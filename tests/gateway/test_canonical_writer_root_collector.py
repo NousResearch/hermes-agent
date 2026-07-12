@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway import canonical_writer_bootstrap as bootstrap
 from gateway import canonical_writer_root_collector as collector
 from gateway.canonical_writer_db import (
     ManagedCloudSQLAdminHBAReceipt,
@@ -27,17 +28,21 @@ REVISION = "1" * 40
 ARTIFACT = "2" * 64
 PLAN = "3" * 64
 BOOT = "4" * 64
+SQL_PRIVATE_IP = "10.0.0.8"
+SQL_TLS_SERVER_NAME = "db.internal"
 
 
 def _hba_receipt(
     *,
     observed_at: int,
     certificate: str = "d" * 64,
+    tls_server_name: str = SQL_TLS_SERVER_NAME,
     ttl_seconds: int = 30,
 ):
     return ManagedCloudSQLAdminHBAReceipt(
-        version="managed-cloudsqladmin-hba-rejection-v1",
-        host="db.internal",
+        version="managed-cloudsqladmin-hba-rejection-v2",
+        host=SQL_PRIVATE_IP,
+        tls_server_name=tls_server_name,
         port=5432,
         server_certificate_sha256=certificate,
         database="cloudsqladmin",
@@ -131,7 +136,8 @@ def _snapshot():
         "database": {
             "expected_user": "canonical_writer",
             "connection": {
-                "host": "db.internal",
+                "host": SQL_PRIVATE_IP,
+                "tls_server_name": SQL_TLS_SERVER_NAME,
                 "port": 5432,
                 "database": "canonical",
                 "user": "canonical_writer",
@@ -153,6 +159,7 @@ def _snapshot():
                 "source_mode": "0400",
                 "source_symlink": False,
                 "same_host": True,
+                "same_tls_server_name": True,
                 "same_port": True,
                 "same_ca": True,
                 "same_user": True,
@@ -1103,12 +1110,17 @@ def test_joint_policy_and_attestation_change_cannot_bypass_manifest():
 
 
 @pytest.mark.parametrize(
-    "observed_at,certificate",
-    [(NOW - 31, "d" * 64), (NOW - 1, "e" * 64)],
+    "observed_at,certificate,tls_server_name",
+    [
+        (NOW - 31, "d" * 64, SQL_TLS_SERVER_NAME),
+        (NOW - 1, "e" * 64, SQL_TLS_SERVER_NAME),
+        (NOW - 1, "d" * 64, "other.internal"),
+    ],
 )
 def test_active_hba_must_be_at_most_thirty_seconds_old_and_peer_bound(
     observed_at,
     certificate,
+    tls_server_name,
 ):
     snapshot = _snapshot()
 
@@ -1118,10 +1130,40 @@ def test_active_hba_must_be_at_most_thirty_seconds_old_and_peer_bound(
             _hba_receipt(
                 observed_at=observed_at,
                 certificate=certificate,
+                tls_server_name=tls_server_name,
                 ttl_seconds=100,
             ),
             collected_at_unix=NOW,
         )
+
+
+def test_active_hba_probe_rejects_config_tls_name_drift(monkeypatch):
+    snapshot = _snapshot()
+    manifest = _manifest_for(snapshot)
+    baseline = _hba_receipt(observed_at=NOW - 300)
+    config = SimpleNamespace(
+        discord_edge_authority=SimpleNamespace(enabled=False),
+        privileges=SimpleNamespace(
+            managed_cloudsqladmin_hba_rejection_receipt=baseline,
+            managed_cloudsqladmin_hba_rejection_sha256=baseline.sha256,
+        ),
+        database=SimpleNamespace(
+            host=SQL_PRIVATE_IP,
+            tls_server_name="other.internal",
+            port=5432,
+            database="canonical",
+            user="canonical_writer",
+        ),
+    )
+    monkeypatch.setattr(bootstrap, "load_service_config", lambda _path: config)
+    monkeypatch.setattr(
+        collector,
+        "collect_managed_cloudsqladmin_hba_receipt",
+        lambda *_args, **_kwargs: pytest.fail("drifted config must not be probed"),
+    )
+
+    with pytest.raises(ValueError, match="does not match approved HBA policy"):
+        collector.probe_active_hba_from_writer_config(manifest, snapshot)
 
 
 def test_manifest_shape_and_digests_are_strict():
@@ -1149,6 +1191,27 @@ def test_manifest_shape_and_digests_are_strict():
         value["snapshot_template"]
     )
     with pytest.raises(ValueError, match="gateway policy is not minimal"):
+        collector.TrustedDeploymentManifest.from_mapping(value)
+
+    for mutation in ("missing", "extra"):
+        value = _manifest_for(snapshot).to_mapping()
+        connection = value["snapshot_template"]["database"]["connection"]
+        if mutation == "missing":
+            connection.pop("tls_server_name")
+        else:
+            connection["tls_server_name_alias"] = SQL_TLS_SERVER_NAME
+        value["snapshot_policy_sha256"] = collector.snapshot_policy_sha256(
+            value["snapshot_template"]
+        )
+        with pytest.raises(ValueError, match="connection fields are not exact"):
+            collector.TrustedDeploymentManifest.from_mapping(value)
+
+    value = _manifest_for(snapshot).to_mapping()
+    value["snapshot_template"]["database"]["connection"]["host"] = "8.8.8.8"
+    value["snapshot_policy_sha256"] = collector.snapshot_policy_sha256(
+        value["snapshot_template"]
+    )
+    with pytest.raises(ValueError, match="exact private IPv4"):
         collector.TrustedDeploymentManifest.from_mapping(value)
 
 

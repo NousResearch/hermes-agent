@@ -93,8 +93,9 @@ class _ProjectionProtocolSession:
 def _managed_hba_receipt(*, observed_at=None):
     observed_at = int(time.time()) if observed_at is None else observed_at
     return {
-        "version": "managed-cloudsqladmin-hba-rejection-v1",
-        "host": "db.internal",
+        "version": "managed-cloudsqladmin-hba-rejection-v2",
+        "host": "10.0.0.8",
+        "tls_server_name": "db.internal",
         "port": 5432,
         "server_certificate_sha256": "d" * 64,
         "database": "cloudsqladmin",
@@ -152,7 +153,8 @@ def _config_value(tmp_path):
             "max_connections": 4,
         },
         "database": {
-            "host": "db.internal",
+            "host": "10.0.0.8",
+            "tls_server_name": "db.internal",
             "port": 5432,
             "database": "canonical",
             "user": "canonical_writer",
@@ -231,6 +233,8 @@ def test_loads_explicit_secret_free_config_and_pins_routine_catalog(tmp_path):
     assert len({config.writer_gid, config.socket_gid, config.projector_gid}) == 3
     assert config.projector_gid != config.writer_gid
     assert config.database.credential.path == tmp_path / "database-password"
+    assert config.database.host == "10.0.0.8"
+    assert config.database.tls_server_name == "db.internal"
     assert not hasattr(config.database, "password")
     assert config.privileges.executable_routines == EXPECTED_ROUTINE_SIGNATURES
     assert {
@@ -296,6 +300,66 @@ def test_config_rejects_symlink_secret_fields_unknown_fields_and_same_uid(tmp_pa
     value = _config_value(tmp_path)
     value["service"]["socket_gid"] = value["service"]["writer_gid"]
     with pytest.raises(ValueError, match="groups must be distinct"):
+        _load(_write_config(tmp_path, value))
+
+
+def test_config_requires_explicit_tls_identity_without_host_fallback(tmp_path):
+    value = _config_value(tmp_path)
+    del value["database"]["tls_server_name"]
+
+    with pytest.raises(ValueError, match="database.tls_server_name"):
+        _load(_write_config(tmp_path, value))
+
+
+@pytest.mark.parametrize(
+    "tls_server_name",
+    [" db.internal", "DB.internal", "db.internal."],
+)
+def test_config_rejects_noncanonical_tls_identity(tmp_path, tls_server_name):
+    value = _config_value(tmp_path)
+    value["database"]["tls_server_name"] = tls_server_name
+
+    with pytest.raises(ValueError, match="tls_server_name|TLS server name"):
+        _load(_write_config(tmp_path, value))
+
+
+def test_config_rejects_whitespace_normalized_connect_host(tmp_path):
+    value = _config_value(tmp_path)
+    value["database"]["host"] = " 10.0.0.8"
+
+    with pytest.raises(ValueError, match="database.host"):
+        _load(_write_config(tmp_path, value))
+
+
+def test_config_rejects_hba_receipt_with_missing_or_mismatched_tls_identity(
+    tmp_path,
+):
+    value = _config_value(tmp_path)
+    del value["privileges"][
+        "managed_cloudsqladmin_hba_rejection_receipt"
+    ]["tls_server_name"]
+    with pytest.raises(ValueError, match="receipt fields are not exact"):
+        _load(_write_config(tmp_path, value))
+
+    value = _config_value(tmp_path)
+    receipt = value["privileges"][
+        "managed_cloudsqladmin_hba_rejection_receipt"
+    ]
+    receipt["tls_server_name"] = "other.internal"
+    value["privileges"][
+        "managed_cloudsqladmin_hba_rejection_sha256"
+    ] = writer_db.managed_cloudsqladmin_hba_receipt_from_mapping(receipt).sha256
+    with pytest.raises(ValueError, match="does not match database coordinates"):
+        _load(_write_config(tmp_path, value))
+
+
+def test_config_rejects_legacy_hba_v1_without_fallback(tmp_path):
+    value = _config_value(tmp_path)
+    value["privileges"][
+        "managed_cloudsqladmin_hba_rejection_receipt"
+    ]["version"] = "managed-cloudsqladmin-hba-rejection-v1"
+
+    with pytest.raises(ValueError, match="receipt version is invalid"):
         _load(_write_config(tmp_path, value))
 
 

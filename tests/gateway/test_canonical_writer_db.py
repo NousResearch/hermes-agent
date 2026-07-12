@@ -14,6 +14,8 @@ import pytest
 from gateway import canonical_writer_db as writer_db
 
 
+_DB_HOST = "10.20.30.40"
+_DB_TLS_SERVER_NAME = "db.internal"
 _ROUTINE_DEFINITION = (
     "CREATE FUNCTION canonical_brain.append_event(jsonb) RETURNS jsonb"
 )
@@ -105,12 +107,18 @@ def _credential(tmp_path, value: bytes = b"secret\n") -> writer_db.CredentialSou
     return writer_db.CredentialSource(path=path, expected_uid=os.getuid())
 
 
-def _config(tmp_path, *, host: str = "db.internal") -> writer_db.WriterDBConfig:
+def _config(
+    tmp_path,
+    *,
+    host: str = _DB_HOST,
+    tls_server_name: str = _DB_TLS_SERVER_NAME,
+) -> writer_db.WriterDBConfig:
     ca_file = tmp_path / "server-ca.pem"
     ca_file.write_text("test-ca", encoding="utf-8")
     ca_file.chmod(0o444)
     return writer_db.WriterDBConfig(
         host=host,
+        tls_server_name=tls_server_name,
         port=5432,
         database="canonical",
         user="canonical_writer",
@@ -136,8 +144,9 @@ def _managed_hba_receipt(
     observed_at_unix=2_000_000_000,
 ):
     return writer_db.ManagedCloudSQLAdminHBAReceipt(
-        version="managed-cloudsqladmin-hba-rejection-v1",
-        host="db.internal",
+        version="managed-cloudsqladmin-hba-rejection-v2",
+        host=_DB_HOST,
+        tls_server_name=_DB_TLS_SERVER_NAME,
         port=5432,
         server_certificate_sha256=certificate_sha256,
         database="cloudsqladmin",
@@ -983,11 +992,11 @@ def test_managed_hba_runtime_refreshes_expired_proof_before_fixed_db_work(
     database.query_fixed("append_event", {"payload": {"case": 2}})
 
     assert events == [
-        ("probe", 2_000_000_000, "db.internal"),
-        ("session", 2_000_000_000, "db.internal"),
-        ("session", 2_000_000_300, "db.internal"),
-        ("probe", 2_000_000_301, "db.internal"),
-        ("session", 2_000_000_301, "db.internal"),
+        ("probe", 2_000_000_000, _DB_HOST),
+        ("session", 2_000_000_000, _DB_HOST),
+        ("session", 2_000_000_300, _DB_HOST),
+        ("probe", 2_000_000_301, _DB_HOST),
+        ("session", 2_000_000_301, _DB_HOST),
     ]
     assert len(sessions) == 3
     assert all(session.closed for session in sessions)
@@ -1395,9 +1404,8 @@ def test_active_managed_hba_probe_rejects_non_exact_server_errors(
         )
 
 
-@pytest.mark.parametrize("host", ["db.internal", "10.20.30.40", "2001:db8::10"])
-def test_wire_connection_uses_ca_verified_hostname_or_ip_tls(
-    tmp_path, monkeypatch, host
+def test_wire_connection_uses_direct_ip_but_verifies_explicit_tls_name(
+    tmp_path, monkeypatch
 ):
     raw = _MemorySocket(b"S")
     protected = _MemorySocket(
@@ -1422,19 +1430,70 @@ def test_wire_connection_uses_ca_verified_hostname_or_ip_tls(
         observed["cafile"] = cafile
         return context
 
-    monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: raw)
+    def create_connection(address, *, timeout):
+        observed["connect_address"] = address
+        observed["connect_timeout"] = timeout
+        return raw
+
+    monkeypatch.setattr(socket, "create_connection", create_connection)
     monkeypatch.setattr(ssl, "create_default_context", create_context)
 
-    session = writer_db._open_postgres_session(_config(tmp_path, host=host))
+    session = writer_db._open_postgres_session(
+        _config(
+            tmp_path,
+            host=_DB_HOST,
+            tls_server_name=_DB_TLS_SERVER_NAME,
+        )
+    )
     session.close()
 
     assert observed["purpose"] is ssl.Purpose.SERVER_AUTH
     assert observed["cafile"].endswith("server-ca.pem")
-    assert observed["server_hostname"] == host
+    assert observed["connect_address"] == (_DB_HOST, 5432)
+    assert observed["connect_timeout"] == 5.0
+    assert observed["server_hostname"] == _DB_TLS_SERVER_NAME
     assert context.verify_mode is ssl.CERT_REQUIRED
     assert context.check_hostname is True
     assert context.minimum_version is ssl.TLSVersion.TLSv1_2
     assert raw.timeouts and protected.timeouts
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("host", " 10.20.30.40", "database host"),
+        ("tls_server_name", " DB.INTERNAL", "TLS server name"),
+        ("tls_server_name", "DB.INTERNAL", "TLS server name"),
+        ("tls_server_name", "db.internal.", "TLS server name"),
+        ("tls_server_name", "2001:0db8::1", "not canonical"),
+        ("tls_server_name", "10.20.30.999", "TLS server name"),
+    ],
+)
+def test_writer_config_requires_exact_ip_and_tls_identity(
+    tmp_path, field, value, message
+):
+    with pytest.raises(ValueError, match=message):
+        _config(tmp_path, **{field: value})
+
+
+@pytest.mark.parametrize("host", ["db.internal", "2001:db8::10"])
+def test_generic_writer_config_preserves_explicit_dns_and_ipv6_hosts(
+    tmp_path, host
+):
+    assert _config(tmp_path, host=host).host == host
+
+
+def test_managed_hba_binding_rejects_different_tls_identity(tmp_path):
+    baseline = _managed_hba_receipt()
+    observed = replace(baseline, tls_server_name="other.internal")
+
+    with pytest.raises(writer_db.PrivilegeAttestationError, match="binding"):
+        writer_db._validate_active_managed_hba_receipt(
+            baseline,
+            observed,
+            config=_config(tmp_path),
+            now_unix=baseline.observed_at_unix,
+        )
 
 
 def test_wire_connection_rejects_server_without_tls(tmp_path, monkeypatch):

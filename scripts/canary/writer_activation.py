@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from gateway.canonical_writer_bootstrap import CanonicalWriterServiceConfig
+from gateway.canonical_writer_db import validate_tls_server_name
 from gateway.canonical_writer_boundary import (
     DEFAULT_DISCORD_EDGE_SOCKET_PATH,
     DEFAULT_DISCORD_EDGE_UNIT,
@@ -52,7 +53,7 @@ from scripts.canary.writer_release import (
 )
 
 
-ACTIVATION_PLAN_SCHEMA = "muncho-writer-only-activation-plan.v1"
+ACTIVATION_PLAN_SCHEMA = "muncho-writer-only-activation-plan.v2"
 DEFAULT_MANIFEST_PATH = Path(
     "/etc/muncho/writer-activation/deployment-manifest.json"
 )
@@ -450,6 +451,7 @@ def _writer_config_policy(
     config: CanonicalWriterServiceConfig,
     *,
     sql_ip: str,
+    sql_tls_server_name: str,
     identities: HostNumericIdentities,
 ) -> dict[str, Any]:
     identities.validate()
@@ -468,6 +470,7 @@ def _writer_config_policy(
     credential = database.credential
     if (
         database.host != sql_ip
+        or database.tls_server_name != sql_tls_server_name
         or credential.path is None
         or credential.fd is not None
         or credential.expected_uid != identities.writer_uid
@@ -478,6 +481,7 @@ def _writer_config_policy(
     if (
         receipt is None
         or receipt.host != sql_ip
+        or receipt.tls_server_name != sql_tls_server_name
         or receipt.port != database.port
         or receipt.user != database.user
         or receipt.sha256
@@ -488,6 +492,7 @@ def _writer_config_policy(
         "expected_user": database.user,
         "connection": {
             "host": sql_ip,
+            "tls_server_name": sql_tls_server_name,
             "port": database.port,
             "database": database.database,
             "user": database.user,
@@ -506,6 +511,7 @@ def _writer_config_policy(
             "source_mode": "0400",
             "source_symlink": False,
             "same_host": False,
+            "same_tls_server_name": False,
             "same_port": False,
             "same_ca": False,
             "same_user": False,
@@ -524,6 +530,7 @@ def _snapshot_template(
     native_executable_policy: PreapprovedNativeExecutablePolicy,
     *,
     sql_ip: str,
+    sql_tls_server_name: str,
 ) -> dict[str, Any]:
     import_paths = _release_import_policy(release)
     root = release.artifact_root
@@ -620,6 +627,7 @@ def _snapshot_template(
     database = _writer_config_policy(
         writer_config,
         sql_ip=sql_ip,
+        sql_tls_server_name=sql_tls_server_name,
         identities=identities,
     )
     return {
@@ -676,6 +684,7 @@ class ActivationPlan:
     digests: ActivationDigests
     paths: ActivationPaths
     sql_private_ip: str
+    sql_tls_server_name: str
     collector_argv: tuple[str, ...]
     validator_argv: tuple[str, ...]
     sha256: str
@@ -692,6 +701,7 @@ class ActivationPlan:
         return {
             "schema": self.schema,
             "sql_private_ip": self.sql_private_ip,
+            "sql_tls_server_name": self.sql_tls_server_name,
             "identities": self.identities.to_mapping(),
             "digests": self.digests.to_mapping(),
             "paths": self.paths.to_mapping(),
@@ -727,6 +737,7 @@ def build_activation_plan(
     *,
     native_executable_policy: PreapprovedNativeExecutablePolicy,
     sql_private_ip: str,
+    sql_tls_server_name: str,
     paths: ActivationPaths = ActivationPaths(),
 ) -> ActivationPlan:
     identities.validate()
@@ -742,6 +753,7 @@ def build_activation_plan(
         raise ValueError("SQL private IP is invalid") from exc
     if (
         address.version != 4
+        or str(address) != sql_private_ip
         or not address.is_private
         or address.is_loopback
         or address.is_link_local
@@ -750,6 +762,7 @@ def build_activation_plan(
         or address.is_unspecified
     ):
         raise ValueError("SQL endpoint must be exact private IPv4")
+    validate_tls_server_name(sql_tls_server_name)
     expected_allow = (f"{address}/32",)
     if unit_spec.database_ip_allow != expected_allow:
         raise ValueError("unit SQL allow-list does not match exact private IP")
@@ -768,6 +781,7 @@ def build_activation_plan(
         identities,
         native_executable_policy,
         sql_ip=sql_private_ip,
+        sql_tls_server_name=sql_tls_server_name,
     )
     projection_path = unit_spec.projection_directory / DEFAULT_PROJECTION_FILENAME
     host_contract = {
@@ -821,6 +835,7 @@ def build_activation_plan(
         digests=digests,
         paths=paths,
         sql_private_ip=sql_private_ip,
+        sql_tls_server_name=sql_tls_server_name,
         collector_argv=collector,
         validator_argv=validator,
         sha256="",
@@ -833,6 +848,7 @@ def build_activation_plan(
         digests=provisional.digests,
         paths=provisional.paths,
         sql_private_ip=provisional.sql_private_ip,
+        sql_tls_server_name=provisional.sql_tls_server_name,
         collector_argv=provisional.collector_argv,
         validator_argv=provisional.validator_argv,
         sha256=plan_sha256,
@@ -938,12 +954,17 @@ def _write_root_json(path: Path, value: Mapping[str, Any]) -> None:
 def _validate_activation_plan(plan: ActivationPlan) -> None:
     if not isinstance(plan, ActivationPlan):
         raise TypeError("activation plan is required")
+    if plan.schema != ACTIVATION_PLAN_SCHEMA:
+        raise ValueError("activation plan schema is invalid")
     plan.paths.validate()
     plan.identities.validate()
     plan.digests.validate()
     if plan.sha256 != _sha256_json(plan.unsigned_mapping()):
         raise ValueError("activation plan digest is invalid")
     trusted = TrustedDeploymentManifest.from_mapping(plan.deployment_manifest)
+    connection = trusted.snapshot_template.get("database", {}).get(
+        "connection", {}
+    )
     if (
         trusted.approved_plan_sha256 != plan.digests.approved_plan_sha256
         or trusted.host_contract["writer_unit_fragment_sha256"]
@@ -960,6 +981,8 @@ def _validate_activation_plan(plan: ActivationPlan) -> None:
         != plan.digests.gateway_unit_sha256
         or _sha256_text(plan.unit_bundle.tmpfiles)
         != plan.digests.tmpfiles_sha256
+        or connection.get("host") != plan.sql_private_ip
+        or connection.get("tls_server_name") != plan.sql_tls_server_name
     ):
         raise ValueError("activation plan host digests are inconsistent")
     interpreter = str(

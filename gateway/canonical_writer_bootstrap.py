@@ -117,6 +117,7 @@ _SERVICE_KEYS = frozenset(
 _DATABASE_KEYS = frozenset(
     {
         "host",
+        "tls_server_name",
         "port",
         "database",
         "user",
@@ -214,6 +215,17 @@ def _required_text(value: Any, label: str) -> str:
     if not result or any(ord(char) < 32 for char in result):
         raise ValueError(f"{label} is invalid")
     return result
+
+
+def _required_exact_text(value: Any, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError(f"{label} is invalid")
+    return value
 
 
 def _integer(value: Any, label: str, *, minimum: int, maximum: int) -> int:
@@ -850,7 +862,11 @@ def load_service_config(
         "database.credential_file",
     )
     db_config = WriterDBConfig(
-        host=_required_text(database.get("host"), "database.host"),
+        host=_required_exact_text(database.get("host"), "database.host"),
+        tls_server_name=_required_exact_text(
+            database.get("tls_server_name"),
+            "database.tls_server_name",
+        ),
         port=_integer(
             database.get("port"),
             "database.port",
@@ -880,6 +896,7 @@ def load_service_config(
     )
     if managed_hba_receipt is not None and (
         managed_hba_receipt.host != db_config.host
+        or managed_hba_receipt.tls_server_name != db_config.tls_server_name
         or managed_hba_receipt.port != db_config.port
         or managed_hba_receipt.user != db_config.user
     ):

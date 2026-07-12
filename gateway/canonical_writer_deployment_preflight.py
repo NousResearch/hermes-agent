@@ -9,6 +9,7 @@ mutation authority remain outside this checker.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import re
 import stat
@@ -29,6 +30,7 @@ from gateway.canonical_writer_db import (
     TablePrivilegeGrant,
     WriterPrivilegePolicy,
     managed_cloudsqladmin_hba_receipt_from_mapping,
+    validate_tls_server_name,
     validate_privilege_attestation,
 )
 from gateway.canonical_writer_postgres_backend import (
@@ -247,6 +249,39 @@ def _sha256(value: Any) -> str | None:
     return value
 
 
+def _external_native_mapping_policy(
+    value: Any,
+    *,
+    artifact_root: str | None,
+) -> tuple[tuple[str, str], ...]:
+    """Return one exact canonical external-native mapping allow-list.
+
+    The activation plan emits a non-empty, path-sorted JSON list.  Packaged
+    preflight must validate the same shape before it may use the paths as an
+    exception to the otherwise release-contained executable-map invariant.
+    """
+
+    if artifact_root is None or type(value) is not list or not value:
+        raise ValueError("external native mapping policy is absent")
+    result: list[tuple[str, str]] = []
+    for raw in value:
+        item = _mapping(raw)
+        path = _absolute_normalized_path(item.get("path"))
+        digest = _sha256(item.get("sha256"))
+        if (
+            set(item) != {"path", "sha256"}
+            or path is None
+            or _path_is_within(path, artifact_root)
+            or digest is None
+        ):
+            raise ValueError("external native mapping policy is invalid")
+        result.append((path, digest))
+    paths = [path for path, _digest in result]
+    if paths != sorted(paths) or len(paths) != len(set(paths)):
+        raise ValueError("external native mapping policy is not canonical")
+    return tuple(result)
+
+
 def _revision(value: Any) -> str | None:
     if not isinstance(value, str) or _REVISION_RE.fullmatch(value) is None:
         return None
@@ -366,6 +401,7 @@ _WRITER_DEPLOYMENT_POLICY_KEYS = {
     "module",
     "module_origin",
     "projection_export_directory",
+    "preapproved_external_native_executable_mappings",
     "read_write_paths",
     "revision",
     "runtime_directory",
@@ -489,6 +525,13 @@ def _writer_deployment_checks(
         read_write_paths = _strings(policy.get("read_write_paths"))
         bind_paths = _strings(policy.get("bind_paths"))
         bind_read_only_paths = _strings(policy.get("bind_read_only_paths"))
+        approved_native_mappings = _external_native_mapping_policy(
+            policy.get("preapproved_external_native_executable_mappings"),
+            artifact_root=artifact_root,
+        )
+        approved_native_paths = tuple(
+            path for path, _digest in approved_native_mappings
+        )
 
         raw_import_paths = policy.get("import_paths")
         if not isinstance(raw_import_paths, Sequence) or isinstance(
@@ -716,6 +759,13 @@ def _writer_deployment_checks(
                 for protected_path, expected in import_policy.items()
             )
 
+        observed_external_native_paths = tuple(
+            sorted(
+                path
+                for path in mapped_executable_paths
+                if not covered_by_immutable_closure(path)
+            )
+        )
         process_code_closure = (
             process_shape_ok
             and effective_import_paths == expected_import_paths
@@ -730,8 +780,11 @@ def _writer_deployment_checks(
             and interpreter in mapped_executable_paths
             and len(set(mapped_executable_paths)) == len(mapped_executable_paths)
             and all(
-                covered_by_immutable_closure(path) for path in mapped_executable_paths
+                covered_by_immutable_closure(path)
+                or path in approved_native_paths
+                for path in mapped_executable_paths
             )
+            and observed_external_native_paths == approved_native_paths
             and _empty_sequence(process.get("unexpected_import_origins"))
             and _empty_sequence(process.get("deleted_code_mappings"))
             and _empty_sequence(process.get("writable_code_mappings"))
@@ -853,6 +906,7 @@ _GATEWAY_DEPLOYMENT_POLICY_KEYS = {
     "interpreter",
     "module",
     "module_origin",
+    "preapproved_external_native_executable_mappings",
     "read_write_paths",
     "revision",
     "unit_name",
@@ -952,6 +1006,13 @@ def _gateway_deployment_checks(
         read_write_paths = _strings(policy.get("read_write_paths"))
         bind_paths = _strings(policy.get("bind_paths"))
         bind_read_only_paths = _strings(policy.get("bind_read_only_paths"))
+        approved_native_mappings = _external_native_mapping_policy(
+            policy.get("preapproved_external_native_executable_mappings"),
+            artifact_root=artifact_root,
+        )
+        approved_native_paths = tuple(
+            path for path, _digest in approved_native_mappings
+        )
         dynamic_loading_mode = str(
             policy.get("dynamic_python_loading_mode") or ""
         )
@@ -1151,6 +1212,13 @@ def _gateway_deployment_checks(
                 for protected_path, expected in import_policy.items()
             )
 
+        observed_external_native_paths = tuple(
+            sorted(
+                path
+                for path in mapped_paths
+                if not covered_by_shared_release(path)
+            )
+        )
         process_code_closure = (
             process_shape_ok
             and effective_import_paths == expected_import_paths
@@ -1161,7 +1229,12 @@ def _gateway_deployment_checks(
             and process.get("mapped_executable_paths_complete") is True
             and interpreter in mapped_paths
             and len(set(mapped_paths)) == len(mapped_paths)
-            and all(covered_by_shared_release(path) for path in mapped_paths)
+            and all(
+                covered_by_shared_release(path)
+                or path in approved_native_paths
+                for path in mapped_paths
+            )
+            and observed_external_native_paths == approved_native_paths
             and _empty_sequence(process.get("unexpected_import_origins"))
             and _empty_sequence(process.get("deleted_code_mappings"))
             and _empty_sequence(process.get("writable_code_mappings"))
@@ -1524,7 +1597,9 @@ def _writer_authority_surface_checks(
                     expected_pid=child_pid,
                     expected_uid=gateway_uid,
                     expected_gid=gateway_gid,
-                    expected_supplementary_gids=(socket_group_gid,),
+                    expected_supplementary_gids=tuple(
+                        sorted((gateway_gid, socket_group_gid))
+                    ),
                 )
             )
             if type(child_pid) is int:
@@ -1542,14 +1617,18 @@ def _writer_authority_surface_checks(
                 expected_pid=_integer(gateway_process.get("pid")),
                 expected_uid=gateway_uid,
                 expected_gid=gateway_gid,
-                expected_supplementary_gids=(socket_group_gid,),
+                expected_supplementary_gids=tuple(
+                    sorted((gateway_gid, socket_group_gid))
+                ),
             )
             and _authority_identity(
                 writer_identity,
                 expected_pid=_integer(writer_process.get("pid")),
                 expected_uid=writer_uid,
                 expected_gid=writer_gid,
-                expected_supplementary_gids=(projector_gid,),
+                expected_supplementary_gids=tuple(
+                    sorted((writer_gid, projector_gid))
+                ),
             )
             and children_exact
         )
@@ -1741,7 +1820,7 @@ def _writer_authority_surface_checks(
         PreflightCheck(
             "writer_authority.identities_exact",
             fresh_root_evidence and identities_exact,
-            "gateway, every observed gateway child, and writer must have exact effective UID/GID and only their dedicated supplementary group",
+            "gateway, every observed gateway child, and writer must have exact effective UID/GID and Linux Groups including their primary and dedicated group",
         ),
         PreflightCheck(
             "writer_authority.dangerous_groups_absent",
@@ -2275,6 +2354,42 @@ def _parse_database_attestation(
 ) -> tuple[str, WriterPrivilegePolicy, PrivilegeAttestation]:
     database = _mapping(value)
     expected_user = str(database.get("expected_user") or "")
+    connection = _mapping(database.get("connection"))
+    if set(connection) != {
+        "host",
+        "tls_server_name",
+        "port",
+        "database",
+        "user",
+    }:
+        raise ValueError("managed HBA connection evidence is not exact")
+    connection_host = connection.get("host")
+    try:
+        connection_address = ipaddress.ip_address(connection_host)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("managed HBA connection host is not exact IPv4") from exc
+    if (
+        connection_address.version != 4
+        or str(connection_address) != connection_host
+        or not connection_address.is_private
+        or connection_address.is_loopback
+        or connection_address.is_link_local
+        or connection_address.is_multicast
+        or connection_address.is_reserved
+        or connection_address.is_unspecified
+    ):
+        raise ValueError("managed HBA connection host is not exact private IPv4")
+    validate_tls_server_name(connection.get("tls_server_name"))
+    if (
+        type(connection.get("port")) is not int
+        or not 1 <= connection["port"] <= 65535
+        or not isinstance(connection.get("database"), str)
+        or not connection["database"]
+        or not isinstance(connection.get("user"), str)
+        or not connection["user"]
+        or connection.get("user") != expected_user
+    ):
+        raise ValueError("managed HBA connection evidence is invalid")
     policy_raw = _mapping(database.get("policy"))
     attestation_raw = _mapping(database.get("attestation"))
     raw_schema_privileges = tuple(
@@ -2333,7 +2448,6 @@ def _parse_database_attestation(
             "managed cloudsqladmin HBA rejection receipt does not match production"
         )
     if managed_hba_receipt is not None:
-        connection = _mapping(database.get("connection"))
         evidence = _mapping(
             database.get("managed_cloudsqladmin_hba_rejection_evidence")
         )
@@ -2343,8 +2457,6 @@ def _parse_database_attestation(
         evidence_receipt = managed_cloudsqladmin_hba_receipt_from_mapping(
             evidence_receipt_raw
         )
-        if set(connection) != {"host", "port", "database", "user"}:
-            raise ValueError("managed HBA connection evidence is not exact")
         if set(evidence) != {
             "complete",
             "collector_uid",
@@ -2352,6 +2464,7 @@ def _parse_database_attestation(
             "source_mode",
             "source_symlink",
             "same_host",
+            "same_tls_server_name",
             "same_port",
             "same_ca",
             "same_user",
@@ -2362,6 +2475,8 @@ def _parse_database_attestation(
             raise ValueError("managed HBA root evidence fields are not exact")
         if (
             connection.get("host") != managed_hba_receipt.host
+            or connection.get("tls_server_name")
+            != managed_hba_receipt.tls_server_name
             or type(connection.get("port")) is not int
             or connection.get("port") != managed_hba_receipt.port
             or connection.get("database") == "cloudsqladmin"
@@ -2376,6 +2491,7 @@ def _parse_database_attestation(
                 evidence.get(name) is not True
                 for name in (
                     "same_host",
+                    "same_tls_server_name",
                     "same_port",
                     "same_ca",
                     "same_user",
@@ -2383,6 +2499,8 @@ def _parse_database_attestation(
                 )
             )
             or evidence_receipt.host != managed_hba_receipt.host
+            or evidence_receipt.tls_server_name
+            != managed_hba_receipt.tls_server_name
             or evidence_receipt.port != managed_hba_receipt.port
             or evidence_receipt.user != managed_hba_receipt.user
             or evidence_receipt.server_certificate_sha256
@@ -2602,14 +2720,18 @@ def evaluate_snapshot(snapshot: Mapping[str, Any]) -> PreflightReport:
     credential_mode = _mode(credential.get("mode"))
     projection_export_mode = _mode(projection_export.get("mode"))
     collected_at_unix = _integer(snapshot.get("collected_at_unix"))
-    raw_supplementary_gids = snapshot.get("writer_supplementary_gids")
-    if isinstance(raw_supplementary_gids, Sequence) and not isinstance(
-        raw_supplementary_gids,
-        (str, bytes, bytearray),
-    ):
-        supplementary_gids = tuple(_integer(value) for value in raw_supplementary_gids)
-    else:
-        supplementary_gids = ()
+    try:
+        gateway_supplementary_gids = _strict_integers(
+            snapshot.get("gateway_supplementary_gids")
+        )
+    except ValueError:
+        gateway_supplementary_gids = ()
+    try:
+        writer_supplementary_gids = _strict_integers(
+            snapshot.get("writer_supplementary_gids")
+        )
+    except ValueError:
+        writer_supplementary_gids = ()
 
     checks: list[PreflightCheck] = [
         PreflightCheck(
@@ -2631,9 +2753,16 @@ def evaluate_snapshot(snapshot: Mapping[str, Any]) -> PreflightReport:
             "projector GID must differ from writer and socket client groups",
         ),
         PreflightCheck(
+            "identity.gateway_socket_membership",
+            gateway_supplementary_gids
+            == tuple(sorted((gateway_gid, expected_group_gid))),
+            "gateway Linux Groups must contain exactly its primary and dedicated socket-client GIDs",
+        ),
+        PreflightCheck(
             "identity.writer_projector_membership",
-            supplementary_gids == (projector_gid,),
-            "writer must have exactly the dedicated projector supplementary GID",
+            writer_supplementary_gids
+            == tuple(sorted((writer_gid, projector_gid))),
+            "writer Linux Groups must contain exactly its primary and dedicated projector GIDs",
         ),
         PreflightCheck(
             "helper.legacy_absent",

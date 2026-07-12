@@ -42,6 +42,7 @@ from gateway.canonical_writer_db import (
     ManagedCloudSQLAdminHBAReceipt,
     collect_managed_cloudsqladmin_hba_receipt,
     managed_cloudsqladmin_hba_receipt_from_mapping,
+    validate_tls_server_name,
 )
 from gateway.canonical_writer_deployment_preflight import (
     _HARDENED_TRUE_PROPERTIES,
@@ -644,6 +645,43 @@ class TrustedDeploymentManifest:
                 raise ValueError(f"host contract {name} is invalid")
         if snapshot_template.get("deployment_mode") != WRITER_ONLY_MODE:
             raise ValueError("snapshot template is not writer-only")
+        database = _mapping(snapshot_template.get("database"))
+        connection = _mapping(database.get("connection"))
+        if set(connection) != {
+            "host",
+            "tls_server_name",
+            "port",
+            "database",
+            "user",
+        }:
+            raise ValueError("snapshot database connection fields are not exact")
+        connection_host = connection.get("host")
+        try:
+            connection_address = ipaddress.ip_address(connection_host)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("snapshot database host is not exact IPv4") from exc
+        if (
+            connection_address.version != 4
+            or str(connection_address) != connection_host
+            or not connection_address.is_private
+            or connection_address.is_loopback
+            or connection_address.is_link_local
+            or connection_address.is_multicast
+            or connection_address.is_reserved
+            or connection_address.is_unspecified
+        ):
+            raise ValueError("snapshot database host is not exact private IPv4")
+        validate_tls_server_name(connection.get("tls_server_name"))
+        if (
+            type(connection.get("port")) is not int
+            or not 1 <= connection["port"] <= 65535
+            or not isinstance(connection.get("database"), str)
+            or not connection["database"]
+            or not isinstance(connection.get("user"), str)
+            or not connection["user"]
+            or connection["user"] != database.get("expected_user")
+        ):
+            raise ValueError("snapshot database connection is invalid")
         discord = _mapping(snapshot_template.get("discord_edge"))
         if (
             discord.get("unit_name") != DEFAULT_DISCORD_EDGE_UNIT
@@ -3797,6 +3835,8 @@ def probe_active_hba_from_writer_config(
         or config.privileges.managed_cloudsqladmin_hba_rejection_sha256
         != baseline.sha256
         or connection.get("host") != config.database.host
+        or connection.get("tls_server_name")
+        != config.database.tls_server_name
         or connection.get("port") != config.database.port
         or connection.get("database") != config.database.database
         or connection.get("user") != config.database.user
@@ -3833,6 +3873,7 @@ def _install_active_hba_evidence(
         raise ValueError("active managed HBA probe did not return a receipt")
     if (
         observed.host != baseline.host
+        or observed.tls_server_name != baseline.tls_server_name
         or observed.port != baseline.port
         or observed.user != baseline.user
         or observed.server_certificate_sha256
@@ -3853,6 +3894,7 @@ def _install_active_hba_evidence(
         "source_mode",
         "source_symlink",
         "same_host",
+        "same_tls_server_name",
         "same_port",
         "same_ca",
         "same_user",
@@ -3868,6 +3910,7 @@ def _install_active_hba_evidence(
             "complete": True,
             "collector_uid": 0,
             "same_host": True,
+            "same_tls_server_name": True,
             "same_port": True,
             "same_ca": True,
             "same_user": True,

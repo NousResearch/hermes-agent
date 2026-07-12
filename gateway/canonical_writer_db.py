@@ -38,7 +38,7 @@ _MAX_RESULT_BYTES = 8 * 1024 * 1024
 _MAX_FIELD_BYTES = 1024 * 1024
 _MAX_ATTESTATION_ROWS = 2048
 _MAX_FIXED_TRANSACTION_ATTEMPTS = 3
-_MANAGED_HBA_RECEIPT_VERSION = "managed-cloudsqladmin-hba-rejection-v1"
+_MANAGED_HBA_RECEIPT_VERSION = "managed-cloudsqladmin-hba-rejection-v2"
 _MANAGED_HBA_RECEIPT_MAX_TTL_SECONDS = 300
 _MANAGED_HBA_DATABASE = "cloudsqladmin"
 _MANAGED_HBA_RESULT = "pg_hba_rejected"
@@ -257,6 +257,7 @@ class WriterDBConfig:
     """Fixed connection coordinates supplied by the writer service."""
 
     host: str
+    tls_server_name: str
     port: int
     database: str
     user: str
@@ -267,8 +268,8 @@ class WriterDBConfig:
     application_name: str = "muncho-canonical-writer"
 
     def __post_init__(self) -> None:
-        if not self.host or any(ord(char) < 32 for char in self.host):
-            raise ValueError("database host is invalid")
+        _exact_connect_host(self.host)
+        validate_tls_server_name(self.tls_server_name)
         if not 1 <= self.port <= 65535:
             raise ValueError("database port is invalid")
         _valid_identifier(self.database, "database")
@@ -291,6 +292,7 @@ class ManagedCloudSQLAdminHBAReceipt:
 
     version: str
     host: str
+    tls_server_name: str
     port: int
     server_certificate_sha256: str
     database: str
@@ -305,9 +307,8 @@ class ManagedCloudSQLAdminHBAReceipt:
     def __post_init__(self) -> None:
         if self.version != _MANAGED_HBA_RECEIPT_VERSION:
             raise ValueError("managed HBA receipt version is invalid")
-        if not self.host or self.host != self.host.strip():
-            raise ValueError("managed HBA receipt host is invalid")
-        _tls_server_name(self.host)
+        _exact_connect_host(self.host)
+        validate_tls_server_name(self.tls_server_name)
         if isinstance(self.port, bool) or not 1 <= self.port <= 65535:
             raise ValueError("managed HBA receipt port is invalid")
         if not re.fullmatch(r"[0-9a-f]{64}", self.server_certificate_sha256):
@@ -343,6 +344,7 @@ class ManagedCloudSQLAdminHBAReceipt:
         return {
             "version": self.version,
             "host": self.host,
+            "tls_server_name": self.tls_server_name,
             "port": self.port,
             "server_certificate_sha256": self.server_certificate_sha256,
             "database": self.database,
@@ -376,6 +378,7 @@ class ManagedCloudSQLAdminHBAReceipt:
 _MANAGED_HBA_RECEIPT_KEYS = frozenset({
     "version",
     "host",
+    "tls_server_name",
     "port",
     "server_certificate_sha256",
     "database",
@@ -401,6 +404,7 @@ def managed_cloudsqladmin_hba_receipt_from_mapping(
         for name in (
             "version",
             "host",
+            "tls_server_name",
             "server_certificate_sha256",
             "database",
             "user",
@@ -2661,33 +2665,52 @@ class _PostgresWireSession:
                 pass
 
 
-def _tls_server_name(host: str) -> str:
-    normalized = host.strip()
-    if normalized.startswith("[") or normalized.endswith("]"):
-        raise ValueError("database host must not use URL brackets")
+def _exact_connect_host(host: str) -> str:
+    if not isinstance(host, str) or not host or host != host.strip():
+        raise ValueError("database host is invalid")
+    if any(ord(char) < 32 or ord(char) == 127 for char in host):
+        raise ValueError("database host is invalid")
+    return host
+
+
+def validate_tls_server_name(value: str) -> str:
+    """Validate an exact TLS identity without resolving or normalizing it."""
+
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError("database TLS server name is invalid")
+    if value.startswith("[") or value.endswith("]"):
+        raise ValueError("database TLS server name must not use URL brackets")
     try:
-        return str(ipaddress.ip_address(normalized))
+        address = ipaddress.ip_address(value)
     except ValueError:
-        if len(normalized) > 253 or normalized.endswith("."):
-            raise ValueError("database TLS hostname is invalid")
-        labels = normalized.split(".")
+        if (
+            len(value) > 253
+            or value.endswith(".")
+            or value != value.lower()
+            or re.fullmatch(r"[0-9.]+", value) is not None
+        ):
+            raise ValueError("database TLS server name is invalid")
+        labels = value.split(".")
         if any(
             not label
             or len(label) > 63
             or label.startswith("-")
             or label.endswith("-")
-            or not re.fullmatch(r"[A-Za-z0-9-]+", label)
+            or not re.fullmatch(r"[a-z0-9-]+", label)
             for label in labels
         ):
-            raise ValueError("database TLS hostname is invalid")
-        return normalized
+            raise ValueError("database TLS server name is invalid")
+        return value
+    if str(address) != value:
+        raise ValueError("database TLS server name is not canonical")
+    return value
 
 
 def _open_verified_tls_connection(
     config: WriterDBConfig,
 ) -> tuple[ssl.SSLSocket, str]:
     _validate_ca_file(config.ca_file, config.credential.expected_uid)
-    server_name = _tls_server_name(config.host)
+    server_name = validate_tls_server_name(config.tls_server_name)
     raw: socket.socket | None = None
     protected: ssl.SSLSocket | None = None
     ownership_transferred = False
@@ -2811,6 +2834,7 @@ def collect_managed_cloudsqladmin_hba_receipt(
             return ManagedCloudSQLAdminHBAReceipt(
                 version=_MANAGED_HBA_RECEIPT_VERSION,
                 host=config.host,
+                tls_server_name=config.tls_server_name,
                 port=config.port,
                 server_certificate_sha256=certificate_sha256,
                 database=_MANAGED_HBA_DATABASE,
@@ -2844,10 +2868,30 @@ def _validate_active_managed_hba_receipt(
 ) -> None:
     if type(require_expected_fresh) is not bool:
         raise TypeError("require_expected_fresh must be boolean")
-    binding = (config.host, config.port, _MANAGED_HBA_DATABASE, config.user)
+    binding = (
+        config.host,
+        config.tls_server_name,
+        config.port,
+        _MANAGED_HBA_DATABASE,
+        config.user,
+    )
     if (
-        (expected.host, expected.port, expected.database, expected.user) != binding
-        or (observed.host, observed.port, observed.database, observed.user) != binding
+        (
+            expected.host,
+            expected.tls_server_name,
+            expected.port,
+            expected.database,
+            expected.user,
+        )
+        != binding
+        or (
+            observed.host,
+            observed.tls_server_name,
+            observed.port,
+            observed.database,
+            observed.user,
+        )
+        != binding
         or (require_expected_fresh and not expected.is_fresh(now_unix))
         or not observed.is_fresh(now_unix)
         or not hmac.compare_digest(

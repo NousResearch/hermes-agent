@@ -138,7 +138,7 @@ def _generate_tls(directory: Path) -> tuple[Path, Path, Path]:
     server_cert = directory / "server.crt"
     extensions = directory / "server.ext"
     extensions.write_text(
-        "subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n",
+        "subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n",
         encoding="utf-8",
     )
     _run([
@@ -285,8 +285,9 @@ def _migration_invocation(
 def _test_managed_hba_receipt(config: WriterDBConfig) -> ManagedCloudSQLAdminHBAReceipt:
     observed_at = int(time.time())
     return ManagedCloudSQLAdminHBAReceipt(
-        version="managed-cloudsqladmin-hba-rejection-v1",
+        version="managed-cloudsqladmin-hba-rejection-v2",
         host=config.host,
+        tls_server_name=config.tls_server_name,
         port=config.port,
         server_certificate_sha256="e" * 64,
         database="cloudsqladmin",
@@ -511,7 +512,8 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
         mapping = _run(["docker", "port", name, "5432/tcp"]).stdout.strip()
         port = int(mapping.rsplit(":", 1)[1])
         config = WriterDBConfig(
-            host="localhost",
+            host="127.0.0.1",
+            tls_server_name="localhost",
             port=port,
             database=DATABASE,
             user=LOGIN,

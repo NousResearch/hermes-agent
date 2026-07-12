@@ -38,6 +38,10 @@ _GATEWAY_MODULE_ORIGIN = (
     f"{_WRITER_ARTIFACT_ROOT}/venv/lib/python3.12/site-packages/gateway/"
     "canonical_writer_gateway_bootstrap.py"
 )
+_WRITER_NATIVE_PATH = "/usr/lib/muncho-reviewed/native-writer.so"
+_WRITER_NATIVE_SHA256 = "6" * 64
+_GATEWAY_NATIVE_PATH = "/usr/lib/muncho-reviewed/native-gateway.so"
+_GATEWAY_NATIVE_SHA256 = "7" * 64
 
 
 def _canonical_non_owner_acl_grants():
@@ -147,6 +151,12 @@ def _writer_deployment():
             "read_write_paths": read_write_paths,
             "bind_paths": [],
             "bind_read_only_paths": [_WRITER_ARTIFACT_ROOT],
+            "preapproved_external_native_executable_mappings": [
+                {
+                    "path": _WRITER_NATIVE_PATH,
+                    "sha256": _WRITER_NATIVE_SHA256,
+                }
+            ],
         },
         "attestation": {
             "complete": True,
@@ -196,7 +206,9 @@ def _writer_deployment():
                 "loaded_module_origins_complete": True,
                 "loaded_module_origins": [_WRITER_MODULE_ORIGIN],
                 "mapped_executable_paths_complete": True,
-                "mapped_executable_paths": [_WRITER_INTERPRETER],
+                "mapped_executable_paths": sorted(
+                    [_WRITER_INTERPRETER, _WRITER_NATIVE_PATH]
+                ),
                 "unexpected_import_origins": [],
                 "deleted_code_mappings": [],
                 "writable_code_mappings": [],
@@ -237,6 +249,12 @@ def _gateway_deployment(writer_deployment):
             "read_write_paths": read_write_paths,
             "bind_paths": [],
             "bind_read_only_paths": [_WRITER_ARTIFACT_ROOT],
+            "preapproved_external_native_executable_mappings": [
+                {
+                    "path": _GATEWAY_NATIVE_PATH,
+                    "sha256": _GATEWAY_NATIVE_SHA256,
+                }
+            ],
         },
         "attestation": {
             "complete": True,
@@ -280,7 +298,9 @@ def _gateway_deployment(writer_deployment):
                 "loaded_module_origins_complete": True,
                 "loaded_module_origins": [_GATEWAY_MODULE_ORIGIN],
                 "mapped_executable_paths_complete": True,
-                "mapped_executable_paths": [_WRITER_INTERPRETER],
+                "mapped_executable_paths": sorted(
+                    [_WRITER_INTERPRETER, _GATEWAY_NATIVE_PATH]
+                ),
                 "unexpected_import_origins": [],
                 "deleted_code_mappings": [],
                 "writable_code_mappings": [],
@@ -343,14 +363,14 @@ def _writer_authority_surface(writer_deployment):
                 "pid": 4242,
                 "effective_uid": 1001,
                 "effective_gid": 2000,
-                "supplementary_gids": [2001],
+                "supplementary_gids": [2000, 2001],
             },
             "gateway_children": {"complete": True, "processes": []},
             "writer": {
                 "pid": 4343,
                 "effective_uid": 1002,
                 "effective_gid": 2002,
-                "supplementary_gids": [2003],
+                "supplementary_gids": [2002, 2003],
             },
         },
         "group_policy": {
@@ -484,8 +504,9 @@ def _private_schema_identity_sha256(identity):
 
 def _managed_hba_receipt():
     return {
-        "version": "managed-cloudsqladmin-hba-rejection-v1",
-        "host": "db.internal",
+        "version": "managed-cloudsqladmin-hba-rejection-v2",
+        "host": "10.0.0.8",
+        "tls_server_name": "db.internal",
         "port": 5432,
         "server_certificate_sha256": "d" * 64,
         "database": "cloudsqladmin",
@@ -529,7 +550,8 @@ def _good_snapshot():
         "writer_uid": 1002,
         "writer_gid": 2002,
         "projector_gid": 2003,
-        "writer_supplementary_gids": [2003],
+        "gateway_supplementary_gids": [2000, 2001],
+        "writer_supplementary_gids": [2002, 2003],
         "gateway_process": {
             "complete": True,
             "platform": "linux",
@@ -669,7 +691,8 @@ def _good_snapshot():
         "database": {
             "expected_user": "canonical_writer",
             "connection": {
-                "host": "db.internal",
+                "host": "10.0.0.8",
+                "tls_server_name": "db.internal",
                 "port": 5432,
                 "database": "canonical",
                 "user": "canonical_writer",
@@ -681,6 +704,7 @@ def _good_snapshot():
                 "source_mode": "0400",
                 "source_symlink": False,
                 "same_host": True,
+                "same_tls_server_name": True,
                 "same_port": True,
                 "same_ca": True,
                 "same_user": True,
@@ -814,6 +838,74 @@ def test_good_snapshot_passes_all_invariants():
     assert all(check.passed for check in report.checks)
 
 
+@pytest.mark.parametrize(
+    ("deployment_name", "policy_failure", "closure_failure"),
+    [
+        (
+            "writer_deployment",
+            "writer_deployment.policy_valid",
+            "writer_deployment.process_code_closure",
+        ),
+        (
+            "gateway_deployment",
+            "gateway_deployment.shared_immutable_release",
+            "gateway_deployment.process_code_closure",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing_policy",
+        "empty_policy",
+        "extra_entry_field",
+        "invalid_hash",
+        "inside_release",
+        "duplicate_path",
+        "unsorted_paths",
+        "missing_live_mapping",
+        "unapproved_live_mapping",
+    ],
+)
+def test_external_native_mapping_policy_and_live_set_are_exact(
+    deployment_name,
+    policy_failure,
+    closure_failure,
+    case,
+):
+    snapshot = _good_snapshot()
+    deployment = snapshot[deployment_name]
+    policy = deployment["policy"]
+    process = deployment["attestation"]["process"]
+    mappings = policy["preapproved_external_native_executable_mappings"]
+
+    expected_failure = policy_failure
+    if case == "missing_policy":
+        policy.pop("preapproved_external_native_executable_mappings")
+    elif case == "empty_policy":
+        mappings.clear()
+    elif case == "extra_entry_field":
+        mappings[0]["kind"] = "native_library"
+    elif case == "invalid_hash":
+        mappings[0]["sha256"] = "not-a-sha256"
+    elif case == "inside_release":
+        mappings[0]["path"] = f"{_WRITER_ARTIFACT_ROOT}/native.so"
+    elif case == "duplicate_path":
+        mappings.append(copy.deepcopy(mappings[0]))
+    elif case == "unsorted_paths":
+        mappings.append({"path": "/aaa/native.so", "sha256": "8" * 64})
+    elif case == "missing_live_mapping":
+        process["mapped_executable_paths"] = [_WRITER_INTERPRETER]
+        expected_failure = closure_failure
+    elif case == "unapproved_live_mapping":
+        process["mapped_executable_paths"].append("/usr/lib/unapproved.so")
+        expected_failure = closure_failure
+    else:  # pragma: no cover - parametrization is closed above
+        raise AssertionError(case)
+
+    assert expected_failure in _failed_names(snapshot)
+
+
 def test_exact_immutable_projection_exporter_unit_and_timer_can_be_enabled():
     snapshot = _good_snapshot()
     _enable_projection_exporter(snapshot)
@@ -838,6 +930,20 @@ def test_exact_immutable_projection_exporter_unit_and_timer_can_be_enabled():
         (
             lambda value: value.update(projector_gid=2001),
             "identity.projector_gid_isolated",
+        ),
+        (
+            lambda value: value.update(gateway_supplementary_gids=[2001]),
+            "identity.gateway_socket_membership",
+        ),
+        (
+            lambda value: value.update(
+                gateway_supplementary_gids=[2000, 2001, 2999]
+            ),
+            "identity.gateway_socket_membership",
+        ),
+        (
+            lambda value: value.update(writer_supplementary_gids=[2003]),
+            "identity.writer_projector_membership",
         ),
         (
             lambda value: value.update(writer_supplementary_gids=[]),
@@ -1162,10 +1268,23 @@ def test_preflight_rejects_invalid_managed_cloudsqladmin_hba_receipt(digest):
         lambda database: database[
             "managed_cloudsqladmin_hba_rejection_evidence"
         ].update(same_credential=False),
+        lambda database: database[
+            "managed_cloudsqladmin_hba_rejection_evidence"
+        ].update(same_tls_server_name=False),
         lambda database: database["managed_cloudsqladmin_hba_rejection_evidence"][
             "receipt"
         ].update(expires_at_unix=1_799_999_999),
-        lambda database: database["connection"].update(host="other.internal"),
+        lambda database: database["connection"].update(host="10.0.0.9"),
+        lambda database: database["connection"].update(
+            tls_server_name="other.internal"
+        ),
+        lambda database: database["connection"].pop("tls_server_name"),
+        lambda database: database[
+            "managed_cloudsqladmin_hba_rejection_evidence"
+        ].pop("same_tls_server_name"),
+        lambda database: database["managed_cloudsqladmin_hba_rejection_evidence"][
+            "receipt"
+        ].update(tls_server_name="other.internal"),
     ],
 )
 def test_preflight_requires_fresh_root_collected_bound_hba_evidence(mutate):
@@ -2018,7 +2137,7 @@ def test_gateway_immutable_release_and_dynamic_loading_fail_closed(
                     "pid": 5000,
                     "effective_uid": 0,
                     "effective_gid": 2000,
-                    "supplementary_gids": [2001],
+                    "supplementary_gids": [2000, 2001],
                 }
             ),
             "writer_authority.identities_exact",

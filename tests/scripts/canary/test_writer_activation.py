@@ -28,6 +28,7 @@ from gateway.canonical_writer_root_collector import (
     TrustedDeploymentManifest,
     snapshot_policy_sha256,
 )
+from gateway.canonical_writer_deployment_preflight import evaluate_snapshot
 from scripts.canary import writer_activation
 from scripts.canary.writer_activation import (
     ActivationDigests,
@@ -49,6 +50,7 @@ from scripts.canary.writer_release import (
 
 REVISION = "a" * 40
 SQL_PRIVATE_IP = "10.91.0.3"
+SQL_TLS_SERVER_NAME = "db.muncho.internal"
 APPROVED_PLAN_SHA256 = "1" * 64
 WRITER_CONFIG_SHA256 = "2" * 64
 GATEWAY_CONFIG_SHA256 = "3" * 64
@@ -147,8 +149,9 @@ def _identities() -> HostNumericIdentities:
 
 def _hba_receipt() -> ManagedCloudSQLAdminHBAReceipt:
     return ManagedCloudSQLAdminHBAReceipt(
-        version="managed-cloudsqladmin-hba-rejection-v1",
+        version="managed-cloudsqladmin-hba-rejection-v2",
         host=SQL_PRIVATE_IP,
+        tls_server_name=SQL_TLS_SERVER_NAME,
         port=5432,
         server_certificate_sha256="4" * 64,
         database="cloudsqladmin",
@@ -181,6 +184,7 @@ def _writer_config() -> CanonicalWriterServiceConfig:
         max_connections=4,
         database=WriterDBConfig(
             host=SQL_PRIVATE_IP,
+            tls_server_name=SQL_TLS_SERVER_NAME,
             port=5432,
             database="muncho_canary_brain",
             user="canonical_writer",
@@ -258,7 +262,96 @@ def _plan():
         _digests(release, unit_spec),
         native_executable_policy=_native_policy(),
         sql_private_ip=SQL_PRIVATE_IP,
+        sql_tls_server_name=SQL_TLS_SERVER_NAME,
     )
+
+
+def _activation_snapshot_with_live_code_closure():
+    snapshot = json.loads(
+        json.dumps(_plan().deployment_manifest["snapshot_template"])
+    )
+    collected_at_unix = 1_800_000_000
+    snapshot["collected_at_unix"] = collected_at_unix
+
+    for deployment_name, pid, module_origin_key in (
+        ("writer_deployment", 4343, "bootstrap_module_origin"),
+        ("gateway_deployment", 4242, "entry_module_origin"),
+    ):
+        deployment = snapshot[deployment_name]
+        policy = deployment["policy"]
+        import_paths = policy["import_paths"]
+        interpreter = next(
+            item for item in import_paths if item["kind"] == "interpreter"
+        )
+        approved_native_paths = [
+            item["path"]
+            for item in policy[
+                "preapproved_external_native_executable_mappings"
+            ]
+        ]
+        process = {
+            "complete": True,
+            "observed_at_unix": collected_at_unix,
+            "pid": pid,
+            "systemd_main_pid": pid,
+            "process_start_time_ticks": 123_456 + pid,
+            "systemd_main_pid_start_time_ticks": 123_456 + pid,
+            "unit_name": policy["unit_name"],
+            "cmdline": policy["exec_start"],
+            "executable_path": policy["interpreter"],
+            "executable_digest_sha256": interpreter["digest_sha256"],
+            "revision": policy["revision"],
+            "artifact_digest_sha256": policy["artifact_digest_sha256"],
+            module_origin_key: policy["module_origin"],
+            "effective_import_paths": sorted(
+                item["path"]
+                for item in import_paths
+                if item["kind"] in {"site_packages", "stdlib"}
+            ),
+            "loaded_module_origins_complete": True,
+            "loaded_module_origins": [policy["module_origin"]],
+            "mapped_executable_paths_complete": True,
+            "mapped_executable_paths": [
+                policy["interpreter"],
+                *approved_native_paths,
+            ],
+            "unexpected_import_origins": [],
+            "deleted_code_mappings": [],
+            "writable_code_mappings": [],
+        }
+        if deployment_name == "writer_deployment":
+            deployment["attestation"] = {
+                "complete": False,
+                "artifact": {},
+                "import_closure": {},
+                "unit": {},
+                "mounts": {},
+                "process": process,
+            }
+        else:
+            process.update(
+                {
+                    "dynamic_python_discovery_complete": True,
+                    "dynamic_python_loading_mode": "disabled",
+                    "dynamic_python_discovery_paths": [],
+                    "dynamic_python_loaded_origins": [],
+                    "dynamic_python_writable_paths": [],
+                }
+            )
+            deployment["attestation"] = {
+                "complete": False,
+                "unit": {},
+                "mounts": {},
+                "process": process,
+            }
+    return snapshot
+
+
+def _checks_by_name(snapshot):
+    return {
+        check.name: check
+        for check in evaluate_snapshot(snapshot).checks
+    }
 
 
 def test_plan_is_collector_valid_and_binds_release_host_and_sql_contracts():
@@ -272,9 +365,12 @@ def test_plan_is_collector_valid_and_binds_release_host_and_sql_contracts():
     assert trusted.approved_plan_sha256 == APPROVED_PLAN_SHA256
     assert trusted.revision == REVISION
     assert trusted.snapshot_policy_sha256 == snapshot_policy_sha256(snapshot)
+    assert plan.schema == "muncho-writer-only-activation-plan.v2"
     assert plan.sql_private_ip == SQL_PRIVATE_IP
+    assert plan.sql_tls_server_name == SQL_TLS_SERVER_NAME
     assert snapshot["database"]["connection"] == {
         "host": SQL_PRIVATE_IP,
+        "tls_server_name": SQL_TLS_SERVER_NAME,
         "port": 5432,
         "database": "muncho_canary_brain",
         "user": "canonical_writer",
@@ -295,6 +391,80 @@ def test_plan_is_collector_valid_and_binds_release_host_and_sql_contracts():
     assert plan.unit_bundle.contract == render_systemd_units(
         _release(), _unit_spec()
     ).contract
+
+
+def test_activation_snapshot_flows_exact_linux_groups_to_packaged_preflight():
+    snapshot = json.loads(
+        json.dumps(_plan().deployment_manifest["snapshot_template"])
+    )
+
+    assert snapshot["gateway_supplementary_gids"] == [3101, 3103]
+    assert snapshot["writer_supplementary_gids"] == [3102, 3104]
+    checks = _checks_by_name(snapshot)
+    assert checks["identity.gateway_socket_membership"].passed
+    assert checks["identity.writer_projector_membership"].passed
+
+
+@pytest.mark.parametrize(
+    ("field", "missing_primary", "failed_check"),
+    [
+        (
+            "gateway_supplementary_gids",
+            [3103],
+            "identity.gateway_socket_membership",
+        ),
+        (
+            "writer_supplementary_gids",
+            [3104],
+            "identity.writer_projector_membership",
+        ),
+    ],
+)
+def test_packaged_preflight_rejects_linux_groups_without_primary_gid(
+    field,
+    missing_primary,
+    failed_check,
+):
+    snapshot = json.loads(
+        json.dumps(_plan().deployment_manifest["snapshot_template"])
+    )
+    snapshot[field] = missing_primary
+
+    assert not _checks_by_name(snapshot)[failed_check].passed
+
+
+def test_activation_native_mapping_policy_flows_to_packaged_code_closure():
+    snapshot = _activation_snapshot_with_live_code_closure()
+    expected = [
+        NATIVE_A.to_mapping(_release().artifact_root),
+        NATIVE_B.to_mapping(_release().artifact_root),
+    ]
+
+    assert snapshot["writer_deployment"]["policy"][
+        "preapproved_external_native_executable_mappings"
+    ] == expected
+    assert snapshot["gateway_deployment"]["policy"][
+        "preapproved_external_native_executable_mappings"
+    ] == expected
+    checks = _checks_by_name(snapshot)
+    for name in (
+        "writer_deployment.policy_valid",
+        "writer_deployment.process_code_closure",
+        "gateway_deployment.shared_immutable_release",
+        "gateway_deployment.process_code_closure",
+    ):
+        assert checks[name].passed, checks[name].detail
+
+
+def test_packaged_preflight_rejects_activation_native_mapping_hash_drift():
+    snapshot = _activation_snapshot_with_live_code_closure()
+    snapshot["writer_deployment"]["policy"][
+        "preapproved_external_native_executable_mappings"
+    ][0]["sha256"] = "A" * 64
+
+    checks = _checks_by_name(snapshot)
+    assert not checks["writer_deployment.policy_valid"].passed
+    assert not checks["writer_deployment.process_code_closure"].passed
 
 
 def test_plan_pins_minimal_immutable_import_roots_and_collector_argv():
@@ -374,12 +544,17 @@ def test_native_mapping_policy_is_mandatory_and_non_empty():
     )
 
     with pytest.raises(TypeError, match="native_executable_policy"):
-        build_activation_plan(*positional, sql_private_ip=SQL_PRIVATE_IP)
+        build_activation_plan(
+            *positional,
+            sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
+        )
     with pytest.raises(TypeError, match="policy is required"):
         build_activation_plan(
             *positional,
             native_executable_policy=None,
             sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
         )
     for policy in (
         replace(_native_policy(), writer=()),
@@ -390,6 +565,7 @@ def test_native_mapping_policy_is_mandatory_and_non_empty():
                 *positional,
                 native_executable_policy=policy,
                 sql_private_ip=SQL_PRIVATE_IP,
+                sql_tls_server_name=SQL_TLS_SERVER_NAME,
             )
 
 
@@ -473,6 +649,7 @@ def test_native_mapping_policy_rejects_ambiguous_or_malformed_entries(
             _digests(release, unit_spec),
             native_executable_policy=policy,
             sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
         )
 
 
@@ -513,7 +690,23 @@ def test_plan_contains_policy_and_paths_but_no_secret_values():
     }
 
 
-def test_plan_is_deterministic_and_self_digest_rejects_mutation(monkeypatch):
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ({"sql_private_ip": "10.91.0.4"}, "plan digest"),
+        (
+            {"sql_tls_server_name": "other.muncho.internal"},
+            "plan digest",
+        ),
+        (
+            {"schema": "muncho-writer-only-activation-plan.v1"},
+            "plan schema",
+        ),
+    ],
+)
+def test_plan_is_deterministic_and_self_digest_rejects_mutation(
+    monkeypatch, mutation, error
+):
     first = _plan()
     second = _plan()
 
@@ -521,9 +714,9 @@ def test_plan_is_deterministic_and_self_digest_rejects_mutation(monkeypatch):
     assert first.sha256 == second.sha256
     assert len(first.sha256) == 64
 
-    mutated = replace(first, sql_private_ip="10.91.0.4")
+    mutated = replace(first, **mutation)
     monkeypatch.setattr(writer_activation, "_effective_uid", lambda: 1000)
-    with pytest.raises(ValueError, match="plan digest"):
+    with pytest.raises(ValueError, match=error):
         write_root_activation_plan(mutated)
 
 
@@ -544,6 +737,7 @@ def test_plan_rejects_reviewed_unit_digest_drift():
             digests,
             native_executable_policy=_native_policy(),
             sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
         )
 
 
@@ -568,6 +762,7 @@ def test_plan_rejects_nonprivate_or_nonexact_sql_boundary(sql_ip, unit_ip):
             _digests(release, unit_spec),
             native_executable_policy=_native_policy(),
             sql_private_ip=sql_ip,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
         )
 
 
@@ -589,6 +784,52 @@ def test_plan_rejects_writer_config_or_host_identity_drift():
             digests,
             native_executable_policy=_native_policy(),
             sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
+        )
+
+    with pytest.raises(ValueError, match="database authority"):
+        build_activation_plan(
+            release,
+            unit_spec,
+            replace(
+                config,
+                database=replace(
+                    config.database,
+                    tls_server_name="other.muncho.internal",
+                ),
+            ),
+            _identities(),
+            digests,
+            native_executable_policy=_native_policy(),
+            sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
+        )
+
+    mismatched_receipt = replace(
+        config.privileges.managed_cloudsqladmin_hba_rejection_receipt,
+        tls_server_name="other.muncho.internal",
+    )
+    with pytest.raises(ValueError, match="HBA baseline"):
+        build_activation_plan(
+            release,
+            unit_spec,
+            replace(
+                config,
+                privileges=replace(
+                    config.privileges,
+                    managed_cloudsqladmin_hba_rejection_receipt=(
+                        mismatched_receipt
+                    ),
+                    managed_cloudsqladmin_hba_rejection_sha256=(
+                        mismatched_receipt.sha256
+                    ),
+                ),
+            ),
+            _identities(),
+            digests,
+            native_executable_policy=_native_policy(),
+            sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
         )
 
     with pytest.raises(ValueError, match="host identities"):
@@ -600,6 +841,7 @@ def test_plan_rejects_writer_config_or_host_identity_drift():
             digests,
             native_executable_policy=_native_policy(),
             sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
         )
 
     with pytest.raises(ValueError, match="socket-client groups"):
@@ -614,6 +856,28 @@ def test_plan_rejects_writer_config_or_host_identity_drift():
             digests,
             native_executable_policy=_native_policy(),
             sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
+        )
+
+
+@pytest.mark.parametrize(
+    "tls_server_name",
+    [" DB.MUNCHO.INTERNAL", "DB.MUNCHO.INTERNAL", "db.muncho.internal."],
+)
+def test_plan_rejects_nonexact_tls_server_name(tls_server_name):
+    release = _release()
+    unit_spec = _unit_spec()
+
+    with pytest.raises(ValueError, match="TLS server name"):
+        build_activation_plan(
+            release,
+            unit_spec,
+            _writer_config(),
+            _identities(),
+            _digests(release, unit_spec),
+            native_executable_policy=_native_policy(),
+            sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=tls_server_name,
         )
 
 
@@ -637,6 +901,7 @@ def test_plan_rejects_discord_authority_and_ambiguous_stdlib():
             _digests(release, unit_spec),
             native_executable_policy=_native_policy(),
             sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
         )
 
     ambiguous = _release(
@@ -657,6 +922,7 @@ def test_plan_rejects_discord_authority_and_ambiguous_stdlib():
             _digests(ambiguous, unit_spec),
             native_executable_policy=_native_policy(),
             sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
         )
 
 
@@ -670,6 +936,7 @@ def test_activation_paths_are_production_pinned():
             _digests(),
             native_executable_policy=_native_policy(),
             sql_private_ip=SQL_PRIVATE_IP,
+            sql_tls_server_name=SQL_TLS_SERVER_NAME,
             paths=replace(
                 ActivationPaths(),
                 manifest_path=Path("/tmp/deployment-manifest.json"),

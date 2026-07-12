@@ -1,0 +1,4 @@
+name: vault-triage-feedback
+version: 1.0.0
+description: "Expose /para-feedback so vault triage audit items can be reviewed and corrected from Slack and other chat surfaces."
+author: Hermes Agent

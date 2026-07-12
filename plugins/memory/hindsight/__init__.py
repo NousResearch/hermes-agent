@@ -496,7 +496,9 @@ def _load_simple_env(path) -> dict[str, str]:
         return {}
 
     values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # utf-8-sig, not plain utf-8: this is also used on the Hermes .env during
+    # post_setup, and a Notepad BOM would otherwise stick to the first key.
+    for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)

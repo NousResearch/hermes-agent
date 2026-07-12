@@ -169,8 +169,8 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #   the dashboard. ``config.yaml`` is the supported surface for these.
 #
 # IMPORTANT: ``HERMES_*`` overall is NOT blocked. Many legitimate
-# integration credentials follow that prefix (HERMES_GEMINI_CLIENT_ID,
-# HERMES_LANGFUSE_PUBLIC_KEY, HERMES_SPOTIFY_CLIENT_ID, ...). The
+# integration credentials follow that prefix (HERMES_LANGFUSE_PUBLIC_KEY,
+# HERMES_SPOTIFY_CLIENT_ID, ...). The
 # denylist is name-by-name on purpose so the gate stays narrow and
 # doesn't accidentally break provider setup wizards.
 #
@@ -299,7 +299,7 @@ _EXTRA_ENV_KEYS = frozenset({
 import yaml
 
 from hermes_cli.colors import Colors, color
-from hermes_cli.default_soul import DEFAULT_SOUL_MD
+from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 
 
 # =============================================================================
@@ -819,10 +819,22 @@ def _secure_file(path):
 
 
 def _ensure_default_soul_md(home: Path) -> None:
-    """Seed a default SOUL.md into HERMES_HOME if the user doesn't have one yet."""
+    """Seed a default SOUL.md into HERMES_HOME, upgrading legacy empty templates.
+
+    First run: write DEFAULT_SOUL_MD. Existing installs whose SOUL.md is still
+    the old comment-only scaffold (seeded by older install.sh / install.ps1 /
+    docker images, which shadowed the runtime default) get upgraded in place to
+    DEFAULT_SOUL_MD. A SOUL.md the user actually customized is never touched.
+    """
     soul_path = home / "SOUL.md"
     if soul_path.exists():
-        return
+        try:
+            existing = soul_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return
+        if not is_legacy_template_soul(existing):
+            return
+        # Legacy empty template -> upgrade to the real default in place.
     soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
     _secure_file(soul_path)
 
@@ -891,6 +903,13 @@ DEFAULT_CONFIG = {
     "max_concurrent_sessions": None,
     "agent": {
         "max_turns": 90,
+        # SSL/TLS configuration for all HTTP clients.
+        # ca_bundle: path to a custom CA bundle PEM file.
+        # insecure: set True to disable certificate verification.
+        "tls": {
+            "ca_bundle": "",
+            "insecure": False,
+        },
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -967,6 +986,11 @@ DEFAULT_CONFIG = {
         #   "on"             — force the prompt posture everywhere.
         #   "off"            — disable entirely.
         "coding_context": "auto",
+        # Verification closure: after the agent edits files in a code workspace,
+        # do not accept a final answer until fresh verification evidence exists
+        # or the agent explains why it cannot run checks. The loop is bounded
+        # and uses the passive verification ledger. Set false to disable.
+        "verify_on_stop": True,
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
@@ -1021,6 +1045,12 @@ DEFAULT_CONFIG = {
         "modal_mode": "auto",
         "cwd": ".",  # Use current directory
         "timeout": 180,
+        # Bounded grace period (seconds) between SIGTERM and an escalated
+        # SIGKILL when terminating a host process tree (browser daemons, etc.).
+        # A daemon that stalls in its SIGTERM handler is force-killed after this
+        # window so it can't leak indefinitely. 0 disables escalation (SIGTERM
+        # only — the historical behavior). Floored internally at 0.
+        "daemon_term_grace_seconds": 2.0,
         # Environment variables to pass through to sandboxed execution
         # (terminal and execute_code).  Skill-declared required_environment_variables
         # are passed through automatically; this list is for non-skill use cases.
@@ -1259,7 +1289,7 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
+        "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to
@@ -1287,6 +1317,22 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+        "in_place": False,            # When True, compaction rewrites the message
+                                      # list and rebuilds the system prompt WITHOUT
+                                      # rotating the session id — the conversation
+                                      # keeps one durable id for its whole life
+                                      # (no parent_session_id chain, no `name #N`
+                                      # renumbering). Eliminates the session-rotation
+                                      # bug cluster (#33618 /goal loss, #14238 lost
+                                      # response, #33907 orphans, #45117 search gaps,
+                                      # #42228 null cwd) — see #38763. Non-destructive:
+                                      # the live context is compacted (lossy for what
+                                      # the model reloads), but the pre-compaction
+                                      # turns are soft-archived under the same id
+                                      # (active=0, compacted=1) — still searchable via
+                                      # session_search and recoverable, not deleted.
+                                      # Default False during rollout; will flip on
+                                      # after live validation.
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
@@ -1513,6 +1559,25 @@ DEFAULT_CONFIG = {
             "timeout": 60,
             "extra_body": {},
         },
+        # Background review — the post-turn self-improvement fork that decides
+        # whether to save a memory / patch a skill. "auto" (default) = run on
+        # the main chat model, replaying the full conversation, which is already
+        # warm in the prompt cache (cheap cache reads) — unchanged, optimal.
+        # Set provider/model to a cheaper model (e.g. openrouter
+        # google/gemini-3-flash-preview) to run the review there for ~3-5x lower
+        # cost. A different model can't reuse the main prompt cache anyway, so
+        # the fork automatically replays a compact digest instead of the full
+        # transcript when routed (minimises the cold-write). Same model = full
+        # replay; different model = digest. Quality holds (memory capture
+        # identical, skill near-identical in benchmarks).
+        "background_review": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 120,
+            "extra_body": {},
+        },
     },
     
     "display": {
@@ -1551,6 +1616,10 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "show_reasoning": False,
+        # When reasoning display is on, the post-response "Reasoning" recap box
+        # collapses long thinking to the first 10 lines. Set true to print the
+        # complete thinking text uncollapsed (live streaming is always full).
+        "reasoning_full": False,
         # Background self-improvement review notifications surfaced in chat.
         #   "off"     — no chat notification (the review still runs and writes)
         #   "on"      — generic "💾 Memory updated" line (default)
@@ -1622,6 +1691,12 @@ DEFAULT_CONFIG = {
         # applies where tool_progress is already enabled. Per-platform override
         # via display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
+        # How a reasoning/thinking summary renders when show_reasoning is on.
+        # "code" (default) = 💭 fenced code block; "blockquote" = "> " lines;
+        # "subtext" = "-# " lines (Discord small grey metadata text). Discord
+        # defaults to "subtext"; override per-platform via
+        # display.platforms.<platform>.reasoning_style.
+        "reasoning_style": "code",
         # Auto-delete system-notice replies (e.g. "✨ New session started!",
         # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
         # that support message deletion (currently Telegram; other platforms
@@ -1660,6 +1735,31 @@ DEFAULT_CONFIG = {
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
+        # Petdex animated mascot (https://github.com/crafter-station/petdex).
+        # A purely cosmetic sprite that reacts to agent activity across the
+        # CLI, TUI, and desktop app. Manage with `hermes pets`. Disabled until
+        # a pet is installed + selected (no effect on prompt caching — this is
+        # a display concern only).
+        "pet": {
+            "enabled": False,
+            # Active pet slug; resolved against installed pets in
+            # get_hermes_home()/pets/. Empty → first installed pet.
+            "slug": "",
+            # Terminal render protocol for CLI/TUI:
+            #   auto  — detect kitty/iTerm2/sixel, else unicode half-blocks
+            #   kitty | iterm | sixel | unicode | off
+            "render_mode": "auto",
+            # Master size scalar (relative to native 192×208 frames). One knob
+            # shrinks every surface: the desktop canvas scales its pixels by it
+            # and the CLI/TUI derive their terminal column width from it. The
+            # half-block fallback clamps to a legibility floor (it can't shrink
+            # as far as true-pixel kitty/GUI without turning to mush).
+            "scale": 0.33,
+            # Hard override for terminal column width. 0 = auto (derive from
+            # scale); set a positive int only to pin the half-block/kitty width
+            # independently of scale.
+            "unicode_cols": 0,
+        },
     },
 
     # Web dashboard settings
@@ -2092,12 +2192,11 @@ DEFAULT_CONFIG = {
         # list_roles, member_info, search_members, fetch_messages, list_pins,
         # pin_message, unpin_message, create_thread, add_role, remove_role.
         "server_actions": "",
-        # Accept arbitrary attachment file types (not just SUPPORTED_DOCUMENT_TYPES).
-        # When True, any uploaded file is cached to disk with mime
-        # application/octet-stream and the path is surfaced to the agent so it
-        # can use terminal/read_file/etc. against it. Default False preserves
-        # the historical allowlist behaviour.
-        # Env override: DISCORD_ALLOW_ANY_ATTACHMENT.
+        # DEPRECATED / no-op. Any uploaded file is now always cached and
+        # surfaced to the agent regardless of file type — authorization to
+        # message the agent is the gate, not the extension. Kept so existing
+        # configs that set it do not error. Env override:
+        # DISCORD_ALLOW_ANY_ATTACHMENT.
         "allow_any_attachment": False,
         # Maximum bytes per attachment the gateway will cache. The whole file
         # is held in memory while being written, so unlimited uploads carry a
@@ -2142,7 +2241,8 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
         "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
         "extra": {
-            "rich_messages": True,      # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set False to force legacy MarkdownV2
+            "rich_messages": False,     # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set True to opt in. Default stays legacy MarkdownV2 because rich messages can be hard to copy as plain text in Telegram clients.
+            "rich_drafts": False,       # Experimental Bot API 10.1 rich draft previews during Telegram DM streaming. Default off because Telegram Desktop/macOS can visually overlay rich draft frames until the chat redraws.
         },
     },
 
@@ -2265,7 +2365,7 @@ DEFAULT_CONFIG = {
     "cron": {
         # Active cron SCHEDULER provider (Axis B — the trigger that decides
         # WHEN a due job fires). Empty string = the built-in in-process 60s
-        # ticker (default). Name an installed provider (plugins/cron/<name>/ or
+        # ticker (default). Name an installed provider (plugins/cron_providers/<name>/ or
         # $HERMES_HOME/plugins/<name>/) to relocate the trigger — e.g. "chronos",
         # the NAS-mediated managed-cron provider for scale-to-zero deployments.
         # An unknown or unavailable provider falls back to the built-in, so cron
@@ -2293,6 +2393,27 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+        # Make cron deliveries CONTINUABLE: a user can reply to a cron brief
+        # and the agent has it in context (no "what is Task #2?" amnesia).
+        # Default False preserves the historical isolation guarantee (cron
+        # deliveries live only in the cron job's own session). Per-job
+        # `attach_to_session` overrides this for a single job.
+        #
+        # Behaviour is THREAD-PREFERRED, scoped to the job's origin chat:
+        #   - Thread-capable platforms (Telegram forum/DM topics, Discord
+        #     threads, Slack threads): a dedicated thread is opened for the job
+        #     via the adapter's create_handoff_thread, the brief is delivered
+        #     into it, and that thread's session is seeded so the user's reply
+        #     in-thread continues with full context. Each continuable job gets
+        #     its own scrollback, isolated from the parent channel.
+        #   - DM-only platforms (WhatsApp / Signal / SMS): no threads exist, so
+        #     the brief is mirrored into the origin DM session instead — the
+        #     DM itself is the continuation surface.
+        # Both paths ride the shipped gateway.mirror.mirror_to_session and are
+        # alternation- and cache-safe (appended at a turn boundary, never
+        # mid-loop, never mutating the cached system prompt). Only the origin
+        # chat is ever touched — fan-out / broadcast targets are never mirrored.
+        "mirror_delivery": False,
         # Maximum number of due jobs to run in parallel per tick.
         # null/0 = unbounded (limited only by thread count).
         # 1 = serial (pre-v0.9 behaviour).
@@ -2447,6 +2568,18 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
+        # and, when an instance is opted in via the NAS "Labs" toggle (carried as
+        # the HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent
+        # AND a wakeUrl is registered, drives the relay transport dormant so the
+        # platform (e.g. Fly autostop:"suspend") can suspend the now-idle machine;
+        # it wakes on the connector's wakeUrl poke. This is the idle TIMEOUT only
+        # — whether the feature is enabled at all is the Labs toggle, never a
+        # config key (decisions.md D2/D11). 0/negative falls back to the default.
+        "scale_to_zero": {
+            "idle_timeout_minutes": 5,
+        },
+
         # Inject a human-readable timestamp prefix (e.g.
         # "[Tue 2026-04-28 13:40:53 CEST]") onto user messages IN THE MODEL'S
         # CONTEXT so the agent has temporal awareness of when each message was
@@ -2457,6 +2590,16 @@ DEFAULT_CONFIG = {
         "message_timestamps": {
             "enabled": False,
         },
+
+        # Maximum bytes for an inbound image / audio / video payload the
+        # gateway will buffer into memory and cache to disk. Inbound media is
+        # read fully into RAM before being written, so an unbounded upload
+        # (Discord Nitro allows 500 MB) or a remote media URL pointing at a
+        # huge file can spike memory and OOM-kill the gateway on constrained
+        # deployments. Enforced in the shared cache helpers
+        # (gateway/platforms/base.py), so the cap holds across every platform
+        # adapter. ``0`` disables the cap. Default 128 MiB.
+        "max_inbound_media_bytes": 134217728,
 
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /
@@ -2495,6 +2638,18 @@ DEFAULT_CONFIG = {
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
+
+        # OpenAI-compatible API server platform
+        # (gateway/platforms/api_server.py).
+        "api_server": {
+            # Maximum number of agent runs the API server will service
+            # concurrently. Requests to /v1/chat/completions, /v1/responses,
+            # and /v1/runs that arrive while this many runs are already
+            # in flight are rejected with HTTP 429 + a Retry-After header,
+            # bounding CPU / memory / upstream-LLM-quota exhaustion from a
+            # request flood. Set to 0 to disable the cap entirely.
+            "max_concurrent_runs": 10,
+        },
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,
@@ -2746,6 +2901,17 @@ DEFAULT_CONFIG = {
     "paste_collapse_threshold": 5,
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
+
+    # Computer Use (cua-driver) toolset settings.
+    "computer_use": {
+        # cua-driver ships with anonymous usage telemetry (PostHog) ENABLED
+        # by default upstream. Hermes disables it for our users unless they
+        # explicitly opt in here. When false (default), Hermes sets
+        # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in the cua-driver child env for
+        # every invocation (MCP backend, status, doctor, install). Set true
+        # to let cua-driver use its own default (telemetry on).
+        "cua_telemetry": False,
+    },
 
 
     # Config schema version - bump this when adding new required fields
@@ -3033,30 +3199,6 @@ OPTIONAL_ENV_VARS = {
     "HERMES_QWEN_BASE_URL": {
         "description": "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
         "prompt": "Qwen Portal base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "HERMES_GEMINI_CLIENT_ID": {
-        "description": "Google OAuth client ID for google-gemini-cli (optional; defaults to Google's public gemini-cli client)",
-        "prompt": "Google OAuth client ID (optional — leave empty to use the public default)",
-        "url": "https://console.cloud.google.com/apis/credentials",
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "HERMES_GEMINI_CLIENT_SECRET": {
-        "description": "Google OAuth client secret for google-gemini-cli (optional)",
-        "prompt": "Google OAuth client secret (optional)",
-        "url": "https://console.cloud.google.com/apis/credentials",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "HERMES_GEMINI_PROJECT_ID": {
-        "description": "GCP project ID for paid Gemini tiers (free tier auto-provisions)",
-        "prompt": "GCP project ID for Gemini OAuth (leave empty for free tier)",
         "url": None,
         "password": False,
         "category": "provider",
@@ -5430,23 +5572,44 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     ``model.*`` key is empty — they never override an existing value.
     After migration the root-level keys are removed so they can't cause
     confusion on subsequent loads.
+
+    Also aliases ``api_base`` → ``base_url`` (issue #8919). ``api_base`` is the
+    intuitive name OpenAI-SDK / LiteLLM users reach for, and ``hermes config set``
+    blindly accepts any dotted key — so ``model.api_base`` got written, confirmed,
+    and then silently ignored by the runtime resolver (which reads only
+    ``model.base_url``), causing requests to fall back to OpenRouter. We migrate
+    the alias to the canonical key (fallback-only — never override an explicit
+    ``base_url``) and drop the alias so it can't confuse later loads.
     """
-    # Only act if there are root-level keys to migrate
-    has_root = any(config.get(k) for k in ("provider", "base_url", "context_length"))
-    if not has_root:
+    # Only act if there are root-level keys (or an api_base alias) to migrate
+    model_in = config.get("model")
+    model_has_alias = isinstance(model_in, dict) and model_in.get("api_base")
+    has_root = any(
+        config.get(k) for k in ("provider", "base_url", "context_length", "api_base")
+    )
+    if not has_root and not model_has_alias:
         return config
 
     config = dict(config)
     model = config.get("model")
     if not isinstance(model, dict):
         model = {"default": model} if model else {}
-        config["model"] = model
+    else:
+        model = dict(model)
+    config["model"] = model
 
     for key in ("provider", "base_url", "context_length"):
         root_val = config.get(key)
         if root_val and not model.get(key):
             model[key] = root_val
         config.pop(key, None)
+
+    # api_base is an alias for base_url, at the root OR inside model.
+    for alias_val in (config.get("api_base"), model.get("api_base")):
+        if alias_val and not model.get("base_url"):
+            model["base_url"] = alias_val
+    config.pop("api_base", None)
+    model.pop("api_base", None)
 
     return config
 
@@ -5590,6 +5753,34 @@ def load_config_readonly() -> Dict[str, Any]:
     safety guarantee is purely documented, not enforced — be careful.
     """
     return _load_config_impl(want_deepcopy=False)
+
+
+def write_platform_config_field(
+    platform_key: str,
+    field_key: str,
+    value: Any,
+    *,
+    raw: bool = False,
+) -> None:
+    """Persist one scalar field under ``platforms.<platform_key>``.
+
+    ``raw=True`` preserves CLI setup flows that intentionally edit only the
+    user's raw config file. Dashboard routes use the default loaded-config path
+    so they retain their existing profile-scoped ``load_config`` behavior.
+    """
+    config = read_raw_config() if raw else load_config()
+    platforms = config.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        platforms = {}
+        config["platforms"] = platforms
+
+    platform_config = platforms.setdefault(platform_key, {})
+    if not isinstance(platform_config, dict):
+        platform_config = {}
+        platforms[platform_key] = platform_config
+
+    platform_config[field_key] = value
+    save_config(config)
 
 
 TERMINAL_CONFIG_ENV_MAP = {
@@ -6372,6 +6563,60 @@ def redact_key(key: str) -> str:
     return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
+# Key names (case-insensitive, exact match) whose VALUE is a credential and
+# must be masked before printing any config dict to the terminal. Covers the
+# fields a custom provider stuffs into the `model`/`custom_providers` blocks
+# (`api_key`) plus the usual token/secret/password shapes. Exact-match only so
+# benign keys like `token_count` or `secret_santa` don't get masked.
+_SECRET_CONFIG_KEYS = frozenset({
+    "api_key",
+    "apikey",
+    "key",
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "secret",
+    "client_secret",
+    "password",
+    "passwd",
+    "auth",
+    "authorization",
+    "private_key",
+    "bearer",
+    "jwt",
+})
+
+
+def redact_config_value(value: Any, _depth: int = 0) -> Any:
+    """Return a copy of ``value`` with credential-shaped keys masked for display.
+
+    Recursively walks dicts/lists and replaces the value of any key in
+    ``_SECRET_CONFIG_KEYS`` (case-insensitive) with a masked form via
+    :func:`agent.redact.mask_secret`. Non-secret keys and scalar values pass
+    through unchanged. Use this before ``print``-ing any config sub-tree that
+    might carry a custom-provider ``api_key`` — ``print`` bypasses the logging
+    redactor, and opaque tokens (e.g. Cloudflare ``cfut_...``) don't match the
+    vendor-prefix regexes either, so structural key-name masking is required.
+    """
+    from agent.redact import mask_secret
+
+    # Defensive bound on recursion depth for pathological/cyclic configs.
+    if _depth > 20:
+        return value
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, str) and k.lower() in _SECRET_CONFIG_KEYS and isinstance(v, str) and v:
+                out[k] = mask_secret(v)
+            else:
+                out[k] = redact_config_value(v, _depth + 1)
+        return out
+    if isinstance(value, list):
+        return [redact_config_value(v, _depth + 1) for v in value]
+    return value
+
+
 def show_config():
     """Display current configuration."""
     config = load_config()
@@ -6440,7 +6685,7 @@ def show_config():
     # Model settings
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
-    print(f"  Model:        {config.get('model', 'not set')}")
+    print(f"  Model:        {redact_config_value(config.get('model', 'not set'))}")
     _cfg_max_turns = config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])
     print(f"  Max turns:    {_cfg_max_turns}")
     # Warn on stale HERMES_MAX_ITERATIONS ghost in .env that disagrees with
@@ -6686,7 +6931,15 @@ def set_config_value(key: str, value: str):
         value = float(value)
 
     _set_nested(user_config, key, value)
-    
+    # Normalize the api_base → base_url alias at set-time too (issue #8919),
+    # so a fresh `hermes config set model.api_base ...` lands on the canonical
+    # key the runtime resolver actually reads, instead of being silently
+    # ignored. Mirrors the load-time migration in _normalize_root_model_keys.
+    _alias_norm = key.strip().lower()
+    if _alias_norm in ("model.api_base", "api_base"):
+        user_config = _normalize_root_model_keys(user_config)
+        key = "model.base_url"
+        print("  (note: 'api_base' is an alias — saved as model.base_url)")
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
     from utils import atomic_yaml_write
@@ -6698,7 +6951,17 @@ def set_config_value(key: str, value: str):
     if env_var and key != "terminal.cwd":
         save_env_value(env_var, _terminal_env_value(value))
 
-    print(f"✓ Set {key} = {value} in {config_path}")
+    # Mask the echoed value when the (possibly nested) key is credential-shaped
+    # — e.g. `hermes config set model.api_key cfut_...` routes to config.yaml
+    # (lowercase, so it misses the .env api_keys list above) and would otherwise
+    # print the raw secret to the terminal.
+    _leaf_key = key.rsplit(".", 1)[-1].lower()
+    if _leaf_key in _SECRET_CONFIG_KEYS and isinstance(value, str) and value:
+        from agent.redact import mask_secret
+        _display_value = mask_secret(value)
+    else:
+        _display_value = value
+    print(f"✓ Set {key} = {_display_value} in {config_path}")
 
 
 # =============================================================================

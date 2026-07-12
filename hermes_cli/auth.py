@@ -46,7 +46,7 @@ import httpx
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, atomic_yaml_write, is_truthy_value
+from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -138,10 +138,6 @@ SERVICE_PROVIDER_NAMES: Dict[str, str] = {
     "spotify": "Spotify",
 }
 
-# Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
-DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
-GEMINI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60  # refresh 60s before expiry
-
 # LM Studio's default no-auth mode still requires *some* non-empty bearer for
 # the API-key code paths (auxiliary_client, runtime resolver) to treat the
 # provider as configured. This sentinel is sent only to LM Studio, never to
@@ -205,12 +201,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Qwen OAuth",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_QWEN_BASE_URL,
-    ),
-    "google-gemini-cli": ProviderConfig(
-        id="google-gemini-cli",
-        name="Google Gemini (OAuth)",
-        auth_type="oauth_external",
-        inference_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
     ),
     "lmstudio": ProviderConfig(
         id="lmstudio",
@@ -1529,7 +1519,7 @@ def resolve_provider(
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "opencode": "opencode-zen", "zen": "opencode-zen",
-        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
+        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
@@ -1739,6 +1729,19 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
         )
         return None
     return cleaned.rstrip("/")
+
+
+def _nous_inference_env_override() -> Optional[str]:
+    """Return the user-set ``NOUS_INFERENCE_BASE_URL`` override, if any.
+
+    This is the documented dev/staging escape hatch. The env source is
+    trusted (the OS user set it themselves), so it is intentionally NOT
+    gated by the network host allowlist — unlike Portal-returned URLs.
+
+    Returns a trailing-slash-stripped non-empty string, or ``None`` when
+    the env var is unset/blank.
+    """
+    return _optional_base_url(os.getenv("NOUS_INFERENCE_BASE_URL"))
 
 
 def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
@@ -2155,97 +2158,6 @@ def get_qwen_auth_status() -> Dict[str, Any]:
 
 
 # =============================================================================
-# Google Gemini OAuth (google-gemini-cli) — PKCE flow + Cloud Code Assist.
-#
-# Tokens live in ~/.hermes/auth/google_oauth.json (managed by agent.google_oauth).
-# The `base_url` here is the marker "cloudcode-pa://google" that run_agent.py
-# uses to construct a GeminiCloudCodeClient instead of the default OpenAI SDK.
-# Actual HTTP traffic goes to https://cloudcode-pa.googleapis.com/v1internal:*.
-# =============================================================================
-
-def _mark_google_gemini_cli_active(creds: Dict[str, Any]) -> None:
-    """Set active_provider to google-gemini-cli in auth.json.
-
-    The actual OAuth tokens live in the Google credential file managed by
-    agent.google_oauth. This function only writes a minimal provider-state
-    entry (email for display) and sets active_provider so that
-    get_active_provider() and _model_section_has_credentials() detect the
-    provider for the setup wizard and status commands.
-    """
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        state: Dict[str, Any] = {}
-        if creds.get("email"):
-            state["email"] = str(creds["email"])
-        _save_provider_state(auth_store, "google-gemini-cli", state)
-        _save_auth_store(auth_store)
-
-
-def resolve_gemini_oauth_runtime_credentials(
-    *,
-    force_refresh: bool = False,
-) -> Dict[str, Any]:
-    """Resolve runtime OAuth creds for google-gemini-cli."""
-    try:
-        from agent.google_oauth import (
-            GoogleOAuthError,
-            _credentials_path,
-            get_valid_access_token,
-            load_credentials,
-        )
-    except ImportError as exc:
-        raise AuthError(
-            f"agent.google_oauth is not importable: {exc}",
-            provider="google-gemini-cli",
-            code="google_oauth_module_missing",
-        ) from exc
-
-    try:
-        access_token = get_valid_access_token(force_refresh=force_refresh)
-    except GoogleOAuthError as exc:
-        raise AuthError(
-            str(exc),
-            provider="google-gemini-cli",
-            code=exc.code,
-        ) from exc
-
-    creds = load_credentials()
-    base_url = DEFAULT_GEMINI_CLOUDCODE_BASE_URL
-    return {
-        "provider": "google-gemini-cli",
-        "base_url": base_url,
-        "api_key": access_token,
-        "source": "google-oauth",
-        "expires_at_ms": (creds.expires_ms if creds else None),
-        "auth_file": str(_credentials_path()),
-        "email": (creds.email if creds else "") or "",
-        "project_id": (creds.project_id if creds else "") or "",
-    }
-
-
-def get_gemini_oauth_auth_status() -> Dict[str, Any]:
-    """Return a status dict for `hermes auth list` / `hermes status`."""
-    try:
-        from agent.google_oauth import _credentials_path, load_credentials
-    except ImportError:
-        return {"logged_in": False, "error": "agent.google_oauth unavailable"}
-    auth_path = _credentials_path()
-    creds = load_credentials()
-    if creds is None or not creds.access_token:
-        return {
-            "logged_in": False,
-            "auth_file": str(auth_path),
-            "error": "not logged in",
-        }
-    return {
-        "logged_in": True,
-        "auth_file": str(auth_path),
-        "source": "google-oauth",
-        "api_key": creds.access_token,
-        "expires_at_ms": creds.expires_ms,
-        "email": creds.email,
-        "project_id": creds.project_id,
-    }
 # Spotify auth — PKCE tokens stored in ~/.hermes/auth.json
 # =============================================================================
 
@@ -2899,9 +2811,31 @@ def resolve_spotify_runtime_credentials(
         if not should_refresh and refresh_if_expiring:
             should_refresh = _is_expiring(state.get("expires_at"), refresh_skew_seconds)
         if should_refresh:
-            state = _refresh_spotify_oauth_state(state)
-            _store_provider_state(auth_store, "spotify", state, set_active=False)
-            _save_auth_store(auth_store)
+            try:
+                state = _refresh_spotify_oauth_state(state)
+                _store_provider_state(auth_store, "spotify", state, set_active=False)
+                _save_auth_store(auth_store)
+            except AuthError as exc:
+                if exc.relogin_required and state.get("refresh_token"):
+                    # Terminal refresh failure — clear dead tokens from auth.json
+                    # so subsequent calls fail fast without a network retry.
+                    # Mirrors the Nous / xAI-OAuth / Codex-OAuth / MiniMax pattern.
+                    for _k in ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at"):
+                        state.pop(_k, None)
+                    state["last_auth_error"] = {
+                        "provider": "spotify",
+                        "code": exc.code or "refresh_failed",
+                        "message": str(exc),
+                        "reason": "runtime_refresh_failure",
+                        "relogin_required": True,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    try:
+                        _store_provider_state(auth_store, "spotify", state, set_active=False)
+                        _save_auth_store(auth_store)
+                    except Exception as _save_exc:
+                        logger.debug("Spotify OAuth: failed to persist quarantined state: %s", _save_exc)
+                raise
 
     access_token = str(state.get("access_token", "") or "").strip()
     if not access_token:
@@ -3838,7 +3772,7 @@ def resolve_codex_runtime_credentials(
 
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
+    refresh_timeout_seconds = env_float("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20)
 
     should_refresh = bool(force_refresh)
     if (not should_refresh) and refresh_if_expiring:
@@ -4475,7 +4409,7 @@ def resolve_xai_oauth_runtime_credentials(
     data = _read_xai_oauth_tokens()
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = float(os.getenv("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", "20"))
+    refresh_timeout_seconds = env_float("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20)
     discovery = dict(data.get("discovery") or {})
     token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
     redirect_uri = str(data.get("redirect_uri", "") or "").strip()
@@ -4561,6 +4495,15 @@ def _default_verify() -> bool | ssl.SSLContext:
     defer to httpx's built-in default (certifi via its own dependency).
     Mirrors the weixin fix in 3a0ec1d93.
     """
+    # First pass: let ssl_compat handle config, env vars, and certifi.
+    try:
+        from agent.ssl_compat import resolve_httpx_verify
+        result = resolve_httpx_verify()
+        if result is not True:
+            return result
+    except ImportError:
+        pass
+    # Second pass: legacy fallback for macOS + certifi.
     if sys.platform == "darwin":
         try:
             import certifi
@@ -5430,9 +5373,15 @@ def refresh_nous_oauth_pure(
             state["refresh_token"] = refreshed.get("refresh_token") or refresh_token_value
             state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
             state["scope"] = refreshed.get("scope") or state.get("scope")
+            # Heal a poisoned stored value: when the Portal-returned URL is
+            # rejected by the allowlist (returns None), reset to the production
+            # default instead of leaving a previously-persisted bad host (e.g. a
+            # stale staging URL) in place. Without this reset, an auth.json that
+            # was poisoned before the allowlist existed keeps re-validating to
+            # None on every refresh and silently re-uses the dead endpoint —
+            # the "falling back to default" warning never actually takes effect.
             refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
-            if refreshed_url:
-                state["inference_base_url"] = refreshed_url
+            state["inference_base_url"] = refreshed_url or DEFAULT_NOUS_INFERENCE_URL
             state["obtained_at"] = now.isoformat()
             state["expires_in"] = access_ttl
             state["expires_at"] = datetime.fromtimestamp(
@@ -5580,11 +5529,24 @@ def resolve_nous_runtime_credentials(
             or os.getenv("NOUS_PORTAL_BASE_URL")
             or DEFAULT_NOUS_PORTAL_URL
         ).rstrip("/")
-        inference_base_url = (
-            _optional_base_url(state.get("inference_base_url"))
-            or os.getenv("NOUS_INFERENCE_BASE_URL")
+        # Persisted value: validated network-provenance only. The stored
+        # inference_base_url is re-validated on read so a poisoned/stale
+        # staging host (persisted before the allowlist existed) heals to the
+        # production default on the no-refresh read path — this is what gets
+        # written back to auth.json. The env override is deliberately NOT
+        # folded in here: it must never be persisted (it's a runtime overlay).
+        stored_inference_base_url = (
+            _validate_nous_inference_url_from_network(
+                _optional_base_url(state.get("inference_base_url"))
+            )
             or DEFAULT_NOUS_INFERENCE_URL
-        ).rstrip("/")
+        )
+        # Effective value used to build the client / returned to callers:
+        # the NOUS_INFERENCE_BASE_URL env override wins (documented dev/staging
+        # escape hatch), else the validated stored value.
+        inference_base_url = (
+            _nous_inference_env_override() or stored_inference_base_url
+        )
         client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
 
         def _persist_state(reason: str) -> None:
@@ -5705,9 +5667,18 @@ def resolve_nous_runtime_credentials(
                         state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
                         state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
                         state["scope"] = refreshed.get("scope") or state.get("scope")
+                        # Heal a poisoned stored value (see refresh_nous_oauth_pure):
+                        # reject → reset to production default, don't keep a stale
+                        # staging host that re-validates to None every refresh.
+                        # This (validated, network-provenance) value is what gets
+                        # persisted to auth.json below. The NOUS_INFERENCE_BASE_URL
+                        # env override is layered on for the client/return value
+                        # only (see below) — it is never persisted.
                         refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
-                        if refreshed_url:
-                            inference_base_url = refreshed_url
+                        stored_inference_base_url = refreshed_url or DEFAULT_NOUS_INFERENCE_URL
+                        inference_base_url = (
+                            _nous_inference_env_override() or stored_inference_base_url
+                        )
                         state["obtained_at"] = now.isoformat()
                         state["expires_in"] = access_ttl
                         state["expires_at"] = datetime.fromtimestamp(
@@ -5736,8 +5707,11 @@ def resolve_nous_runtime_credentials(
             )
 
             # Persist routing and TLS metadata for non-interactive refresh.
+            # Persist the validated, network-provenance URL — NEVER the env
+            # override (which is a runtime-only overlay; persisting it would
+            # leak a dev/staging host into auth.json and survive unsetting it).
             state["portal_base_url"] = portal_base_url
-            state["inference_base_url"] = inference_base_url
+            state["inference_base_url"] = stored_inference_base_url
             state["client_id"] = client_id
             state["tls"] = {
                 "insecure": verify is False,
@@ -6157,8 +6131,6 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_xai_oauth_auth_status()
     if target == "qwen-oauth":
         return get_qwen_auth_status()
-    if target == "google-gemini-cli":
-        return get_gemini_oauth_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
     if target == "copilot-acp":

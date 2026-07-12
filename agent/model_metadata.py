@@ -40,6 +40,15 @@ def _resolve_requests_verify() -> bool | str:
         val = os.getenv(env_var)
         if val and os.path.isfile(val):
             return val
+    # certifi fallback — covers startup paths where setup_ssl_compat()
+    # wasn't called first (short-lived subprocesses, test fixtures).
+    try:
+        import certifi  # noqa: F811
+        ca = certifi.where()
+        if os.path.isfile(ca):
+            return ca
+    except ImportError:
+        pass
     return True
 
 # Provider names that can appear as a "provider:" prefix before a model ID.

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { rankTitleMatchesFirst, sessionMatchesSearch, sessionTitleMatches } from './session-search'
+import { rankTitleMatchesFirst, sessionChannelMatches, sessionMatchesSearch, sessionPlatformMatches, sessionTitleMatches } from './session-search'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -63,6 +63,53 @@ describe('sessionMatchesSearch', () => {
   it('does not match unrelated queries', () => {
     expect(sessionMatchesSearch(makeSession(), 'totally-unrelated')).toBe(false)
   })
+
+  it('matches channel/thread names from display_name, tokenized (typo-tolerant per token)', () => {
+    const discordThread = makeSession({
+      display_name: 'Daemonarchy / #voice-assitant / Desktop App',
+      source: 'discord',
+      title: 'Pin-Sync Bug Recovery'
+    })
+
+    // channel name token + platform token, neither in the title
+    expect(sessionMatchesSearch(discordThread, 'voice discord')).toBe(true)
+    // thread name
+    expect(sessionMatchesSearch(discordThread, 'desktop app')).toBe(true)
+    // the channel-name typo doesn't break per-token matching of other tokens
+    expect(sessionMatchesSearch(discordThread, 'daemonarchy voice')).toBe(true)
+    // every token must land SOMEWHERE — a miss on one token fails the match
+    expect(sessionMatchesSearch(discordThread, 'voice zzzzz')).toBe(false)
+  })
+
+  it('requires all tokens of a multi-word query to match across fields', () => {
+    const session = makeSession({ source: 'telegram', title: 'Grocery list' })
+
+    expect(sessionMatchesSearch(session, 'grocery telegram')).toBe(true)
+    expect(sessionMatchesSearch(session, 'grocery discord')).toBe(false)
+  })
+})
+
+describe('sessionChannelMatches', () => {
+  it('hits when any token appears in the display_name path', () => {
+    const s = makeSession({ display_name: 'Daemonarchy / #voice-assitant / Desktop App' })
+
+    expect(sessionChannelMatches(s, 'voice')).toBe(true)
+    expect(sessionChannelMatches(s, 'desktop')).toBe(true)
+    expect(sessionChannelMatches(s, 'nope')).toBe(false)
+  })
+
+  it('never hits without a display_name', () => {
+    expect(sessionChannelMatches(makeSession({ display_name: null }), 'voice')).toBe(false)
+    expect(sessionChannelMatches(makeSession(), 'voice')).toBe(false)
+  })
+})
+
+describe('sessionPlatformMatches', () => {
+  it('hits on exact platform names and aliases only', () => {
+    expect(sessionPlatformMatches(makeSession({ source: 'discord' }), 'discord')).toBe(true)
+    expect(sessionPlatformMatches(makeSession({ source: 'telegram' }), 'tg')).toBe(true)
+    expect(sessionPlatformMatches(makeSession({ source: 'discord' }), 'disc')).toBe(false)
+  })
 })
 
 describe('sessionTitleMatches', () => {
@@ -92,6 +139,23 @@ describe('rankTitleMatchesFirst', () => {
     const ranked = rankTitleMatchesFirst([contentHit, titleHitA, contentHit2, titleHitB], 'deploy')
 
     expect(ranked.map(s => s.id)).toEqual(['title-a', 'title-b', 'content-1', 'content-2'])
+  })
+
+  it('ranks channel/thread-name hits above platform-only and content hits', () => {
+    const contentHit = makeSession({ id: 'content-1', preview: 'talked about voice stuff', title: 'Other' })
+    const channelHit = makeSession({
+      display_name: 'Daemonarchy / #voice-assitant',
+      id: 'channel-1',
+      source: 'discord',
+      title: 'Firmware Build'
+    })
+    const platformOnly = makeSession({ id: 'platform-1', source: 'discord', title: 'Unrelated' })
+    const titleHit = makeSession({ id: 'title-1', title: 'Voice pipeline design' })
+
+    const ranked = rankTitleMatchesFirst([contentHit, channelHit, platformOnly, titleHit], 'voice discord')
+
+    // title > channel > platform-only > content
+    expect(ranked.map(s => s.id)).toEqual(['title-1', 'channel-1', 'platform-1', 'content-1'])
   })
 
   it('returns input unchanged for an empty query', () => {

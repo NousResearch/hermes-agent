@@ -81,6 +81,36 @@ _COMPRESSION_CHILD_SQL = (
 # compression continuations stay hidden).
 _LISTABLE_CHILD_SQL = f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')})"
 
+# Platform names + common aliases → sessions.source values, so cross-surface
+# search understands "discord" / "tg" / "imessage" as platform intent. Kept in
+# sync with the desktop sidebar's SOURCE_LABELS/SOURCE_ALIASES
+# (apps/desktop/src/lib/session-source.ts).
+_PLATFORM_SEARCH_ALIASES: Dict[str, str] = {
+    "bluebubbles": "bluebubbles",
+    "imessage": "bluebubbles",
+    "cli": "cli",
+    "codex": "codex",
+    "desktop": "desktop",
+    "discord": "discord",
+    "email": "email",
+    "matrix": "matrix",
+    "mattermost": "mattermost",
+    "qq": "qqbot",
+    "qqbot": "qqbot",
+    "signal": "signal",
+    "slack": "slack",
+    "sms": "sms",
+    "telegram": "telegram",
+    "tg": "telegram",
+    "tui": "tui",
+    "webhook": "webhook",
+    "wechat": "weixin",
+    "weixin": "weixin",
+    "whatsapp": "whatsapp",
+    "wa": "whatsapp",
+    "yuanbao": "yuanbao",
+}
+
 
 def _effective_last_active_visible_clause(alias: str = "s") -> Tuple[str, List[str]]:
     """SQL predicate for rows whose denormalized recency should be non-NULL."""
@@ -6320,14 +6350,25 @@ class SessionDB:
         limit: int = 20,
         include_archived: bool = True,
     ) -> List[Dict[str, Any]]:
-        """Search surfaced sessions by case-insensitive title substring.
+        """Search surfaced sessions by title, channel/thread name, and platform.
 
         Titles are human-assigned intent (``/title`` on any platform, the
         desktop rename action, auto-titling), so a title hit should outrank a
-        message-content hit in cross-surface search. Matches rank exact >
-        prefix > substring, tiebroken by recency (``started_at`` DESC), and
-        only listable rows are returned (sub-agent runs and compression
-        continuations excluded — same visibility contract as the sidebar).
+        message-content hit in cross-surface search. Beyond titles, sessions
+        born on messaging platforms carry ``display_name`` (the gateway's
+        presentation path, e.g. ``"Daemonarchy / #general / My Thread"``) and
+        ``source`` (the platform id) — both are searched so a query like
+        ``"general discord"`` surfaces that channel's sessions even when no
+        title mentions it.
+
+        Matching is per-token with partial credit: every whitespace token that
+        hits the title, the display path, or the platform name/alias counts.
+        Rows matching more tokens rank first; ties break on where the best
+        match landed (whole-phrase title exact > prefix > substring > token in
+        title > token in channel/thread path > platform-only), then recency
+        (``started_at`` DESC). Only listable rows are returned (sub-agent runs
+        and compression continuations excluded — same visibility contract as
+        the sidebar).
 
         A plain ``LIKE`` scan is deliberate: ``sessions`` is a small table
         (tens of thousands of rows), so no FTS index is warranted.
@@ -6336,45 +6377,93 @@ class SessionDB:
         if not needle or limit <= 0:
             return []
 
-        like_pattern = (
-            "%"
-            + needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            + "%"
-        )
+        tokens = [t for t in needle.split() if t]
+
+        def _like(term: str) -> str:
+            return (
+                "%"
+                + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                + "%"
+            )
+
+        # Candidate fetch: any token substring-hits title or display_name, or
+        # names a platform. Python does the real ranking; SQL just narrows.
+        or_clauses: List[str] = []
+        params: List[Any] = []
+        platform_sources: set = set()
+        for tok in tokens:
+            or_clauses.append("LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\'")
+            params.append(_like(tok))
+            or_clauses.append(
+                "LOWER(COALESCE(s.display_name, '')) LIKE ? ESCAPE '\\'"
+            )
+            params.append(_like(tok))
+            src = _PLATFORM_SEARCH_ALIASES.get(tok)
+            if src:
+                platform_sources.add(src)
+        if platform_sources:
+            marks = ",".join("?" for _ in platform_sources)
+            or_clauses.append(f"s.source IN ({marks})")
+            params.extend(sorted(platform_sources))
+
         where = [
-            "s.title IS NOT NULL",
-            "TRIM(s.title) != ''",
-            "LOWER(s.title) LIKE ? ESCAPE '\\'",
+            f"({' OR '.join(or_clauses)})",
+            # Findable rows carry human-facing text: a title or a display path.
+            "(COALESCE(TRIM(s.title), '') != '' OR "
+            " COALESCE(TRIM(s.display_name), '') != '')",
             _LISTABLE_CHILD_SQL,
             f"{_delegate_from_json('s.model_config')} IS NULL",
         ]
-        params: List[Any] = [like_pattern]
         if not include_archived:
             where.append("s.archived = 0")
 
         with self._lock:
             rows = self._conn.execute(
-                "SELECT s.id, s.title, s.source, s.model, s.started_at, "
+                "SELECT s.id, s.title, s.display_name, s.source, s.model, "
+                "s.started_at, "
                 "(SELECT m.content FROM messages m "
                 " WHERE m.session_id = s.id AND m.role = 'user' "
                 " ORDER BY m.timestamp ASC LIMIT 1) AS preview "
                 f"FROM sessions s WHERE {' AND '.join(where)} "
                 "ORDER BY s.started_at DESC "
                 "LIMIT ?",
-                params + [max(limit * 4, limit)],
+                params + [max(limit * 8, 80)],
             ).fetchall()
 
-        def score(row) -> int:
+        def score(row) -> tuple:
             title = (row["title"] or "").strip().lower()
+            display = (row["display_name"] or "").strip().lower()
+            source = (row["source"] or "").strip().lower()
+            matched = 0
+            best_tier = 6
+            for tok in tokens:
+                tiers = []
+                if tok in title:
+                    tiers.append(3)
+                if tok in display:
+                    tiers.append(4)
+                if _PLATFORM_SEARCH_ALIASES.get(tok) == source:
+                    tiers.append(5)
+                if tiers:
+                    matched += 1
+                    best_tier = min(best_tier, *tiers)
+            # Whole-phrase title tiers preserve the historical contract that
+            # an exact/prefix title hit beats everything else.
             if title == needle:
-                return 0
-            if title.startswith(needle):
-                return 1
-            return 2
+                best_tier = 0
+            elif title.startswith(needle):
+                best_tier = 1
+            elif needle in title:
+                best_tier = 2
+            return (-matched, best_tier)
 
-        ranked = sorted(enumerate(rows), key=lambda item: (score(item[1]), item[0]))
+        ranked = sorted(
+            enumerate(rows), key=lambda item: (*score(item[1]), item[0])
+        )
         out: List[Dict[str, Any]] = []
         for _, row in ranked[:limit]:
+            if score(row)[0] == 0:
+                continue  # candidate row that no token actually scored on
             d = dict(row)
             preview = (d.get("preview") or "").strip()
             d["preview"] = preview[:200] if preview else ""

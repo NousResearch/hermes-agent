@@ -182,6 +182,7 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
   return {
     archived: false,
     cwd: null,
+    display_name: result.display_name?.trim() || null,
     ended_at: null,
     id: result.session_id,
     _lineage_root_id: result.lineage_root ?? null,

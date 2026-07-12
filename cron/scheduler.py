@@ -239,6 +239,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 }
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from agent.goal_cost_report import format_cost_summary, GoalDuration
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -3448,10 +3449,20 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # below once delivery is done. Defense-in-depth alongside the
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
+        _goal_timer = GoalDuration()
+        _goal_timer.start()
         try:
             success, output, final_response, error = run_job(
                 job, defer_agent_teardown=_deferred_agents
             )
+            # Generate cost/usage summary from the deferred agent (if available).
+            _cost_summary = ""
+            if _deferred_agents:
+                _agent = _deferred_agents[0]
+                _cost_summary = format_cost_summary(
+                    _agent,
+                    duration_seconds=_goal_timer.elapsed,
+                )
         except BaseException:
             # run_job's finally still hands back the agent when it raises; tear
             # it down here so a failed run never leaks its async resources
@@ -3494,6 +3505,11 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # If the agent responded with [SILENT], skip delivery (but
             # output is already saved above).  Failed jobs always deliver.
             deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            # Append cost/usage summary to successful deliveries (silent
+            # markers are checked AFTER this, so we don't waste work
+            # computing a summary for a job that won't deliver).
+            if success and _cost_summary and deliver_content.strip():
+                deliver_content = deliver_content.rstrip() + "\n\n" + _cost_summary
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.

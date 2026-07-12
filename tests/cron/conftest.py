@@ -22,6 +22,19 @@ def _default_cron_test_model(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_cron_test_home(monkeypatch, tmp_path):
+    """Keep real AIAgent bootstrap/log writes out of the user's Hermes home."""
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import run_agent
+
+    monkeypatch.setattr(run_agent, "_hermes_home", home)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_session_context_vars():
     """Reset every session-context ContextVar to its _UNSET default per test.
 

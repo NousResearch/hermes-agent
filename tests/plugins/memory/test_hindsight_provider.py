@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -782,6 +783,124 @@ class TestToolHandlers:
         assert provider._client is second_client
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Cold-start retry budget (PR #62870 review follow-up)
+# ---------------------------------------------------------------------------
+
+
+async def _dummy_coro():
+    return None
+
+
+class TestColdStartRetryBudget:
+    """`first_turn_recall_timeout` must bound the cold-start recall end-to-end.
+
+    Regression for the review on PR #62870: the single idle-daemon retry used
+    to receive a *fresh* full timeout, so a slow-then-retriable cold start
+    could take up to ~2x the advertised latency budget. The retry must only
+    get the remaining budget, and must be skipped once the budget is spent.
+    """
+
+    def _operation(self, client):
+        return _dummy_coro()
+
+    def test_retry_gets_only_remaining_budget(self, provider, monkeypatch):
+        provider._mode = "local_embedded"
+        monkeypatch.setattr(provider, "_get_client", lambda: MagicMock())
+
+        budget = 3.0
+        seen_timeouts: list = []
+        calls = {"n": 0}
+
+        def fake_run_sync(coro, timeout=None):
+            coro.close()  # never awaited on this synthetic path
+            seen_timeouts.append(timeout)
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Slow first attempt consumes part of the budget, then the
+                # embedded daemon appears unreachable (retriable).
+                time.sleep(0.2)
+                raise RuntimeError("Cannot connect to host 127.0.0.1:8888")
+            return "recovered"
+
+        monkeypatch.setattr(provider, "_run_sync", fake_run_sync)
+
+        result = provider._run_hindsight_operation(self._operation, timeout=budget)
+
+        assert result == "recovered"
+        assert len(seen_timeouts) == 2
+        assert seen_timeouts[0] == budget
+        # Retry got only the leftover budget: strictly less than the original
+        # full timeout and still positive.
+        assert 0 < seen_timeouts[1] < budget
+        # And it never exceeds the elapsed-adjusted remaining time.
+        assert seen_timeouts[1] <= budget - 0.2 + 0.05
+
+    def test_retry_skipped_when_budget_exhausted(self, provider, monkeypatch):
+        provider._mode = "local_embedded"
+        monkeypatch.setattr(provider, "_get_client", lambda: MagicMock())
+
+        budget = 1.0
+        seen_timeouts: list = []
+
+        def fake_run_sync(coro, timeout=None):
+            coro.close()
+            seen_timeouts.append(timeout)
+            # Burn past the point where a meaningful retry budget remains.
+            time.sleep(0.7)
+            raise RuntimeError("Cannot connect to host 127.0.0.1:8888")
+
+        monkeypatch.setattr(provider, "_run_sync", fake_run_sync)
+
+        with pytest.raises(RuntimeError, match="Cannot connect to host"):
+            provider._run_hindsight_operation(self._operation, timeout=budget)
+
+        # Only the first attempt ran; the retry was skipped because <0.5s left.
+        assert len(seen_timeouts) == 1
+
+    def test_non_retriable_error_is_not_retried(self, provider, monkeypatch):
+        provider._mode = "local_embedded"
+        monkeypatch.setattr(provider, "_get_client", lambda: MagicMock())
+
+        calls = {"n": 0}
+
+        def fake_run_sync(coro, timeout=None):
+            coro.close()
+            calls["n"] += 1
+            raise ValueError("bad request")
+
+        monkeypatch.setattr(provider, "_run_sync", fake_run_sync)
+
+        with pytest.raises(ValueError, match="bad request"):
+            provider._run_hindsight_operation(self._operation, timeout=3.0)
+
+        assert calls["n"] == 1
+
+    def test_no_timeout_passes_through_without_budget_math(self, provider, monkeypatch):
+        """With timeout=None (default request timeout), the retry still fires
+        and simply reuses None — no deadline is imposed."""
+        provider._mode = "local_embedded"
+        monkeypatch.setattr(provider, "_get_client", lambda: MagicMock())
+
+        seen_timeouts: list = []
+        calls = {"n": 0}
+
+        def fake_run_sync(coro, timeout=None):
+            coro.close()
+            seen_timeouts.append(timeout)
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("Cannot connect to host 127.0.0.1:8888")
+            return "ok"
+
+        monkeypatch.setattr(provider, "_run_sync", fake_run_sync)
+
+        result = provider._run_hindsight_operation(self._operation, timeout=None)
+
+        assert result == "ok"
+        assert seen_timeouts == [None, None]
 
 
 # ---------------------------------------------------------------------------

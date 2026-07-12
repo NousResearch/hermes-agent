@@ -45,6 +45,7 @@ import os
 import queue
 import sys
 import threading
+import time
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -62,6 +63,11 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.6.1"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
+# If less than this much of the end-to-end budget remains after a first
+# cold-start attempt fails, skip the single idle-daemon retry instead of
+# handing it a near-zero (guaranteed-timeout) budget or overshooting the
+# caller's deadline.
+_COLD_START_RETRY_FLOOR_SECONDS = 0.5
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
 # Without it, reusing a stable session-scoped document_id silently
@@ -1177,25 +1183,47 @@ class HindsightMemoryProvider(MemoryProvider):
     def _run_hindsight_operation(self, operation, *, timeout: float | None = None):
         """Run an async Hindsight client operation, retrying once after idle shutdown.
 
-        *timeout* (seconds) bounds each scheduled call; ``None`` uses the
-        configured request timeout. Callers on a latency-sensitive path
-        (e.g. synchronous first-turn recall) pass a small budget so a slow
-        backend degrades to "no memory context" instead of stalling.
+        *timeout* (seconds) is an end-to-end budget, not a per-attempt one.
+        ``None`` uses the configured request timeout. Callers on a
+        latency-sensitive path (e.g. synchronous first-turn recall) pass a
+        small budget so a slow backend degrades to "no memory context"
+        instead of stalling. When the first attempt hits a retriable
+        embedded-daemon failure, the retry only gets whatever time is left
+        in the budget, so a slow/flaky cold start can never exceed *timeout*
+        (minus a small floor to keep the retry from being a no-op).
         """
         client = self._get_client()
+        started = time.monotonic()
         try:
             return self._run_sync(operation(client), timeout=timeout)
         except Exception as exc:
             if not self._is_retriable_embedded_connection_error(exc):
                 raise
+            retry_timeout = timeout
+            if timeout is not None:
+                remaining = timeout - (time.monotonic() - started)
+                # The retry only gets the leftover budget so the end-to-end
+                # cost never exceeds *timeout*. If too little is left to make a
+                # meaningful attempt, skip the retry on this bounded cold path
+                # rather than overshoot the deadline.
+                if remaining < _COLD_START_RETRY_FLOOR_SECONDS:
+                    logger.info(
+                        "Hindsight embedded daemon unreachable and cold-start budget "
+                        "(%.2fs) nearly exhausted (%.2fs left); skipping retry: %s",
+                        timeout, remaining, exc,
+                    )
+                    raise
+                retry_timeout = remaining
             logger.info(
-                "Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s",
+                "Hindsight embedded daemon appears unreachable; recreating client and "
+                "retrying once (retry budget=%.2fs): %s",
+                retry_timeout if retry_timeout is not None else -1.0,
                 exc,
             )
             self._client = None
             client = self._get_client()
             self._client = client
-            return self._run_sync(operation(client), timeout=timeout)
+            return self._run_sync(operation(client), timeout=retry_timeout)
 
     def _probe_url(self) -> str:
         """Return the URL to probe /version on.

@@ -704,6 +704,41 @@ def test_oneshot_exit_code_zero_when_failed_with_error_text(monkeypatch, capsys)
     assert "HTTP 404" in capsys.readouterr().out
 
 
+def test_oneshot_agent_disables_next_turn_prefetch(monkeypatch):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    captured = {}
+    result = {"final_response": "ok"}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+            self.messages = [{"role": "user", "content": "hello"}]
+            self.shutdown_calls = []
+
+        def run_conversation(self, _prompt):
+            return result
+
+        def shutdown_memory_provider(self, messages):
+            self.shutdown_calls.append(messages)
+            captured["shutdown_calls"] = list(self.shutdown_calls)
+
+    import hermes_cli.runtime_provider as runtime_provider_mod
+    import run_agent as run_agent_mod
+
+    monkeypatch.setattr(run_agent_mod, "AIAgent", FakeAgent)
+    monkeypatch.setattr(runtime_provider_mod, "resolve_runtime_provider", lambda **_kw: {})
+    monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: object())
+
+    assert oneshot_mod._run_agent("hello") == ("ok", result)
+    assert captured["prefetch_after_turn"] is False
+    assert captured["shutdown_calls"] == [[{"role": "user", "content": "hello"}]]
+
+
 def test_oneshot_reraises_keyboard_interrupt(monkeypatch):
     _stub_plugin_discovery(monkeypatch)
     import hermes_cli.oneshot as oneshot_mod

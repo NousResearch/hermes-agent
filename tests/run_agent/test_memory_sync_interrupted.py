@@ -35,6 +35,7 @@ def _bare_agent():
     # providers that cache per-session state can update it mid-process
     # (see #6672).
     agent.session_id = "test_session_001"
+    setattr(agent, "prefetch_after_turn", True)
     return agent
 
 
@@ -90,6 +91,23 @@ class TestSyncExternalMemoryForTurn:
             "What's the weather in Paris?",
             session_id="test_session_001",
         )
+
+    def test_completed_oneshot_turn_syncs_but_skips_next_turn_prefetch(self):
+        """Oneshot should save memory, but not warm a turn that cannot exist."""
+        agent = _bare_agent()
+        setattr(agent, "prefetch_after_turn", False)
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="remember this",
+            final_response="remembered",
+            interrupted=False,
+        )
+
+        agent._memory_manager.sync_all.assert_called_once_with(
+            "remember this", "remembered",
+            session_id="test_session_001",
+        )
+        agent._memory_manager.queue_prefetch_all.assert_not_called()
 
     def test_completed_turn_syncs_messages_when_present(self):
         agent = _bare_agent()

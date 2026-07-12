@@ -6410,16 +6410,18 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
+
+    from agent.acp_agent_registry import resolve_agent_launch
+    from agent.acp_client import extract_agent_from_url
+
+    agent_name = extract_agent_from_url(base_url) or provider_id.removesuffix("-acp")
+    try:
+        command, args = resolve_agent_launch(agent_name)
+    except ValueError:
+        return {"configured": False, "provider": provider_id, "name": pconfig.name}
 
     resolved_command = shutil.which(command) if command else None
     return {

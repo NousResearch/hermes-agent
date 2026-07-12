@@ -1925,6 +1925,76 @@ def _model_flow_copilot_acp(config, current_model=""):
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
+def _model_flow_acp_agent(config, current_model="", provider_id=""):
+    """Generic ACP-agent flow (claude-acp, codex-acp, gemini-acp, qwen-acp).
+
+    Mirrors _model_flow_copilot_acp minus the GitHub model catalog: these
+    agents pick their own underlying model, so the saved model name is only
+    a hint forwarded to the ACP session.
+    """
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _save_model_choice,
+        deactivate_provider,
+        get_external_process_provider_status,
+        resolve_external_process_provider_credentials,
+    )
+    from hermes_cli.config import load_config, save_config
+    from agent.acp_agent_registry import agent_display_name, agent_install_hint
+
+    del config
+
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    agent_name = provider_id.removesuffix("-acp")
+    display = agent_display_name(agent_name)
+
+    status = get_external_process_provider_status(provider_id)
+    resolved_command = (
+        status.get("resolved_command") or status.get("command") or agent_name
+    )
+    effective_base = status.get("base_url") or pconfig.inference_base_url
+
+    print(f"  {pconfig.name} delegates Hermes turns to {display}'s ACP adapter.")
+    print("  Hermes starts its own ACP subprocess for each request; the agent")
+    print("  uses its own login/credentials and picks its own underlying model")
+    print("  (the model name saved here is only a hint).")
+    print(f"  Command: {resolved_command}")
+    print(f"  Backend marker: {effective_base}")
+    print()
+
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        print(f"  {agent_install_hint(agent_name)}")
+        return
+
+    effective_base = creds.get("base_url") or effective_base
+
+    default_model = current_model if current_model == provider_id else provider_id
+    try:
+        entered = input(f"  Model hint [{default_model}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("No change.")
+        return
+    selected = entered or default_model
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = effective_base
+    model["api_mode"] = "chat_completions"
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection with automatic endpoint routing.
 

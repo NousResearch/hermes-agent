@@ -93,13 +93,12 @@ describe('Hermes REST session helpers', () => {
     )
   })
 
-  it('gives the whole startup data burst the long timeout, not just profiles', async () => {
+  it('gives slow startup data calls the long timeout', async () => {
     api.mockResolvedValue({})
 
     const bootCalls: [() => Promise<unknown>, string][] = [
       [getHermesConfig, '/api/config'],
       [getHermesConfigDefaults, '/api/config/defaults'],
-      [getGlobalModelInfo, '/api/model/info'],
       [() => getGlobalModelOptions(), '/api/model/options?explicit_only=1'],
       [getCronJobs, '/api/cron/jobs']
     ]
@@ -109,6 +108,16 @@ describe('Hermes REST session helpers', () => {
       await call()
       expect(api).toHaveBeenCalledWith(expect.objectContaining({ path, timeoutMs: 60_000 }))
     }
+  })
+
+  it('bounds the optional live model metadata probe', async () => {
+    api.mockResolvedValue({})
+
+    await getGlobalModelInfo()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/api/model/info', timeoutMs: 5_000 })
+    )
   })
 
   it('keeps the liveness poll on the short default so a dead backend fails fast', async () => {

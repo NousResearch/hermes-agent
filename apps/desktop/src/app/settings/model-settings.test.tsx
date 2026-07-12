@@ -35,6 +35,7 @@ vi.mock('@/hermes', () => ({
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
+  setApiRequestProfile: vi.fn(),
   getHermesConfigRecord: () => getHermesConfigRecord(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config),
   setApiRequestProfile: () => {}
@@ -49,6 +50,16 @@ vi.mock('@/store/onboarding', () => ({
 vi.mock('../hooks/use-on-profile-switch', () => ({
   useOnProfileSwitch: (handler: () => void) => {
     profileSwitchHandler = handler
+  }
+}))
+
+vi.mock('@/app/hooks/use-config-record', () => ({
+  invalidateHermesConfig: vi.fn(),
+  setHermesConfigCache: vi.fn(),
+  useHermesConfigRecord: () => {
+    getHermesConfigRecord()
+
+    return { data: { agent: { reasoning_effort: 'medium', service_tier: 'normal' } } }
   }
 }))
 
@@ -245,6 +256,20 @@ describe('ModelSettings', () => {
 
     expect(await screen.findByText('Vision')).toBeTruthy()
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
+  })
+
+  it('keeps config-backed settings usable when live model metadata times out', async () => {
+    getGlobalModelInfo.mockRejectedValueOnce(new Error('Model metadata request timed out'))
+
+    await renderModelSettings()
+
+    expect(await screen.findByText('Vision')).toBeTruthy()
+    expect(screen.getByText('Model metadata request timed out')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Apply' }).hasAttribute('disabled')).toBe(false)
+
+    const provider = (await screen.findAllByRole('combobox'))[0]
+    fireEvent.click(provider)
+    expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
   })
 
   it('assigns an auxiliary task to the main model via setModelAssignment', async () => {

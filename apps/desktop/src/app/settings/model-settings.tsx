@@ -226,30 +226,59 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     setError('')
 
     try {
-      const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
+      const [modelInfoResult, modelOptionsResult, auxiliaryModelsResult, moaModelsResult] = await Promise.allSettled([
         getGlobalModelInfo(),
         getGlobalModelOptions(),
         getAuxiliaryModels(),
-        getMoaModels().catch(() => null)
+        getMoaModels()
       ])
 
       if (profileEpoch.current !== epoch) {
         return
       }
 
-      setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
-      setProviders(modelOptions.providers || [])
+      const failures: string[] = []
 
-      if (replaceSelection) {
-        setSelectedProvider(modelInfo.provider)
-        setSelectedModel(modelInfo.model)
-      } else {
-        setSelectedProvider(prev => prev || modelInfo.provider)
-        setSelectedModel(prev => prev || modelInfo.model)
+      const settledValue = <T,>(result: PromiseSettledResult<T>, reportFailure = true): T | null => {
+        if (result.status === 'fulfilled') {
+          return result.value
+        }
+
+        if (reportFailure) {
+          failures.push(result.reason instanceof Error ? result.reason.message : String(result.reason))
+        }
+
+        return null
       }
 
-      setAuxiliary(auxiliaryModels)
+      const modelInfo = settledValue(modelInfoResult)
+      const modelOptions = settledValue(modelOptionsResult)
+      const auxiliaryModels = settledValue(auxiliaryModelsResult)
+      const moaModels = settledValue(moaModelsResult, false)
+      const resolvedMain = modelInfo?.model ? modelInfo : auxiliaryModels?.main
+
+      if (resolvedMain?.model) {
+        setMainModel({ model: resolvedMain.model, provider: resolvedMain.provider })
+
+        if (replaceSelection) {
+          setSelectedProvider(resolvedMain.provider)
+          setSelectedModel(resolvedMain.model)
+        } else {
+          setSelectedProvider(prev => prev || resolvedMain.provider)
+          setSelectedModel(prev => prev || resolvedMain.model)
+        }
+      }
+
+      if (modelOptions) {
+        setProviders(modelOptions.providers || [])
+      }
+
+      if (auxiliaryModels) {
+        setAuxiliary(auxiliaryModels)
+      }
+
       setMoa(moaModels)
+      setError(failures.join('; '))
 
       if (moaModels) {
         setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))

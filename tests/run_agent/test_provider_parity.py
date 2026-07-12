@@ -918,7 +918,7 @@ class TestChatMessagesToResponsesInputMessageItems:
                             base_url="https://chatgpt.com/backend-api/codex")
         messages = [{"role": "assistant", "content": "Hello world"}]
         items = _chat_messages_to_responses_input(messages)
-        assert items == [{"role": "assistant", "content": "Hello world"}]
+        assert items == [{"role": "assistant", "content": [{"type": "output_text", "text": "Hello world"}]}]
 
     def test_skips_invalid_message_items(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
@@ -936,7 +936,7 @@ class TestChatMessagesToResponsesInputMessageItems:
         ]
         items = _chat_messages_to_responses_input(messages)
         # All invalid — falls back to plain text reconstruction
-        assert items == [{"role": "assistant", "content": "fallback text"}]
+        assert items == [{"role": "assistant", "content": [{"type": "output_text", "text": "fallback text"}]}]
 
 
 # ── Chat completions response handling (OpenRouter/Nous) ─────────────────────

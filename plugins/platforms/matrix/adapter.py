@@ -1559,6 +1559,16 @@ class MatrixAdapter(BasePlatformAdapter):
             await asyncio.gather(*redaction_tasks, return_exceptions=True)
         self._reaction_redaction_tasks.clear()
 
+        # Drain the event loop so in-flight mautrix handler tasks (decrypt,
+        # key-query, etc.) that were gathered inside _dispatch_sync have a
+        # chance to receive the CancelledError that propagate()d through
+        # the gather.  Without this window, those tasks may still hold
+        # references to _crypto_db when we stop() it below, producing a
+        # flood of ``RuntimeError: database pool has been stopped`` (#63395).
+        if asyncio.current_task() is not None:
+            for _ in range(10):
+                await asyncio.sleep(0)
+
         # Close the SQLite crypto store database.
         if hasattr(self, "_crypto_db") and self._crypto_db:
             try:

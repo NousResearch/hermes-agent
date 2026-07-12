@@ -2017,15 +2017,26 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
         _pending[rid] = (sid, ev)
         payload["request_id"] = rid
         _pending_prompt_payloads[rid] = (event, dict(payload))
+    answered = False
+    answer = ""
+    answer_present = False
     try:
         _emit(event, sid, payload)
-        ev.wait(timeout=timeout)
+        answered = ev.wait(timeout=timeout)
     finally:
         with _prompt_lock:
             _pending.pop(rid, None)
             _pending_prompt_payloads.pop(rid, None)
-    with _prompt_lock:
-        return _answers.pop(rid, "")
+            answer_present = rid in _answers
+            answer = _answers.pop(rid, "")
+
+    if not answered and not answer_present and event in {"secret.request", "sudo.request"}:
+        _emit(
+            f"{event.removesuffix('.request')}.expire",
+            sid,
+            {"request_id": rid},
+        )
+    return answer
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -10016,11 +10027,13 @@ def _(rid, params: dict) -> dict:
 # ── Methods: respond ─────────────────────────────────────────────────
 
 
-def _respond(rid, params, key):
+def _respond(rid, params, key, *, allow_expired=False):
     r = params.get("request_id", "")
     with _prompt_lock:
         entry = _pending.get(r)
         if not entry:
+            if allow_expired and r:
+                return _ok(rid, {"status": "expired"})
             return _err(rid, 4009, f"no pending {key} request")
         _, ev = entry
         _answers[r] = params.get(key, "")
@@ -10041,12 +10054,12 @@ def _(rid, params: dict) -> dict:
 
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "password")
+    return _respond(rid, params, "password", allow_expired=True)
 
 
 @method("secret.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "value")
+    return _respond(rid, params, "value", allow_expired=True)
 
 
 @method("approval.respond")

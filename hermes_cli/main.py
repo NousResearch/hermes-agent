@@ -9412,6 +9412,56 @@ def _cmd_update_pip(args):
     print("✓ Update complete! Restart hermes to use the new version.")
 
 
+def _update_index_lock_path(project_root: Path) -> Path | None:
+    """Return the checkout's index lock path, including linked worktrees."""
+    git_marker = project_root / ".git"
+    if git_marker.is_dir():
+        return git_marker / "index.lock"
+    if not git_marker.is_file():
+        return None
+
+    try:
+        marker = git_marker.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    prefix = "gitdir:"
+    if not marker.lower().startswith(prefix):
+        return None
+
+    git_dir = Path(marker[len(prefix) :].strip())
+    if not git_dir.is_absolute():
+        git_dir = (project_root / git_dir).resolve()
+    return git_dir / "index.lock"
+
+
+def _abort_if_update_index_locked(project_root: Path) -> None:
+    """Refuse to update while Git's index lock exists.
+
+    ``index.lock`` does not record its owner, so neither its age nor contents
+    can prove that no live Git operation owns it. Preserve the lock and give
+    the user an explicit recovery command instead of risking repository
+    corruption by unlinking it.
+    """
+    lock_path = _update_index_lock_path(project_root)
+    if lock_path is None or not lock_path.exists():
+        return
+
+    if _is_windows():
+        quoted_path = str(lock_path).replace("'", "''")
+        recovery = f"Remove-Item -LiteralPath '{quoted_path}'"
+    else:
+        import shlex
+
+        recovery = f"rm -f -- {shlex.quote(str(lock_path))}"
+
+    print(f"✗ Git index lock exists: {lock_path}")
+    print("  Another Git operation may still be using this repository.")
+    print("  Close or wait for it to finish, then retry `hermes update`.")
+    print("  If no Git operation is running, remove the orphaned lock:")
+    print(f"    {recovery}")
+    sys.exit(2)
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -9461,6 +9511,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if concurrent:
                 print(_format_concurrent_instances_message(concurrent, scripts_dir))
                 sys.exit(2)
+
+    # Git's lock file has no reliable ownership metadata. Refuse before backup
+    # or checkout mutation rather than guessing from its age and racing a
+    # legitimate long-running Git operation.
+    _abort_if_update_index_locked(PROJECT_ROOT)
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.

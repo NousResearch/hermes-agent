@@ -325,6 +325,13 @@ def _should_probe_ollama_vision(provider: str, base_url: str) -> bool:
         return True
     if not base_url:
         return False
+    # Skip probing for remote API providers — SSL handshake can hang on
+    # some platforms (e.g. ARM boards with IPv6 connectivity issues).
+    # Only probe when the base URL points to a local address.
+    import re
+    host = base_url.split("://")[-1].split("/")[0].split(":")[0]
+    if host not in ("localhost", "127.0.0.1", "::1", "0.0.0.0") and not host.startswith("192.168."):
+        return False
     try:
         from agent.model_metadata import detect_local_server_type
 

@@ -183,11 +183,75 @@ def activate_durable_lazy_target() -> None:
         pass
 
 
+def apply_ipv4_fallback() -> bool:
+    """Prefer IPv4 when the system has IPv6 enabled but no working route.
+
+    On some Linux distributions (notably ARM single-board computers), IPv6
+    is enabled in the kernel but no default IPv6 route exists.  Python's
+    ``socket.getaddrinfo()`` returns IPv6 addresses first, causing httpx
+    and other HTTP libraries to hang on SSL handshake when connecting to
+    dual-stack servers.
+
+    This function probes IPv6 reachability once at startup by attempting a
+    connection to a well-known IPv6 host.  If the probe fails within two
+    seconds, ``socket.getaddrinfo`` is patched to return only IPv4
+    addresses for all subsequent calls.
+
+    Users who need IPv6 can opt out by setting ``HERMES_DISABLE_IPV4_FALLBACK=1``
+    or by ensuring a working default IPv6 route.
+
+    Returns True if the IPv4-only patch was applied, False otherwise.
+    """
+    if os.environ.get("HERMES_DISABLE_IPV4_FALLBACK"):
+        return False
+
+    import socket
+
+    _orig_getaddrinfo = socket.getaddrinfo
+
+    def _probe_ipv6_connectivity() -> bool:
+        try:
+            import ssl
+            infos = _orig_getaddrinfo("opencode.ai", 443, socket.AF_INET6, socket.SOCK_STREAM)
+            if not infos:
+                return False
+            addr = infos[0][4]
+            s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            s.settimeout(4.0)
+            try:
+                s.connect(addr)
+                ctx = ssl.create_default_context()
+                ss = ctx.wrap_socket(s, server_hostname="opencode.ai")
+                ss.close()
+                return True
+            except (socket.timeout, OSError, ConnectionError, ssl.SSLError):
+                return False
+            finally:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+        except (socket.gaierror, OSError):
+            return False
+
+    if _probe_ipv6_connectivity():
+        return False
+
+    def _patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+    socket.getaddrinfo = _patched_getaddrinfo
+    return True
+
+
 # Apply on import — entry points just need ``import hermes_bootstrap``
 # (or ``from hermes_bootstrap import apply_windows_utf8_bootstrap``) at
 # the very top of their module, before importing anything else.  The
 # import side effect does the right thing.
 apply_windows_utf8_bootstrap()
+
+# Apply IPv4 fallback on systems with broken IPv6 connectivity.
+apply_ipv4_fallback()
 
 # Activate the durable lazy-install target (immutable Docker images) so
 # packages installed into the data volume on a previous run are importable

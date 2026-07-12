@@ -683,6 +683,13 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
 
+  # Experimental automatic mode router (default: disabled).
+  # When enabled, substantial evidence-gathering tasks may be delegated to a
+  # synchronous, capability-scoped research child for same-turn synthesis.
+  # Execution/development routing is intentionally not exposed by this flag.
+  mode_router:
+    enabled: false
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

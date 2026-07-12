@@ -336,6 +336,19 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
     return text
 
 
+def _normalize_tool_call_id(tool_call_id: str) -> str:
+    """Normalize composite tool_call ids to the short form.
+
+    Providers that bridge Chat Completions to the Responses API (e.g. OpenRouter)
+    may return composite ids like ``call_xxx|fc_yyy``.  The assistant message
+    stores only the short form (``call_xxx``), so tool-result messages must use
+    the same short id or they are silently dropped by the provider.
+    """
+    if isinstance(tool_call_id, str) and "|" in tool_call_id:
+        return tool_call_id.split("|", 1)[0]
+    return tool_call_id
+
+
 def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Strip image blobs from a message for trajectory saving.
 
@@ -393,8 +406,7 @@ def make_tool_result_message(
     """
     # Normalize composite tool_call ids (e.g., call_xxx|fc_yyy -> call_xxx)
     # to match the short id stored in assistant tool_calls entries.
-    if isinstance(tool_call_id, str) and "|" in tool_call_id:
-        tool_call_id = tool_call_id.split("|", 1)[0]
+    tool_call_id = _normalize_tool_call_id(tool_call_id)
     wrapped = _maybe_wrap_untrusted(name, content)
     message = {
         "role": "tool",

@@ -12,11 +12,13 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -2656,6 +2658,61 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+def _resolve_cron_session_db_timeout() -> float:
+    """Resolve the bounded SessionDB constructor timeout for cron paths."""
+    timeout: float | None = None
+    raw_env_timeout = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
+    if raw_env_timeout:
+        try:
+            timeout = float(raw_env_timeout)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
+                raw_env_timeout,
+            )
+    if timeout is None:
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config() or {}
+            cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+            configured = cron_cfg.get("session_db_timeout_seconds")
+            if configured is not None:
+                timeout = float(configured)
+        except Exception as exc:
+            logger.debug(
+                "Failed to load cron.session_db_timeout_seconds from config: %s",
+                exc,
+            )
+    return 10.0 if timeout is None else timeout
+
+
+def _open_cron_session_db(log_context: str):
+    """Open SessionDB without allowing a wedged constructor to block cron."""
+    timeout = _resolve_cron_session_db_timeout()
+    try:
+        from hermes_state import SessionDB
+
+        if timeout <= 0:
+            return SessionDB()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            return pool.submit(SessionDB).result(timeout=timeout)
+        finally:
+            # A wedged constructor must not hold up the tick or job monitor.
+            pool.shutdown(wait=False)
+    except concurrent.futures.TimeoutError:
+        logger.error(
+            "%s: SessionDB init did not return within %.0fs — proceeding "
+            "without a session store instead of blocking forever",
+            log_context,
+            timeout,
+        )
+    except Exception as exc:
+        logger.debug("%s: SQLite session store not available: %s", log_context, exc)
+    return None
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -2802,59 +2859,7 @@ def run_job(
     # _running_job_ids never runs, so the job stays wedged "running" until
     # the whole gateway process is restarted, silently skipping every
     # scheduled fire in between with "already running — skipping".
-    _session_db = None
-    try:
-        from hermes_state import SessionDB
-
-        # Resolve timeout: env override → config.yaml → default 10s.
-        # Mirrors the script_timeout_seconds resolution pattern.
-        _session_db_timeout: float | None = None
-        _raw_env_timeout = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
-        if _raw_env_timeout:
-            try:
-                _session_db_timeout = float(_raw_env_timeout)
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
-                    _raw_env_timeout,
-                )
-        if _session_db_timeout is None:
-            try:
-                from hermes_cli.config import load_config
-                _cfg = load_config() or {}
-                _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
-                _configured = _cron_cfg.get("session_db_timeout_seconds")
-                if _configured is not None:
-                    _session_db_timeout = float(_configured)
-            except Exception as exc:
-                logger.debug(
-                    "Failed to load cron.session_db_timeout_seconds from config: %s",
-                    exc,
-                )
-        if _session_db_timeout is None:
-            _session_db_timeout = 10.0
-
-        if _session_db_timeout > 0:
-            _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            try:
-                _session_db = _session_db_pool.submit(SessionDB).result(timeout=_session_db_timeout)
-            finally:
-                # Don't wait for a wedged connect() to unwind — abandon the
-                # worker thread (same pattern as the agent inactivity timeout
-                # further down) rather than blocking shutdown on it too.
-                _session_db_pool.shutdown(wait=False)
-        else:
-            # 0 = unlimited (legacy behavior, opt-in for debugging)
-            _session_db = SessionDB()
-    except concurrent.futures.TimeoutError:
-        logger.error(
-            "Job '%s': SessionDB init did not return within %.0fs — proceeding "
-            "without a session store for this run instead of blocking it "
-            "forever",
-            job.get("id", "?"), _session_db_timeout,
-        )
-    except Exception as e:
-        logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+    _session_db = _open_cron_session_db(f"Job '{job.get('id', '?')}'")
 
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
@@ -3350,6 +3355,14 @@ def run_job(
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+
+        # Register the ownership lease so the stale-session reaper can prove
+        # this run is dead before closing its session row.  Done AFTER
+        # AIAgent/session init and BEFORE run_conversation.  Failure is
+        # non-fatal — a missing lease means the reaper will not reap (fail
+        # closed), which is the safe default.
+        _cron_lease = _register_cron_session_lease(_cron_session_id, job_id)
+        _last_lease_heartbeat = time.monotonic()
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
@@ -3405,6 +3418,22 @@ def run_job(
                     "Job '%s': run_claim heartbeat failed", job_name, exc_info=True
                 )
 
+        def _heartbeat_cron_lease_if_due():
+            """Heartbeat the session ownership lease for ALL AI cron runs.
+
+            Unlike the run_claim heartbeat (one-shots only), this fires for
+            every run so a stale lease reliably means the owning run stopped
+            progressing.  Throttled by ``_LEASE_HEARTBEAT_INTERVAL_SECONDS``
+            and best-effort — a failed heartbeat does not weaken the existing
+            run_claim heartbeat or abort the run.
+            """
+            nonlocal _last_lease_heartbeat
+            _mono = time.monotonic()
+            if _mono - _last_lease_heartbeat < _LEASE_HEARTBEAT_INTERVAL_SECONDS:
+                return
+            _last_lease_heartbeat = _mono
+            _heartbeat_cron_session_lease(_cron_session_id)
+
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
         # env passthrough registrations) when the cron run hops into the worker
@@ -3414,9 +3443,10 @@ def run_job(
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
-                # Unlimited — no inactivity watchdog, but a one-shot still
-                # needs its run_claim heartbeat, so poll instead of blocking.
-                if _is_oneshot:
+                # Unlimited — no inactivity watchdog, but one-shots still
+                # need their run_claim heartbeat and every registered lease
+                # needs its own heartbeat, so poll instead of blocking.
+                if _is_oneshot or _cron_lease is not None:
                     result = None
                     while True:
                         done, _ = concurrent.futures.wait(
@@ -3426,7 +3456,10 @@ def run_job(
                             result = _cron_future.result()
                             break
                         _heartbeat_run_claim_if_due()
+                        _heartbeat_cron_lease_if_due()
                 else:
+                    # Lease registration failed, so there is nothing to
+                    # heartbeat. Missing leases are never reaped.
                     result = _cron_future.result()
             else:
                 result = None
@@ -3438,6 +3471,7 @@ def run_job(
                         result = _cron_future.result()
                         break
                     _heartbeat_run_claim_if_due()
+                    _heartbeat_cron_lease_if_due()
                     # Agent still running — check inactivity.
                     _idle_secs = 0.0
                     if hasattr(agent, "get_activity_summary"):
@@ -3607,6 +3641,7 @@ def run_job(
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
+        _cron_session_ended = True
         if _session_db:
             # Title the cron session from the job (name -> id) and PERSIST it
             # BEFORE end_session()/close() tear the connection down, so the
@@ -3644,11 +3679,20 @@ def run_job(
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
             except (Exception, KeyboardInterrupt) as e:
+                # end_session failed — retain the lease so a later process can
+                # recover this session via the reaper once the owner is dead.
+                _cron_session_ended = False
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
             try:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
+        # Remove the ownership lease only after a successful end_session (or
+        # when no session DB row could exist because _session_db was never
+        # opened).  If end_session failed the lease is retained so the reaper
+        # can recover the orphaned row later.  Idempotent (missing file = no-op).
+        if _cron_session_ended:
+            _remove_cron_session_lease(_cron_session_id)
         # Release subprocesses, terminal sandboxes, browser daemons, and the
         # main OpenAI/httpx client held by this ephemeral cron agent. Without
         # this, a gateway that ticks cron every N minutes leaks fds per job
@@ -3866,6 +3910,287 @@ def _notify_provider_jobs_changed() -> None:
         logger.debug("on_jobs_changed notify failed: %s", e)
 
 
+# ── Cron session ownership leases ────────────────────────────────────
+# Every AI-backed cron run registers a *lease* sidecar so the reaper can
+# prove the owning run is dead before closing its session row.  This avoids
+# the cross-process hazard of the previous design (which only checked this
+# process's ``_running_job_ids`` and would reap another process's active
+# >45m run).  Leases live in a profile-local directory under ``cron/`` — no
+# schema bump — and are named by a SHA-256 hash of the session_id so
+# untrusted ids are never interpolated into a filesystem path.
+
+
+_CRON_LEASE_DIR_NAME = "cron_session_leases"
+_STALE_CRON_SESSION_MAX_AGE_SECONDS = 45 * 60
+_LEASE_HEARTBEAT_INTERVAL_SECONDS = 30.0
+
+
+def _cron_lease_dir() -> Path:
+    return _get_hermes_home() / "cron" / _CRON_LEASE_DIR_NAME
+
+
+def _cron_lease_path(session_id: str) -> Path:
+    """Return the on-disk lease path for ``session_id``.
+
+    The filename is a SHA-256 hex digest of the session id — never the raw
+    id — so an untrusted session id cannot escape the lease directory or
+    inject path separators (``..`` / ``/`` / NUL).  The directory is created
+    lazily; callers that only *read* leases should tolerate its absence.
+    """
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    return _cron_lease_dir() / f"{digest}.json"
+
+
+def _cron_local_host_id() -> str:
+    """A best-effort stable identifier for this host.
+
+    Used only to decide whether a lease's owner *could* be probed locally
+    (same host) — never as a trust assertion.  When it cannot be determined
+    the reaper treats the lease as cross-host and refuses to reap it.
+    """
+    try:
+        return socket.gethostname() or ""
+    except Exception:
+        return ""
+
+
+def _write_cron_session_lease(path: Path, lease: dict) -> None:
+    """Atomically replace ``path`` with a complete lease document."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".tmp.{os.getpid()}.{threading.get_ident()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(lease, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _register_cron_session_lease(
+    session_id: str, job_id: str
+) -> Optional[dict]:
+    """Atomically write the ownership lease for a cron session.
+
+    Called after ``AIAgent`` / session initialization, before
+    ``run_conversation``.  Returns the lease dict on success, or ``None``
+    on failure (the run proceeds — a missing lease simply means the reaper
+    will not reap the session, which is the fail-closed default).
+    """
+    try:
+        from gateway.status import _get_process_start_time
+
+        owner_pid = os.getpid()
+        lease = {
+            "session_id": session_id,
+            "job_id": job_id,
+            "owner_pid": owner_pid,
+            "owner_start_time": _get_process_start_time(owner_pid),
+            "host": _cron_local_host_id(),
+            "heartbeat_at": time.time(),
+        }
+        path = _cron_lease_path(session_id)
+        _write_cron_session_lease(path, lease)
+        return lease
+    except Exception:
+        logger.debug("Failed to register cron session lease: %s", exc_info=True)
+        return None
+
+
+def _heartbeat_cron_session_lease(session_id: str) -> None:
+    """Refresh a lease heartbeat without changing its owner identity.
+
+    Called from the run monitor loop for every AI cron run.  The recorded
+    PID and process-start fingerprint must still match this process; a stale
+    runner must never refresh a replacement owner's lease.
+    """
+    try:
+        from gateway.status import _get_process_start_time
+
+        lease = _read_cron_session_lease(session_id)
+        if not lease or lease.get("session_id") != session_id:
+            return
+        owner_pid = os.getpid()
+        try:
+            recorded_pid = int(lease.get("owner_pid") or 0)
+        except (TypeError, ValueError):
+            return
+        if recorded_pid != owner_pid:
+            return
+
+        recorded_start = lease.get("owner_start_time")
+        if recorded_start is not None:
+            try:
+                recorded_start = int(recorded_start)
+                current_start = _get_process_start_time(owner_pid)
+                if current_start is None or recorded_start != int(current_start):
+                    return
+            except (TypeError, ValueError):
+                return
+
+        lease["heartbeat_at"] = time.time()
+        _write_cron_session_lease(_cron_lease_path(session_id), lease)
+    except Exception:
+        logger.debug("Failed to heartbeat cron session lease: %s", exc_info=True)
+
+
+def _remove_cron_session_lease(session_id: str) -> None:
+    """Delete the lease sidecar.  Idempotent (missing file is a no-op)."""
+    try:
+        path = _cron_lease_path(session_id)
+        path.unlink(missing_ok=True)
+    except Exception:
+        logger.debug("Failed to remove cron session lease: %s", exc_info=True)
+
+
+def _read_cron_session_lease(session_id: str) -> Optional[dict]:
+    """Read and parse the lease for ``session_id``, or ``None``.
+
+    ``None`` covers missing, unreadable, and malformed leases — the caller
+    treats all of these as "do not reap".
+    """
+    path = _cron_lease_path(session_id)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not raw.strip():
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _owner_definitively_dead(lease: dict) -> bool:
+    """Return True only when the lease owner is *provably* no longer alive.
+
+    Fail-closed: any uncertainty (cross-host, unparseable pid, missing
+    start-time fingerprint, ambiguous probe) returns ``False`` so the
+    session is left alone.  For the local host we use the gateway.status
+    process-liveness probe plus the recorded start-time fingerprint to
+    distinguish PID reuse — a recycled PID yields a different start time
+    and is never mistaken for the original owner.
+    """
+    try:
+        pid = int(lease.get("owner_pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+
+    try:
+        from gateway.status import _pid_exists, _get_process_start_time
+        local_host = _cron_local_host_id()
+    except Exception:
+        return False
+
+    # Different host / unknown host → cannot probe locally → fail closed.
+    if not local_host or lease.get("host") != local_host:
+        return False
+
+    try:
+        if not _pid_exists(pid):
+            return True
+    except Exception:
+        return False
+
+    # PID is alive — guard against PID reuse via the start-time fingerprint.
+    recorded_start = lease.get("owner_start_time")
+    if recorded_start is None:
+        # No fingerprint recorded → cannot prove reuse → fail closed.
+        return False
+    try:
+        recorded_start = int(recorded_start)
+    except (TypeError, ValueError):
+        return False
+    try:
+        current_start = _get_process_start_time(pid)
+    except Exception:
+        return False
+    if current_start is None:
+        # Probe uncertain → fail closed.
+        return False
+    # Start-time mismatch → the original owner died and the PID was reused
+    # by a different process → the owner is definitively dead.
+    return current_start != recorded_start
+
+
+def _reap_stale_cron_sessions() -> int:
+    """Close cron sessions whose owning run is *provably* dead.
+
+    A session is reaped ONLY when ALL of the following hold:
+
+    1. Session age exceeds ``_STALE_CRON_SESSION_MAX_AGE_SECONDS``.
+    2. A lease exists and parses.
+    3. The lease heartbeat is stale (older than the max-age threshold).
+    4. The owner is definitively not alive (local host only, PID probe +
+       start-time fingerprint).
+
+    Any missing/malformed/cross-host/uncertain lease, or a fresh
+    heartbeat, means do not reap (fail-closed).  Closing uses
+    ``end_session`` (exact id + ``ended_at IS NULL`` guard) so concurrent
+    closes are idempotent.
+    """
+    try:
+        db = _open_cron_session_db("Stale cron session reaper")
+        if db is None:
+            return 0
+        try:
+            open_sessions = db.list_open_cron_sessions()
+        finally:
+            db.close()
+        if not open_sessions:
+            return 0
+
+        now = time.time()
+        cutoff = now - _STALE_CRON_SESSION_MAX_AGE_SECONDS
+        reaped = 0
+        for row in open_sessions:
+            session_id = row.get("id", "")
+            started_at = row.get("started_at")
+            if started_at is None or started_at >= cutoff:
+                continue  # not old enough
+            lease = _read_cron_session_lease(session_id)
+            if not lease or lease.get("session_id") != session_id:
+                continue  # missing / malformed → do not reap
+            heartbeat_at = lease.get("heartbeat_at")
+            try:
+                heartbeat_at = float(heartbeat_at)
+            except (TypeError, ValueError):
+                continue  # fresh-or-unknown heartbeat → do not reap
+            if heartbeat_at >= cutoff:
+                continue  # heartbeat is fresh — run may still be alive
+            if not _owner_definitively_dead(lease):
+                continue  # owner alive / PID reuse / uncertain → do not reap
+            try:
+                db2 = _open_cron_session_db("Stale cron session reaper")
+                if db2 is None:
+                    continue
+                try:
+                    db2.end_session(session_id, "stale_reaped")
+                finally:
+                    db2.close()
+                _remove_cron_session_lease(session_id)
+                reaped += 1
+                logger.warning(
+                    "Reaped stale cron session %s (job %s) — owner "
+                    "pid %s dead, heartbeat stale",
+                    session_id,
+                    lease.get("job_id", "?"),
+                    lease.get("owner_pid", "?"),
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to reap stale cron session %s: %s",
+                    session_id, exc_info=True,
+                )
+        return reaped
+    except Exception:
+        logger.debug("Stale cron session reaper failed: %s", exc_info=True)
+        return 0
+
+
 def tick(
     verbose: bool = True,
     adapters=None,
@@ -3906,6 +4231,15 @@ def tick(
         if lock_fd is not None:
             lock_fd.close()
         return 0
+
+    # ── Stale-session reaper (every tick) ─────────────────────────────
+    # Close cron sessions whose owning run is provably dead (stale lease
+    # heartbeat + dead owner).  Fail-closed: a missing/fresh/cross-host
+    # lease is never reaped.  Cheap index scan + targeted end_session.
+    try:
+        _reap_stale_cron_sessions()
+    except Exception:
+        logger.debug("tick reaper invocation failed: %s", exc_info=True)
 
     try:
         if can_dispatch is not None and not can_dispatch():

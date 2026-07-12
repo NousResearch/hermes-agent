@@ -1003,6 +1003,108 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
+    def test_run_job_retains_lease_when_end_session_fails(self, tmp_path):
+        """The real finally path keeps the lease when DB closure fails."""
+        job = {"id": "test-job", "name": "test", "prompt": "hello"}
+        fake_db = MagicMock()
+        fake_db.end_session.side_effect = RuntimeError("DB locked")
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("cron.scheduler._register_cron_session_lease", return_value={}) as register_lease, \
+             patch("cron.scheduler._remove_cron_session_lease") as remove_lease, \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": "ok"
+            }
+            success, _, final_response, error = run_job(job)
+
+        assert success is True
+        assert final_response == "ok"
+        assert error is None
+        session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        register_lease.assert_called_once_with(session_id, "test-job")
+        fake_db.end_session.assert_called_once_with(session_id, "cron_complete")
+        remove_lease.assert_not_called()
+
+    def test_run_job_does_not_append_duplicate_final_response(self, tmp_path):
+        """Regression for PR #62663: run_job must NOT append final_response
+        as a separate assistant message.  The shared turn finalizer
+        (agent/turn_finalizer.py:223-231) already persists the full
+        transcript — including a closing assistant message when the tail
+        isn't already assistant — via ``_persist_session``.  Appending
+        again here would duplicate the successful cron reply in the
+        session DB.
+
+        This test proves the invariant: for a successful cron run with a
+        non-empty final_response, ``append_message`` is never called with
+        that final_response as an assistant message.  The turn finalizer
+        is the sole authority for transcript persistence.
+        """
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "The cron report output.",
+                "messages": [{"role": "user", "content": "hello"}],
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert final_response == "The cron report output."
+
+        # The turn finalizer (inside run_conversation → _persist_session)
+        # is the sole authority.  run_job must NOT call append_message
+        # with the final_response as a separate assistant message.
+        if fake_db.append_message.called:
+            for call in fake_db.append_message.call_args_list:
+                args, kwargs = call
+                # args: (session_id, role, content) — check none is an
+                # assistant message with the final_response content.
+                role = args[1] if len(args) > 1 else kwargs.get("role")
+                content = args[2] if len(args) > 2 else kwargs.get("content")
+                assert not (
+                    role == "assistant"
+                    and content == "The cron report output."
+                ), "run_job must not duplicate final_response via append_message"
+
+        # end_session is still called exactly once (the finally block).
+        fake_db.end_session.assert_called_once()
+
     def test_run_job_suppresses_empty_turn_explainer(self, tmp_path):
         """An empty model turn becomes the '⚠️ No reply…' explainer (#34452).
         For cron, that abnormal-empty explainer must be treated as empty so it

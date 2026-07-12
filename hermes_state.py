@@ -2419,6 +2419,22 @@ class SessionDB:
         except Exception:
             return False
 
+    def list_open_cron_sessions(self) -> List[Dict[str, Any]]:
+        """Return open (``ended_at IS NULL``) cron sessions for reaper inspection.
+
+        Read-only: each row carries ``id`` and ``started_at`` so the caller can
+        cross-reference the owning run's liveness via a lease sidecar before
+        deciding whether to close.  Closing is done with ``end_session`` (exact
+        id + ``ended_at IS NULL`` guard), never by this list method.
+        """
+        sql = (
+            "SELECT id, started_at FROM sessions "
+            "WHERE source = 'cron' AND ended_at IS NULL "
+            "ORDER BY started_at ASC"
+        )
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql)]
+
     def update_session_cwd(
         self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
     ) -> None:

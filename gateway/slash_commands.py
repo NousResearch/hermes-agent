@@ -1430,7 +1430,19 @@ class GatewaySlashCommandsMixin:
             force_refresh,
             is_session,
         ) = parse_model_flags(raw_args)
-        persist_global = resolve_persist_behavior(is_global_flag, is_session)
+
+        # In messaging platforms (gateway), /model defaults to session-scope
+        # unless --global is explicitly specified. This differs from CLI
+        # behavior (which respects model.persist_switch_by_default config) because
+        # messaging platform sessions are typically ephemeral and per-chat,
+        # and unintended global config writes cause cross-session pollution.
+        # See #63083.
+        if is_session:
+            persist_global = False
+        elif is_global_flag:
+            persist_global = True
+        else:
+            persist_global = False
 
         # --refresh: bust the disk cache so the picker shows live data.
         if force_refresh:

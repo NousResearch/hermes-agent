@@ -136,44 +136,54 @@ async def _drive_picker(runner, event):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "seed_model",
-    [
-        # Already-nested dict (common case).
-        {
-            "default": "old-model",
-            "provider": "custom",
-            "base_url": "https://api.custom.example/v1",
-            "api_key": "sk-stale",
-            "api_mode": "anthropic_messages",
-        },
-        # Flat-string model: must be coerced to a nested dict on a tap (same
-        # scalar-``model:`` guard the text path has) instead of raising
-        # ``TypeError`` on assignment.
-        "deepseek-v4-flash",
-    ],
-    ids=["nested-dict", "flat-string"],
-)
-async def test_picker_tap_persists_by_default(tmp_path, monkeypatch, seed_model):
-    """Tapping a model in the picker (bare /model) persists to config.yaml,
-    matching the typed ``/model`` default — this is the #49176 fix. The written
-    ``model:`` must always end up a nested dict regardless of the seed shape."""
-    adapter = _FakePickerAdapter()
-    cfg_path = _setup_isolated_home(tmp_path, monkeypatch, seed_model)
+async def test_picker_tap_does_not_persist_by_default(tmp_path, monkeypatch):
+    """Tapping a model in the picker (bare /model) is session-scoped by default
+    on messaging platforms — config.yaml is untouched. Use --global to persist.
 
-    confirmation = await _drive_picker(_make_runner(adapter), _make_event("/model"))
+    This behavior differs from CLI (which persists by default) because
+    messaging platform sessions are typically ephemeral and per-chat, and
+    unintended global config writes cause cross-session pollution. See #63083.
+    """
+    adapter = _FakePickerAdapter()
+    cfg_path = _setup_isolated_home(
+        tmp_path, monkeypatch, {"default": "old-model", "provider": "custom"}
+    )
+    runner = _make_runner(adapter)
+
+    confirmation = await _drive_picker(runner, _make_event("/model"))
 
     assert confirmation is not None
     assert "gpt-5.5" in confirmation
-    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    assert isinstance(written["model"], dict), (
-        "model: should be coerced to a dict, got %r" % (written["model"],)
+    # The session override IS applied in-memory (proves the path didn't no-op).
+    assert runner._session_model_overrides, "session override should be set"
+    assert any(
+        ov.get("model") == "gpt-5.5"
+        for ov in runner._session_model_overrides.values()
     )
+    # But config.yaml is untouched — the override is in-memory only.
+    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert written["model"]["default"] == "old-model"
+    assert written["model"]["provider"] == "custom"
+
+
+@pytest.mark.asyncio
+async def test_picker_tap_with_global_flag_persists(tmp_path, monkeypatch):
+    """``/model --global`` then a picker tap persists to config.yaml."""
+    adapter = _FakePickerAdapter()
+    cfg_path = _setup_isolated_home(
+        tmp_path, monkeypatch, {"default": "old-model", "provider": "custom"}
+    )
+    runner = _make_runner(adapter)
+
+    confirmation = await _drive_picker(runner, _make_event("/model --global"))
+
+    assert confirmation is not None
+    assert "gpt-5.5" in confirmation
+    # With --global, the persist block runs and updates config.yaml.
+    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
-    assert "base_url" not in written["model"]
-    assert "api_key" not in written["model"]
-    assert "api_mode" not in written["model"]
+    assert "base_url" not in written["model"]  # openrouter, not custom
 
 
 @pytest.mark.asyncio

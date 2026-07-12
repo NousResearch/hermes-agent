@@ -1131,6 +1131,61 @@ def _wait_for_systemd_service_restart(
     return False
 
 
+def _wait_for_launchd_service_restart(
+    *,
+    previous_pid: int | None = None,
+    timeout: float = 30.0,
+) -> bool:
+    """Wait for the launchd-managed gateway to come back after a restart."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    printed_runtime_wait = False
+
+    while time.monotonic() < deadline:
+        if not _probe_launchd_service_running():
+            time.sleep(1)
+            continue
+
+        new_pid = None
+        try:
+            from gateway.status import get_running_pid
+
+            new_pid = get_running_pid()
+        except Exception:
+            new_pid = None
+
+        if new_pid and (previous_pid is None or new_pid != previous_pid):
+            runtime_state = _gateway_runtime_status_for_pid(new_pid)
+            gateway_state = (runtime_state or {}).get("gateway_state")
+            if gateway_state == "running":
+                print(f"✓ Launchd service restarted (PID {new_pid})")
+                return True
+            if gateway_state == "startup_failed":
+                reason = (runtime_state or {}).get("exit_reason") or "startup failed"
+                print(
+                    "⚠ Launchd service process restarted "
+                    f"(PID {new_pid}), but gateway startup failed: {reason}"
+                )
+                return False
+            if not printed_runtime_wait:
+                print(
+                    f"⏳ Launchd service process started (PID {new_pid}); "
+                    "waiting for gateway runtime..."
+                )
+                printed_runtime_wait = True
+
+        time.sleep(1)
+
+    print(
+        f"⚠ Launchd service did not relaunch within {int(timeout)}s.\n"
+        "  Check status: hermes gateway status\n"
+        "  Recover manually:\n"
+        f"    launchctl kickstart {_launchd_domain()}/{get_launchd_label()}"
+    )
+    return False
+
+
 def _systemd_unit_is_start_limited(props: dict[str, str]) -> bool:
     result = props.get("Result", "").lower()
     sub_state = props.get("SubState", "").lower()
@@ -4326,8 +4381,15 @@ def launchd_restart():
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
-            _clear_launchd_unsupported_marker()
-            return
+            if _wait_for_launchd_service_restart(
+                previous_pid=pid,
+                timeout=max(drain_timeout + 10.0, 15.0),
+            ):
+                _clear_launchd_unsupported_marker()
+                return
+            print(
+                "⚠ launchd did not relaunch after the graceful restart request — forcing kickstart"
+            )
         if pid is not None:
             # Announce the drain BEFORE waiting on it. This wait can run for
             # the full drain budget (180s by default) while the old gateway
@@ -4350,6 +4412,12 @@ def launchd_restart():
                         f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
                     )
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        if not _wait_for_launchd_service_restart(previous_pid=pid, timeout=20.0):
+            raise subprocess.CalledProcessError(
+                1,
+                ["launchctl", "kickstart", "-k", target],
+                stderr="launchd accepted the restart request, but the gateway did not relaunch",
+            )
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()
     except subprocess.CalledProcessError as e:
@@ -4381,6 +4449,12 @@ def launchd_restart():
                 timeout=30,
             )
             subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+            if not _wait_for_launchd_service_restart(previous_pid=None, timeout=20.0):
+                raise subprocess.CalledProcessError(
+                    1,
+                    ["launchctl", "kickstart", target],
+                    stderr="launchd reloaded the job, but the gateway did not relaunch",
+                )
         except subprocess.CalledProcessError as e2:
             if not _launchctl_domain_unsupported(e2.returncode):
                 raise

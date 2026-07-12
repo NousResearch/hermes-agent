@@ -143,6 +143,12 @@ class NormalizedResponse:
         pd = self.provider_data or {}
         return pd.get("codex_message_items")
 
+    @property
+    def annotations(self):
+        """Response annotations (e.g. MiMo web_search url_citation)."""
+        pd = self.provider_data or {}
+        return pd.get("annotations")
+
 
 # ---------------------------------------------------------------------------
 # Factory helpers

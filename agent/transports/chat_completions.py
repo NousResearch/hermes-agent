@@ -538,8 +538,10 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs["timeout"] = timeout
 
         # Tools — apply provider preprocessing, then Moonshot/Kimi sanitization
+        # Call prepare_tools even when tools is empty/None so provider-native
+        # tools (e.g. Xiaomi web_search) can inject from nothing.
+        tools = profile.prepare_tools(tools or [], model=model)
         if tools:
-            tools = profile.prepare_tools(tools, model=model)
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
@@ -708,6 +710,33 @@ class ChatCompletionsTransport(ProviderTransport):
         rd = getattr(msg, "reasoning_details", None)
         if rd:
             provider_data["reasoning_details"] = rd
+
+        # MiMo web_search url_citation annotations.  These are
+        # response-only — the API does not require them on replay — but
+        # we persist them so downstream code can render sources.
+        annotations = getattr(msg, "annotations", None)
+        if annotations is None and hasattr(msg, "model_extra"):
+            _msg_extra_annot = getattr(msg, "model_extra", None) or {}
+            if isinstance(_msg_extra_annot, dict):
+                annotations = _msg_extra_annot.get("annotations")
+        if annotations:
+            # Normalize to plain dicts for JSON persistence.
+            def _to_dict(obj):
+                if isinstance(obj, dict):
+                    return {k: _to_dict(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [_to_dict(i) for i in obj]
+                if hasattr(obj, "model_dump"):
+                    try:
+                        return obj.model_dump()
+                    except Exception:
+                        pass
+                if hasattr(obj, "__dict__"):
+                    return {k: _to_dict(v) for k, v in obj.__dict__.items()}
+                return obj
+
+            annotations = [_to_dict(a) for a in annotations]
+            provider_data["annotations"] = annotations
 
         # OpenAI structured-refusal field. When a model declines, the SDK
         # populates ``message.refusal`` with the explanation and leaves

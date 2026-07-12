@@ -12692,6 +12692,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         width=self._scrollback_box_width(),
                     ))
 
+            # Render MiMo web_search url_citation sources, if any.
+            _annotations = result.get("last_annotations") if result else None
+            if _annotations:
+                _citations = []
+                for annot in _annotations:
+                    uc = annot.get("url_citation", {}) if isinstance(annot, dict) else {}
+                    url = uc.get("url", "")
+                    title = uc.get("title", "")
+                    if url:
+                        _citations.append((title, url))
+                if _citations:
+                    # Deduplicate by URL
+                    seen = set()
+                    unique = []
+                    for t, u in _citations:
+                        if u not in seen:
+                            seen.add(u)
+                            unique.append((t, u))
+                    _src_lines = []
+                    for t, u in unique:
+                        label = t if t else u
+                        _src_lines.append(f"  {_DIM}• {label} — {u}{_RST}")
+                    _cprint(f"\n{_DIM}Sources:{_RST}")
+                    for line in _src_lines:
+                        _cprint(line)
+
 
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.

@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 class XiaomiProfile(ProviderProfile):
     """Xiaomi MiMo — optional native web_search tool injection."""
 
+    # Sentinel for "not yet read".  Caching prevents per-request config
+    # re-reads that could change the wire tool schema mid-conversation
+    # and break prompt-cache stability.
+    _WS_UNSET = object()
+    _ws_cache: Any = _WS_UNSET
+
     def prepare_tools(
         self, tools: list[dict[str, Any]], *, model: str | None = None
     ) -> list[dict[str, Any]]:
@@ -35,7 +41,7 @@ class XiaomiProfile(ProviderProfile):
         It coexists with Hermes's own function tools — MiMo supports
         hybrid tool calling.
         """
-        ws_cfg = self._web_search_config()
+        ws_cfg = self._web_search_config_cached()
         if not ws_cfg:
             return tools
 
@@ -61,6 +67,12 @@ class XiaomiProfile(ProviderProfile):
         return tools + [ws_tool]
 
     # ── Config access ──────────────────────────────────────────
+
+    def _web_search_config_cached(self) -> dict[str, Any] | None:
+        """Return cached web_search config (read once per profile lifetime)."""
+        if self._ws_cache is self._WS_UNSET:
+            type(self)._ws_cache = self._web_search_config()
+        return self._ws_cache
 
     @staticmethod
     def _web_search_config() -> dict[str, Any] | None:

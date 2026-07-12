@@ -421,10 +421,20 @@ def finalize_turn(
             last_reasoning = msg["reasoning"]
             break
 
+    # Extract last annotations (e.g. MiMo url_citation) from the turn.
+    last_annotations = None
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            break
+        if msg.get("role") == "assistant" and msg.get("annotations"):
+            last_annotations = msg["annotations"]
+            break
+
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
         "last_reasoning": last_reasoning,
+        "last_annotations": last_annotations,
         "messages": messages,
         "api_calls": api_call_count,
         "completed": completed,

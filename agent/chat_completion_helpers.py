@@ -1174,6 +1174,16 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         if preserved:
             msg["reasoning_details"] = preserved
 
+    # MiMo web_search url_citation annotations — persist so downstream
+    # renderers and gateway can display sources alongside the response.
+    annotations = getattr(assistant_message, "annotations", None)
+    if annotations is None:
+        # NormalizedResponse stores annotations in provider_data
+        pd = getattr(assistant_message, "provider_data", None) or {}
+        annotations = pd.get("annotations")
+    if annotations:
+        msg["annotations"] = annotations
+
     # Anthropic interleaved-thinking replay: when a turn interleaves signed
     # thinking blocks with tool_use, the parallel reasoning_details +
     # tool_calls fields lose the cross-type ordering, and reconstruction

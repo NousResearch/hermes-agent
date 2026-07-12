@@ -9,6 +9,7 @@ Uses python-telegram-bot library for:
 
 import asyncio
 import dataclasses
+import faulthandler
 import inspect
 import json
 import logging
@@ -45,6 +46,35 @@ def _consume_abandoned_task(task: asyncio.Task) -> None:
         logger.debug("Abandoned Telegram init task failed after timeout", exc_info=True)
 
 
+# Grace period after the wall-clock deadline fires: if the event loop still
+# hasn't processed the expiry callback by then, the loop thread itself is
+# blocked in a synchronous call — the exact state in which every asyncio-based
+# timeout (including this helper's own expiry hand-off) goes silent, so the
+# gateway hangs at "attempt 1/8" with no further output (#63309).
+_LOOP_BLOCKED_DUMP_GRACE = 5.0
+
+
+def _dump_loop_blocked_diagnostics(timeout: float, grace: float) -> None:
+    """Emit diagnostics from the deadline timer thread when the loop is stuck.
+
+    Runs OFF the event loop, so it works precisely when the loop cannot. The
+    faulthandler dump names the frame the loop thread is blocked in — the one
+    piece of information #63309-class hangs otherwise never surface.
+    """
+    logger.warning(
+        "[Telegram] init deadline (%.0fs) expired but the event loop has not "
+        "processed the expiry after a further %.0fs — the loop thread appears "
+        "BLOCKED in a synchronous call, which is why no timeout fires (#63309). "
+        "Dumping all thread stacks to stderr to identify the blocking frame.",
+        timeout,
+        grace,
+    )
+    try:
+        faulthandler.dump_traceback(all_threads=True)
+    except Exception:
+        logger.debug("faulthandler traceback dump failed", exc_info=True)
+
+
 async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=None):
     """Await with a wall-clock deadline that does not depend on loop timers.
 
@@ -66,17 +96,34 @@ async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=N
     task = asyncio.ensure_future(awaitable)
     loop = asyncio.get_running_loop()
     deadline = loop.create_future()
+    # Set the moment the loop actually runs the expiry callback (or the helper
+    # exits normally). threading.Event so the watchdog thread can read it
+    # without touching asyncio state from off-loop.
+    loop_processed_expiry = threading.Event()
 
     def _mark_expired() -> None:
+        loop_processed_expiry.set()
         if not deadline.done():
             deadline.set_result(None)
 
     def _expire_from_thread() -> None:
         loop.call_soon_threadsafe(_mark_expired)
 
+    def _watchdog_check() -> None:
+        # The deadline fired _LOOP_BLOCKED_DUMP_GRACE ago but the loop never
+        # ran _mark_expired: the loop thread is stuck in a synchronous call.
+        # Diagnose from this thread — the loop can't.
+        if not loop_processed_expiry.is_set():
+            _dump_loop_blocked_diagnostics(timeout, _LOOP_BLOCKED_DUMP_GRACE)
+
     timer = threading.Timer(max(timeout, 0.0), _expire_from_thread)
     timer.daemon = True
     timer.start()
+    watchdog = threading.Timer(
+        max(timeout, 0.0) + _LOOP_BLOCKED_DUMP_GRACE, _watchdog_check
+    )
+    watchdog.daemon = True
+    watchdog.start()
     try:
         done, _ = await asyncio.wait(
             {task, deadline},
@@ -99,6 +146,11 @@ async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=N
         raise asyncio.TimeoutError()
     finally:
         timer.cancel()
+        watchdog.cancel()
+        # cancel() cannot stop a Timer whose callback is already running;
+        # setting the event closes that race so a completed await can never
+        # be misreported as a blocked loop.
+        loop_processed_expiry.set()
 
 
 async def _run_abandon_cleanup(on_abandon) -> None:

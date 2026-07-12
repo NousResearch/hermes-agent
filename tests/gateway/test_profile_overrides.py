@@ -171,6 +171,60 @@ class TestApplyProfileRuntimeOverrides:
 
         assert captured["explicit_api_key"] == "sk-coder-secret"
 
+    def test_api_key_env_honors_secret_scope_two_multiplexed_profiles(self, monkeypatch):
+        """Under gateway.multiplex_profiles, ``api_key_env`` resolves through
+        the profile's secret scope — never ``os.environ``, which may hold
+        another profile's credential."""
+        from agent import secret_scope as ss
+
+        captured = {}
+
+        def fake_resolve(*, requested, explicit_api_key, explicit_base_url, target_model):
+            captured["explicit_api_key"] = explicit_api_key
+            return {"provider": "anthropic", "api_key": explicit_api_key, "base_url": None, "api_mode": None}
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+        )
+        # A process-global value that must NOT leak into either profile.
+        monkeypatch.setenv("AGENT_API_KEY", "sk-global-leak")
+
+        runner = MagicMock(spec=GatewayRunner)
+        fn = _bound_method("_apply_profile_runtime_overrides")
+        ss.set_multiplex_active(True)
+        try:
+            for agent_id, key in (("coder", "sk-coder"), ("research", "sk-research")):
+                profile = AgentProfile(
+                    id=agent_id, provider="anthropic", api_key_env="AGENT_API_KEY"
+                )
+                tok = ss.set_secret_scope({"AGENT_API_KEY": key})
+                try:
+                    with use_profile(profile):
+                        _, runtime = fn(runner, "m", {})
+                finally:
+                    ss.reset_secret_scope(tok)
+                assert captured["explicit_api_key"] == key
+                assert runtime["api_key"] == key
+        finally:
+            ss.set_multiplex_active(False)
+
+    def test_api_key_env_fails_closed_when_unscoped_multiplexed(self, monkeypatch):
+        """An unscoped ``api_key_env`` read in multiplex mode raises instead of
+        silently reading another profile's process-global value."""
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("AGENT_API_KEY", "sk-global-leak")
+        runner = MagicMock(spec=GatewayRunner)
+        fn = _bound_method("_apply_profile_runtime_overrides")
+        profile = AgentProfile(id="coder", provider="anthropic", api_key_env="AGENT_API_KEY")
+        ss.set_multiplex_active(True)
+        try:
+            with use_profile(profile):
+                with pytest.raises(ss.UnscopedSecretError):
+                    fn(runner, "m", {})
+        finally:
+            ss.set_multiplex_active(False)
+
     def test_resolve_failure_falls_back_to_gateway_runtime(self, monkeypatch):
         """If provider resolution raises, keep the gateway runtime — never
         return half-broken credentials to AIAgent."""

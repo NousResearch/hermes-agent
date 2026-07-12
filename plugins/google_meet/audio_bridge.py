@@ -174,6 +174,7 @@ class AudioBridge:
                 ["system_profiler", "SPAudioDataType"],
                 text=True,
                 stderr=subprocess.STDOUT,
+                timeout=30,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(

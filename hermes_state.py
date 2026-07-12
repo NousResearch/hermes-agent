@@ -835,6 +835,19 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
+
+CREATE TABLE IF NOT EXISTS task_checkpoints (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    task_goal TEXT NOT NULL,
+    current_phase TEXT DEFAULT '',
+    completed_tool_calls TEXT DEFAULT '[]',
+    pending_tool_calls TEXT DEFAULT '[]',
+    iteration_budget_remaining INTEGER DEFAULT 0,
+    error_state TEXT DEFAULT NULL,
+    plan_markdown TEXT DEFAULT '',
+    snapshot_at REAL NOT NULL,
+    resume_count INTEGER DEFAULT 0
+);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -6684,6 +6697,108 @@ class SessionDB:
                 "UPDATE sessions SET handoff_state = 'failed', "
                 "handoff_error = ? WHERE id = ?",
                 (error[:500], session_id),
+            )
+        self._execute_write(_do)
+
+
+# ── Task durability (checkpoint/resume) ──────────────────────────────
+    # Persists agent task progress so that a restarted session can resume
+    # where it left off instead of re-deriving context from scratch.
+
+    def save_task_checkpoint(
+        self,
+        session_id: str,
+        task_goal: str,
+        *,
+        current_phase: str = "",
+        completed_tool_calls: Optional[list] = None,
+        pending_tool_calls: Optional[list] = None,
+        iteration_budget_remaining: int = 0,
+        error_state: Optional[str] = None,
+        plan_markdown: str = "",
+        increment_resume: bool = False,
+    ) -> None:
+        """UPSERT a task progress checkpoint for *session_id*."""
+        import json as _json
+        import time as _time
+
+        def _do(conn):
+            now = _time.time()
+            completed = _json.dumps(completed_tool_calls or [])
+            pending = _json.dumps(pending_tool_calls or [])
+
+            conn.execute(
+                "INSERT INTO task_checkpoints "
+                "(session_id, task_goal, current_phase, completed_tool_calls, "
+                " pending_tool_calls, iteration_budget_remaining, error_state, "
+                " plan_markdown, snapshot_at, resume_count) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET "
+                "task_goal = COALESCE(excluded.task_goal, task_checkpoints.task_goal), "
+                "current_phase = COALESCE(NULLIF(excluded.current_phase, ''), task_checkpoints.current_phase), "
+                "completed_tool_calls = CASE WHEN excluded.completed_tool_calls = '[]' "
+                "  AND task_checkpoints.completed_tool_calls != '[]' "
+                "  THEN task_checkpoints.completed_tool_calls "
+                "  ELSE excluded.completed_tool_calls END, "
+                "pending_tool_calls = CASE WHEN excluded.pending_tool_calls = '[]' "
+                "  AND task_checkpoints.pending_tool_calls != '[]' "
+                "  THEN task_checkpoints.pending_tool_calls "
+                "  ELSE excluded.pending_tool_calls END, "
+                "iteration_budget_remaining = CASE WHEN excluded.iteration_budget_remaining = 0 "
+                "  AND task_checkpoints.iteration_budget_remaining > 0 "
+                "  THEN task_checkpoints.iteration_budget_remaining "
+                "  ELSE excluded.iteration_budget_remaining END, "
+                "error_state = COALESCE(excluded.error_state, task_checkpoints.error_state), "
+                "plan_markdown = COALESCE(NULLIF(excluded.plan_markdown, ''), task_checkpoints.plan_markdown), "
+                "snapshot_at = excluded.snapshot_at"
+                + (", resume_count = task_checkpoints.resume_count + 1" if increment_resume else ""),
+                (
+                    session_id, task_goal, current_phase, completed, pending,
+                    iteration_budget_remaining, error_state, plan_markdown,
+                    now, 0 if not increment_resume else None,
+                ),
+            )
+        self._execute_write(_do)
+
+    def load_task_checkpoint(
+        self, session_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Load the task checkpoint for *session_id*, or None."""
+        import json as _json
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT * FROM task_checkpoints WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            d = dict(row)
+            for col in ("completed_tool_calls", "pending_tool_calls"):
+                raw = d.get(col, "[]")
+                try:
+                    d[col] = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+                except (_json.JSONDecodeError, TypeError):
+                    d[col] = []
+            return d
+        return self._execute_write(_do)
+
+    def has_task_checkpoint(self, session_id: str) -> bool:
+        """Return True if a task checkpoint exists for *session_id*."""
+        def _do(conn):
+            row = conn.execute(
+                "SELECT 1 FROM task_checkpoints WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            return row is not None
+        return self._execute_write(_do)
+
+    def delete_task_checkpoint(self, session_id: str) -> None:
+        """Remove the task checkpoint for *session_id*."""
+        def _do(conn):
+            conn.execute(
+                "DELETE FROM task_checkpoints WHERE session_id = ?",
+                (session_id,),
             )
         self._execute_write(_do)
 

@@ -1344,12 +1344,122 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
+        # ── Tool error classification & recovery annotation ──────────
+        # Classify tool failures so the LLM sees a structured recovery hint
+        # on the next turn.  Pattern-matching (no LLM call), safe under all
+        # prompt-caching and role-alternation invariants — the annotation
+        # stays inside the existing tool-result message.
+        try:
+            from agent.error_classifier import classify_tool_error
+
+            classification = classify_tool_error(
+                result,
+                tool_name=function_name,
+                tool_args=_tool_original_args,
+            )
+        except Exception:
+            classification = None
+
+        if classification is not None:
+            recovery_annotation = {
+                "class": classification.reason.value,
+                "confidence": classification.confidence,
+                "retryable": classification.retryable,
+                "max_retries": classification.max_retries,
+                "hint": classification.recovery_hint,
+            }
+            if classification.known_fix:
+                recovery_annotation["known_fix"] = classification.known_fix
+            try:
+                result_data = json.loads(result)
+                if isinstance(result_data, dict):
+                    result_data["_recovery"] = recovery_annotation
+                    result = json.dumps(result_data, ensure_ascii=False)
+            except (json.JSONDecodeError, TypeError):
+                pass  # Non-JSON result — skip annotation
+
         return result
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
         return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
+
+
+# ── Task durability: progress save hook ──────────────────────────────
+# Called after each successful effectful tool call to persist task
+# progress to state.db so a restarted session can resume where it left off.
+# Skips read-only tools (NO_EFFECT_TOOL_NAMES) — only checkpoint mutations.
+
+def _save_tool_progress(
+    function_name: str,
+    function_args: dict,
+    result: Any,
+    task_id: str,
+) -> None:
+    """Best-effort: persist tool progress to the session's task checkpoint."""
+    try:
+        from agent.tool_result_classification import NO_EFFECT_TOOL_NAMES
+        if function_name in NO_EFFECT_TOOL_NAMES:
+            return  # Read-only tools don't need checkpointing
+
+        from hermes_state import SessionDB
+        session_id = os.environ.get("HERMES_SESSION_ID", "")
+        if not session_id:
+            return
+
+        db = SessionDB()
+        if not db.has_task_checkpoint(session_id):
+            return  # No task started for this session
+
+        # Load current checkpoint, append this tool call, save back
+        cp = db.load_task_checkpoint(session_id)
+        if not cp:
+            return
+
+        import json as _json
+
+        # Build step summary
+        result_summary = ""
+        try:
+            rd = _json.loads(result) if isinstance(result, str) else (result or {})
+            if isinstance(rd, dict):
+                if rd.get("error"):
+                    # Failed tool calls aren't "completed" — only save successes
+                    return
+                # Extract meaningful success signal
+                if "bytes_written" in rd:
+                    result_summary = f"Wrote {rd['bytes_written']} bytes"
+                elif "exit_code" in rd and rd["exit_code"] == 0:
+                    output = str(rd.get("output", ""))[:80]
+                    result_summary = output or "Command succeeded"
+                elif "success" in rd:
+                    result_summary = str(rd.get("success", ""))[:80]
+                else:
+                    result_summary = "Completed"
+        except Exception:
+            result_summary = "Completed"
+
+        step = {
+            "tool": function_name,
+            "args": {k: str(v)[:80] for k, v in (function_args or {}).items()},
+            "result_summary": result_summary,
+            "at": __import__("time").time(),
+        }
+
+        completed = cp.get("completed_tool_calls", [])
+        if isinstance(completed, list):
+            completed.append(step)
+
+        db.save_task_checkpoint(
+            session_id,
+            task_goal=cp.get("task_goal", ""),
+            current_phase=cp.get("current_phase", ""),
+            completed_tool_calls=completed,
+            iteration_budget_remaining=cp.get("iteration_budget_remaining", 0),
+        )
+    except Exception:
+        pass  # Best-effort — never disrupt the main loop
 
 
 # =============================================================================

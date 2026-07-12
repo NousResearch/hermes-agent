@@ -2363,6 +2363,20 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     )
 
 
+def _maybe_save_tool_progress(
+    function_name: str,
+    function_args: dict,
+    result: Any,
+    task_id: str,
+) -> None:
+    """Forwarder — see model_tools._save_tool_progress."""
+    try:
+        from model_tools import _save_tool_progress
+        _save_tool_progress(function_name, function_args, result, task_id or "")
+    except Exception:
+        pass
+
+
 
 def repair_tool_call(agent, tool_name: str) -> str | None:
     """Attempt to repair a mismatched tool name before aborting.

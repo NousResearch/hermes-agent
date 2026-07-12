@@ -565,6 +565,29 @@ def _ensure_docker_available() -> None:
             )
 
 
+def _format_docker_run_failure(
+    error: subprocess.CalledProcessError | subprocess.TimeoutExpired,
+    *,
+    image: str,
+    timeout_s: int,
+) -> str:
+    """Render a truthful docker sandbox startup failure message."""
+    if isinstance(error, subprocess.TimeoutExpired):
+        return (
+            f"Docker sandbox startup timed out after {timeout_s} seconds while "
+            f"starting image '{image}'. Docker is installed, but the Hermes "
+            "sandbox container did not become ready in time."
+        )
+
+    stderr = (error.stderr or "").strip()
+    stdout = (error.output or "").strip()
+    detail = stderr or stdout or str(error)
+    return (
+        "Docker sandbox startup failed while running `docker run` "
+        f"(exit code {error.returncode}): {detail}"
+    )
+
+
 class DockerEnvironment(BaseEnvironment):
     """Hardened Docker container execution with resource limits and persistence.
 
@@ -1005,7 +1028,9 @@ class DockerEnvironment(BaseEnvironment):
                     capture_output=True, timeout=10,
                     stdin=subprocess.DEVNULL,
                 )
-                raise
+                raise RuntimeError(
+                    _format_docker_run_failure(e, image=image, timeout_s=120)
+                ) from e
             self._container_id = result.stdout.strip()
             logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 

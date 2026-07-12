@@ -10130,11 +10130,10 @@ def _(rid, params: dict) -> dict:
     explicit_message_id = (
         str(raw_message_id).strip() if raw_message_id is not None else None
     ) or None
-    message_id = (
-        explicit_message_id
-        if explicit_message_id is not None
-        else str(rid) if rid is not None else None
-    )
+    # JSON-RPC request ids are transport-local sequence numbers that may be
+    # reused after reconnect. Only a client-supplied stable source id belongs
+    # in canonical history / SessionDB platform_message_id.
+    message_id = explicit_message_id
     session, err = _sess_nowait(params, rid)
     if err:
         return err
@@ -10179,8 +10178,8 @@ def _(rid, params: dict) -> dict:
     with session["history_lock"]:
         # A Desktop queue entry keeps the same explicit ID across
         # timeout/resume retries. Acknowledge an already-owned ID instead of
-        # accepting a duplicate turn. Do not dedupe the JSON-RPC request ID
-        # fallback: clients may reuse it after reconnect.
+        # interrupting again or enqueuing a duplicate turn. JSON-RPC request
+        # IDs are transport-local and never participate in source deduplication.
         if explicit_message_id is not None and _has_prompt_message_id(
             session, explicit_message_id
         ):

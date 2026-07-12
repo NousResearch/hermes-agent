@@ -182,6 +182,42 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     return "".join(out)
 
 
+def _split_concatenated_json_objects(raw_args: str) -> list[str] | None:
+    """Split a string of multiple concatenated top-level JSON objects.
+
+    Gemini's OpenAI-compatible endpoint sometimes delivers parallel tool
+    calls with ``index=None``, so the streaming assembler merges all
+    argument fragments into a single entry (e.g.
+    ``'{"date":"x"}{"date":"y"}{"date":"z"}'``).  ``json.loads`` rejects
+    this with "Extra data" and ``_repair_tool_call_arguments`` replaces
+    the whole blob with ``"{}"``, silently dropping every call.  This
+    helper uses ``JSONDecoder.raw_decode`` to peel off each complete
+    object so the caller can emit one tool call per object (#62937).
+
+    Returns a list of individual compact JSON strings when the input
+    contains **two or more** valid top-level objects, otherwise ``None``.
+    """
+    raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
+    if not raw_stripped:
+        return None
+    decoder = json.JSONDecoder()
+    objects: list[str] = []
+    pos = 0
+    length = len(raw_stripped)
+    while pos < length:
+        while pos < length and raw_stripped[pos].isspace():
+            pos += 1
+        if pos >= length:
+            break
+        try:
+            obj, end = decoder.raw_decode(raw_stripped, pos)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        objects.append(json.dumps(obj, separators=(",", ":")))
+        pos = end
+    return objects if len(objects) > 1 else None
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
 
@@ -469,6 +505,7 @@ __all__ = [
     "_sanitize_messages_surrogates",
     "_escape_invalid_chars_in_json_strings",
     "_repair_tool_call_arguments",
+    "_split_concatenated_json_objects",
     "_strip_non_ascii",
     "_sanitize_messages_non_ascii",
     "_sanitize_tools_non_ascii",

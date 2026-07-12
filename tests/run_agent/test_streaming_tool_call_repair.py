@@ -113,3 +113,64 @@ class TestStreamingAssemblyRepair:
         parsed = json.loads(result)
         assert parsed["command"] == "ls -la /tmp"
         assert parsed["timeout"] == 30
+
+
+class TestConcatenatedObjectsSplit:
+    """Tests for _split_concatenated_json_objects — the helper that splits
+    Gemini OpenAI-compat concatenated parallel tool-call arguments (#62937).
+
+    When Gemini's OpenAI-compat endpoint delivers parallel tool calls with
+    index=None, the streaming assembler merges all argument fragments into
+    one entry.  json.loads rejects the result with "Extra data" and
+    _repair_tool_call_arguments replaces it with "{}".  This helper lets the
+    assembler emit one tool call per concatenated object instead.
+    """
+
+    def test_three_concatenated_objects(self):
+        """Real-world Gemini payload: three calendar events glued together."""
+        from run_agent import _split_concatenated_json_objects
+        raw = '{"title":"Opening","date":"2026-07-01"}{"title":"Semi","date":"2026-07-05"}{"title":"Final","date":"2026-07-09"}'
+        result = _split_concatenated_json_objects(raw)
+        assert result is not None
+        assert len(result) == 3
+        for obj_str in result:
+            parsed = json.loads(obj_str)
+            assert "title" in parsed and "date" in parsed
+        assert json.loads(result[0])["title"] == "Opening"
+        assert json.loads(result[2])["title"] == "Final"
+
+    def test_single_object_returns_none(self):
+        """A single valid JSON object is NOT a concatenation."""
+        from run_agent import _split_concatenated_json_objects
+        assert _split_concatenated_json_objects('{"a": 1}') is None
+
+    def test_empty_and_garbage_return_none(self):
+        """Empty strings, None, and garbage must return None."""
+        from run_agent import _split_concatenated_json_objects
+        assert _split_concatenated_json_objects("") is None
+        assert _split_concatenated_json_objects(None) is None
+        assert _split_concatenated_json_objects("garbage") is None
+
+    def test_whitespace_between_objects(self):
+        """Objects separated by whitespace/newlines still split correctly."""
+        from run_agent import _split_concatenated_json_objects
+        raw = '{"x": 1}\n\n  {"y": 2}'
+        result = _split_concatenated_json_objects(raw)
+        assert result is not None
+        assert len(result) == 2
+
+    def test_partial_concatenation_returns_none(self):
+        """One valid + one broken object is not a clean concatenation."""
+        from run_agent import _split_concatenated_json_objects
+        raw = '{"x": 1}{broken'
+        assert _split_concatenated_json_objects(raw) is None
+
+    def test_two_objects(self):
+        """Minimum concatenation: exactly two objects."""
+        from run_agent import _split_concatenated_json_objects
+        raw = '{"a":1}{"b":2}'
+        result = _split_concatenated_json_objects(raw)
+        assert result is not None
+        assert len(result) == 2
+        assert json.loads(result[0]) == {"a": 1}
+        assert json.loads(result[1]) == {"b": 2}

@@ -81,12 +81,20 @@ class FakeForumChannel:
 
 
 class FakeThread:
-    def __init__(self, channel_id: int = 1, name: str = "thread", parent=None, guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "thread",
+        parent=None,
+        guild_name: str = "Hermes Server",
+        owner_id: int | None = None,
+    ):
         self.id = channel_id
         self.name = name
         self.parent = parent
         self.parent_id = getattr(parent, "id", None)
         self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
+        self.owner_id = owner_id
         self.topic = None
 
     def history(self, *, limit, before, after=None, oldest_first=None):
@@ -598,6 +606,24 @@ async def test_discord_unknown_thread_still_requires_mention(adapter, monkeypatc
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_bot_owned_thread_allows_first_unmentioned_followup(adapter, monkeypatch):
+    """A bot-created thread remains mention-free after a gateway restart."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    thread = FakeThread(channel_id=790, name="daily plan", owner_id=999)
+    assert "790" not in adapter._threads
+    message = make_message(channel=thread, content="first follow-up without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    assert "790" in adapter._threads
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,14 @@ import pytest
 from gateway import status
 
 
+def test_boot_identity_liveness_uses_gateway_boot_id_contract():
+    current = status.get_current_boot_id()
+
+    assert status.is_boot_id_alive(current) is True
+    assert status.is_boot_id_alive("not-a-boot-id") is False
+    assert status.is_boot_id_alive(f"{os.getpid()}:") is False
+
+
 @pytest.fixture(autouse=True)
 def _reset_gateway_runtime_lock_handle():
     """Reset the module-global ``_gateway_lock_handle`` around each test.

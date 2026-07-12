@@ -41,10 +41,12 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
+from tools import async_delegation_store as _store
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,33 @@ _records: Dict[str, Dict[str, Any]] = {}
 _DEFAULT_MAX_ASYNC_CHILDREN = 3
 # How many completed records to retain for status queries before pruning.
 _MAX_RETAINED_COMPLETED = 50
+_MAX_REGISTRY_RECORDS = _store.MAX_REGISTRY_RECORDS
+_sync_fallback_registry_cap = 0
+
+
+def _registry_path():
+    return _store.registry_path()
+
+
+def _write_registry_for_tests(registry: Dict[str, Any]) -> None:
+    _store.write_for_tests(registry)
+
+
+def _locked_registry(*, timeout: float = 5.0):
+    return _store.locked_registry(timeout=timeout)
+
+
+def is_boot_id_alive(boot_id: str) -> bool:
+    return _store.is_boot_id_alive(boot_id)
+
+
+def observability_counters() -> Dict[str, int]:
+    return {"sync_fallback_registry_cap": _sync_fallback_registry_cap}
+
+
+def _record_profile_home(record: Dict[str, Any]) -> Optional[Path]:
+    value = record.get("registry_profile_home")
+    return Path(value) if value else None
 
 
 def _get_executor(max_workers: int) -> ThreadPoolExecutor:
@@ -134,6 +163,8 @@ def dispatch_async_delegation(
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    durable_spec: Optional[Dict[str, Any]] = None,
+    current_boot_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
 
@@ -204,6 +235,27 @@ def dispatch_async_delegation(
                     f"config.yaml to allow more concurrent background subagents."
                 ),
             }
+        if durable_spec is not None:
+            profile_home = _registry_path().parent.parent
+            durable, rejection = _store.persist_dispatch(
+                delegation_id=delegation_id,
+                durable_spec=durable_spec,
+                boot_id=current_boot_id or "",
+                dispatched_at=dispatched_at,
+                profile_home=profile_home,
+                max_records=_MAX_REGISTRY_RECORDS,
+            )
+            if durable is None:
+                global _sync_fallback_registry_cap
+                if rejection == "registry_cap":
+                    _sync_fallback_registry_cap += 1
+                return {
+                    "status": "rejected",
+                    "reason": rejection,
+                    "error": "Durable async delegation registry unavailable; run synchronously.",
+                }
+            record["attempt_id"] = durable["attempt"]["attempt_id"]
+            record["registry_profile_home"] = str(profile_home)
         _records[delegation_id] = record
 
     executor = _get_executor(max_async_children)
@@ -211,6 +263,31 @@ def dispatch_async_delegation(
     def _worker() -> None:
         result: Dict[str, Any] = {}
         status = "error"
+        if record.get("attempt_id"):
+            try:
+                submitted = _store.mark_submitted(
+                    delegation_id,
+                    record["attempt_id"],
+                    profile_home=_record_profile_home(record),
+                )
+            except Exception as exc:
+                result = {
+                    "status": "error",
+                    "summary": None,
+                    "error": f"submission telemetry failed: {type(exc).__name__}: {exc}",
+                    "api_calls": 0,
+                    "duration_seconds": round(time.time() - dispatched_at, 2),
+                }
+                _finalize(delegation_id, result, status)
+                return
+            if not submitted:
+                logger.info(
+                    "async_delegation_start_skipped delegation_id=%s attempt_id=%s "
+                    "reason=cancelled_or_superseded",
+                    delegation_id,
+                    record["attempt_id"],
+                )
+                return
         try:
             result = runner() or {}
             status = result.get("status") or "completed"
@@ -232,10 +309,22 @@ def dispatch_async_delegation(
         # get_hermes_home() under the right profile.
         executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
+        payload = None
+        if record.get("attempt_id"):
+            payload = _store.fail_attempt(
+                delegation_id,
+                record["attempt_id"],
+                f"submission failed: {type(exc).__name__}: {exc}",
+                profile_home=_record_profile_home(record),
+            )
         with _records_lock:
             _records.pop(delegation_id, None)
         return {
             "status": "rejected",
+            "reason": "submission_failed",
+            "delegation_id": delegation_id,
+            "fallback_event_id": (payload or {}).get("event_id"),
+            "_registry_profile_home": str(_record_profile_home(record) or ""),
             "error": f"Failed to schedule async delegation: {exc}",
         }
 
@@ -246,11 +335,21 @@ def dispatch_async_delegation(
     return {"status": "dispatched", "delegation_id": delegation_id}
 
 
-def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
+def _finalize(
+    delegation_id: str,
+    result: Dict[str, Any],
+    status: str,
+    *,
+    attempt_id: Optional[str] = None,
+    registry_path=None,
+) -> None:
     """Mark a record complete and push the completion event onto the queue."""
     with _records_lock:
         record = _records.get(delegation_id)
         if record is None:
+            return
+        expected_attempt = attempt_id or record.get("attempt_id")
+        if expected_attempt and record.get("attempt_id") not in {None, expected_attempt}:
             return
         record["status"] = status
         record["completed_at"] = time.time()
@@ -259,6 +358,34 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
         event_record = dict(record)
         _prune_completed_locked()
 
+    if event_record.get("recover_on_shutdown") and status != "completed":
+        # Interrupted mid-shutdown: the boot-scan re-dispatches. But a job whose
+        # runner FINISHED inside the shutdown window has a real result — dropping
+        # it and re-running the whole delegation discards completed work (and
+        # re-executes side effects). Greptile P1 2026-07-11: completed results
+        # always flow to the terminal store; only genuinely-interrupted jobs
+        # take the recovery path.
+        return
+    if expected_attempt:
+        profile_home = (
+            registry_path.parent.parent
+            if registry_path is not None
+            else _record_profile_home(event_record)
+        )
+        payload = _store.append_terminal(
+            delegation_id,
+            expected_attempt,
+            result,
+            status,
+            profile_home=profile_home,
+        )
+        if payload is None:
+            return
+        from tools.process_registry import process_registry
+
+        payload["_registry_profile_home"] = str(profile_home or "")
+        process_registry.completion_queue.put(payload)
+        return
     _push_completion_event(event_record, result, status)
 
 
@@ -332,6 +459,8 @@ def dispatch_async_delegation_batch(
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    durable_spec: Optional[Dict[str, Any]] = None,
+    current_boot_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -391,6 +520,27 @@ def dispatch_async_delegation_batch(
                     f"config.yaml to allow more concurrent background units."
                 ),
             }
+        if durable_spec is not None:
+            profile_home = _registry_path().parent.parent
+            durable, rejection = _store.persist_dispatch(
+                delegation_id=delegation_id,
+                durable_spec=durable_spec,
+                boot_id=current_boot_id or "",
+                dispatched_at=dispatched_at,
+                profile_home=profile_home,
+                max_records=_MAX_REGISTRY_RECORDS,
+            )
+            if durable is None:
+                global _sync_fallback_registry_cap
+                if rejection == "registry_cap":
+                    _sync_fallback_registry_cap += 1
+                return {
+                    "status": "rejected",
+                    "reason": rejection,
+                    "error": "Durable async delegation registry unavailable; run synchronously.",
+                }
+            record["attempt_id"] = durable["attempt"]["attempt_id"]
+            record["registry_profile_home"] = str(profile_home)
         _records[delegation_id] = record
 
     executor = _get_executor(max_async_children)
@@ -398,6 +548,29 @@ def dispatch_async_delegation_batch(
     def _worker() -> None:
         combined: Dict[str, Any] = {}
         status = "error"
+        if record.get("attempt_id"):
+            try:
+                submitted = _store.mark_submitted(
+                    delegation_id,
+                    record["attempt_id"],
+                    profile_home=_record_profile_home(record),
+                )
+            except Exception as exc:
+                combined = {
+                    "results": [],
+                    "error": f"submission telemetry failed: {type(exc).__name__}: {exc}",
+                    "total_duration_seconds": round(time.time() - dispatched_at, 2),
+                }
+                _finalize_batch(delegation_id, combined, status)
+                return
+            if not submitted:
+                logger.info(
+                    "async_delegation_start_skipped delegation_id=%s attempt_id=%s "
+                    "reason=cancelled_or_superseded",
+                    delegation_id,
+                    record["attempt_id"],
+                )
+                return
         try:
             combined = runner() or {}
             # Batch status: completed unless every child errored/was interrupted.
@@ -424,10 +597,22 @@ def dispatch_async_delegation_batch(
         # Propagate the dispatching profile to the detached batch children.
         executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover
+        payload = None
+        if record.get("attempt_id"):
+            payload = _store.fail_attempt(
+                delegation_id,
+                record["attempt_id"],
+                f"submission failed: {type(exc).__name__}: {exc}",
+                profile_home=_record_profile_home(record),
+            )
         with _records_lock:
             _records.pop(delegation_id, None)
         return {
             "status": "rejected",
+            "reason": "submission_failed",
+            "delegation_id": delegation_id,
+            "fallback_event_id": (payload or {}).get("event_id"),
+            "_registry_profile_home": str(_record_profile_home(record) or ""),
             "error": f"Failed to schedule async delegation batch: {exc}",
         }
 
@@ -451,6 +636,29 @@ def _finalize_batch(
         record["interrupt_fn"] = None
         event_record = dict(record)
         _prune_completed_locked()
+
+    if event_record.get("recover_on_shutdown") and status != "completed":
+        # Same contract as _finalize: a batch that COMPLETED during the
+        # shutdown window keeps its combined result; only interrupted
+        # batches take the boot-scan recovery path (Greptile P1 2026-07-11).
+        return
+    if event_record.get("attempt_id"):
+        payload = _store.append_terminal(
+            delegation_id,
+            event_record["attempt_id"],
+            combined,
+            status,
+            profile_home=_record_profile_home(event_record),
+        )
+        if payload is None:
+            return
+        from tools.process_registry import process_registry
+
+        payload["_registry_profile_home"] = str(
+            _record_profile_home(event_record) or ""
+        )
+        process_registry.completion_queue.put(payload)
+        return
 
     try:
         from tools.process_registry import process_registry
@@ -496,19 +704,244 @@ def _finalize_batch(
         )
 
 
+_RESTART_CONTINUATION = (
+    "This job was interrupted by a gateway restart at {timestamp}. Read any "
+    "partial artifact at paths explicitly named in the original goal or context, "
+    "then CONTINUE from that work rather than starting over. Do not assume an "
+    "artifact exists; inspect before using it."
+)
+
+
+def recover_async_delegations(
+    *,
+    current_boot_id: str,
+    runner_factory: Callable[[Dict[str, Any], str], Any],
+    resume_enabled: bool = True,
+    profile_home=None,
+    max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+) -> Dict[str, int]:
+    """Claim and submit restartable records once for one profile/boot."""
+    claimed, summary = _store.claim_recoveries(
+        current_boot_id=current_boot_id,
+        resume_enabled=resume_enabled,
+        profile_home=profile_home,
+        owner_alive=is_boot_id_alive,
+    )
+    executor = _get_executor(max_async_children)
+    for durable in claimed:
+        delegation_id = durable["delegation_id"]
+        attempt_id = durable["attempt"]["attempt_id"]
+        source = durable.get("source") or {}
+        route = durable.get("route") or {}
+        tasks = source.get("tasks") or []
+        goals = [str(task.get("goal") or "") for task in tasks if isinstance(task, dict)]
+        continuation = _RESTART_CONTINUATION.format(
+            timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        )
+        try:
+            produced = runner_factory(durable, continuation)
+            if isinstance(produced, tuple):
+                runner, interrupt_fn = produced
+            else:
+                runner, interrupt_fn = produced, None
+            if not callable(runner):
+                raise TypeError("resume runner factory did not return a callable")
+        except Exception as exc:
+            payload = _store.fail_attempt(
+                delegation_id,
+                attempt_id,
+                f"reconstruction failed: {type(exc).__name__}: {exc}",
+                profile_home=profile_home,
+            )
+            if payload:
+                from tools.process_registry import process_registry
+
+                payload["_registry_profile_home"] = str(profile_home or "")
+                process_registry.completion_queue.put(payload)
+            summary["failed_validation"] += 1
+            continue
+
+        live_record: Dict[str, Any] = {
+            "delegation_id": delegation_id,
+            "goal": goals[0] if len(goals) == 1 else f"{len(goals)} parallel subagents",
+            "goals": goals,
+            "context": source.get("shared_context"),
+            "toolsets": (durable.get("execution") or {}).get("toolsets"),
+            "role": (tasks[0].get("role") if tasks else "leaf"),
+            "model": (durable.get("execution") or {}).get("model"),
+            "session_key": route.get("session_key", ""),
+            "origin_ui_session_id": route.get("origin_ui_session_id", ""),
+            "parent_session_id": route.get("parent_session_id"),
+            "status": "running",
+            "dispatched_at": durable.get("created_at"),
+            "completed_at": None,
+            "interrupt_fn": interrupt_fn,
+            "is_batch": source.get("kind") == "batch" or len(goals) > 1,
+            "attempt_id": attempt_id,
+            "registry_profile_home": str(
+                profile_home or _registry_path().parent.parent
+            ),
+        }
+        with _records_lock:
+            _records[delegation_id] = live_record
+
+        def _worker(
+            _runner=runner,
+            _delegation_id=delegation_id,
+            _attempt_id=attempt_id,
+        ) -> None:
+            result: Dict[str, Any] = {}
+            status = "error"
+            try:
+                submitted = _store.mark_submitted(
+                    _delegation_id,
+                    _attempt_id,
+                    profile_home=profile_home,
+                )
+                if not submitted:
+                    logger.info(
+                        "async_delegation_recovery_skipped delegation_id=%s attempt_id=%s reason=cancelled_or_superseded",
+                        _delegation_id,
+                        _attempt_id,
+                    )
+                    return
+                logger.info(
+                    "async_delegation_redispatched delegation_id=%s attempt_id=%s current_boot_id=%s",
+                    _delegation_id,
+                    _attempt_id,
+                    current_boot_id,
+                )
+                value = _runner()
+                result = value if isinstance(value, dict) else {}
+                child_results = result.get("results") or []
+                if child_results and all(
+                    item.get("status") not in {"completed", "success"}
+                    for item in child_results
+                ):
+                    status = "error"
+                else:
+                    status = result.get("status") or "completed"
+            except Exception as exc:
+                logger.exception(
+                    "Recovered async delegation %s crashed", _delegation_id
+                )
+                result = {
+                    "status": "error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            finally:
+                _finalize(
+                    _delegation_id,
+                    result,
+                    status,
+                    attempt_id=_attempt_id,
+                    registry_path=_store.registry_path(profile_home),
+                )
+
+        try:
+            executor.submit(propagate_context_to_thread(_worker))
+        except Exception as exc:
+            with _records_lock:
+                _records.pop(delegation_id, None)
+            payload = _store.fail_attempt(
+                delegation_id,
+                attempt_id,
+                f"submission failed: {type(exc).__name__}: {exc}",
+                profile_home=profile_home,
+            )
+            if payload:
+                from tools.process_registry import process_registry
+
+                payload["_registry_profile_home"] = str(profile_home or "")
+                process_registry.completion_queue.put(payload)
+    return summary
+
+
+def enqueue_pending_outbox(
+    *, current_boot_id: str, profile_home=None
+) -> int:
+    """Replay both restart and terminal events through the existing queue."""
+    payloads = _store.enqueue_pending_outbox(
+        current_boot_id=current_boot_id,
+        profile_home=profile_home,
+    )
+    if payloads:
+        from tools.process_registry import process_registry
+
+        for payload in payloads:
+            payload["_registry_profile_home"] = str(
+                profile_home or _registry_path().parent.parent
+            )
+            process_registry.completion_queue.put(payload)
+    return len(payloads)
+
+
+def acknowledge_outbox_event(
+    event_id: str,
+    *,
+    outcome: str,
+    reason: Optional[str] = None,
+    profile_home=None,
+) -> bool:
+    return _store.acknowledge(
+        event_id,
+        outcome=outcome,
+        reason=reason,
+        profile_home=profile_home,
+    )
+
+
 def list_async_delegations() -> List[Dict[str, Any]]:
-    """Snapshot of async delegations (running + recently completed).
-
-    Safe to call from any thread. Excludes the non-serialisable interrupt_fn.
-    """
+    """Snapshot live handles plus safe summaries from the durable registry."""
     with _records_lock:
-        return [
-            {k: v for k, v in r.items() if k != "interrupt_fn"}
+        live = {
+            str(r.get("delegation_id")): {
+                k: v for k, v in r.items() if k != "interrupt_fn"
+            }
             for r in _records.values()
-        ]
+        }
+    try:
+        durable_records = _store.read_registry().get("records", {})
+    except _store.RegistryError:
+        durable_records = {}
+    for delegation_id, record in durable_records.items():
+        if delegation_id in live or not isinstance(record, dict):
+            continue
+        source = record.get("source") or {}
+        execution = record.get("execution") or {}
+        attempt = record.get("attempt") or {}
+        terminal = record.get("terminal") or {}
+        tasks = source.get("tasks") or []
+        goal = tasks[0].get("goal") if tasks and isinstance(tasks[0], dict) else ""
+        live[delegation_id] = {
+            "delegation_id": delegation_id,
+            "status": record.get("state"),
+            "generation": attempt.get("generation", 0),
+            "redispatch_count": attempt.get("redispatch_count", 0),
+            "dispatched_at": record.get("created_at"),
+            "completed_at": terminal.get("completed_at"),
+            "model": execution.get("model"),
+            "goal": str(goal or "")[:160],
+        }
+    return list(live.values())
 
 
-def interrupt_all(reason: str = "shutdown") -> int:
+def _mark_recoverable(
+    delegation_ids: List[str], *, lock_timeout: float = 0.1
+) -> bool:
+    return _store.transition_owned(
+        delegation_ids,
+        "recoverable",
+        timeout=lock_timeout,
+    )
+
+
+def interrupt_all(
+    reason: str = "shutdown",
+    *,
+    recoverable: bool = False,
+    lock_timeout: float = 0.1,
+) -> int:
     """Signal every running async delegation to stop. Returns how many.
 
     Used on ``/stop`` and gateway shutdown so a dangling background subagent
@@ -520,6 +953,18 @@ def interrupt_all(reason: str = "shutdown") -> int:
         targets = [
             r for r in _records.values() if r.get("status") == "running"
         ]
+        if recoverable:
+            for record in targets:
+                record["recover_on_shutdown"] = True
+    durable_ids = [r["delegation_id"] for r in targets if r.get("attempt_id")]
+    if recoverable and durable_ids:
+        # Best-effort optimization only. Lock acquisition is bounded so shutdown
+        # never stalls; running+dead-boot recovery is the guaranteed equivalent.
+        _mark_recoverable(durable_ids, lock_timeout=lock_timeout)
+    elif not recoverable:
+        # /stop and other explicit parent/user cancellation are terminal,
+        # including resume-disabled records without a live handle.
+        _store.cancel_matching(all_active=True)
     for r in targets:
         fn = r.get("interrupt_fn")
         if callable(fn):
@@ -562,6 +1007,20 @@ def interrupt_for_session(
     """
     if not session_key and not origin_ui_session_id and not parent_session_id:
         return 0
+    # Greptile P1 2026-07-11: when BOTH session_key and parent_session_id are
+    # supplied, the pair is a SCOPED selector — session_key alone must not
+    # claim records spawned by a PRIOR session in the same chat (the platform
+    # key survives /new resets). A record with no recorded parent_session_id
+    # (legacy) still matches by key; a record WITH one must agree.
+    scoped = bool(session_key and parent_session_id)
+
+    def _key_match(rec_key: str, rec_parent: str) -> bool:
+        if not session_key or rec_key != session_key:
+            return False
+        if scoped and rec_parent and rec_parent != parent_session_id:
+            return False
+        return True
+
     count = 0
     with _records_lock:
         targets = [
@@ -569,10 +1028,23 @@ def interrupt_for_session(
             if r.get("status") == "running"
             and (
                 (origin_ui_session_id and str(r.get("origin_ui_session_id") or "") == origin_ui_session_id)
-                or (session_key and str(r.get("session_key") or "") == session_key)
-                or (parent_session_id and str(r.get("parent_session_id") or "") == parent_session_id)
+                or _key_match(
+                    str(r.get("session_key") or ""),
+                    str(r.get("parent_session_id") or ""),
+                )
+                or (
+                    parent_session_id
+                    and str(r.get("parent_session_id") or "") == parent_session_id
+                )
             )
         ]
+    # Explicit cancellation is durable before the signal, including records
+    # left untouched while resume_on_restart was disabled.
+    _store.cancel_matching(
+        session_key=session_key,
+        parent_session_id=parent_session_id,
+        origin_ui_session_id=origin_ui_session_id,
+    )
     for r in targets:
         fn = r.get("interrupt_fn")
         if callable(fn):
@@ -594,7 +1066,7 @@ def interrupt_for_session(
 
 def _reset_for_tests() -> None:
     """Test-only: clear all state and tear down the executor."""
-    global _executor, _executor_max_workers
+    global _executor, _executor_max_workers, _sync_fallback_registry_cap
     with _executor_lock:
         if _executor is not None:
             _executor.shutdown(wait=False)
@@ -602,3 +1074,4 @@ def _reset_for_tests() -> None:
         _executor_max_workers = 0
     with _records_lock:
         _records.clear()
+    _sync_fallback_registry_cap = 0

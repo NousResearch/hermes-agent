@@ -328,7 +328,7 @@ class TestPostStopInterruptSwallow:
         assert "send it again" in response
 
     @pytest.mark.asyncio
-    async def test_interrupt_and_clear_session_evicts_cached_agent(self):
+    async def test_interrupt_and_clear_session_evicts_cached_agent(self, monkeypatch):
         """The control-interrupt path must evict the session's cached agent
         so its ``_interrupt_requested`` flag cannot leak into the next turn."""
         import threading
@@ -363,6 +363,11 @@ class TestPostStopInterruptSwallow:
         runner._release_running_agent_state = (
             lambda key, **kw: released.append(key)
         )
+        cancelled = []
+        monkeypatch.setattr(
+            "tools.async_delegation.interrupt_for_session",
+            lambda **kwargs: cancelled.append(kwargs) or 1,
+        )
 
         await runner._interrupt_and_clear_session(
             session_key,
@@ -372,6 +377,14 @@ class TestPostStopInterruptSwallow:
         )
 
         assert agent.interrupt_reasons == [_INTERRUPT_REASON_STOP]
+        assert cancelled == [{
+            "session_key": session_key,
+            # /new-scope fix 2026-07-11: the call site now also passes the
+            # current session id (empty here — harness runner has no
+            # session_store entry), scoping durable cancels to THIS session.
+            "parent_session_id": "",
+            "reason": _INTERRUPT_REASON_STOP,
+        }]
         assert released == [session_key]
         assert session_key not in runner._agent_cache, (
             "Cached agent with a set interrupt flag must be evicted on /stop "

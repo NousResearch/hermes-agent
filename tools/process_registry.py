@@ -2105,6 +2105,25 @@ def format_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
+    if evt_type == "async_delegation_restarted":
+        deleg_id = evt.get("delegation_id", "unknown")
+        generation = evt.get("attempt_generation", "?")
+        count = evt.get("redispatch_count", "?")
+        goals = evt.get("goals") or []
+        task_text = (
+            goals[0]
+            if len(goals) == 1
+            else f"{len(goals)} parallel subagents"
+        )
+        return (
+            f"[ASYNC DELEGATION RESTARTED — {deleg_id}]\n"
+            "The gateway restarted while this background work was active. "
+            f"Hermes durably claimed and relaunched it (generation {generation}, "
+            f"recovery launch {count}/2).\n"
+            f"Original task: {task_text}\n"
+            "No action is required; the terminal result will re-enter as a fresh turn."
+        )
+
     if evt_type == "async_delegation":
         return _format_async_delegation(evt)
 

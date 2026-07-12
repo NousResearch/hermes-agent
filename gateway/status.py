@@ -184,6 +184,24 @@ def get_current_boot_id() -> str:
     return _compute_boot_id(os.getpid())
 
 
+def is_boot_id_alive(boot_id: str) -> bool:
+    """Return whether a serialized gateway boot identity still owns a live PID."""
+    try:
+        pid_text, created_text = str(boot_id).split(":", 1)
+        if not created_text:
+            return False
+        pid = int(pid_text)
+
+        import psutil
+
+        process = psutil.Process(pid)
+        return process.is_running() and abs(
+            process.create_time() - float(created_text)
+        ) < 0.01
+    except Exception:
+        return False
+
+
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string.
 

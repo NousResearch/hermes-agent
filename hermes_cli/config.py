@@ -2280,7 +2280,8 @@ DEFAULT_CONFIG = {
         "api_mode": "",    # wire protocol for delegation.base_url: "chat_completions",
                            # "codex_responses", or "anthropic_messages". Empty = auto-detect
                            # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
-                           # explicitly for non-standard endpoints the heuristic can't detect.
+                           # explicitly for non-standard endpoints the URL heuristic can't identify.
+        "resume_on_restart": True,  # recover gateway background delegations after restart
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these

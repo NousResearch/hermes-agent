@@ -1112,6 +1112,26 @@ class GatewaySlashCommandsMixin:
             )
             return EphemeralReply(t("gateway.stop.stopped"))
 
+        # Detached delegations can outlive the parent turn, leaving no resident
+        # agent even though this session still owns cancellable work.
+        try:
+            from tools.async_delegation import interrupt_for_session
+
+            async_stopped = interrupt_for_session(
+                session_key=session_key,
+                parent_session_id=str(getattr(session_entry, "session_id", "") or ""),
+                reason="stop_command",
+            )
+        except Exception:
+            logger.debug(
+                "Failed to cancel background delegations for session %s",
+                session_key,
+                exc_info=True,
+            )
+            async_stopped = 0
+        if async_stopped:
+            return EphemeralReply(t("gateway.stop.stopped"))
+
         return t("gateway.stop.no_active")
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:

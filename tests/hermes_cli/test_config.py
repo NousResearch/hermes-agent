@@ -1783,6 +1783,18 @@ class TestDelegationCapUnificationMigration:
     def test_default_config_has_no_max_async_children(self):
         assert "max_async_children" not in DEFAULT_CONFIG["delegation"]
 
+    def test_delegation_resume_on_restart_default_and_user_override(
+        self, tmp_path, monkeypatch
+    ):
+        """The behavioral knob is config.yaml-backed through the real loader."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"delegation": {"resume_on_restart": False}}),
+            encoding="utf-8",
+        )
+        assert DEFAULT_CONFIG["delegation"]["resume_on_restart"] is True
+        assert load_config()["delegation"]["resume_on_restart"] is False
+
 
 class TestConfigNormalizationDoesNotOverwriteUserValues:
     """Regression tests for #27354."""

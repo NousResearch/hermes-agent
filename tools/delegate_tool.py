@@ -17,6 +17,7 @@ never the child's intermediate tool calls or reasoning.
 """
 
 import enum
+import copy
 import json
 import logging
 
@@ -28,7 +29,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from toolsets import TOOLSETS
 
@@ -1167,6 +1168,10 @@ def _build_child_agent(
     # context message and seed the child with it (spec v0.8 D-4 / P0.3). Default
     # False keeps every existing caller byte-identical (INV-5).
     inherit_context: bool = False,
+    # Recovery reuses the exact fold captured before the original launch.
+    materialized_prefill_messages: Optional[List[Dict[str, Any]]] = None,
+    recovery_max_spawn_depth: Optional[int] = None,
+    recovery_orchestrator_enabled: Optional[bool] = None,
     # Per-task skill promotion: names re-promoted to full descriptions in the
     # child's compact skills index (see agent/system_prompt.py). None/empty =
     # pure names-only index.
@@ -1191,8 +1196,13 @@ def _build_child_agent(
     # the normalised role (_normalize_role ran in delegate_task) so
     # we only deal with 'leaf' or 'orchestrator' here.
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
-    max_spawn = _get_max_spawn_depth()
-    orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
+    max_spawn = recovery_max_spawn_depth or _get_max_spawn_depth()
+    orchestrator_enabled = (
+        recovery_orchestrator_enabled
+        if recovery_orchestrator_enabled is not None
+        else _get_orchestrator_enabled()
+    )
+    orchestrator_ok = orchestrator_enabled and child_depth < max_spawn
     effective_role = role if (role == "orchestrator" and orchestrator_ok) else "leaf"
 
     # ── Subagent identity (stable across events, 0-indexed for TUI) ─────
@@ -1423,8 +1433,10 @@ def _build_child_agent(
     # assistant/tool turns is DISAVOWED by the child (P0.3) — the fold is the fix.
     # Default path (inherit_context False) is byte-identical: keep the historical
     # boot-attr forward (INV-5).
-    child_prefill_messages = getattr(parent_agent, "prefill_messages", None)
-    if inherit_context:
+    child_prefill_messages: Any = getattr(parent_agent, "prefill_messages", None)
+    if materialized_prefill_messages is not None:
+        child_prefill_messages = copy.deepcopy(materialized_prefill_messages)
+    elif inherit_context:
         try:
             _cfg = _load_config()
             _boom = (_cfg.get("boomerang") or {}) if isinstance(_cfg, dict) else {}
@@ -2658,6 +2670,190 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _build_durable_background_spec(
+    *,
+    task_list: List[Dict[str, Any]],
+    shared_context: Optional[str],
+    top_role: str,
+    inherit_context: Optional[bool],
+    cfg: Dict[str, Any],
+    creds: Dict[str, Any],
+    parent_agent,
+    session_key: str,
+    parent_session_id: Optional[str],
+    origin_ui_session_id: str,
+    max_iterations: int,
+    children: Optional[List[Any]] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Build the non-secret restart intent for a routable gateway session."""
+    if not is_truthy_value(cfg.get("resume_on_restart"), default=True):
+        return None, None
+    try:
+        from gateway.session_context import get_session_env
+
+        source_name = get_session_env("HERMES_SESSION_SOURCE", "")
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+        if source_name == "tui" or not platform:
+            return None, None
+        profile = get_session_env("HERMES_SESSION_PROFILE", "") or "default"
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
+        user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+        user_name = get_session_env("HERMES_SESSION_USER_NAME", "") or None
+    except Exception:
+        return None, None
+
+    from gateway.status import get_current_boot_id
+
+    boot_id = get_current_boot_id()
+    if not boot_id or str(boot_id).endswith(":"):
+        raise RuntimeError("gateway boot identity is unavailable")
+
+    persisted_tasks = []
+    for index, task in enumerate(task_list):
+        persisted = copy.deepcopy(task)
+        persisted["role"] = _normalize_role(task.get("role") or top_role)
+        persisted["inherit_context"] = bool(
+            task.get("inherit_context")
+            if "inherit_context" in task
+            else inherit_context
+        )
+        if persisted["inherit_context"] and children and index < len(children):
+            persisted["materialized_prefill_messages"] = copy.deepcopy(
+                getattr(children[index], "prefill_messages", None)
+            )
+        persisted_tasks.append(persisted)
+
+    effective_agent = children[0] if children else parent_agent
+    effective_provider = creds.get("provider") or getattr(effective_agent, "provider", None)
+    if cfg.get("base_url"):
+        credential_ref = {
+            "source": "delegation_config",
+            "parent_provider": (
+                getattr(parent_agent, "custom_provider", None)
+                or getattr(parent_agent, "provider", None)
+            ),
+        }
+    else:
+        credential_ref = {
+            "source": "provider",
+            "provider": cfg.get("provider") or effective_provider,
+            "custom_provider": getattr(effective_agent, "custom_provider", None),
+        }
+    session_parts = str(session_key or "").split(":")
+    chat_type = session_parts[3] if len(session_parts) > 4 else None
+    parent_toolsets = (
+        getattr(effective_agent, "enabled_toolsets", None)
+        or getattr(effective_agent, "_enabled_toolsets", None)
+    )
+    execution = {
+        "model": creds.get("model") or getattr(effective_agent, "model", None),
+        "provider": effective_provider,
+        "base_url": creds.get("base_url") or getattr(effective_agent, "base_url", None),
+        "api_mode": creds.get("api_mode") or getattr(effective_agent, "api_mode", None),
+        "acp_command": creds.get("command") or getattr(
+            effective_agent, "acp_command", None
+        ),
+        "acp_args": list(
+            creds.get("args") or getattr(effective_agent, "acp_args", None) or []
+        ),
+        "reasoning_config": copy.deepcopy(getattr(effective_agent, "reasoning_config", None)),
+        "fallback_chain": copy.deepcopy(getattr(effective_agent, "fallback_model", None)),
+        "service_tier": getattr(effective_agent, "service_tier", None),
+        "providers_allowed": copy.deepcopy(getattr(effective_agent, "providers_allowed", None)),
+        "providers_ignored": copy.deepcopy(getattr(effective_agent, "providers_ignored", None)),
+        "providers_order": copy.deepcopy(getattr(effective_agent, "providers_order", None)),
+        "provider_sort": getattr(effective_agent, "provider_sort", None),
+        "provider_require_parameters": bool(
+            getattr(effective_agent, "provider_require_parameters", False)
+        ),
+        "provider_data_collection": getattr(
+            effective_agent, "provider_data_collection", None
+        ),
+        "openrouter_min_coding_score": getattr(
+            effective_agent, "openrouter_min_coding_score", None
+        ),
+        "toolsets": list(parent_toolsets) if parent_toolsets else None,
+        "max_iterations": max_iterations,
+        "parent_depth": int(getattr(parent_agent, "_delegate_depth", 0) or 0),
+        "max_spawn_depth": _get_max_spawn_depth(),
+        "orchestrator_enabled": _get_orchestrator_enabled(),
+        "workspace_hint": _resolve_workspace_hint(parent_agent),
+        # Symbolic lookup data only. Credential bytes are re-resolved on resume.
+        "credential_ref": credential_ref,
+    }
+    return {
+        "profile": profile,
+        "source": {
+            "kind": "batch" if len(persisted_tasks) > 1 else "single",
+            "tasks": persisted_tasks,
+            "shared_context": shared_context,
+        },
+        "execution": execution,
+        "route": {
+            "session_key": session_key,
+            "parent_session_id": parent_session_id,
+            "origin_ui_session_id": origin_ui_session_id,
+            "platform": platform,
+            "chat_type": chat_type,
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "user_name": user_name,
+            "profile": profile,
+        },
+    }, str(boot_id)
+
+
+def build_recovered_delegation_runner(
+    record: Dict[str, Any],
+    continuation: str,
+    parent_agent,
+) -> Callable[[], Dict[str, Any]]:
+    """Reconstruct one persisted single/batch unit through ``delegate_task``."""
+    source = record.get("source") or {}
+    tasks = copy.deepcopy(source.get("tasks") or [])
+    for task in tasks:
+        original = task.get("context")
+        task["context"] = f"{original}\n\n{continuation}" if original else continuation
+
+    def _runner() -> Dict[str, Any]:
+        from gateway.session_context import restore_session_vars, set_session_vars
+
+        route = record.get("route") or {}
+        execution = record.get("execution") or {}
+        tokens = set_session_vars(
+            platform=str(route.get("platform") or ""),
+            source="gateway_recovery",
+            chat_id=str(route.get("chat_id") or ""),
+            thread_id=str(route.get("thread_id") or ""),
+            user_id=str(route.get("user_id") or ""),
+            user_name=str(route.get("user_name") or ""),
+            session_key=str(route.get("session_key") or ""),
+            session_id=str(route.get("parent_session_id") or ""),
+            profile=str(route.get("profile") or record.get("profile") or "default"),
+            cwd=str(execution.get("workspace_hint") or ""),
+            async_delivery=True,
+            ui_session_id=str(route.get("origin_ui_session_id") or ""),
+        )
+        try:
+            raw = delegate_task(
+                tasks=tasks,
+                max_iterations=execution.get("max_iterations"),
+                background=False,
+                parent_agent=parent_agent,
+                _recovery_spec=record,
+            )
+        finally:
+            restore_session_vars(tokens)
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("recovered delegate_task returned a non-object payload")
+        return parsed
+
+    return _runner
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2668,6 +2864,7 @@ def delegate_task(
     inherit_context: Optional[bool] = None,
     skills: Optional[List[str]] = None,
     parent_agent=None,
+    _recovery_spec: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2698,17 +2895,18 @@ def delegate_task(
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
 
-    # Background (async) delegation now applies to BOTH single tasks and
-    # batches. A batch simply becomes N independent async dispatches: each
-    # child runs on the daemon executor and re-enters the conversation via
-    # the completion queue on its own, carrying its own handle. There's no
-    # combined "wait for all" — fan-out is exactly N background subagents.
+    # Background (async) delegation applies to both single tasks and batches.
+    # One batch remains one logical durable unit and emits one consolidated
+    # completion after its children finish.
     background = is_truthy_value(background, default=False) if background is not None else False
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
     depth = getattr(parent_agent, "_delegate_depth", 0)
-    max_spawn = _get_max_spawn_depth()
+    recovery_execution = (_recovery_spec or {}).get("execution") or {}
+    max_spawn = int(
+        recovery_execution.get("max_spawn_depth") or _get_max_spawn_depth()
+    )
     if depth >= max_spawn:
         return json.dumps(
             {
@@ -2724,6 +2922,23 @@ def delegate_task(
 
     # Load config
     cfg = _load_config()
+    if _recovery_spec:
+        # Recovery reuses this same live adapter but pins the effective,
+        # non-secret settings captured before the original executor submit.
+        # Credentials are deliberately absent and resolve again below.
+        _execution = recovery_execution
+        _credential_ref = _execution.get("credential_ref") or {}
+        cfg = dict(cfg)
+        cfg.update({
+            "model": _execution.get("model") or "",
+            "provider": _credential_ref.get("provider") or _execution.get("provider") or "",
+            "base_url": _execution.get("base_url") or "",
+            "api_key": "",
+            "api_mode": _execution.get("api_mode") or "",
+            "max_iterations": int(
+                _execution.get("max_iterations") or DEFAULT_MAX_ITERATIONS
+            ),
+        })
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
@@ -2799,6 +3014,12 @@ def delegate_task(
     import model_tools as _model_tools
 
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
+    recovery_max_spawn_raw = recovery_execution.get("max_spawn_depth")
+    recovery_max_spawn = (
+        int(recovery_max_spawn_raw)
+        if isinstance(recovery_max_spawn_raw, (int, str))
+        else None
+    )
 
     # Build all child agents on the main thread (thread-safe construction)
     # Wrapped in try/finally so the global is always restored even if a
@@ -2831,6 +3052,13 @@ def delegate_task(
                     t.get("inherit_context")
                     if "inherit_context" in t
                     else inherit_context
+                ),
+                materialized_prefill_messages=t.get("materialized_prefill_messages"),
+                recovery_max_spawn_depth=recovery_max_spawn,
+                recovery_orchestrator_enabled=(
+                    bool(recovery_execution.get("orchestrator_enabled"))
+                    if "orchestrator_enabled" in recovery_execution
+                    else None
                 ),
                 skills=(t.get("skills") if "skills" in t else skills),
             )
@@ -3177,6 +3405,34 @@ def delegate_task(
                     pass
 
         _goals = [t["goal"] for t in task_list]
+        try:
+            _durable_spec, _gateway_boot_id = _build_durable_background_spec(
+                task_list=task_list,
+                shared_context=context,
+                top_role=top_role,
+                inherit_context=inherit_context,
+                cfg=cfg,
+                creds=creds,
+                parent_agent=parent_agent,
+                session_key=_session_key,
+                parent_session_id=_parent_session_id,
+                origin_ui_session_id=_origin_ui_session_id,
+                max_iterations=effective_max_iter,
+                children=_child_agents,
+            )
+        except Exception as exc:
+            logger.error(
+                "delegate_task: durable restart intent unavailable (%s); "
+                "running synchronously rather than launching untracked work",
+                exc,
+            )
+            _sync_result = _execute_and_aggregate()
+            if isinstance(_sync_result, dict):
+                _sync_result["note"] = (
+                    "Restart-safe background persistence was unavailable, so "
+                    "the subagent(s) ran SYNCHRONOUSLY and the result is included above."
+                )
+            return json.dumps(_sync_result, ensure_ascii=False)
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
@@ -3191,7 +3447,22 @@ def delegate_task(
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),
+            durable_spec=_durable_spec,
+            current_boot_id=_gateway_boot_id,
         )
+
+        if (
+            _durable_spec is not None
+            and dispatch.get("status") == "rejected"
+            and dispatch.get("reason") in {"registry_cap", "registry_error"}
+        ):
+            _sync_result = _execute_and_aggregate()
+            if isinstance(_sync_result, dict):
+                _sync_result["note"] = (
+                    "Restart-safe background persistence was unavailable, so "
+                    "the subagent(s) ran SYNCHRONOUSLY and the result is included above."
+                )
+            return json.dumps(_sync_result, ensure_ascii=False)
 
         if dispatch.get("status") == "dispatched":
             n = len(_goals)
@@ -3226,6 +3497,16 @@ def delegate_task(
             dispatch.get("error", "rejected"),
         )
         _cap_result = _execute_and_aggregate()
+        _fallback_event_id = dispatch.get("fallback_event_id")
+        if _fallback_event_id:
+            from tools.async_delegation import acknowledge_outbox_event
+
+            acknowledge_outbox_event(
+                _fallback_event_id,
+                outcome="dropped",
+                reason="fallback_ran",
+                profile_home=dispatch.get("_registry_profile_home") or None,
+            )
         if isinstance(_cap_result, dict):
             _cap_result["note"] = (
                 "The background delegation pool was at capacity "

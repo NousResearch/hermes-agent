@@ -225,18 +225,16 @@ delegate_task(
 
 ## Lifetime and Durability
 
-:::warning delegate_task is synchronous — not durable
-`delegate_task` runs **inside the parent's current turn**. It blocks the parent until every child finishes (or is cancelled). It is **not** a background job queue:
+By default, `delegate_task` is synchronous: it runs inside the parent's current turn and blocks until every child finishes or is cancelled. With `background=true`, a gateway session instead returns a delegation handle immediately and receives restart and terminal results as fresh internal turns.
 
-- If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active children are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
-- Children do **not** continue running after the parent turn ends.
-- Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
+Gateway background delegations persist restart intent under the originating profile. With `delegation.resume_on_restart: true` (the default), a later gateway boot can launch a fresh replacement attempt from the original task settings and continuation context. Hermes permits two submitted replacement launches, pins every notification to the parent session, and never edits existing conversation history. `/new`, `/stop`, parent cancellation, and ended sessions cancel the durable record so it cannot be resurrected or rerouted.
 
-For **durable long-running work** that must survive interrupts or outlive the current turn, use:
+This recovery is a fresh execution attempt, not a child-transcript checkpoint. Put partial work in paths named explicitly in the task so a replacement can inspect and continue it. CLI/TUI background delegations remain process-local in this phase because those surfaces do not have the gateway's durable delivery route.
 
-- `cronjob` (action=`create`) — schedules a separate agent run; immune to parent-turn interrupts.
-- `terminal(background=True, notify_on_complete=True)` — long-running shell commands that keep running while the agent does other things.
-:::
+For work that needs an independent schedule or process rather than parent-session delivery, use:
+
+- `cronjob` (action=`create`) — schedules a separate agent run.
+- `terminal(background=True, notify_on_complete=True)` — runs a shell command independently and reports its result.
 
 ## Key Properties
 

@@ -1881,8 +1881,9 @@ def _profile_runtime_scope(profile_home: "Path"):
          keys and never the process-global ``os.environ`` (which in a
          multiplexer may hold another profile's values).
 
-    Only used on the multiplexed inbound path. Single-profile gateways never
-    enter this scope, so their behavior is unchanged. Loading the profile's
+    Inbound single-profile turns do not need this scope. Restart recovery uses
+    it for every served profile, including the default profile, so each durable
+    record re-resolves its current profile credentials. Loading the profile's
     ``.env`` here does NOT mutate ``os.environ`` — ``build_profile_secret_scope``
     returns an isolated dict — which is what keeps subprocesses (MCP, kanban)
     from inheriting cross-profile secrets.
@@ -3041,7 +3042,7 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
-    if evt_type == "async_delegation":
+    if evt_type in {"async_delegation", "async_delegation_restarted"}:
         # Reuse the shared rich formatter (self-contained task-source block).
         from tools.process_registry import format_process_notification
         return format_process_notification(evt)
@@ -3069,7 +3070,7 @@ def _drain_gateway_watch_events(completion_queue) -> "list[dict]":
         evt_type = evt.get("type", "completion")
         if evt_type in {"watch_match", "watch_disabled"}:
             watch_events.append(evt)
-        elif evt_type == "async_delegation":
+        elif evt_type in {"async_delegation", "async_delegation_restarted"}:
             requeue.append(evt)
         # else: process completion events are handled by the watcher task
     for evt in requeue:
@@ -9782,6 +9783,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # visible for manual recovery on the next user message.
         await self._restore_resume_pending_sessions_at_startup()
 
+        # Adapters and parent-session startup restore are complete. Claim once,
+        # then queue restart/terminal events before the existing watcher starts.
+        try:
+            self._recover_async_delegations_once()
+        except Exception:
+            logger.error(
+                "Async delegation restart recovery failed during gateway startup",
+                exc_info=True,
+            )
+
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
             from tools.process_registry import process_registry
@@ -10565,7 +10576,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("mark_running_jobs_interrupted (%s) error: %s", phase, _e)
                 try:
                     from tools.async_delegation import interrupt_all as _interrupt_async
-                    _async_n = _interrupt_async(reason=f"gateway shutdown ({phase})")
+                    _async_n = _interrupt_async(
+                        reason=f"gateway shutdown ({phase})",
+                        recoverable=True,
+                        lock_timeout=0.1,
+                    )
                     if _async_n:
                         logger.info(
                             "Shutdown (%s): interrupted %d background delegation(s)",
@@ -18408,6 +18423,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from gateway.session import SessionSource
 
         session_key = str(evt.get("session_key") or "").strip()
+        event_profile = str(evt.get("profile") or "").strip() or "default"
+
+        def _profile_matches(source) -> bool:
+            source_profile = str(getattr(source, "profile", None) or "default")
+            return source_profile == event_profile
+
         derived_platform = ""
         derived_chat_type = ""
         derived_chat_id = ""
@@ -18416,7 +18437,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
-                if entry and getattr(entry, "origin", None):
+                if (
+                    entry
+                    and getattr(entry, "origin", None)
+                    and _profile_matches(entry.origin)
+                ):
                     return entry.origin
             except Exception as exc:
                 logger.debug(
@@ -18426,7 +18451,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             cached_source = self._get_cached_session_source(session_key)
-            if cached_source is not None:
+            if cached_source is not None and _profile_matches(cached_source):
                 return cached_source
 
             _parsed = _parse_session_key(session_key)
@@ -18474,9 +18499,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_id=str(evt.get("thread_id") or "").strip() or None,
             user_id=str(evt.get("user_id") or "").strip() or None,
             user_name=str(evt.get("user_name") or "").strip() or None,
+            profile=str(evt.get("profile") or "").strip() or None,
         )
 
-    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
+    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> str:
         """Inject a watch-pattern notification as a synthetic message event.
 
         Routing must come from the queued watch event itself, not from whatever
@@ -18488,19 +18514,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Dropping watch notification with no routing metadata for process %s",
                 evt.get("session_id", "unknown"),
             )
-            return
+            return "dropped"
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        adapter = None
-        for p, a in self.adapters.items():
-            if p.value == platform_name:
-                adapter = a
-                break
+        adapter = self._adapter_for_source(source)
         if not adapter:
-            return
+            return "temporary"
         try:
             metadata = {}
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
+                current = await self.async_session_store.get_or_create_session(source)
+                if parent_session_id != current.session_id:
+                    pinned_row = None
+                    try:
+                        session_db = getattr(self, "_session_db", None)
+                        if session_db is not None:
+                            pinned_row = await session_db.get_session(parent_session_id)
+                    except Exception:
+                        pinned_row = None
+                    if pinned_row is None or pinned_row.get("ended_at"):
+                        logger.info(
+                            "Dropping pinned async notification for ended session "
+                            "parent_session_id=%s current_session_id=%s",
+                            parent_session_id,
+                            current.session_id,
+                        )
+                        return "dropped"
                 metadata["gateway_session_id"] = parent_session_id
             synth_event = MessageEvent(
                 text=synth_text,
@@ -18517,8 +18556,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source.thread_id,
             )
             await adapter.handle_message(synth_event)
+            return "delivered"
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
+            return "temporary"
 
     def _enrich_async_delegation_routing(self, evt: dict) -> None:
         """Fill platform/chat_id/thread_id/chat_type on an async-delegation event.
@@ -18540,6 +18581,184 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         evt["chat_id"] = parsed.get("chat_id", "")
         if parsed.get("thread_id"):
             evt["thread_id"] = parsed["thread_id"]
+
+    def _recover_async_delegations_once(self) -> Dict[str, int]:
+        """Recover durable background work once per boot and replay its outbox."""
+        boot_id = self._current_boot_id()
+        if getattr(self, "_async_delegation_recovery_boot_id", None) == boot_id:
+            return {"claimed": 0, "queued": 0}
+        self._async_delegation_recovery_boot_id = boot_id
+
+        from hermes_cli.config import load_config
+        from hermes_cli.profiles import profiles_to_serve
+        from run_agent import AIAgent
+        from tools.async_delegation import (
+            enqueue_pending_outbox,
+            recover_async_delegations,
+        )
+        from tools.delegate_tool import (
+            _resolve_delegation_credentials,
+            build_recovered_delegation_runner,
+        )
+
+        totals = {"claimed": 0, "queued": 0, "exhausted": 0, "failed_validation": 0}
+        profiles = profiles_to_serve(
+            multiplex=bool(getattr(self.config, "multiplex_profiles", False))
+        )
+        for profile_name, profile_home in profiles:
+            try:
+                with _profile_runtime_scope(profile_home):
+                    raw_cfg = load_config() or {}
+                    delegation_cfg = raw_cfg.get("delegation") or {}
+                    resume_enabled = is_truthy_value(
+                        delegation_cfg.get("resume_on_restart"), default=True
+                    )
+                    max_children = int(
+                        delegation_cfg.get("max_concurrent_children") or 3
+                    )
+
+                    def _runner_factory(record: dict, continuation: str):
+                        execution = record.get("execution") or {}
+                        route = record.get("route") or {}
+                        credential_ref = execution.get("credential_ref") or {}
+                        if credential_ref.get("source") == "delegation_config":
+                            from types import SimpleNamespace
+
+                            parent_provider = credential_ref.get("parent_provider")
+                            current_direct_key = str(
+                                delegation_cfg.get("api_key") or ""
+                            ).strip() or None
+                            if current_direct_key:
+                                parent_runtime = {}
+                            elif parent_provider:
+                                parent_runtime = _resolve_runtime_agent_kwargs_for_provider(
+                                    str(parent_provider)
+                                )
+                            else:
+                                parent_runtime = _resolve_runtime_agent_kwargs()
+                            direct_cfg = {
+                                "model": execution.get("model"),
+                                "base_url": execution.get("base_url"),
+                                "api_mode": execution.get("api_mode"),
+                                # Read the current secret from config; never use a
+                                # credential value from the persisted record.
+                                "api_key": current_direct_key,
+                            }
+                            direct = _resolve_delegation_credentials(
+                                direct_cfg,
+                                SimpleNamespace(**parent_runtime),
+                            )
+                            runtime = {
+                                "api_key": direct.get("api_key")
+                                or parent_runtime.get("api_key"),
+                                "base_url": direct.get("base_url"),
+                                "provider": direct.get("provider"),
+                                "api_mode": direct.get("api_mode"),
+                                "command": direct.get("command"),
+                                "args": list(direct.get("args") or []),
+                                "credential_pool": None,
+                            }
+                        else:
+                            requested_provider = (
+                                credential_ref.get("provider")
+                                or execution.get("provider")
+                            )
+                            if requested_provider:
+                                runtime = _resolve_runtime_agent_kwargs_for_provider(
+                                    str(requested_provider)
+                                )
+                            else:
+                                runtime = _resolve_runtime_agent_kwargs()
+                        agent_kwargs = {
+                            **runtime,
+                            "model": execution.get("model") or "",
+                            "max_iterations": int(
+                                execution.get("max_iterations") or 45
+                            ),
+                            "provider_require_parameters": bool(
+                                execution.get("provider_require_parameters", False)
+                            ),
+                            "skip_memory": True,
+                            "skip_context_files": True,
+                        }
+                        if execution.get("acp_command"):
+                            agent_kwargs["command"] = execution["acp_command"]
+                            agent_kwargs["args"] = list(execution.get("acp_args") or [])
+                        for key, value in {
+                            "enabled_toolsets": execution.get("toolsets"),
+                            "platform": route.get("platform"),
+                            "session_id": route.get("parent_session_id"),
+                            "reasoning_config": execution.get("reasoning_config"),
+                            "service_tier": execution.get("service_tier"),
+                            "fallback_model": execution.get("fallback_chain"),
+                            "providers_allowed": execution.get("providers_allowed"),
+                            "providers_ignored": execution.get("providers_ignored"),
+                            "providers_order": execution.get("providers_order"),
+                            "provider_sort": execution.get("provider_sort"),
+                            "provider_data_collection": execution.get(
+                                "provider_data_collection"
+                            ),
+                            "openrouter_min_coding_score": execution.get(
+                                "openrouter_min_coding_score"
+                            ),
+                        }.items():
+                            if value is not None:
+                                agent_kwargs[key] = value
+                        parent = AIAgent(**agent_kwargs)
+                        setattr(
+                            parent,
+                            "_delegate_depth",
+                            int(execution.get("parent_depth") or 0),
+                        )
+                        setattr(
+                            parent,
+                            "terminal_cwd",
+                            execution.get("workspace_hint") or None,
+                        )
+                        recovered_runner = build_recovered_delegation_runner(
+                            record,
+                            continuation,
+                            parent,
+                        )
+
+                        def _interrupt_recovered_parent() -> None:
+                            parent.interrupt("Recovered async delegation cancelled")
+
+                        return recovered_runner, _interrupt_recovered_parent
+
+                    summary = recover_async_delegations(
+                        current_boot_id=boot_id,
+                        runner_factory=_runner_factory,
+                        resume_enabled=resume_enabled,
+                        profile_home=profile_home,
+                        max_async_children=max_children,
+                    )
+                    queued = enqueue_pending_outbox(
+                        current_boot_id=boot_id,
+                        profile_home=profile_home,
+                    )
+            except Exception:
+                logger.error(
+                    "Async delegation recovery failed for profile=%s home=%s",
+                    profile_name,
+                    profile_home,
+                    exc_info=True,
+                )
+                continue
+            for key in ("claimed", "exhausted", "failed_validation"):
+                totals[key] += int(summary.get(key, 0))
+            totals["queued"] += queued
+            logger.info(
+                "async_delegation_recovery_profile profile=%s boot_id=%s "
+                "claimed=%d queued=%d exhausted=%d failed_validation=%d",
+                profile_name,
+                boot_id,
+                summary.get("claimed", 0),
+                queued,
+                summary.get("exhausted", 0),
+                summary.get("failed_validation", 0),
+            )
+        return totals
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async-delegation completions and inject them as new turns.
@@ -18569,7 +18788,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         evt = _pr.completion_queue.get_nowait()
                     except Exception:
                         break
-                    if evt.get("type") == "async_delegation":
+                    if evt.get("type") in {
+                        "async_delegation",
+                        "async_delegation_restarted",
+                    }:
                         async_events.append(evt)
                     else:
                         requeue.append(evt)
@@ -18579,9 +18801,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._enrich_async_delegation_routing(evt)
                     synth_text = _format_gateway_process_notification(evt)
                     if not synth_text:
+                        event_id = str(evt.get("event_id") or "")
+                        if event_id:
+                            from tools.async_delegation import acknowledge_outbox_event
+
+                            acknowledge_outbox_event(
+                                event_id,
+                                outcome="dropped",
+                                reason="formatter_empty",
+                                profile_home=evt.get("_registry_profile_home") or None,
+                            )
                         continue
                     try:
-                        await self._inject_watch_notification(synth_text, evt)
+                        outcome = await self._inject_watch_notification(synth_text, evt)
+                        event_id = str(evt.get("event_id") or "")
+                        if event_id and outcome in {"delivered", "dropped"}:
+                            from tools.async_delegation import acknowledge_outbox_event
+
+                            acknowledge_outbox_event(
+                                event_id,
+                                outcome=outcome,
+                                reason=(
+                                    "origin_session_ended_or_unroutable"
+                                    if outcome == "dropped"
+                                    else None
+                                ),
+                                profile_home=evt.get("_registry_profile_home") or None,
+                            )
+                        elif outcome == "temporary":
+                            # Retry in this boot while an adapter/session store
+                            # reconnects; the outbox remains crash-safe.
+                            # Greptile P1 2026-07-11: BOUNDED — a permanently
+                            # unroutable event otherwise ping-pongs the queue
+                            # every watcher cycle forever. ~30 min of retries
+                            # (at the watcher interval), then park it: the
+                            # durable outbox re-delivers on next boot.
+                            retries = int(evt.get("_temporary_retries", 0)) + 1
+                            evt["_temporary_retries"] = retries
+                            if retries <= 900:
+                                _pr.completion_queue.put(evt)
+                            else:
+                                logger.warning(
+                                    "Async delegation event %s undeliverable after "
+                                    "%d temporary-failure retries; parking until "
+                                    "next boot (outbox remains durable)",
+                                    evt.get("event_id") or evt.get("delegation_id"),
+                                    retries,
+                                )
                     except Exception as e:
                         logger.error("Async delegation injection error: %s", e)
             except Exception as e:
@@ -19336,6 +19602,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         running_agent = self._running_agents.get(session_key)
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             running_agent.interrupt(interrupt_reason)
+        try:
+            from tools.async_delegation import interrupt_for_session
+
+            # Greptile P1 2026-07-11: pass the CURRENT session id alongside the
+            # platform key. session_key survives /new resets, so key-only
+            # matching could cancel a delegation spawned by a PRIOR session in
+            # the same chat. With both selectors the registry can prefer the
+            # precise id-match; key-only records (legacy) still match by key.
+            current_session_id = ""
+            try:
+                entry = self.session_store._entries.get(session_key)  # noqa: SLF001
+                current_session_id = str(getattr(entry, "session_id", "") or "")
+            except Exception:
+                current_session_id = ""
+            interrupt_for_session(
+                session_key=session_key,
+                parent_session_id=current_session_id,
+                reason=interrupt_reason,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to cancel background delegations for session %s",
+                session_key,
+                exc_info=True,
+            )
         self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
         adapter = self._adapter_for_source(source)
         if adapter and hasattr(adapter, "interrupt_session_activity"):

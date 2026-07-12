@@ -156,3 +156,30 @@ async def test_stop_does_not_interrupt_sibling_when_unauthorized(monkeypatch):
 
     assert interrupted == []
     assert "no active" in str(getattr(result, "text", result)).lower()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_detached_delegation_without_resident_agent(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    key = _per_user_key("userA")
+    runner._running_agents = {}
+    runner.__dict__["session_store"] = _FakeStore(key)
+    cancelled = []
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session",
+        lambda **kwargs: cancelled.append(kwargs) or 1,
+    )
+
+    event = MessageEvent(
+        text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
+    )
+    result = await runner._handle_stop_command(event)
+
+    assert cancelled == [
+        {
+            "session_key": key,
+            "parent_session_id": "",
+            "reason": "stop_command",
+        }
+    ]
+    assert "no active" not in str(getattr(result, "text", result)).lower()

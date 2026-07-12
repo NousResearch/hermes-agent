@@ -1205,13 +1205,10 @@ def init_agent(
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
-    if agent._mode_router_enabled:
-        # Registry schemas may be memoized/shared: copy before agent-local append.
-        from copy import deepcopy
-        from agent.research_mode_tool import ROUTE_RESEARCH_MODE_TOOL
-        agent.tools = list(agent.tools)
-        if not any(t["function"]["name"] == "route_research_mode" for t in agent.tools):
-            agent.tools.append(deepcopy(ROUTE_RESEARCH_MODE_TOOL))
+    from agent.research_mode_tool import inject_research_mode_tool
+    agent.tools = inject_research_mode_tool(
+        agent.tools, enabled=agent._mode_router_enabled,
+    )
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()

@@ -37,6 +37,7 @@ def test_off_and_absent_preserve_canonical_tool_schema_exactly():
     absent, baseline = _make_agent({})
     disabled, _ = _make_agent({"enabled": False})
     canonical = json.dumps(baseline, sort_keys=True, separators=(",", ":"))
+    assert absent.tools is baseline
     assert json.dumps(absent.tools, sort_keys=True, separators=(",", ":")) == canonical
     assert json.dumps(disabled.tools, sort_keys=True, separators=(",", ":")) == canonical
     assert absent.valid_tool_names == disabled.valid_tool_names == {"baseline_tool"}

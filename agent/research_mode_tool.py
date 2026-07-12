@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any
 
 TOOL_NAME = "route_research_mode"
@@ -33,6 +34,24 @@ ROUTE_RESEARCH_MODE_TOOL = {
         },
     },
 }
+
+
+def inject_research_mode_tool(tools: list, *, enabled: bool) -> list:
+    """Return an agent-owned tool snapshot with the canonical local router.
+
+    Disabled mode is an exact no-op, including object identity. Enabled mode
+    copies the outer snapshot, removes every registry/plugin collision for the
+    reserved name, and appends one private copy of the canonical schema.
+    """
+    if not enabled:
+        return tools
+
+    local_tools = [
+        tool for tool in tools
+        if tool.get("function", {}).get("name") != TOOL_NAME
+    ]
+    local_tools.append(deepcopy(ROUTE_RESEARCH_MODE_TOOL))
+    return local_tools
 
 
 def validate_arguments(arguments: dict[str, Any]) -> str | None:

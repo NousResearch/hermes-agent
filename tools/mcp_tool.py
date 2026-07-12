@@ -5317,6 +5317,14 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # Preserve private operational schemas when rebuilding the registry-derived
+    # snapshot. A colliding plugin schema is replaced by the canonical local one.
+    from agent.research_mode_tool import inject_research_mode_tool
+    new_defs = inject_research_mode_tool(
+        new_defs, enabled=bool(getattr(agent, "_mode_router_enabled", False)),
+    )
+    new_names = {t["function"]["name"] for t in new_defs}
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.

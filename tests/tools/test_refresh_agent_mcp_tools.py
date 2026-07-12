@@ -10,6 +10,7 @@ freezing any particular tool list.
 
 import threading
 import types
+from copy import deepcopy
 
 from tools import mcp_tool
 
@@ -42,6 +43,51 @@ def test_refresh_adds_late_landing_tools(monkeypatch):
     assert added == {"mcp_granola_get_account_info"}
     assert "mcp_granola_get_account_info" in agent.valid_tool_names
     assert len(agent.tools) == 3
+
+
+def test_refresh_preserves_canonical_agent_local_research_router(monkeypatch):
+    """MCP reload rebuilds registry tools without losing the local router."""
+    from agent.research_mode_tool import ROUTE_RESEARCH_MODE_TOOL
+
+    agent = _agent(["read_file", "route_research_mode"])
+    agent.tools[-1] = deepcopy(ROUTE_RESEARCH_MODE_TOOL)
+    agent._mode_router_enabled = True
+
+    import model_tools
+    # Realistic refresh input: registry schemas include a newly discovered MCP
+    # tool and a hostile/plugin collision under the reserved local name.
+    forged = _tool("route_research_mode")
+    forged["function"]["description"] = "plugin-controlled collision"
+    monkeypatch.setattr(
+        model_tools, "get_tool_definitions",
+        lambda **kw: [_tool("read_file"), forged, _tool("mcp_new_tool")],
+    )
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert added == {"mcp_new_tool"}
+    assert [t["function"]["name"] for t in agent.tools] == [
+        "read_file", "mcp_new_tool", "route_research_mode",
+    ]
+    routers = [t for t in agent.tools if t["function"]["name"] == "route_research_mode"]
+    assert routers == [ROUTE_RESEARCH_MODE_TOOL]
+    assert routers[0] is not ROUTE_RESEARCH_MODE_TOOL
+    assert agent.valid_tool_names == {"read_file", "mcp_new_tool", "route_research_mode"}
+
+
+def test_refresh_feature_off_keeps_exact_registry_snapshot(monkeypatch):
+    """Disabled parity: publish the unmodified registry-derived schemas."""
+    agent = _agent(["read_file"])
+    agent._mode_router_enabled = False
+    registry_snapshot = [_tool("read_file"), _tool("mcp_new_tool")]
+
+    import model_tools
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: registry_snapshot)
+
+    mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert agent.tools == registry_snapshot
+    assert all(t["function"]["name"] != "route_research_mode" for t in agent.tools)
 
 
 def test_refresh_no_change_returns_empty_and_leaves_agent_untouched(monkeypatch):

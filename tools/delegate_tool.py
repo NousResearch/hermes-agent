@@ -22,6 +22,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 import os
+import subprocess
 import threading
 import time
 from concurrent.futures import (
@@ -1469,6 +1470,227 @@ def _dump_subagent_timeout_diagnostic(
         return None
 
 
+def _run_codex_exec(
+    goal: str,
+    child_progress_cb,
+    child,
+    task_index: int,
+    child_start: float,
+) -> Dict[str, Any]:
+    """Run ``codex exec --json`` directly and relay progress events
+    through the child's existing progress callback.
+
+    This is a narrow Codex-specific execution path that bypasses
+    ``CopilotACPClient`` (which requires ``--acp --stdio``, unsupported
+    by the current ``@openai/codex`` CLI).  All non-Codex delegation
+    continues through the normal subagent path.
+    """
+    # Determine workspace directory from the child's ACP cwd, falling
+    # back to the session working directory.
+    cwd = getattr(child, "_acp_cwd", None) or os.getcwd()
+
+    cmd = [
+        "codex", "exec", "--json",
+        "--sandbox", "workspace-write",
+        goal,
+    ]
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+    )
+
+    final_message: Optional[str] = None
+    turn_failed = False
+    error_message: Optional[str] = None
+
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                logger.debug("Codex exec: malformed JSONL line: %s", line[:200])
+                continue
+
+            event_type = event.get("type", "")
+
+            if event_type == "item.started":
+                item = event.get("item", {})
+                if isinstance(item, dict) and item.get("type") == "command_execution":
+                    cmd_text = str(item.get("command", ""))
+                    if len(cmd_text) > 150:
+                        cmd_text = cmd_text[:147] + "..."
+                    if child_progress_cb:
+                        try:
+                            child_progress_cb(
+                                "subagent.text",
+                                preview=f"\U0001f527 Codex is running: {cmd_text}",
+                            )
+                        except Exception:
+                            pass
+
+            elif event_type == "item.completed":
+                item = event.get("item", {})
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type", "")
+
+                if item_type == "command_execution":
+                    status = str(item.get("status") or "")
+                    exit_code = item.get("exit_code")
+                    if status == "completed":
+                        msg = "\u2705 Codex command completed"
+                        if exit_code is not None:
+                            msg += f" (exit {exit_code})"
+                    elif status == "failed":
+                        msg = f"\u274c Codex command failed (exit {exit_code})"
+                    else:
+                        msg = f"Codex command: {status}"
+                    if child_progress_cb:
+                        try:
+                            child_progress_cb("subagent.text", preview=msg)
+                        except Exception:
+                            pass
+
+                elif item_type == "file_change":
+                    changes = item.get("changes") or []
+                    if changes:
+                        paths: list[str] = []
+                        for c in changes[:3]:
+                            p = str(c.get("path", ""))
+                            paths.append(os.path.basename(p) if p else "?")
+                        suffix = (
+                            f" +{len(changes) - 3} more"
+                            if len(changes) > 3
+                            else ""
+                        )
+                        if child_progress_cb:
+                            try:
+                                child_progress_cb(
+                                    "subagent.text",
+                                    preview=(
+                                        "\u270f\ufe0f Codex changed: "
+                                        + ", ".join(paths)
+                                        + suffix
+                                    ),
+                                )
+                            except Exception:
+                                pass
+
+                elif item_type == "agent_message":
+                    text = str(item.get("text") or "")
+                    if text:
+                        final_message = text
+                        if child_progress_cb:
+                            try:
+                                child_progress_cb("subagent.text", preview=text)
+                            except Exception:
+                                pass
+
+            elif event_type == "turn.failed":
+                turn_failed = True
+                err_info = event.get("error", {})
+                if isinstance(err_info, dict):
+                    error_message = str(err_info.get("message") or "Codex turn failed")
+                else:
+                    error_message = str(err_info or "Codex turn failed")
+                if child_progress_cb:
+                    try:
+                        child_progress_cb(
+                            "subagent.text",
+                            preview=f"\u274c Codex turn failed: {error_message}",
+                        )
+                    except Exception:
+                        pass
+
+            elif event_type == "error":
+                error_message = str(event.get("message") or "Unknown Codex error")
+                if child_progress_cb:
+                    try:
+                        child_progress_cb(
+                            "subagent.text",
+                            preview=f"\u274c Codex error: {error_message}",
+                        )
+                    except Exception:
+                        pass
+
+            # thread.started, turn.started, turn.completed, and unknown
+            # event types are intentionally ignored.
+    finally:
+        # Ensure the subprocess is cleaned up even on interrupt.
+        _cleanup_codex_proc(proc)
+
+    duration = round(time.monotonic() - child_start, 2)
+
+    if turn_failed or error_message:
+        return {
+            "task_index": task_index,
+            "status": "failed",
+            "summary": error_message or "Codex task failed",
+            "error": error_message or "Codex task failed",
+            "exit_reason": "error",
+            "api_calls": 0,
+            "duration_seconds": duration,
+            "model": "codex",
+            "tokens": {"input": 0, "output": 0},
+            "tool_trace": [],
+            "messages": [],
+        }
+
+    if final_message:
+        return {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": final_message,
+            "api_calls": 0,
+            "duration_seconds": duration,
+            "model": "codex",
+            "exit_reason": "completed",
+            "tokens": {"input": 0, "output": 0},
+            "tool_trace": [],
+            "messages": [],
+        }
+
+    return {
+        "task_index": task_index,
+        "status": "completed",
+        "summary": "Codex completed the task.",
+        "api_calls": 0,
+        "duration_seconds": duration,
+        "model": "codex",
+        "exit_reason": "completed",
+        "tokens": {"input": 0, "output": 0},
+        "tool_trace": [],
+        "messages": [],
+    }
+
+
+def _cleanup_codex_proc(proc: subprocess.Popen) -> None:
+    """Terminate a codex subprocess, waiting briefly for graceful exit."""
+    if proc.poll() is not None:
+        return  # Already exited
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -1624,10 +1846,23 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback start failed: %s", e)
 
+        # ── Codex exec fast path ───────────────────────────────────────
+        # When the delegated command is exactly "codex", bypass the normal
+        # subagent / CopilotACPClient path and run codex exec --json
+        # directly in-process.  This gives us structured JSONL events that
+        # we relay as interim messages through the existing progress
+        # callback, without building a new transport abstraction.
+        if getattr(child, "acp_command", None) == "codex":
+            try:
+                return _run_codex_exec(
+                    goal, child_progress_cb, child, task_index, child_start
+                )
+            finally:
+                _heartbeat_stop.set()
+                if _subagent_id:
+                    _unregister_subagent(_subagent_id)
+
         # File-state coordination: reuse the stable subagent_id as the child's
-        # task_id so file_state writes, active-subagents registry, and TUI
-        # events all share one key.  Falls back to a fresh uuid only if the
-        # pre-built id is somehow missing.
         import uuid as _uuid
 
         child_task_id = _subagent_id or f"subagent-{task_index}-{_uuid.uuid4().hex[:8]}"

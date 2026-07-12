@@ -4504,6 +4504,19 @@ def _make_agent(
         pass
 
     cfg = _load_cfg()
+
+    # Register shell hooks from config.yaml at the single Desktop chokepoint
+    # (_make_agent).  Entry-point and WebSocket agent creation both converge
+    # here, so a single registration covers all Desktop paths.
+    # Let register_from_config resolve consent internally — don't pass a raw
+    # YAML string that would bypass the normalisation in shell_hooks.py:849-854.
+    try:
+        from agent.shell_hooks import register_from_config as _reg_hooks
+
+        _reg_hooks(cfg)
+    except Exception:
+        logger.debug("register_from_config failed in _make_agent", exc_info=True)
+
     agent_cfg = cfg.get("agent") or {}
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
     startup_skills = _parse_tui_skills_env()

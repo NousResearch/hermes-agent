@@ -1998,6 +1998,25 @@ class SlashCommandCompleter(Completer):
                             start_position=-len(sub_text),
                             display=sub,
                         )
+                return
+
+            # Skill subcommand completions — skill commands live in _skill_commands
+            # and have their own subcommands declared in metadata.hermes.ui.subcommands
+            # subcommands is a dict: {subcommand_name: description}
+            skill_info = self._iter_skill_commands().get(base_cmd)
+            if skill_info and " " not in sub_text:
+                sc_raw = skill_info.get("subcommands", {})
+                sc_dict = sc_raw if isinstance(sc_raw, dict) else {}
+                for sc, sc_desc in sc_dict.items():
+                    if sc.startswith(sub_lower) and sc != sub_lower:
+                        short_desc = sc_desc[:50] + ("..." if len(sc_desc) > 50 else "")
+                        yield Completion(
+                            sc,
+                            start_position=-len(sub_text),
+                            display=sc,
+                            display_meta=short_desc,
+                        )
+                return
             return
 
         word = text[1:]

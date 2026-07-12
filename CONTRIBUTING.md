@@ -445,6 +445,10 @@ metadata:
     related_skills: [other-skill-name]
     fallback_for_toolsets: [web]       # Optional — show only when toolset is unavailable
     requires_toolsets: [terminal]      # Optional — show only when toolset is available
+    ui:                                # Optional — tab-completion for subcommands
+      subcommands:
+        list: Short description
+        find: Short description
 ---
 
 # Skill Title
@@ -526,6 +530,19 @@ metadata:
 ```
 
 The filtering happens at prompt build time in `agent/prompt_builder.py`. The `build_skills_system_prompt()` function receives the set of available tools and toolsets from the agent and uses `_skill_should_show()` to evaluate each skill's conditions.
+
+### Skill subcommand completions
+
+Skills with subcommands can declare them in `metadata.hermes.ui` to get native tab-completion without touching `COMMAND_REGISTRY`. `subcommands` is a dict of `{subcommand: description}`. Descriptions are shown as `display_meta` in tab-completion and truncated at 50 chars with `...` if longer. If absent or malformed, no completions are yielded.
+
+```yaml
+metadata:
+  hermes:
+    ui:
+      subcommands:
+        list: Show all items in a table
+        find: Search by name or content
+```
 
 ### Skill setup metadata
 

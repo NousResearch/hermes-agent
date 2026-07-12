@@ -374,11 +374,17 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
+                    # Extract UI/completion metadata from frontmatter
+                    ui = (frontmatter or {}).get('metadata', {}).get('hermes', {}).get('ui', {})
+                    subcommands_raw = ui.get('subcommands', {})
+                    subcommands = subcommands_raw if isinstance(subcommands_raw, dict) else {}
+
                     _skill_commands[f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
+                        "subcommands": subcommands,
                     }
                 except Exception:
                     continue

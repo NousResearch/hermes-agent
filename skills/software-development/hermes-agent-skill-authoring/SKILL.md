@@ -50,6 +50,10 @@ metadata:
   hermes:
     tags: [short, descriptive, tags]
     related_skills: [other-skill, another-skill]
+    ui:
+      subcommands:                       # dict → enables /<skill> <tab> completion
+        sub1: Short description (≤50 chars)
+        sub2: Another short description
 ---
 ```
 

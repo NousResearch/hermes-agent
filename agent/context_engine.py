@@ -260,4 +260,14 @@ class ContextEngine(ABC):
         (e.g. recalculate DAG budgets, switch summary models).
         """
         self.context_length = context_length
+        # Apply per-model threshold overrides if set (longest substring match).
+        # Falls back to _config_threshold_percent (the raw config value) when
+        # no override matches. Plugin engines that override update_model() can
+        # call resolve_model_threshold() for the same logic.
+        from agent.context_compressor import resolve_model_threshold
+        _config_pct = getattr(self, "_config_threshold_percent", self.threshold_percent)
+        self._base_threshold_percent = resolve_model_threshold(
+            model, getattr(self, "model_thresholds", {}), _config_pct,
+        )
+        self.threshold_percent = self._base_threshold_percent
         self.threshold_tokens = int(context_length * self.threshold_percent)

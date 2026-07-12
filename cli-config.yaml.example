@@ -414,6 +414,16 @@ compression:
   # compaction doesn't fire with half the window still free; set above 0.75 to override.
   threshold: 0.50
 
+  # Per-model threshold overrides: keys are substring-matched against the model
+  # name (longest match wins). Useful when some models need different compaction
+  # points — e.g. a 1M-context model can compress later (0.30) while a 128K
+  # model needs to compress earlier (0.60). The small-context floor (75% for
+  # <512K models) still applies on top of per-model overrides.
+  # model_thresholds:
+  #   "glm-5.2": 0.40
+  #   "claude-sonnet": 0.35
+  #   "gpt-5": 0.30
+
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
   codex_gpt55_autoraise: true

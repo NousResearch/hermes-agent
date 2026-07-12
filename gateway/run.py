@@ -17425,6 +17425,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("model", "max_tokens"),
         ("compression", "enabled"),
         ("compression", "threshold"),
+        ("compression", "model_thresholds"),
         ("compression", "codex_gpt55_autoraise"),
         ("compression", "codex_app_server_auto"),
         ("compression", "target_ratio"),

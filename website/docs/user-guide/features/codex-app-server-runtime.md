@@ -18,6 +18,7 @@ Not using OpenAI Codex? `hermes setup --portal` configures a non-Codex backend w
 - Run OpenAI agent turns against your **ChatGPT subscription** (no API key required) using the same auth flow Codex CLI uses.
 - Use **Codex's own toolset and sandbox** — `shell` for terminal/read/write/search, `apply_patch` for structured edits, `update_plan` for planning, all running inside seatbelt/landlock sandboxing.
 - **Native Codex plugins** — Linear, GitHub, Gmail, Calendar, Canva, etc. — installed via `codex plugin` are auto-migrated and active in your Hermes session.
+- **Native Codex Computer Use on macOS** — when Codex's bundled Computer Use plugin is installed, GUI turns use Codex's persistent `node_repl` + accessibility-first runtime instead of Hermes' generic one-action screenshot loop.
 - **Hermes' richer tools come along** — web_search, web_extract, browser automation, vision, image generation, skills, and TTS work via an MCP callback. Codex calls back into Hermes for tools it doesn't have built in.
 - **Memory and skill nudges keep working** — Codex's events are projected into Hermes' message shape so the self-improvement loop sees a normal-looking transcript.
 
@@ -54,6 +55,44 @@ Examples (the ones the OpenClaw thread highlighted as "YouTube-video-worthy"):
 What's NOT migrated:
 - Plugins you haven't installed yet — install them in Codex first.
 - ChatGPT app marketplace entries (`app/list`) — these are already enabled inside codex by virtue of your account auth.
+
+#### Native Computer Use on macOS
+
+Codex Computer Use is also available through this runtime when the bundled
+`computer-use` and `node_repl` MCP servers are present in your Codex install.
+This is the same execution stack used by Codex desktop: a persistent JavaScript
+session, accessibility-tree reads and diffs, multiple UI actions per model
+turn, and a fresh app-state read after the actions. It avoids repeatedly
+sending full screenshots through Hermes' generic `computer_use` function.
+
+Check that Codex sees both components:
+
+```bash
+codex mcp get computer-use --json
+codex mcp get node_repl --json
+```
+
+The first time a Hermes task targets an app, Codex asks for app access through
+an MCP elicitation. Hermes routes that request through its normal approval UI:
+
+- **Allow once** grants only that call.
+- **Allow for this session** reuses the grant for the current Codex session.
+- **Always allow** persists the app grant so later Hermes/Codex sessions do not
+  prompt again.
+
+Hermes only enables this persistence bridge for the trusted `node_repl` server
+when Codex marks the request as the `computer-use` connector. Other MCP
+elicitations keep the existing fail-closed behavior. Headless contexts without
+an approval surface also decline new app grants; approve the app once from an
+interactive Hermes session first.
+
+:::note
+The ChatGPT subscription Responses endpoint used by Hermes' default
+`openai-codex` transport does not expose the Responses API `computer` tool.
+Selecting `codex_app_server` is therefore required for the native Codex GUI
+stack; merely selecting a Codex model on Hermes' default runtime still uses
+Hermes' generic `computer_use` tool.
+:::
 
 ### 3. Hermes tool callback (MCP server, registered in `~/.codex/config.toml`)
 
@@ -123,6 +162,7 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets �
 | Codex sandbox (seatbelt/landlock, profiles) | — | yes (Codex built-in) |
 | ChatGPT subscription auth | — | yes (via `openai-codex` provider) |
 | Native Codex plugins (Linear, GitHub, etc.) | — | yes (auto-migrated) |
+| Native Codex Computer Use (macOS) | — | yes (when bundled Codex plugin is installed) |
 | User MCP servers | yes | yes (auto-migrated to codex) |
 | Memory + skill review (background) | yes | yes (via item projection) |
 | Multi-turn conversations | yes | yes |
@@ -166,6 +206,7 @@ That command:
 - Migrates user MCP servers from `~/.hermes/config.yaml` to `~/.codex/config.toml`.
 - **Discovers and migrates installed native Codex plugins** (Linear, GitHub, Gmail, Calendar, Canva, etc.) by querying Codex's `plugin/list` RPC.
 - **Registers Hermes' own tools as an MCP server** so the codex subprocess can call back for tools codex doesn't ship with.
+- **Routes native Computer Use app grants through Hermes approvals**, preserving once/session/always scope.
 - **Writes `default_permissions = ":workspace"`** so the sandbox allows writes within the workspace without prompting for every operation.
 - Tells you what was migrated. Takes effect on the **next** session — the current cached agent keeps the prior runtime so prompt caches stay valid.
 
@@ -228,6 +269,12 @@ Codex requests approval before executing commands or applying patches. These get
 - **Deny** → command is rejected; Codex continues in read-only mode.
 
 For `apply_patch` (file edit) approvals, Hermes shows a summary of what changed (`1 add, 1 update: /tmp/new.py, /tmp/old.py`) when codex provides the data via the corresponding `fileChange` item.
+
+Codex Computer Use app grants use the same approval surface. Unlike shell and
+patch approvals, Computer Use advertises whether a grant can persist. Hermes
+passes that scope back to Codex, so choosing **Always allow** is durable across
+new app-server sessions. A missing approval UI or malformed/spoofed elicitation
+is declined.
 
 ## Permission profiles
 

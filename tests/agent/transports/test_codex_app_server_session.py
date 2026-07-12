@@ -661,6 +661,193 @@ class TestServerRequestRouting:
         s.run_turn("hi", turn_timeout=1.0)
         assert ("elic-1", {"action": "accept", "content": None, "_meta": None}) in client.responses
 
+    @pytest.mark.parametrize(
+        "choice,persist",
+        [("once", None), ("session", "session"), ("always", "always")],
+    )
+    def test_computer_use_elicitation_uses_interactive_approval_scope(
+        self, choice, persist
+    ):
+        """Codex Computer Use app approval reaches Hermes through node_repl.
+
+        Preserve the user's requested persistence scope on the MCP response so
+        an ``always`` approval survives future Codex app-server sessions.
+        """
+        client = FakeClient()
+        client.queue_server_request(
+            "mcpServer/elicitation/request", request_id="cua-1",
+            threadId="t", turnId="tu1", serverName="node_repl",
+            mode="form", message='Allow Computer Use to use "Hermes"?',
+            requestedSchema={"type": "object", "properties": {}},
+            _meta={
+                "codex_approval_kind": "mcp_tool_call",
+                "connector_id": "computer-use",
+                # Presentation labels may be localized; connector_id is the
+                # stable protocol identity.
+                "connector_name": "Uso del ordenador",
+                "persist": ["session", "always"],
+                "riskLevel": "low",
+                "tool_params": {"app": "com.nousresearch.hermes"},
+                "tool_params_display": [
+                    {"display_name": "App", "name": "app", "value": "Hermes"}
+                ],
+            },
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        approvals = []
+
+        def approve(command, description, *, allow_permanent=True):
+            approvals.append((command, description, allow_permanent))
+            return choice
+
+        s = make_session(client, approval_callback=approve)
+        s.run_turn("hi", turn_timeout=1.0)
+
+        response_meta = {"persist": persist} if persist else None
+        assert (
+            "cua-1",
+            {"action": "accept", "content": None, "_meta": response_meta},
+        ) in client.responses
+        assert approvals == [
+            (
+                'Allow Computer Use to use "Hermes"?',
+                "Codex Computer Use requests access to Hermes "
+                "(com.nousresearch.hermes)",
+                True,
+            )
+        ]
+
+    def test_computer_use_elicitation_uses_gateway_approval_router(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "mcpServer/elicitation/request", request_id="cua-2",
+            serverName="node_repl", mode="form",
+            message='Allow Computer Use to use "Finder"?',
+            requestedSchema={"type": "object", "properties": {}},
+            _meta={
+                "codex_approval_kind": "mcp_tool_call",
+                "connector_id": "computer-use",
+                "connector_name": "Computer Use",
+                "persist": ["session", "always"],
+                "tool_params": {"app": "com.apple.finder"},
+                "tool_params_display": [
+                    {"display_name": "App", "name": "app", "value": "Finder"}
+                ],
+            },
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        s = make_session(client)
+        with patch(
+            "tools.approval.request_elicitation_choice",
+            return_value="always",
+        ) as request_consent:
+            s.run_turn("hi", turn_timeout=1.0)
+
+        assert (
+            "cua-2",
+            {
+                "action": "accept",
+                "content": None,
+                "_meta": {"persist": "always"},
+            },
+        ) in client.responses
+        request_consent.assert_called_once_with(
+            'Allow Computer Use to use "Finder"?',
+            "Codex Computer Use requests access to Finder (com.apple.finder)",
+            allow_permanent=True,
+            surface="codex-computer-use",
+        )
+
+    def test_computer_use_rejects_unsupported_persistence_choice(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "mcpServer/elicitation/request", request_id="cua-scope",
+            serverName="node_repl", mode="form",
+            message='Allow Computer Use to use "Finder"?',
+            requestedSchema={"type": "object", "properties": {}},
+            _meta={
+                "codex_approval_kind": "mcp_tool_call",
+                "connector_id": "computer-use",
+                "connector_name": "Computer Use",
+                "persist": ["session"],
+                "tool_params": {"app": "com.apple.finder"},
+            },
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        s = make_session(client, approval_callback=lambda *a, **k: "always")
+        s.run_turn("hi", turn_timeout=1.0)
+
+        assert (
+            "cua-scope",
+            {"action": "decline", "content": None, "_meta": None},
+        ) in client.responses
+
+    def test_malformed_computer_use_persistence_fails_closed(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "mcpServer/elicitation/request", request_id="cua-malformed",
+            serverName="node_repl", mode="form",
+            message='Allow Computer Use to use "Finder"?',
+            requestedSchema={"type": "object", "properties": {}},
+            _meta={
+                "codex_approval_kind": "mcp_tool_call",
+                "connector_id": "computer-use",
+                "connector_name": "Computer Use",
+                "persist": 7,
+                "tool_params": {"app": "com.apple.finder"},
+            },
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        approvals = []
+        s = make_session(
+            client,
+            approval_callback=lambda *a, **k: approvals.append(a) or "always",
+        )
+
+        s.run_turn("hi", turn_timeout=1.0)
+
+        assert approvals == []
+        assert (
+            "cua-malformed",
+            {"action": "decline", "content": None, "_meta": None},
+        ) in client.responses
+
+    def test_spoofed_computer_use_elicitation_stays_declined(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "mcpServer/elicitation/request", request_id="cua-spoof",
+            serverName="some-third-party", mode="form",
+            message='Allow Computer Use to use "Finder"?',
+            requestedSchema={"type": "object", "properties": {}},
+            _meta={"connector_id": "computer-use"},
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        s = make_session(client, approval_callback=lambda *a, **k: "always")
+        s.run_turn("hi", turn_timeout=1.0)
+
+        assert (
+            "cua-spoof",
+            {"action": "decline", "content": None, "_meta": None},
+        ) in client.responses
+
     def test_mcp_elicitation_for_other_servers_declines(self):
         """For third-party MCP servers we decline by default so users
         explicitly opt in through codex's own UI."""

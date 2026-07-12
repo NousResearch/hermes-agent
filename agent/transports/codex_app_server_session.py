@@ -811,6 +811,9 @@ class CodexAppServerSession:
                                                   (we decline; user controls
                                                   permission profile in
                                                   ~/.codex/config.toml).
+          mcpServer/elicitation/request          — structured MCP consent;
+                                                  Computer Use app grants are
+                                                  bridged to Hermes approvals.
         """
         if self._client is None:
             return
@@ -845,6 +848,11 @@ class CodexAppServerSession:
                     rid,
                     {"action": "accept", "content": None, "_meta": None},
                 )
+            elif _is_computer_use_elicitation(params):
+                self._client.respond(
+                    rid,
+                    self._decide_computer_use_elicitation(params),
+                )
             else:
                 self._client.respond(
                     rid,
@@ -857,6 +865,61 @@ class CodexAppServerSession:
             self._client.respond_error(
                 rid, code=-32601, message=f"Unsupported method: {method}"
             )
+
+    def _decide_computer_use_elicitation(self, params: dict) -> dict:
+        """Bridge Codex Computer Use's app grant into Hermes approvals.
+
+        The Computer Use client runs inside the trusted ``node_repl`` MCP and
+        asks through a normal MCP elicitation. Preserve its advertised
+        persistence scope so "always" really survives future app-server
+        sessions. Missing UI, exceptions, and unknown choices fail closed.
+        """
+        message = str(params.get("message") or "Allow Computer Use app access?")
+        meta = params.get("_meta") or {}
+        tool_params = meta.get("tool_params") or {}
+        app_id = str(tool_params.get("app") or "unknown app")
+        display_name = _computer_use_display_name(meta) or app_id
+        description = (
+            f"Codex Computer Use requests access to {display_name} ({app_id})"
+        )
+        supported_persistence = _computer_use_persistence(meta)
+        if supported_persistence is None:
+            return {"action": "decline", "content": None, "_meta": None}
+        allow_permanent = "always" in supported_persistence
+
+        try:
+            if self._approval_callback is not None:
+                choice = self._approval_callback(
+                    message,
+                    description,
+                    allow_permanent=allow_permanent,
+                )
+            else:
+                from tools.approval import request_elicitation_choice
+
+                choice = request_elicitation_choice(
+                    message,
+                    description,
+                    allow_permanent=allow_permanent,
+                    surface="codex-computer-use",
+                )
+        except Exception:
+            logger.exception("Computer Use elicitation approval failed")
+            choice = "deny"
+
+        response_meta = None
+        if choice == "always":
+            if "always" not in supported_persistence:
+                return {"action": "decline", "content": None, "_meta": None}
+            response_meta = {"persist": "always"}
+        elif choice == "session":
+            if "session" not in supported_persistence:
+                return {"action": "decline", "content": None, "_meta": None}
+            response_meta = {"persist": "session"}
+        elif choice != "once":
+            return {"action": "decline", "content": None, "_meta": None}
+
+        return {"action": "accept", "content": None, "_meta": response_meta}
 
     def _decide_exec_approval(self, params: dict) -> str:
         if self._routing.auto_approve_exec:
@@ -1026,6 +1089,54 @@ def _apply_compaction_notification(result: TurnResult, note: dict) -> None:
     result.compacted = True
     result.thread_id = params.get("threadId") or result.thread_id
     result.turn_id = params.get("turnId") or result.turn_id
+
+
+def _is_computer_use_elicitation(params: dict) -> bool:
+    """Recognize only the trusted node_repl Computer Use approval shape.
+
+    Checking both the MCP server and Codex-injected connector metadata keeps a
+    third-party MCP from opting into this privileged persistence bridge merely
+    by copying the user-visible message.
+    """
+    if params.get("serverName") != "node_repl" or params.get("mode") != "form":
+        return False
+    meta = params.get("_meta") or {}
+    return (
+        isinstance(meta, dict)
+        and meta.get("codex_approval_kind") == "mcp_tool_call"
+        and meta.get("connector_id") == "computer-use"
+        and isinstance(meta.get("tool_params"), dict)
+        and isinstance(meta["tool_params"].get("app"), str)
+        and bool(meta["tool_params"]["app"].strip())
+        and _computer_use_persistence(meta) is not None
+    )
+
+
+def _computer_use_persistence(meta: dict) -> Optional[frozenset[str]]:
+    """Validate and normalize Computer Use's advertised grant scopes."""
+    value = meta.get("persist")
+    if not isinstance(value, list):
+        return None
+    if any(not isinstance(item, str) for item in value):
+        return None
+    scopes = frozenset(value)
+    if not scopes.issubset({"session", "always"}):
+        return None
+    return scopes
+
+
+def _computer_use_display_name(meta: dict) -> Optional[str]:
+    """Extract the app label supplied for the approval UI, if present."""
+    displays = meta.get("tool_params_display") or []
+    if not isinstance(displays, list):
+        return None
+    for item in displays:
+        if not isinstance(item, dict) or item.get("name") != "app":
+            continue
+        value = item.get("value")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _approval_choice_to_codex_decision(choice: str) -> str:

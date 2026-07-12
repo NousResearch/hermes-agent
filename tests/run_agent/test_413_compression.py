@@ -1137,3 +1137,40 @@ class TestOutputCapRecovery:
         assert result["output_cap_exhausted"] is True
         assert "Output token budget recovery failed" in result["final_response"]
         assert "compression" not in result["final_response"].lower()
+
+    def test_output_cap_retries_when_compaction_disabled(self, agent):
+        """Parsed vLLM output-cap errors must retry even when auto-compaction is off."""
+        agent.compression_enabled = False
+        context = 131_072
+        initial_input = 65_537
+        agent.max_tokens = 65_536
+        payloads = []
+
+        def _provider(**kwargs):
+            payloads.append(kwargs)
+            if len(payloads) == 1:
+                raise _make_vllm_output_cap_error(
+                    context=context,
+                    input_tokens=initial_input,
+                    max_tokens=kwargs["max_tokens"],
+                )
+            return _mock_response(content="Recovered with compaction disabled")
+
+        agent.client.chat.completions.create.side_effect = _provider
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result.get("compaction_disabled") is not True
+        mock_compress.assert_not_called()
+        assert len(payloads) == 2
+        assert payloads[0]["max_tokens"] == 65_536
+        # 65,535 available - 128 base reserve.
+        assert payloads[1]["max_tokens"] == 65_407
+        assert payloads[1]["messages"] == payloads[0]["messages"]

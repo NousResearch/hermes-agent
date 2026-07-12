@@ -3038,14 +3038,21 @@ def run_conversation(
                 # (``/new``), switch to a larger-context model, or reduce
                 # attachments.  Forced compaction via ``/compress``
                 # (``force=True``) is unaffected — it never reaches this loop.
+                # Parsed output-cap errors are exempt: the input already fits and
+                # recovery only lowers max_tokens — no compaction required.
                 _overflow_reasons = {
                     FailoverReason.long_context_tier,
                     FailoverReason.payload_too_large,
                     FailoverReason.context_overflow,
                 }
+                _is_recoverable_output_cap = (
+                    classified.reason == FailoverReason.context_overflow
+                    and parse_available_output_tokens_from_error(error_msg) is not None
+                )
                 if (
                     classified.reason in _overflow_reasons
                     and not getattr(agent, "compression_enabled", True)
+                    and not _is_recoverable_output_cap
                 ):
                     agent._flush_status_buffer()
                     agent._vprint(

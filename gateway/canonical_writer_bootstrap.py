@@ -13,7 +13,9 @@ import argparse
 import json
 import os
 import re
+import signal
 import stat
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +42,8 @@ from gateway.canonical_writer_db import (
 from gateway.canonical_writer_boundary import (
     DEFAULT_GATEWAY_UNIT,
     DEFAULT_SOCKET_PATH,
+    current_process_hardening_state,
+    harden_current_process_against_dumping,
 )
 from gateway.canonical_writer_handlers import (
     CanonicalWriterHandlers,
@@ -58,15 +62,29 @@ from gateway.canonical_writer_postgres_backend import (
 )
 from gateway.discord_edge_protocol import ed25519_public_key_id
 from gateway.discord_edge_writer_authority import CanonicalWriterDiscordAuthority
-from scripts.canonical_writer_service import (
+from gateway.canonical_writer_service import (
     CanonicalWriterServer,
-    SystemctlMainPidProvider,
+    SystemdCgroupV2MainPidProvider,
     SystemdMainPidAuthorizer,
 )
+from gateway.canonical_writer_readiness import (
+    boot_identity,
+    current_python_runtime_identity,
+    module_file_identity,
+    notify_systemd_attestation,
+    process_start_time_ticks,
+    readiness_receipt_sha256,
+    write_runtime_attestation,
+)
+import gateway.canonical_writer_service as canonical_writer_service_module
 
 
 _MAX_CONFIG_BYTES = 64 * 1024
 _MAX_KEY_BYTES = 8 * 1024
+WRITER_RUNTIME_ATTESTATION_VERSION = "canonical-writer-runtime-attestation-v1"
+DEFAULT_WRITER_RUNTIME_ATTESTATION_PATH = Path(
+    "/run/muncho-canonical-writer/runtime-attestation.json"
+)
 _SYSTEMD_UNIT = re.compile(r"^[A-Za-z0-9_.@:-]+\.service$")
 _FORBIDDEN_SECRET_KEYS = frozenset(
     {
@@ -89,6 +107,7 @@ _SERVICE_KEYS = frozenset(
         "gateway_uid",
         "writer_uid",
         "writer_gid",
+        "socket_gid",
         "projector_gid",
         "owner_discord_user_ids",
         "connection_timeout_seconds",
@@ -155,6 +174,7 @@ class CanonicalWriterServiceConfig:
     gateway_uid: int
     writer_uid: int
     writer_gid: int
+    socket_gid: int
     projector_gid: int
     owner_discord_user_ids: frozenset[str]
     connection_timeout_seconds: float
@@ -652,6 +672,12 @@ def load_service_config(
         minimum=1,
         maximum=(1 << 31) - 1,
     )
+    socket_gid = _integer(
+        service.get("socket_gid"),
+        "service.socket_gid",
+        minimum=1,
+        maximum=(1 << 31) - 1,
+    )
     projector_gid = _integer(
         service.get("projector_gid"),
         "service.projector_gid",
@@ -666,9 +692,9 @@ def load_service_config(
     )
     if gateway_uid == writer_uid:
         raise ValueError("gateway and writer UIDs must be distinct")
-    if projector_gid == writer_gid:
+    if len({writer_gid, socket_gid, projector_gid}) != 3:
         raise ValueError(
-            "projector read group must be distinct from the gateway socket group"
+            "writer, gateway socket, and projector groups must be distinct"
         )
     if (
         stat.S_IMODE(trusted_stat.st_mode) == 0o440
@@ -897,6 +923,7 @@ def load_service_config(
         gateway_uid=gateway_uid,
         writer_uid=writer_uid,
         writer_gid=writer_gid,
+        socket_gid=socket_gid,
         projector_gid=projector_gid,
         owner_discord_user_ids=frozenset(
             _required_text(value, "service.owner_discord_user_ids item")
@@ -1132,13 +1159,15 @@ def build_service(
     )
     authorizer = SystemdMainPidAuthorizer(
         config.gateway_unit,
-        SystemctlMainPidProvider(),
+        SystemdCgroupV2MainPidProvider(),
         expected_uid=config.gateway_uid,
     )
     server = CanonicalWriterServer(
         config.socket_path,
         authorizer=authorizer,
         dispatcher=dispatcher,
+        expected_socket_gid=config.socket_gid,
+        recover_stale_socket=True,
         socket_mode=0o660,
         connection_timeout_seconds=config.connection_timeout_seconds,
         max_connections=config.max_connections,
@@ -1152,7 +1181,132 @@ def build_service(
     )
 
 
+def publish_writer_runtime_readiness(
+    bootstrap: CanonicalWriterBootstrap,
+    *,
+    receipt_path: Path = DEFAULT_WRITER_RUNTIME_ATTESTATION_PATH,
+    _now_unix: Callable[[], float] = time.time,
+    _boot_identity_provider: Callable[[], tuple[str, int]] = boot_identity,
+    _process_start_time: Callable[[int], int] = process_start_time_ticks,
+    _notify: Callable[..., bool] = notify_systemd_attestation,
+    _process_hardening_provider: Callable[[], tuple[bool, int, int]] = (
+        current_process_hardening_state
+    ),
+    _python_runtime_provider: Callable[[], Mapping[str, Any]] = (
+        current_python_runtime_identity
+    ),
+) -> Mapping[str, Any]:
+    """Write and systemd-publish one live, secret-free writer attestation."""
+
+    if bootstrap.server.fileno < 0:
+        raise RuntimeError("writer listener is not active")
+    socket_stat = bootstrap.config.socket_path.lstat()
+    if (
+        not stat.S_ISSOCK(socket_stat.st_mode)
+        or socket_stat.st_uid != bootstrap.config.writer_uid
+        or socket_stat.st_gid != bootstrap.config.socket_gid
+        or stat.S_IMODE(socket_stat.st_mode) != 0o660
+    ):
+        raise RuntimeError("writer socket identity is invalid")
+    boot_id_sha256, boottime_ns = _boot_identity_provider()
+    pid = os.getpid()
+    dumpable, core_soft, core_hard = _process_hardening_provider()
+    if dumpable is not False or core_soft != 0 or core_hard != 0:
+        raise RuntimeError("writer process hardening attestation is invalid")
+    python_runtime = dict(_python_runtime_provider())
+    if set(python_runtime) != {
+        "effective_import_paths",
+        "unexpected_import_paths",
+        "loaded_module_origins",
+        "unexpected_import_origins",
+        "loaded_module_origins_complete",
+        "effective_environment_variable_names",
+        "effective_environment_variable_value_sha256",
+    } or python_runtime.get("loaded_module_origins_complete") is not True:
+        raise RuntimeError("writer Python runtime attestation is incomplete")
+    for name in (
+        "effective_import_paths",
+        "unexpected_import_paths",
+        "loaded_module_origins",
+        "unexpected_import_origins",
+        "effective_environment_variable_names",
+    ):
+        values = python_runtime.get(name)
+        if (
+            not isinstance(values, list)
+            or any(not isinstance(value, str) for value in values)
+            or values != sorted(set(values))
+        ):
+            raise RuntimeError("writer Python runtime attestation is invalid")
+    environment_names = python_runtime["effective_environment_variable_names"]
+    environment_value_sha256 = python_runtime.get(
+        "effective_environment_variable_value_sha256"
+    )
+    if (
+        not isinstance(environment_value_sha256, dict)
+        or list(environment_value_sha256) != environment_names
+        or any(
+            not isinstance(value, str)
+            or re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for value in environment_value_sha256.values()
+        )
+    ):
+        raise RuntimeError("writer Python environment attestation is invalid")
+    bootstrap_origin, bootstrap_sha256 = module_file_identity(__file__)
+    service_origin, service_sha256 = module_file_identity(
+        canonical_writer_service_module.__file__
+    )
+    observed_at_unix = int(_now_unix())
+    if observed_at_unix < 0:
+        raise RuntimeError("writer runtime attestation clock is invalid")
+    receipt = {
+        "version": WRITER_RUNTIME_ATTESTATION_VERSION,
+        "observed_at_unix": observed_at_unix,
+        "observed_at_boottime_ns": boottime_ns,
+        "boot_id_sha256": boot_id_sha256,
+        "writer_pid": pid,
+        "writer_start_time_ticks": _process_start_time(pid),
+        "bootstrap_module_origin": bootstrap_origin,
+        "bootstrap_module_sha256": bootstrap_sha256,
+        "service_module_origin": service_origin,
+        "service_module_sha256": service_sha256,
+        "statement_catalog_sha256": bootstrap.database.statement_catalog_sha256,
+        "database_identity": CANONICAL_WRITER_MIGRATION_OWNER,
+        "database_role": bootstrap.config.database.user,
+        "private_schema_identity_sha256": (
+            bootstrap.config.privileges.private_schema_identity_sha256
+        ),
+        "managed_hba_baseline_sha256": (
+            bootstrap.config.privileges
+            .managed_cloudsqladmin_hba_rejection_sha256
+        ),
+        "discord_edge_authority_enabled": (
+            bootstrap.config.discord_edge_authority.enabled
+        ),
+        "socket_path": str(bootstrap.config.socket_path),
+        "socket_inode": socket_stat.st_ino,
+        "socket_device": socket_stat.st_dev,
+        "socket_owner_uid": socket_stat.st_uid,
+        "socket_group_gid": socket_stat.st_gid,
+        "socket_mode": "0660",
+        "writer_dumpable": dumpable,
+        "writer_core_soft_limit": core_soft,
+        "writer_core_hard_limit": core_hard,
+        **python_runtime,
+    }
+    write_runtime_attestation(receipt_path, receipt)
+    digest = readiness_receipt_sha256(receipt)
+    if not _notify(
+        WRITER_RUNTIME_ATTESTATION_VERSION,
+        digest,
+        ready=True,
+    ):
+        raise RuntimeError("writer service requires systemd Type=notify")
+    return receipt
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    harden_current_process_against_dumping()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="absolute root-owned JSON config")
     parser.add_argument(
@@ -1171,6 +1325,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(json.dumps({"success": True, "event_count": count}, sort_keys=True))
         return 0
+    bootstrap.server.start()
+    try:
+        publish_writer_runtime_readiness(bootstrap)
+    except BaseException:
+        bootstrap.server.shutdown()
+        raise
+
+    def _shutdown(_signum, _frame):
+        bootstrap.server.shutdown()
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
     bootstrap.server.serve_forever()
     return 0
 

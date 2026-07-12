@@ -40,6 +40,17 @@ from gateway.canonical_writer_protocol import (
 
 _SYSTEMD_UNIT_RE = re.compile(r"^[A-Za-z0-9_.@:-]+\.service$")
 _PEER_CREDENTIALS_STRUCT = struct.Struct("3i")
+_SYSTEMD_SYSTEM_SLICE_PATH = Path("/sys/fs/cgroup/system.slice")
+_CGROUP_PROCS_FILENAME = "cgroup.procs"
+_MAX_CGROUP_PROCS_BYTES = 4096
+_MAX_LINUX_TGID = (1 << 31) - 1
+
+
+def _effective_uid() -> int:
+    getter = getattr(os, "geteuid", None)
+    if not callable(getter):
+        raise RuntimeError("Canonical writer service requires POSIX UID support")
+    return int(getter())
 
 
 @dataclass(frozen=True)
@@ -64,6 +75,241 @@ class TypedDispatcher(Protocol):
         payload: Mapping[str, Any],
         context: DispatchContext,
     ) -> DispatchResult: ...
+
+
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_mode),
+        int(value.st_uid),
+        int(value.st_gid),
+    )
+
+
+class SystemdCgroupV2MainPidProvider:
+    """Read one service TGID directly from a root-owned cgroup-v2 boundary.
+
+    ``systemctl show`` is unsuitable inside a peer-authentication heartbeat:
+    the helper process temporarily joins the caller's service cgroup and can
+    make an otherwise single-process boundary appear to contain a child.  This
+    provider never creates a process.  It opens every attacker-selectable path
+    component with ``O_NOFOLLOW`` and requires the same root-owned identity to
+    remain reachable through the stable directory descriptors after the read.
+    """
+
+    def __init__(
+        self,
+        *,
+        _system_slice_path: str | os.PathLike[str] = _SYSTEMD_SYSTEM_SLICE_PATH,
+        _expected_owner_uid: int = 0,
+        _expected_owner_gid: int = 0,
+    ) -> None:
+        system_slice_path = Path(_system_slice_path)
+        if not system_slice_path.is_absolute():
+            raise ValueError("systemd system.slice path must be absolute")
+        if _expected_owner_uid < 0 or _expected_owner_gid < 0:
+            raise ValueError("cgroup owner identity must be non-negative")
+        self._system_slice_path = system_slice_path
+        self._expected_owner_uid = int(_expected_owner_uid)
+        self._expected_owner_gid = int(_expected_owner_gid)
+
+    def _validate_identity(
+        self,
+        value: os.stat_result,
+        *,
+        directory: bool,
+    ) -> tuple[int, int, int, int, int]:
+        expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+        if (
+            not expected_type(value.st_mode)
+            or value.st_uid != self._expected_owner_uid
+            or value.st_gid != self._expected_owner_gid
+            or stat.S_IMODE(value.st_mode) & 0o022
+        ):
+            raise PermissionError("cgroup path lacks root-owned immutable identity")
+        return _file_identity(value)
+
+    @staticmethod
+    def _directory_open_flags() -> int:
+        if any(
+            not hasattr(os, name)
+            for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW")
+        ):
+            raise OSError("required Linux secure-open flags are unavailable")
+        return (
+            os.O_RDONLY
+            | os.O_CLOEXEC
+            | os.O_DIRECTORY
+            | os.O_NOFOLLOW
+        )
+
+    @staticmethod
+    def _file_open_flags() -> int:
+        if any(not hasattr(os, name) for name in ("O_CLOEXEC", "O_NOFOLLOW")):
+            raise OSError("required Linux secure-open flags are unavailable")
+        return (
+            os.O_RDONLY
+            | os.O_CLOEXEC
+            | os.O_NOFOLLOW
+        )
+
+    def _open_system_slice(self) -> tuple[int, tuple[int, int, int, int, int]]:
+        before = os.lstat(self._system_slice_path)
+        before_identity = self._validate_identity(before, directory=True)
+        descriptor = os.open(self._system_slice_path, self._directory_open_flags())
+        try:
+            opened_identity = self._validate_identity(
+                os.fstat(descriptor),
+                directory=True,
+            )
+            after_identity = self._validate_identity(
+                os.lstat(self._system_slice_path),
+                directory=True,
+            )
+            if before_identity != opened_identity or opened_identity != after_identity:
+                raise PermissionError("system.slice identity changed during open")
+            return descriptor, opened_identity
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def _open_child(
+        self,
+        parent_descriptor: int,
+        name: str,
+        *,
+        directory: bool,
+    ) -> tuple[int, tuple[int, int, int, int, int]]:
+        before = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        before_identity = self._validate_identity(before, directory=directory)
+        flags = self._directory_open_flags() if directory else self._file_open_flags()
+        descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+        try:
+            opened_identity = self._validate_identity(
+                os.fstat(descriptor),
+                directory=directory,
+            )
+            after_identity = self._validate_identity(
+                os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                ),
+                directory=directory,
+            )
+            if before_identity != opened_identity or opened_identity != after_identity:
+                raise PermissionError("cgroup path identity changed during open")
+            return descriptor, opened_identity
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def _read_bounded(self, descriptor: int) -> bytes:
+        chunks: list[bytes] = []
+        observed = 0
+        while observed <= _MAX_CGROUP_PROCS_BYTES:
+            chunk = os.read(descriptor, _MAX_CGROUP_PROCS_BYTES + 1 - observed)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            observed += len(chunk)
+        payload = b"".join(chunks)
+        if len(payload) > _MAX_CGROUP_PROCS_BYTES:
+            raise ValueError("cgroup.procs exceeds bounded input size")
+        return payload
+
+    def _identity_is_current(
+        self,
+        descriptor: int,
+        expected_identity: tuple[int, int, int, int, int],
+        *,
+        directory: bool,
+    ) -> bool:
+        return (
+            self._validate_identity(os.fstat(descriptor), directory=directory)
+            == expected_identity
+        )
+
+    def main_pid(self, unit_name: str) -> int | None:
+        if not _SYSTEMD_UNIT_RE.fullmatch(unit_name):
+            return None
+        system_slice_descriptor = unit_descriptor = procs_descriptor = -1
+        try:
+            system_slice_descriptor, system_slice_identity = self._open_system_slice()
+            unit_descriptor, unit_identity = self._open_child(
+                system_slice_descriptor,
+                unit_name,
+                directory=True,
+            )
+            procs_descriptor, procs_identity = self._open_child(
+                unit_descriptor,
+                _CGROUP_PROCS_FILENAME,
+                directory=False,
+            )
+            payload = self._read_bounded(procs_descriptor)
+
+            current_procs_identity = self._validate_identity(
+                os.stat(
+                    _CGROUP_PROCS_FILENAME,
+                    dir_fd=unit_descriptor,
+                    follow_symlinks=False,
+                ),
+                directory=False,
+            )
+            current_unit_identity = self._validate_identity(
+                os.stat(
+                    unit_name,
+                    dir_fd=system_slice_descriptor,
+                    follow_symlinks=False,
+                ),
+                directory=True,
+            )
+            current_system_slice_identity = self._validate_identity(
+                os.lstat(self._system_slice_path),
+                directory=True,
+            )
+            if (
+                current_procs_identity != procs_identity
+                or current_unit_identity != unit_identity
+                or current_system_slice_identity != system_slice_identity
+                or not self._identity_is_current(
+                    procs_descriptor,
+                    procs_identity,
+                    directory=False,
+                )
+                or not self._identity_is_current(
+                    unit_descriptor,
+                    unit_identity,
+                    directory=True,
+                )
+                or not self._identity_is_current(
+                    system_slice_descriptor,
+                    system_slice_identity,
+                    directory=True,
+                )
+            ):
+                return None
+
+            match = re.fullmatch(rb"([1-9][0-9]*)\n", payload)
+            if match is None:
+                return None
+            tgid = int(match.group(1))
+            return tgid if 0 < tgid <= _MAX_LINUX_TGID else None
+        except (OSError, ValueError):
+            return None
+        finally:
+            for descriptor in (
+                procs_descriptor,
+                unit_descriptor,
+                system_slice_descriptor,
+            ):
+                if descriptor >= 0:
+                    os.close(descriptor)
 
 
 class SystemctlMainPidProvider:
@@ -268,6 +514,8 @@ class CanonicalWriterServer:
         dispatcher: TypedDispatcher,
         peer_credentials_getter: PeerCredentialsGetter = linux_peer_credentials,
         replay_guard: ReplayGuard | None = None,
+        expected_socket_gid: int | None = None,
+        recover_stale_socket: bool = False,
         socket_mode: int = 0o660,
         connection_timeout_seconds: float = 30.0,
         max_connections: int = 8,
@@ -277,6 +525,15 @@ class CanonicalWriterServer:
             raise ValueError("Canonical writer socket path must be absolute")
         if socket_mode & ~0o777 or socket_mode & 0o007:
             raise ValueError("socket mode contains unsupported bits")
+        if (
+            expected_socket_gid is not None
+            and (type(expected_socket_gid) is not int or expected_socket_gid <= 0)
+        ):
+            raise ValueError("expected socket GID is invalid")
+        if type(recover_stale_socket) is not bool:
+            raise TypeError("stale socket recovery policy must be boolean")
+        if recover_stale_socket and expected_socket_gid is None:
+            raise ValueError("stale socket recovery requires an exact socket GID")
         if not 0 < connection_timeout_seconds <= 300:
             raise ValueError("connection timeout must be between 0 and 300 seconds")
         if not 1 <= max_connections <= 64:
@@ -286,6 +543,8 @@ class CanonicalWriterServer:
         self.dispatcher = dispatcher
         self.peer_credentials_getter = peer_credentials_getter
         self.replay_guard = replay_guard or ReplayGuard()
+        self.expected_socket_gid = expected_socket_gid
+        self.recover_stale_socket = recover_stale_socket
         self.socket_mode = socket_mode
         self.connection_timeout_seconds = connection_timeout_seconds
         self._listener: socket.socket | None = None
@@ -304,16 +563,38 @@ class CanonicalWriterServer:
     def start(self) -> None:
         if self._listener is not None:
             return
-        if self.socket_path.exists() or self.socket_path.is_symlink():
-            raise FileExistsError(f"refusing to replace existing socket path: {self.socket_path}")
+        if self.expected_socket_gid is not None:
+            parent_stat = self.socket_path.parent.stat()
+            if (
+                not stat.S_ISDIR(parent_stat.st_mode)
+                or self.socket_path.parent.is_symlink()
+                or parent_stat.st_uid != _effective_uid()
+                or parent_stat.st_gid != self.expected_socket_gid
+                or stat.S_IMODE(parent_stat.st_mode) != 0o2750
+            ):
+                raise PermissionError(
+                    "Canonical writer runtime directory ownership is invalid"
+                )
+        self._prepare_socket_path()
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         listener.set_inheritable(False)
         try:
             listener.bind(str(self.socket_path))
             os.chmod(self.socket_path, self.socket_mode)
             socket_stat = self.socket_path.lstat()
-            if not stat.S_ISSOCK(socket_stat.st_mode):
+            if (
+                not stat.S_ISSOCK(socket_stat.st_mode)
+                or socket_stat.st_uid != _effective_uid()
+                or stat.S_IMODE(socket_stat.st_mode) != self.socket_mode
+            ):
                 raise RuntimeError("bound Canonical writer endpoint is not a socket")
+            if (
+                self.expected_socket_gid is not None
+                and socket_stat.st_gid != self.expected_socket_gid
+            ):
+                raise PermissionError(
+                    "Canonical writer socket did not inherit the dedicated GID"
+                )
             self._listener_identity = (socket_stat.st_dev, socket_stat.st_ino)
             listener.listen()
             listener.settimeout(0.2)
@@ -322,6 +603,45 @@ class CanonicalWriterServer:
             self._unlink_owned_socket()
             raise
         self._listener = listener
+
+    def _prepare_socket_path(self) -> None:
+        try:
+            observed = self.socket_path.lstat()
+        except FileNotFoundError:
+            return
+        if not self.recover_stale_socket:
+            raise FileExistsError(
+                f"refusing to replace existing socket path: {self.socket_path}"
+            )
+        if (
+            not stat.S_ISSOCK(observed.st_mode)
+            or observed.st_uid != _effective_uid()
+            or observed.st_gid != self.expected_socket_gid
+            or stat.S_IMODE(observed.st_mode) != self.socket_mode
+            or observed.st_nlink != 1
+        ):
+            raise PermissionError(
+                "Canonical writer stale socket identity is invalid"
+            )
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(0.2)
+        try:
+            try:
+                probe.connect(str(self.socket_path))
+            except ConnectionRefusedError:
+                pass
+            except FileNotFoundError:
+                return
+            else:
+                raise FileExistsError(
+                    "Canonical writer socket is already accepting connections"
+                )
+        finally:
+            probe.close()
+        current = self.socket_path.lstat()
+        if (current.st_dev, current.st_ino) != (observed.st_dev, observed.st_ino):
+            raise RuntimeError("Canonical writer stale socket identity changed")
+        self.socket_path.unlink()
 
     def serve_forever(self) -> None:
         self.start()

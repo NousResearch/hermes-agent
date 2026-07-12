@@ -18,6 +18,8 @@ import contextvars
 import ctypes
 import errno
 import hashlib
+import os
+import stat
 import sys
 import threading
 from dataclasses import dataclass
@@ -32,6 +34,7 @@ DEFAULT_WRITER_USER = "muncho-canonical-writer"
 DEFAULT_DISCORD_EDGE_SOCKET_PATH = Path("/run/muncho-discord-egress/edge.sock")
 DEFAULT_DISCORD_EDGE_UNIT = "muncho-discord-egress.service"
 DEFAULT_DISCORD_EDGE_USER = "muncho-discord-egress"
+DEFAULT_MANAGED_CONFIG_PATH = Path("/etc/hermes/config.yaml")
 _MAX_RUNTIME_VALUE_CHARS = 1024
 
 
@@ -204,6 +207,53 @@ def writer_boundary_configured(config: Mapping[str, Any] | None = None) -> bool:
         return False
 
 
+def load_managed_writer_boundary_policy() -> Mapping[str, Any]:
+    """Load only the root-controlled managed policy for service activation.
+
+    This is deliberately separate from :func:`load_config`: a writer-only
+    service must freeze the same policy that was proven root-owned, never a
+    gateway-writable user overlay that happened to be loaded first.
+    """
+
+    from hermes_cli import managed_scope
+
+    managed_dir = managed_scope.get_managed_dir()
+    if managed_dir is None or managed_dir != DEFAULT_MANAGED_CONFIG_PATH.parent:
+        raise RuntimeError("canonical_writer_managed_directory_is_not_pinned")
+    directory_stat = os.lstat(managed_dir)
+    config_stat = os.lstat(DEFAULT_MANAGED_CONFIG_PATH)
+    if (
+        stat.S_ISLNK(directory_stat.st_mode)
+        or not stat.S_ISDIR(directory_stat.st_mode)
+        or directory_stat.st_uid != 0
+        or directory_stat.st_gid != 0
+        or stat.S_IMODE(directory_stat.st_mode) & 0o022
+        or stat.S_ISLNK(config_stat.st_mode)
+        or not stat.S_ISREG(config_stat.st_mode)
+        or config_stat.st_nlink != 1
+        or config_stat.st_uid != 0
+        or config_stat.st_gid != 0
+        or stat.S_IMODE(config_stat.st_mode) & 0o022
+    ):
+        raise RuntimeError("canonical_writer_managed_policy_is_not_root_controlled")
+    managed = managed_scope.load_managed_config()
+    if not isinstance(managed, Mapping):
+        raise RuntimeError("canonical_writer_managed_policy_is_not_a_mapping")
+    if not load_writer_boundary_config(managed).enabled:
+        raise RuntimeError("canonical_writer_managed_boundary_is_disabled")
+    return managed
+
+
+def managed_writer_boundary_configured() -> bool:
+    """Require the privileged boundary from immutable managed policy."""
+
+    try:
+        load_managed_writer_boundary_policy()
+        return True
+    except Exception:
+        return False
+
+
 def canonical_model_tools_configured() -> bool:
     """Return the restart-only Canonical model-tool availability policy.
 
@@ -307,24 +357,54 @@ def _disable_process_core_dumps() -> None:
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
-def harden_gateway_process_for_writer_boundary() -> bool:
+def current_process_hardening_state() -> tuple[bool, int, int]:
+    """Return the calling process' dumpable and core-limit state.
+
+    This is intentionally in-process: Linux does not expose another process'
+    ``PR_GET_DUMPABLE`` value through a stable procfs field.  Readiness binds
+    the result to the exact systemd MainPID and immutable module digest.
+    """
+
+    if sys.platform != "linux":
+        raise RuntimeError(
+            "canonical_writer_boundary_requires_linux_process_hardening"
+        )
+    import resource
+
+    core_soft, core_hard = resource.getrlimit(resource.RLIMIT_CORE)
+    return (
+        _linux_prctl(_PR_GET_DUMPABLE, 0) != 0,
+        int(core_soft),
+        int(core_hard),
+    )
+
+
+def harden_current_process_against_dumping() -> None:
+    """Disable core dumps and same-UID ptrace-style inspection."""
+
+    if sys.platform != "linux":
+        raise RuntimeError(
+            "canonical_writer_boundary_requires_linux_process_hardening"
+        )
+    _disable_process_core_dumps()
+    _linux_prctl(_PR_SET_DUMPABLE, 0)
+    if _linux_prctl(_PR_GET_DUMPABLE, 0) != 0:
+        raise RuntimeError("gateway_process_remains_dumpable")
+
+
+def harden_gateway_process_for_writer_boundary(
+    config: Mapping[str, Any] | None = None,
+) -> bool:
     """Make exact-PID authorization resistant to same-UID child injection."""
 
     global _PROCESS_HARDENED
-    config = frozen_writer_boundary_config()
-    if not config.enabled:
+    frozen = frozen_writer_boundary_config(config)
+    if not frozen.enabled:
         return False
     with _PROCESS_HARDENING_LOCK:
         if _PROCESS_HARDENED:
             return True
-        if sys.platform != "linux":
-            raise RuntimeError(
-                "canonical_writer_boundary_requires_linux_process_hardening"
-            )
-        _disable_process_core_dumps()
-        _linux_prctl(_PR_SET_DUMPABLE, 0)
-        if _linux_prctl(_PR_GET_DUMPABLE, 0) != 0:
-            raise RuntimeError("gateway_process_remains_dumpable")
+        harden_current_process_against_dumping()
         _PROCESS_HARDENED = True
         return True
 
@@ -456,8 +536,8 @@ def canonical_writer_call(
     from gateway.canonical_writer_client import (
         CanonicalWriterClient,
         ExactServerMainPidAuthorizer,
-        SystemctlServerMainPidProvider,
     )
+    from gateway.canonical_writer_service import SystemdCgroupV2MainPidProvider
 
     with _CLIENT_LOCK:
         client = _CLIENTS.get(config)
@@ -481,7 +561,7 @@ def canonical_writer_call(
                 server_authorizer=ExactServerMainPidAuthorizer(
                     server_unit=config.writer_unit,
                     expected_server_uid=writer_uid,
-                    main_pid_provider=SystemctlServerMainPidProvider(),
+                    main_pid_provider=SystemdCgroupV2MainPidProvider(),
                 ),
             )
             _CLIENTS[config] = client

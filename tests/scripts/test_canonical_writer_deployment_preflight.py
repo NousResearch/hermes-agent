@@ -20,7 +20,7 @@ from gateway.canonical_writer_postgres_backend import (
     EXPECTED_HELPER_ROUTINE_SIGNATURES,
     EXPECTED_ROUTINE_SIGNATURES,
 )
-from scripts import canonical_writer_deployment_preflight as preflight
+from gateway import canonical_writer_deployment_preflight as preflight
 
 
 _WRITER_REVISION = "1" * 40
@@ -29,13 +29,14 @@ _WRITER_ARTIFACT_ROOT = f"/opt/muncho-canonical-writer/releases/{_WRITER_REVISIO
 _WRITER_INTERPRETER = f"{_WRITER_ARTIFACT_ROOT}/venv/bin/python3.12"
 _WRITER_MODULE_ORIGIN = (
     f"{_WRITER_ARTIFACT_ROOT}/venv/lib/python3.12/site-packages/"
-    "scripts/canonical_writer_bootstrap.py"
+    "gateway/canonical_writer_bootstrap.py"
 )
 _WRITER_CONFIG = "/etc/muncho-canonical-writer/writer.json"
 _WRITER_RUNTIME = "/run/muncho-canonical-writer"
 _WRITER_EXPORT = "/var/lib/muncho-canonical-writer/projection"
 _GATEWAY_MODULE_ORIGIN = (
-    f"{_WRITER_ARTIFACT_ROOT}/venv/lib/python3.12/site-packages/gateway/run.py"
+    f"{_WRITER_ARTIFACT_ROOT}/venv/lib/python3.12/site-packages/gateway/"
+    "canonical_writer_gateway_bootstrap.py"
 )
 
 
@@ -123,7 +124,7 @@ def _writer_deployment():
         _WRITER_INTERPRETER,
         "-I",
         "-m",
-        "scripts.canonical_writer_bootstrap",
+        "gateway.canonical_writer_bootstrap",
         "--config",
         _WRITER_CONFIG,
     ]
@@ -135,7 +136,7 @@ def _writer_deployment():
             "revision": _WRITER_REVISION,
             "artifact_digest_sha256": _WRITER_ARTIFACT_DIGEST,
             "interpreter": _WRITER_INTERPRETER,
-            "module": "scripts.canonical_writer_bootstrap",
+            "module": "gateway.canonical_writer_bootstrap",
             "module_origin": _WRITER_MODULE_ORIGIN,
             "config_path": _WRITER_CONFIG,
             "exec_start": exec_start,
@@ -153,7 +154,7 @@ def _writer_deployment():
                 "name": "muncho-canonical-writer.service",
                 "exec_start": exec_start,
                 "interpreter": _WRITER_INTERPRETER,
-                "module": "scripts.canonical_writer_bootstrap",
+                "module": "gateway.canonical_writer_bootstrap",
                 "config_path": _WRITER_CONFIG,
                 "working_directory": _WRITER_ARTIFACT_ROOT,
                 "revision": _WRITER_REVISION,
@@ -212,8 +213,13 @@ def _writer_deployment():
 
 def _gateway_deployment(writer_deployment):
     policy = writer_deployment["policy"]
-    exec_start = [_WRITER_INTERPRETER, "-I", "-m", "gateway.run"]
-    read_write_paths = ["/run/hermes-cloud-gateway", "/var/lib/hermes-gateway"]
+    exec_start = [
+        _WRITER_INTERPRETER,
+        "-I",
+        "-m",
+        "gateway.canonical_writer_gateway_bootstrap",
+    ]
+    read_write_paths = ["/run/hermes-cloud-gateway"]
     return {
         "policy": {
             "unit_name": "hermes-cloud-gateway.service",
@@ -221,7 +227,7 @@ def _gateway_deployment(writer_deployment):
             "revision": _WRITER_REVISION,
             "artifact_digest_sha256": _WRITER_ARTIFACT_DIGEST,
             "interpreter": _WRITER_INTERPRETER,
-            "module": "gateway.run",
+            "module": "gateway.canonical_writer_gateway_bootstrap",
             "module_origin": _GATEWAY_MODULE_ORIGIN,
             "exec_start": exec_start,
             "working_directory": _WRITER_ARTIFACT_ROOT,
@@ -238,7 +244,7 @@ def _gateway_deployment(writer_deployment):
                 "name": "hermes-cloud-gateway.service",
                 "exec_start": exec_start,
                 "interpreter": _WRITER_INTERPRETER,
-                "module": "gateway.run",
+                "module": "gateway.canonical_writer_gateway_bootstrap",
                 "module_origin": _GATEWAY_MODULE_ORIGIN,
                 "working_directory": _WRITER_ARTIFACT_ROOT,
                 "revision": _WRITER_REVISION,
@@ -320,7 +326,7 @@ def _writer_authority_surface(writer_deployment):
         _WRITER_INTERPRETER,
         "-I",
         "-m",
-        "scripts.canonical_writer_bootstrap",
+        "gateway.canonical_writer_bootstrap",
         "--config",
         _WRITER_CONFIG,
         "--export-events",
@@ -380,7 +386,7 @@ def _writer_authority_surface(writer_deployment):
                 "revision": _WRITER_REVISION,
                 "artifact_digest_sha256": _WRITER_ARTIFACT_DIGEST,
                 "interpreter": _WRITER_INTERPRETER,
-                "module": "scripts.canonical_writer_bootstrap",
+                "module": "gateway.canonical_writer_bootstrap",
                 "module_origin": _WRITER_MODULE_ORIGIN,
                 "config_path": _WRITER_CONFIG,
                 "export_path": export_path,
@@ -484,7 +490,7 @@ def _managed_hba_receipt():
         "server_certificate_sha256": "d" * 64,
         "database": "cloudsqladmin",
         "user": "canonical_writer",
-        "observed_at_unix": 1_799_999_900,
+        "observed_at_unix": 1_799_999_990,
         "expires_at_unix": 1_800_000_200,
         "sqlstate": "28000",
         "server_message": (
@@ -507,6 +513,7 @@ def _good_snapshot():
         "UMask": "0077",
         "CapabilityBoundingSet": "",
         "AmbientCapabilities": "",
+        "LimitCORE": "0",
         "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6",
     })
     private_schema_identity = _private_schema_identity()
@@ -515,6 +522,7 @@ def _good_snapshot():
         managed_hba_receipt
     ).sha256
     return {
+        "deployment_mode": "writer_only",
         "collected_at_unix": 1_800_000_000,
         "gateway_uid": 1001,
         "gateway_gid": 2000,
@@ -595,7 +603,7 @@ def _good_snapshot():
             },
             "sources": [
                 {
-                    "name": "discord_bot_token",
+                    "name": "canonical_writer_database_password",
                     "provisioned_by": "systemd",
                     "gateway_file_access": {
                         "read": False,
@@ -609,6 +617,25 @@ def _good_snapshot():
                     },
                 }
             ],
+        },
+        "discord_edge": {
+            "complete": True,
+            "collected_by_uid": 0,
+            "observed_at_unix": 1_800_000_000,
+            "gateway_enabled": False,
+            "writer_authority_enabled": False,
+            "unit_name": "muncho-discord-egress.service",
+            "unit_exists": False,
+            "unit_enabled": False,
+            "unit_active": False,
+            "main_pid": 0,
+            "config_path": "/etc/muncho/discord-edge.json",
+            "config_exists": False,
+            "token_path": "/etc/muncho/discord-edge-credentials/bot-token",
+            "token_exists": False,
+            "socket_path": "/run/muncho-discord-egress/edge.sock",
+            "socket_exists": False,
+            "process_pids": [],
         },
         "helper": {
             "exists": False,
@@ -1148,6 +1175,38 @@ def test_preflight_requires_fresh_root_collected_bound_hba_evidence(mutate):
     assert "database.least_privilege" in _failed_names(snapshot)
 
 
+def test_preflight_accepts_distinct_fresh_active_hba_receipt_bound_to_baseline():
+    snapshot = _good_snapshot()
+    active = copy.deepcopy(_managed_hba_receipt())
+    active["observed_at_unix"] = 1_799_999_995
+    active["expires_at_unix"] = 1_800_000_025
+    evidence = snapshot["database"][
+        "managed_cloudsqladmin_hba_rejection_evidence"
+    ]
+    evidence["receipt"] = active
+    evidence["receipt_sha256"] = managed_cloudsqladmin_hba_receipt_from_mapping(
+        active
+    ).sha256
+
+    assert preflight.evaluate_snapshot(snapshot).ok
+
+
+def test_preflight_rejects_active_hba_evidence_older_than_thirty_seconds():
+    snapshot = _good_snapshot()
+    stale = copy.deepcopy(_managed_hba_receipt())
+    stale["observed_at_unix"] = 1_799_999_969
+    stale["expires_at_unix"] = 1_800_000_100
+    evidence = snapshot["database"][
+        "managed_cloudsqladmin_hba_rejection_evidence"
+    ]
+    evidence["receipt"] = stale
+    evidence["receipt_sha256"] = managed_cloudsqladmin_hba_receipt_from_mapping(
+        stale
+    ).sha256
+
+    assert "database.least_privilege" in _failed_names(snapshot)
+
+
 def test_preflight_requires_every_pinned_non_executable_helper_identity():
     snapshot = _good_snapshot()
     snapshot["database"]["policy"]["helper_routine_identities"].pop()
@@ -1287,13 +1346,65 @@ def test_preflight_rejects_helper_identity_drift_and_accidental_execute():
         ),
         (
             lambda value: value["runtime_secret_sources"]["sources"][0].update(
-                name="model_api_key"
+                name="discord_bot_token"
             ),
             "runtime_secrets.discord_source_isolated",
         ),
     ],
 )
 def test_process_and_runtime_secret_evidence_fail_closed(mutate, failed):
+    snapshot = _good_snapshot()
+    mutate(snapshot)
+
+    assert failed in _failed_names(snapshot)
+
+
+@pytest.mark.parametrize(
+    "mutate,failed",
+    [
+        (
+            lambda value: value.update(deployment_mode="full"),
+            "deployment.writer_only_mode",
+        ),
+        (
+            lambda value: value["discord_edge"].update(gateway_enabled=True),
+            "discord_edge.writer_only_disabled",
+        ),
+        (
+            lambda value: value["discord_edge"].update(
+                writer_authority_enabled=True
+            ),
+            "discord_edge.writer_only_disabled",
+        ),
+        (
+            lambda value: value["discord_edge"].update(unit_exists=True),
+            "discord_edge.writer_only_unit_absent",
+        ),
+        (
+            lambda value: value["discord_edge"].update(config_exists=True),
+            "discord_edge.writer_only_config_absent",
+        ),
+        (
+            lambda value: value["discord_edge"].update(token_exists=True),
+            "discord_edge.writer_only_token_absent",
+        ),
+        (
+            lambda value: value["discord_edge"].update(socket_exists=True),
+            "discord_edge.writer_only_socket_absent",
+        ),
+        (
+            lambda value: value["discord_edge"].update(process_pids=[9001]),
+            "discord_edge.writer_only_process_absent",
+        ),
+        (
+            lambda value: value["discord_edge"].update(
+                observed_at_unix=1_799_999_969
+            ),
+            "discord_edge.writer_only_evidence_fresh",
+        ),
+    ],
+)
+def test_writer_only_discord_surface_must_be_exactly_absent(mutate, failed):
     snapshot = _good_snapshot()
     mutate(snapshot)
 
@@ -1333,7 +1444,7 @@ def test_process_and_runtime_secret_evidence_fail_closed(mutate, failed):
         ),
         (
             lambda value: value["writer_deployment"]["policy"].update(
-                module="scripts.canonical_writer_service"
+                module="gateway.canonical_writer_service"
             ),
             "writer_deployment.policy_valid",
         ),
@@ -2169,3 +2280,19 @@ def test_cli_emits_stable_json_and_nonzero_for_failure(tmp_path, capsys):
     assert output == json.dumps(
         decoded, sort_keys=True, separators=(",", ":")
     ) + "\n"
+
+
+def test_cli_never_treats_arbitrary_passing_json_as_activation_authority(
+    tmp_path,
+    capsys,
+):
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps(_good_snapshot()), encoding="utf-8")
+
+    assert preflight.main(["--input", str(path)]) == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is False
+    assert any(
+        check["name"] == "snapshot.non_authoritative"
+        for check in report["checks"]
+    )

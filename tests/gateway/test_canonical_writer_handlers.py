@@ -27,7 +27,7 @@ from gateway.discord_edge_writer_authority import (
     CanonicalWriterDiscordAuthority,
     derive_routeback_edge_idempotency_key,
 )
-from scripts.canonical_writer_service import DispatchContext, PeerCredentials
+from gateway.canonical_writer_service import DispatchContext, PeerCredentials
 
 
 NOW = dt.datetime(2026, 7, 12, 8, 0, tzinfo=dt.timezone.utc)

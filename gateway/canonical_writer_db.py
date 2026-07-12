@@ -1284,6 +1284,7 @@ class CanonicalWriterDB:
                 observed_hba_receipt,
                 config=self._config,
                 now_unix=int(time.time()),
+                require_expected_fresh=False,
             )
             with self._managed_hba_lock:
                 self._active_managed_hba_receipt = observed_hba_receipt

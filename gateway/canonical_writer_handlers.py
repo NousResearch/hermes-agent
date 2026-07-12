@@ -1300,7 +1300,7 @@ class CanonicalWriterHandlers:
 
 
 class CanonicalWriterTypedDispatcher:
-    """Adapter for ``scripts.canonical_writer_service.TypedDispatcher``."""
+    """Adapter for ``gateway.canonical_writer_service.TypedDispatcher``."""
 
     def __init__(
         self,
@@ -1314,7 +1314,7 @@ class CanonicalWriterTypedDispatcher:
         )
 
     def dispatch(self, operation: Any, payload: Mapping[str, Any], context: Any) -> Any:
-        from scripts.canonical_writer_service import DispatchResult
+        from gateway.canonical_writer_service import DispatchResult
 
         try:
             typed_operation = CanonicalWriterOperation(operation)

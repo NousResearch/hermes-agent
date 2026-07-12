@@ -33,8 +33,8 @@ from gateway.canonical_writer_postgres_backend import (
 from gateway.discord_edge_writer_authority import (
     derive_routeback_edge_idempotency_key,
 )
-from scripts.canonical_writer_bootstrap import build_service
-from scripts.canonical_writer_service import DispatchContext, PeerCredentials
+from gateway.canonical_writer_bootstrap import build_service
+from gateway.canonical_writer_service import DispatchContext, PeerCredentials
 import tools.canonical_brain_tool as canonical_tool
 
 
@@ -596,6 +596,7 @@ def test_bootstrap_dispatcher_preserves_flat_public_writer_contract(monkeypatch)
     config = SimpleNamespace(
         writer_uid=2002,
         writer_gid=2002,
+        socket_gid=2001,
         gateway_uid=2001,
         owner_discord_user_ids=frozenset({"owner-1"}),
         gateway_unit="hermes-cloud-gateway.service",

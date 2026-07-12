@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import stat
 import time
+import uuid
 from copy import deepcopy
 from contextlib import contextmanager
 from dataclasses import replace
@@ -29,12 +32,18 @@ from gateway.canonical_writer_boundary import DEFAULT_SOCKET_PATH
 from gateway.discord_edge_protocol import ed25519_public_key_id
 from gateway.discord_edge_writer_authority import CanonicalWriterDiscordAuthority
 from scripts.canonical_brain_event_projector import read_events
-from scripts.canonical_writer_bootstrap import (
+from gateway.canonical_writer_bootstrap import (
+    WRITER_RUNTIME_ATTESTATION_VERSION,
     build_service,
     export_projection_events,
     load_service_config,
+    publish_writer_runtime_readiness,
 )
-from scripts.canonical_writer_service import DispatchContext, PeerCredentials
+from gateway.canonical_writer_service import (
+    DispatchContext,
+    PeerCredentials,
+    SystemdCgroupV2MainPidProvider,
+)
 
 
 EVENT_ID_1 = "11111111-1111-4111-8111-111111111111"
@@ -136,7 +145,8 @@ def _config_value(tmp_path):
             "gateway_uid": os.getuid() + 1,
             "writer_uid": os.getuid(),
             "writer_gid": os.getgid(),
-            "projector_gid": os.getgid() + 1,
+            "socket_gid": os.getgid() + 1,
+            "projector_gid": os.getgid() + 2,
             "owner_discord_user_ids": ["owner-1"],
             "connection_timeout_seconds": 20,
             "max_connections": 4,
@@ -218,6 +228,7 @@ def test_loads_explicit_secret_free_config_and_pins_routine_catalog(tmp_path):
 
     assert config.gateway_uid != config.writer_uid
     assert config.owner_discord_user_ids == frozenset({"owner-1"})
+    assert len({config.writer_gid, config.socket_gid, config.projector_gid}) == 3
     assert config.projector_gid != config.writer_gid
     assert config.database.credential.path == tmp_path / "database-password"
     assert not hasattr(config.database, "password")
@@ -280,6 +291,11 @@ def test_config_rejects_symlink_secret_fields_unknown_fields_and_same_uid(tmp_pa
     value = _config_value(tmp_path)
     value["service"]["gateway_uid"] = value["service"]["writer_uid"]
     with pytest.raises(ValueError, match="distinct"):
+        _load(_write_config(tmp_path, value))
+
+    value = _config_value(tmp_path)
+    value["service"]["socket_gid"] = value["service"]["writer_gid"]
+    with pytest.raises(ValueError, match="groups must be distinct"):
         _load(_write_config(tmp_path, value))
 
 
@@ -641,6 +657,10 @@ def test_build_service_attests_before_exposing_typed_dispatch(tmp_path):
     assert response.status == "ok"
     assert response.result == {"pong": True}
     assert bootstrap.database.calls[0][0] == "op_ping"
+    assert isinstance(
+        bootstrap.server.authorizer.main_pid_provider,
+        SystemdCgroupV2MainPidProvider,
+    )
 
 
 def test_build_service_rejects_runtime_identity_drift(tmp_path):
@@ -680,6 +700,76 @@ def test_build_service_keeps_routeback_fail_closed_when_authority_disabled(
     bootstrap = build_service(config, _database_factory=_FakeDatabase)
 
     assert bootstrap.handlers.discord_edge_authority is None
+
+
+def test_writer_runtime_readiness_binds_socket_process_and_systemd_status(
+    tmp_path,
+):
+    socket_path = Path("/tmp") / f"cw-ready-{uuid.uuid4().hex}.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    os.chown(socket_path, -1, os.getgid())
+    socket_path.chmod(0o660)
+    notifications = []
+    bootstrap = SimpleNamespace(
+        server=SimpleNamespace(fileno=listener.fileno()),
+        config=SimpleNamespace(
+            socket_path=socket_path,
+            writer_uid=os.getuid(),
+            socket_gid=os.getgid(),
+            database=SimpleNamespace(user="canonical_writer"),
+            privileges=SimpleNamespace(
+                private_schema_identity_sha256="c" * 64,
+                managed_cloudsqladmin_hba_rejection_sha256="d" * 64,
+            ),
+            discord_edge_authority=SimpleNamespace(enabled=False),
+        ),
+        database=SimpleNamespace(statement_catalog_sha256="e" * 64),
+    )
+    receipt_path = tmp_path / "writer-runtime-attestation.json"
+
+    try:
+        receipt = publish_writer_runtime_readiness(
+            bootstrap,
+            receipt_path=receipt_path,
+            _now_unix=lambda: 1_800_000_000,
+            _boot_identity_provider=lambda: ("b" * 64, 987654321),
+            _process_start_time=lambda _pid: 123456,
+            _notify=lambda *args, **kwargs: (
+                notifications.append((args, kwargs)) or True
+            ),
+            _process_hardening_provider=lambda: (False, 0, 0),
+            _python_runtime_provider=lambda: {
+                "effective_import_paths": ["/opt/release/site-packages"],
+                "unexpected_import_paths": [],
+                "loaded_module_origins": [
+                    "/opt/release/site-packages/gateway/"
+                    "canonical_writer_bootstrap.py"
+                ],
+                "unexpected_import_origins": [],
+                "loaded_module_origins_complete": True,
+                "effective_environment_variable_names": ["NOTIFY_SOCKET"],
+                "effective_environment_variable_value_sha256": {
+                    "NOTIFY_SOCKET": "d" * 64
+                },
+            },
+        )
+    finally:
+        listener.close()
+        socket_path.unlink(missing_ok=True)
+
+    assert receipt["version"] == WRITER_RUNTIME_ATTESTATION_VERSION
+    assert receipt["writer_pid"] == os.getpid()
+    assert receipt["writer_start_time_ticks"] == 123456
+    assert receipt["socket_group_gid"] == os.getgid()
+    assert receipt["socket_mode"] == "0660"
+    assert receipt["discord_edge_authority_enabled"] is False
+    assert receipt["writer_dumpable"] is False
+    assert receipt["writer_core_soft_limit"] == 0
+    assert receipt["writer_core_hard_limit"] == 0
+    assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o600
+    assert notifications[0][0][0] == WRITER_RUNTIME_ATTESTATION_VERSION
+    assert notifications[0][1] == {"ready": True}
 
 
 def _snapshot_backend(tmp_path, monkeypatch, pages):

@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -9,6 +10,7 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,11 +34,12 @@ from gateway.canonical_writer_protocol import (
     parse_response,
     receive_message,
 )
-from scripts.canonical_writer_service import (
+from gateway.canonical_writer_service import (
     CanonicalWriterServer,
     DispatchResult,
     OperationDispatcher,
     PeerCredentials,
+    SystemdCgroupV2MainPidProvider,
     SystemdMainPidAuthorizer,
 )
 
@@ -138,6 +141,122 @@ def _connect(path):
     conn.settimeout(2)
     conn.connect(str(path))
     return conn
+
+
+def test_socket_inherits_exact_gid_from_setgid_runtime_directory(tmp_path):
+    del tmp_path
+    if os.getgid() <= 0:
+        pytest.skip("test requires a non-root dedicated group")
+    runtime = Path("/tmp") / f"cw-runtime-{uuid.uuid4().hex}"
+    runtime.mkdir()
+    os.chown(runtime, -1, os.getgid())
+    runtime.chmod(0o2750)
+    socket_path = runtime / "writer.sock"
+    server = CanonicalWriterServer(
+        socket_path,
+        authorizer=SystemdMainPidAuthorizer(
+            "muncho-gateway.service",
+            _StaticMainPidProvider(os.getpid()),
+            expected_uid=os.getuid(),
+        ),
+        dispatcher=_ping_dispatcher(),
+        expected_socket_gid=os.getgid(),
+    )
+
+    try:
+        server.start()
+        observed = socket_path.lstat()
+        assert observed.st_gid == os.getgid()
+        assert stat.S_IMODE(observed.st_mode) == 0o660
+    finally:
+        server.shutdown()
+        runtime.rmdir()
+
+
+def test_socket_refuses_runtime_directory_without_setgid(tmp_path):
+    if os.getgid() <= 0:
+        pytest.skip("test requires a non-root dedicated group")
+    runtime = tmp_path / "writer-runtime"
+    runtime.mkdir()
+    runtime.chmod(0o750)
+    server = CanonicalWriterServer(
+        runtime / "writer.sock",
+        authorizer=SystemdMainPidAuthorizer(
+            "muncho-gateway.service",
+            _StaticMainPidProvider(os.getpid()),
+            expected_uid=os.getuid(),
+        ),
+        dispatcher=_ping_dispatcher(),
+        expected_socket_gid=os.getgid(),
+    )
+
+    with pytest.raises(PermissionError, match="runtime directory ownership"):
+        server.start()
+
+
+def test_socket_refuses_group_writable_setgid_runtime_directory(tmp_path):
+    if os.getgid() <= 0:
+        pytest.skip("test requires a non-root dedicated group")
+    runtime = tmp_path / "writer-runtime"
+    runtime.mkdir()
+    runtime.chmod(0o2770)
+    server = CanonicalWriterServer(
+        runtime / "writer.sock",
+        authorizer=SystemdMainPidAuthorizer(
+            "muncho-gateway.service",
+            _StaticMainPidProvider(os.getpid()),
+            expected_uid=os.getuid(),
+        ),
+        dispatcher=_ping_dispatcher(),
+        expected_socket_gid=os.getgid(),
+    )
+
+    with pytest.raises(PermissionError, match="runtime directory ownership"):
+        server.start()
+
+
+def test_exact_stale_socket_is_recovered_without_replacing_live_listener(
+    tmp_path,
+):
+    del tmp_path
+    if os.getgid() <= 0:
+        pytest.skip("test requires a non-root dedicated group")
+    runtime = Path("/tmp") / f"cw-runtime-{uuid.uuid4().hex}"
+    runtime.mkdir()
+    os.chown(runtime, -1, os.getgid())
+    runtime.chmod(0o2750)
+    socket_path = runtime / "writer.sock"
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(socket_path))
+    socket_path.chmod(0o660)
+    stale.close()
+    server = CanonicalWriterServer(
+        socket_path,
+        authorizer=SystemdMainPidAuthorizer(
+            "muncho-gateway.service",
+            _StaticMainPidProvider(os.getpid()),
+            expected_uid=os.getuid(),
+        ),
+        dispatcher=_ping_dispatcher(),
+        expected_socket_gid=os.getgid(),
+        recover_stale_socket=True,
+    )
+
+    try:
+        server.start()
+        assert stat.S_ISSOCK(socket_path.lstat().st_mode)
+        competing = CanonicalWriterServer(
+            socket_path,
+            authorizer=server.authorizer,
+            dispatcher=_ping_dispatcher(),
+            expected_socket_gid=os.getgid(),
+            recover_stale_socket=True,
+        )
+        with pytest.raises(FileExistsError, match="accepting connections"):
+            competing.start()
+    finally:
+        server.shutdown()
+        runtime.rmdir()
 
 
 def _response(conn):
@@ -447,6 +566,178 @@ def test_systemctl_server_pid_provider_uses_strict_bounded_command(monkeypatch):
     ]
     assert provider.main_pid("../../attacker.service") is None
     assert len(observed) == 1
+
+
+def _cgroup_v2_provider(tmp_path, payload):
+    system_slice = tmp_path / "system.slice"
+    unit = system_slice / "muncho-canonical-writer.service"
+    unit.mkdir(parents=True)
+    procs = unit / "cgroup.procs"
+    procs.write_bytes(payload)
+    system_slice.chmod(0o755)
+    unit.chmod(0o755)
+    procs.chmod(0o644)
+    provider = SystemdCgroupV2MainPidProvider(
+        _system_slice_path=system_slice,
+        _expected_owner_uid=os.getuid(),
+        _expected_owner_gid=os.getgid(),
+    )
+    return provider, unit, procs
+
+
+def test_cgroup_v2_main_pid_provider_accepts_exactly_one_tgid(tmp_path):
+    provider, _unit, _procs = _cgroup_v2_provider(
+        tmp_path,
+        f"{os.getpid()}\n".encode("ascii"),
+    )
+
+    assert provider.main_pid("muncho-canonical-writer.service") == os.getpid()
+    assert provider.main_pid("../../attacker.service") is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"",
+        b"101\n202\n",
+        b"not-a-pid\n",
+        b"0\n",
+        b"-1\n",
+        b"123",
+        b"123\ntrailer",
+        (b"1" * 4097) + b"\n",
+    ],
+)
+def test_cgroup_v2_main_pid_provider_rejects_non_singleton_payload(
+    tmp_path,
+    payload,
+):
+    provider, _unit, _procs = _cgroup_v2_provider(tmp_path, payload)
+
+    assert provider.main_pid("muncho-canonical-writer.service") is None
+
+
+def test_cgroup_v2_main_pid_provider_rejects_symlink(tmp_path):
+    provider, _unit, procs = _cgroup_v2_provider(tmp_path, b"123\n")
+    target = tmp_path / "attacker-procs"
+    target.write_bytes(b"123\n")
+    procs.unlink()
+    procs.symlink_to(target)
+
+    assert provider.main_pid("muncho-canonical-writer.service") is None
+
+
+def test_cgroup_v2_main_pid_provider_rejects_unit_directory_symlink(tmp_path):
+    provider, unit, _procs = _cgroup_v2_provider(tmp_path, b"123\n")
+    replacement = tmp_path / "replacement-unit"
+    unit.rename(replacement)
+    unit.symlink_to(replacement, target_is_directory=True)
+
+    assert provider.main_pid("muncho-canonical-writer.service") is None
+
+
+def test_cgroup_v2_main_pid_provider_rejects_non_authoritative_owner(tmp_path):
+    provider, unit, _procs = _cgroup_v2_provider(tmp_path, b"123\n")
+    provider = SystemdCgroupV2MainPidProvider(
+        _system_slice_path=unit.parent,
+        _expected_owner_uid=os.getuid() + 1,
+        _expected_owner_gid=os.getgid(),
+    )
+
+    assert provider.main_pid("muncho-canonical-writer.service") is None
+
+
+def test_cgroup_v2_main_pid_provider_rejects_path_rotation(
+    tmp_path,
+    monkeypatch,
+):
+    provider, _unit, procs = _cgroup_v2_provider(tmp_path, b"123\n")
+    original_read = os.read
+    rotated = False
+
+    def rotating_read(descriptor, maximum_bytes):
+        nonlocal rotated
+        payload = original_read(descriptor, maximum_bytes)
+        if not rotated:
+            replacement = procs.with_name("replacement.procs")
+            replacement.write_bytes(b"123\n")
+            replacement.chmod(0o644)
+            os.replace(replacement, procs)
+            rotated = True
+        return payload
+
+    monkeypatch.setattr("gateway.canonical_writer_service.os.read", rotating_read)
+
+    assert provider.main_pid("muncho-canonical-writer.service") is None
+
+
+def test_canonical_writer_call_uses_no_subprocess_cgroup_provider(monkeypatch):
+    from gateway import canonical_writer_boundary as boundary
+
+    observed = {}
+    config = boundary.CanonicalWriterBoundaryConfig(enabled=True)
+
+    class FakeClient:
+        def __init__(self, _socket_path, *, server_authorizer, **_kwargs):
+            observed["provider"] = server_authorizer.main_pid_provider
+
+        def call(self, *_args, **_kwargs):
+            return SimpleNamespace(request_id="request-1", status="ok", result={})
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(boundary, "frozen_writer_boundary_config", lambda: config)
+    monkeypatch.setattr(
+        "gateway.canonical_writer_client.CanonicalWriterClient",
+        FakeClient,
+    )
+    monkeypatch.setattr(
+        "pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=os.getuid()),
+    )
+    boundary.close_canonical_writer_clients()
+    try:
+        assert boundary.canonical_writer_call("ping", {}) == {
+            "request_id": "request-1",
+            "status": "ok",
+        }
+        assert isinstance(observed["provider"], SystemdCgroupV2MainPidProvider)
+    finally:
+        boundary.close_canonical_writer_clients()
+
+
+def test_discord_edge_client_keeps_legacy_systemctl_provider(monkeypatch):
+    from gateway import canonical_writer_boundary as boundary
+
+    observed = {}
+    config = boundary.CanonicalWriterBoundaryConfig(
+        enabled=True,
+        discord_edge_enabled=True,
+    )
+
+    class FakeEdgeClient:
+        def __init__(self, _socket_path, *, server_authorizer, **_kwargs):
+            observed["provider"] = server_authorizer.main_pid_provider
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(boundary, "frozen_writer_boundary_config", lambda: config)
+    monkeypatch.setattr(
+        "gateway.discord_edge_client.DiscordEdgeClient",
+        FakeEdgeClient,
+    )
+    monkeypatch.setattr(
+        "pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=os.getuid()),
+    )
+    boundary.close_canonical_writer_clients()
+    try:
+        assert boundary.privileged_discord_edge_client() is not None
+        assert isinstance(observed["provider"], SystemctlServerMainPidProvider)
+    finally:
+        boundary.close_canonical_writer_clients()
 
 
 @pytest.mark.parametrize(

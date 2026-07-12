@@ -15,7 +15,7 @@ from gateway.canonical_writer_handlers import (
     RuntimeContext,
 )
 from gateway.canonical_writer_protocol import CanonicalWriterOperation
-from scripts.canonical_writer_service import DispatchContext, PeerCredentials
+from gateway.canonical_writer_service import DispatchContext, PeerCredentials
 from tools import approval
 
 

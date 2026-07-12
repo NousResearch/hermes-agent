@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pure deployment preflight for the privileged Canonical Brain writer.
+"""Pure diagnostic preflight for the privileged Canonical Brain writer.
 
 The command consumes an already-collected JSON snapshot.  It never invokes
 systemd, IAM, Secret Manager, Cloud SQL, or the network, so collection and
@@ -39,6 +39,8 @@ from gateway.canonical_writer_postgres_backend import (
     EXPECTED_ROUTINE_SIGNATURES,
 )
 from gateway.canonical_writer_boundary import (
+    DEFAULT_DISCORD_EDGE_SOCKET_PATH,
+    DEFAULT_DISCORD_EDGE_UNIT,
     DEFAULT_GATEWAY_UNIT,
     DEFAULT_SOCKET_PATH,
     DEFAULT_WRITER_UNIT,
@@ -63,9 +65,10 @@ _HARDENED_TRUE_PROPERTIES = (
 _FORBIDDEN_IAM_MARKERS = ("cloudsql", "secretmanager")
 _FORBIDDEN_BROAD_ROLES = {"roles/owner", "roles/editor"}
 _MAX_GATEWAY_PROCESS_EVIDENCE_AGE_SECONDS = 30
+_MAX_ACTIVE_HBA_EVIDENCE_AGE_SECONDS = 30
 _TRUSTED_SECRET_PROVISIONERS = {"root", "systemd"}
-_WRITER_BOOTSTRAP_MODULE = "scripts.canonical_writer_bootstrap"
-_GATEWAY_ENTRY_MODULE = "gateway.run"
+_WRITER_BOOTSTRAP_MODULE = "gateway.canonical_writer_bootstrap"
+_GATEWAY_ENTRY_MODULE = "gateway.canonical_writer_gateway_bootstrap"
 _WRITER_EXPORT_UNIT = "muncho-canonical-writer-export.service"
 _WRITER_EXPORT_TIMER = "muncho-canonical-writer-export.timer"
 _REQUIRED_IMPORT_KINDS = {
@@ -103,10 +106,30 @@ _ALLOWED_TIMER_SCHEDULE_KEYS = {
     "Persistent",
     "RandomizedDelayUSec",
 }
-_GATEWAY_ALLOWED_READ_WRITE_PATHS = {
-    "/run/hermes-cloud-gateway",
-    "/var/lib/hermes-gateway",
-    "/var/log/hermes-gateway",
+_GATEWAY_REQUIRED_READ_WRITE_PATHS = ("/run/hermes-cloud-gateway",)
+_WRITER_ONLY_DEPLOYMENT_MODE = "writer_only"
+_DISCORD_EDGE_CONFIG_PATH = "/etc/muncho/discord-edge.json"
+_DISCORD_EDGE_TOKEN_PATH = (
+    "/etc/muncho/discord-edge-credentials/bot-token"
+)
+_WRITER_ONLY_DISCORD_EDGE_KEYS = {
+    "complete",
+    "collected_by_uid",
+    "observed_at_unix",
+    "gateway_enabled",
+    "writer_authority_enabled",
+    "unit_name",
+    "unit_exists",
+    "unit_enabled",
+    "unit_active",
+    "main_pid",
+    "config_path",
+    "config_exists",
+    "token_path",
+    "token_exists",
+    "socket_path",
+    "socket_exists",
+    "process_pids",
 }
 
 
@@ -970,13 +993,15 @@ def _gateway_deployment_checks(
             Path(module_origin) == Path(root) / expected_module_relative
             for root in site_package_roots
         )
-        writable_paths_safe = all(
-            _absolute_normalized_path(path) == path
-            and path in _GATEWAY_ALLOWED_READ_WRITE_PATHS
-            and artifact_root is not None
-            and not _path_is_within(path, artifact_root)
-            and not _path_is_within(artifact_root, path)
-            for path in read_write_paths
+        writable_paths_safe = (
+            read_write_paths == _GATEWAY_REQUIRED_READ_WRITE_PATHS
+            and all(
+                _absolute_normalized_path(path) == path
+                and artifact_root is not None
+                and not _path_is_within(path, artifact_root)
+                and not _path_is_within(artifact_root, path)
+                for path in read_write_paths
+            )
         )
         dynamic_paths_safe = (
             dynamic_loading_mode in {"disabled", "immutable_only"}
@@ -1011,7 +1036,12 @@ def _gateway_deployment_checks(
             and module_origin_exact
             and working_directory == artifact_root
             and exec_start
-            == (interpreter, "-I", "-m", _GATEWAY_ENTRY_MODULE)
+            == (
+                interpreter,
+                "-I",
+                "-m",
+                _GATEWAY_ENTRY_MODULE,
+            )
             and import_shape_ok
             and interpreter_policy is not None
             and interpreter_policy[0] == "interpreter"
@@ -1802,7 +1832,89 @@ def _gateway_process_checks(
     ]
 
 
-def _runtime_secret_source_checks(value: Any) -> list[PreflightCheck]:
+def _writer_only_discord_edge_checks(
+    value: Any,
+    *,
+    collected_at_unix: int,
+) -> list[PreflightCheck]:
+    """Require the privileged Discord surface to be wholly absent.
+
+    This is a mechanical deployment boundary, not semantic routing.  The
+    writer-only canary deliberately has no Discord identity or credential, so
+    every exact edge entry point must be absent before the gateway is allowed
+    to become ready.
+    """
+
+    evidence = _mapping(value)
+    raw_process_pids = evidence.get("process_pids")
+    process_pids_exact = (
+        isinstance(raw_process_pids, Sequence)
+        and not isinstance(raw_process_pids, (str, bytes, bytearray))
+        and not raw_process_pids
+    )
+    observed_at_unix = _integer(evidence.get("observed_at_unix"))
+    evidence_fresh = (
+        set(evidence) == _WRITER_ONLY_DISCORD_EDGE_KEYS
+        and evidence.get("complete") is True
+        and evidence.get("collected_by_uid") == 0
+        and collected_at_unix >= 0
+        and observed_at_unix >= 0
+        and 0
+        <= collected_at_unix - observed_at_unix
+        <= _MAX_GATEWAY_PROCESS_EVIDENCE_AGE_SECONDS
+    )
+    return [
+        PreflightCheck(
+            "discord_edge.writer_only_evidence_fresh",
+            evidence_fresh,
+            "writer-only Discord absence evidence must be exact, UID-0-collected, and no more than 30 seconds old",
+        ),
+        PreflightCheck(
+            "discord_edge.writer_only_disabled",
+            evidence.get("gateway_enabled") is False
+            and evidence.get("writer_authority_enabled") is False,
+            "gateway Discord egress and writer Discord authority must both be disabled",
+        ),
+        PreflightCheck(
+            "discord_edge.writer_only_unit_absent",
+            evidence.get("unit_name") == DEFAULT_DISCORD_EDGE_UNIT
+            and evidence.get("unit_exists") is False
+            and evidence.get("unit_enabled") is False
+            and evidence.get("unit_active") is False
+            and _integer(evidence.get("main_pid")) == 0,
+            "the privileged Discord egress unit and MainPID must be absent",
+        ),
+        PreflightCheck(
+            "discord_edge.writer_only_config_absent",
+            evidence.get("config_path") == _DISCORD_EDGE_CONFIG_PATH
+            and evidence.get("config_exists") is False,
+            "the privileged Discord egress config must be absent",
+        ),
+        PreflightCheck(
+            "discord_edge.writer_only_token_absent",
+            evidence.get("token_path") == _DISCORD_EDGE_TOKEN_PATH
+            and evidence.get("token_exists") is False,
+            "the privileged Discord bot-token credential must be absent",
+        ),
+        PreflightCheck(
+            "discord_edge.writer_only_socket_absent",
+            evidence.get("socket_path") == str(DEFAULT_DISCORD_EDGE_SOCKET_PATH)
+            and evidence.get("socket_exists") is False,
+            "the privileged Discord egress socket must be absent",
+        ),
+        PreflightCheck(
+            "discord_edge.writer_only_process_absent",
+            process_pids_exact,
+            "no privileged Discord egress process may exist in writer-only mode",
+        ),
+    ]
+
+
+def _runtime_secret_source_checks(
+    value: Any,
+    *,
+    discord_edge_enabled: bool,
+) -> list[PreflightCheck]:
     evidence = _mapping(value)
     legacy = _mapping(evidence.get("legacy_hermes_env"))
     pgpass = _mapping(evidence.get("pgpass"))
@@ -1948,8 +2060,12 @@ def _runtime_secret_source_checks(value: Any) -> list[PreflightCheck]:
         ),
         PreflightCheck(
             "runtime_secrets.discord_source_isolated",
-            "discord_bot_token" in source_names,
-            "the Discord bot token must have a root/systemd source that is file-inaccessible to gateway children",
+            (
+                "discord_bot_token" in source_names
+                if discord_edge_enabled
+                else "discord_bot_token" not in source_names
+            ),
+            "the Discord bot token must be isolated when enabled and wholly absent in writer-only mode",
         ),
     ]
 
@@ -2266,9 +2382,16 @@ def _parse_database_attestation(
                     "same_credential",
                 )
             )
-            or evidence_receipt != managed_hba_receipt
-            or evidence.get("receipt_sha256") != managed_hba_digest
-            or not managed_hba_receipt.is_fresh(collected_at_unix)
+            or evidence_receipt.host != managed_hba_receipt.host
+            or evidence_receipt.port != managed_hba_receipt.port
+            or evidence_receipt.user != managed_hba_receipt.user
+            or evidence_receipt.server_certificate_sha256
+            != managed_hba_receipt.server_certificate_sha256
+            or evidence.get("receipt_sha256") != evidence_receipt.sha256
+            or not evidence_receipt.is_fresh(collected_at_unix)
+            or not 0
+            <= collected_at_unix - evidence_receipt.observed_at_unix
+            <= _MAX_ACTIVE_HBA_EVIDENCE_AGE_SECONDS
         ):
             raise ValueError("managed HBA root evidence is invalid or stale")
     elif database.get("managed_cloudsqladmin_hba_rejection_evidence") not in (
@@ -2430,6 +2553,11 @@ def _systemd_checks(properties: Mapping[str, Any]) -> list[PreflightCheck]:
                 _disabled_or_empty(properties.get("AmbientCapabilities")),
                 "must be empty",
             ),
+            PreflightCheck(
+                "systemd.LimitCORE",
+                str(properties.get("LimitCORE") or "") == "0",
+                "must be zero",
+            ),
         )
     )
     raw_families = properties.get("RestrictAddressFamilies")
@@ -2458,6 +2586,8 @@ def _systemd_checks(properties: Mapping[str, Any]) -> list[PreflightCheck]:
 def evaluate_snapshot(snapshot: Mapping[str, Any]) -> PreflightReport:
     """Evaluate deterministic deployment invariants from a collected snapshot."""
 
+    deployment_mode = snapshot.get("deployment_mode")
+    writer_only_mode = deployment_mode == _WRITER_ONLY_DEPLOYMENT_MODE
     gateway_uid = _integer(snapshot.get("gateway_uid"))
     gateway_gid = _integer(snapshot.get("gateway_gid"))
     writer_uid = _integer(snapshot.get("writer_uid"))
@@ -2482,6 +2612,11 @@ def evaluate_snapshot(snapshot: Mapping[str, Any]) -> PreflightReport:
         supplementary_gids = ()
 
     checks: list[PreflightCheck] = [
+        PreflightCheck(
+            "deployment.writer_only_mode",
+            writer_only_mode,
+            "this preflight authorizes only the exact writer-only canary mode",
+        ),
         PreflightCheck(
             "identity.distinct_uids",
             gateway_uid >= 0 and writer_uid >= 0 and gateway_uid != writer_uid,
@@ -2574,7 +2709,18 @@ def evaluate_snapshot(snapshot: Mapping[str, Any]) -> PreflightReport:
             collected_at_unix=collected_at_unix,
         )
     )
-    checks.extend(_runtime_secret_source_checks(snapshot.get("runtime_secret_sources")))
+    checks.extend(
+        _runtime_secret_source_checks(
+            snapshot.get("runtime_secret_sources"),
+            discord_edge_enabled=not writer_only_mode,
+        )
+    )
+    checks.extend(
+        _writer_only_discord_edge_checks(
+            snapshot.get("discord_edge"),
+            collected_at_unix=collected_at_unix,
+        )
+    )
     checks.extend(
         _writer_deployment_checks(
             snapshot.get("writer_deployment"),
@@ -2747,8 +2893,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = PreflightReport(
             (PreflightCheck("snapshot.valid", False, f"invalid snapshot: {exc}"),)
         )
+    # Arbitrary JSON is useful for diagnostics and regression tests, but it is
+    # never deployment authority.  Only the UID-0 trusted collector may emit
+    # an activation receipt after collecting live host evidence.
+    report = PreflightReport(
+        (
+            *report.checks,
+            PreflightCheck(
+                "snapshot.non_authoritative",
+                False,
+                "offline JSON evaluation cannot authorize activation",
+            ),
+        )
+    )
     print(json.dumps(report.to_dict(), sort_keys=True, separators=(",", ":")))
-    return 0 if report.ok else 2
+    return 2
 
 
 if __name__ == "__main__":

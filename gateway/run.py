@@ -21068,7 +21068,6 @@ _CRON_SHUTDOWN_DRAIN_TIMEOUT = 65.0
 # next tick), but bounding it correctly keeps the drain honest.
 _HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT = 35.0
 
-
 async def _await_thread_exit(
     thread: Optional[threading.Thread], timeout: float, poll: float = 0.1
 ) -> bool:
@@ -21092,7 +21091,12 @@ async def _await_thread_exit(
     return not thread.is_alive()
 
 
-async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
+async def start_gateway(
+    config: Optional[GatewayConfig] = None,
+    replace: bool = False,
+    verbosity: Optional[int] = 0,
+    require_canonical_writer: bool = False,
+) -> bool:
     """
     Start the gateway and run until interrupted.
     
@@ -21105,7 +21109,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         replace: If True, kill any existing gateway instance before starting.
                  Useful for systemd services to avoid restart-loop deadlocks
                  when the previous process hasn't fully exited yet.
+        require_canonical_writer: Fail closed unless the managed privileged
+                 writer boundary is enabled and later passes in-process PING.
     """
+    if type(require_canonical_writer) is not bool:
+        raise TypeError("require_canonical_writer must be boolean")
     # Snapshot the checkout revision now, while sys.modules still matches disk,
     # so a later `git pull` under this long-lived process can be detected (and
     # risky work like model switching refused) instead of crashing on a stale
@@ -21118,8 +21126,25 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # same-UID child cannot ptrace/process_vm/pidfd-inject writer calls into it.
     from gateway.canonical_writer_boundary import (
         harden_gateway_process_for_writer_boundary,
+        load_managed_writer_boundary_policy,
     )
-    harden_gateway_process_for_writer_boundary()
+    try:
+        activation_policy = (
+            load_managed_writer_boundary_policy()
+            if require_canonical_writer
+            else None
+        )
+        writer_boundary_hardened = harden_gateway_process_for_writer_boundary(
+            activation_policy
+        )
+    except Exception:
+        writer_boundary_hardened = False
+    if require_canonical_writer and not writer_boundary_hardened:
+        logger.error(
+            "Canonical writer is required by the service activation contract "
+            "but is not enabled by immutable /etc/hermes managed policy."
+        )
+        return False
 
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same HERMES_HOME.
@@ -21494,6 +21519,40 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
 
+    # An enabled Canonical writer is an operational source-of-truth boundary,
+    # not an optional background integration.  Prove it from this exact
+    # hardened systemd MainPID before MCP discovery, adapters, cron, hooks, or
+    # any model-controlled child can start.  A failed PING leaves the gateway
+    # unready and releases the startup lock instead of degrading silently.
+    canonical_writer_readiness_receipt = None
+    try:
+        from gateway.canonical_writer_readiness import (
+            attest_canonical_writer_startup_readiness,
+            notify_systemd_writer_readiness,
+        )
+
+        canonical_writer_readiness_receipt = (
+            attest_canonical_writer_startup_readiness()
+        )
+        if canonical_writer_readiness_receipt is not None:
+            if not notify_systemd_writer_readiness(
+                canonical_writer_readiness_receipt,
+                ready=False,
+            ):
+                raise RuntimeError(
+                    "enabled Canonical writer requires systemd Type=notify"
+                )
+    except Exception:
+        logger.error(
+            "Canonical writer startup readiness failed; gateway remains offline.",
+            exc_info=True,
+        )
+        _planned_stop_watcher_stop.set()
+        _planned_stop_watcher_thread.join(timeout=2)
+        remove_pid_file()
+        release_gateway_runtime_lock()
+        return False
+
     try:
         from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
 
@@ -21549,6 +21608,49 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if runner.exit_code is not None:
             raise SystemExit(runner.exit_code)
         return True
+
+    if canonical_writer_readiness_receipt is not None:
+        try:
+            from gateway.canonical_writer_readiness import (
+                attest_canonical_writer_startup_readiness,
+                notify_systemd_writer_readiness,
+            )
+
+            # Runner startup can load immutable platform/plugin modules.  Take
+            # a second in-process PING and rewrite the receipt from this exact
+            # MainPID so READY binds the final startup import closure rather
+            # than the smaller pre-runner module set.
+            canonical_writer_readiness_receipt = (
+                attest_canonical_writer_startup_readiness()
+            )
+            if canonical_writer_readiness_receipt is None:
+                raise RuntimeError(
+                    "Canonical writer boundary disappeared during startup"
+                )
+            if not notify_systemd_writer_readiness(
+                canonical_writer_readiness_receipt,
+                ready=True,
+            ):
+                raise RuntimeError(
+                    "enabled Canonical writer requires systemd Type=notify"
+                )
+        except Exception:
+            logger.error(
+                "Canonical writer systemd readiness publication failed.",
+                exc_info=True,
+            )
+            await runner.stop()
+            _planned_stop_watcher_stop.set()
+            _planned_stop_watcher_thread.join(timeout=2)
+            try:
+                from tools.mcp_tool import shutdown_mcp_servers
+
+                shutdown_mcp_servers()
+            except Exception:
+                pass
+            remove_pid_file()
+            release_gateway_runtime_lock()
+            return False
     
     # Start the background cron scheduler via the resolved provider so
     # scheduled jobs fire automatically. The built-in provider is the
@@ -21673,6 +21775,11 @@ def main():
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")
     parser.add_argument("--config", "-c", help="Path to gateway config file")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    parser.add_argument(
+        "--require-canonical-writer",
+        action="store_true",
+        help="Fail startup unless the privileged Canonical writer is enabled and ready",
+    )
     
     args = parser.parse_args()
     
@@ -21698,7 +21805,15 @@ def main():
     # same os._exit backstop means EVERY exit path is wedge-proof, not just the
     # boolean-return ones.
     try:
-        success = asyncio.run(start_gateway(config))
+        startup_kwargs = {}
+        if args.require_canonical_writer:
+            startup_kwargs["require_canonical_writer"] = True
+        success = asyncio.run(
+            start_gateway(
+                config,
+                **startup_kwargs,
+            )
+        )
         exit_code = 0 if success else 1
     except SystemExit as e:
         # e.code may be None (→ 0), an int, or a str (→ 1, like CPython).

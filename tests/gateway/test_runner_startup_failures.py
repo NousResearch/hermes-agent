@@ -1,5 +1,8 @@
-import pytest
+import asyncio
+import os
 from unittest.mock import AsyncMock
+
+import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
@@ -174,6 +177,113 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
     ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=1)
 
     assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_writer_readiness_failure_blocks_mcp_and_runner_start(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner_started = False
+    mcp_started = False
+    released = False
+
+    class _RunnerMustRemainOffline:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = False
+            self.exit_reason = None
+            self.exit_code = None
+            self.adapters = {}
+
+        async def start(self):
+            nonlocal runner_started
+            runner_started = True
+            return True
+
+    def fail_readiness():
+        raise RuntimeError("simulated writer outage")
+
+    def discover_mcp():
+        nonlocal mcp_started
+        mcp_started = True
+
+    def release_lock():
+        nonlocal released
+        released = True
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", release_lock)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr(
+        "hermes_logging.setup_logging",
+        lambda hermes_home, mode: tmp_path,
+    )
+    monkeypatch.setattr(
+        "gateway.canonical_writer_boundary."
+        "harden_gateway_process_for_writer_boundary",
+        lambda _policy=None: True,
+    )
+    monkeypatch.setattr(
+        "gateway.canonical_writer_readiness."
+        "attest_canonical_writer_startup_readiness",
+        fail_readiness,
+    )
+    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", discover_mcp)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerMustRemainOffline)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(
+        config=GatewayConfig(),
+        replace=False,
+        verbosity=None,
+    )
+
+    assert ok is False
+    assert runner_started is False
+    assert mcp_started is False
+    assert released is True
+
+
+@pytest.mark.asyncio
+async def test_required_writer_cannot_fail_open_from_missing_managed_config(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "gateway.canonical_writer_boundary."
+        "harden_gateway_process_for_writer_boundary",
+        lambda _policy=None: True,
+    )
+    monkeypatch.setattr(
+        "gateway.canonical_writer_boundary."
+        "load_managed_writer_boundary_policy",
+        lambda: (_ for _ in ()).throw(RuntimeError("managed policy missing")),
+    )
+
+    class _RunnerMustNotExist:
+        def __init__(self, _config):
+            raise AssertionError("writerless required gateway must remain offline")
+
+    monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerMustNotExist)
+
+    from gateway.run import start_gateway
+
+    assert (
+        await start_gateway(
+            config=GatewayConfig(),
+            replace=False,
+            verbosity=None,
+            require_canonical_writer=True,
+        )
+        is False
+    )
 
 
 @pytest.mark.asyncio

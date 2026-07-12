@@ -1,4 +1,7 @@
 import hashlib
+import stat
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -49,6 +52,68 @@ def test_tool_availability_is_static_policy_not_socket_health(monkeypatch):
     )
 
     assert boundary.writer_boundary_configured() is True
+
+
+def test_required_service_policy_must_come_from_root_managed_scope(
+    monkeypatch,
+    tmp_path,
+):
+    managed_dir = tmp_path / "etc" / "hermes"
+    config_path = managed_dir / "config.yaml"
+    monkeypatch.setattr(boundary, "DEFAULT_MANAGED_CONFIG_PATH", config_path)
+    entries = {
+        managed_dir: SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o755,
+            st_uid=0,
+            st_gid=0,
+            st_nlink=1,
+        ),
+        config_path: SimpleNamespace(
+            st_mode=stat.S_IFREG | 0o444,
+            st_uid=0,
+            st_gid=0,
+            st_nlink=1,
+        ),
+    }
+    monkeypatch.setattr(
+        boundary.os,
+        "lstat",
+        lambda path: entries[Path(path)],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.managed_scope.get_managed_dir",
+        lambda: managed_dir,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.managed_scope.load_managed_config",
+        lambda: _config(),
+    )
+
+    assert boundary.managed_writer_boundary_configured() is True
+
+    entries[config_path].st_mode = stat.S_IFREG | 0o666
+    assert boundary.managed_writer_boundary_configured() is False
+
+
+def test_managed_policy_can_be_frozen_before_gateway_writable_config(monkeypatch):
+    managed = _config()
+    writable = _config(enabled=False)
+    hardening_calls: list[str] = []
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: writable,
+    )
+    monkeypatch.setattr(
+        boundary,
+        "harden_current_process_against_dumping",
+        lambda: hardening_calls.append("hardened"),
+    )
+
+    assert boundary.harden_gateway_process_for_writer_boundary(managed) is True
+    assert boundary.frozen_writer_boundary_config() == (
+        boundary.load_writer_boundary_config(managed)
+    )
+    assert hardening_calls == ["hardened"]
 
 
 def test_writer_policy_is_frozen_until_process_restart():

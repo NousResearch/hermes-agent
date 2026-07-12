@@ -876,6 +876,37 @@ def test_managed_hba_exception_is_actively_reprobed_on_every_startup(
     )
 
 
+def test_startup_uses_expired_baseline_only_as_peer_and_coordinate_pin(
+    tmp_path,
+    monkeypatch,
+):
+    now_unix = 2_000_001_000
+    monkeypatch.setattr(time, "time", lambda: now_unix)
+    baseline = _managed_hba_receipt(observed_at_unix=2_000_000_000)
+    policy = replace(
+        _policy(),
+        managed_cloudsqladmin_hba_rejection_receipt=baseline,
+        managed_cloudsqladmin_hba_rejection_sha256=baseline.sha256,
+    )
+    sessions = []
+    database = writer_db.CanonicalWriterDB(
+        config=_config(tmp_path),
+        privilege_policy=policy,
+        statements=writer_db.StatementCatalog(()),
+        _session_factory=lambda _config: (
+            sessions.append(_ManagedHBAFakeSession()) or sessions[-1]
+        ),
+        _managed_hba_probe=lambda _config: _managed_hba_receipt(
+            observed_at_unix=now_unix,
+        ),
+    )
+
+    database.startup_attest()
+
+    assert len(sessions) == 1
+    assert sessions[0].closed is True
+
+
 def test_managed_hba_startup_rejects_stale_or_different_peer_receipt(
     tmp_path,
     monkeypatch,

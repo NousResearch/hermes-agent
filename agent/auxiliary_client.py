@@ -6683,6 +6683,7 @@ def _validate_llm_response(
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+    response = _unwrap_data_envelope(response, task)
     from agent.aux_accounting import record_aux_usage
     record_aux_usage(response, task, provider=provider, base_url=base_url)
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
@@ -6704,6 +6705,55 @@ def _validate_llm_response(
             f"adapter or custom endpoint compatibility."
         ) from exc
     return response
+
+
+def _unwrap_data_envelope(response: Any, task: str = None) -> Any:
+    """Unwrap gateway envelopes like {"data": {<chat completion>}, "success": true}.
+
+    Some OpenAI-compatible gateways (e.g. api.cline.bot) wrap non-streaming
+    JSON bodies in a data/success envelope.  The SDK leniently parses this
+    into a ChatCompletion with choices=None and keeps the envelope keys as
+    extra fields, so the real completion is reachable at ``response.data``.
+    Error envelopes ({"success": false, "data": {"error": ...}}) raise the
+    provider's actual error instead of a generic invalid-response error.
+    """
+    if _obj_get(response, "choices"):
+        return response
+    data = _obj_get(response, "data")
+    if not isinstance(data, dict):
+        return response
+    if _obj_get(response, "success") is False:
+        err = data.get("error") or data
+        msg = err.get("message") if isinstance(err, dict) else None
+        raise RuntimeError(
+            f"Auxiliary {task or 'call'}: provider returned error envelope: "
+            f"{msg or err}"
+        )
+    if not data.get("choices"):
+        return response
+    try:
+        return type(response).model_validate(data)
+    except (AttributeError, TypeError, ValueError):
+        # No model_validate (SimpleNamespace) or the inner payload fails
+        # strict validation (pydantic ValidationError is a ValueError).
+        pass
+    choices = []
+    for ch in data["choices"]:
+        msg = ch.get("message") if isinstance(ch, dict) else None
+        if isinstance(msg, dict):
+            choices.append(SimpleNamespace(
+                message=SimpleNamespace(**msg),
+                finish_reason=ch.get("finish_reason") or "stop",
+            ))
+    if not choices:
+        return response
+    return SimpleNamespace(
+        id=data.get("id", ""),
+        model=data.get("model", ""),
+        object=data.get("object", "chat.completion"),
+        choices=choices,
+        usage=data.get("usage"),
+    )
 
 
 def _recover_aux_response_message(response: Any) -> Optional[Any]:

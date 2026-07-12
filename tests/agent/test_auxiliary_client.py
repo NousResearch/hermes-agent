@@ -35,6 +35,7 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
+    _unwrap_data_envelope,
 )
 
 
@@ -2287,6 +2288,106 @@ class TestStaleFallbackCandidateSkip:
                     task="compression",
                     messages=[{"role": "user", "content": "summarize"}],
                 )
+
+
+class TestDataEnvelopeUnwrap:
+    """Gateways like api.cline.bot wrap completions in {"data": ..., "success": ...}."""
+
+    def _envelope_data(self, content="unwrapped"):
+        return {
+            "id": "chatcmpl-env",
+            "object": "chat.completion",
+            "created": 1751000000,
+            "model": "cline-pass/kimi-k2.7-code",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+
+    def test_unwrap_envelope_via_model_validate(self):
+        """A leniently-parsed ChatCompletion with the envelope as extras is rebuilt."""
+        from openai.types.chat import ChatCompletion
+
+        wrapped = ChatCompletion.model_construct(
+            data=self._envelope_data(), success=True
+        )
+
+        result = _unwrap_data_envelope(wrapped, task="vision")
+
+        assert isinstance(result, ChatCompletion)
+        assert result.choices[0].message.content == "unwrapped"
+        assert result.model == "cline-pass/kimi-k2.7-code"
+        assert result.usage.total_tokens == 15
+
+    def test_call_llm_unwraps_data_envelope(self):
+        """End-to-end sync path; SimpleNamespace exercises the synthesis fallback."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=None, success=True, data=self._envelope_data()
+        )
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "cline-pass/kimi-k2.7-code")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("custom", "cline-pass/kimi-k2.7-code", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain") as mock_chain:
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "unwrapped"
+        mock_chain.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_unwraps_data_envelope(self):
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=None, success=True, data=self._envelope_data()
+            )
+        )
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "cline-pass/kimi-k2.7-code")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("custom", "cline-pass/kimi-k2.7-code", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain") as mock_chain:
+            result = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "unwrapped"
+        mock_chain.assert_not_called()
+
+    def test_error_envelope_raises_provider_message(self):
+        wrapped = SimpleNamespace(
+            choices=None,
+            success=False,
+            data={"error": {"message": "upstream provider rejected the request",
+                            "code": "bad_model"}},
+        )
+
+        with pytest.raises(RuntimeError, match="upstream provider rejected the request"):
+            _unwrap_data_envelope(wrapped, task="vision")
+
+    def test_non_envelope_responses_unchanged(self):
+        normal = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))]
+        )
+        assert _unwrap_data_envelope(normal) is normal
+
+        # MagicMock's auto-attribute `data` is not a dict — must stay on the
+        # existing invalid-response path (guards the fallback tests below).
+        mock_resp = MagicMock(choices=[])
+        assert _unwrap_data_envelope(mock_resp) is mock_resp
+
+        no_choices = SimpleNamespace(choices=None, success=True, data={"no": "choices"})
+        assert _unwrap_data_envelope(no_choices) is no_choices
 
 
 class TestAuxiliaryFallbackLayering:

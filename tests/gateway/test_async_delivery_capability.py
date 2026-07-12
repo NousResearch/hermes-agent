@@ -75,6 +75,14 @@ class TestAsyncDeliverySupported:
         finally:
             clear_session_vars(tokens)
 
+    def test_dispatcher_spawned_kanban_worker_is_unsupported(self, monkeypatch):
+        """A one-shot Kanban worker cannot receive a detached completion
+        after its process exits, even when its CLI session otherwise defaults
+        to supporting async delivery."""
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_review")
+
+        assert async_delivery_supported() is False
+
     def test_clear_resets_to_default_supported(self):
         """A cleared context must fall back to default-supported, NOT be
         mistaken for an opted-out stateless adapter."""

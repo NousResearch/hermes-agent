@@ -291,6 +291,74 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert "the real task" in text
 
 
+def test_delegate_task_background_waits_inside_kanban_worker(monkeypatch):
+    """A dispatcher-spawned Kanban worker is a finite process, so a required
+    delegated result must return in-turn instead of becoming an orphaned
+    background completion after the parent exits."""
+    import json
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_review")
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "kanban-worker-session"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def delayed_child(task_index, goal, child=None, parent_agent=None, **kw):
+        started.set()
+        release.wait(timeout=5)
+        return {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": "review approved",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "model": "m",
+            "exit_reason": "completed",
+        }
+
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
+    monkeypatch.setattr(dt, "_run_single_child", delayed_child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+
+    captured = {}
+
+    def call_delegate():
+        captured["output"] = dt.delegate_task(
+            goal="independent review",
+            background=True,
+            parent_agent=parent,
+        )
+
+    caller = threading.Thread(target=call_delegate)
+    caller.start()
+    assert started.wait(timeout=2)
+    assert caller.is_alive(), "Kanban delegate_task returned before its child finished"
+    assert ad.active_count() == 0
+
+    release.set()
+    caller.join(timeout=5)
+    assert not caller.is_alive()
+
+    parsed = json.loads(captured["output"])
+    assert parsed["results"][0]["summary"] == "review approved"
+    assert "SYNCHRONOUSLY" in parsed["note"]
+    assert process_registry.completion_queue.empty()
+
+
 def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     """TUI async delegation must route to the live/compressed agent id.
 
@@ -675,5 +743,4 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
 

@@ -2516,20 +2516,18 @@ def terminal_tool(
                         get_session_env as _gse,
                     )
 
-                    # Stateless request/response sessions (the API server /
-                    # WebUI path) cannot route a completion back to the agent
-                    # after the turn ends — there is no persistent channel and
-                    # send() is a no-op. Registering a watcher there silently
-                    # no-ops (issue #10760). Refuse the promise instead: drop
-                    # the flags and tell the agent to poll.
+                    # Finite sessions (stateless HTTP requests and one-shot
+                    # Kanban workers) cannot route a completion back to the
+                    # agent after the turn/process ends. Refuse the promise:
+                    # drop the flags and tell the agent to poll.
                     if not _async_ok():
                         notify_on_complete = False
                         watch_patterns = None
                         result_data["notify_on_complete"] = False
                         result_data["notify_unsupported"] = (
-                            "notify_on_complete / watch_patterns are not available on "
-                            "this endpoint (stateless HTTP API — no channel to deliver "
-                            "an async completion after the turn ends). The process is "
+                            "notify_on_complete / watch_patterns are not available in "
+                            "this session because it cannot deliver an async completion "
+                            "after the turn ends. The process is "
                             "running in the background; retrieve its result with "
                             "process(action='poll') or process(action='wait')."
                         )

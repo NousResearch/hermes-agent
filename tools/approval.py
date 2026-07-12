@@ -2886,9 +2886,11 @@ def check_all_command_guards(command: str, env_type: str,
                 elif choice == "always":
                     approve_session(session_key, key)
                     approve_permanent(key)
-                    save_permanent_allowlist(_permanent_approved)
-                # choice == "once": no persistence — command allowed this
-                # single time only, matching the CLI's behavior.
+            # Save permanent allowlist once after processing all keys (matches CLI path)
+            if choice == "always":
+                save_permanent_allowlist(_permanent_approved)
+            # choice == "once": no persistence — command allowed this
+            # single time only, matching the CLI's behavior.
 
             return {"approved": True, "message": None,
                     "user_approved": True, "description": combined_desc}

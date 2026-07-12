@@ -21,7 +21,7 @@ import {
   terminalSelectionLabel,
   terminalTheme
 } from './selection'
-import { closeTerminal, updateTerminalReviveBuffer } from './terminals'
+import { closeTerminal, updateTerminalRestoreCwd, updateTerminalReviveBuffer } from './terminals'
 
 // How many scrollback lines to serialize for relaunch restore. Mirrors VS Code's
 // terminal.integrated.persistentSessionScrollback default; the store caps the
@@ -32,6 +32,11 @@ const PERSISTENT_SESSION_SCROLLBACK = 200
 // idle gap persists almost immediately (so `cmd; quit` is on disk before the
 // renderer tears down), then at most once per window while output streams.
 const SNAPSHOT_THROTTLE_MS = 750
+
+// Minimum gap between main-side PTY cwd probes. The probe spawns lsof on macOS,
+// so keep it well throttled — cwd only changes on a `cd`, which the reporter
+// already reads off the next output snapshot anyway.
+const CWD_PROBE_THROTTLE_MS = 2000
 
 // True once the page/app is tearing down (Cmd+Q, Alt+F4, window close, reload).
 // App quit kills the PTYs from the main process, which fires onExit in the
@@ -224,10 +229,50 @@ interface UseTerminalSessionOptions {
   /** Only the active tab is visible, owns the agent reader, and runs injections. */
   active: boolean
   onAddSelectionToChat: (text: string, label?: string) => void
+  /** Last observed shell cwd from the previous session; the fresh PTY starts
+   *  here (falling back to `cwd`) so a prior `cd` survives a relaunch. */
+  restoreCwd?: string
   /** Serialized scrollback from the previous session, replayed once on mount. */
   reviveBuffer?: string
   /** Reports the resolved shell name once the PTY is live (for the tab label). */
   onShell?: (shell: string) => void
+}
+
+// Parse a working directory out of a cwd-reporting OSC payload. Covers OSC 7
+// (`file://host/path`, emitted by many bash/zsh integrations) and OSC 9;9
+// (`9;<path>`, ConEmu/Windows-Terminal style some PowerShell profiles emit).
+// Returns null for anything unrecognized so callers can ignore it.
+export function parseOscCwd(code: 7 | 9, payload: string): string | null {
+  if (code === 9) {
+    // OSC 9;9;<path> — the leading "9;" selects the cwd sub-command.
+    if (!payload.startsWith('9;')) {
+      return null
+    }
+
+    const raw = payload.slice(2).trim().replace(/^"|"$/g, '')
+
+    return raw || null
+  }
+
+  // OSC 7 — a file URI. Strip the scheme + authority and percent-decode.
+  const match = /^file:\/\/[^/]*(\/.*)$/.exec(payload.trim())
+
+  if (!match) {
+    return null
+  }
+
+  let raw = match[1]
+
+  try {
+    raw = decodeURIComponent(raw)
+  } catch {
+    // Keep the undecoded path if it isn't valid percent-encoding.
+  }
+
+  // Windows file URIs carry a leading slash before the drive (`/C:/Users`).
+  const windows = /^\/[A-Za-z]:[\\/]/.exec(raw)
+
+  return (windows ? raw.slice(1) : raw) || null
 }
 
 // Bind the palette to the live skin surface so the terminal blends with the app
@@ -331,6 +376,7 @@ export function useTerminalSession({
   cwd,
   active,
   onAddSelectionToChat,
+  restoreCwd,
   reviveBuffer,
   onShell
 }: UseTerminalSessionOptions) {
@@ -353,6 +399,11 @@ export function useTerminalSession({
   // Snapshot the revive buffer once: live snapshots feed updateTerminalReviveBuffer
   // and would otherwise re-arm replay on every store-driven re-render.
   const initialReviveBufferRef = useRef(reviveBuffer)
+  // The cwd to boot the fresh PTY in — the last dir the prior session observed
+  // (survives a `cd`), captured once so store-driven re-renders don't move it.
+  const initialRestoreCwdRef = useRef(restoreCwd)
+  // Latest cwd seen this session; de-dupes redundant store writes.
+  const lastObservedCwdRef = useRef<string | null>(null)
   // Whether the user ever fed input into this session (keystrokes, paste,
   // drag-and-drop paths, or an injected command). Gates idle-buffer handling in
   // persistSnapshot so an untouched tab never re-saves an accumulating snapshot.
@@ -494,6 +545,50 @@ export function useTerminalSession({
       term.write('\r\n')
     }
 
+    // Track the shell's working directory so a reopened tab restarts where the
+    // user last `cd`'d. Two independent signals feed it: cwd-reporting OSC
+    // sequences (immediate, for shells configured to emit them) and a periodic
+    // PTY cwd probe on the main side (shell-agnostic on POSIX). The store
+    // updater de-dupes, so both feeding it is harmless.
+    const recordCwd = (next: string | null | undefined) => {
+      const value = (next ?? '').trim()
+
+      if (!value || value === lastObservedCwdRef.current) {
+        return
+      }
+
+      lastObservedCwdRef.current = value
+      updateTerminalRestoreCwd(id, value)
+    }
+
+    const cwdOscHandlers = ([7, 9] as const).map(code =>
+      term.parser.registerOscHandler(code, payload => {
+        recordCwd(parseOscCwd(code, payload))
+
+        return false // let the sequence propagate; we only observe it
+      })
+    )
+
+    cleanup.push(() => cwdOscHandlers.forEach(handler => handler.dispose()))
+
+    let cwdProbeAt = 0
+
+    const probeCwd = () => {
+      const sessionId = sessionIdRef.current
+
+      if (!sessionId || !terminalApi.cwd || Date.now() - cwdProbeAt < CWD_PROBE_THROTTLE_MS) {
+        return
+      }
+
+      cwdProbeAt = Date.now()
+      void terminalApi
+        .cwd(sessionId)
+        .then(recordCwd)
+        .catch(() => {
+          // Best-effort: no cwd probe on this platform (e.g. Windows).
+        })
+    }
+
     // Capture the buffer on a leading-edge throttle and persist synchronously via
     // the store. No unload hook: by the time the user quits, a recent snapshot is
     // already on disk (the prior beforeunload-based attempt lost the last output).
@@ -529,6 +624,9 @@ export function useTerminalSession({
       } catch {
         // Best-effort restore: never let serialization break a live terminal.
       }
+
+      // A user command may have `cd`'d; refresh the persisted cwd (throttled).
+      probeCwd()
     }
 
     const scheduleSnapshot = () => {
@@ -700,7 +798,10 @@ export function useTerminalSession({
 
     const startSession = () =>
       void terminalApi
-        .start({ cols: term.cols, cwd, rows: term.rows })
+        // Prefer the prior session's last cwd so a reopened tab lands where the
+        // user last `cd`'d; the main side falls back to the launch cwd (then
+        // home) if that dir no longer exists.
+        .start({ cols: term.cols, cwd: initialRestoreCwdRef.current || cwd, rows: term.rows })
         .then(session => {
           if (disposed) {
             void terminalApi.dispose(session.id)

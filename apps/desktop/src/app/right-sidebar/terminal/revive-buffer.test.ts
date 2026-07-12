@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { cleanReviveSnapshot, isIdlePromptOnly } from './use-terminal-session'
+import { cleanReviveSnapshot, isIdlePromptOnly, parseOscCwd } from './use-terminal-session'
 
 // A default-PowerShell idle prompt: no blank-line separator before it.
 const PS_PROMPT = 'PS C:\\Users\\Aleksandr>'
@@ -68,5 +68,30 @@ describe('cleanReviveSnapshot', () => {
   it('returns empty for a blank-only buffer without throwing', () => {
     expect(cleanReviveSnapshot('')).toBe('')
     expect(cleanReviveSnapshot('\r\n  \r\n')).toBe('')
+  })
+})
+
+describe('parseOscCwd', () => {
+  it('parses an OSC 7 file URI and percent-decodes it', () => {
+    expect(parseOscCwd(7, 'file://host/Users/al/my%20project')).toBe('/Users/al/my project')
+  })
+
+  it('strips the leading slash from a Windows OSC 7 file URI', () => {
+    expect(parseOscCwd(7, 'file:///C:/Users/Aleksandr/project')).toBe('C:/Users/Aleksandr/project')
+  })
+
+  it('ignores non-file OSC 7 payloads', () => {
+    expect(parseOscCwd(7, 'https://example.com')).toBeNull()
+    expect(parseOscCwd(7, '')).toBeNull()
+  })
+
+  it('parses an OSC 9;9 cwd payload and unquotes it', () => {
+    expect(parseOscCwd(9, '9;"C:\\Users\\Aleksandr"')).toBe('C:\\Users\\Aleksandr')
+    expect(parseOscCwd(9, '9;/home/al/src')).toBe('/home/al/src')
+  })
+
+  it('ignores OSC 9 sub-commands other than 9;<path> (e.g. progress)', () => {
+    expect(parseOscCwd(9, '4;3')).toBeNull()
+    expect(parseOscCwd(9, 'some notification')).toBeNull()
   })
 })

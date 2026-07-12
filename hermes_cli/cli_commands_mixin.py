@@ -2476,6 +2476,7 @@ class CLICommandsMixin:
             /reasoning hide|off     Hide model thinking/reasoning from output
             /reasoning full         Show complete thinking (no 10-line clamp)
             /reasoning clamp        Collapse long thinking to the first 10 lines
+            /reasoning clamp <N>    Collapse long thinking to the first N lines
         """
         from cli import _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
         parts = cmd.strip().split(maxsplit=1)
@@ -2490,16 +2491,22 @@ class CLICommandsMixin:
             else:
                 level = rc.get("effort", "medium")
             display_state = "on ✓" if self.show_reasoning else "off"
-            full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
+            clamp_lines = getattr(self, "reasoning_clamp_lines", 10)
+            full_state = "full" if getattr(self, "reasoning_full", False) else f"clamped to {clamp_lines} lines"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide|full|clamp>{_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide|full|clamp [lines]>{_RST}")
             return
 
-        arg = parts[1].strip().lower()
+        arg_text = parts[1].strip().lower()
+        tokens = arg_text.split()
+        arg = tokens[0] if tokens else ""
 
         # Display toggle
         if arg in {"show", "on"}:
+            if len(tokens) > 1:
+                _cprint(f"  {_DIM}Usage: /reasoning {arg}{_RST}")
+                return
             self.show_reasoning = True
             if self.agent:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
@@ -2508,6 +2515,9 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}")
             return
         if arg in {"hide", "off"}:
+            if len(tokens) > 1:
+                _cprint(f"  {_DIM}Usage: /reasoning {arg}{_RST}")
+                return
             self.show_reasoning = False
             if self.agent:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
@@ -2517,6 +2527,9 @@ class CLICommandsMixin:
 
         # Full / clamped recap toggle
         if arg in {"full", "all"}:
+            if len(tokens) > 1:
+                _cprint(f"  {_DIM}Usage: /reasoning {arg}{_RST}")
+                return
             self.reasoning_full = True
             save_config_value("display.reasoning_full", True)
             _cprint(f"  {_ACCENT}✓ Reasoning display: FULL (saved){_RST}")
@@ -2525,26 +2538,41 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}  Note: reasoning display is OFF — run /reasoning show to see it.{_RST}")
             return
         if arg in {"clamp", "collapse", "short"}:
+            if len(tokens) > 2:
+                _cprint(f"  {_DIM}Usage: /reasoning clamp [lines]{_RST}")
+                return
+            clamp_lines = 10
+            if len(tokens) == 2:
+                try:
+                    clamp_lines = int(tokens[1])
+                except ValueError:
+                    _cprint(f"  {_DIM}Clamp line count must be a positive integer.{_RST}")
+                    return
+                if clamp_lines < 1:
+                    _cprint(f"  {_DIM}Clamp line count must be a positive integer.{_RST}")
+                    return
             self.reasoning_full = False
+            self.reasoning_clamp_lines = clamp_lines
             save_config_value("display.reasoning_full", False)
-            _cprint(f"  {_ACCENT}✓ Reasoning display: CLAMPED to 10 lines (saved){_RST}")
+            save_config_value("display.reasoning_clamp_lines", clamp_lines)
+            _cprint(f"  {_ACCENT}✓ Reasoning display: CLAMPED to {clamp_lines} lines (saved){_RST}")
             return
 
         # Effort level change
-        parsed = _parse_reasoning_config(arg)
+        parsed = _parse_reasoning_config(arg_text)
         if parsed is None:
-            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg_text}{_RST}")
             _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh{_RST}")
-            _cprint(f"  {_DIM}Display:      show, hide{_RST}")
+            _cprint(f"  {_DIM}Display:      show, hide, full, clamp [lines]{_RST}")
             return
 
         self.reasoning_config = parsed
         self.agent = None  # Force agent re-init with new reasoning config
 
-        if save_config_value("agent.reasoning_effort", arg):
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
+        if save_config_value("agent.reasoning_effort", arg_text):
+            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg_text}' (saved to config){_RST}")
         else:
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg_text}' (session only){_RST}")
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy — control what Enter does while Hermes is working.

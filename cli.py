@@ -459,6 +459,7 @@ def load_cli_config() -> Dict[str, Any]:
             # hermes_cli/config.py DEFAULT_CONFIG (display.show_reasoning).
             "show_reasoning": True,
             "reasoning_full": False,
+            "reasoning_clamp_lines": 10,
             "streaming": True,
             "busy_input_mode": "interrupt",
             "persistent_output": True,
@@ -3729,6 +3730,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # reasoning_full: when reasoning display is on, print the post-response
         # recap box uncollapsed instead of clamping to the first 10 lines.
         self.reasoning_full = CLI_CONFIG["display"].get("reasoning_full", False)
+        self.reasoning_clamp_lines = CLI_CONFIG["display"].get("reasoning_clamp_lines", 10)
         _configure_output_history(
             enabled=CLI_CONFIG["display"].get("persistent_output", True),
             max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),
@@ -12646,12 +12648,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     r_fill = w - 2 - len(r_label)
                     r_top = f"{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}"
                     r_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
-                    # Collapse long reasoning to the first 10 lines unless the
+                    # Collapse long reasoning to the configured line count unless the
                     # user opted into full display via /reasoning full.
                     lines = reasoning.strip().splitlines()
-                    if len(lines) > 10 and not getattr(self, "reasoning_full", False):
-                        display_reasoning = "\n".join(lines[:10])
-                        display_reasoning += f"\n{_DIM}  ... ({len(lines) - 10} more lines — /reasoning full to show){_RST}"
+                    clamp_lines = max(1, int(getattr(self, "reasoning_clamp_lines", 10) or 10))
+                    if len(lines) > clamp_lines and not getattr(self, "reasoning_full", False):
+                        display_reasoning = "\n".join(lines[:clamp_lines])
+                        display_reasoning += f"\n{_DIM}  ... ({len(lines) - clamp_lines} more lines — /reasoning full to show){_RST}"
                     else:
                         display_reasoning = reasoning.strip()
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")

@@ -1794,6 +1794,8 @@ DEFAULT_CONFIG = {
         # collapses long thinking to the first 10 lines. Set true to print the
         # complete thinking text uncollapsed (live streaming is always full).
         "reasoning_full": False,
+        # Number of lines shown by the collapsed post-response reasoning recap.
+        "reasoning_clamp_lines": 10,
         # Background self-improvement review notifications surfaced in chat.
         #   "off"     — no chat notification (the review still runs and writes)
         #   "on"      — generic "💾 Memory updated" line (default)

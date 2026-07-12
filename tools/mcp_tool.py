@@ -639,25 +639,20 @@ def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
         my_pid = os.getpid()
         # Read the raw starttime field (clock ticks since boot) from
         # /proc/<pid>/stat. This is stable across reads — unlike
-        # psutil.Process.create_time(), which drifts on WSL2 because
+        # psutil.Process(pid).create_time(), which drifts on WSL2 because
         # psutil derives it from time.time() - /proc/uptime and the latter
         # jitters by ~1-2s. The watchdog's _is_orphaned() compares against
         # this value, so it MUST be in the same unit (ticks). Falls back to
         # psutil create_time() only on non-Linux where /proc is absent.
-        parent_start_time = None
-        try:
-            with open(f"/proc/{my_pid}/stat") as f:
-                stat_fields = f.read().split()
-            if len(stat_fields) >= 22:
-                parent_start_time = float(stat_fields[21])
-        except (OSError, ValueError):
-            pass
-        if parent_start_time is None:
-            try:
-                import psutil
-                parent_start_time = psutil.Process(my_pid).create_time()
-            except ImportError:
-                parent_start_time = time.time()
+        # Lazy import avoids a circular load (watchdog imports nothing from
+        # here, but keeping it local makes the dependency obvious).
+        from tools.mcp_stdio_watchdog import _read_proc_starttime
+        starttime = _read_proc_starttime(my_pid)
+        if starttime is not None:
+            parent_start_time = float(starttime)
+        else:
+            import psutil
+            parent_start_time = psutil.Process(my_pid).create_time()
     except Exception:
         # Never let watchdog bookkeeping failure block a real MCP connection.
         return command, args

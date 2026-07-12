@@ -51,37 +51,45 @@ _ORPHAN_GRACE_S = max(0.0, _env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
 _in_flight = threading.Event()  # set while a command is executing
 
 
+def _read_proc_starttime(pid: int):
+    """Read the starttime field (field 22, clock ticks since boot) from
+    ``/proc/<pid>/stat``. Returns ``None`` if ``/proc`` is unavailable
+    (non-Linux) or the entry is malformed/unreadable.
+
+    ``comm`` (field 2) can contain spaces and parens, so a naive ``split()``
+    over the whole record corrupts every field index after it. Split on the
+    last ``)`` and index into the tail (starttime is tail index 19), matching
+    ``gateway/drain_control.py`` and ``tools/mcp_stdio_watchdog.py``.
+    """
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            stat = f.read()
+        tail = stat.rsplit(")", 1)[1].split()
+        return int(tail[19])
+    except (FileNotFoundError, IndexError, ValueError, OSError):
+        return None
+
+
 def _is_orphaned(original_ppid, parent_create_time, getppid=os.getppid) -> bool:
     """True once our spawning gateway is gone. Compare to the ORIGINAL ppid
     (never ==1: Linux reparents to a subreaper) and guard PID reuse via the
     /proc/<pid>/stat starttime (stable) instead of psutil create_time()
-    (which drifts ~1-2s on WSL2 via the jittery /proc/uptime boot_time)."""
+    (which drifts ~1-2s on WSL2 via the jittery /proc/uptime boot_time).
+
+    Non-Linux fallback compares psutil create_time() (not a bare pid_exists)
+    so a recycled PID is still detected as a different process.
+    """
     if getppid() != original_ppid:
         return True
-    # Fast path: read /proc/<ppid>/stat directly (Linux). Stable across reads.
-    try:
-        with open(f"/proc/{original_ppid}/stat") as f:
-            stat_fields = f.read().split()
-        if len(stat_fields) >= 22:
-            # Field 22 (1-indexed) = starttime in clock ticks since boot.
-            return int(stat_fields[21]) != parent_create_time
-        if psutil is not None:
-            return not psutil.pid_exists(original_ppid)
+    # Linux fast path: /proc ticks (stable, immune to WSL2 boot_time drift).
+    starttime = _read_proc_starttime(original_ppid)
+    if starttime is not None:
+        return starttime != parent_create_time
+    # Fallback: compare the psutil create_time fingerprint (PID-reuse guard).
+    if psutil is None:
         return False
-    except FileNotFoundError:
-        if psutil is None:
-            return False
-        try:
-            return not psutil.pid_exists(original_ppid)
-        except psutil.Error:
-            return True
-    except (ProcessLookupError, OSError, ValueError):
-        if psutil is None:
-            return False
-        try:
-            return not psutil.pid_exists(original_ppid)
-        except psutil.Error:
-            return True
+    try:
+        return psutil.Process(original_ppid).create_time() != parent_create_time
     except psutil.Error:
         return True
 
@@ -168,17 +176,15 @@ def main():
     orig_ppid = os.getppid()
     # Read raw starttime (clock ticks) from /proc/stat — stable, unlike
     # psutil.create_time() which drifts on WSL2 (see _is_orphaned docstring).
-    parent_create_time = 0.0
-    try:
-        with open(f"/proc/{orig_ppid}/stat") as f:
-            stat_fields = f.read().split()
-        if len(stat_fields) >= 22:
-            parent_create_time = float(stat_fields[21])
-    except (OSError, ValueError):
+    # Falls back to psutil create_time() on non-Linux where /proc is absent.
+    parent_create_time = _read_proc_starttime(orig_ppid)
+    if parent_create_time is None:
         try:
             parent_create_time = psutil.Process(orig_ppid).create_time()
         except psutil.Error:
             parent_create_time = 0.0
+    else:
+        parent_create_time = float(parent_create_time)
     _start_parent_death_watchdog(orig_ppid, parent_create_time)
     _prepare_slash_worker_runtime()
 

@@ -63,6 +63,27 @@ _POLL_INTERVAL_S = 2.0
 _TERM_GRACE_S = 3.0
 
 
+def _read_proc_starttime(pid: int):
+    """Read the starttime field (field 22, clock ticks since boot) from
+    ``/proc/<pid>/stat``. Returns ``None`` if ``/proc`` is unavailable
+    (non-Linux) or the entry is malformed/unreadable.
+
+    ``comm`` (field 2) can contain spaces and parens — e.g.
+    ``chrome (helper)`` — so a naive ``split()`` over the whole record
+    corrupts every field index after it. We split on the *last* ``)`` and
+    index into the whitespace-delimited tail, the same approach used by
+    ``gateway/drain_control.py``. After ``comm`` the tail starts at field 3,
+    so starttime (field 22, 1-indexed) is the tail's index 19.
+    """
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            stat = f.read()
+        tail = stat.rsplit(")", 1)[1].split()
+        return int(tail[19])
+    except (FileNotFoundError, IndexError, ValueError, OSError):
+        return None
+
+
 def _is_orphaned(original_ppid: int, parent_create_time: float, getppid=os.getppid) -> bool:
     """True once the process that spawned us is gone.
 
@@ -70,53 +91,32 @@ def _is_orphaned(original_ppid: int, parent_create_time: float, getppid=os.getpp
     subreaper, not always PID 1), and guards against PID reuse via the recorded
     starttime of the original parent.
 
-    NOTE: we deliberately avoid psutil.Process(pid).create_time(). On WSL2,
-    psutil derives create_time() from a (boot_time, /proc/pid/stat starttime)
-    pair where boot_time = time.time() - /proc/uptime. WSL2's /proc/uptime
-    jitters by ~1-2s, so boot_time (and thus create_time()) drifts over the
-    life of a process. The watchdog snapshots create_time at spawn and
-    compares later — a ~10-18s drift flips the comparison and makes
-    is_orphaned() return True for a LIVING parent, killing every stdio MCP
-    child on a ~10-30s reconnect loop. Reading the raw starttime field
-    (field 22, in clock ticks) from /proc/<pid>/stat is stable across reads
-    and immune to the boot_time drift, so we use that on Linux. ``psutil`` is
-    only used for pid_exists() and as a non-Linux fallback.
+    On Linux we read the raw starttime field (field 22, clock ticks since boot)
+    from ``/proc/<ppid>/stat``. This is stable across reads — unlike
+    ``psutil.Process(pid).create_time()``, which drifts ~1-2s on WSL2 because
+    psutil derives it from ``(boot_time, /proc/pid/stat starttime)`` where
+    ``boot_time = time.time() - /proc/uptime`` and WSL2's ``/proc/uptime``
+    jitters. The watchdog snapshots create_time at spawn and compares later —
+    a drift flips the comparison and makes ``is_orphaned()`` return True for a
+    LIVING parent, killing every stdio MCP child on a ~10-30s reconnect loop.
+
+    The non-Linux fallback (``/proc`` unavailable) preserves the PID-reuse
+    guard by comparing ``psutil.Process(pid).create_time()`` against the
+    snapshot rather than degrading to a bare ``pid_exists()`` check, which
+    would miss the case where the PID was recycled by an unrelated process.
     """
     if getppid() != original_ppid:
         return True
-    # Fast path: read /proc/<ppid>/stat directly (Linux). Stable across reads.
-    try:
-        with open(f"/proc/{original_ppid}/stat") as f:
-            stat_fields = f.read().split()
-        if len(stat_fields) >= 22:
-            # Field 22 (1-indexed) = starttime in clock ticks since boot.
-            return int(stat_fields[21]) != parent_create_time
-        # Malformed stat — fall back to existence check.
-        if psutil is not None:
-            return not psutil.pid_exists(original_ppid)
+    # Linux fast path: /proc ticks (stable, immune to WSL2 boot_time drift).
+    starttime = _read_proc_starttime(original_ppid)
+    if starttime is not None:
+        return starttime != parent_create_time
+    # Fallback (non-Linux or /proc unreadable): compare the psutil create_time
+    # fingerprint so a PID-reuse (same pid, different process) is still caught.
+    if psutil is None:
         return False
-    except FileNotFoundError:
-        # /proc unavailable (non-Linux) or process gone.
-        if psutil is None:
-            return False
-        try:
-            return not psutil.pid_exists(original_ppid)
-        except psutil.Error:
-            return True
-    except (ProcessLookupError, OSError):
-        if psutil is None:
-            return False
-        try:
-            return not psutil.pid_exists(original_ppid)
-        except psutil.Error:
-            return True
-    except ValueError:
-        if psutil is None:
-            return False
-        try:
-            return not psutil.pid_exists(original_ppid)
-        except psutil.Error:
-            return True
+    try:
+        return psutil.Process(original_ppid).create_time() != parent_create_time
     except psutil.Error:
         return True
 

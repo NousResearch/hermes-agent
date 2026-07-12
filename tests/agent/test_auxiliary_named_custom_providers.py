@@ -1,6 +1,5 @@
 """Tests for named custom provider and 'main' alias resolution in auxiliary_client."""
 
-import os
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -99,6 +98,26 @@ class TestResolveProviderClientMainAlias:
         client, model = resolve_provider_client("main", "test")
         assert client is not None
         assert "beans.local" in str(client.base_url)
+
+    def test_main_resolves_github_copilot_alias(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "gpt-5.4", "provider": "github-copilot"},
+        })
+        with (
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "ghu_test_token",
+                "base_url": "https://api.githubcopilot.com",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("main", "gpt-5.4")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.called
 
 
 class TestResolveProviderClientNamedCustom:
@@ -232,7 +251,7 @@ class TestResolveVisionProviderClientModelNormalization:
 
         assert provider == "zai"
         assert client is not None
-        assert model == "glm-5.1"
+        assert model == "glm-5v-turbo"  # zai has dedicated vision model in _PROVIDER_VISION_MODELS
 
 
 class TestVisionPathApiMode:
@@ -252,3 +271,293 @@ class TestVisionPathApiMode:
         mock_gcc.assert_called_once()
         _, kwargs = mock_gcc.call_args
         assert kwargs.get("api_mode") == "chat_completions"
+
+
+class TestProvidersDictApiModeAnthropicMessages:
+    """Regression guard for #15033.
+
+    Named providers declared under the ``providers:`` dict with
+    ``api_mode: anthropic_messages`` must route auxiliary calls through
+    the Anthropic Messages API (via AnthropicAuxiliaryClient), not
+    through an OpenAI chat-completions client.
+
+    The bug had two halves: the providers-dict branch of
+    ``_get_named_custom_provider`` dropped the ``api_mode`` field, and
+    ``resolve_provider_client``'s named-custom branch never read it.
+    """
+
+    def test_providers_dict_propagates_api_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MYRELAY_API_KEY", "sk-test")
+        _write_config(tmp_path, {
+            "providers": {
+                "myrelay": {
+                    "name": "myrelay",
+                    "base_url": "https://example-relay.test/anthropic",
+                    "key_env": "MYRELAY_API_KEY",
+                    "api_mode": "anthropic_messages",
+                    "default_model": "claude-opus-4-7",
+                },
+            },
+        })
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+        entry = _get_named_custom_provider("myrelay")
+        assert entry is not None
+        assert entry.get("api_mode") == "anthropic_messages"
+        assert entry.get("base_url") == "https://example-relay.test/anthropic"
+        assert entry.get("api_key") == "sk-test"
+
+    def test_providers_dict_invalid_api_mode_is_dropped(self, tmp_path):
+        _write_config(tmp_path, {
+            "providers": {
+                "weird": {
+                    "name": "weird",
+                    "base_url": "https://example.test",
+                    "api_mode": "bogus_nonsense",
+                    "default_model": "x",
+                },
+            },
+        })
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+        entry = _get_named_custom_provider("weird")
+        assert entry is not None
+        assert "api_mode" not in entry
+
+    def test_providers_dict_without_api_mode_is_unchanged(self, tmp_path):
+        _write_config(tmp_path, {
+            "providers": {
+                "localchat": {
+                    "name": "localchat",
+                    "base_url": "http://127.0.0.1:1234/v1",
+                    "api_key": "local-key",
+                    "default_model": "llama-3",
+                },
+            },
+        })
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+        entry = _get_named_custom_provider("localchat")
+        assert entry is not None
+        assert "api_mode" not in entry
+
+    def test_resolve_provider_client_returns_anthropic_client(self, tmp_path, monkeypatch):
+        """Named custom provider with api_mode=anthropic_messages must
+        route through AnthropicAuxiliaryClient."""
+        monkeypatch.setenv("MYRELAY_API_KEY", "sk-test")
+        _write_config(tmp_path, {
+            "providers": {
+                "myrelay": {
+                    "name": "myrelay",
+                    "base_url": "https://example-relay.test/anthropic",
+                    "key_env": "MYRELAY_API_KEY",
+                    "api_mode": "anthropic_messages",
+                    "default_model": "claude-opus-4-7",
+                },
+            },
+        })
+        from agent.auxiliary_client import (
+            resolve_provider_client,
+            AnthropicAuxiliaryClient,
+            AsyncAnthropicAuxiliaryClient,
+        )
+        sync_client, sync_model = resolve_provider_client("myrelay", async_mode=False)
+        assert isinstance(sync_client, AnthropicAuxiliaryClient), (
+            f"expected AnthropicAuxiliaryClient, got {type(sync_client).__name__}"
+        )
+        assert sync_model == "claude-opus-4-7"
+
+        async_client, async_model = resolve_provider_client("myrelay", async_mode=True)
+        assert isinstance(async_client, AsyncAnthropicAuxiliaryClient), (
+            f"expected AsyncAnthropicAuxiliaryClient, got {type(async_client).__name__}"
+        )
+        assert async_model == "claude-opus-4-7"
+
+    def test_aux_task_override_routes_named_provider_to_anthropic(self, tmp_path, monkeypatch):
+        """The full chain: auxiliary.<task>.provider: myrelay with
+        api_mode anthropic_messages must produce an Anthropic client."""
+        monkeypatch.setenv("MYRELAY_API_KEY", "sk-test")
+        _write_config(tmp_path, {
+            "providers": {
+                "myrelay": {
+                    "name": "myrelay",
+                    "base_url": "https://example-relay.test/anthropic",
+                    "key_env": "MYRELAY_API_KEY",
+                    "api_mode": "anthropic_messages",
+                    "default_model": "claude-opus-4-7",
+                },
+            },
+            "auxiliary": {
+                "compression": {
+                    "provider": "myrelay",
+                    "model": "claude-sonnet-4.6",
+                },
+            },
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+        })
+        from agent.auxiliary_client import (
+            get_async_text_auxiliary_client,
+            get_text_auxiliary_client,
+            AnthropicAuxiliaryClient,
+            AsyncAnthropicAuxiliaryClient,
+        )
+        async_client, async_model = get_async_text_auxiliary_client("compression")
+        assert isinstance(async_client, AsyncAnthropicAuxiliaryClient)
+        assert async_model == "claude-sonnet-4.6"
+
+        sync_client, sync_model = get_text_auxiliary_client("compression")
+        assert isinstance(sync_client, AnthropicAuxiliaryClient)
+        assert sync_model == "claude-sonnet-4.6"
+
+    def test_provider_without_api_mode_still_uses_openai(self, tmp_path):
+        """Named providers that don't declare api_mode should still go
+        through the plain OpenAI-wire path (no regression)."""
+        _write_config(tmp_path, {
+            "providers": {
+                "localchat": {
+                    "name": "localchat",
+                    "base_url": "http://127.0.0.1:1234/v1",
+                    "api_key": "local-key",
+                    "default_model": "llama-3",
+                },
+            },
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        from openai import OpenAI, AsyncOpenAI
+        sync_client, _ = resolve_provider_client("localchat", async_mode=False)
+        # sync returns the raw OpenAI client
+        assert isinstance(sync_client, OpenAI)
+        async_client, _ = resolve_provider_client("localchat", async_mode=True)
+        assert isinstance(async_client, AsyncOpenAI)
+
+
+class TestCustomProviderAliasCollision:
+    """A user-declared custom_providers entry whose name matches a built-in
+    *alias* (not a canonical provider) must win over the built-in.
+
+    Regression guard for #15743: users who defined fallback_model pointing at
+    a custom_providers entry named ``kimi`` were having requests routed to
+    the built-in kimi-coding endpoint because ``_normalize_aux_provider``
+    rewrote ``kimi`` → ``kimi-coding`` before the named-custom lookup.
+    """
+
+    def test_custom_named_kimi_wins_over_builtin_alias(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+            "custom_providers": [
+                {
+                    "name": "kimi",
+                    "base_url": "https://my-custom-kimi.example.com/v1",
+                    "api_key": "my-kimi-key",
+                    "models": {"my-kimi-model": {"context_length": 200000}},
+                },
+            ],
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        from openai import OpenAI
+        client, model = resolve_provider_client("kimi", model="my-kimi-model", raw_codex=True)
+        assert isinstance(client, OpenAI)
+        assert "my-custom-kimi.example.com" in str(client.base_url)
+        assert client.api_key == "my-kimi-key"
+        assert model == "my-kimi-model"
+
+    def test_bare_kimi_without_custom_still_routes_to_builtin(self, tmp_path, monkeypatch):
+        """Regression guard: bare 'kimi' with no custom entry must still
+        reach the built-in kimi-coding provider."""
+        _write_config(tmp_path, {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+        })
+        monkeypatch.setenv("KIMI_API_KEY", "builtin-kimi-key")
+        from agent.auxiliary_client import resolve_provider_client
+        client, _ = resolve_provider_client("kimi", model="kimi-k2-0905-preview", raw_codex=True)
+        assert client is not None
+        base_url = str(client.base_url)
+        # Built-in kimi-coding points at api.moonshot.ai
+        assert "moonshot" in base_url or "kimi" in base_url, f"unexpected base_url {base_url!r}"
+
+    def test_explicit_overrides_applied_on_api_key_branch(self, tmp_path, monkeypatch):
+        """Explicit base_url/api_key from the caller must override the
+        registered provider's defaults on the API-key branch.  Used by
+        _try_activate_fallback to route a fallback through a built-in
+        provider name but targeting a user-supplied endpoint."""
+        _write_config(tmp_path, {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+        })
+        monkeypatch.setenv("KIMI_API_KEY", "builtin-kimi-key")
+        from agent.auxiliary_client import resolve_provider_client
+        from openai import OpenAI
+        client, _ = resolve_provider_client(
+            "kimi-coding", model="kimi-k2", raw_codex=True,
+            explicit_base_url="https://override.example.com",
+            explicit_api_key="override-key",
+        )
+        assert isinstance(client, OpenAI)
+        assert "override.example.com" in str(client.base_url)
+        assert client.api_key == "override-key"
+
+
+class TestResolveProviderClientMainRuntimeCustom:
+    """When the main agent uses a named custom provider (custom:<name>),
+    resolve_provider_client('custom', ..., main_runtime=...) must reuse the
+    main_runtime's base_url + api_key instead of re-resolving from the bare
+    'custom' provider name.  Re-resolution loses the provider name and falls
+    back to OpenRouter or a wrong API-key provider. (#45472)"""
+
+    def test_custom_provider_main_runtime_used_directly(self, tmp_path, monkeypatch):
+        """main_runtime with base_url + api_key for a named custom provider
+        is used directly, bypassing the _try_custom_endpoint / API-key
+        fallback chain."""
+        from agent.auxiliary_client import resolve_provider_client
+        main_runtime = {
+            "provider": "custom",
+            "base_url": "https://my-gateway.example.com/v1",
+            "api_key": "***",
+            "model": "glm-5.1",
+        }
+        client, model = resolve_provider_client(
+            "custom",
+            model="explicit-glm-5.1",
+            main_runtime=main_runtime,
+        )
+        assert client is not None
+        assert model == "explicit-glm-5.1"
+        assert "my-gateway.example.com" in str(client.base_url)
+        assert client.api_key == "***"
+
+    def test_custom_provider_main_runtime_no_credentials_falls_through(self, tmp_path, monkeypatch):
+        """When main_runtime has no base_url or no api_key, the existing
+        _try_custom_endpoint / _resolve_api_key_provider fallback chain is
+        still tried."""
+        # Ensure no env-provided credentials interfere
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        from agent.auxiliary_client import resolve_provider_client
+        # main_runtime with key but no base_url → must fall through
+        client, model = resolve_provider_client(
+            "custom",
+            main_runtime={"api_key": "k", "base_url": ""},
+        )
+        # Should fall through to _try_custom_endpoint → return None,None
+        # because no OPENAI_BASE_URL is set and no custom endpoint is configured
+        assert client is None
+
+    def test_custom_provider_main_runtime_respects_explicit_base_url(self, tmp_path):
+        """explicit_base_url still wins over main_runtime — the caller's
+        explicit argument is the strongest signal."""
+        from agent.auxiliary_client import resolve_provider_client
+        main_runtime = {
+            "base_url": "https://main-runtime.example.com/v1",
+            "api_key": "sk-main",
+            "model": "ignored-model",
+        }
+        client, model = resolve_provider_client(
+            "custom",
+            model="explicit-model",
+            explicit_base_url="https://explicit.example.com/v1",
+            explicit_api_key="sk-explicit",
+            main_runtime=main_runtime,
+        )
+        assert client is not None
+        assert model == "explicit-model"
+        assert "explicit.example.com" in str(client.base_url)
+        assert client.api_key == "sk-explicit"

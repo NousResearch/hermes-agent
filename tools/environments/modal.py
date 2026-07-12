@@ -80,11 +80,23 @@ def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> Non
         _save_snapshots(snapshots)
 
 
+def _ensure_modal_sdk() -> None:
+    """Lazy-install modal on demand. Idempotent — fast no-op once installed."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("terminal.modal", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
+
+
 def _resolve_modal_image(image_spec: Any) -> Any:
     """Convert registry references or snapshot ids into Modal image objects.
 
     Includes add_python support for ubuntu/debian images (absorbed from PR 4511).
     """
+    _ensure_modal_sdk()
     import modal as _modal
 
     if not isinstance(image_spec, str):
@@ -132,9 +144,14 @@ class _AsyncWorker:
         self._loop.run_forever()
 
     def run_coroutine(self, coro, timeout=600):
+        from agent.async_utils import safe_schedule_threadsafe
         if self._loop is None or self._loop.is_closed():
+            if asyncio.iscoroutine(coro):
+                coro.close()
             raise RuntimeError("AsyncWorker loop is not running")
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        future = safe_schedule_threadsafe(coro, self._loop)
+        if future is None:
+            raise RuntimeError("AsyncWorker loop is not running")
         return future.result(timeout=timeout)
 
     def stop(self):
@@ -183,6 +200,7 @@ class ModalEnvironment(BaseEnvironment):
             if restored_snapshot_id:
                 logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
 
+        _ensure_modal_sdk()
         import modal as _modal
 
         cred_mounts = []
@@ -269,6 +287,7 @@ class ModalEnvironment(BaseEnvironment):
             upload_fn=self._modal_upload,
             delete_fn=self._modal_delete,
             bulk_upload_fn=self._modal_bulk_upload,
+            bulk_download_fn=self._modal_bulk_download,
         )
         self._sync_manager.sync(force=True)
         self.init_session()
@@ -347,6 +366,27 @@ class ModalEnvironment(BaseEnvironment):
 
         self._worker.run_coroutine(_bulk(), timeout=120)
 
+    def _modal_bulk_download(self, dest: Path) -> None:
+        """Download remote .hermes/ as a tar archive.
+
+        Modal sandboxes always run as root, so /root/.hermes is hardcoded
+        (consistent with iter_sync_files call on line 269).
+        """
+        async def _download():
+            proc = await self._sandbox.exec.aio(
+                "bash", "-c", "tar cf - -C / root/.hermes"
+            )
+            data = await proc.stdout.read.aio()
+            exit_code = await proc.wait.aio()
+            if exit_code != 0:
+                raise RuntimeError(f"Modal bulk download failed (exit {exit_code})")
+            return data
+
+        tar_bytes = self._worker.run_coroutine(_download(), timeout=120)
+        if isinstance(tar_bytes, str):
+            tar_bytes = tar_bytes.encode()
+        dest.write_bytes(tar_bytes)
+
     def _modal_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files via exec."""
         rm_cmd = quoted_rm_command(remote_paths)
@@ -403,6 +443,10 @@ class ModalEnvironment(BaseEnvironment):
         """Snapshot the filesystem (if persistent) then stop the sandbox."""
         if self._sandbox is None:
             return
+
+        if self._sync_manager:
+            logger.info("Modal: syncing files from sandbox...")
+            self._sync_manager.sync_back()
 
         if self._persistent:
             try:

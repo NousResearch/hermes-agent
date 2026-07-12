@@ -1,6 +1,6 @@
 """Tests that invalid context_length values in config produce visible warnings."""
 
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch
 
 
 def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-4.6"):
@@ -8,6 +8,8 @@ def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-
     cfg = {"model": model_cfg}
     if custom_providers is not None:
         cfg["custom_providers"] = custom_providers
+
+    base_url = model_cfg.get("base_url", "")
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
@@ -21,6 +23,7 @@ def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-
         agent = AIAgent(
             model=model,
             api_key="test-key-1234567890",
+            base_url=base_url,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

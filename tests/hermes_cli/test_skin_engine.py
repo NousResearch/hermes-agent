@@ -1,10 +1,6 @@
 """Tests for hermes_cli.skin_engine — the data-driven skin/theme system."""
 
-import json
-import os
 import pytest
-from pathlib import Path
-from unittest.mock import patch
 
 
 @pytest.fixture(autouse=True)
@@ -100,6 +96,18 @@ class TestBuiltinSkins:
         assert skin.get_color("banner_text") == "#2C1810"
         assert skin.get_color("completion_menu_bg") == "#F5EFE0"
 
+    def test_charizard_skin_has_dark_ember_completion_menu(self):
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("charizard")
+        assert skin.name == "charizard"
+        assert skin.get_color("banner_dim") == "#C58A45"
+        assert skin.get_color("completion_menu_bg") == "#0B0503"
+        assert skin.get_color("completion_menu_current_bg") == "#4A1B07"
+        assert skin.get_color("completion_menu_meta_bg") == "#120806"
+        assert skin.get_color("completion_menu_meta_current_bg") == "#5A260D"
+        assert skin.get_color("selection_bg") == "#5A260D"
+
     def test_unknown_skin_falls_back_to_default(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("nonexistent_skin_xyz")
@@ -152,10 +160,28 @@ class TestSkinManagement:
         init_skin_from_config({})
         assert get_active_skin_name() == "default"
 
+    def test_init_skin_from_null_display(self):
+        """display: null should fall back to default, not crash."""
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": None})
+        assert get_active_skin_name() == "default"
+
+    def test_init_skin_from_non_dict_display(self):
+        """display: <non-dict> should fall back to default."""
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": "invalid"})
+        assert get_active_skin_name() == "default"
+
+        init_skin_from_config({"display": 42})
+        assert get_active_skin_name() == "default"
+
+        init_skin_from_config({"display": []})
+        assert get_active_skin_name() == "default"
+
 
 class TestUserSkins:
     def test_load_user_skin_from_yaml(self, tmp_path, monkeypatch):
-        from hermes_cli.skin_engine import load_skin, _skins_dir
+        from hermes_cli.skin_engine import load_skin
         # Create a user skin YAML
         skins_dir = tmp_path / "skins"
         skins_dir.mkdir()
@@ -180,6 +206,37 @@ class TestUserSkins:
         assert skin.tool_prefix == "▸"
         # Should inherit defaults for unspecified colors
         assert skin.get_color("banner_border") == "#CD7F32"  # from default
+
+    def test_load_user_skin_invalid_section_types_fall_back_to_defaults(self, tmp_path, monkeypatch):
+        from hermes_cli.skin_engine import load_skin
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        import yaml
+
+        (skins_dir / "broken.yaml").write_text(
+            yaml.dump(
+                {
+                    "name": "broken",
+                    "colors": ["not", "a", "mapping"],
+                    "spinner": "invalid",
+                    "branding": ["also", "invalid"],
+                    "tool_emojis": ["invalid"],
+                    "tool_prefix": "!",
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+
+        skin = load_skin("broken")
+
+        assert skin.name == "broken"
+        assert skin.get_color("banner_title") == "#FFD700"
+        assert skin.get_branding("agent_name") == "Hermes Agent"
+        assert skin.spinner.get("waiting_faces", []) == []
+        assert skin.tool_emojis == {}
+        assert skin.tool_prefix == "!"
 
     def test_list_skins_includes_user_skins(self, tmp_path, monkeypatch):
         from hermes_cli.skin_engine import list_skins
@@ -234,7 +291,7 @@ class TestCliBrandingHelpers:
         from hermes_cli.skin_engine import set_active_skin, get_active_prompt_symbol
 
         set_active_skin("ares")
-        assert get_active_prompt_symbol() == "⚔ ❯ "
+        assert get_active_prompt_symbol() == "⚔ "
 
     def test_active_help_header_ares(self):
         from hermes_cli.skin_engine import set_active_skin, get_active_help_header
@@ -250,7 +307,6 @@ class TestCliBrandingHelpers:
 
     def test_prompt_toolkit_style_overrides_cover_tui_classes(self):
         from hermes_cli.skin_engine import set_active_skin, get_prompt_toolkit_style_overrides
-
         set_active_skin("ares")
         overrides = get_prompt_toolkit_style_overrides()
         required = {
@@ -259,6 +315,13 @@ class TestCliBrandingHelpers:
             "prompt",
             "prompt-working",
             "hint",
+            "status-bar",
+            "status-bar-strong",
+            "status-bar-dim",
+            "status-bar-good",
+            "status-bar-warn",
+            "status-bar-bad",
+            "status-bar-critical",
             "input-rule",
             "image-badge",
             "completion-menu",
@@ -307,6 +370,15 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["prompt"] == skin.get_color("prompt")
         assert overrides["input-rule"] == skin.get_color("input_rule")
+        assert overrides["status-bar"] == (
+            f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_text')}"
+        )
+        assert overrides["status-bar-strong"] == (
+            f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_strong')} bold"
+        )
+        assert overrides["status-bar-critical"] == (
+            f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_critical')} bold"
+        )
         assert overrides["clarify-title"] == f"{skin.get_color('banner_title')} bold"
         assert overrides["sudo-prompt"] == f"{skin.get_color('ui_error')} bold"
         assert overrides["approval-title"] == f"{skin.get_color('ui_warn')} bold"

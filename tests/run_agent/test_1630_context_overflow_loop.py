@@ -8,8 +8,6 @@ Verifies that:
 3. Context-overflow failures produce helpful error messages suggesting /compact.
 """
 
-import pytest
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -32,6 +30,7 @@ class TestGeneric400Heuristic:
             from run_agent import AIAgent
             a = AIAgent(
                 api_key="test-key-12345",
+                base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,

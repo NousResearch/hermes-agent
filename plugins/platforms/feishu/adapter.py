@@ -58,6 +58,8 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -4554,12 +4556,18 @@ class FeishuAdapter(BasePlatformAdapter):
             file_path=display_name,
             requested_message_type=outbound_message_type,
         )
+        upload_duration_ms = (
+            self._probe_audio_duration_ms(file_path)
+            if upload_file_type == "opus"
+            else None
+        )
         try:
             with open(file_path, "rb") as file_obj:
                 body = self._build_file_upload_body(
                     file_type=upload_file_type,
                     file_name=display_name,
                     file=file_obj,
+                    duration=upload_duration_ms,
                 )
                 request = self._build_file_upload_request(body)
                 upload_response = await self._run_blocking(self._client.im.v1.file.create, request)
@@ -4585,10 +4593,13 @@ class FeishuAdapter(BasePlatformAdapter):
                     metadata=metadata,
                 )
             else:
+                message_payload = {"file_key": file_key}
+                if resolved_message_type == "audio" and upload_duration_ms and upload_duration_ms > 0:
+                    message_payload["duration"] = upload_duration_ms
                 message_response = await self._feishu_send_with_retry(
                     chat_id=chat_id,
                     msg_type=resolved_message_type,
-                    payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
+                    payload=json.dumps(message_payload, ensure_ascii=False),
                     reply_to=reply_to,
                     metadata=metadata,
                 )
@@ -4988,16 +4999,24 @@ class FeishuAdapter(BasePlatformAdapter):
         return SimpleNamespace(request_body=request_body)
 
     @staticmethod
-    def _build_file_upload_body(*, file_type: str, file_name: str, file: Any) -> Any:
+    def _build_file_upload_body(
+        *,
+        file_type: str,
+        file_name: str,
+        file: Any,
+        duration: Optional[int] = None,
+    ) -> Any:
         if "CreateFileRequestBody" in globals():
-            return (
+            builder = (
                 CreateFileRequestBody.builder()
                 .file_type(file_type)
                 .file_name(file_name)
                 .file(file)
-                .build()
             )
-        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file)
+            if duration is not None:
+                builder = builder.duration(duration)
+            return builder.build()
+        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file, duration=duration)
 
     @staticmethod
     def _build_file_upload_request(request_body: Any) -> Any:
@@ -5013,6 +5032,34 @@ class FeishuAdapter(BasePlatformAdapter):
         content = payload.setdefault("zh_cn", {}).setdefault("content", [])
         content.append([media_tag])
         return json.dumps(payload, ensure_ascii=False)
+
+    @staticmethod
+    def _probe_audio_duration_ms(file_path: str) -> Optional[int]:
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            return None
+        try:
+            result = subprocess.run(
+                [ffmpeg, "-i", file_path, "-f", "null", "-"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+
+        match = re.search(
+            r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)",
+            result.stderr or "",
+        )
+        if not match:
+            return None
+
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
+        seconds = float(match.group(3))
+        return int(round(((hours * 60 + minutes) * 60 + seconds) * 1000))
 
     @staticmethod
     def _resolve_outbound_file_routing(

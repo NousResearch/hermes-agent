@@ -204,7 +204,7 @@ class TestConfigGetters:
         assert _get_command_tts_output_format({"format": "m4a"}) == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
 
     def test_output_format_supported_set(self):
-        assert COMMAND_TTS_OUTPUT_FORMATS == frozenset({"mp3", "wav", "ogg", "flac"})
+        assert COMMAND_TTS_OUTPUT_FORMATS == frozenset({"mp3", "wav", "ogg", "opus", "flac"})
 
     def test_voice_compatible_boolean(self):
         assert _is_command_tts_voice_compatible({"voice_compatible": True}) is True

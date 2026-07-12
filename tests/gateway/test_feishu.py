@@ -2633,15 +2633,22 @@ class TestAdapterBehavior(unittest.TestCase):
             audio_path = tmp.name
 
         try:
-            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            with (
+                patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct),
+                patch.object(FeishuAdapter, "_probe_audio_duration_ms", return_value=1234),
+            ):
                 result = asyncio.run(adapter.send_voice(chat_id="oc_chat", audio_path=audio_path))
         finally:
             os.unlink(audio_path)
 
         self.assertTrue(result.success)
         self.assertEqual(captured["upload_request"].request_body.file_type, "opus")
+        self.assertEqual(captured["upload_request"].request_body.duration, 1234)
         self.assertEqual(captured["message_request"].request_body.msg_type, "audio")
-        self.assertEqual(captured["message_request"].request_body.content, '{"file_key": "file_audio_123"}')
+        self.assertEqual(
+            json.loads(captured["message_request"].request_body.content),
+            {"file_key": "file_audio_123", "duration": 1234},
+        )
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_extracts_title_and_links(self):

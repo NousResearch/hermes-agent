@@ -13019,7 +13019,9 @@ def _(rid, params: dict) -> dict:
         # Remove API key env vars from .env and process
         if pconfig and pconfig.api_key_env_vars:
             for ev in pconfig.api_key_env_vars:
-                if remove_env_value(ev):
+                removed_from_file = remove_env_value(ev)
+                removed_from_process = os.environ.pop(ev, None) is not None
+                if removed_from_file or removed_from_process:
                     cleared_env = True
 
         # Clear OAuth / credential pool state

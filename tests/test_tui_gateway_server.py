@@ -7348,6 +7348,33 @@ def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
     assert cleanup_count["n"] == 2
 
 
+def test_model_disconnect_clears_process_env_for_api_key_provider(monkeypatch):
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    monkeypatch.setitem(
+        PROVIDER_REGISTRY,
+        "openai",
+        types.SimpleNamespace(name="OpenAI", api_key_env_vars=("OPENAI_API_KEY",)),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    with patch("hermes_cli.config.remove_env_value", return_value=False) as remove_env:
+        with patch("hermes_cli.auth.clear_provider_auth", return_value=False) as clear_auth:
+            resp = server._methods["model.disconnect"](
+                "1",
+                {"slug": "openai"},
+            )
+
+    assert resp["result"] == {
+        "slug": "openai",
+        "name": "OpenAI",
+        "disconnected": True,
+    }
+    assert "OPENAI_API_KEY" not in os.environ
+    remove_env.assert_called_once_with("OPENAI_API_KEY")
+    clear_auth.assert_called_once_with("openai")
+
+
 # ── config.get indicator normalization ───────────────────────────────
 
 

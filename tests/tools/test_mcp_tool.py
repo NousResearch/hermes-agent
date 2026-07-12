@@ -88,6 +88,106 @@ class TestFilterMCPChildren:
 
 
 # ---------------------------------------------------------------------------
+# HTTP redirect credential stripping
+# ---------------------------------------------------------------------------
+
+class TestMCPRedirectCredentialStripping:
+    def test_cross_origin_redirect_strips_configured_credential_headers(self):
+        """httpx only strips Authorization by default; MCP config headers such
+        as X-Api-Key must also be removed before a cross-origin redirect.
+        """
+        import httpx
+
+        from tools.mcp_tool import _make_mcp_cross_origin_request_sanitizer
+
+        seen: list[tuple[str, dict[str, str]]] = []
+
+        def handler(request):
+            seen.append((str(request.url), dict(request.headers)))
+            if len(seen) == 1:
+                return httpx.Response(
+                    302,
+                    headers={"Location": "https://evil.example/mcp"},
+                    request=request,
+                )
+            return httpx.Response(200, text="ok", request=request)
+
+        async def drive():
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                follow_redirects=True,
+                event_hooks={
+                    "request": [_make_mcp_cross_origin_request_sanitizer("https://mcp.example/mcp")],
+                },
+            ) as client:
+                await client.get(
+                    "https://mcp.example/mcp",
+                    headers={
+                        "Authorization": "Bearer auth-secret",
+                        "X-Api-Key": "api-secret",
+                        "X-Auth-Token": "token-secret",
+                        "MCP-Protocol-Version": "2025-03-26",
+                    },
+                )
+
+        asyncio.run(drive())
+
+        assert len(seen) == 2
+        first_headers = seen[0][1]
+        redirect_headers = seen[1][1]
+        assert first_headers["authorization"] == "Bearer auth-secret"
+        assert first_headers["x-api-key"] == "api-secret"
+        assert first_headers["x-auth-token"] == "token-secret"
+        assert "authorization" not in redirect_headers
+        assert "x-api-key" not in redirect_headers
+        assert "x-auth-token" not in redirect_headers
+        assert redirect_headers["mcp-protocol-version"] == "2025-03-26"
+
+    def test_same_origin_redirect_preserves_configured_headers(self):
+        """Same-origin MCP redirects keep configured headers for canonical
+        /mcp -> /mcp/ style endpoint normalization.
+        """
+        import httpx
+
+        from tools.mcp_tool import _make_mcp_cross_origin_request_sanitizer
+
+        seen: list[tuple[str, dict[str, str]]] = []
+
+        def handler(request):
+            seen.append((str(request.url), dict(request.headers)))
+            if len(seen) == 1:
+                return httpx.Response(
+                    307,
+                    headers={"Location": "https://mcp.example/mcp/"},
+                    request=request,
+                )
+            return httpx.Response(200, text="ok", request=request)
+
+        async def drive():
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                follow_redirects=True,
+                event_hooks={
+                    "request": [_make_mcp_cross_origin_request_sanitizer("https://mcp.example/mcp")],
+                },
+            ) as client:
+                await client.get(
+                    "https://mcp.example/mcp",
+                    headers={
+                        "Authorization": "Bearer auth-secret",
+                        "X-Api-Key": "api-secret",
+                    },
+                )
+
+        asyncio.run(drive())
+
+        assert len(seen) == 2
+        redirect_headers = seen[1][1]
+        assert redirect_headers["authorization"] == "Bearer auth-secret"
+        assert redirect_headers["x-api-key"] == "api-secret"
+
+
+# ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
 

@@ -120,6 +120,84 @@ logger = logging.getLogger(__name__)
 _OSV_MALWARE_CHECK_TIMEOUT_S = 12.0
 
 
+_MCP_REDIRECT_SENSITIVE_EXACT_HEADERS = {
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+}
+_MCP_REDIRECT_SENSITIVE_HEADER_MARKERS = (
+    "apikey",
+    "auth",
+    "credential",
+    "secret",
+    "token",
+)
+
+
+def _url_origin_tuple(url: Any) -> tuple[str, str, int | None]:
+    """Return scheme/host/effective-port for redirect comparisons."""
+    if isinstance(url, str):
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower()
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+        if port is None:
+            if scheme == "https":
+                port = 443
+            elif scheme == "http":
+                port = 80
+        return scheme, host, port
+    scheme = str(getattr(url, "scheme", "") or "").lower()
+    host = str(getattr(url, "host", "") or "").lower()
+    port = getattr(url, "port", None)
+    if port is None:
+        if scheme == "https":
+            port = 443
+        elif scheme == "http":
+            port = 80
+    return scheme, host, port
+
+
+def _is_mcp_redirect_sensitive_header(name: str) -> bool:
+    """Whether a configured MCP header should not survive a cross-origin redirect."""
+    normalized = name.lower()
+    if normalized in _MCP_REDIRECT_SENSITIVE_EXACT_HEADERS:
+        return True
+    compact = re.sub(r"[^a-z0-9]", "", normalized)
+    return any(marker in compact for marker in _MCP_REDIRECT_SENSITIVE_HEADER_MARKERS)
+
+
+async def _strip_mcp_credentials_on_cross_origin_redirect(response: Any) -> None:
+    """Strip credential-like MCP headers from a redirected cross-origin request.
+
+    httpx removes ``Authorization`` across origins, but user-configured MCP
+    headers commonly carry credentials under names such as ``X-Api-Key`` or
+    ``X-Auth-Token``. Those must not be replayed to a different redirect host.
+    """
+    next_request = getattr(response, "next_request", None)
+    if not getattr(response, "is_redirect", False) or next_request is None:
+        return
+    if _url_origin_tuple(response.request.url) == _url_origin_tuple(next_request.url):
+        return
+    for header_name in list(next_request.headers):
+        if _is_mcp_redirect_sensitive_header(header_name):
+            next_request.headers.pop(header_name, None)
+
+
+def _make_mcp_cross_origin_request_sanitizer(origin_url: Any) -> Callable[[Any], Coroutine[Any, Any, None]]:
+    """Build an httpx request hook that strips MCP credentials off-origin."""
+    origin = _url_origin_tuple(origin_url)
+
+    async def _sanitize_request(request: Any) -> None:
+        if _url_origin_tuple(request.url) == origin:
+            return
+        for header_name in list(request.headers):
+            if _is_mcp_redirect_sensitive_header(header_name):
+                request.headers.pop(header_name, None)
+
+    return _sanitize_request
+
+
 # ---------------------------------------------------------------------------
 # Stdio subprocess stderr redirection
 # ---------------------------------------------------------------------------
@@ -2423,6 +2501,10 @@ class MCPServerTask:
                     kwargs: dict = {
                         "follow_redirects": True,
                         "verify": _verify_for_factory,
+                        "event_hooks": {
+                            "request": [_make_mcp_cross_origin_request_sanitizer(url)],
+                            "response": [_strip_mcp_credentials_on_cross_origin_redirect],
+                        },
                     }
                     if timeout is not None:
                         kwargs["timeout"] = timeout
@@ -2469,23 +2551,14 @@ class MCPServerTask:
             # matching the SDK's own create_mcp_http_client defaults.
             import httpx
 
-            _original_url = httpx.URL(url)
-
-            async def _strip_auth_on_cross_origin_redirect(response):
-                """Strip Authorization headers when redirected to a different origin."""
-                if response.is_redirect and response.next_request:
-                    target = response.next_request.url
-                    if (target.scheme, target.host, target.port) != (
-                        _original_url.scheme, _original_url.host, _original_url.port,
-                    ):
-                        response.next_request.headers.pop("authorization", None)
-                        response.next_request.headers.pop("Authorization", None)
-
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
-                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                "event_hooks": {
+                    "request": [_make_mcp_cross_origin_request_sanitizer(url)],
+                    "response": [_strip_mcp_credentials_on_cross_origin_redirect],
+                },
             }
             if headers:
                 client_kwargs["headers"] = headers

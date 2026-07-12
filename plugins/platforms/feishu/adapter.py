@@ -1980,6 +1980,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
     ) -> SendResult:
         """Send an interactive card with approval buttons.
 
@@ -2002,6 +2003,14 @@ class FeishuAdapter(BasePlatformAdapter):
                     "value": {"hermes_action": action_name, "approval_id": approval_id},
                 }
 
+            actions = [
+                _btn("✅ Allow Once", "approve_once", "primary"),
+                _btn("✅ Session", "approve_session"),
+            ]
+            if allow_permanent:
+                actions.append(_btn("✅ Always", "approve_always"))
+            actions.append(_btn("❌ Deny", "deny", "danger"))
+
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
@@ -2015,12 +2024,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     },
                     {
                         "tag": "action",
-                        "actions": [
-                            _btn("✅ Allow Once", "approve_once", "primary"),
-                            _btn("✅ Session", "approve_session"),
-                            _btn("✅ Always", "approve_always"),
-                            _btn("❌ Deny", "deny", "danger"),
-                        ],
+                        "actions": actions,
                     },
                 ],
             }

@@ -32,6 +32,36 @@ class TestMatrixExecApprovalReactions:
         assert emojis == ["✅", "♾️", "❌"]
 
     @pytest.mark.asyncio
+    async def test_hides_permanent_instruction_and_reaction_when_disallowed(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@liizfq:liizfq.top")
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="tok",
+                extra={"homeserver": "https://matrix.example.org"},
+            )
+        )
+        adapter._client = types.SimpleNamespace()
+        adapter.send = AsyncMock(
+            return_value=types.SimpleNamespace(success=True, message_id="$evt1")
+        )
+        adapter._send_reaction = AsyncMock(return_value="$r")
+
+        await adapter.send_exec_approval(
+            chat_id="!room:example.org",
+            command="curl http://172.16.0.2/internal",
+            session_key="sess-1",
+            allow_permanent=False,
+        )
+
+        text = adapter.send.await_args.args[1]
+        assert "!approve always" not in text
+        emojis = [call.args[2] for call in adapter._send_reaction.await_args_list]
+        assert emojis == ["✅", "❌"]
+
+    @pytest.mark.asyncio
     async def test_reaction_resolves_pending_approval(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@liizfq:liizfq.top")
         from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt

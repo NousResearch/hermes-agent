@@ -112,17 +112,26 @@ def _ensure_teams_mock():
 
     # Cards mocks
     class MockAdaptiveCard:
+        def __init__(self):
+            self.body = []
+            self.actions = []
+
         def with_version(self, v):
             return self
 
         def with_body(self, body):
+            self.body = body
             return self
 
         def with_actions(self, actions):
+            self.actions = actions
             return self
 
+    def MockExecuteAction(**kwargs):
+        return SimpleNamespace(**kwargs)
+
     microsoft_teams_cards.AdaptiveCard = MockAdaptiveCard
-    microsoft_teams_cards.ExecuteAction = MagicMock
+    microsoft_teams_cards.ExecuteAction = MockExecuteAction
     microsoft_teams_cards.TextBlock = MagicMock
 
     # HttpRequest TypedDict mock
@@ -497,6 +506,35 @@ class TestTeamsSend:
         mock_app.send.assert_awaited_once()
         call_args = mock_app.send.call_args
         assert call_args[0][0] == "conv-id"
+
+
+class TestTeamsExecApproval:
+    @pytest.mark.anyio
+    async def test_hides_always_when_permanent_approval_disallowed(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        captured = {}
+
+        async def fake_send_card(chat_id, card):
+            captured["chat_id"] = chat_id
+            captured["card"] = card
+            return SimpleNamespace(id="msg-123")
+
+        adapter._send_card = AsyncMock(side_effect=fake_send_card)
+
+        result = await adapter.send_exec_approval(
+            chat_id="conv-id",
+            command="curl http://172.16.0.2/internal",
+            session_key="session-1",
+            allow_permanent=False,
+        )
+
+        assert result.success is True
+        assert captured["chat_id"] == "conv-id"
+        titles = [action.title for action in captured["card"].actions]
+        assert titles == ["Allow Once", "Allow Session", "Deny"]
 
 
 def _make_summary_payload():

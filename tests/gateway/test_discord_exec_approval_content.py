@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.discord.adapter import DiscordAdapter
+import plugins.platforms.discord.adapter as discord_adapter
+from plugins.platforms.discord.adapter import (
+    DiscordAdapter,
+    _remove_discord_view_item_by_label,
+)
 
 
 def _capture_channel(adapter):
@@ -46,6 +50,50 @@ async def test_exec_approval_prompt_uses_visible_content_with_command_and_reason
     assert command in prompt_text
     assert "Reason" in prompt_text
     assert "script execution via -c flag" in prompt_text
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_hides_always_when_permanent_approval_disallowed(monkeypatch):
+    captured = {}
+
+    class _CapturedView:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(discord_adapter, "ExecApprovalView", _CapturedView)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+
+    result = await adapter.send_exec_approval(
+        chat_id="555",
+        command="curl http://172.16.0.2/internal",
+        session_key="discord:555",
+        allow_permanent=False,
+    )
+
+    assert result.success is True
+    assert captured["allow_permanent"] is False
+
+
+def test_discord_view_removes_permanent_approval_button_by_label():
+    always = SimpleNamespace(label="Always Allow")
+    view = SimpleNamespace(
+        children=[
+            SimpleNamespace(label="Allow Once"),
+            SimpleNamespace(label="Allow Session"),
+            always,
+            SimpleNamespace(label="Deny"),
+        ]
+    )
+    view.remove_item = view.children.remove
+
+    _remove_discord_view_item_by_label(view, "Always Allow")
+
+    assert [child.label for child in view.children] == [
+        "Allow Once",
+        "Allow Session",
+        "Deny",
+    ]
 
 
 @pytest.mark.asyncio

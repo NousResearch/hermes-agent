@@ -353,6 +353,40 @@ def _redact_approval_command(cmd: "str | None") -> str:
     return redact_sensitive_text(str(cmd or ""), force=True)
 
 
+def _build_exec_approval_kwargs(
+    adapter,
+    *,
+    chat_id: str,
+    command: str,
+    session_key: str,
+    description: str,
+    metadata: Optional[Dict[str, Any]],
+    allow_permanent: bool,
+) -> Dict[str, Any]:
+    """Build adapter kwargs without breaking older approval surfaces."""
+    kwargs: Dict[str, Any] = {
+        "chat_id": chat_id,
+        "command": command,
+        "session_key": session_key,
+        "description": description,
+        "metadata": metadata,
+    }
+    method = getattr(type(adapter), "send_exec_approval", None)
+    if method is not None and "allow_permanent" in inspect.signature(method).parameters:
+        kwargs["allow_permanent"] = bool(allow_permanent)
+    return kwargs
+
+
+def _format_exec_approval_reply_options(prefix: str, allow_permanent: bool) -> str:
+    options = (
+        f"Reply `{prefix}approve` to execute, `{prefix}approve session` to approve this pattern "
+        "for the session"
+    )
+    if allow_permanent:
+        options += f", `{prefix}approve always` to approve permanently"
+    return options + f", or `{prefix}deny` to cancel."
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
@@ -18634,14 +18668,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # false positives from MagicMock auto-attribute creation in tests.
                 if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
                     try:
+                        _send_exec_approval_kwargs = _build_exec_approval_kwargs(
+                            _status_adapter,
+                            chat_id=_status_chat_id,
+                            command=cmd,
+                            session_key=_approval_session_key,
+                            description=desc,
+                            metadata=_status_thread_metadata,
+                            allow_permanent=approval_data.get("allow_permanent", True),
+                        )
                         _approval_fut = safe_schedule_threadsafe(
-                            _status_adapter.send_exec_approval(
-                                chat_id=_status_chat_id,
-                                command=cmd,
-                                session_key=_approval_session_key,
-                                description=desc,
-                                metadata=_status_thread_metadata,
-                            ),
+                            _status_adapter.send_exec_approval(**_send_exec_approval_kwargs),
                             _loop_for_step,
                             logger=logger,
                             log_message="send_exec_approval scheduling error",
@@ -18666,12 +18703,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Slack threads and reserved by Matrix clients.
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                approve_options = _format_exec_approval_reply_options(
+                    _p, bool(approval_data.get("allow_permanent", True))
+                )
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
-                    f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
-                    f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
+                    f"{approve_options}"
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(

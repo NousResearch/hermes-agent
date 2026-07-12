@@ -5571,6 +5571,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
+        allow_permanent: bool = True,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
@@ -5642,6 +5643,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
                 require_admin=require_admin,
                 admin_user_ids=admin_user_ids,
+                allow_permanent=allow_permanent,
             )
 
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed, "view": view}
@@ -6807,6 +6809,17 @@ def _resolve_exec_approval_admin_gate(
     return (True, admin_ids)
 
 
+def _remove_discord_view_item_by_label(view: Any, label: str) -> None:
+    for child in tuple(getattr(view, "children", ())):
+        if getattr(child, "label", None) != label:
+            continue
+        remover = getattr(view, "remove_item", None)
+        if callable(remover):
+            remover(child)
+        else:
+            view.children.remove(child)
+
+
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
 
@@ -6823,7 +6836,7 @@ def _define_discord_view_classes() -> None:
         """
         Interactive button view for exec approval of dangerous commands.
 
-        Shows four buttons: Allow Once, Allow Session, Always Allow, Deny.
+        Shows Allow Once, Allow Session, optional Always Allow, and Deny.
         Clicking a button calls ``resolve_gateway_approval()`` to unblock the
         waiting agent thread — the same mechanism as the text ``/approve`` flow.
         Only users in the allowed list can click.  Times out after 5 minutes.
@@ -6836,6 +6849,7 @@ def _define_discord_view_classes() -> None:
             allowed_role_ids: Optional[set] = None,
             require_admin: bool = False,
             admin_user_ids: Optional[set] = None,
+            allow_permanent: bool = True,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
@@ -6849,6 +6863,8 @@ def _define_discord_view_classes() -> None:
                 str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()
             }
             self.resolved = False
+            if not allow_permanent:
+                _remove_discord_view_item_by_label(self, "Always Allow")
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized.

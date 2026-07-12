@@ -1466,7 +1466,6 @@ def _copy_browser_command_context(context: Dict[str, Any]) -> Dict[str, Any]:
         "cmd_prefix": list(context["cmd_prefix"]),
         "backend_args": list(context["backend_args"]),
         "task_socket_dir": context["task_socket_dir"],
-        "browser_env": dict(context["browser_env"]),
     }
 
 
@@ -1496,9 +1495,8 @@ def _get_browser_command_context(
 ) -> Dict[str, Any]:
     """Build or reuse immutable-ish per-session command context.
 
-    The returned lists/dict are always fresh copies so callers can append the
-    per-command subcommand/args or pass env to subprocess without mutating the
-    cached base context for subsequent browser tool calls.
+    The returned lists are always fresh copies so callers can append the
+    per-command subcommand/args without mutating the cached base context.
     """
     session_key = str(session_info.get("session_key") or task_id)
     cache_key = (session_key, engine)
@@ -1536,33 +1534,11 @@ def _get_browser_command_context(
         f"agent-browser-{session_info['session_name']}"
     )
 
-    browser_env = _build_browser_env()
-    browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
-    browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
-
-    if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
-        idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
-        browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
-
-    if (
-        "AGENT_BROWSER_ARGS" not in browser_env
-        and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
-    ):
-        if _needs_chromium_sandbox_bypass():
-            logger.debug(
-                "browser: sandbox bypass needed (root/docker/AppArmor userns) — "
-                "injecting --no-sandbox"
-            )
-            browser_env["AGENT_BROWSER_ARGS"] = (
-                "--no-sandbox,--disable-dev-shm-usage"
-            )
-
     context = {
         "session_signature": session_signature,
         "cmd_prefix": cmd_prefix,
         "backend_args": backend_args,
         "task_socket_dir": task_socket_dir,
-        "browser_env": browser_env,
     }
 
     with _cleanup_lock:
@@ -1574,6 +1550,31 @@ def _get_browser_command_context(
             _browser_command_context_cache[cache_key] = context
 
     return _copy_browser_command_context(context)
+
+
+def _build_browser_command_env(task_socket_dir: str) -> Dict[str, str]:
+    """Build the subprocess environment from the current process state."""
+    browser_env = _build_browser_env()
+    browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
+    browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
+
+    if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
+        browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(
+            BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000
+        )
+
+    if (
+        "AGENT_BROWSER_ARGS" not in browser_env
+        and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
+        and _needs_chromium_sandbox_bypass()
+    ):
+        logger.debug(
+            "browser: sandbox bypass needed (root/docker/AppArmor userns) — "
+            "injecting --no-sandbox"
+        )
+        browser_env["AGENT_BROWSER_ARGS"] = "--no-sandbox,--disable-dev-shm-usage"
+
+    return browser_env
 
 
 def _emergency_cleanup_all_sessions():
@@ -2489,7 +2490,7 @@ def _run_browser_command(
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
-        browser_env = command_context["browser_env"]
+        browser_env = _build_browser_command_env(task_socket_dir)
 
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file

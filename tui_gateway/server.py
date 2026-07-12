@@ -5205,6 +5205,18 @@ def _make_agent(
     source: str | None = None,
     platform_override: str | None = None,
 ):
+    # Isolation certify seam (dead unless HERMES_ISO_CERTIFY_SYNTH_TURN=1):
+    # return a GIL-heavy synthetic agent so the AC-4 harness reproduces the
+    # Mechanism-B interpreter-contention regime through the REAL dispatch fork
+    # (_pool when isolation is OFF, the compute-host child when ON) without
+    # spending tokens on real 100K+-context model calls. See
+    # tui_gateway/synthetic_turn.py + scripts/iso-certify.py.
+    from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
+
+    _synth = maybe_build_synthetic_agent(session_id or key, model_override)
+    if _synth is not None:
+        return _synth
+
     from run_agent import AIAgent
 
     # MCP tool discovery runs in a background daemon thread at startup so a

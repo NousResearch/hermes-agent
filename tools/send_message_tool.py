@@ -1678,7 +1678,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         runner = _gateway_runner_ref()
     except Exception:
         runner = None
-    if runner is not None:
+    if runner is not None and not os.getenv("HERMES_CRON_SESSION"):
         try:
             from gateway.config import Platform
             live_adapter = runner.adapters.get(Platform.MATRIX)
@@ -1688,6 +1688,18 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
                 "ephemeral connect (may re-init E2EE per send, see #46310)",
                 exc_info=True,
             )
+            live_adapter = None
+
+    if live_adapter is not None:
+        # aiohttp sessions are bound to the loop that created them. Cron and
+        # tool execution can run on a different loop from the gateway, so do
+        # not reuse a live Matrix adapter across loop ownership boundaries.
+        try:
+            adapter_loop = live_adapter._client.api.session._loop
+        except AttributeError:
+            adapter_loop = None
+        if adapter_loop is not None and adapter_loop is not asyncio.get_running_loop():
+            logger.debug("Matrix: live adapter belongs to another event loop; using ephemeral adapter")
             live_adapter = None
 
     if live_adapter is not None:

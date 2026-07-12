@@ -933,6 +933,78 @@ class TestSendToPlatformChunking:
         finally:
             doc_path.unlink(missing_ok=True)
 
+
+    def test_matrix_send_to_platform_cron_skips_live_adapter(self, monkeypatch):
+        live_adapter = SimpleNamespace(
+            _client=SimpleNamespace(api=SimpleNamespace(session=SimpleNamespace(_loop=asyncio.get_event_loop())))
+        )
+        ephemeral = SimpleNamespace(connect=AsyncMock(return_value=True), disconnect=AsyncMock())
+        core = AsyncMock(return_value={"success": True, "platform": "matrix", "message_id": "$cron"})
+        runner = SimpleNamespace(adapters={Platform.MATRIX: live_adapter})
+        pconfig = SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"})
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+        with (
+            patch("gateway.run._gateway_runner_ref", return_value=runner),
+            patch("plugins.platforms.matrix.adapter.MatrixAdapter", return_value=ephemeral),
+            patch("tools.send_message_tool._matrix_send_core", core),
+        ):
+            result = asyncio.run(
+                _send_to_platform(Platform.MATRIX, pconfig, "!room:example.com", "cron text")
+            )
+
+        assert result == {"success": True, "platform": "matrix", "message_id": "$cron"}
+        core.assert_awaited_once_with(ephemeral, "!room:example.com", "cron text", [], None)
+        ephemeral.connect.assert_awaited_once()
+        ephemeral.disconnect.assert_awaited_once()
+
+    def test_matrix_send_to_platform_falls_back_for_foreign_loop(self):
+        foreign_loop = asyncio.new_event_loop()
+        try:
+            live_adapter = SimpleNamespace(
+                _client=SimpleNamespace(api=SimpleNamespace(session=SimpleNamespace(_loop=foreign_loop)))
+            )
+            ephemeral = SimpleNamespace(connect=AsyncMock(return_value=True), disconnect=AsyncMock())
+            core = AsyncMock(return_value={"success": True, "platform": "matrix", "message_id": "$fallback"})
+            runner = SimpleNamespace(adapters={Platform.MATRIX: live_adapter})
+            pconfig = SimpleNamespace(enabled=True, token="tok", extra={})
+            with (
+                patch("gateway.run._gateway_runner_ref", return_value=runner),
+                patch("plugins.platforms.matrix.adapter.MatrixAdapter", return_value=ephemeral),
+                patch("tools.send_message_tool._matrix_send_core", core),
+            ):
+                result = asyncio.run(
+                    _send_to_platform(
+                        Platform.MATRIX, pconfig, "!room:example.com", "fallback text"
+                    )
+                )
+            assert result == {"success": True, "platform": "matrix", "message_id": "$fallback"}
+            core.assert_awaited_once_with(ephemeral, "!room:example.com", "fallback text", [], None)
+            ephemeral.connect.assert_awaited_once()
+            ephemeral.disconnect.assert_awaited_once()
+        finally:
+            foreign_loop.close()
+
+    def test_matrix_send_to_platform_reuses_same_loop_live_adapter(self):
+        async def run():
+            live_adapter = SimpleNamespace(
+                _client=SimpleNamespace(api=SimpleNamespace(session=SimpleNamespace(_loop=asyncio.get_running_loop())))
+            )
+            core = AsyncMock(return_value={"success": True, "platform": "matrix", "message_id": "$live"})
+            runner = SimpleNamespace(adapters={Platform.MATRIX: live_adapter})
+            pconfig = SimpleNamespace(enabled=True, token="tok", extra={})
+            with (
+                patch("gateway.run._gateway_runner_ref", return_value=runner),
+                patch("tools.send_message_tool._matrix_send_core", core),
+            ):
+                result = await _send_to_platform(
+                    Platform.MATRIX, pconfig, "!room:example.com", "live text"
+                )
+            assert result == {"success": True, "platform": "matrix", "message_id": "$live"}
+            core.assert_awaited_once_with(live_adapter, "!room:example.com", "live text", [], None)
+
+        asyncio.run(run())
+
     def test_matrix_text_only_uses_adapter_path(self):
         """Text-only Matrix sends must go through the E2EE-capable adapter.
 

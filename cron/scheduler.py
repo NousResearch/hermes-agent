@@ -1536,9 +1536,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
-        # Prefer the live adapter when the gateway is running — this supports E2EE
-        # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
-        runtime_adapter = (adapters or {}).get(platform)
+        # Cron delivery runs outside the gateway adapter's ownership context.
+        # Use the standalone sender here; otherwise the DeliveryRouter can reuse
+        # a live aiohttp-backed adapter across event loops.
+        runtime_adapter = (
+            None
+            if os.getenv("HERMES_CRON_SESSION")
+            else (adapters or {}).get(platform)
+        )
         delivered = False
         target_errors = []
 

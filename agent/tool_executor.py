@@ -1095,6 +1095,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_call_id=getattr(tool_call, "id", "") or "",
         )
 
+        # Registry-dispatched tools get their args coerced in handle_function_call;
+        # this direct agent-loop path doesn't, so string scalars like todo's
+        # merge="false" would arrive raw and read as truthy. Coerce here too.
+        from model_tools import coerce_tool_args
+        function_args = coerce_tool_args(function_name, function_args)
+
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
         _block_error_type = "plugin_block"

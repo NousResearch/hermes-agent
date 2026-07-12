@@ -2448,6 +2448,56 @@ class TestExecuteToolCalls:
         assert "Rate limit reached" not in output
 
 
+class TestAgentLoopArgCoercion:
+    """Direct agent-loop dispatch must coerce string-encoded scalar args the
+    same way the registry path does. Regression for todo's ``merge`` flag: the
+    string ``"false"`` used to be forwarded raw and read as a truthy merge,
+    silently turning a full replace into an update-by-id merge."""
+
+    @staticmethod
+    def _replace_with_new_item():
+        # ``merge`` arrives as the string "false" — the raw shape a model emits.
+        return {
+            "todos": [
+                {"id": "new", "content": "replacement item", "status": "pending"}
+            ],
+            "merge": "false",
+        }
+
+    def test_invoke_tool_coerces_todo_merge_flag(self, agent):
+        """Concurrent dispatch entry: _invoke_tool -> invoke_tool."""
+        agent._todo_store.write(
+            [{"id": "old", "content": "existing item", "status": "pending"}]
+        )
+
+        result = json.loads(
+            agent._invoke_tool("todo", self._replace_with_new_item(), "task-1")
+        )
+
+        expected = [{"id": "new", "content": "replacement item", "status": "pending"}]
+        assert result["todos"] == expected
+        assert agent._todo_store.read() == expected
+
+    def test_sequential_dispatch_coerces_todo_merge_flag(self, agent):
+        """Sequential executor path: _execute_tool_calls_sequential."""
+        agent._todo_store.write(
+            [{"id": "old", "content": "existing item", "status": "pending"}]
+        )
+        tool_call = _mock_tool_call(
+            name="todo",
+            arguments=json.dumps(self._replace_with_new_item()),
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert agent._todo_store.read() == [
+            {"id": "new", "content": "replacement item", "status": "pending"}
+        ]
+
+
 class TestRetryAfterCap:
     """#26293: the conversation loop owns rate-limit backoff and honors the
     Retry-After header up to a 600s ceiling (was 120s, which retried before

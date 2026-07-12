@@ -2185,6 +2185,12 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
 
+    # Registry-dispatched tools get their args coerced in handle_function_call;
+    # this direct agent-loop path doesn't, so string scalars like todo's
+    # merge="false" would arrive raw and read as truthy. Coerce here too.
+    from model_tools import coerce_tool_args
+    function_args = coerce_tool_args(function_name, function_args)
+
     # Check plugin hooks for a block or approval directive before executing.
     block_message: Optional[str] = None
     if not pre_tool_block_checked:

@@ -260,6 +260,7 @@ class QQAdapter(BasePlatformAdapter):
         # box; callers can override with set_interaction_callback(None) or
         # register a custom handler.
         self._interaction_callback = self._default_interaction_dispatch
+        self._exec_approval_state: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -1137,9 +1138,13 @@ class QQAdapter(BasePlatformAdapter):
 
         approval = parse_approval_button_data(button_data)
         if approval is not None:
-            session_key, decision = approval
+            request_id, decision = approval
+            session_key = self._exec_approval_state.get(request_id, "")
+            exact_request = bool(session_key)
+            if not session_key:
+                session_key = request_id
             choice = self._APPROVAL_BUTTON_TO_CHOICE.get(decision)
-            if choice is None:
+            if choice is None or not session_key:
                 logger.warning(
                     "[%s] Unknown approval decision %r (session=%s)",
                     self._log_tag, decision, session_key,
@@ -1156,7 +1161,14 @@ class QQAdapter(BasePlatformAdapter):
                 # Import lazily to keep the adapter importable in tests that
                 # don't exercise the approval subsystem.
                 from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(session_key, choice)
+                if exact_request:
+                    count = resolve_gateway_approval(
+                        session_key, choice, request_id=request_id
+                    )
+                else:
+                    count = resolve_gateway_approval(session_key, choice)
+                if count:
+                    self._exec_approval_state.pop(request_id, None)
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s "
                     "(choice=%s, operator=%s)",
@@ -2676,7 +2688,10 @@ class QQAdapter(BasePlatformAdapter):
         :func:`tools.approval.resolve_gateway_approval` — dispatched by the
         adapter's interaction callback (:meth:`_default_interaction_dispatch`).
         """
-        del metadata  # QQ doesn't have thread_id / DM targeting overrides.
+        request_id = str((metadata or {}).get("approval_request_id") or "")
+        if not request_id:
+            request_id = uuid.uuid4().hex
+        self._exec_approval_state[request_id] = session_key
 
         # Use the reply-to message for passive-message context when we have one.
         # QQ requires a msg_id on outbound messages to a user we've never
@@ -2684,15 +2699,18 @@ class QQAdapter(BasePlatformAdapter):
         msg_id = self._last_msg_id.get(chat_id)
 
         req = ApprovalRequest(
-            session_key=session_key,
+            session_key=request_id,
             title="Execute this command?",
             description=description,
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
         )
-        return await self.send_approval_request(
+        result = await self.send_approval_request(
             chat_id, req, reply_to=msg_id,
         )
+        if not result.success:
+            self._exec_approval_state.pop(request_id, None)
+        return result
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # matches gateway's default gateway_timeout
 

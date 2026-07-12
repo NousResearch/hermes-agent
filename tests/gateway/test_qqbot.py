@@ -1794,11 +1794,12 @@ class TestSendExecApproval:
             command="rm -rf /tmp/demo",
             session_key="sess:abc",
             description="delete temp dir",
+            metadata={"approval_request_id": "req-qq"},
         )
         assert result.success
         assert len(calls) == 1
         req = calls[0]["req"]
-        assert req.session_key == "sess:abc"
+        assert req.session_key == "req-qq"
         assert req.command_preview == "rm -rf /tmp/demo"
         assert req.description == "delete temp dir"
         assert calls[0]["reply_to"] == "inbound-42"

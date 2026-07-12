@@ -95,6 +95,7 @@ class TestSlackExecApproval:
             command="rm -rf /important",
             session_key="agent:main:slack:group:C1:1111",
             description="dangerous deletion",
+            metadata={"approval_request_id": "req-slack"},
         )
 
         assert result.success is True
@@ -117,9 +118,9 @@ class TestSlackExecApproval:
         assert "hermes_approve_session" in action_ids
         assert "hermes_approve_always" in action_ids
         assert "hermes_deny" in action_ids
-        # Each button carries the session key as value
+        # Each button carries the exact pending request ID.
         for e in elements:
-            assert e["value"] == "agent:main:slack:group:C1:1111"
+            assert e["value"] == "req-slack"
 
     @pytest.mark.asyncio
     async def test_sends_in_thread(self):

@@ -1722,6 +1722,7 @@ class TestSendExecApprovalButtons:
             command="rm -rf /tmp/foo",
             session_key="sess-app-1",
             description="cleanup script",
+            metadata={"approval_request_id": "req-whatsapp"},
         )
 
         assert result.success
@@ -1740,7 +1741,10 @@ class TestSendExecApprovalButtons:
         body = payload["interactive"]["body"]["text"]
         assert "rm -rf /tmp/foo" in body
         assert "cleanup script" in body
-        assert adapter._exec_approval_state[approval_id] == "sess-app-1"
+        assert adapter._exec_approval_state[approval_id] == {
+            "session_key": "sess-app-1",
+            "request_id": "req-whatsapp",
+        }
 
     @pytest.mark.asyncio
     async def test_long_command_is_truncated(self):

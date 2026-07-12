@@ -344,6 +344,28 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
     return result.stdout, None
 
 
+def _aborted_stat_read_result(path: str, exit_code: int) -> Optional["ReadResult"]:
+    """Map a killed ``wc -c`` stat probe to an explicit abort error.
+
+    The read path stats the file with ``wc -c`` before reading it. A non-zero
+    exit normally means the file is missing, but two exit codes mean the probe
+    itself was aborted, not that the file is gone:
+
+      * 130 — the subprocess was killed by SIGINT. This fires when a client
+        disconnects mid-turn and the in-flight read is interrupted; reporting
+        it as "File not found" makes agents believe a file was deleted.
+      * 124 — the probe hit a ``timeout``/coreutils deadline.
+
+    Returns a ``ReadResult`` carrying the accurate error for those cases, or
+    ``None`` so the caller falls through to the file-not-found suggestion path.
+    """
+    if exit_code == 130:
+        return ReadResult(error=f"Read interrupted while checking file: {path}")
+    if exit_code == 124:
+        return ReadResult(error=f"Read timed out while checking file: {path}")
+    return None
+
+
 def _split_tool_diagnostics(output: str) -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output.
 
@@ -1091,9 +1113,13 @@ class ShellFileOperations(FileOperations):
         stat_result = self._exec(stat_cmd)
         
         if stat_result.exit_code != 0:
+            # An interrupted/timed-out stat probe is not a missing file.
+            aborted = _aborted_stat_read_result(path, stat_result.exit_code)
+            if aborted is not None:
+                return aborted
             # File not found - try to suggest similar files
             return self._suggest_similar_files(path)
-        
+
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         try:
             file_size = int(stat_output.strip())
@@ -1228,6 +1254,9 @@ class ShellFileOperations(FileOperations):
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         if stat_result.exit_code != 0:
+            aborted = _aborted_stat_read_result(path, stat_result.exit_code)
+            if aborted is not None:
+                return aborted
             return self._suggest_similar_files(path)
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         try:

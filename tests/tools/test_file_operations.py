@@ -578,6 +578,49 @@ class TestShellFileOpsHelpers:
         assert result.content == "alpha\n"
 
 
+class TestReadStatProbeAborted:
+    """A killed ``wc -c`` stat probe must not masquerade as a missing file.
+
+    When a client disconnects mid-turn the in-flight stat subprocess is
+    killed with SIGINT (exit 130); a coreutils deadline is exit 124. Both
+    are read aborts, not deletions — see issue #63069.
+    """
+
+    def _stat_exit(self, mock_env, code):
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "", "returncode": code}
+            return {"output": "", "returncode": 0}
+        mock_env.execute.side_effect = side_effect
+        return ShellFileOperations(mock_env)
+
+    def test_read_file_interrupt_reports_interrupted(self, mock_env):
+        ops = self._stat_exit(mock_env, 130)
+        result = ops.read_file("/tmp/test/present.md")
+        assert result.error == "Read interrupted while checking file: /tmp/test/present.md"
+        assert result.similar_files == []
+
+    def test_read_file_timeout_reports_timed_out(self, mock_env):
+        ops = self._stat_exit(mock_env, 124)
+        result = ops.read_file("/tmp/test/present.md")
+        assert result.error == "Read timed out while checking file: /tmp/test/present.md"
+
+    def test_read_file_other_error_still_file_not_found(self, mock_env):
+        ops = self._stat_exit(mock_env, 1)
+        result = ops.read_file("/tmp/test/missing.md")
+        assert result.error == "File not found: /tmp/test/missing.md"
+
+    def test_read_file_raw_interrupt_reports_interrupted(self, mock_env):
+        ops = self._stat_exit(mock_env, 130)
+        result = ops.read_file_raw("/tmp/test/present.md")
+        assert result.error == "Read interrupted while checking file: /tmp/test/present.md"
+
+    def test_read_file_raw_other_error_still_file_not_found(self, mock_env):
+        ops = self._stat_exit(mock_env, 1)
+        result = ops.read_file_raw("/tmp/test/missing.md")
+        assert result.error == "File not found: /tmp/test/missing.md"
+
+
 class TestSearchPathValidation:
     """Test that search() returns an error for non-existent paths."""
 

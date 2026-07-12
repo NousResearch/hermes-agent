@@ -94,6 +94,30 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="acp://copilot",
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "claude-acp": HermesOverlay(
+        transport="codex_responses",
+        auth_type="external_process",
+        base_url_override="acp://claude",
+        base_url_env_var="CLAUDE_ACP_BASE_URL",
+    ),
+    "codex-acp": HermesOverlay(
+        transport="codex_responses",
+        auth_type="external_process",
+        base_url_override="acp://codex",
+        base_url_env_var="CODEX_ACP_BASE_URL",
+    ),
+    "gemini-acp": HermesOverlay(
+        transport="codex_responses",
+        auth_type="external_process",
+        base_url_override="acp://gemini",
+        base_url_env_var="GEMINI_ACP_BASE_URL",
+    ),
+    "qwen-acp": HermesOverlay(
+        transport="codex_responses",
+        auth_type="external_process",
+        base_url_override="acp://qwen",
+        base_url_env_var="QWEN_ACP_BASE_URL",
+    ),
     "github-copilot": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN"),

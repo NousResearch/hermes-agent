@@ -1,0 +1,5 @@
+name: gemini-acp-provider
+kind: model-provider
+version: 1.0.0
+description: Gemini CLI via ACP subprocess (generalized ACP client, issue #5257)
+author: Nous Research

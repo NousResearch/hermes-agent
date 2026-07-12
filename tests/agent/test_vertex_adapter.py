@@ -106,6 +106,44 @@ def test_get_vertex_config_uses_adc_and_default_region(vertex_adapter):
     )
 
 
+class _MetaCreds:
+    def __init__(self):
+        self.token = None
+        self.expiry = None
+        self.expired = False
+
+    def refresh(self, req):
+        self.token = "FAKE.TOKEN"
+
+
+def test_adc_project_none_falls_back_to_metadata(vertex_adapter, monkeypatch):
+    """GCE VM: default() mints a token but returns project_id=None; the adapter
+    must resolve the project from the metadata server rather than discard a
+    valid token. Regression guard for VM attached-service-account auth."""
+    ga = sys.modules["google.auth"]
+    monkeypatch.setattr(ga, "default", lambda scopes=None: (_MetaCreds(), None))
+    monkeypatch.setattr(
+        vertex_adapter, "_project_from_metadata", lambda: "metadata-project"
+    )
+    token, base = vertex_adapter.get_vertex_config()
+    assert token == "FAKE.TOKEN"
+    assert "projects/metadata-project" in base
+
+
+def test_explicit_project_override_wins_over_metadata(vertex_adapter, monkeypatch):
+    """Billing safety: an explicit VERTEX_PROJECT_ID must beat the VM host
+    project even when the metadata fallback would supply one."""
+    ga = sys.modules["google.auth"]
+    monkeypatch.setattr(ga, "default", lambda scopes=None: (_MetaCreds(), None))
+    monkeypatch.setattr(
+        vertex_adapter, "_project_from_metadata", lambda: "metadata-project"
+    )
+    monkeypatch.setenv("VERTEX_PROJECT_ID", "billing-project")
+    _token, base = vertex_adapter.get_vertex_config()
+    assert "projects/billing-project" in base
+    assert "metadata-project" not in base
+
+
 def test_config_yaml_supplies_project_and_region(vertex_adapter, monkeypatch):
     monkeypatch.setattr(
         vertex_adapter, "_vertex_config",

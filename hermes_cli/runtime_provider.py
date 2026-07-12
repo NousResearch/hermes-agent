@@ -1593,12 +1593,20 @@ def resolve_runtime_provider(
         if not token or not base_url:
             raise AuthError(
                 "Vertex AI credentials could not be resolved. Vertex uses "
-                "OAuth2 (not a static API key): provide a service-account JSON "
-                "via GOOGLE_APPLICATION_CREDENTIALS (or VERTEX_CREDENTIALS_PATH) "
-                "in ~/.hermes/.env, or run 'gcloud auth application-default "
-                "login' for ADC. Set the GCP project/region under vertex: in "
-                "config.yaml if they aren't embedded in the credentials. "
-                "Install the extra with: pip install 'hermes-agent[vertex]'."
+                "OAuth2 (not a static API key). Pick ONE:\n"
+                "  - On a Google Cloud VM: no key needed. Grant the VM's "
+                "attached service account the Vertex AI User role and the "
+                "cloud-platform scope; Hermes mints tokens from the metadata "
+                "server automatically.\n"
+                "  - Elsewhere: run 'gcloud auth application-default login' "
+                "(ADC), or point VERTEX_CREDENTIALS_PATH (or "
+                "GOOGLE_APPLICATION_CREDENTIALS) at a service-account JSON in "
+                "~/.hermes/.env.\n"
+                "Set the GCP project/region under vertex: in config.yaml if "
+                "they aren't embedded in the credentials, and ensure google-auth "
+                "is installed: pip install 'hermes-agent[vertex]'.\n"
+                "To pinpoint the failing step, run: "
+                "python scripts/diagnose_vertex.py"
             )
         return {
             "provider": "vertex",

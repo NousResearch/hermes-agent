@@ -1394,6 +1394,25 @@ import threading as _threading  # noqa: E402
 _picker_prewarm_done = _threading.Event()
 
 
+def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False) -> bool:
+    """Return whether *provider* has a credential that can be selected now.
+
+    ``auth.json`` historically allowed opaque token-style pool values that do
+    not deserialize into ``PooledCredential`` entries. Preserve visibility for
+    those legacy values, but when a real pool exists its availability state is
+    authoritative: an all-exhausted/dead pool is not authenticated.
+    """
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(provider)
+        if pool.has_credentials():
+            return pool.has_available()
+    except Exception:
+        pass
+    return raw_pool_present
+
+
 def _extra_headers_from_config(entry: Any) -> dict[str, str]:
     if not isinstance(entry, dict):
         return {}
@@ -1696,22 +1715,13 @@ def list_authenticated_providers(
             try:
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
-                if store and store.get("credential_pool", {}).get(hermes_id):
-                    has_creds = True
-                    # ...but if it parses into a full pool whose every entry is
-                    # exhausted/dead, it has no usable credential right now, so
-                    # don't treat it as authenticated -- otherwise an aggregator
-                    # whose quota is spent hijacks no-provider model resolution
-                    # and sticks as the session provider (#45759). Simple
-                    # token-style entries (no exhaustion-tracked entries) keep
-                    # the prior behaviour.
-                    try:
-                        from agent.credential_pool import load_pool as _load_pool
-                        _pool = _load_pool(hermes_id)
-                        if _pool.has_credentials() and not _pool.has_available():
-                            has_creds = False
-                    except Exception:
-                        pass
+                raw_pool_present = bool(
+                    store and store.get("credential_pool", {}).get(hermes_id)
+                )
+                if raw_pool_present:
+                    has_creds = _credential_pool_is_usable(
+                        hermes_id, raw_pool_present=True
+                    )
             except Exception:
                 pass
         if not has_creds:
@@ -1800,12 +1810,7 @@ def list_authenticated_providers(
         # imports on demand but aren't in the raw auth.json yet.
         if not has_creds:
             try:
-                from agent.credential_pool import load_pool
-                pool = load_pool(hermes_slug)
-                # has_available(), not has_credentials(): an all-exhausted pool
-                # holds entries but no usable credential, so it must not count
-                # as authenticated (#45759).
-                if pool.has_available():
+                if _credential_pool_is_usable(hermes_slug):
                     has_creds = True
             except Exception as exc:
                 logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
@@ -1944,11 +1949,7 @@ def list_authenticated_providers(
                 pass
         if not _cp_has_creds:
             try:
-                from agent.credential_pool import load_pool
-                _cp_pool = load_pool(_cp.slug)
-                # has_available(): exclude pools whose every entry is exhausted
-                # (#45759).
-                if _cp_pool.has_available():
+                if _credential_pool_is_usable(_cp.slug):
                     _cp_has_creds = True
             except Exception:
                 pass

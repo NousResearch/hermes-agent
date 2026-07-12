@@ -25,8 +25,8 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **cloud browser backend** (Browserbase-style CDP session provider) | [Browser Provider Plugins](/developer-guide/browser-provider-plugin) |
 | A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](/developer-guide/secret-source-plugin) |
 | A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](/user-guide/features/web-dashboard#custom-providers) — `ctx.register_dashboard_auth_provider()` |
-| A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](/user-guide/features/tts#custom-command-providers) — config-driven, no Python needed |
-| An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](/user-guide/features/tts#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to a shell template |
+| A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](/user-guide/features/tts#custom-command-providers) — config-driven, no Python needed. Python engines: [TTS Provider Plugins](/developer-guide/tts-provider-plugin) |
+| An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](/user-guide/features/tts#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to a shell template. Python engines: [Transcription Provider Plugins](/developer-guide/transcription-provider-plugin) |
 | **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](/user-guide/features/mcp) — declare `mcp_servers.<name>` in `config.yaml` |
 | **Gateway event hooks** (fire on startup, session events, commands) | [Event Hooks](/user-guide/features/hooks#gateway-event-hooks) — drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` |
 | **Shell hooks** (run a shell command on events) | [Shell Hooks](/user-guide/features/hooks#shell-hooks) — declare under `hooks:` in `config.yaml` |

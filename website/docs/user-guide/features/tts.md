@@ -407,6 +407,8 @@ Override these on your provider class for richer integration:
 
 See `agent/tts_provider.py` for the full ABC including docstrings.
 
+**Full guide:** [TTS Provider Plugins](/developer-guide/tts-provider-plugin) — complete worked example (Voicebox), ABC reference table, response contract, streaming, voice bubbles, testing, pip distribution.
+
 ## Voice Message Transcription (STT)
 
 Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automatically transcribed and injected as text into the conversation. The agent sees the transcript as normal text.
@@ -670,3 +672,5 @@ Override these on your provider class for richer integration:
 - `get_setup_schema()` → return `{name, badge, tag, env_vars: [{key, prompt, url}]}` to power picker rows in `hermes tools` / `hermes setup` (the picker category for STT is not yet shipped — this metadata is available to plugins for forward compatibility).
 
 See `agent/transcription_provider.py` for the full ABC including docstrings.
+
+**Full guide:** [Transcription Provider Plugins](/developer-guide/transcription-provider-plugin) — complete worked example (Voicebox), ABC reference table, response contract, error-message guidance, testing, pip distribution.

@@ -1411,6 +1411,38 @@ class TestQuickSnapshot:
         snap_id = create_quick_snapshot(label="before-upgrade", hermes_home=hermes_home)
         assert "before-upgrade" in snap_id
 
+    def test_same_second_snapshots_are_unique(self, hermes_home):
+        import hermes_cli.backup as backup_mod
+
+        with patch.object(backup_mod, "datetime") as mock_datetime:
+            mock_datetime.now.return_value.strftime.return_value = "20260712-120000"
+
+            config = hermes_home / "config.yaml"
+            config.write_text("version: one\n", encoding="utf-8")
+            first = backup_mod.create_quick_snapshot(
+                label="manual", hermes_home=hermes_home
+            )
+
+            config.write_text("version: two\n", encoding="utf-8")
+            second = backup_mod.create_quick_snapshot(
+                label="manual", hermes_home=hermes_home
+            )
+
+        assert first is not None
+        assert second is not None
+        assert second.startswith(f"{first}-")
+        snapshot_root = hermes_home / "state-snapshots"
+        assert (snapshot_root / first / "config.yaml").read_text(
+            encoding="utf-8"
+        ) == "version: one\n"
+        assert (snapshot_root / second / "config.yaml").read_text(
+            encoding="utf-8"
+        ) == "version: two\n"
+        assert backup_mod.restore_quick_snapshot(first, hermes_home=hermes_home)
+        assert config.read_text(encoding="utf-8") == "version: one\n"
+        assert backup_mod.restore_quick_snapshot(second, hermes_home=hermes_home)
+        assert config.read_text(encoding="utf-8") == "version: two\n"
+
     def test_state_db_safely_copied(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot
         snap_id = create_quick_snapshot(hermes_home=hermes_home)

@@ -234,6 +234,37 @@ VALID_HOOKS: Set[str] = {
     # Skill lifecycle — post-edit. Observer-only, fires after successful
     # edit. Kwargs: name, path (abs str), success (bool)
     "post_skill_edit",
+    # Skill lifecycle — patch (find-and-replace). Fired by
+    # skill_manage(action='patch') before searching for the skill.
+    # Plugins may return:
+    #   {"action": "handled"}  → plugin handles the patch; skip Hermes patch
+    #   {"action": "block", "reason": "..."}  → abort
+    #   None / {}              → default: _find_skill + in-place patch
+    # Kwargs: name, old_string, new_string, file_path (str or None), replace_all (bool)
+    "pre_skill_patch",
+    # Skill lifecycle — write_file (add/overwrite a supporting file).
+    # Fired by skill_manage(action='write_file') before searching for the skill.
+    # Plugins may return:
+    #   {"action": "handled"}  → plugin handles the write; skip Hermes write
+    #   {"action": "block", "reason": "..."}  → abort
+    #   None / {}              → default: _find_skill + normal write
+    # Kwargs: name, file_path, file_content
+    "pre_skill_write_file",
+    # Skill lifecycle — remove_file (delete a supporting file).
+    # Fired by skill_manage(action='remove_file') before searching for the skill.
+    # Plugins may return:
+    #   {"action": "handled"}  → plugin handles the removal; skip Hermes removal
+    #   {"action": "block", "reason": "..."}  → abort
+    #   None / {}              → default: _find_skill + normal removal
+    # Kwargs: name, file_path
+    "pre_skill_remove_file",
+    # Skill lifecycle — delete. Fired by skill_manage(action='delete') before
+    # searching for the skill. Plugins may return:
+    #   {"action": "handled"}  → plugin handled the delete; skip Hermes delete
+    #   {"action": "block", "reason": "..."}  → abort
+    #   None / {}              → default: _find_skill + delete/archive
+    # Kwargs: name
+    "pre_skill_delete",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

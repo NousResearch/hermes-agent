@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
@@ -162,6 +163,7 @@ class LSPClient:
 
         # Process + streams
         self._proc: Optional[asyncio.subprocess.Process] = None
+        self._process_group_id: Optional[int] = None
         self._stderr_task: Optional[asyncio.Task] = None
         self._reader_task: Optional[asyncio.Task] = None
 
@@ -263,13 +265,12 @@ class LSPClient:
             cmd = self._win_wrap_cmd(cmd)
 
         try:
-            # start_new_session=True detaches the LSP server into its own
-            # process group / session. Without this, the LSP server inherits
-            # the gateway's pgid (= TUI parent PID). When mcp_tool's
-            # _kill_orphaned_mcp_children races with LSP spawn and sweeps the
-            # gateway's child set, it captures the LSP PID, records the
-            # inherited pgid, and killpg() then kills the TUI parent itself.
-            # See tui_gateway_crash.log "killpg → SIGTERM received" stacks.
+            spawn_kwargs: Dict[str, Any] = {}
+            if sys.platform != "win32":
+                # Detach the LSP server into its own process group/session.
+                # This prevents unrelated orphan sweeps from targeting the
+                # gateway's group and lets cleanup terminate all descendants.
+                spawn_kwargs["start_new_session"] = True
             self._proc = await asyncio.create_subprocess_exec(
                 cmd[0],
                 *cmd[1:],
@@ -278,8 +279,10 @@ class LSPClient:
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 cwd=self._cwd,
-                start_new_session=True,
+                **spawn_kwargs,
             )
+            if sys.platform != "win32":
+                self._process_group_id = self._proc.pid
         except FileNotFoundError as e:
             raise LSPProtocolError(
                 f"LSP server binary not found: {cmd[0]} ({e})"
@@ -446,19 +449,42 @@ class LSPClient:
                 pass
         proc = self._proc
         self._proc = None
+        process_group_id = self._process_group_id
+        self._process_group_id = None
         if proc is None:
             return
         if proc.returncode is None:
             try:
-                proc.terminate()
+                if process_group_id is not None:
+                    os.killpg(process_group_id, signal.SIGTERM)
+                else:
+                    proc.terminate()
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
                 except asyncio.TimeoutError:
                     try:
-                        proc.kill()
+                        if process_group_id is not None:
+                            os.killpg(process_group_id, signal.SIGKILL)
+                        else:
+                            proc.kill()
                         await proc.wait()
                     except ProcessLookupError:
                         pass
+            except ProcessLookupError:
+                pass
+        elif process_group_id is not None:
+            # The leader can exit before a worker; a live process group with
+            # this id then consists only of descendants from our own session.
+            try:
+                os.killpg(process_group_id, signal.SIGTERM)
+                deadline = asyncio.get_running_loop().time() + SHUTDOWN_GRACE
+                while asyncio.get_running_loop().time() < deadline:
+                    await asyncio.sleep(0.05)
+                    try:
+                        os.killpg(process_group_id, 0)
+                    except ProcessLookupError:
+                        return
+                os.killpg(process_group_id, signal.SIGKILL)
             except ProcessLookupError:
                 pass
 

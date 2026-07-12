@@ -395,6 +395,11 @@ class VoiceReceiver:
         self._last_speech_time: Dict[int, float] = {}
         # Whether we're currently collecting an utterance for this SSRC.
         self._speaking: Dict[int, bool] = defaultdict(bool)
+        # Rolling-frame VAD: recent frame energy booleans per SSRC.
+        # A frame counts as speech if any of the last vad_frame_count frames
+        # had energy above threshold — prevents brief dips between syllables
+        # from being classified as silence.
+        self._vad_history: Dict[int, list] = defaultdict(list)
 
         # Opus decoder per SSRC (each user needs own decoder state)
         self._decoders: Dict[int, object] = {}
@@ -436,6 +441,9 @@ class VoiceReceiver:
         with self._lock:
             self._buffers.clear()
             self._last_packet_time.clear()
+            self._last_speech_time.clear()
+            self._speaking.clear()
+            self._vad_history.clear()
             self._decoders.clear()
             self._ssrc_to_user.clear()
         logger.info("VoiceReceiver stopped")
@@ -692,14 +700,24 @@ class VoiceReceiver:
                 self._decoders[ssrc] = discord.opus.Decoder()
             pcm = self._decoders[ssrc].decode(decrypted)
 
-            # VAD: compute RMS energy to classify speech vs silence
-            # 16-bit PCM samples; RMS tells us if this frame has voice energy.
+            # VAD: compute RMS energy to classify speech vs silence.
+            # Uses a rolling window of vad_frame_count frames — a frame counts
+            # as speech if ANY of the recent frames had energy above threshold.
+            # This prevents brief dips between syllables from breaking an
+            # utterance into fragments.
             samples = struct.unpack('<%dh' % (len(pcm) // 2), pcm)
             if samples:
                 rms = int(math.sqrt(sum(s * s for s in samples) / len(samples)))
             else:
                 rms = 0
-            is_speech = rms >= self.vad_energy_threshold
+            frame_is_loud = rms >= self.vad_energy_threshold
+
+            # Update rolling history and classify using the window
+            history = self._vad_history[ssrc]
+            history.append(frame_is_loud)
+            if len(history) > self.vad_frame_count:
+                history.pop(0)
+            is_speech = any(history)
 
             with self._lock:
                 self._last_packet_time[ssrc] = time.monotonic()
@@ -799,12 +817,14 @@ class VoiceReceiver:
                     self._last_packet_time.pop(ssrc, None)
                     self._last_speech_time.pop(ssrc, None)
                     self._speaking[ssrc] = False
+                    self._vad_history.pop(ssrc, None)
                 elif silence_duration >= self.silence_threshold * 2:
                     # Stale buffer with no valid user — discard
                     self._buffers.pop(ssrc, None)
                     self._last_packet_time.pop(ssrc, None)
                     self._last_speech_time.pop(ssrc, None)
                     self._speaking[ssrc] = False
+                    self._vad_history.pop(ssrc, None)
 
         return completed
 
@@ -1370,7 +1390,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Auto-disconnect: when a user leaves or switches away from the
                 # voice channel the bot is currently in, check if any non-bot
                 # humans remain. If the channel is empty, disconnect the bot.
-                if left or switched and adapter_self._voice_auto_disconnect:
+                if (left or switched) and adapter_self._voice_auto_disconnect:
                     vc = adapter_self._voice_clients.get(guild_id)
                     if vc and vc.is_connected():
                         bot_channel = vc.channel
@@ -2725,7 +2745,20 @@ class DiscordAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send audio as a Discord file attachment."""
+        """Send audio as a Discord file attachment, or play in VC if connected.
+
+        When the bot is in a voice channel for this chat's guild, play the
+        audio directly in the VC instead of uploading a file.  This covers
+        both the auto-TTS path (play_tts) and the agent-initiated TTS path
+        (text_to_speech tool → MEDIA: tag → send_voice).
+        """
+        # If connected to a voice channel for this chat, play there.
+        for gid, text_ch_id in self._voice_text_channels.items():
+            if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
+                logger.info("[%s] Playing TTS in voice channel via send_voice (guild=%d)", self.name, gid)
+                success = await self.play_in_voice_channel(gid, audio_path)
+                return SendResult(success=success)
+
         try:
             import io
 

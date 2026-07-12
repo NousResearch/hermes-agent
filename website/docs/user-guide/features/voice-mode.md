@@ -422,6 +422,21 @@ tts:
     ref_text: ''
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
+
+# Discord voice channel
+discord:
+  voice:
+    auto_join: false              # Auto-join when an allowed user enters a VC
+    auto_disconnect: true         # Auto-disconnect when the last human leaves
+    idle_timeout: 300             # Seconds of inactivity before auto-leave
+    silence_threshold: 1.5        # Seconds of silence to end an utterance
+    min_speech_duration: 0.5      # Minimum speech duration to process
+    mode: "all"                   # "off" | "voice_only" | "all"
+    channel_id: null              # Specific voice channel ID to auto-join
+    text_channel_id: null         # Text channel for transcripts/responses
+    vad:
+      energy_threshold: 300       # RMS level (0-32767) below which = silence
+      frame_count: 3              # Rolling window size for VAD (each frame = 20ms)
 ```
 
 ### Environment Variables

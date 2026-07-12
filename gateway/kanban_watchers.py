@@ -109,6 +109,62 @@ def _release_singleton_lock(handle) -> None:
         pass
 
 
+# Benign-decline buckets on a ``DispatchResult``: the dispatcher looked at the
+# board and chose NOT to spawn for a self-clearing reason (a concurrency cap is
+# saturated, a worker bounced off a provider rate-limit / quota wall, another
+# process holds the board lock, or a respawn guard is cooling a task down).
+# None of these are operator-actionable — the work resumes on a later tick — so
+# a zero-spawn tick explained by any of them must NOT count toward the "stuck"
+# streak. See the field docstrings on ``kanban_db.DispatchResult``.
+_BENIGN_DECLINE_FIELDS = (
+    "skipped_per_profile_capped",
+    "rate_limited",
+    "respawn_guarded",
+    "skipped_locked",
+)
+# Genuine-fault buckets: the dispatcher TRIED to spawn and the attempt failed.
+# ``spawn_failed`` is populated on EVERY spawn failure this tick (workspace
+# resolution or worker launch), so an early, pre-circuit-breaker failure on one
+# board is a fault immediately — it can't be masked by a benign decline on a
+# different board and silently reset the streak. ``auto_blocked`` is the subset
+# that additionally tripped the circuit breaker (broken venv / PATH / credential
+# loss → repeated spawn_failed). Either forces the tick to count.
+_FAULT_FIELDS = (
+    "spawn_failed",
+    "auto_blocked",
+)
+
+
+def _stall_streak_is_bad(ready_pending, any_spawned, results) -> bool:
+    """Decide whether a dispatcher tick counts toward the "stuck" streak.
+
+    A tick is "bad" (stall-suspect) only when there is spawnable work,
+    nothing was spawned, AND the zero-spawn is not explained by a benign,
+    self-clearing decline (concurrency cap saturated / provider rate-limit /
+    board lock held / respawn guard). A genuine hard fault (circuit-breaker
+    ``auto_blocked``) always counts even if a benign decline co-occurs on
+    another board.
+
+    This is the fix for the false "check profile health (venv, PATH,
+    credentials)" warning that fired for ~2h during a provider 429 window /
+    large fan-out, when the dispatcher was healthy but throttled.
+    """
+    if not ready_pending or any_spawned:
+        return False
+    declined_benign = False
+    fault_seen = False
+    for _slug, res in (results or []):
+        if res is None:
+            continue
+        for name in _FAULT_FIELDS:
+            if getattr(res, name, None):
+                fault_seen = True
+        for name in _BENIGN_DECLINE_FIELDS:
+            if getattr(res, name, None):
+                declined_benign = True
+    return fault_seen or not declined_benign
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -1250,9 +1306,25 @@ class GatewayKanbanWatchersMixin:
                             res.promoted,
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
                         )
-                # Health telemetry (aggregate across boards)
+                # Health telemetry (aggregate across boards).
+                #
+                # A tick with ready work but zero spawns is only a REAL stall
+                # when the dispatcher tried and FAILED (broken venv/PATH/creds
+                # → spawn_failed / circuit-breaker auto_block). It is NOT a
+                # stall when the dispatcher DECLINED for a benign, self-clearing
+                # reason: every eligible profile is at its concurrency cap, a
+                # worker bailed on a provider rate-limit / quota wall (released
+                # to ``ready`` without counting a failure), or another process
+                # holds the board's dispatch lock. Those "declined" states look
+                # identical to a hard failure through the ``not any_spawned``
+                # lens, which historically mis-fired the "check profile health
+                # (venv, PATH, credentials)" warning for hours during a large
+                # fan-out or a provider-side 429 window (the assignee was simply
+                # throttled, not broken). ``_stall_streak_is_bad`` consults the
+                # DispatchResult buckets so telemetry can tell "busy/throttled"
+                # from "genuinely stuck" instead of guessing.
                 ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
+                if _stall_streak_is_bad(ready_pending, any_spawned, results):
                     bad_ticks += 1
                 else:
                     bad_ticks = 0
@@ -1261,8 +1333,9 @@ class GatewayKanbanWatchersMixin:
                     if now - last_warn_at >= 300:
                         logger.warning(
                             "kanban dispatcher stuck: ready queue non-empty for "
-                            "%d consecutive ticks but 0 workers spawned. Check "
-                            "profile health (venv, PATH, credentials) and "
+                            "%d consecutive ticks but 0 workers spawned, with no "
+                            "benign decline (cap/rate-limit/lock) to explain it. "
+                            "Check profile health (venv, PATH, credentials) and "
                             "`hermes kanban list --status ready`.",
                             bad_ticks,
                         )

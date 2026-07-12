@@ -1819,3 +1819,60 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class TestSessionTurnsBufferBounding:
+    """`_session_turns` must not grow for the whole session in append mode.
+
+    Append retains ship only the delta since the last watermark, so a retained
+    turn is never read again and the buffer is trimmed to the un-retained tail.
+    Overwrite mode resends the whole session each retain and must keep every
+    turn, so it is deliberately left unbounded.
+    """
+
+    def _drive(self, provider, monkeypatch, *, mode, n_turns, retain_every):
+        provider._auto_retain = True
+        provider._retain_every_n_turns = retain_every
+        monkeypatch.setattr(provider, "_ensure_writer", lambda: None)
+        monkeypatch.setattr(provider, "_register_atexit", lambda: None)
+        monkeypatch.setattr(provider, "_run_hindsight_operation", lambda op: None)
+        monkeypatch.setattr(
+            provider, "_resolve_retain_target", lambda doc: (doc or "doc", mode)
+        )
+        # Run queued retain closures inline so the shipped content is captured
+        # without spinning up the writer thread.
+        shipped: list[str] = []
+        real_build = provider._build_retain_kwargs
+
+        def _capture(content, **kw):
+            shipped.append(content)
+            return real_build(content, **kw)
+
+        monkeypatch.setattr(provider, "_build_retain_kwargs", _capture)
+        q = MagicMock()
+        q.put = lambda fn: fn()
+        provider._retain_queue = q
+
+        for i in range(n_turns):
+            provider.sync_turn(f"user {i}", f"assistant {i}")
+        return shipped
+
+    def test_append_trims_retained_turns_without_dropping_data(self, provider, monkeypatch):
+        shipped = self._drive(provider, monkeypatch, mode="append", n_turns=6, retain_every=3)
+        # Buffer drained after the last retain; watermark reset.
+        assert provider._session_turns == []
+        assert provider._last_retained_turn_count == 0
+        # Two retains (turn 3 and 6), each shipping only its 3-turn delta — every
+        # turn shipped exactly once: none re-sent, none lost.
+        assert len(shipped) == 2
+        assert sum(len(json.loads(c)) for c in shipped) == 6
+
+    def test_append_buffer_stays_bounded_across_many_turns(self, provider, monkeypatch):
+        self._drive(provider, monkeypatch, mode="append", n_turns=103, retain_every=5)
+        # Holds only the un-retained tail (turns 101-103), not all 103.
+        assert len(provider._session_turns) == 3
+
+    def test_overwrite_keeps_full_buffer(self, provider, monkeypatch):
+        self._drive(provider, monkeypatch, mode=None, n_turns=6, retain_every=3)
+        # Overwrite resends the whole session each retain, so every turn stays.
+        assert len(provider._session_turns) == 6

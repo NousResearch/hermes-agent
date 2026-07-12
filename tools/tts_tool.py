@@ -1906,6 +1906,32 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
 # Provider: Piper (local, neural VITS, 44 languages)
 # ===========================================================================
 
+# Each cached entry below is a whole loaded TTS model (tens of MB). An
+# unbounded dict pins one model per distinct voice/model for the process
+# lifetime, so a surface that sweeps voices grows memory with no ceiling. Cap
+# each cache with a small LRU — most sessions use one or two voices, and a
+# reload on a cold miss is cheap next to keeping every model resident.
+_TTS_MODEL_CACHE_MAX = 3
+
+
+def _tts_cache_get_or_load(cache: Dict[str, Any], key: str, load: Callable[[], Any]) -> Any:
+    """Get ``key`` from ``cache`` or load it, keeping the cache LRU-bounded.
+
+    Refreshes recency on a hit (insertion-ordered dict: pop + reinsert), loads
+    on a miss, then evicts least-recently-used entries beyond the cap. An entry
+    evicted while a caller still holds its returned reference stays alive for
+    that caller; only the cache slot is released.
+    """
+    if key in cache:
+        cache[key] = cache.pop(key)
+        return cache[key]
+    value = load()
+    cache[key] = value
+    while len(cache) > _TTS_MODEL_CACHE_MAX:
+        cache.pop(next(iter(cache)), None)
+    return value
+
+
 # Module-level cache for Piper voice instances. Voices are keyed on their
 # absolute .onnx model path so switching voices doesn't invalidate older
 # cached voices.
@@ -2017,12 +2043,14 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
     # PiperVoice instance serves all speakers, so it stays out of the cache
     # key. Multi-speaker workflows share one model load.
     cache_key = f"{model_path}::cuda={use_cuda}"
-    global _piper_voice_cache
-    if cache_key not in _piper_voice_cache:
+
+    def _load_piper_voice():
         logger.info("[Piper] Loading voice: %s", model_path)
-        _piper_voice_cache[cache_key] = PiperVoice.load(model_path, use_cuda=use_cuda)
+        v = PiperVoice.load(model_path, use_cuda=use_cuda)
         logger.info("[Piper] Voice loaded")
-    voice = _piper_voice_cache[cache_key]
+        return v
+
+    voice = _tts_cache_get_or_load(_piper_voice_cache, cache_key, _load_piper_voice)
 
     # Optional synthesis knobs — only pass a SynthesisConfig when at least
     # one advanced knob is configured, so we don't depend on a newer Piper
@@ -2114,13 +2142,13 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
     clean_text = kt_config.get("clean_text", True)
 
     # Use cached model instance if available
-    global _kittentts_model_cache
-    if model_name not in _kittentts_model_cache:
+    def _load_kittentts_model():
         logger.info("[KittenTTS] Loading model: %s", model_name)
-        _kittentts_model_cache[model_name] = KittenTTS(model_name)
+        m = KittenTTS(model_name)
         logger.info("[KittenTTS] Model loaded successfully")
+        return m
 
-    model = _kittentts_model_cache[model_name]
+    model = _tts_cache_get_or_load(_kittentts_model_cache, model_name, _load_kittentts_model)
 
     # Generate audio (returns numpy array at 24kHz)
     audio = model.generate(text, voice=voice, speed=speed, clean_text=clean_text)

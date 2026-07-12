@@ -393,6 +393,111 @@ def _extract_context(entry: Dict[str, Any]) -> Optional[int]:
     return None
 
 
+def _extract_cost(entry: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """Extract the per-million USD cost block from a models.dev model entry.
+
+    models.dev stores cost already in per-million-token USD (unlike the
+    OpenRouter models API, which is per-token). Shape:
+        {"input": 10, "output": 50, "cache_read": 1, "cache_write": 12.5}
+    ``input``/``output`` are required (a model with neither is unpriced);
+    ``cache_read``/``cache_write`` are optional. Returns a normalized dict
+    with float values (only the keys present), or None when the entry has no
+    usable input/output cost.
+    """
+    if not isinstance(entry, dict):
+        return None
+    cost = entry.get("cost")
+    if not isinstance(cost, dict):
+        return None
+
+    def _num(key: str) -> Optional[float]:
+        v = cost.get(key)
+        if isinstance(v, bool):  # guard: bool is an int subclass
+            return None
+        if isinstance(v, (int, float)) and v >= 0:
+            return float(v)
+        return None
+
+    inp = _num("input")
+    out = _num("output")
+    # A usable pricing entry needs at least one of input/output.
+    if inp is None and out is None:
+        return None
+
+    result: Dict[str, float] = {}
+    if inp is not None:
+        result["input"] = inp
+    if out is not None:
+        result["output"] = out
+    cr = _num("cache_read")
+    if cr is not None:
+        result["cache_read"] = cr
+    cw = _num("cache_write")
+    if cw is not None:
+        result["cache_write"] = cw
+    return result
+
+
+def lookup_models_dev_pricing(provider: str, model: str) -> Optional[Dict[str, float]]:
+    """Look up per-million USD pricing for a provider+model combo in models.dev.
+
+    Mirror of ``lookup_models_dev_context`` for the cost dimension. Returns the
+    normalized cost dict ({input, output, cache_read?, cache_write?} in
+    per-million USD) or None if the provider is unmapped or the model/cost is
+    absent. Match order: exact id, then case-insensitive (via _find_model_entry).
+    """
+    models = _get_provider_models(provider)
+    if models is None:
+        return None
+    entry = _find_model_entry(models, model)
+    if entry is None:
+        return None
+    return _extract_cost(entry)
+
+
+def lookup_models_dev_pricing_any_provider(model: str) -> Optional[Dict[str, float]]:
+    """Look up per-million USD pricing for a bare model id across ALL providers.
+
+    Cost-dimension twin of ``lookup_models_dev_context_any_provider``. For an
+    aggregator provider (yunwu et al.) with no one-to-one PROVIDER_TO_MODELS_DEV
+    mapping, scan every provider's model dict for the id and return the first
+    valid cost block. Match order per provider: exact id, then case-insensitive.
+    Returns None if no provider lists the id with usable cost.
+    """
+    if not model:
+        return None
+    data = fetch_models_dev()
+    if not isinstance(data, dict):
+        return None
+
+    model_lower = model.lower()
+    # Pass 1: exact id across all providers.
+    for provider_data in data.values():
+        if not isinstance(provider_data, dict):
+            continue
+        models = provider_data.get("models", {})
+        if not isinstance(models, dict):
+            continue
+        entry = models.get(model)
+        if isinstance(entry, dict):
+            cost = _extract_cost(entry)
+            if cost:
+                return cost
+    # Pass 2: case-insensitive id across all providers.
+    for provider_data in data.values():
+        if not isinstance(provider_data, dict):
+            continue
+        models = provider_data.get("models", {})
+        if not isinstance(models, dict):
+            continue
+        for mid, mdata in models.items():
+            if mid.lower() == model_lower and isinstance(mdata, dict):
+                cost = _extract_cost(mdata)
+                if cost:
+                    return cost
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Model capability metadata
 # ---------------------------------------------------------------------------

@@ -1470,3 +1470,23 @@ updates:
 #     binary_path: ""                               # "" = resolve op via PATH; else absolute path
 #     cache_ttl_seconds: 300                        # 0 disables BOTH cache layers
 #     override_existing: true                       # resolved values win over existing env
+
+# =============================================================================
+# Cost / pricing
+# =============================================================================
+# Controls how the cost of a turn is estimated for models NOT in the curated
+# official-docs pricing snapshot (the snapshot always takes precedence — it
+# encodes deliberate corrections a live catalog can't know, e.g. entering a
+# model's standing LIST price rather than a temporary launch-intro rate).
+#
+# `external_source` picks the dynamic catalog used to price snapshot-missing
+# models (and `provider: openrouter` / notional-relay routes):
+#   models_dev  (default) — the git-backed models.dev registry; one source for
+#                           both context windows and per-million cost, with
+#                           cache-tier rates.
+#   openrouter            — the OpenRouter models API (the historical source).
+# Whichever is NOT chosen is used automatically as the fallback when the
+# primary catalog is missing a model id.
+#
+# pricing:
+#   external_source: models_dev

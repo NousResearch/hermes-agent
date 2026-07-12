@@ -168,9 +168,10 @@ def is_notional_xai_provider(provider_name: Optional[str]) -> bool:
 # fleet cost *visibility* we price these at OpenRouter's live catalog rates for
 # the underlying OpenAI model and label the result "estimated". Unlike the
 # Anthropic proxies (which fall back to a static docs snapshot), OpenAI models
-# are priced purely from the live OpenRouter models API — the same dynamic
-# source that already powers `provider: openrouter` routes fleet-wide. See
-# resolve_billing_route() and _openrouter_pricing_entry().
+# are priced from the configured external pricing catalog (models.dev by
+# default, OpenRouter as fallback) — the same dynamic source that powers
+# `provider: openrouter` routes fleet-wide. See resolve_billing_route() and
+# _external_pricing_entry().
 NOTIONAL_OPENROUTER_PROVIDERS = frozenset({
     "openai-codex",
 })
@@ -1225,6 +1226,93 @@ def _normalize_codex_model_name(model: str) -> Optional[str]:
     return None
 
 
+# --- External (dynamic-catalog) pricing sources ------------------------------
+#
+# For models NOT in the curated _OFFICIAL_DOCS_PRICING snapshot (e.g. the
+# gpt-5.x family behind the openai-codex notional relay), price falls back to a
+# live external catalog. Historically this was OpenRouter's models API only.
+# It is now a CONFIGURABLE source (config.yaml `pricing.external_source`),
+# defaulting to models.dev — a git-backed registry that already powers the
+# fleet's context-window resolution and carries per-million cost fields. The
+# curated snapshot ALWAYS takes precedence over any external source (see
+# get_pricing_entry): the snapshot encodes deliberate corrections a live
+# catalog can't know — most importantly the list-price-not-intro-promo rule
+# (e.g. Sonnet 5's standing $3/$15, where models.dev/OpenRouter track the
+# temporary $2/$10 intro rate and would under-bill once the promo lapses).
+
+_VALID_PRICING_SOURCES = ("models_dev", "openrouter")
+_DEFAULT_PRICING_SOURCE = "models_dev"
+
+
+def _pricing_source_order() -> tuple:
+    """Resolve the external pricing-source preference order from config.yaml.
+
+    Reads `pricing.external_source` (default 'models_dev'). Returns a tuple with
+    the configured primary first and the other valid source(s) after it as
+    automatic fallback, so a model missing from the primary catalog still
+    resolves from the secondary. Any unrecognized/missing value degrades to the
+    default order (never raises — pricing must not break a turn).
+    """
+    primary = _DEFAULT_PRICING_SOURCE
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        pricing_cfg = cfg.get("pricing")
+        if isinstance(pricing_cfg, dict):
+            candidate = pricing_cfg.get("external_source")
+            if isinstance(candidate, str) and candidate.strip().lower() in _VALID_PRICING_SOURCES:
+                primary = candidate.strip().lower()
+    except Exception:
+        primary = _DEFAULT_PRICING_SOURCE
+    # Primary first, then the remaining valid sources as ordered fallback.
+    return (primary, *[s for s in _VALID_PRICING_SOURCES if s != primary])
+
+
+def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    """Build a PricingEntry from the models.dev registry cost block.
+
+    models.dev stores cost already in per-million USD, so (unlike the OpenRouter
+    path) no per-token→per-million conversion is applied. Resolution mirrors the
+    context-window path: try the model's mapped provider first, then a
+    cross-provider scan (for aggregator ids that belong to no single mapped
+    provider). Returns None if models.dev has no usable cost for the id.
+    """
+    from agent.models_dev import (
+        lookup_models_dev_pricing,
+        lookup_models_dev_pricing_any_provider,
+    )
+
+    cost = lookup_models_dev_pricing(route.provider, route.model)
+    if cost is None:
+        cost = lookup_models_dev_pricing_any_provider(route.model)
+    if cost is None:
+        # "-codex" variant absent → price the stripped base model id.
+        fallback = _normalize_codex_model_name(route.model)
+        if fallback:
+            cost = lookup_models_dev_pricing_any_provider(fallback)
+    if cost is None:
+        return None
+
+    inp = _to_decimal(cost.get("input"))
+    out = _to_decimal(cost.get("output"))
+    if inp is None and out is None:
+        return None
+    cache_read = _to_decimal(cost.get("cache_read"))
+    cache_write = _to_decimal(cost.get("cache_write"))
+    return PricingEntry(
+        input_cost_per_million=inp,
+        output_cost_per_million=out,
+        cache_read_cost_per_million=cache_read,
+        cache_write_cost_per_million=cache_write,
+        request_cost=None,
+        source="provider_models_api",
+        source_url="https://models.dev/api.json",
+        pricing_version="models-dev-api",
+        fetched_at=_UTC_NOW(),
+    )
+
+
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     metadata = fetch_model_metadata()
     entry = _pricing_entry_from_metadata(
@@ -1244,6 +1332,35 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
             source_url="https://openrouter.ai/docs/api/api-reference/models/get-models",
             pricing_version="openrouter-models-api",
         )
+    return None
+
+
+# Dispatch table: pricing-source name → entry builder.
+_PRICING_SOURCE_BUILDERS = {
+    "models_dev": _models_dev_pricing_entry,
+    "openrouter": _openrouter_pricing_entry,
+}
+
+
+def _external_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    """Price a route from the configured external catalog(s).
+
+    Tries the config-selected primary source (default models.dev), then the
+    other valid source as fallback, so a model absent from the primary catalog
+    still resolves. This is ONLY consulted after the curated snapshot has
+    missed (see get_pricing_entry), so the snapshot's deliberate corrections
+    always win. Never raises.
+    """
+    for source in _pricing_source_order():
+        builder = _PRICING_SOURCE_BUILDERS.get(source)
+        if builder is None:
+            continue
+        try:
+            entry = builder(route)
+        except Exception:
+            entry = None
+        if entry is not None:
+            return entry
     return None
 
 
@@ -1308,7 +1425,11 @@ def get_pricing_entry(
             pricing_version="included-route",
         )
     if route.provider == "openrouter":
-        return _openrouter_pricing_entry(route)
+        # Notional relays (openai-codex, provider: openrouter routes) and any
+        # model absent from the curated snapshot price from the configured
+        # external catalog — models.dev by default, OpenRouter as fallback
+        # (config.yaml `pricing.external_source`). See _external_pricing_entry.
+        return _external_pricing_entry(route)
     if route.base_url:
         entry = _pricing_entry_from_metadata(
             fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),

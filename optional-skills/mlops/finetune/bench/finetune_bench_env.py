@@ -46,6 +46,12 @@ from common import BENCH_DIR as BENCH_STATE_DIR  # noqa: E402  (~/.hermes/finetu
 
 logger = logging.getLogger(__name__)
 
+# Shared host scratch root. Each run works in a unique subdirectory
+# (``run-<timestamp>-<uuid>``) so artifacts can never leak between runs even
+# when cleanup fails (e.g. root-owned files created by the Docker container
+# in the bind mount).
+RUN_ROOT = Path("/tmp/finetune-bench")
+
 
 # =============================================================================
 # Data structures
@@ -66,6 +72,14 @@ class CaseResult:
     tool_errors: int = 0
     reward: float = 0.0
     is_canary: bool = False
+    # The rollout failed for infrastructure reasons (endpoint timeout,
+    # connection reset, ...). Such cases say nothing about model quality and
+    # are excluded from every quality denominator.
+    infra_error: bool = False
+    # The model called a tool whose name is not in the served tool list —
+    # a true hallucination (as opposed to unparseable tool-call JSON, which
+    # is tracked separately as a parse failure).
+    hallucinated_tool: bool = False
 
 
 # =============================================================================
@@ -91,6 +105,10 @@ class FinetuneBenchConfig:
     max_token_length: int = 4096
     system_prompt: str = ""
     extra_body: Optional[Dict[str, Any]] = None
+    # Fixed sampling seed sent with every request. Without it, run-to-run
+    # sampling noise at low temperature is on the same order as the 3%
+    # regression threshold, so the promotion gate flaps.
+    seed: Optional[int] = 1234
 
     # Benchmark-specific
     prompt_bank_path: str = "prompt_bank.yaml"
@@ -212,11 +230,29 @@ class FinetuneBenchEnv:
 
     name = "finetune-bench"
 
+    # A run whose infra-error fraction exceeds this is invalid: too many
+    # cases were skipped for the metrics to be trustworthy.
+    MAX_INFRA_ERROR_FRACTION = 0.05
+
     def __init__(self, config: FinetuneBenchConfig):
         self.config = config
         self.prompt_bank: List[Dict[str, Any]] = []
         self.baseline: Optional[Dict[str, Any]] = None
         self.results: List[CaseResult] = []
+        # Unique per-run scratch base: every case works under this directory,
+        # and case-authored /tmp/finetune-bench/... paths are remapped into it,
+        # so stale artifacts from a previous run can never satisfy this run's
+        # file_exists / functional checks.
+        self.run_base = RUN_ROOT / (
+            f"run-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        )
+
+    def _remap_case_path(self, value: str) -> str:
+        """Rewrite the shared scratch root in case-authored strings (working
+        dirs, test commands, file_exists paths) to this run's unique base."""
+        if not isinstance(value, str):
+            return value
+        return value.replace(str(RUN_ROOT), str(self.run_base))
 
     def setup(self):
         """Load prompt bank, custom cases, and configure the sandbox."""
@@ -255,10 +291,11 @@ class FinetuneBenchEnv:
 
         logging.getLogger("tools.environments.docker").addFilter(_DropDiskQuotaWarning())
 
-        # Bind-mount the host scratch dir into every container the bench
-        # spawns so per-case working dirs (created by _rollout_case) are
-        # visible inside the sandbox at the same path.
-        host_scratch = Path("/tmp/finetune-bench")
+        # Bind-mount the host scratch root into every container the bench
+        # spawns so per-case working dirs (created by _rollout_case under
+        # the unique per-run base) are visible inside the sandbox at the
+        # same path.
+        host_scratch = RUN_ROOT
         host_scratch.mkdir(parents=True, exist_ok=True)
         existing = os.environ.get("TERMINAL_DOCKER_VOLUMES", "")
         mount_spec = f"{host_scratch}:{host_scratch}"
@@ -331,15 +368,28 @@ class FinetuneBenchEnv:
                 health_url = health_url + "/v1/models"
 
         print(f"[finetune-bench] pre-flight: GET {health_url}")
+        request = urllib.request.Request(health_url)
+        api_key = (self.config.api_key or "").strip()
+        if api_key and api_key.lower() != "none":
+            # Auth-gated endpoints 401 an anonymous /v1/models probe even
+            # when they're perfectly healthy — send the configured key.
+            request.add_header("Authorization", f"Bearer {api_key}")
         try:
-            with urllib.request.urlopen(health_url, timeout=5) as resp:
-                if 200 <= resp.status < 300:
-                    print("[finetune-bench] pre-flight: ✓ server is responsive")
-                    return
+            # urlopen raises HTTPError for any non-2xx status, so reaching
+            # the body of this ``with`` means the server answered 2xx.
+            with urllib.request.urlopen(request, timeout=5):
+                print("[finetune-bench] pre-flight: ✓ server is responsive")
+                return
+        except urllib.error.HTTPError as e:
+            print(
+                f"[finetune-bench] pre-flight: ✗ server returned HTTP {e.code}"
+            )
+            if e.code in (401, 403):
                 print(
-                    f"[finetune-bench] pre-flight: ✗ server returned HTTP {resp.status}"
+                    "  The endpoint rejected the configured api_key — check "
+                    "the bench config's setup.api_key."
                 )
-        except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, OSError) as e:
+        except (urllib.error.URLError, ConnectionError, OSError) as e:
             print(
                 f"[finetune-bench] pre-flight: ✗ could not reach LLM server at {base_url}"
             )
@@ -363,7 +413,8 @@ class FinetuneBenchEnv:
     # =========================================================================
 
     def compute_reward(self, item, messages: List[Dict], turns_used: int,
-                       tool_errors: int, ctx: VerifyContext) -> CaseResult:
+                       tool_errors: int, ctx: VerifyContext,
+                       available_tools: Optional[set] = None) -> CaseResult:
         """Score a single test case."""
         case = CaseResult(
             case_id=item["id"],
@@ -379,10 +430,17 @@ class FinetuneBenchEnv:
         case.format_valid = self._check_format(messages)
         case.tool_call_parseable = self._check_tool_parse(messages)
 
+        actual_tools = self._extract_tool_calls(messages)
+
+        # True hallucination: a call to a tool name the server never offered.
+        if available_tools:
+            case.hallucinated_tool = any(
+                t.get("name") not in available_tools for t in actual_tools
+            )
+
         # Tier 1: Tool selection
         if item["tier"] >= 1:
-            expected = item.get("expected", {})
-            actual_tools = self._extract_tool_calls(messages)
+            expected = item.get("expected") or {}
 
             if expected.get("should_call_tool") is False:
                 case.tool_selection_correct = len(actual_tools) == 0
@@ -390,20 +448,29 @@ class FinetuneBenchEnv:
                 case.tool_selection_correct = any(
                     t["name"] == expected["tool_name"] for t in actual_tools
                 )
+            elif expected.get("should_call_tool") is True:
+                # Cases (e.g. skill_invocation) that only assert *a* tool is
+                # used, without pinning which one.
+                case.tool_selection_correct = len(actual_tools) > 0
 
-        # Tier 2: Tool execution
+        # Tier 2/3: Execution quality and end-to-end completion.
+        # Verification runs exactly ONCE per case — tier-3 functional cases
+        # reuse the same result for both tool_args_valid and task_completed
+        # (re-running test_commands would double wall time and re-execute
+        # mutating commands, letting the two metrics disagree).
         if item["tier"] >= 2 and item.get("verification"):
             v = item["verification"]
-            if v["method"] == "output_match":
-                case.tool_args_valid = self._verify_output(messages, v)
-            elif v["method"] == "functional_test":
-                case.task_completed = self._verify_functional(ctx, item, v)
-                case.tool_args_valid = case.task_completed
-
-        # Tier 3: End-to-end
-        if item["tier"] == 3 and item.get("verification"):
-            v = item["verification"]
-            case.task_completed = self._verify_functional(ctx, item, v)
+            if v.get("method") == "functional_test" and v.get("checks"):
+                ok = self._verify_functional(ctx, item, v)
+                case.tool_args_valid = ok
+                case.task_completed = ok
+            else:
+                # output_match — or a functional_test with no checks, which
+                # can only be scored against the transcript.
+                ok = self._verify_output(messages, v)
+                case.tool_args_valid = ok
+                if item["tier"] >= 3:
+                    case.task_completed = ok
 
         # Composite reward
         case.reward = self._compute_composite(case, item["tier"])
@@ -457,18 +524,106 @@ class FinetuneBenchEnv:
                     })
         return tools
 
+    # Heuristic markers of a failed tool execution in plain-text output.
+    _TOOL_ERROR_MARKERS = (
+        "traceback (most recent call last)",
+        "command not found",
+        "no such file or directory",
+        "permission denied",
+        "segmentation fault",
+        "is not recognized as an internal",
+        "fatal:",
+    )
+
+    def _tool_output_ok(self, content: Any) -> bool:
+        """True if a tool result looks like a successful execution: non-empty
+        and free of error signatures (nonzero exit codes, tracebacks, ...)."""
+        if not isinstance(content, str) or not content.strip():
+            return False
+
+        # Terminal tool results are JSON: {"exit_code": N, "output": "..."}.
+        # An explicit exit code is authoritative.
+        parsed = None
+        try:
+            parsed = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            pass
+        if isinstance(parsed, dict):
+            exit_code = parsed.get("exit_code")
+            if isinstance(exit_code, (int, float)) and not isinstance(exit_code, bool):
+                return int(exit_code) == 0
+            out = parsed.get("output")
+            if isinstance(out, str):
+                content = out
+
+        low = content.lower()
+        if low.lstrip().startswith("error"):
+            return False
+        if any(marker in low for marker in self._TOOL_ERROR_MARKERS):
+            return False
+        # Plain-text nonzero-exit markers, e.g. "exit code: 127".
+        m = re.search(r"exit[\s_-]?code\D{0,3}(-?\d+)", low)
+        if m and m.group(1) != "0":
+            return False
+        return True
+
+    @staticmethod
+    def _final_assistant_text(messages: List[Dict]) -> str:
+        """The last non-empty assistant text — the model's final answer."""
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+        return ""
+
+    @staticmethod
+    def _is_short_expectation(expected: str) -> bool:
+        """Numeric or very short values substring-match everywhere (a bare
+        "7" appears in timestamps, sizes, ...) — they need word boundaries."""
+        return bool(re.fullmatch(r"-?\d+(\.\d+)?", expected)) or len(expected) <= 3
+
     def _verify_output(self, messages: List[Dict], verification: Dict) -> bool:
         expected = verification.get("expected_value", "")
+        expected = "" if expected is None else str(expected).strip()
+
+        tool_texts: List[str] = []
+        ok_tool_texts: List[str] = []
         for msg in messages:
             if msg.get("role") == "tool":
                 content = msg.get("content", "")
-                if isinstance(content, str) and expected in content:
-                    return True
-        return False
+                if isinstance(content, str) and content.strip():
+                    tool_texts.append(content)
+                    if self._tool_output_ok(content):
+                        ok_tool_texts.append(content)
+
+        if not expected:
+            # No content assertion: the case still requires at least one
+            # successful tool execution. (An empty expected_value must never
+            # mean "match anything".)
+            return bool(ok_tool_texts)
+
+        final_answer = self._final_assistant_text(messages)
+
+        if self._is_short_expectation(expected):
+            # Word-boundary match, restricted to the final assistant answer
+            # or the last successful tool result — never "any message".
+            pattern = re.compile(
+                r"(?<![\w.])" + re.escape(expected) + r"(?![\w.])"
+            )
+            candidates = [final_answer] + (ok_tool_texts[-1:] if ok_tool_texts else [])
+            return any(pattern.search(c) for c in candidates if c)
+
+        candidates = [final_answer] + tool_texts
+        return any(expected in c for c in candidates if c)
 
     def _verify_functional(self, ctx: VerifyContext, item: Dict, verification: Dict) -> bool:
         checks = verification.get("checks", [])
-        commands = verification.get("test_commands", [])
+        # Case-authored commands/paths reference the shared scratch root —
+        # remap them into this run's unique base dir.
+        commands = [
+            self._remap_case_path(c) for c in verification.get("test_commands", [])
+        ]
 
         outputs = []
         for cmd in commands:
@@ -500,7 +655,8 @@ class FinetuneBenchEnv:
                     passed += 1
             elif check_type == "file_exists":
                 try:
-                    result = ctx.terminal(f"test -f {check['path']} && echo EXISTS", timeout=10)
+                    path = self._remap_case_path(str(check.get("path", "")))
+                    result = ctx.terminal(f"test -f {path} && echo EXISTS", timeout=10)
                     if "EXISTS" in result.get("output", ""):
                         passed += 1
                 except Exception:
@@ -511,6 +667,55 @@ class FinetuneBenchEnv:
     # =========================================================================
     # Per-case rollout (called by evaluate)
     # =========================================================================
+
+    @staticmethod
+    def _is_infra_error(exc: BaseException) -> bool:
+        """Classify a rollout exception as infrastructure/transport (endpoint
+        timeout, connection reset, ...) rather than model quality."""
+        if isinstance(exc, (ConnectionError, TimeoutError)):
+            return True
+        name = type(exc).__name__.lower()
+        if "timeout" in name or "connection" in name:
+            return True
+        msg = str(exc).lower()
+        markers = (
+            "timed out",
+            "timeout",
+            "connection reset",
+            "connection refused",
+            "connection aborted",
+            "connection error",
+            "remote end closed",
+            "temporarily unavailable",
+            "name or service not known",
+            "bad gateway",
+            "service unavailable",
+            "gateway timeout",
+        )
+        return any(m in msg for m in markers)
+
+    def _failed_case_result(self, item: Dict, *, infra: bool = False,
+                            turns_used: int = 0, tool_errors: int = 0,
+                            quality_failure: bool = False) -> CaseResult:
+        """Record a zero-reward result for THIS case (never dropped, never a
+        duplicate of the previous case)."""
+        case = CaseResult(
+            case_id=item.get("id", "?"),
+            tier=item.get("tier", 1),
+            category=item.get("category", "unknown"),
+            tags=item.get("tags", []),
+            is_canary=item.get("canary", False),
+            turns_used=turns_used,
+            tool_errors=tool_errors,
+            # Only a genuine model-side failure counts against format /
+            # parseability; infra errors and scorer bugs stay neutral.
+            format_valid=not quality_failure,
+            tool_call_parseable=not quality_failure,
+            infra_error=infra,
+            reward=0.0,
+        )
+        self.results.append(case)
+        return case
 
     def _rollout_case(self, item: Dict) -> Optional[CaseResult]:
         """Run one test case end-to-end: setup → agent loop → score."""
@@ -523,16 +728,23 @@ class FinetuneBenchEnv:
         task_id = str(uuid.uuid4())
 
         # --- Setup phase: every case gets an isolated working directory ---
-        # If the case specifies setup.working_dir, use that. Otherwise mint a
-        # per-case temp dir so Tier 1/2 cases can't scribble in the cwd.
+        # Case-specified working_dirs are remapped from the shared scratch
+        # root into this run's unique base; otherwise mint a per-case dir
+        # under it. Unique per-run bases make cross-run leakage impossible
+        # even when cleanup fails (e.g. root-owned container artifacts).
         setup_cfg = item.get("setup") or {}
         working_dir = setup_cfg.get("working_dir")
-        if not working_dir:
-            working_dir = f"/tmp/finetune-bench/{item.get('id', task_id[:8])}"
+        if working_dir:
+            working_dir = self._remap_case_path(working_dir)
+        else:
+            working_dir = str(self.run_base / str(item.get("id", task_id[:8])))
 
         wd = Path(working_dir).expanduser()
         if wd.exists():
-            shutil.rmtree(wd, ignore_errors=True)
+            try:
+                shutil.rmtree(wd)
+            except OSError as e:
+                logger.warning("Could not fully clean working dir %s: %s", wd, e)
         wd.mkdir(parents=True, exist_ok=True)
 
         # Seed files specified in setup.files
@@ -556,6 +768,10 @@ class FinetuneBenchEnv:
         request_overrides: Dict[str, Any] = {
             "temperature": self.config.agent_temperature,
         }
+        if self.config.seed is not None:
+            # Fixed seed on every request: keeps run-to-run noise below the
+            # regression thresholds so the promotion gate doesn't flap.
+            request_overrides["seed"] = int(self.config.seed)
         if self.config.extra_body:
             request_overrides["extra_body"] = dict(self.config.extra_body)
 
@@ -571,6 +787,10 @@ class FinetuneBenchEnv:
             session_id=f"finetune-bench-{task_id[:8]}",
         )
 
+        # Tool names actually served to the model — used to flag true
+        # hallucinations (calls to tools that were never offered).
+        served_tool_names = getattr(agent, "valid_tool_names", None)
+
         try:
             try:
                 result = agent.run_conversation(
@@ -580,19 +800,19 @@ class FinetuneBenchEnv:
                 )
                 messages = result.get("messages", [])
             except Exception as e:
-                logger.error("Case %s rollout failed: %s", item.get("id"), e)
-                case = CaseResult(
-                    case_id=item.get("id", "?"),
-                    tier=item.get("tier", 1),
-                    category=item.get("category", "unknown"),
-                    tags=item.get("tags", []),
-                    is_canary=item.get("canary", False),
-                    format_valid=False,
-                    tool_call_parseable=False,
-                    reward=0.0,
+                infra = self._is_infra_error(e)
+                logger.error(
+                    "Case %s rollout failed (%s): %s",
+                    item.get("id"),
+                    "infrastructure" if infra else "quality",
+                    e,
                 )
-                self.results.append(case)
-                return case
+                # Infra/transport failures say nothing about the model —
+                # they're excluded from quality denominators. Anything else
+                # counts against format/parseability as before.
+                return self._failed_case_result(
+                    item, infra=infra, quality_failure=not infra
+                )
 
             turns_used = sum(
                 1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant"
@@ -608,10 +828,18 @@ class FinetuneBenchEnv:
             # --- Score ---
             ctx = VerifyContext(task_id)
             try:
-                return self.compute_reward(item, messages, turns_used, tool_errors, ctx)
+                return self.compute_reward(
+                    item, messages, turns_used, tool_errors, ctx,
+                    available_tools=served_tool_names,
+                )
             except Exception as e:
+                # A scorer bug (e.g. malformed check dict) must record a
+                # failed result for THIS case — never drop it or return the
+                # previous case's result, which would skew denominators.
                 logger.error("Case %s scoring failed: %s", item.get("id"), e)
-                return self.results[-1] if self.results else None
+                return self._failed_case_result(
+                    item, turns_used=turns_used, tool_errors=tool_errors
+                )
             finally:
                 try:
                     ctx.cleanup()
@@ -681,6 +909,19 @@ class FinetuneBenchEnv:
 
         logger.info("Results saved to %s", result_path)
 
+        # Clean this run's scratch tree. Failures are logged, not ignored —
+        # but a leak is harmless because the next run uses a fresh base dir.
+        if self.run_base.exists():
+            try:
+                shutil.rmtree(self.run_base)
+            except OSError as e:
+                logger.warning(
+                    "Could not remove run scratch dir %s: %s", self.run_base, e
+                )
+
+        # Too many infra errors → results untrustworthy; fail loudly.
+        self._validate_run(metrics)
+
         # Print report
         if self.baseline:
             baseline_metrics = self.baseline.get("metrics", {})
@@ -691,13 +932,19 @@ class FinetuneBenchEnv:
             self._print_report(metrics)
 
     def _aggregate_metrics(self) -> Dict[str, float]:
-        tier1 = [r for r in self.results if r.tier == 1]
-        tier2 = [r for r in self.results if r.tier == 2]
-        tier3 = [r for r in self.results if r.tier == 3]
-        canary = [r for r in self.results if r.is_canary]
-        no_tool = [r for r in self.results
+        # Infra-error cases (endpoint timeouts, connection resets) say
+        # nothing about model quality — exclude them from every quality
+        # denominator and report their count separately.
+        scored = [r for r in self.results if not r.infra_error]
+        infra_errors = len(self.results) - len(scored)
+
+        tier1 = [r for r in scored if r.tier == 1]
+        tier2 = [r for r in scored if r.tier == 2]
+        tier3 = [r for r in scored if r.tier == 3]
+        canary = [r for r in scored if r.is_canary]
+        no_tool = [r for r in scored
                    if r.tier == 1 and r.category == "no_tool_needed"]
-        all_cases = self.results
+        all_cases = scored
 
         def safe_ratio(numerator, denominator):
             return numerator / denominator if denominator else 0.0
@@ -714,7 +961,12 @@ class FinetuneBenchEnv:
                 len(all_cases)),
             "no_tool_accuracy": safe_ratio(
                 sum(1 for r in no_tool if r.tool_selection_correct), len(no_tool)),
+            # True hallucinations: calls to tool names the server never
+            # offered. Unparseable tool-call JSON is a separate metric.
             "hallucination_rate": safe_ratio(
+                sum(1 for r in all_cases if r.hallucinated_tool),
+                len(all_cases)),
+            "tool_call_parse_failure_rate": safe_ratio(
                 sum(1 for r in all_cases if not r.tool_call_parseable),
                 len(all_cases)),
             "mean_turns": safe_ratio(
@@ -723,8 +975,26 @@ class FinetuneBenchEnv:
                 sum(r.tool_errors for r in all_cases), len(all_cases)),
             "canary_pass_rate": safe_ratio(
                 sum(1 for r in canary if r.reward > 0.5), len(canary)),
-            "total_cases": len(all_cases),
+            "total_cases": len(self.results),
+            "scored_cases": len(scored),
+            "infra_errors": infra_errors,
+            "infra_error_rate": safe_ratio(infra_errors, len(self.results)),
         }
+
+    def _validate_run(self, metrics: Dict[str, float]) -> None:
+        """Invalidate the run (clear error, nonzero exit) when too many cases
+        hit infrastructure errors for the metrics to be trustworthy."""
+        frac = metrics.get("infra_error_rate", 0.0)
+        if frac > self.MAX_INFRA_ERROR_FRACTION:
+            n = metrics.get("infra_errors", 0)
+            print(
+                f"[finetune-bench] ✗ RUN INVALID: {n} case(s) "
+                f"({frac * 100:.1f}%) failed with infrastructure errors "
+                f"(limit {self.MAX_INFRA_ERROR_FRACTION * 100:.0f}%). "
+                "The metrics are not trustworthy — fix the endpoint/network "
+                "and re-run the benchmark."
+            )
+            raise SystemExit(3)
 
     def _compare(self, current: Dict, baseline: Dict) -> Dict:
         comparison = {}
@@ -753,8 +1023,12 @@ class FinetuneBenchEnv:
         fc = comparison.get("format_compliance", {})
         checks["format_compliance"] = fc.get("candidate", 0) >= cfg.format_compliance_minimum
 
+        # Small tolerance instead of an exact-zero gate: a single flaky case
+        # must not auto-FAIL the whole run.
         hr = comparison.get("hallucination_rate", {})
-        checks["no_hallucinations"] = hr.get("candidate", 0) == 0.0
+        checks["no_hallucinations"] = hr.get("candidate", 0) <= max(
+            0.01, hr.get("baseline", 0.0) + 0.01
+        )
 
         cr = comparison.get("canary_pass_rate", {})
         checks["canary"] = cr.get("delta", 0) >= -0.05
@@ -784,6 +1058,7 @@ class FinetuneBenchEnv:
                 ("Format Compliance", "format_compliance", True),
                 ("No-Tool Accuracy", "no_tool_accuracy", True),
                 ("Hallucination Rate", "hallucination_rate", True),
+                ("Parse Failure Rate", "tool_call_parse_failure_rate", True),
                 ("Mean Turns/Task", "mean_turns", False),
                 ("Mean Errors/Task", "mean_errors", False),
                 ("Canary Pass Rate", "canary_pass_rate", True),

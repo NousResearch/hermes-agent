@@ -2287,7 +2287,9 @@ cases:
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      # Django is unambiguously among the top 3 by stars — any correct
+      # answer must mention it.
+      expected_value: "Django"
     tags: [research, web]
 
   - id: e2e-031
@@ -2342,7 +2344,9 @@ cases:
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      # The L in SOLID — a correct summary must name the Liskov
+      # substitution principle; the word never appears in the prompt.
+      expected_value: "Liskov"
     tags: [research, design]
 
   - id: e2e-036
@@ -2353,7 +2357,9 @@ cases:
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      # A real answer must cite a concrete identifier (CVE-2xxx-...);
+      # "CVE-2" cannot be satisfied by merely echoing the prompt.
+      expected_value: "CVE-2"
     tags: [research, security]
 
   - id: e2e-037
@@ -2364,7 +2370,9 @@ cases:
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      # QLoRA's defining trait — any correct comparison must discuss
+      # quantization/quantized weights; the term is not in the prompt.
+      expected_value: "quantiz"
     tags: [research, ml]
 
   # -- refactor (+8 new) --

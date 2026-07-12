@@ -8,6 +8,11 @@ env:
   terminal_backend: docker
   max_agent_turns: 15
   agent_temperature: 0.1
+  # Fixed sampling seed sent with every request. Without it, run-to-run
+  # sampling noise at temperature 0.1 (~3% on the binary-scored tiers) is
+  # the same size as the 3% regression threshold, so the promotion gate
+  # flaps between PASS and FAIL on identical adapters.
+  seed: 1234
   terminal_timeout: 60
   terminal_lifetime: 600
   # Per-response output cap. 2048 is too small — write_file calls with

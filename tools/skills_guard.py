@@ -688,20 +688,23 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     )
 
 
-def _full_content_hash(skill_path: Path) -> str:
-    """Complete SHA-256 over paths and bytes for scan cache identity."""
+def _content_digest(skill_path: Path) -> str:
+    """Canonical SHA-256 over relative paths and exact file bytes."""
     h = hashlib.sha256()
     if skill_path.is_dir():
         for file_path in sorted(skill_path.rglob("*")):
-            rel = file_path.relative_to(skill_path).as_posix()
-            if file_path.is_symlink():
-                h.update(rel.encode() + b"\x00SYMLINK\x00")
-            elif file_path.is_file():
-                h.update(rel.encode() + b"\x00")
+            if file_path.is_file():
+                rel = file_path.relative_to(skill_path).as_posix()
+                h.update(rel.encode("utf-8") + b"\x00")
                 h.update(file_path.read_bytes())
     else:
         h.update(skill_path.read_bytes())
-    return f"sha256:{h.hexdigest()}"
+    return h.hexdigest()
+
+
+def full_content_hash(skill_path: Path) -> str:
+    """Full canonical digest used to bind scanner attestations."""
+    return f"sha256:{_content_digest(skill_path)}"
 
 
 def _finding_dict(finding: Finding) -> dict:
@@ -718,9 +721,10 @@ def scan_skill_cached(
     cache_dir: Path | None = None,
 ) -> Tuple[ScanResult, dict]:
     """Return a scan plus attestation, caching only exact current content."""
-    bundle_hash = _full_content_hash(skill_path)
+    bundle_hash = full_content_hash(skill_path)
     cache_root = cache_dir or skill_path.parent / ".scan-cache"
-    cache_file = cache_root / f"{bundle_hash.split(':', 1)[1]}.json"
+    source_identity = hashlib.sha256(f"{source}\0{source_url}".encode("utf-8")).hexdigest()[:16]
+    cache_file = cache_root / f"{bundle_hash.split(':', 1)[1]}-{source_identity}.json"
     try:
         cached = json.loads(cache_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -728,7 +732,8 @@ def scan_skill_cached(
     if (isinstance(cached, dict)
             and cached.get("bundle_hash") == bundle_hash
             and cached.get("scanner_version") == SCANNER_VERSION
-            and cached.get("source") == source):
+            and cached.get("source") == source
+            and cached.get("source_url") == source_url):
         result = ScanResult(
             skill_name=skill_path.name, source=source,
             trust_level=cached["trust_level"], verdict=cached["verdict"],
@@ -849,20 +854,7 @@ def content_hash(skill_path: Path) -> str:
     one on an in-memory bundle), so any change to the hash shape MUST
     land in both places at once.
     """
-    h = hashlib.sha256()
-    if skill_path.is_dir():
-        for f in sorted(skill_path.rglob("*")):
-            if f.is_file():
-                try:
-                    rel = f.relative_to(skill_path).as_posix()
-                    h.update(rel.encode("utf-8"))
-                    h.update(b"\x00")
-                    h.update(f.read_bytes())
-                except OSError:
-                    continue
-    elif skill_path.is_file():
-        h.update(skill_path.read_bytes())
-    return f"sha256:{h.hexdigest()[:16]}"
+    return f"sha256:{_content_digest(skill_path)[:16]}"
 
 
 # ---------------------------------------------------------------------------

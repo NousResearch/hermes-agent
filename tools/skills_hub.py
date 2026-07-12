@@ -29,7 +29,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.skill_utils import is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunparse
 
 import httpx
 import yaml
@@ -152,13 +152,13 @@ class SkillBundle:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-_ALLOWED_SUPPORT_DIRS = frozenset({"references", "templates", "scripts", "assets"})
+_ALLOWED_SUPPORT_DIRS = frozenset({"references", "templates", "scripts", "assets", "examples"})
 _LOCAL_LINK_RE = re.compile(
-    r"(?:\]\(|`|(?:^|[\s\"']))((?:references|templates|scripts|assets)/[^\s)`\"'<>]+)",
+    r"(?:\]\(|`|(?:^|[\s\"']))((?:references|templates|scripts|assets|examples)/[^\s)`\"'<>]+)",
     re.MULTILINE,
 )
 _SUSPICIOUS_LOCAL_REF_RE = re.compile(
-    r"(?:references|templates|scripts|assets)/(?:[^\s)`\"'<>]*/)?\.\.(?:/|$)"
+    r"(?:references|templates|scripts|assets|examples)/(?:[^\s)`\"'<>]*/)?\.\.(?:/|$)"
 )
 
 
@@ -169,7 +169,7 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
         return None
     paths: set[str] = set()
     for match in _LOCAL_LINK_RE.finditer(normalized):
-        raw = match.group(1).rstrip(".,;:")
+        raw = unquote(urlsplit(match.group(1).rstrip(".,;:")).path)
         try:
             safe = _validate_bundle_rel_path(raw)
         except ValueError:
@@ -575,6 +575,7 @@ class GitHubSource(SkillSource):
         # Per-instance cache: repo -> (default_branch, tree_entries)
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
+        self._tree_revisions: Dict[str, str] = {}
         # Per-repo cache of the optional skills.sh.json grouping sidecar,
         # mapping skill_name -> human-readable grouping title. ``None`` means
         # "fetched, no sidecar"; a missing key means "not fetched yet".
@@ -651,29 +652,30 @@ class GitHubSource(SkillSource):
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": skill_md}
         tree = self._get_repo_tree(repo)
         if tree is not None:
-            _branch, entries = tree
+            branch, entries = tree
             prefix = f"{skill_path.rstrip('/')}/"
-            wanted_roots = {path.split("/", 1)[0] for path in referenced}
-            for item in entries:
-                item_path = item.get("path", "")
-                if not item_path.startswith(prefix):
-                    continue
-                rel_path = item_path[len(prefix):]
-                if rel_path.split("/", 1)[0] not in wanted_roots:
-                    continue
+            entries_by_path = {item.get("path", ""): item for item in entries}
+            for rel_path in sorted(referenced):
+                item_path = f"{prefix}{rel_path}"
+                item = entries_by_path.get(item_path)
+                if item is None:
+                    logger.warning("Referenced skill support file is missing: %s", item_path)
+                    return None
                 if item.get("type") != "blob" or item.get("mode") == "120000":
                     logger.warning("Rejected non-regular file in skill bundle: %s", item_path)
                     return None
-                content = self._fetch_file_content(repo, item_path)
-                if content is None:
-                    return None
-                files[_validate_bundle_rel_path(rel_path)] = content
-        else:
-            for rel_path in referenced:
-                content = self._fetch_file_content(repo, f"{skill_path.rstrip('/')}/{rel_path}")
+                content = self._fetch_file_bytes(repo, item_path)
                 if content is None:
                     return None
                 files[rel_path] = content
+            revision = self._tree_revisions.get(repo) or branch
+        else:
+            for rel_path in referenced:
+                content = self._fetch_file_bytes(repo, f"{skill_path.rstrip('/')}/{rel_path}")
+                if content is None:
+                    return None
+                files[rel_path] = content
+            revision = ""
 
         skill_name = skill_path.rstrip("/").split("/")[-1]
         trust = self.trust_level_for(identifier)
@@ -684,7 +686,13 @@ class GitHubSource(SkillSource):
             source="github",
             identifier=identifier,
             trust_level=trust,
-            metadata={"source_url": f"https://github.com/{repo}/tree/main/{skill_path}"},
+            metadata={
+                "source_url": (
+                    f"https://github.com/{repo}/tree/{revision}/{skill_path}"
+                    if revision else f"https://github.com/{repo}/{skill_path}"
+                ),
+                "source_revision": revision,
+            },
         )
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
@@ -823,6 +831,9 @@ class GitHubSource(SkillSource):
             return None
 
         entries = tree_data.get("tree", [])
+        revision = tree_data.get("sha")
+        if isinstance(revision, str) and revision:
+            self._tree_revisions[repo] = revision
         self._tree_cache[repo] = (default_branch, entries)
         return (default_branch, entries)
 
@@ -1039,14 +1050,24 @@ class GitHubSource(SkillSource):
         return None
 
     def _fetch_file_content(self, repo: str, path: str) -> Optional[str]:
-        """Fetch a single file's content from GitHub."""
+        """Fetch a single text file from GitHub."""
+        content = self._fetch_file_bytes(repo, path)
+        if content is None:
+            return None
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+    def _fetch_file_bytes(self, repo: str, path: str) -> Optional[bytes]:
+        """Fetch exact file bytes from GitHub without text decoding."""
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
         resp = self._github_get(
             url,
             headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
         )
         if resp is not None and resp.status_code == 200:
-            return resp.text
+            return resp.content
         return None
 
     def _get_skillsh_groupings(self, repo: str) -> Optional[Dict[str, str]]:
@@ -1482,7 +1503,7 @@ class UrlSource(SkillSource):
             support_url = urljoin(base_url, rel_path)
             if urlparse(support_url).netloc != urlparse(url).netloc:
                 return None
-            content = self._fetch_text(support_url)
+            content = self._fetch_bytes(support_url)
             if content is None:
                 return None
             files[rel_path] = content
@@ -1514,6 +1535,13 @@ class UrlSource(SkillSource):
         resp = _guarded_http_get(url, timeout=20)
         if resp is not None and resp.status_code == 200:
             return resp.text
+        return None
+
+    @staticmethod
+    def _fetch_bytes(url: str) -> Optional[bytes]:
+        resp = _guarded_http_get(url, timeout=20)
+        if resp is not None and resp.status_code == 200:
+            return resp.content
         return None
 
     # Skill names must look like identifiers: lowercase letters/digits with

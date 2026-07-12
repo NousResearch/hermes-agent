@@ -62,6 +62,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@excalidraw/excalidraw": "^0.18.1",
     "@hermes/shared": "file:../shared",
     "@icons-pack/react-simple-icons": "=13.11.1",
     "@lezer/highlight": "^1.2.3",

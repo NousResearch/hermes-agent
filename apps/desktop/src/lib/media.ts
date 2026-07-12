@@ -27,7 +27,14 @@ const MEDIA_BY_EXT: Record<string, MediaInfo> = {
   svg: { kind: 'image', mime: 'image/svg+xml' },
   wav: { kind: 'audio', mime: 'audio/wav' },
   webm: { kind: 'video', mime: 'video/webm' },
-  webp: { kind: 'image', mime: 'image/webp' }
+  webp: { kind: 'image', mime: 'image/webp' },
+  // Diagram source files — rendered inline via the chat embeds when their
+  // contents are pasted as fenced blocks, and shown with a type icon when
+  // attached as files. `.mermaid`/`.drawio`/`.excalidraw` aren't
+  // image media themselves, so they stay generic 'file' kind.
+  mermaid: { kind: 'file', mime: 'application/vnd.hermes.mermaid' },
+  drawio: { kind: 'file', mime: 'application/vnd.jgraph.mxfile' },
+  excalidraw: { kind: 'file', mime: 'application/vnd.excalidraw+json' }
 }
 
 function mediaInfo(path: string): MediaInfo | undefined {

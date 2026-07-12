@@ -1166,6 +1166,7 @@ class KanbanApprovalRequest:
     user_id: Optional[str]
     notifier_profile: Optional[str]
     requested_at: int
+    notified_at: Optional[int]
     decided_at: Optional[int]
     expires_at: int
     decided_by: Optional[str]
@@ -1198,6 +1199,11 @@ class KanbanApprovalRequest:
             user_id=row["user_id"],
             notifier_profile=row["notifier_profile"],
             requested_at=int(row["requested_at"]),
+            notified_at=(
+                int(row["notified_at"])
+                if row["notified_at"] is not None
+                else None
+            ),
             decided_at=(
                 int(row["decided_at"])
                 if row["decided_at"] is not None
@@ -1422,6 +1428,7 @@ CREATE TABLE IF NOT EXISTS kanban_approval_requests (
     user_id          TEXT,
     notifier_profile TEXT,
     requested_at     INTEGER NOT NULL,
+    notified_at      INTEGER,
     decided_at       INTEGER,
     expires_at       INTEGER NOT NULL,
     decided_by       TEXT,
@@ -2198,6 +2205,23 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         if "notifier_profile" not in notify_cols:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
+            )
+
+    approval_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='kanban_approval_requests'"
+    ).fetchone() is not None
+    if approval_table_exists:
+        approval_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(kanban_approval_requests)")
+        }
+        if "notified_at" not in approval_cols:
+            _add_column_if_missing(
+                conn,
+                "kanban_approval_requests",
+                "notified_at",
+                "notified_at INTEGER",
             )
 
     # One-shot backfill: any task that is 'running' before runs existed
@@ -3611,6 +3635,67 @@ def list_task_approvals(
         _approval_as_dict(KanbanApprovalRequest.from_row(row))
         for row in conn.execute(sql, params).fetchall()
     ]
+
+
+def list_pending_unnotified_task_approvals(
+    conn: sqlite3.Connection,
+    *,
+    task_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """List pending approval notices that have not reached their owner.
+
+    This state is independent of ``kanban_notify_subs.last_event_id``.  The
+    notifier claims event cursors before network I/O, so a process crash after
+    that claim must still be able to discover and retry the approval notice.
+    """
+    sql = (
+        "SELECT * FROM kanban_approval_requests "
+        "WHERE state = 'pending' AND notified_at IS NULL"
+    )
+    params: list[Any] = []
+    if task_id is not None:
+        sql += " AND task_id = ?"
+        params.append(str(task_id))
+    if notifier_profile is not None:
+        sql += " AND notifier_profile = ?"
+        params.append(str(notifier_profile))
+    sql += " ORDER BY requested_at ASC, rowid ASC"
+    return [
+        _approval_as_dict(KanbanApprovalRequest.from_row(row))
+        for row in conn.execute(sql, params).fetchall()
+    ]
+
+
+def mark_task_approval_notified(
+    conn: sqlite3.Connection,
+    request_id: str,
+    *,
+    notified_at: Optional[int] = None,
+) -> bool:
+    """Record successful owner notification without reviving a decision.
+
+    ``False`` means the request no longer exists or is no longer pending.
+    Repeated calls for an already-notified pending request are idempotently
+    successful.  Database errors are allowed to propagate so the notifier can
+    leave the row unmarked and retry on its next tick.
+    """
+    timestamp = int(time.time()) if notified_at is None else int(notified_at)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT state, notified_at FROM kanban_approval_requests WHERE id = ?",
+            (str(request_id),),
+        ).fetchone()
+        if row is None or row["state"] != "pending":
+            return False
+        if row["notified_at"] is not None:
+            return True
+        changed = conn.execute(
+            "UPDATE kanban_approval_requests SET notified_at = ? "
+            "WHERE id = ? AND state = 'pending' AND notified_at IS NULL",
+            (timestamp, str(request_id)),
+        )
+        return changed.rowcount == 1
 
 
 def _approval_route_for_task(

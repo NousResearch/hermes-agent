@@ -124,6 +124,41 @@ def test_request_parks_exact_run_without_counting_failure_and_redacts_event(
         assert request["action_digest"] not in serialized
 
 
+def test_approval_notification_state_is_durable_and_idempotent(kanban_home):
+    with kb.connect() as conn:
+        task = _claimed_task(conn)
+        request = _request(conn, task)
+        assert request is not None
+        assert request["notified_at"] is None
+        assert [
+            item["id"]
+            for item in kb.list_pending_unnotified_task_approvals(
+                conn,
+                task_id=task.id,
+            )
+        ] == [request["id"]]
+
+        assert kb.mark_task_approval_notified(
+            conn,
+            request["id"],
+            notified_at=1234,
+        ) is True
+        # A duplicate post-send acknowledgement is harmless.
+        assert kb.mark_task_approval_notified(
+            conn,
+            request["id"],
+            notified_at=5678,
+        ) is True
+
+        stored = kb.get_task_approval(conn, request["id"])
+        assert stored is not None
+        assert stored["notified_at"] == 1234
+        assert kb.list_pending_unnotified_task_approvals(
+            conn,
+            task_id=task.id,
+        ) == []
+
+
 def test_late_pid_registration_cannot_reanimate_parked_worker(kanban_home):
     with kb.connect() as conn:
         task = _claimed_task(conn)

@@ -322,10 +322,8 @@ class GatewayKanbanWatchersMixin:
                                     thread_id=sub.get("thread_id") or "",
                                     kinds=TERMINAL_KINDS,
                                 )
-                                if not events:
-                                    continue
-                                task = _kb.get_task(conn, sub["task_id"])
                                 approvals: dict[int, dict] = {}
+                                event_approval_ids: set[str] = set()
                                 for event in events:
                                     if event.kind != "approval_requested":
                                         continue
@@ -341,12 +339,34 @@ class GatewayKanbanWatchersMixin:
                                     if (
                                         isinstance(request, dict)
                                         and request.get("status") == "pending"
+                                        and request.get("notified_at") is None
                                         and _approval_record_matches_subscription(request, sub)
                                     ):
                                         approvals[event.id] = request
+                                        event_approval_ids.add(str(request["id"]))
+                                # The event cursor is claimed before adapter.send.
+                                # If the gateway crashes in that window, a restart
+                                # cannot see the event again.  Approval rows retain
+                                # an independent delivery marker so that exact-route
+                                # pending notices remain discoverable.  Exclude ids
+                                # already represented by this event batch to avoid a
+                                # duplicate within one delivery attempt.
+                                recovered_approvals = [
+                                    request
+                                    for request in _kb.list_pending_unnotified_task_approvals(
+                                        conn,
+                                        task_id=sub["task_id"],
+                                    )
+                                    if str(request.get("id") or "")
+                                    not in event_approval_ids
+                                    and _approval_record_matches_subscription(request, sub)
+                                ]
+                                if not events and not recovered_approvals:
+                                    continue
+                                task = _kb.get_task(conn, sub["task_id"])
                                 logger.debug(
-                                    "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
-                                    len(events), sub["task_id"], slug, old_cursor, cursor,
+                                    "kanban notifier: claimed %d event(s) and recovered %d approval notice(s) for %s on board %s cursor %s→%s",
+                                    len(events), len(recovered_approvals), sub["task_id"], slug, old_cursor, cursor,
                                 )
                                 deliveries.append({
                                     "sub": sub,
@@ -354,6 +374,7 @@ class GatewayKanbanWatchersMixin:
                                     "cursor": cursor,
                                     "events": events,
                                     "approvals": approvals,
+                                    "recovered_approvals": recovered_approvals,
                                     "task": task,
                                     "board": slug,
                                 })
@@ -402,8 +423,14 @@ class GatewayKanbanWatchersMixin:
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
                     board_tag = f"[{board_slug}] " if board_slug else ""
-                    for ev in d["events"]:
-                        kind = ev.kind
+                    delivery_items = [(ev, None) for ev in d["events"]]
+                    delivery_items.extend(
+                        (None, request)
+                        for request in d.get("recovered_approvals", [])
+                    )
+                    for ev, recovered_approval in delivery_items:
+                        kind = ev.kind if ev is not None else "approval_requested"
+                        approval_request_id: Optional[str] = None
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
@@ -463,7 +490,11 @@ class GatewayKanbanWatchersMixin:
                                 new_status = str(ev.payload["status"])
                             msg = f"🔄 {board_tag}{tag}Kanban {sub['task_id']} → {new_status}"
                         elif kind == "approval_requested":
-                            request = d.get("approvals", {}).get(ev.id)
+                            request = (
+                                recovered_approval
+                                if recovered_approval is not None
+                                else d.get("approvals", {}).get(ev.id)
+                            )
                             if not request:
                                 # Missing, already-decided, or routed to a
                                 # different subscription. Advance this sub's
@@ -473,6 +504,7 @@ class GatewayKanbanWatchersMixin:
                             request_id = str(request.get("id") or "")
                             if not request_id:
                                 continue
+                            approval_request_id = request_id
                             display_target = _approval_notice_line(
                                 request.get("display_target"), limit=240,
                             ) or "(redacted command)"
@@ -533,26 +565,23 @@ class GatewayKanbanWatchersMixin:
                                         "kanban notifier: artifact delivery for %s failed: %s",
                                         sub["task_id"], art_exc,
                                     )
-                            # Reset the failure counter on success.
-                            sub_fail_counts.pop(sub_key, None)
                         except Exception as exc:
                             fails = sub_fail_counts.get(sub_key, 0) + 1
                             sub_fail_counts[sub_key] = fails
-                            logger.warning(
-                                "kanban notifier: send failed for %s on %s "
-                                "(attempt %d/%d): %s",
-                                sub["task_id"], platform_str, fails,
-                                MAX_SEND_FAILURES, exc,
-                            )
-                            if fails >= MAX_SEND_FAILURES:
+                            if approval_request_id:
+                                # A durable approval has no alternate owner
+                                # after its route is stamped.  Never discard
+                                # that route merely because the adapter was
+                                # transiently unavailable; keep retrying until
+                                # the request is decided or delivery succeeds.
                                 logger.warning(
-                                    "kanban notifier: dropping subscription "
-                                    "%s on %s after %d consecutive send failures",
-                                    sub["task_id"], platform_str, fails,
+                                    "kanban notifier: approval %s send failed for %s on %s (attempt %d); retaining route for retry: %s",
+                                    approval_request_id,
+                                    sub["task_id"],
+                                    platform_str,
+                                    fails,
+                                    exc,
                                 )
-                                await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
-                                sub_fail_counts.pop(sub_key, None)
-                            else:
                                 await asyncio.to_thread(
                                     self._kanban_rewind,
                                     sub,
@@ -560,10 +589,63 @@ class GatewayKanbanWatchersMixin:
                                     d.get("old_cursor", 0),
                                     board_slug,
                                 )
+                            else:
+                                logger.warning(
+                                    "kanban notifier: send failed for %s on %s "
+                                    "(attempt %d/%d): %s",
+                                    sub["task_id"], platform_str, fails,
+                                    MAX_SEND_FAILURES, exc,
+                                )
+                                if fails >= MAX_SEND_FAILURES:
+                                    logger.warning(
+                                        "kanban notifier: dropping subscription "
+                                        "%s on %s after %d consecutive send failures",
+                                        sub["task_id"], platform_str, fails,
+                                    )
+                                    await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
+                                    sub_fail_counts.pop(sub_key, None)
+                                else:
+                                    await asyncio.to_thread(
+                                        self._kanban_rewind,
+                                        sub,
+                                        d["cursor"],
+                                        d.get("old_cursor", 0),
+                                        board_slug,
+                                    )
                             # Rewind the pre-send claim on transient failure so
                             # a later tick can retry. After too many failures,
                             # dropping the subscription is the terminal action.
                             break
+                        if approval_request_id:
+                            try:
+                                await asyncio.to_thread(
+                                    self._kanban_mark_approval_notified,
+                                    approval_request_id,
+                                    board_slug,
+                                )
+                            except Exception as exc:
+                                # The chat received the notice but the durable
+                                # marker did not commit.  Rewind the event claim
+                                # when possible and leave notified_at NULL.  The
+                                # next tick may duplicate the notice, which is
+                                # the required at-least-once failure mode.
+                                logger.warning(
+                                    "kanban notifier: could not mark approval %s notified on board %s; retrying: %s",
+                                    approval_request_id,
+                                    board_slug,
+                                    exc,
+                                )
+                                await asyncio.to_thread(
+                                    self._kanban_rewind,
+                                    sub,
+                                    d["cursor"],
+                                    d.get("old_cursor", 0),
+                                    board_slug,
+                                )
+                                break
+                        # Reset the failure counter only after every durable
+                        # post-send acknowledgement succeeds.
+                        sub_fail_counts.pop(sub_key, None)
                     else:
                         # All events delivered; advance cursor. The cursor
                         # is the dedup mechanism — it prevents re-delivery
@@ -719,6 +801,20 @@ class GatewayKanbanWatchersMixin:
                 claimed_cursor=claimed_cursor,
                 old_cursor=old_cursor,
             )
+        finally:
+            conn.close()
+
+    def _kanban_mark_approval_notified(
+        self,
+        request_id: str,
+        board: Optional[str] = None,
+    ) -> bool:
+        """Persist an approval notice acknowledgement after adapter.send."""
+        from hermes_cli import kanban_db as _kb
+
+        conn = _kb.connect(board=board)
+        try:
+            return _kb.mark_task_approval_notified(conn, request_id)
         finally:
             conn.close()
 

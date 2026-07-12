@@ -163,6 +163,27 @@ def test_migration_is_idempotent(tmp_path, monkeypatch):
         assert len(conn.execute("SELECT * FROM task_events").fetchall()) == 2
 
 
+def test_legacy_approval_table_gains_notification_marker(tmp_path, monkeypatch):
+    """Boards created before notification recovery migrate in place."""
+    db_path = _setup_home(tmp_path, monkeypatch)
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(kb.SCHEMA_SQL)
+    conn.execute(
+        "ALTER TABLE kanban_approval_requests DROP COLUMN notified_at"
+    )
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path) as migrated:
+        columns = {
+            row["name"]
+            for row in migrated.execute(
+                "PRAGMA table_info(kanban_approval_requests)"
+            )
+        }
+    assert "notified_at" in columns
+
+
 def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):
     """The crash that motivated #35096 — ``int(None)`` on a NULL cursor — is
     gone after migration; the notifier query returns an integer cursor."""

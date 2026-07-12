@@ -196,6 +196,30 @@ def run_oneshot(
     # the mismatch.  Require the caller to be explicit.  Validate BEFORE the
     # stderr redirect so the message actually reaches the terminal.
     env_model_early = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
+
+    # MoA virtual provider (#56828): normalize BEFORE the provider/model
+    # guard and the stderr redirect. `--provider moa` alone has a
+    # well-defined default (the configured default_preset) so it must not
+    # be rejected by the guard below, and an unknown-preset error must
+    # reach the real stderr — everything inside the redirect goes to
+    # devnull. _run_agent() repeats this normalization for direct callers;
+    # it is idempotent.
+    from hermes_cli.config import load_config as _load_config
+    from hermes_cli.moa_config import resolve_moa_request
+
+    try:
+        _moa = resolve_moa_request(
+            provider,
+            (model or "").strip() or env_model_early,
+            _load_config(),
+            model_explicit=bool((model or "").strip() or env_model_early),
+        )
+    except ValueError as exc:
+        sys.stderr.write(f"hermes -z: {exc}\n")
+        return 2
+    if _moa is not None:
+        provider, model = _moa
+
     if provider and not ((model or "").strip() or env_model_early):
         sys.stderr.write(
             "hermes -z: --provider requires --model (or HERMES_INFERENCE_MODEL). "

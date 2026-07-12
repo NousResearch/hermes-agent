@@ -164,6 +164,27 @@ def test_oneshot_unknown_preset_exits_with_preset_list(oneshot_rig, capsys):
     assert "strategy" in combined
 
 
+def test_run_oneshot_provider_moa_defaults_preset(oneshot_rig, capsys):
+    """PUBLIC path: `hermes -z --provider moa` (no --model) must reach the
+    default preset instead of being rejected by the provider/model guard."""
+    rc = oneshot_rig.run_oneshot("hi", provider="moa")
+    assert rc == 0
+    kwargs = _CapturedAgent.last_kwargs
+    assert kwargs["provider"] == "moa"
+    assert kwargs["model"] == "strategy"
+    assert "ok" in capsys.readouterr().out
+
+
+def test_run_oneshot_unknown_preset_reports_on_real_stderr(oneshot_rig, capsys):
+    """PUBLIC path: unknown-preset diagnostics must reach the real stderr —
+    everything inside run_oneshot's redirect goes to devnull."""
+    rc = oneshot_rig.run_oneshot("hi", model="moa:bogus")
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "bogus" in err
+    assert "strategy" in err
+
+
 # -- integration: classic chat mixin -------------------------------------------
 
 

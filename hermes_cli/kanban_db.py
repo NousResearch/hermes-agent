@@ -10375,7 +10375,7 @@ def _terminate_failed_bootstrap_worker(proc, *, timeout: float = 2.0) -> None:
         try:
             import signal
 
-            os.killpg(int(proc.pid), signal.SIGTERM)
+            os.killpg(int(proc.pid), signal.SIGTERM)  # windows-footgun: ok — POSIX branch guarded by not _IS_WINDOWS
             group_signalled = True
         except (AttributeError, ProcessLookupError, PermissionError, OSError):
             pass
@@ -10394,7 +10394,7 @@ def _terminate_failed_bootstrap_worker(proc, *, timeout: float = 2.0) -> None:
                 try:
                     import signal
 
-                    os.killpg(int(proc.pid), signal.SIGKILL)
+                    os.killpg(int(proc.pid), signal.SIGKILL)  # windows-footgun: ok — POSIX branch guarded by not _IS_WINDOWS
                     group_signalled = True
                 except (AttributeError, ProcessLookupError, PermissionError, OSError):
                     pass
@@ -10414,8 +10414,8 @@ def _terminate_failed_bootstrap_worker(proc, *, timeout: float = 2.0) -> None:
         try:
             import signal
 
-            os.killpg(int(proc.pid), 0)
-            os.killpg(int(proc.pid), signal.SIGKILL)
+            os.killpg(int(proc.pid), 0)  # windows-footgun: ok — POSIX branch guarded by not _IS_WINDOWS
+            os.killpg(int(proc.pid), signal.SIGKILL)  # windows-footgun: ok — POSIX branch guarded by not _IS_WINDOWS
         except (AttributeError, ProcessLookupError, PermissionError, OSError):
             pass
 

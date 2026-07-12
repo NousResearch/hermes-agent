@@ -45,6 +45,8 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
             "HERMES_AGENT_TIMEOUT",
             "HERMES_AGENT_TIMEOUT_WARNING",
             "HERMES_GATEWAY_BUSY_INPUT_MODE",
+            "HERMES_GATEWAY_BUSY_TEXT_MODE",
+            "HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT",
             "HERMES_TIMEZONE",
         ):
             v = os.environ.get(k)
@@ -80,13 +82,15 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
 
 
 def _write_config(home: Path, agent_cfg: dict | None = None, display_cfg: dict | None = None,
-                  timezone: str | None = None) -> None:
+                  timezone: str | None = None, gateway_cfg: dict | None = None) -> None:
     import yaml
     cfg: dict = {}
     if agent_cfg:
         cfg["agent"] = agent_cfg
     if display_cfg:
         cfg["display"] = display_cfg
+    if gateway_cfg:
+        cfg["gateway"] = gateway_cfg
     if timezone:
         cfg["timezone"] = timezone
     (home / "config.yaml").write_text(yaml.safe_dump(cfg))
@@ -143,6 +147,15 @@ def test_config_display_busy_input_mode_wins_over_stale_env(hermes_home: Path) -
     assert env.get("HERMES_GATEWAY_BUSY_INPUT_MODE") == "interrupt"
 
 
+def test_config_display_busy_text_mode_wins_over_stale_env(hermes_home: Path) -> None:
+    _write_config(hermes_home, display_cfg={"busy_text_mode": "queue"})
+    _write_env(hermes_home, {"HERMES_GATEWAY_BUSY_TEXT_MODE": "interrupt"})
+
+    env = _run_gateway_import(hermes_home, initial_env={})
+
+    assert env.get("HERMES_GATEWAY_BUSY_TEXT_MODE") == "queue"
+
+
 def test_config_timezone_wins_over_stale_env(hermes_home: Path) -> None:
     _write_config(hermes_home, timezone="America/Los_Angeles")
     _write_env(hermes_home, {"HERMES_TIMEZONE": "UTC"})
@@ -164,3 +177,29 @@ def test_env_value_survives_when_config_omits_key(hermes_home: Path) -> None:
     env = _run_gateway_import(hermes_home, initial_env={})
 
     assert env.get("HERMES_MAX_ITERATIONS") == "123"
+
+
+def test_config_platform_connect_timeout_supplies_env_when_unset(hermes_home: Path) -> None:
+    """config.yaml:gateway.platform_connect_timeout supplies the env var when
+    it isn't already set (#19776 — config surface for the Discord connect
+    timeout, replacing the undocumented env-var-only workaround)."""
+    _write_config(hermes_home, gateway_cfg={"platform_connect_timeout": 90})
+
+    env = _run_gateway_import(hermes_home, initial_env={})
+
+    assert env.get("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT") == "90"
+
+
+def test_env_platform_connect_timeout_wins_over_config(hermes_home: Path) -> None:
+    """Unlike the agent.*/display.*/timezone bridges (config-authoritative),
+    HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT is the manual-override escape hatch:
+    an explicitly-set env var WINS over config.yaml. This divergence is
+    intentional (#19776) — the env var is the operator's emergency knob."""
+    _write_config(hermes_home, gateway_cfg={"platform_connect_timeout": 90})
+
+    env = _run_gateway_import(
+        hermes_home,
+        initial_env={"HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT": "120"},
+    )
+
+    assert env.get("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT") == "120"

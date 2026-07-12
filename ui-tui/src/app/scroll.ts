@@ -13,6 +13,23 @@ export interface ScrollWithSelectionOptions {
   readonly selection: SelectionApi
 }
 
+function scrollBoundsForDelta(s: ScrollBoxHandle, cur: number, delta: number) {
+  const viewport = Math.max(0, s.getViewportHeight())
+  const cachedHeight = Math.max(viewport, s.getScrollHeight())
+  let max = Math.max(0, cachedHeight - viewport)
+
+  // getScrollHeight() is render-time cached. After the streaming tail is
+  // committed into virtual history, the Yoga height can be fresher than the
+  // cached value; if we clamp only against the cached fake bottom, wheel-down
+  // becomes a no-op and no render is scheduled to reveal the real tail.
+  if (delta > 0 && cur + delta >= max - 1) {
+    const freshHeight = Math.max(viewport, s.getFreshScrollHeight())
+    max = Math.max(0, freshHeight - viewport)
+  }
+
+  return { max, viewport }
+}
+
 export function scrollWithSelectionBy(delta: number, { scrollRef, selection }: ScrollWithSelectionOptions): void {
   const s = scrollRef.current
 
@@ -21,8 +38,7 @@ export function scrollWithSelectionBy(delta: number, { scrollRef, selection }: S
   }
 
   const cur = s.getScrollTop() + s.getPendingDelta()
-  const viewport = Math.max(0, s.getViewportHeight())
-  const max = Math.max(0, s.getScrollHeight() - viewport)
+  const { max, viewport } = scrollBoundsForDelta(s, cur, delta)
   const actual = Math.max(0, Math.min(max, cur + delta)) - cur
 
   if (actual === 0) {

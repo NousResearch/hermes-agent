@@ -5,6 +5,7 @@ version: 1.0.0
 author: Orchestra Research
 license: MIT
 dependencies: [lm-eval, transformers, vllm]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Evaluation, LM Evaluation Harness, Benchmarking, MMLU, HumanEval, GSM8K, EleutherAI, Model Quality, Academic Benchmarks, Industry Standard]

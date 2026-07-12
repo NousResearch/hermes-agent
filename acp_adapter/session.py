@@ -457,25 +457,50 @@ class SessionManager:
             else:
                 # Update model_config (contains cwd) if changed.
                 try:
-                    with db._lock:
-                        db._conn.execute(
-                            "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-                            (cwd_json, model_str, state.session_id),
-                        )
-                        db._conn.commit()
+                    db.update_session_meta(state.session_id, cwd_json, model_str)
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
 
-            # Replace stored messages with current history.
-            db.clear_messages(state.session_id)
-            for msg in state.history:
-                db.append_message(
-                    session_id=state.session_id,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    tool_name=msg.get("tool_name") or msg.get("name"),
-                    tool_calls=msg.get("tool_calls"),
-                    tool_call_id=msg.get("tool_call_id"),
+            # When the agent owns persistence to this same SessionDB it has
+            # already flushed the live transcript incrementally during
+            # run_conversation (append_message), and it preserves pre-compaction
+            # turns non-destructively via archive_and_compact() — keeping them on
+            # disk as searchable active=0/compacted=1 rows. Calling
+            # replace_messages() here would then be a redundant double-write that
+            # DELETEs exactly those archived rows (and, after a compression-driven
+            # id rotation where agent.session_id no longer equals
+            # state.session_id, clobbers the ended parent transcript) — silent
+            # data loss for any ACP conversation long enough to compress.
+            #
+            # Only fall back to the destructive atomic replace when the agent is
+            # NOT persisting itself to this DB (e.g. a test agent factory, or a
+            # fresh create/fork whose copied history the agent has not flushed
+            # yet). That path still rolls back on a mid-rewrite failure so the
+            # previously persisted conversation survives (salvaged from #13675).
+            agent = state.agent
+            agent_db = getattr(agent, "_session_db", None)
+            agent_owns_persistence = (
+                agent_db is not None
+                and agent_db is db
+                and bool(getattr(agent, "_session_db_created", False))
+            )
+            if not agent_owns_persistence:
+                # Even when the current agent doesn't "own" persistence, the
+                # session on disk may already carry compaction-archived rows —
+                # e.g. after a model switch or a /restore, both of which mint a
+                # fresh agent with _session_db_created=False (so the check above
+                # is False) yet leave the durable archived transcript in place.
+                # A full-history replace would DELETE those archived rows just
+                # like the owned-agent case. Guard against it: when archived
+                # rows exist, replace ONLY the live (active=1) set and leave the
+                # archived turns untouched; otherwise the destructive replace is
+                # safe (fresh create/fork with no archived history to lose).
+                try:
+                    has_archived = db.has_archived_messages(state.session_id)
+                except Exception:
+                    has_archived = False
+                db.replace_messages(
+                    state.session_id, state.history, active_only=has_archived
                 )
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
@@ -608,6 +633,7 @@ class SessionManager:
             ),
             "quiet_mode": True,
             "session_id": session_id,
+            "session_db": self._get_db(),
             "model": model or default_model,
         }
 
@@ -628,6 +654,10 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
+        # Codex app-server sessions are spawned lazily on the first turn. Stamp
+        # the ACP workspace onto the agent so the Codex runtime starts from the
+        # editor/session cwd instead of the Hermes daemon's process cwd.
+        agent.session_cwd = cwd
         # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
         # Route any incidental human-readable agent output to stderr instead.
         agent._print_fn = _acp_stderr_print

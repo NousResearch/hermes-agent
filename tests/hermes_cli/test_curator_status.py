@@ -114,6 +114,12 @@ def test_status_shows_most_and_least_used_sections(curator_status_env):
     env["make_skill"]("top-dog")
     env["make_skill"]("middling")
     env["make_skill"]("never-used")
+    # Mark all three as agent-created so they enter the curator's catalog.
+    # Under the provenance-marker semantics, skills must be explicitly opted
+    # into curator management (normally via the background-review fork when
+    # it creates a skill through skill_manage).
+    for n in ("top-dog", "middling", "never-used"):
+        env["skill_usage"].mark_agent_created(n)
 
     # Bump use_count differentially. All three counters (use/view/patch) feed
     # into activity_count, so bumping use alone is enough to make activity
@@ -150,7 +156,9 @@ def test_status_hides_most_active_when_all_zero(curator_status_env):
     env = curator_status_env
     env["make_skill"]("a")
     env["make_skill"]("b")
-    # No bumps.
+    # Mark both as agent-created so the catalog lists them. No bumps.
+    env["skill_usage"].mark_agent_created("a")
+    env["skill_usage"].mark_agent_created("b")
 
     out = _capture_status(env["curator_cli"])
 
@@ -167,3 +175,28 @@ def test_status_no_skills_produces_clean_empty_output(curator_status_env):
     # None of the ranking sections render
     assert "most active" not in out
     assert "least active" not in out
+
+
+def test_status_marks_missing_last_report_path(monkeypatch, capsys, tmp_path):
+    import agent.curator as curator_state
+    import hermes_cli.curator as curator_cli
+    import tools.skill_usage as skill_usage
+
+    missing_report = tmp_path / "stale-report"
+    monkeypatch.setattr(curator_state, "load_state", lambda: {
+        "paused": False,
+        "last_run_at": None,
+        "last_run_summary": "auto: no changes",
+        "run_count": 1,
+        "last_report_path": str(missing_report),
+    })
+    monkeypatch.setattr(curator_state, "is_enabled", lambda: True)
+    monkeypatch.setattr(curator_state, "get_interval_hours", lambda: 168)
+    monkeypatch.setattr(curator_state, "get_stale_after_days", lambda: 30)
+    monkeypatch.setattr(curator_state, "get_archive_after_days", lambda: 90)
+    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: [])
+
+    assert curator_cli._cmd_status(SimpleNamespace()) == 0
+
+    out = capsys.readouterr().out
+    assert f"last report:    {missing_report} (missing)" in out

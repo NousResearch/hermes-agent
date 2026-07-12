@@ -21,6 +21,12 @@ The failure modes we've seen in the wild:
   optional fields (common Pydantic/MCP shape). Anthropic rejects these at
   the top of ``input_schema``; collapse them to the non-null branch.
 * Unconstrained ``additionalProperties`` on objects with empty properties.
+* ``default`` (and other annotation keywords) alongside ``$ref`` — strict
+  backends (Fireworks-hosted Kimi, JSON Schema draft-07 validators) reject
+  sibling keywords at the same level as ``$ref``.  Common MCP/Pydantic shape
+  after nullable-union collapse::
+
+      {"$ref": "#/$defs/Foo", "default": null}
 
 This module walks the final tool schema tree (after MCP-level normalization
 and any per-tool dynamic rebuilds) and fixes the known-hostile constructs
@@ -84,6 +90,76 @@ def _sanitize_single_tool(tool: dict) -> dict:
     # argument coercion (``model_tools._schema_allows_null``) can still
     # map a model-emitted ``"null"`` string to Python ``None``.
     fn["parameters"] = strip_nullable_unions(fn["parameters"], keep_nullable_hint=True)
+    # Strip top-level combinators that strict backends (OpenAI's Codex
+    # endpoint at chatgpt.com/backend-api/codex) reject outright. Nested
+    # combinators inside properties are preserved.
+    fn["parameters"] = _strip_top_level_combinators(
+        fn["parameters"], path=fn.get("name", "<tool>")
+    )
+    fn["parameters"] = _strip_ref_siblings(fn["parameters"])
+    return out
+
+
+# Sibling keywords strict JSON Schema validators reject alongside ``$ref``.
+_REF_FORBIDDEN_SIBLINGS = frozenset({"default"})
+
+
+def _strip_ref_siblings(node: Any) -> Any:
+    """Drop forbidden sibling keywords from nodes that carry ``$ref``.
+
+    Fireworks (and other draft-07-strict backends) fail tool requests with::
+
+        JSON Schema not supported: keyword(s) ['default'] not allowed at
+        the same level as $ref.
+
+    Nullable-union collapse and MCP ingestion can leave ``default`` on a
+    ``$ref`` node; strip it recursively.
+    """
+    if isinstance(node, list):
+        return [_strip_ref_siblings(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    out = {key: _strip_ref_siblings(value) for key, value in node.items()}
+    if "$ref" in out:
+        for key in _REF_FORBIDDEN_SIBLINGS:
+            if key in out:
+                out.pop(key, None)
+    return out
+
+
+_TOP_LEVEL_FORBIDDEN_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")
+
+
+def _strip_top_level_combinators(params: dict, *, path: str = "<tool>") -> dict:
+    """Drop combinator keywords from the top-level of a function parameters schema.
+
+    OpenAI's Codex backend (``chatgpt.com/backend-api/codex``) is stricter
+    than the public Functions API and rejects requests with::
+
+        Invalid schema for function 'X': schema must have type 'object' and
+        not have 'oneOf'/'anyOf'/'allOf'/'enum'/'not' at the top level.
+
+    These keywords are typically used for conditional required-fields hints
+    (``allOf: [{if: ..., then: {required: [...]}}]``). Removing them at the
+    top level discards the hint but does not change which argument *values*
+    are valid — the tool handler always re-validates required fields.
+
+    Only the *top* level is stripped; combinators nested inside a property's
+    schema are preserved (the strict rule only applies to the outermost
+    parameters object).
+    """
+    if not isinstance(params, dict):
+        return params
+    out = dict(params)
+    for key in _TOP_LEVEL_FORBIDDEN_KEYS:
+        if key in out:
+            logger.debug(
+                "schema_sanitizer[%s]: stripped top-level %r combinator "
+                "from tool parameters (strict-backend compat)",
+                path, key,
+            )
+            out.pop(key, None)
     return out
 
 
@@ -144,6 +220,9 @@ def strip_nullable_unions(
                 replacement.setdefault("nullable", True)
             for meta_key in ("title", "description", "default", "examples"):
                 if meta_key in stripped and meta_key not in replacement:
+                    # ``default`` is illegal alongside ``$ref`` on strict backends.
+                    if meta_key == "default" and "$ref" in replacement:
+                        continue
                     replacement[meta_key] = stripped[meta_key]
             return strip_nullable_unions(replacement, keep_nullable_hint=keep_nullable_hint)
     return stripped
@@ -156,7 +235,9 @@ def _sanitize_node(node: Any, path: str) -> Any:
       ``{"type": <value>}`` so downstream consumers see a dict.
     - Injects ``properties: {}`` into object-typed nodes missing it.
     - Normalizes ``type: [X, "null"]`` arrays to single ``type: X`` (keeping
-      ``nullable: true`` as a hint).
+      ``nullable: true`` as a hint), and multi-type arrays like
+      ``["number", "string"]`` to an ``anyOf`` of single-type schemas so no
+      branch is dropped (ported from anomalyco/opencode#31877).
     - Recurses into ``properties``, ``items``, ``additionalProperties``,
       ``anyOf``, ``oneOf``, ``allOf``, and ``$defs`` / ``definitions``.
     """
@@ -189,23 +270,39 @@ def _sanitize_node(node: Any, path: str) -> Any:
 
     out: dict = {}
     for key, value in node.items():
-        # type: [X, "null"] → type: X (the backend's tool-call parser only
-        # accepts singular string types; nullable is lost but the call still
-        # succeeds, and the model can still pass null on its own.)
+        # JSON Schema ``type`` arrays (e.g. ``["number", "string"]``, common
+        # in MCP tool schemas) are rejected by several tool-call backends:
+        #   * llama.cpp's grammar generator only accepts a singular string type.
+        #   * Gemini (including OpenAI-compatible transports such as GitHub
+        #     Copilot proxying to Gemini) rejects the array form outright —
+        #     plain @ai-sdk/google rewrites it, but the OpenAI-compatible path
+        #     forwards it verbatim and the backend 400s.
+        #
+        # Normalize per the SDK's behavior:
+        #   * single non-null type → ``type: X`` (+ ``nullable: true`` if the
+        #     array also contained "null"). No data lost.
+        #   * multiple non-null types → ``anyOf`` of single-type schemas, so
+        #     EVERY branch survives instead of silently dropping all but the
+        #     first. ``null`` is lifted into ``nullable: true``.
+        #   * all-null / empty → ``type: "null"`` (or object fallback).
+        # Ported from anomalyco/opencode#31877.
         if key == "type" and isinstance(value, list):
-            non_null = [t for t in value if t != "null"]
-            if len(non_null) == 1 and isinstance(non_null[0], str):
+            has_null = "null" in value
+            non_null = [t for t in value if isinstance(t, str) and t != "null"]
+            if len(non_null) == 1:
                 out["type"] = non_null[0]
-                if "null" in value:
+                if has_null:
                     out.setdefault("nullable", True)
                 continue
-            # Fallback: pick the first string type, drop the rest.
-            first_str = next((t for t in value if isinstance(t, str) and t != "null"), None)
-            if first_str:
-                out["type"] = first_str
+            if len(non_null) >= 2:
+                # Preserve all branches as a union instead of dropping them.
+                out["anyOf"] = [{"type": t} for t in non_null]
+                if has_null:
+                    out.setdefault("nullable", True)
                 continue
-            # All-null or empty list → treat as object.
-            out["type"] = "object"
+            # No usable non-null type: all-null array → type: "null";
+            # otherwise an empty/garbage array → object fallback.
+            out["type"] = "null" if has_null else "object"
             continue
 
         if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
@@ -255,3 +352,150 @@ def _sanitize_node(node: Any, path: str) -> Any:
             out["required"] = valid
 
     return out
+
+
+# =============================================================================
+# Reactive strip — only invoked when llama.cpp rejects a schema
+# =============================================================================
+
+_STRIP_ON_RECOVERY_KEYS = frozenset({"pattern", "format"})
+
+
+def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
+    """Strip ``pattern`` and ``format`` JSON Schema keywords from tool schemas.
+
+    This is a *reactive* sanitizer invoked only when llama.cpp's
+    ``json-schema-to-grammar`` converter has rejected a tool schema with an
+    HTTP 400 grammar-parse error.  llama.cpp's regex engine supports only a
+    small subset of ECMAScript regex (literals, ``.``, ``[...]``, ``|``,
+    ``*``, ``+``, ``?``, ``{n,m}``) — it rejects escape classes like ``\\d``,
+    ``\\w``, ``\\s`` and most ``format`` values.  Cloud providers (OpenAI,
+    Anthropic, OpenRouter, Gemini) accept these keywords fine and rely on
+    them as prompting hints, so we keep them in the default schema and only
+    strip on demand.
+
+    The strip operates on a sibling of ``type`` (so schema keywords are
+    removed) — a property literally *named* ``pattern`` (e.g. the first arg
+    of the built-in ``search_files`` tool) is not affected because property
+    names live in the ``properties`` dict, not as siblings of ``type``.
+
+    Args:
+        tools: OpenAI-format tool list, mutated in place for efficiency.
+            Callers that need to preserve the original should deep-copy first.
+
+    Returns:
+        ``(tools, stripped_count)`` — the same list reference plus a count of
+        how many ``pattern``/``format`` keywords were removed across all tools.
+    """
+    if not tools:
+        return tools, 0
+
+    stripped = 0
+
+    def _walk(node: Any) -> None:
+        nonlocal stripped
+        if isinstance(node, dict):
+            # Only strip as a sibling of ``type`` — i.e. when this node is
+            # itself a schema.  This avoids stripping literal property keys
+            # named "pattern" (search_files.pattern, etc.) because those live
+            # inside a ``properties`` dict, not as siblings of ``type``.
+            is_schema_node = "type" in node or "anyOf" in node or "oneOf" in node or "allOf" in node
+            for key in list(node.keys()):
+                if is_schema_node and key in _STRIP_ON_RECOVERY_KEYS:
+                    node.pop(key, None)
+                    stripped += 1
+                    continue
+                _walk(node[key])
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        
+        # OpenAI-format: {"function": {"parameters": {...}}}
+        fn = tool.get("function")
+        if isinstance(fn, dict):
+            params = fn.get("parameters")
+            if isinstance(params, dict):
+                _walk(params)
+                continue
+        
+        # Responses-format: {"name": "...", "parameters": {...}}
+        # (used by codex_responses API mode — xAI, OpenAI Codex, etc.)
+        params = tool.get("parameters")
+        if isinstance(params, dict):
+            _walk(params)
+            continue
+
+    if stripped:
+        logger.info(
+            "schema_sanitizer: stripped %d pattern/format keyword(s) from "
+            "tool schemas (llama.cpp grammar-parse recovery)",
+            stripped,
+        )
+    return tools, stripped
+
+
+def strip_slash_enum(tools: list[dict]) -> tuple[list[dict], int]:
+    """Strip ``enum`` keywords whose string values contain a forward slash.
+
+    xAI's ``/v1/responses`` and ``/v1/chat/completions`` endpoints compile
+    tool schemas to a grammar that rejects ``enum`` values containing ``/``
+    (the request fails with HTTP 400 "Invalid arguments passed to the
+    model" before any token is emitted). Most commonly hit by MCP-derived
+    tools whose enum lists HuggingFace model IDs (``Qwen/Qwen3.5-0.8B``,
+    ``openai/gpt-oss-20b``) or owner/name environment IDs. The constraint
+    is purely a prompting hint; dropping it lets the model still see the
+    field description and pick a value, without xAI tripping on the slash.
+
+    Args:
+        tools: OpenAI-format or Responses-format tool list, mutated in
+            place. Callers that need to preserve the original should
+            deep-copy first.
+
+    Returns:
+        ``(tools, stripped_count)`` — same list reference plus a count of
+        how many ``enum`` keywords were removed.
+    """
+    if not tools:
+        return tools, 0
+
+    stripped = 0
+
+    def _walk(node: Any) -> None:
+        nonlocal stripped
+        if isinstance(node, dict):
+            enum_val = node.get("enum")
+            if isinstance(enum_val, list) and any(
+                isinstance(v, str) and "/" in v for v in enum_val
+            ):
+                node.pop("enum", None)
+                stripped += 1
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if isinstance(fn, dict):
+            params = fn.get("parameters")
+            if isinstance(params, dict):
+                _walk(params)
+                continue
+        params = tool.get("parameters")
+        if isinstance(params, dict):
+            _walk(params)
+
+    if stripped:
+        logger.info(
+            "schema_sanitizer: stripped %d enum keyword(s) containing '/' "
+            "from tool schemas (xAI Responses grammar-compile recovery)",
+            stripped,
+        )
+    return tools, stripped

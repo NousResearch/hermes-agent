@@ -22,7 +22,6 @@ import pytest
 pytestmark = pytest.mark.integration
 
 import json
-import os
 import shutil
 import sys
 import time
@@ -141,11 +140,11 @@ def test_current_implementation():
     
     # Start monitoring in a separate process would be ideal, but for simplicity
     # we'll just check before and after
-    print(f"\n▶️  Starting batch run...")
+    print("\n▶️  Starting batch run...")
     print(f"   Dataset: {dataset_file}")
-    print(f"   Batch size: 3 (4 batches total)")
-    print(f"   Workers: 2")
-    print(f"   Expected behavior: If incremental, checkpoint should update during run")
+    print("   Batch size: 3 (4 batches total)")
+    print("   Workers: 2")
+    print("   Expected behavior: If incremental, checkpoint should update during run")
     
     start_time = time.time()
     
@@ -233,7 +232,7 @@ def test_interruption_and_resume():
     
     checkpoint_file = output_dir / "checkpoint.json"
     
-    print(f"\n▶️  Starting first run (will process 5 prompts, then simulate interruption)...")
+    print("\n▶️  Starting first run (will process 5 prompts, then simulate interruption)...")
     
     temp_dataset = Path("tests/test_data/checkpoint_test_resume_partial.jsonl")
     try:
@@ -268,7 +267,7 @@ def test_interruption_and_resume():
         print(f"✅ First run completed: {initial_completed} prompts saved to checkpoint")
         
         # Now try to resume with full dataset
-        print(f"\n▶️  Starting resume run with full dataset (15 prompts)...")
+        print("\n▶️  Starting resume run with full dataset (15 prompts)...")
         
         runner2 = BatchRunner(
             dataset_file=str(dataset_file),
@@ -294,7 +293,7 @@ def test_interruption_and_resume():
         print("=" * 70)
         print(f"Initial completed: {initial_completed}")
         print(f"Final completed: {final_completed}")
-        print(f"Expected: 15")
+        print("Expected: 15")
         
         if final_completed == 15:
             print("\n✅ PASS: Resume successfully completed all prompts")

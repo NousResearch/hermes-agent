@@ -169,3 +169,78 @@ def test_no_collision_no_warning(tmp_path: Path, caplog) -> None:
         and ("clamp" in r.getMessage() or "reserved" in r.getMessage())
     ]
     assert clamp_warnings == []
+
+
+def test_long_skill_name_preserves_cmd_key_through_by_category(
+    tmp_path: Path,
+) -> None:
+    """Skills with names > 32 chars must keep their original cmd_key.
+
+    ``discord_skill_commands_by_category`` clamps the display name to 32
+    chars but the third tuple element (cmd_key) must stay as the original
+    ``/full-skill-name`` so that ``_skill_handler`` dispatches via
+    ``_run_simple_slash`` with the full command, not the truncated one.
+
+    This is the actual runtime path used by the Discord adapter via
+    ``_refresh_skill_catalog_state``.
+    """
+    from hermes_cli.commands import discord_skill_commands_by_category
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    resolved = str(skills_dir.resolve())
+
+    long_name = "generate-ascii-art-from-text-description-detailed"
+    cmd_key = f"/{long_name}"
+    fake_cmds = {
+        cmd_key: {
+            "name": long_name,
+            "description": "Generate ASCII art from a text description",
+            "skill_md_path": f"{resolved}/creative/{long_name}/SKILL.md",
+            "skill_dir": f"{resolved}/creative/{long_name}",
+        },
+        "/short-skill": {
+            "name": "short-skill",
+            "description": "A short skill",
+            "skill_md_path": f"{resolved}/creative/short-skill/SKILL.md",
+            "skill_dir": f"{resolved}/creative/short-skill",
+        },
+    }
+
+    with patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds), \
+         patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+        categories, uncategorized, hidden = discord_skill_commands_by_category(
+            reserved_names=set(),
+        )
+
+    # Flatten (same as _refresh_skill_catalog_state does)
+    entries = list(uncategorized)
+    for cat_skills in categories.values():
+        entries.extend(cat_skills)
+
+    # Build lookup (same as _refresh_skill_catalog_state does)
+    skill_lookup = {n: (d, k) for n, d, k in entries}
+
+    # Find the long skill
+    long_entry = [e for e in entries if e[2] == cmd_key]
+    assert len(long_entry) == 1, f"Long skill should appear once, got: {long_entry}"
+
+    display_name, desc, key = long_entry[0]
+    assert len(display_name) <= 32, (
+        f"Display name should be clamped to 32 chars, got {len(display_name)}"
+    )
+    assert key == cmd_key, (
+        f"cmd_key must be the original /{long_name}, got {key!r}"
+    )
+
+    # Verify lookup works: clamped display name -> original cmd_key
+    assert display_name in skill_lookup
+    _desc, looked_up_key = skill_lookup[display_name]
+    assert looked_up_key == cmd_key, (
+        f"Lookup must map clamped name to original cmd_key, got {looked_up_key!r}"
+    )
+
+    # Short skill should also be present and correct
+    short_entry = [e for e in entries if e[2] == "/short-skill"]
+    assert len(short_entry) == 1
+    assert short_entry[0][0] == "short-skill"

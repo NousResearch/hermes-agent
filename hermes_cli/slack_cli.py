@@ -23,7 +23,11 @@ import sys
 from pathlib import Path
 
 
-def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
+def _build_full_manifest(
+    bot_name: str,
+    bot_description: str,
+    include_assistant: bool = True,
+) -> dict:
     """Build a full Slack manifest merging display info + our slash list.
 
     The slash-command list is always generated from ``COMMAND_REGISTRY`` so
@@ -31,11 +35,73 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
     (display info, OAuth scopes, socket mode) are set to sensible defaults
     for a Hermes deployment — users can tweak them in the Slack UI after
     pasting.
+
+    When ``include_assistant`` is True (default) the manifest opts the app
+    into Slack's AI Assistant container: the ``assistant_view`` feature, the
+    ``assistant:write`` scope, and the ``assistant_thread_*`` events. Slack
+    then renders DMs as the right-hand Assistant split-pane, where every
+    exchange is a thread and bare slash commands are not delivered as normal
+    ``command`` events. Pass ``include_assistant=False`` (``--no-assistant``)
+    to omit those three pieces and get a flat DM surface where ``/help``,
+    ``/new``, etc. work inline.
     """
     from hermes_cli.commands import slack_app_manifest
 
     partial = slack_app_manifest()
     slashes = partial["features"]["slash_commands"]
+
+    features = {
+        "app_home": {
+            "home_tab_enabled": False,
+            "messages_tab_enabled": True,
+            "messages_tab_read_only_enabled": False,
+        },
+        "bot_user": {
+            "display_name": bot_name[:80],
+            "always_online": True,
+        },
+        "slash_commands": slashes,
+    }
+
+    bot_scopes = [
+        "app_mentions:read",
+        "channels:history",
+        "channels:read",
+        "chat:write",
+        "commands",
+        "files:read",
+        "files:write",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "mpim:history",
+        "mpim:read",
+        "users:read",
+    ]
+
+    bot_events = [
+        "app_mention",
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "message.mpim",
+    ]
+
+    if include_assistant:
+        features["assistant_view"] = {
+            "assistant_description": "Chat with Hermes in threads and DMs.",
+        }
+        bot_scopes.append("assistant:write")
+        bot_events.extend(
+            [
+                "assistant_thread_context_changed",
+                "assistant_thread_started",
+            ]
+        )
+        bot_scopes.sort()
+        bot_events.sort()
 
     return {
         "_metadata": {
@@ -47,45 +113,15 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
             "description": (bot_description or "Your Hermes agent on Slack")[:140],
             "background_color": "#1a1a2e",
         },
-        "features": {
-            "bot_user": {
-                "display_name": bot_name[:80],
-                "always_online": True,
-            },
-            "slash_commands": slashes,
-            "assistant_view": {
-                "assistant_description": "Chat with Hermes in threads and DMs.",
-            },
-        },
+        "features": features,
         "oauth_config": {
             "scopes": {
-                "bot": [
-                    "app_mentions:read",
-                    "assistant:write",
-                    "channels:history",
-                    "channels:read",
-                    "chat:write",
-                    "commands",
-                    "files:read",
-                    "files:write",
-                    "groups:history",
-                    "im:history",
-                    "im:read",
-                    "im:write",
-                    "users:read",
-                ],
+                "bot": bot_scopes,
             },
         },
         "settings": {
             "event_subscriptions": {
-                "bot_events": [
-                    "app_mention",
-                    "assistant_thread_context_changed",
-                    "assistant_thread_started",
-                    "message.channels",
-                    "message.groups",
-                    "message.im",
-                ],
+                "bot_events": bot_events,
             },
             "interactivity": {
                 "is_enabled": True,
@@ -107,16 +143,21 @@ def slack_manifest_command(args) -> int:
       --description DESC  Override the bot description
       --slashes-only  Emit only the ``features.slash_commands`` array (for
                       merging into an existing manifest manually)
+      --no-assistant  Omit Slack AI Assistant mode (assistant_view feature,
+                      assistant:write scope, assistant_thread_* events) so
+                      DMs render as a flat chat where bare slash commands
+                      work inline instead of the Assistant thread pane.
     """
     name = getattr(args, "name", None) or "Hermes"
     description = getattr(args, "description", None) or "Your Hermes agent on Slack"
+    include_assistant = not getattr(args, "no_assistant", False)
 
     if getattr(args, "slashes_only", False):
         from hermes_cli.commands import slack_app_manifest
 
         manifest = slack_app_manifest()["features"]["slash_commands"]
     else:
-        manifest = _build_full_manifest(name, description)
+        manifest = _build_full_manifest(name, description, include_assistant=include_assistant)
 
     payload = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
 

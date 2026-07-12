@@ -113,7 +113,7 @@ Hermes supports six terminal backends. Each determines where the agent's shell c
 ```yaml
 terminal:
   backend: local    # local | docker | ssh | modal | daytona | singularity
-  cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
+  cwd: "."          # Launch directory for local CLI; set an absolute path to override it
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)

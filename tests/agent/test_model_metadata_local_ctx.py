@@ -638,6 +638,41 @@ class TestFetchEndpointModelMetadataLmStudio:
         assert result["publisher/model-a"]["context_length"] == 65536
 
 
+class TestFetchEndpointModelMetadataAzureApim:
+    """Azure APIM-fronted OpenAI endpoints need the native api-key header."""
+
+    def _make_resp(self, body):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = body
+        return resp
+
+    def test_adds_api_key_header_for_azure_apim(self):
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        response = self._make_resp(
+            {
+                "data": [
+                    {"id": "gpt-5.4", "context_length": 400000},
+                ]
+            }
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("agent.model_metadata.requests.get", return_value=response) as mock_get:
+            result = fetch_endpoint_model_metadata(
+                "https://campus-gateway.azure-api.net/openai/v1",
+                api_key="azure-static-key",
+                force_refresh=True,
+            )
+
+        assert mock_get.call_args.kwargs["headers"] == {
+            "Authorization": "Bearer azure-static-key",
+            "api-key": "azure-static-key",
+        }
+        assert "gpt-5.4" in result
+
+
 class TestQueryLocalContextLengthNetworkError:
     """_query_local_context_length handles network failures gracefully."""
 

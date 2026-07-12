@@ -178,6 +178,25 @@ def test_unknown_base_url_clears_default_headers(mock_openai):
 
 
 @patch("run_agent.OpenAI")
+def test_azure_apim_base_url_adds_api_key_header(mock_openai):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="azure-static-key",
+        base_url="https://campus-gateway.azure-api.net/openai/v1",
+        model="gpt-5.4",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    assert agent._client_kwargs["default_headers"]["api-key"] == "azure-static-key"
+
+    agent._apply_client_headers_for_base_url("https://campus-gateway.azure-api.net/openai/v1")
+
+    assert agent._client_kwargs["default_headers"]["api-key"] == "azure-static-key"
+
+
+@patch("run_agent.OpenAI")
 def test_openrouter_headers_include_response_cache_when_enabled(mock_openai):
     """When openrouter.response_cache is True, the cache header is injected."""
     mock_openai.return_value = MagicMock()

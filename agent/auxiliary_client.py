@@ -105,7 +105,14 @@ from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_lengt
 from agent.process_bootstrap import build_keepalive_http_client
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import (
+    azure_openai_api_key_headers,
+    base_url_host_matches,
+    base_url_hostname,
+    env_float,
+    model_forces_max_completion_tokens,
+    normalize_proxy_env_vars,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +190,11 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     # by default and let Hermes control the budget; explicit callers can still
     # override via kwargs.
     kwargs.setdefault("max_retries", 0)
+    azure_headers = azure_openai_api_key_headers(base_url, api_key)
+    if azure_headers:
+        merged_headers = dict(kwargs.get("default_headers") or {})
+        merged_headers.update(azure_headers)
+        kwargs["default_headers"] = merged_headers
     return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
 
@@ -4364,6 +4376,11 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                     async_kwargs["default_headers"] = dict(_ph_async.default_headers)
         except Exception:
             pass
+    azure_headers = azure_openai_api_key_headers(sync_base_url, sync_client.api_key)
+    if azure_headers:
+        merged_headers = dict(async_kwargs.get("default_headers") or {})
+        merged_headers.update(azure_headers)
+        async_kwargs["default_headers"] = merged_headers
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async

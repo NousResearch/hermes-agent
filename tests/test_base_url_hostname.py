@@ -8,7 +8,11 @@ tests/agent/test_direct_provider_url_detection.py.
 
 from __future__ import annotations
 
-from utils import base_url_hostname, base_url_host_matches
+from utils import (
+    azure_openai_api_key_headers,
+    base_url_hostname,
+    base_url_host_matches,
+)
 
 
 # ─── base_url_hostname ────────────────────────────────────────────────────
@@ -158,3 +162,33 @@ class TestOllamaUrlHostCheck:
         assert base_url_host_matches(
             "https://api.ollama.com/v1", "ollama.com"
         ) is True
+
+
+class TestAzureOpenaiApiKeyHeaders:
+    def test_openai_azure_resource_host_gets_api_key_header(self):
+        assert azure_openai_api_key_headers(
+            "https://resource.openai.azure.com/openai/v1",
+            "azure-key",
+        ) == {"api-key": "azure-key"}
+
+    def test_azure_apim_host_gets_api_key_header(self):
+        assert azure_openai_api_key_headers(
+            "https://campus-gateway.azure-api.net/openai/v1",
+            "azure-key",
+        ) == {"api-key": "azure-key"}
+
+    def test_non_azure_host_returns_empty(self):
+        assert azure_openai_api_key_headers(
+            "https://api.openai.com/v1",
+            "openai-key",
+        ) == {}
+
+    def test_callable_or_placeholder_key_returns_empty(self):
+        assert azure_openai_api_key_headers(
+            "https://resource.openai.azure.com/openai/v1",
+            lambda: "jwt",
+        ) == {}
+        assert azure_openai_api_key_headers(
+            "https://campus-gateway.azure-api.net/openai/v1",
+            "no-key-required",
+        ) == {}

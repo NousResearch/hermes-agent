@@ -50,7 +50,11 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from utils import base_url_host_matches, is_truthy_value
+from utils import (
+    azure_openai_api_key_headers,
+    base_url_host_matches,
+    is_truthy_value,
+)
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
 # capture our warnings.  (run_agent.py also does
@@ -960,6 +964,11 @@ def init_agent(
                         client_kwargs["default_headers"] = dict(_ph.default_headers)
                 except Exception:
                     pass
+            azure_headers = azure_openai_api_key_headers(effective_base, api_key)
+            if azure_headers:
+                merged_headers = dict(client_kwargs.get("default_headers") or {})
+                merged_headers.update(azure_headers)
+                client_kwargs["default_headers"] = merged_headers
         else:
             # No explicit creds — use the centralized provider router
             from agent.auxiliary_client import resolve_provider_client

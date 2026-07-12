@@ -103,10 +103,10 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 _AUDIO_STREAM_CHUNK_BYTES = 64 * 1024
 _AUDIO_SPEECH_FORMATS = {
-    "mp3": (".mp3", "audio/mpeg"),
-    "wav": (".wav", "audio/wav"),
-    "opus": (".ogg", "audio/ogg"),
-    "ogg": (".ogg", "audio/ogg"),
+    "mp3": ".mp3",
+    "wav": ".wav",
+    "opus": ".ogg",
+    "ogg": ".ogg",
 }
 _AUDIO_TRANSCRIPTION_FORMATS = {"json", "text", "verbose_json"}
 
@@ -681,7 +681,7 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
-        """Reject overly large request bodies early based on Content-Length."""
+        """Apply route-specific limits to sized and chunked request bodies."""
         if request.method in {"POST", "PUT", "PATCH"}:
             limit = AUDIO_MAX_REQUEST_BYTES if request.path.startswith("/v1/audio/") else MAX_REQUEST_BYTES
             cl = request.headers.get("Content-Length")
@@ -691,6 +691,10 @@ if AIOHTTP_AVAILABLE:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
+            # The application's client_max_size is the largest limit needed by
+            # any route. Clone the request with its actual route limit so
+            # Request.read()/json() also enforce it for chunked bodies.
+            request = request.clone(client_max_size=limit)
         try:
             return await handler(request)
         except web.HTTPRequestEntityTooLarge:
@@ -1134,6 +1138,25 @@ class APIServerAdapter(BasePlatformAdapter):
             if guessed:
                 return guessed
         return ".webm"
+
+    @staticmethod
+    def _detect_audio_media_type(file_path: str) -> str:
+        """Detect an audio MIME type from the generated artifact's signature."""
+        with open(file_path, "rb") as handle:
+            header = handle.read(12)
+        if header.startswith(b"OggS"):
+            return "audio/ogg"
+        if len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"WAVE":
+            return "audio/wav"
+        if header.startswith(b"fLaC"):
+            return "audio/flac"
+        if header.startswith(b"ID3") or (
+            len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0
+        ):
+            return "audio/mpeg"
+        if len(header) >= 8 and header[4:8] == b"ftyp":
+            return "audio/mp4"
+        return "application/octet-stream"
 
     async def _stream_file_response(
         self,
@@ -1589,6 +1612,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         form_fields: Dict[str, str] = {}
         temp_path: Optional[str] = None
+        uploaded_bytes = 0
         try:
             while True:
                 part = await reader.next()
@@ -1602,9 +1626,22 @@ class APIServerAdapter(BasePlatformAdapter):
                             chunk = await part.read_chunk()
                             if not chunk:
                                 break
+                            uploaded_bytes += len(chunk)
+                            if uploaded_bytes > AUDIO_MAX_REQUEST_BYTES:
+                                return web.json_response(
+                                    _openai_error("Request body too large.", code="body_too_large"),
+                                    status=413,
+                                )
                             handle.write(chunk)
                 elif part.name:
-                    form_fields[part.name] = await part.text()
+                    value = await part.read()
+                    uploaded_bytes += len(value)
+                    if uploaded_bytes > AUDIO_MAX_REQUEST_BYTES:
+                        return web.json_response(
+                            _openai_error("Request body too large.", code="body_too_large"),
+                            status=413,
+                        )
+                    form_fields[part.name] = value.decode(part.get_charset(default="utf-8"))
 
             if temp_path is None:
                 return web.json_response(_openai_error("Missing 'file' field"), status=400)
@@ -1689,7 +1726,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        suffix, media_type = audio_format
+        suffix = audio_format
         fd, output_path = tempfile.mkstemp(prefix="hermes_api_tts_", suffix=suffix)
         os.close(fd)
 
@@ -1737,6 +1774,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
             if actual_path != output_path:
                 _cleanup_output_path()
+
+            media_type = self._detect_audio_media_type(actual_path)
 
             return await self._stream_file_response(
                 request,

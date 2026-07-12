@@ -26,12 +26,15 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
+    AUDIO_MAX_REQUEST_BYTES,
+    MAX_REQUEST_BYTES,
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
     _redact_api_error_text,
     check_api_server_requirements,
+    body_limit_middleware,
     cors_middleware,
     security_headers_middleware,
 )
@@ -617,8 +620,8 @@ def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
 
 def _create_app(adapter: APIServerAdapter) -> web.Application:
     """Create the aiohttp app from the adapter (without starting the full server)."""
-    mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
-    app = web.Application(middlewares=mws)
+    mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
+    app = web.Application(middlewares=mws, client_max_size=AUDIO_MAX_REQUEST_BYTES)
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
@@ -1167,7 +1170,7 @@ class TestAudioEndpoints:
 
         def fake_tts(*, text, output_path):
             with open(output_path, "wb") as handle:
-                handle.write(b"audio-bytes")
+                handle.write(b"ID3audio-bytes")
             return json.dumps({
                 "success": True,
                 "file_path": output_path,
@@ -1184,11 +1187,83 @@ class TestAudioEndpoints:
                 body = await resp.read()
 
         assert resp.status == 200
-        assert body == b"audio-bytes"
+        assert body == b"ID3audio-bytes"
         assert resp.headers.get("Content-Type") == "audio/mpeg"
         assert resp.headers.get("X-Hermes-TTS-Provider") == "piper"
         assert resp.headers.get("X-Hermes-Voice-Compatible") == "true"
         assert tts_mock.call_args.kwargs["text"] == "hello from Hermes"
+
+    @pytest.mark.asyncio
+    async def test_audio_speech_uses_generated_artifact_mime_type(self, adapter):
+        app = _create_app(adapter)
+
+        def fake_edge_tts(*, text, output_path):
+            # Edge TTS writes MP3 regardless of the caller-provided suffix.
+            with open(output_path, "wb") as handle:
+                handle.write(b"ID3edge-mp3")
+            return json.dumps({
+                "success": True,
+                "file_path": output_path,
+                "provider": "edge",
+                "voice_compatible": False,
+            })
+
+        with patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_edge_tts):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/audio/speech",
+                    json={"input": "hello", "response_format": "wav"},
+                )
+                await resp.read()
+
+        assert resp.status == 200
+        assert resp.headers.get("Content-Type") == "audio/mpeg"
+
+    @pytest.mark.asyncio
+    async def test_chunked_non_audio_request_keeps_standard_body_limit(self, adapter):
+        async def read_body(request):
+            await request.read()
+            return web.Response(text="ok")
+
+        app = web.Application(
+            middlewares=[body_limit_middleware],
+            client_max_size=AUDIO_MAX_REQUEST_BYTES,
+        )
+        app.router.add_post("/non-audio", read_body)
+
+        async def oversized_chunks():
+            yield b"x" * (MAX_REQUEST_BYTES // 2)
+            yield b"x" * (MAX_REQUEST_BYTES // 2 + 1)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/non-audio", data=oversized_chunks())
+            await resp.read()
+
+        assert resp.status == 413
+
+    @pytest.mark.asyncio
+    async def test_chunked_audio_upload_enforces_audio_limit(self, adapter):
+        app = _create_app(adapter)
+        form = FormData()
+
+        async def audio_chunks():
+            yield b"x" * 5
+            yield b"x" * 5
+
+        form.add_field(
+            "file",
+            audio_chunks(),
+            filename="sample.webm",
+            content_type="audio/webm",
+        )
+
+        with patch("gateway.platforms.api_server.AUDIO_MAX_REQUEST_BYTES", 8):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/audio/transcriptions", data=form)
+                data = await resp.json()
+
+        assert resp.status == 413
+        assert data["error"]["code"] == "body_too_large"
 
 
 # ---------------------------------------------------------------------------

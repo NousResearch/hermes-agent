@@ -88,6 +88,8 @@ Endpoints:
 ```
 POST /v1/chat/completions        OpenAI Chat Completions (streaming via SSE)
 POST /v1/responses               OpenAI Responses API (stateful)
+POST /v1/audio/transcriptions    OpenAI-style speech-to-text (multipart upload)
+POST /v1/audio/speech            OpenAI-style text-to-speech (streamed audio)
 POST /v1/runs                    Start a run, returns run_id (202)
 GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events

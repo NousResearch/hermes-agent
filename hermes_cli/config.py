@@ -8137,23 +8137,6 @@ def set_config_value(key: str, value: str):
         return
     
     # Otherwise it goes to config.yaml
-    # Read the raw user config (not merged with defaults) to avoid
-    # dumping all default values back to the file
-    config_path = get_config_path()
-    require_readable_config_before_write(config_path)
-    user_config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
-        except Exception:
-            user_config = {}
-    
-    # Handle nested keys (e.g., "tts.provider") including numeric list
-    # indices (e.g., "custom_providers.0.api_key").  Delegates to
-    # _set_nested which preserves list-typed nodes; before #17876 the
-    # inline navigation here silently overwrote lists with dicts.
-
     # Convert value to appropriate type
     if value.lower() in {'true', 'yes', 'on'}:
         value = True
@@ -8164,20 +8147,29 @@ def set_config_value(key: str, value: str):
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
 
-    _set_nested(user_config, key, value)
+    # Read/prepare path before writing. Read user config only if we need
+    # to resolve aliasing output paths.
+    config_path = get_config_path()
+    require_readable_config_before_write(config_path)
+
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical
     # key the runtime resolver actually reads, instead of being silently
     # ignored. Mirrors the load-time migration in _normalize_root_model_keys.
     _alias_norm = key.strip().lower()
     if _alias_norm in ("model.api_base", "api_base"):
-        user_config = _normalize_root_model_keys(user_config)
         key = "model.base_url"
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
-    # Write only user config back (not the full merged defaults)
-    ensure_hermes_home()
-    from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+
+    # Handle nested keys (e.g., "tts.provider") including numeric list
+    # indices (e.g., "custom_providers.0.api_key").  Delegates to
+    # atomic_roundtrip_yaml_update for round-trip-safe writes that keep comments,
+    # spacing, and existing formatting in user-edited config files.
+    from utils import atomic_roundtrip_yaml_update
+    atomic_roundtrip_yaml_update(config_path, key, value)
+
+    # Keep file ownership/permissions semantics consistent with existing
+    # atomic write paths while preserving the user's existing YAML text.
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

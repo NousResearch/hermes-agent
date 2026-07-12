@@ -323,18 +323,69 @@ def atomic_roundtrip_yaml_update(
     else:
         config = CommentedMap()
 
-    if not isinstance(config, CommentedMap):
+    if not isinstance(config, (CommentedMap, list, dict)):
         config = CommentedMap(config)
 
-    current = config
+    from collections.abc import MutableMapping, MutableSequence
+
     keys = key_path.split(".")
-    for key in keys[:-1]:
-        next_value = current.get(key)
-        if not isinstance(next_value, CommentedMap):
-            next_value = CommentedMap()
-            current[key] = next_value
+    current = config
+
+    def _is_index(segment: str) -> bool:
+        return segment.isdigit()
+
+    def _make_node(parent: MutableMapping, key: str, *, expect_list: bool):
+        if key not in parent or not isinstance(parent.get(key), (MutableMapping, MutableSequence)):
+            if expect_list:
+                parent[key] = []
+            else:
+                parent[key] = CommentedMap()
+        return parent[key]
+
+    for i, key in enumerate(keys[:-1]):
+        expect_next_list = _is_index(keys[i + 1]) if i + 1 < len(keys) else False
+
+        if isinstance(current, MutableSequence):
+            if not _is_index(key):
+                raise TypeError(
+                    f"Cannot navigate into YAML list at {key_path!r}: "
+                    f"segment {key!r} is not a numeric index"
+                )
+            idx = int(key)
+            if idx < 0 or idx >= len(current):
+                raise IndexError(
+                    f"Cannot navigate into YAML list at {key_path!r}: index {idx} out of range"
+                )
+            current = current[idx]
+            continue
+
+        if not isinstance(current, MutableMapping):
+            raise TypeError(
+                f"Cannot navigate into non-mapping node at {key_path!r}: "
+                f"encountered {type(current).__name__}"
+            )
+
+        next_value = _make_node(current, key, expect_list=expect_next_list)
         current = next_value
-    current[keys[-1]] = value
+
+    final_key = keys[-1]
+    if isinstance(current, MutableSequence):
+        if not _is_index(final_key):
+            raise TypeError(
+                f"Cannot set YAML path {key_path!r}: final segment {final_key!r} is not a numeric list index"
+            )
+        idx = int(final_key)
+        if idx < 0 or idx >= len(current):
+            raise IndexError(
+                f"Cannot set YAML path {key_path!r}: index {idx} out of range"
+            )
+        current[idx] = value
+    else:
+        if not isinstance(current, MutableMapping):
+            raise TypeError(
+                f"Cannot set YAML path {key_path!r}: parent node is {type(current).__name__}"
+            )
+        current[final_key] = value
 
     original_mode = _preserve_file_mode(path)
     original_owner = _preserve_file_owner(path)

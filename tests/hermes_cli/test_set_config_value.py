@@ -124,6 +124,27 @@ class TestConfigYamlRouting:
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
 
+    def test_nested_key_preserves_comments(self, _isolated_hermes_home):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "# user selected defaults\n"
+            "display:\n"
+            "  # model skin controls prompt rendering\n"
+            "  skin: default # inline default\n"
+            "model:\n"
+            "  # provider should not be touched\n"
+            "  provider: openai\n",
+            encoding="utf-8",
+        )
+
+        set_config_value("display.skin", "mono")
+
+        config = _read_config(_isolated_hermes_home)
+        assert "skin: mono" in config
+        assert "# user selected defaults" in config
+        assert "# model skin controls prompt rendering" in config
+        assert "# provider should not be touched" in config
+        assert "inline default" in config  # inline comment kept on line history
+
 
 # ---------------------------------------------------------------------------
 # Empty / falsy values — regression tests for #4277

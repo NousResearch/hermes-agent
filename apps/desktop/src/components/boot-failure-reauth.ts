@@ -26,25 +26,20 @@ const DEFAULT_SIGN_IN_COPY: SignInCopy = {
   withProvider: provider => `Sign in with ${provider}`
 }
 
-// A remote, gated (oauth-bucket), not-currently-connected gateway is a
-// remote-reauth boot failure: the access cookie lapsed (e.g. the remote
-// dashboard restarted) and the local-recovery buttons (Retry/Repair) can't
-// fix it — only re-establishing the remote session can. A connected oauth
-// session, or a token/local gateway, boots for some other reason the
-// local-recovery buttons address, so those return false here. 'cloud' counts
-// as remote here — it resolves to a remote oauth backend (cloud-auto-discovery
-// Q6), so a lapsed cloud session is the same reauth failure.
-export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | undefined): boolean {
-  if (!config) {
-    return false
-  }
+// True when the app is pointed at a remote/cloud backend (either resolves to a
+// remote URL). Any boot failure in this shape is fixable from Settings →
+// Gateway (edit URL / token / sign in) — the local Retry/Repair buttons target
+// the bundled backend and can't help. Drives the escape-hatch emphasis.
+export function isRemoteConfig(config: DesktopConnectionConfig | null | undefined): boolean {
+  return Boolean(config && (config.mode === 'remote' || config.mode === 'cloud') && config.remoteUrl)
+}
 
-  return (
-    (config.mode === 'remote' || config.mode === 'cloud') &&
-    config.remoteAuthMode === 'oauth' &&
-    !config.remoteOauthConnected &&
-    Boolean(config.remoteUrl)
-  )
+// A remote, gated (oauth-bucket), not-currently-connected gateway is a
+// remote-reauth boot failure: the access cookie lapsed and the local Retry/Repair
+// buttons can't fix it — only re-establishing the remote session can. 'cloud'
+// counts as remote (it resolves to a remote oauth backend).
+export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | undefined): boolean {
+  return isRemoteConfig(config) && config!.remoteAuthMode === 'oauth' && !config!.remoteOauthConnected
 }
 
 // Derive the password flag + display label from the probed providers. A

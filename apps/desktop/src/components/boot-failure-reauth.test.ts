@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { DesktopConnectionConfig } from '@/global'
 
-import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
+import { deriveProviderShape, isRemoteConfig, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
 
 function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnectionConfig {
   return {
@@ -18,6 +18,19 @@ function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnec
     ...overrides
   }
 }
+
+describe('isRemoteConfig', () => {
+  it('true for remote/cloud with a URL, regardless of auth mode or connection', () => {
+    expect(isRemoteConfig(config({ remoteAuthMode: 'token', remoteOauthConnected: false }))).toBe(true)
+    expect(isRemoteConfig(config({ mode: 'cloud', remoteOauthConnected: true }))).toBe(true)
+  })
+
+  it('false for local, for a remote with no URL, and for nullish', () => {
+    expect(isRemoteConfig(config({ mode: 'local' }))).toBe(false)
+    expect(isRemoteConfig(config({ remoteUrl: '' }))).toBe(false)
+    expect(isRemoteConfig(null)).toBe(false)
+  })
+})
 
 describe('isRemoteReauthFailure', () => {
   it('true for a remote, gated, disconnected gateway with a URL', () => {

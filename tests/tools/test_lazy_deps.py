@@ -316,15 +316,22 @@ class TestActiveFeatures:
         assert "memory.hindsight" not in active
         assert "platform.slack" not in active
 
-    def test_multi_package_feature_active_if_any_present(self, monkeypatch):
-        # platform.slack has 3 packages; only one needs to be present
-        # for the feature to count as active (user activated it before,
-        # one transitive may have been uninstalled separately).
+    def test_multi_package_feature_active_if_primary_present(self, monkeypatch):
+        # platform.slack's first spec is its primary SDK marker.
         monkeypatch.setattr(
             ld, "_is_present",
             lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
         )
         assert "platform.slack" in ld.active_features()
+
+    def test_shared_secondary_dependency_does_not_activate_feature(self, monkeypatch):
+        # pydantic-settings is shared with MCP and therefore commonly present;
+        # it must not make the heavy Teams backend look previously activated.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "pydantic-settings",
+        )
+        assert "platform.teams" not in ld.active_features()
 
 
 class TestRefreshActiveFeatures:

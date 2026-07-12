@@ -888,7 +888,8 @@ class TestVoiceChannelCommands:
         result = await runner._handle_voice_channel_join(event)
 
         assert "voice dependencies are missing" in result.lower()
-        assert "PyNaCl" in result
+        assert "PyNaCl==1.6.2" in result
+        assert "davey==0.1.4" in result
 
     # -- _handle_voice_channel_leave --
 

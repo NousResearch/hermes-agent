@@ -4,7 +4,7 @@ Uses real NaCl encryption and Opus codec (no mocks for crypto/codec).
 Does NOT require a Discord connection — tests the VoiceReceiver
 packet processing pipeline end-to-end.
 
-Requires: PyNaCl>=1.5.0, discord.py[voice] (opus codec)
+Requires: discord.py>=2.7.1, PyNaCl>=1.6.2, and davey (voice stack)
 """
 
 import struct

@@ -6400,6 +6400,11 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
+    # ZIP/non-git installs must refresh previously activated lazy backends too.
+    # Their packages survive the core reinstall, so stale security pins would
+    # otherwise persist indefinitely on this update path.
+    _refresh_active_lazy_features()
+
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
 

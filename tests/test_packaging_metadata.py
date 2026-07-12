@@ -4,6 +4,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from packaging.version import Version
 
 # setuptools is declared in the [dev] extra and is the build backend, but
 # guard the import so a runner without it skips these packaging checks
@@ -156,14 +157,16 @@ def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     )
 
 
-# Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in
-# 1.0.1. Anything below that lets a malformed Host header desync
+# Minimum non-vulnerable Starlette across all currently known advisories.
+# CVE-2026-48710 ("BadHost") was first fixed in 1.0.1; subsequent fixes raise
+# the current floor to 1.3.1. Anything below that can leave a server surface
+# exposed even if the original BadHost fix is present.
 # ``request.url.path`` from the dispatched ASGI path, bypassing path-based
 # authz in middleware/endpoints that gate on ``request.url``. Starlette is a
 # transitive dep (fastapi in [web]; sse-starlette/mcp in [mcp]/[computer-use]/
 # [dev]) so we pin it directly in every extra that exposes a server surface and
 # enforce the floor in both pyproject and the committed lockfile.
-_STARLETTE_CVE_FLOOR = (1, 0, 1)
+_STARLETTE_CVE_FLOOR = (1, 3, 1)
 
 
 def _version_tuple(spec: str) -> tuple[int, ...]:
@@ -178,8 +181,8 @@ def _version_tuple(spec: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
-    """Every extra that declares Starlette must pin a patched (>=1.0.1) version.
+def test_starlette_pinned_above_cve_floor_in_pyproject():
+    """Every extra that declares Starlette must pin a patched (>=1.3.1) version.
 
     Regression guard for #35067 / CVE-2026-48710. A future edit that drops the
     pin (re-exposing the unbounded transitive ``starlette>=0.27`` from mcp /
@@ -207,12 +210,12 @@ def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
 
     for extra, ver in found.items():
         assert _version_tuple(ver) >= _STARLETTE_CVE_FLOOR, (
-            f"[{extra}] pins starlette=={ver}, below the CVE-2026-48710 fix "
+            f"[{extra}] pins starlette=={ver}, below the current security fix "
             f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))}"
         )
 
 
-def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
+def test_locked_starlette_meets_current_security_floor():
     """The committed uv.lock must resolve starlette to a patched version.
 
     pyproject pins protect the declared extras, but the lockfile is what
@@ -235,7 +238,7 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
     assert versions, "starlette not found in uv.lock"
     for ver in versions:
         assert _version_tuple(ver) >= _STARLETTE_CVE_FLOOR, (
-            f"uv.lock resolves starlette=={ver}, below the CVE-2026-48710 fix "
+            f"uv.lock resolves starlette=={ver}, below the current security fix "
             f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))} — regenerate the "
             f"lockfile after bumping the pin"
         )
@@ -433,7 +436,104 @@ _REQUIRED_SECURITY_PINS = {
         "platform.matrix",
         "platform.teams",
     },
+    "msgpack": {"image.fal"},
+    "python-multipart": {"tool.dashboard"},
+    "starlette": {"tool.dashboard", "tool.computer_use"},
+    "tornado": {"platform.telegram"},
+    "pydantic-settings": {"tool.computer_use", "platform.teams"},
+    "pynacl": {"platform.discord"},
+    "alibabacloud-tea-openapi": {"platform.dingtalk"},
 }
+
+
+_SECURITY_FIXED_FLOORS = {
+    "cryptography": "48.0.1",
+    "idna": "3.15",
+    "msgpack": "1.2.1",
+    "pygments": "2.20.0",
+    "pydantic-settings": "2.14.2",
+    "pynacl": "1.6.2",
+    "pytest": "9.0.3",
+    "python-multipart": "0.0.31",
+    "starlette": "1.3.1",
+    "tornado": "6.5.7",
+}
+
+
+_REQUIRED_EAGER_SECURITY_PINS = {
+    "cryptography": {"core"},
+    "idna": {"core"},
+    "msgpack": {"fal"},
+    "pygments": {"core"},
+    "python-multipart": {"core", "web"},
+    "starlette": {"dev", "mcp", "computer-use", "web"},
+    "tornado": {"messaging", "termux"},
+    "pydantic-settings": {"dev", "mcp", "computer-use", "teams"},
+    "pynacl": {"messaging"},
+    "pytest": {"dev"},
+}
+
+
+def test_security_floors_are_pinned_on_every_eager_surface():
+    """Pip fallbacks must not rely on a vulnerable transitive already moving."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    surfaces = {"core": data["project"]["dependencies"]}
+    surfaces.update(data["project"]["optional-dependencies"])
+
+    problems = []
+    for package, required_surfaces in _REQUIRED_EAGER_SECURITY_PINS.items():
+        floor = Version(_SECURITY_FIXED_FLOORS[package])
+        for surface in sorted(required_surfaces):
+            versions = _pins_from_specs(surfaces[surface]).get(_canonical(package))
+            if not versions:
+                problems.append(f"{surface}: {package}=MISSING")
+                continue
+            for version in versions:
+                if Version(version) < floor:
+                    problems.append(f"{surface}: {package}=={version} < {floor}")
+    assert not problems, "security pins missing or stale:\n  " + "\n  ".join(problems)
+
+
+def test_lockfile_meets_all_security_floors():
+    """Hash-verified installs must resolve every audited package above its floor."""
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    versions = {
+        _canonical(package["name"]): Version(package["version"])
+        for package in lock["package"]
+    }
+    problems = []
+    for package, floor_text in _SECURITY_FIXED_FLOORS.items():
+        installed = versions.get(_canonical(package))
+        floor = Version(floor_text)
+        if installed is None:
+            problems.append(f"{package}=MISSING")
+        elif installed < floor:
+            problems.append(f"{package}=={installed} < {floor}")
+    assert not problems, "uv.lock contains vulnerable resolutions:\n  " + "\n  ".join(problems)
+
+
+def test_discord_voice_stack_uses_patched_explicit_dependencies():
+    """Avoid discord.py 2.7.1's stale PyNaCl<1.6 voice-extra metadata cap."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    eager = data["project"]["optional-dependencies"]["messaging"]
+    lazy = _lazy_deps_by_feature()["platform.discord"]
+    for surface, specs in (("messaging", eager), ("platform.discord", lazy)):
+        assert not any(spec.lower().startswith("discord.py[voice]") for spec in specs), (
+            f"{surface} reintroduced discord.py[voice]'s vulnerable PyNaCl cap"
+        )
+        pins = _pins_from_specs(specs)
+        for package in ("discord.py", "pynacl", "davey"):
+            assert _canonical(package) in pins, f"{surface} must pin {package} explicitly"
+
+
+def test_dingtalk_crypto_compatibility_pin_is_consistent():
+    """tea-openapi 0.4.4 caps cryptography<47 and breaks the patched core pin."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    eager = _pins_from_specs(data["project"]["optional-dependencies"]["dingtalk"])
+    lazy = _pins_from_specs(_lazy_deps_by_feature()["platform.dingtalk"])
+    package = _canonical("alibabacloud-tea-openapi")
+    assert eager.get(package) == {"0.3.16"}
+    assert lazy.get(package) == {"0.3.16"}
 
 
 def test_security_pins_present_in_mirrored_lazy_features():

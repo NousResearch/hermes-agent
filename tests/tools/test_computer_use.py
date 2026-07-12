@@ -1230,11 +1230,17 @@ class TestLazyMcpInstall:
     """
 
     def test_feature_registered_in_allowlist(self):
+        from packaging.requirements import Requirement
+        from packaging.version import Version
         from tools import lazy_deps
-        assert lazy_deps.feature_specs("tool.computer_use") == (
-            "mcp==1.26.0",
-            "starlette==1.0.1",
-        )
+
+        requirements = {
+            Requirement(spec).name.lower(): Requirement(spec)
+            for spec in lazy_deps.feature_specs("tool.computer_use")
+        }
+        assert {"mcp", "starlette", "pydantic-settings"} <= requirements.keys()
+        assert Version("1.3.1") in requirements["starlette"].specifier
+        assert Version("2.14.2") in requirements["pydantic-settings"].specifier
 
     def test_start_lazy_installs_mcp(self):
         from tools.computer_use import cua_backend

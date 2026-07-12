@@ -441,11 +441,12 @@ When you need to run commands, use the 'terminal' tool with your bash command.
 
 **Important:**
 - When you have completed the task successfully, run: echo "MINI_SWE_AGENT_FINAL_OUTPUT" followed by a summary
-- Be concise and efficient in your approach
+- Verify task completion: check outputs, exit codes, and file contents before declaring success
 - Install any needed tools with apt-get or pip
 - Avoid interactive commands (no vim, nano, less, etc.)
+- Do not stop early — verify every step before moving to the next
 
-Complete the user's task step by step."""
+Complete the user's task step by step. Verify completion before final output."""
         
         api_call_count = 0
         completed = False

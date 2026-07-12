@@ -961,13 +961,15 @@ def _strip_inline_markdown(text: str) -> str:
 
 
 def _render_code_block_content(block: CodeBlock) -> str:
-    code = block.code.replace("\r\n", "\n").rstrip("\n")
-    return f"```{block.language}\n{code}\n```"
+    code = block.code.replace("\r\n", "\n")
+    closing_separator = "" if code.endswith("\n") else "\n"
+    return f"```{block.language}\n{code}{closing_separator}```"
 
 
 def _render_code_block_content_from_raw(*, language: str, code: str) -> str:
-    normalized = code.replace("\r\n", "\n").rstrip("\n")
-    return f"```{language}\n{normalized}\n```"
+    normalized = code.replace("\r\n", "\n")
+    closing_separator = "" if normalized.endswith("\n") else "\n"
+    return f"```{language}\n{normalized}{closing_separator}```"
 
 
 def _build_table_element(data: TableBlock, cell_type: str, row_count: int) -> dict[str, Any]:

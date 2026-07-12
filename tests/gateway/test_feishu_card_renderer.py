@@ -69,6 +69,28 @@ def test_code_block_renders_markdown_fence():
     ]
 
 
+def test_code_block_preserves_trailing_newlines():
+    card = render_document_to_feishu_card_v2(
+        MessageDocument([CodeBlock(language="python", code="print('hi')\n\n")])
+    )
+
+    assert card["body"]["elements"] == [
+        {"tag": "markdown", "content": "```python\nprint('hi')\n\n```", "text_size": "normal"}
+    ]
+
+
+def test_raw_markdown_table_preserves_trailing_newlines_when_degraded():
+    raw = "| A |\n|---|\n| 1 |\n\n"
+    card = render_document_to_feishu_card_v2(
+        MessageDocument([TableBlock(headers=["A"], rows=[["1"]], raw_markdown=raw)]),
+        table_policy="markdown",
+    )
+
+    assert card["body"]["elements"] == [
+        {"tag": "markdown", "content": f"```markdown\n{raw}```", "text_size": "normal"}
+    ]
+
+
 def test_list_and_divider_blocks_render_losslessly():
     card = render_document_to_feishu_card_v2(
         MessageDocument(

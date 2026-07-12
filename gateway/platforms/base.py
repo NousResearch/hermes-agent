@@ -2327,6 +2327,14 @@ class BasePlatformAdapter(ABC):
     - Handling media
     """
 
+    # Multi-agent routing default. ``__init__`` sets this per-instance and
+    # ``set_routing_context`` overrides it, but it is declared here as a class
+    # attribute so ``_attach_agent_id`` resolves to the legacy "main" agent even
+    # on adapters or test doubles whose ``__init__`` was bypassed or partially
+    # run — matching how that method already tolerates a missing
+    # ``_gateway_routes``/``_gateway_ref``. Single-agent installs never touch it.
+    _default_agent_id: str = "main"
+
     # Whether this platform renders triple-backtick fenced code blocks (i.e.
     # ``format_message`` translates/preserves markdown fences into a real code
     # block).  Capability flag for markdown-aware presentation choices.

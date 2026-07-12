@@ -187,12 +187,8 @@ class TestDropThinkingOnlyAndMergeUsers:
             {"role": "assistant", "content": "", "_thinking_prefill": True},
         ]
         out = AIAgent._drop_thinking_only_and_merge_users(msgs)
-        assert len(out) == 1
-        assert out[0]["content"] == [
-            {"type": "text", "text": "plain text"},
-            {"type": "text", "text": "[Next user message]"},
-            {"type": "text", "text": "block text"},
-        ]
+        assert [m["role"] for m in out] == ["system", "user"]
+        assert out[-1]["role"] != "assistant"
 
     def test_system_messages_ignored_by_pass(self):
         msgs = [

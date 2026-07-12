@@ -8074,14 +8074,13 @@ def _enqueue_prompt(
     submitted_at: float | None = None,
     message_id: str | None = None,
 ) -> None:
-    """Stash a message to run as the very next turn once the live one ends.
+    """Append one canonical source message to the busy-time FIFO.
 
-    Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). Text-only
-    arrivals share a slot and merge losslessly (mirroring the consecutive-user
-    merge in ``repair_message_sequence``). Image-bearing submissions stay as
-    separate envelopes, so their attachment ownership and chronology survive.
-    ``transport`` is pinned so the drained turn streams back to the client that
-    sent it even if the session transport is rebound meanwhile.
+    ``queued_prompt`` remains the inspectable head slot for compatibility.
+    Later arrivals live in ``queued_prompts`` rather than being concatenated,
+    because text concatenation irreversibly destroys source boundaries
+    (``submitted_at``/``message_id``/image ownership). Each item pins its own
+    transport and optional source metadata until its turn is drained.
     """
     image_paths = list(image_paths or [])
     # #84417: scrub any live-turn self-duplicates first so the consecutive-text
@@ -8105,22 +8104,10 @@ def _enqueue_prompt(
         queued["submitted_at"] = submitted_at
     if message_id is not None:
         queued["message_id"] = message_id
-    existing = session.get("queued_prompt")
-    if (
-        existing
-        and isinstance(existing.get("text"), str)
-        and isinstance(text, str)
-        and not existing.get("image_paths")
-        and not image_paths
-        and not session.get("queued_prompts")
-    ):
-        prev = existing["text"]
-        existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
-        return
-    if existing:
+    if session.get("queued_prompt"):
         session.setdefault("queued_prompts", []).append(queued)
-        return
-    session["queued_prompt"] = queued
+    else:
+        session["queued_prompt"] = queued
 
 
 def _sanitize_queued_entry_vs_inflight_user(
@@ -8275,34 +8262,6 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
                 session["_busy_interrupt_pending"] = False
 
     threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
-
-
-def _enqueue_prompt(
-    session: dict,
-    text: Any,
-    transport: Any,
-    *,
-    submitted_at: float | None = None,
-    message_id: str | None = None,
-) -> None:
-    """Append one canonical source message to the busy-time FIFO.
-
-    ``queued_prompt`` remains the inspectable head slot for compatibility.
-    Later arrivals live in ``queued_prompts`` rather than being concatenated,
-    because text concatenation irreversibly destroys source boundaries. Each
-    item pins its own transport and optional source metadata until its turn is
-    drained.
-    """
-    queued = {"text": text, "transport": transport}
-    if submitted_at is not None:
-        queued["submitted_at"] = submitted_at
-    if message_id is not None:
-        queued["message_id"] = message_id
-
-    if session.get("queued_prompt"):
-        session.setdefault("queued_prompts", []).append(queued)
-    else:
-        session["queued_prompt"] = queued
 
 
 def _handle_busy_submit(
@@ -8520,17 +8479,18 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             file=sys.stderr,
         )
         with session["history_lock"]:
-            next_queued = session.get("queued_prompt")
-            if next_queued:
-                session.setdefault("queued_prompts", []).insert(0, next_queued)
-            session["queued_prompt"] = queued
+            had_successor = bool(session.get("queued_prompt")) or bool(
+                session.get("queued_prompts")
+            )
+            if not had_successor:
+                # Nothing behind the failed item — restore it so the user's
+                # message is not silently dropped by the failed dispatch.
+                session["queued_prompt"] = queued
             session["running"] = False
         dispatch_failed = True
     if dispatch_failed:
         with session["history_lock"]:
-            drain_next = bool(session.get("queued_prompt")) and not session.get(
-                "_turn_cancel_requested"
-            )
+            drain_next = had_successor and not session.get("_turn_cancel_requested")
         if drain_next:
             _drain_queued_prompt(rid, sid, session)
     return True

@@ -614,6 +614,7 @@ def test_prompt_submit_does_not_dedupe_reused_rpc_id_without_explicit_id(
     assert response is not None
     assert response["result"]["status"] == "queued"
     assert session["queued_prompt"]["text"] == "new connection prompt"
+    assert "message_id" not in session["queued_prompt"]
 
 
 def test_prompt_id_dedupe_uses_persisted_source_id(tmp_path):
@@ -910,6 +911,7 @@ def test_repeated_arrivals_drain_once_in_order_to_their_own_transports(monkeypat
     fired = []
 
     def _run(rid, sid, session, text, **kwargs):
+        kwargs.pop("queued_prompt_generation", None)
         fired.append(
             {
                 "rid": rid,

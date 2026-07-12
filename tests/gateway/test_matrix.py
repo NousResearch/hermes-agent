@@ -1891,6 +1891,311 @@ class TestMatrixSyncLoop:
         mock_sync_store.put_next_batch.assert_awaited_once_with("s1234")
 
     @pytest.mark.asyncio
+    async def test_sync_transport_failure_escalates_when_in_place_reconnect_fails(self):
+        """A failed in-place recovery should fall back to retryable fatal state."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._running = True
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=ConnectionError("socket closed"))
+        fake_client.sync_store = mock_sync_store
+        adapter._client = fake_client
+        adapter.connect = AsyncMock(return_value=False)
+        adapter._reconnect_retry_delays = (0.0, 0.0)
+
+        task = adapter._start_sync_task()
+        try:
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=0.2)
+            reconnect_task = adapter._sync_reconnect_task
+            assert reconnect_task is not None
+            await asyncio.wait_for(asyncio.shield(reconnect_task), timeout=0.2)
+        finally:
+            adapter._closing = True
+            reconnect_task = adapter._sync_reconnect_task
+            if reconnect_task and not reconnect_task.done():
+                reconnect_task.cancel()
+            if reconnect_task is not None:
+                await asyncio.gather(task, reconnect_task, return_exceptions=True)
+            else:
+                await asyncio.gather(task, return_exceptions=True)
+
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is True
+        assert adapter.fatal_error_code == "matrix_sync_reconnect_failed"
+
+    @pytest.mark.asyncio
+    async def test_sync_auth_failure_notifies_non_retryable_fatal_error(self):
+        """A permanent Matrix auth failure must not enter reconnect backoff."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._running = True
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(
+            return_value=types.SimpleNamespace(message="M_UNKNOWN_TOKEN")
+        )
+        fake_client.sync_store = mock_sync_store
+        adapter._client = fake_client
+
+        task = asyncio.create_task(adapter._sync_loop())
+        adapter._sync_task = task
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=0.2)
+
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert adapter.fatal_error_code == "matrix_sync_auth"
+
+    @pytest.mark.asyncio
+    async def test_sync_task_cancellation_during_disconnect_does_not_notify(self):
+        """Intentional gateway shutdown must not enqueue a reconnect."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._running = True
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        fake_client = MagicMock()
+        sync_started = asyncio.Event()
+        sync_blocked = asyncio.Event()
+
+        async def _blocked_sync(**kwargs):
+            sync_started.set()
+            await sync_blocked.wait()
+
+        fake_client.sync = AsyncMock(side_effect=_blocked_sync)
+        fake_client.sync_store = mock_sync_store
+        adapter._client = fake_client
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+
+        task = asyncio.create_task(adapter._sync_loop())
+        adapter._sync_task = task
+        await asyncio.wait_for(sync_started.wait(), timeout=0.2)
+        adapter._closing = True
+        task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=0.2)
+
+        fatal_handler.assert_not_awaited()
+        assert adapter.has_fatal_error is False
+
+    @pytest.mark.asyncio
+    async def test_terminal_sync_failure_reconnects_same_adapter(self):
+        """A transport failure should recover the adapter in place."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._running = True
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=ConnectionError("socket closed"))
+        fake_client.sync_store = mock_sync_store
+        adapter._client = fake_client
+
+        reconnected = asyncio.Event()
+        reconnect_calls = []
+
+        async def reconnect(*, is_reconnect=False):
+            reconnect_calls.append(is_reconnect)
+            adapter._closing = False
+            adapter._running = True
+            reconnected.set()
+            return True
+
+        adapter.connect = AsyncMock(side_effect=reconnect)
+        adapter.set_fatal_error_handler(AsyncMock())
+
+        task = adapter._start_sync_task()
+        try:
+            await asyncio.wait_for(reconnected.wait(), timeout=0.2)
+        finally:
+            adapter._closing = True
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        assert reconnect_calls == [True]
+        assert adapter.has_fatal_error is False
+
+    @pytest.mark.asyncio
+    async def test_inflight_turn_delivers_after_in_place_reconnect(self):
+        """An active turn should finish through the recovered Matrix adapter."""
+        from gateway.platforms.base import MessageEvent, MessageType, SendResult
+
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._running = True
+
+        old_client = MagicMock()
+        old_client.sync_store = MagicMock()
+        old_client.sync_store.get_next_batch = AsyncMock(return_value=None)
+        old_client.sync = AsyncMock(side_effect=ConnectionError("socket closed"))
+        adapter._client = old_client
+
+        new_client = MagicMock()
+        reconnected = asyncio.Event()
+
+        async def reconnect(*, is_reconnect=False):
+            assert is_reconnect is True
+            adapter._client = new_client
+            adapter._closing = False
+            adapter._running = True
+            reconnected.set()
+            return True
+
+        adapter.connect = AsyncMock(side_effect=reconnect)
+
+        async def fatal_handler(_failed_adapter):
+            await adapter.disconnect()
+
+        adapter.set_fatal_error_handler(fatal_handler)
+
+        turn_started = asyncio.Event()
+        release_turn = asyncio.Event()
+
+        async def message_handler(_event):
+            turn_started.set()
+            await release_turn.wait()
+            return "response after reconnect"
+
+        adapter.set_message_handler(message_handler)
+
+        async def send(_chat_id, _content, **_kwargs):
+            return SendResult(success=adapter._client is new_client)
+
+        adapter.send = AsyncMock(side_effect=send)
+
+        source = adapter.build_source(
+            "!room:example.org",
+            chat_type="dm",
+            user_id="@alice:example.org",
+        )
+        event = MessageEvent(
+            text="start work",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+
+        sync_task = adapter._start_sync_task()
+        await adapter.handle_message(event)
+        await asyncio.wait_for(turn_started.wait(), timeout=0.2)
+        await asyncio.wait_for(reconnected.wait(), timeout=0.2)
+        release_turn.set()
+
+        session_key = next(iter(adapter._session_tasks))
+        turn_task = adapter._session_tasks[session_key]
+        await asyncio.wait_for(asyncio.shield(turn_task), timeout=0.2)
+
+        assert adapter._client is new_client
+        adapter.send.assert_awaited()
+
+        adapter._closing = True
+        if not sync_task.done():
+            sync_task.cancel()
+        await asyncio.gather(sync_task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_send_waits_for_client_during_in_place_reconnect(self):
+        """An active turn should wait for the same adapter's client to return."""
+        from gateway.platforms.base import SendResult
+
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._client = None
+        adapter._client_ready = asyncio.Event()
+
+        fake_client = MagicMock()
+        fake_client.send_message_event = AsyncMock(return_value="$event-after-reconnect")
+
+        async def restore_client():
+            await asyncio.sleep(0.01)
+            adapter._client = fake_client
+            adapter._client_ready.set()
+
+        restore_task = asyncio.create_task(restore_client())
+        result = await asyncio.wait_for(
+            adapter.send("!room:example.org", "response after reconnect"),
+            timeout=0.2,
+        )
+        await restore_task
+
+        assert isinstance(result, SendResult)
+        assert result.success is True
+        fake_client.send_message_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_in_place_reconnect_retries_transient_failure(self):
+        """Transient reconnect failure should not replace the adapter immediately."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._client = MagicMock()
+        adapter._reconnect_retry_delays = (0.0, 0.0)
+        new_client = MagicMock()
+        reconnect_calls = 0
+
+        async def reconnect(*, is_reconnect=False):
+            nonlocal reconnect_calls
+            assert is_reconnect is True
+            reconnect_calls += 1
+            if reconnect_calls == 1:
+                return False
+            adapter._client = new_client
+            adapter._client_ready.set()
+            return True
+
+        adapter.connect = AsyncMock(side_effect=reconnect)
+        await adapter._reconnect_sync_in_place(ConnectionError("502"))
+
+        assert reconnect_calls == 2
+        assert adapter._client is new_client
+        assert adapter.has_fatal_error is False
+
+    @pytest.mark.asyncio
+    async def test_reconnect_attempt_has_a_bounded_timeout(self):
+        """A hung connect attempt must not stall the in-place retry ladder."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._reconnect_retry_delays = (0.0, 0.0)
+        adapter._reconnect_attempt_timeout = 0.01
+        connect_started = asyncio.Event()
+
+        async def hanging_connect(*, is_reconnect=False):
+            assert is_reconnect is True
+            connect_started.set()
+            await asyncio.Event().wait()
+
+        adapter.connect = AsyncMock(side_effect=hanging_connect)
+        await asyncio.wait_for(
+            adapter._reconnect_sync_in_place(ConnectionError("transport closed")),
+            timeout=0.1,
+        )
+
+        assert connect_started.is_set()
+        assert adapter.connect.await_count == 2
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_code == "matrix_sync_reconnect_failed"
+
+    @pytest.mark.asyncio
+    async def test_e2ee_key_sharing_timeout_does_not_block_connect(self):
+        """A stuck optional key-share must not hold Matrix reconnect hostage."""
+        adapter = _make_adapter()
+        adapter._reconnect_attempt_timeout = 0.01
+        crypto = MagicMock()
+
+        async def hanging_share_keys():
+            await asyncio.Event().wait()
+
+        crypto.share_keys = AsyncMock(side_effect=hanging_share_keys)
+        await adapter._share_keys_with_timeout(crypto)
+        crypto.share_keys.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_sync_loop_reconciles_pending_invites(self):
         """Pending rooms.invite entries should be joined if callbacks were missed."""
         adapter = _make_adapter()

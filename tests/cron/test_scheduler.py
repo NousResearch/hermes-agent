@@ -2508,9 +2508,11 @@ class TestRunJobSkillBacked:
         assert "cronjob" in (kwargs["disabled_toolsets"] or [])
 
         prompt_arg = mock_agent.run_conversation.call_args.args[0]
-        assert "blogwatcher" in prompt_arg
-        assert "Follow this skill" in prompt_arg
-        assert "Check the feeds and summarize anything new." in prompt_arg
+        runtime_context = kwargs["ephemeral_system_prompt"]
+        assert prompt_arg == "Check the feeds and summarize anything new."
+        assert "blogwatcher" in runtime_context
+        assert "Follow this skill." in runtime_context
+        assert prompt_arg not in runtime_context
 
     def test_run_job_loads_multiple_skills_in_order(self, tmp_path):
         job = {
@@ -2554,10 +2556,12 @@ class TestRunJobSkillBacked:
         assert [call.args[0] for call in skill_view_mock.call_args_list] == ["blogwatcher", "maps"]
 
         prompt_arg = mock_agent.run_conversation.call_args.args[0]
-        assert prompt_arg.index("blogwatcher") < prompt_arg.index("maps")
-        assert "Instructions for blogwatcher." in prompt_arg
-        assert "Instructions for maps." in prompt_arg
-        assert "Combine the results." in prompt_arg
+        runtime_context = mock_agent_cls.call_args.kwargs["ephemeral_system_prompt"]
+        assert runtime_context.index("blogwatcher") < runtime_context.index("maps")
+        assert "Instructions for blogwatcher." in runtime_context
+        assert "Instructions for maps." in runtime_context
+        assert prompt_arg == "Combine the results."
+        assert prompt_arg not in runtime_context
 
 
 class TestSilentDelivery:
@@ -2910,11 +2914,15 @@ class TestRunJobWakeGate:
             success, doc, final, err = scheduler.run_job(self._make_job())
 
         agent_cls.assert_called_once()
-        # The script output should be visible in the prompt passed to
-        # run_conversation.
+        # Runtime data is model-visible via non-user ephemeral context while the
+        # persisted/current user message stays the raw scheduled instruction.
         call_kwargs = agent.run_conversation.call_args
         prompt_arg = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("user_message", "")
-        assert script_output in prompt_arg
+        assert prompt_arg == "Do a thing"
+        runtime_context = agent_cls.call_args.kwargs["ephemeral_system_prompt"]
+        # Runtime data is represented as a JSON string inside an explicit
+        # untrusted-data boundary, not interpolated as authoritative Markdown.
+        assert json.dumps(script_output, ensure_ascii=False) in runtime_context
         assert success is True
         assert err is None
 

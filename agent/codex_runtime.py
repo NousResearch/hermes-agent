@@ -637,6 +637,13 @@ def run_codex_app_server_turn(
         # Supersedes the narrower item/started-only bridge from #38835.
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            # The app-server owns its base prompt. Pass only Hermes' ephemeral
+            # execution context through Codex's non-user instruction field;
+            # copying ``_cached_system_prompt`` here would duplicate Codex's
+            # own base instructions and break ordinary prompt behavior.
+            developer_instructions=(
+                getattr(agent, "ephemeral_system_prompt", None) or None
+            ),
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,

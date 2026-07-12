@@ -161,6 +161,35 @@ class TestLifecycle:
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
 
+    def test_thread_start_sends_developer_instructions_exactly_once(self):
+        """Runtime-only instructions use Codex's non-user thread field."""
+        client = FakeClient()
+        s = make_session(
+            client,
+            developer_instructions="EPHEMERAL_CRON_CONTEXT_SENTINEL",
+        )
+
+        s.ensure_started()
+        s.ensure_started()
+
+        thread_starts = [
+            params for method, params in client.requests if method == "thread/start"
+        ]
+        assert len(thread_starts) == 1
+        assert thread_starts[0]["developerInstructions"] == (
+            "EPHEMERAL_CRON_CONTEXT_SENTINEL"
+        )
+
+    def test_thread_start_omits_developer_instructions_for_ordinary_session(self):
+        """Non-ephemeral Codex behavior keeps its existing wire shape."""
+        client = FakeClient()
+        s = make_session(client)
+
+        s.ensure_started()
+
+        _, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert "developerInstructions" not in params
+
     def test_close_idempotent(self):
         client = FakeClient()
         s = make_session(client)
@@ -195,6 +224,27 @@ class TestRunTurn:
                    for m in r.projected_messages)
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
+
+    def test_developer_instructions_never_enter_turn_user_input(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(
+            client,
+            developer_instructions="EPHEMERAL_CRON_CONTEXT_SENTINEL",
+        )
+
+        r = s.run_turn("RAW_SCHEDULED_INTENT", turn_timeout=2.0)
+
+        assert r.error is None
+        _, params = next(req for req in client.requests if req[0] == "turn/start")
+        assert params["input"] == [
+            {"type": "text", "text": "RAW_SCHEDULED_INTENT"}
+        ]
+        assert "EPHEMERAL_CRON_CONTEXT_SENTINEL" not in str(params["input"])
 
     def test_token_usage_notification_is_captured(self):
         client = FakeClient()

@@ -210,3 +210,31 @@ def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
     assert runner_called["hit"] is False, (
         "POSIX must not take the Windows loop-factory branch"
     )
+
+
+def test_start_server_bridges_terminal_config_to_env(monkeypatch):
+    """start_server must call apply_terminal_config_to_env() so that terminal
+    tool calls running inside the serve process itself (not just child
+    processes) respect the configured backend.
+
+    Without this bridge, a serve process with terminal.backend: docker in
+    config.yaml still runs terminal commands locally, bypassing the sandbox.
+    """
+    _stub_uvicorn(monkeypatch)
+
+    called = {"hit": False}
+
+    import hermes_cli.config as _cfg
+
+    def _fake_apply(*, env=None, config=None, override=None):
+        called["hit"] = True
+        return env or {}
+
+    monkeypatch.setattr(_cfg, "apply_terminal_config_to_env", _fake_apply)
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert called["hit"] is True, (
+        "start_server must call apply_terminal_config_to_env() to bridge "
+        "terminal.* config into the serve process environment"
+    )

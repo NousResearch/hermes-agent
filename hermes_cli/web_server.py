@@ -17001,6 +17001,16 @@ def start_server(
     """
     import uvicorn
 
+    # Bridge terminal.* config into the process env so that terminal tool calls
+    # running inside this serve process (not just child processes) respect the
+    # configured backend (e.g. docker sandbox). Without this, the serve process
+    # always runs terminal commands locally regardless of config.yaml settings.
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+        apply_terminal_config_to_env()
+    except Exception:
+        _log.debug("Failed to apply terminal config bridge for serve process", exc_info=True)
+
     try:
         from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
 

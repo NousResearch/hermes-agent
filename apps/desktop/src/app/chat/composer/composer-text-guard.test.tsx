@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
 import { act, cleanup, render } from '@testing-library/react'
-import { useCallback, useRef } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { useCallback, useEffect, useRef } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 afterEach(cleanup)
+beforeEach(() => {
+  vi.useFakeTimers()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 // Regression repro for #49903: on desktop v0.17.0 the composer threw an
 // uncaught `Error: Composer is not available` at startup and the input went
@@ -16,12 +23,10 @@ afterEach(cleanup)
 // before the core binds, and the popout refactor (#49488) widened that window,
 // so the throw surfaced as an uncaught error that wedged the input.
 //
-// The fix wraps every `aui.composer().setText` call in a `setComposerText`
-// helper that swallows the unbound-core throw — the contentEditable DOM +
-// draftRef already hold the text and the draft⇄editor sync re-applies it once
-// the core attaches, so nothing is lost. This Harness mirrors that helper
-// faithfully (same try/catch shape) over a fake `aui` whose composer can be
-// toggled bound/unbound, the way the assistant-ui runtime behaves across mount.
+// The fix keeps the latest desired draft on file and retries `setText` on
+// animation frames until the composer core binds. That preserves the no-crash
+// startup behavior while also preventing a stale runtime draft from leaking
+// into the next session after a scope swap.
 
 interface FakeComposer {
   setText: (value: string) => void
@@ -44,6 +49,7 @@ function makeFakeAui(bound: { current: boolean }, applied: string[]) {
 }
 
 function Harness({
+  writes,
   bound,
   applied,
   onError
@@ -51,28 +57,78 @@ function Harness({
   applied: string[]
   bound: { current: boolean }
   onError: (err: unknown) => void
+  writes: string[]
 }) {
   const aui = useRef(makeFakeAui(bound, applied)).current
+  const pendingComposerTextRef = useRef<string | null>(null)
+  const pendingComposerTextRafRef = useRef<number | undefined>(undefined)
 
-  // Verbatim mirror of the production `setComposerText` helper in index.tsx.
+  const flushPendingComposerText = useCallback(() => {
+    const pending = pendingComposerTextRef.current
+
+    if (pending === null) {
+      return true
+    }
+
+    try {
+      aui.composer().setText(pending)
+      pendingComposerTextRef.current = null
+
+      return true
+    } catch {
+      return false
+    }
+  }, [aui])
+
+  const schedulePendingComposerTextFlush = useCallback(() => {
+    if (pendingComposerTextRafRef.current !== undefined) {
+      return
+    }
+
+    const retry = () => {
+      pendingComposerTextRafRef.current = undefined
+
+      if (pendingComposerTextRef.current === null) {
+        return
+      }
+
+      if (!flushPendingComposerText()) {
+        pendingComposerTextRafRef.current = window.requestAnimationFrame(retry)
+      }
+    }
+
+    pendingComposerTextRafRef.current = window.requestAnimationFrame(retry)
+  }, [flushPendingComposerText])
+
   const setComposerText = useCallback(
     (value: string) => {
-      try {
-        aui.composer().setText(value)
-      } catch {
-        // Composer core not bound yet — swallow so the input stays usable.
+      pendingComposerTextRef.current = value
+
+      if (!flushPendingComposerText()) {
+        schedulePendingComposerTextFlush()
       }
     },
-    [aui]
+    [flushPendingComposerText, schedulePendingComposerTextFlush]
   )
 
-  // A draft-restore-on-mount that fires while the core may still be unbound,
-  // exactly like loadIntoComposer/clearDraft do on startup.
-  try {
-    setComposerText('restored draft')
-  } catch (err) {
-    onError(err)
-  }
+  useEffect(() => {
+    for (const value of writes) {
+      try {
+        setComposerText(value)
+      } catch (err) {
+        onError(err)
+      }
+    }
+  }, [onError, setComposerText, writes])
+
+  useEffect(
+    () => () => {
+      if (pendingComposerTextRafRef.current !== undefined) {
+        window.cancelAnimationFrame(pendingComposerTextRafRef.current)
+      }
+    },
+    []
+  )
 
   return null
 }
@@ -83,7 +139,7 @@ describe('setComposerText guard (#49903)', () => {
     const bound = { current: false }
     const onError = vi.fn()
 
-    expect(() => render(<Harness applied={applied} bound={bound} onError={onError} />)).not.toThrow()
+    expect(() => render(<Harness applied={applied} bound={bound} onError={onError} writes={['restored draft']} />)).not.toThrow()
 
     // The guard absorbed the throw — nothing escaped to the renderer, and no
     // assistant-ui write landed (core was unbound).
@@ -97,10 +153,48 @@ describe('setComposerText guard (#49903)', () => {
     const onError = vi.fn()
 
     act(() => {
-      render(<Harness applied={applied} bound={bound} onError={onError} />)
+      render(<Harness applied={applied} bound={bound} onError={onError} writes={['restored draft']} />)
     })
 
     expect(onError).not.toHaveBeenCalled()
     expect(applied).toEqual(['restored draft'])
+  })
+
+  it('replays the latest pending draft once the core binds', () => {
+    const applied: string[] = []
+    const bound = { current: false }
+
+    render(<Harness applied={applied} bound={bound} onError={vi.fn()} writes={['restored draft']} />)
+
+    act(() => {
+      vi.advanceTimersByTime(16)
+    })
+    expect(applied).toEqual([])
+
+    bound.current = true
+    act(() => {
+      vi.advanceTimersByTime(16)
+    })
+
+    expect(applied).toEqual(['restored draft'])
+  })
+
+  it('flushes only the newest pending value across an unbound session swap', () => {
+    const applied: string[] = []
+    const bound = { current: false }
+
+    render(<Harness applied={applied} bound={bound} onError={vi.fn()} writes={['previous session draft', '']} />)
+
+    act(() => {
+      vi.advanceTimersByTime(16)
+    })
+    expect(applied).toEqual([])
+
+    bound.current = true
+    act(() => {
+      vi.advanceTimersByTime(16)
+    })
+
+    expect(applied).toEqual([''])
   })
 })

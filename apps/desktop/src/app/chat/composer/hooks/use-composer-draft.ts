@@ -62,22 +62,10 @@ export function useComposerDraft({
     return trimmed.length > 0 && !SLASH_COMMAND_RE.test(trimmed)
   })
 
-  // assistant-ui's composer mutators throw when the core isn't bound yet (a
-  // startup/thread-swap window); the DOM + draftRef hold the text and the
-  // subscription reconciles once it binds, so swallow the premature write.
-  const setComposerText = useCallback(
-    (value: string) => {
-      try {
-        aui.composer().setText(value)
-      } catch {
-        // Composer core not bound yet — DOM/draftRef carry the text.
-      }
-    },
-    [aui]
-  )
-
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef('')
+  const pendingComposerTextRef = useRef<string | null>(null)
+  const pendingComposerTextRafRef = useRef<number | undefined>(undefined)
   const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
   const draftPersistTimerRef = useRef<number | undefined>(undefined)
   const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
@@ -95,6 +83,57 @@ export function useComposerDraft({
   queueEditStateRef.current = queueEditRef.current
 
   const [focusRequestId, setFocusRequestId] = useState(0)
+
+  const flushPendingComposerText = useCallback(() => {
+    const pending = pendingComposerTextRef.current
+
+    if (pending === null) {
+      return true
+    }
+
+    try {
+      aui.composer().setText(pending)
+      pendingComposerTextRef.current = null
+
+      return true
+    } catch {
+      return false
+    }
+  }, [aui])
+
+  const schedulePendingComposerTextFlush = useCallback(() => {
+    if (pendingComposerTextRafRef.current !== undefined) {
+      return
+    }
+
+    const retry = () => {
+      pendingComposerTextRafRef.current = undefined
+
+      if (pendingComposerTextRef.current === null) {
+        return
+      }
+
+      if (!flushPendingComposerText()) {
+        pendingComposerTextRafRef.current = window.requestAnimationFrame(retry)
+      }
+    }
+
+    pendingComposerTextRafRef.current = window.requestAnimationFrame(retry)
+  }, [flushPendingComposerText])
+
+  // assistant-ui's composer mutators throw when the core isn't bound yet (a
+  // startup/thread-swap window). Keep the latest desired draft on file and
+  // replay it once the core binds so stale session text cannot leak back in.
+  const setComposerText = useCallback(
+    (value: string) => {
+      pendingComposerTextRef.current = value
+
+      if (!flushPendingComposerText()) {
+        schedulePendingComposerTextFlush()
+      }
+    },
+    [flushPendingComposerText, schedulePendingComposerTextFlush]
+  )
 
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)
@@ -149,6 +188,15 @@ export function useComposerDraft({
       focusInput()
     }
   }, [focusInput, focusKey, focusRequestId, inputDisabled])
+
+  useEffect(
+    () => () => {
+      if (pendingComposerTextRafRef.current !== undefined) {
+        window.cancelAnimationFrame(pendingComposerTextRafRef.current)
+      }
+    },
+    []
+  )
 
   useEffect(() => {
     if (inputDisabled) {

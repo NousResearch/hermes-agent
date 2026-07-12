@@ -1421,7 +1421,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_network = cc.get("docker_network", True)
 
     if env_type == "local":
-        return _LocalEnvironment(cwd=cwd, timeout=timeout)
+        env = _LocalEnvironment(cwd=cwd, timeout=timeout)
+        env._env_type = env_type  # stamp for backend-compatibility check
+        return env
     
     elif env_type == "docker":
         # One-shot orphan reaper: clean up labeled containers left behind by
@@ -1431,7 +1433,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         # subagents, RL benchmarks) don't run the reaper N times.
         # Disable via ``terminal.docker_orphan_reaper: false`` (issue #20561).
         _maybe_reap_docker_orphans(cc)
-        return _DockerEnvironment(
+        env = _DockerEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
@@ -1445,13 +1447,17 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             extra_args=docker_extra_args,
             persist_across_processes=cc.get("docker_persist_across_processes", True),
         )
+        env._env_type = env_type
+        return env
     
     elif env_type == "singularity":
-        return _SingularityEnvironment(
+        env = _SingularityEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
         )
+        env._env_type = env_type
+        return env
     
     elif env_type == "modal":
         sandbox_kwargs = {}
@@ -1470,11 +1476,13 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         modal_state = _get_modal_backend_state(cc.get("modal_mode"))
 
         if modal_state["selected_backend"] == "managed":
-            return _ManagedModalEnvironment(
+            env = _ManagedModalEnvironment(
                 image=image, cwd=cwd, timeout=timeout,
                 modal_sandbox_kwargs=sandbox_kwargs,
                 persistent_filesystem=persistent, task_id=task_id,
             )
+            env._env_type = env_type
+            return env
 
         if modal_state["selected_backend"] != "direct":
             if modal_state["managed_mode_blocked"]:
@@ -1505,25 +1513,29 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                 )
             raise ValueError(message)
 
-        return _ModalEnvironment(
+        env = _ModalEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             modal_sandbox_kwargs=sandbox_kwargs,
             persistent_filesystem=persistent, task_id=task_id,
         )
+        env._env_type = env_type
+        return env
     
     elif env_type == "daytona":
         # Lazy import so daytona SDK is only required when backend is selected.
         from tools.environments.daytona import DaytonaEnvironment as _DaytonaEnvironment
-        return _DaytonaEnvironment(
+        env = _DaytonaEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=int(cpu), memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
         )
+        env._env_type = env_type
+        return env
 
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
-        return _SSHEnvironment(
+        env = _SSHEnvironment(
             host=ssh_config["host"],
             user=ssh_config["user"],
             port=ssh_config.get("port", 22),
@@ -1531,6 +1543,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             cwd=cwd,
             timeout=timeout,
         )
+        env._env_type = env_type
+        return env
 
     else:
         raise ValueError(
@@ -1642,7 +1656,19 @@ def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
     lookup = _resolve_container_task_id(task_id)
     with _env_lock:
-        return _active_environments.get(lookup) or _active_environments.get(task_id)
+        env = _active_environments.get(lookup) or _active_environments.get(task_id)
+    # If the cached env was created with a different backend type, evict
+    # and return None so the caller creates a fresh env for the current config.
+    if env is not None:
+        cached_type = getattr(env, "_env_type", None)
+        if cached_type is not None:
+            current_type = _get_env_config()["env_type"]
+            if cached_type != current_type:
+                with _env_lock:
+                    _active_environments.pop(lookup, None)
+                    _active_environments.pop(task_id, None)
+                return None
+    return env
 
 
 def is_persistent_env(task_id: str) -> bool:

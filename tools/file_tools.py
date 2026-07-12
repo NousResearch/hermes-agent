@@ -1066,8 +1066,18 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     if cached is not None:
         with _env_lock:
             if task_id in _active_environments:
-                _last_activity[task_id] = time.time()
-                return cached
+                env = _active_environments[task_id]
+                # Evict if backend type changed between sessions (#62720)
+                cached_type = getattr(env, "_env_type", None)
+                if cached_type is not None and cached_type != _get_env_config()["env_type"]:
+                    _active_environments.pop(task_id, None)
+                    _last_activity.pop(task_id, None)
+                    with _file_ops_lock:
+                        _file_ops_cache.pop(task_id, None)
+                    cached = None
+                else:
+                    _last_activity[task_id] = time.time()
+                    return cached
             else:
                 # Environment was cleaned up -- preserve the old cwd before
                 # invalidating the stale cache entry (fixes #26211: silent
@@ -1090,8 +1100,18 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         # Double-check: another thread may have created it while we waited
         with _env_lock:
             if task_id in _active_environments:
-                _last_activity[task_id] = time.time()
-                terminal_env = _active_environments[task_id]
+                env = _active_environments[task_id]
+                # Evict if backend type changed between sessions (#62720)
+                cached_type = getattr(env, "_env_type", None)
+                if cached_type is not None and cached_type != _get_env_config()["env_type"]:
+                    _active_environments.pop(task_id, None)
+                    _last_activity.pop(task_id, None)
+                    with _file_ops_lock:
+                        _file_ops_cache.pop(task_id, None)
+                    terminal_env = None
+                else:
+                    _last_activity[task_id] = time.time()
+                    terminal_env = env
             else:
                 terminal_env = None
 

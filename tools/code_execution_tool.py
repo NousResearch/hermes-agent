@@ -640,11 +640,18 @@ def _get_or_create_env(task_id: str):
 
     effective_task_id = _resolve_container_task_id(task_id)
 
-    # Fast path: environment already exists
+    # Fast path: environment already exists with matching backend type
     with _env_lock:
         if effective_task_id in _active_environments:
-            _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
+            env = _active_environments[effective_task_id]
+            # Evict if backend type changed between sessions (#62720)
+            cached_type = getattr(env, "_env_type", None)
+            if cached_type is not None and cached_type != _get_env_config()["env_type"]:
+                _active_environments.pop(effective_task_id, None)
+                _last_activity.pop(effective_task_id, None)
+            else:
+                _last_activity[effective_task_id] = time.time()
+                return env, _get_env_config()["env_type"]
 
     # Slow path: create environment (same pattern as file_tools._get_file_ops)
     with _creation_locks_lock:
@@ -655,8 +662,14 @@ def _get_or_create_env(task_id: str):
     with task_lock:
         with _env_lock:
             if effective_task_id in _active_environments:
-                _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
+                env = _active_environments[effective_task_id]
+                cached_type = getattr(env, "_env_type", None)
+                if cached_type is not None and cached_type != _get_env_config()["env_type"]:
+                    _active_environments.pop(effective_task_id, None)
+                    _last_activity.pop(effective_task_id, None)
+                else:
+                    _last_activity[effective_task_id] = time.time()
+                    return env, _get_env_config()["env_type"]
 
         config = _get_env_config()
         env_type = config["env_type"]

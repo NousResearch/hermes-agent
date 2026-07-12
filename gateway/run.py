@@ -4803,17 +4803,18 @@ class GatewayRunner:
 
         # Notify the chat that initiated /restart that the gateway is back.
         planned_restart_notification_pending = _planned_restart_notification_pending()
-        await self._send_restart_notification()
+        restart_notification_target = await self._send_restart_notification()
 
-        # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
+        # An external signal may have both an interrupted active chat and one
+        # or more configured home channels. Preserve the precise active-chat
+        # reply, but do not send a second generic startup ping to that same
+        # platform/chat/topic. Other configured homes can still receive the
+        # recovery notification.
         if planned_restart_notification_pending:
+            skip_targets = {restart_notification_target} if restart_notification_target else None
             try:
                 await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
+                    skip_targets=skip_targets,
                 )
             finally:
                 _clear_planned_restart_notification()

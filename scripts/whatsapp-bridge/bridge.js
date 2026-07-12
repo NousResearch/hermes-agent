@@ -30,7 +30,7 @@ import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { matchesAllowedSender, matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -532,8 +532,10 @@ async function startSocket() {
 
       const chatId = msg.key.remoteJid;
       const senderId = msg.key.participant || chatId;
+      const senderPn = msg.key.senderPn || '';
+      const resolvedSenderId = senderPn || senderId;
       const isGroup = chatId.endsWith('@g.us');
-      const senderNumber = senderId.replace(/@.*/, '');
+      const senderNumber = resolvedSenderId.replace(/@.*/, '');
       emitDebugEvent({
         stage: 'upsert',
         type,
@@ -634,7 +636,7 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedSender(senderId, senderPn, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
@@ -710,7 +712,7 @@ async function startSocket() {
       const event = await extractBridgeEvent({
         msg,
         chatId,
-        senderId,
+        senderId: resolvedSenderId,
         senderNumber,
         botIds,
         isGroup,

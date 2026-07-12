@@ -63,6 +63,15 @@ export function expandWhatsAppIdentifiers(identifier, sessionDir) {
   return resolved;
 }
 
+export function matchesAllowedSender(senderId, senderPn, allowedUsers, sessionDir) {
+  // WhatsApp Multi-Device can expose a first-contact sender as an opaque LID
+  // before it persists LID mapping files. Baileys supplies the same sender's
+  // authenticated phone JID separately in msg.key.senderPn, so consult it
+  // as an additional alias without changing the allowlist itself.
+  return matchesAllowedUser(senderId, allowedUsers, sessionDir)
+    || matchesAllowedUser(senderPn, allowedUsers, sessionDir);
+}
+
 export function matchesAllowedUser(senderId, allowedUsers, sessionDir) {
   // Empty allowlist = NO ONE allowed (secure default, #8389).  Operators
   // who want an open bot must set ``WHATSAPP_ALLOWED_USERS=*`` explicitly.

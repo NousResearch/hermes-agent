@@ -18351,6 +18351,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
 
+            # Peek at the cached entry's snapshot session_id (if any) so we can
+            # check, OUTSIDE the cache lock, whether THAT session_id is a DEAD
+            # session in state.db. This closes a gap in the #54947 fix: that
+            # fix treats "cached session_id != current session_id" as an
+            # intentional /resume-style switch and reuses the agent unchanged.
+            # But the #54878 self-heal produces the exact same tuple shape
+            # when it recovers a routing key away from a session that was
+            # already ended — the cached AIAgent still belongs to the DEAD
+            # session, not a valid sibling conversation. Reusing it lets that
+            # turn's post-run "session split" sync write the routing key
+            # straight back onto the dead session_id, undoing the self-heal
+            # and looping every message until an interrupt happens to race in
+            # first (the #54878 x #54947 interaction — no existing upstream
+            # issue tracks this combination as of 2026-07-12).
+            _peek_cached_sid = None
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    _peek_entry = _cache.get(session_key)
+                if _peek_entry and len(_peek_entry) > 3:
+                    _peek_cached_sid = _peek_entry[3]
+            _cached_sid_is_dead = False
+            if (
+                _peek_cached_sid is not None
+                and session_id is not None
+                and _peek_cached_sid != session_id
+            ):
+                try:
+                    _cached_sid_is_dead = self.session_store._is_session_ended_in_db(
+                        _peek_cached_sid
+                    )
+                except Exception:
+                    _cached_sid_is_dead = False
+
             # Detect cross-process writes: when another process (e.g. hermes
             # dashboard) appends to the same session in the shared SessionDB,
             # the cached agent's in-memory transcript becomes stale.  Compare
@@ -18390,7 +18423,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             and session_id is not None
                             and _cached_sid != session_id
                         )
-                        if (
+                        # Re-validate the OUTSIDE-lock dead-session peek
+                        # against the tuple actually read under THIS lock —
+                        # the cache entry could have been replaced between
+                        # the peek and this lock acquisition, and a stale
+                        # "dead" verdict must never be applied to a
+                        # different (possibly live) cached agent.
+                        _stale_dead_sid_reuse = (
+                            _session_id_mismatch
+                            and _cached_sid_is_dead
+                            and _cached_sid == _peek_cached_sid
+                        )
+                        if _stale_dead_sid_reuse:
+                            # #54878 x #54947 interaction: the routing key
+                            # was just self-healed away from a session that
+                            # state.db already marked ended, but the cached
+                            # AIAgent here still belongs to that DEAD
+                            # session_id. The #54947 "different session_id
+                            # under the same key = intentional switch, reuse
+                            # freely" rule does not hold here — this isn't a
+                            # sibling conversation, it's a stale agent left
+                            # over from before the self-heal. Reusing it lets
+                            # this turn's post-run "session split" sync write
+                            # the routing key straight back onto the dead
+                            # session_id, undoing the self-heal and looping
+                            # every message until an interrupt happens to
+                            # race in first. Discard and rebuild fresh
+                            # instead, same as a genuine cross-process write.
+                            logger.info(
+                                "Agent cache invalidated for session %s: "
+                                "cached agent's session_id %s is ended in "
+                                "state.db (stale self-heal artifact, "
+                                "#54878 x #54947) — discarding instead of "
+                                "reusing across the routing recovery",
+                                session_key, _cached_sid,
+                            )
+                            evicted = self._agent_cache.pop(session_key, None)
+                            _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+                            if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
+                                # Same deferred-cleanup rationale as the
+                                # cross-process branch below (#52197): don't
+                                # block the event loop / cache lock on
+                                # memory-provider shutdown or socket teardown.
+                                _xproc_evicted_agent = _ev_agent
+                        elif (
                             not _session_id_mismatch
                             and _cached_mc is not None
                             and _current_msg_count is not None

@@ -2978,9 +2978,8 @@ class GatewaySlashCommandsMixin:
             /busy steer         Inject messages mid-run without interrupting
             /busy interrupt     Interrupt the current run (default)
         """
-        text = (event.text or "").strip()
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2 or parts[1].strip().lower() == "status":
+        arg = event.get_command_args().strip().lower()
+        if not arg or arg == "status":
             mode = self._busy_input_mode
             if mode == "queue":
                 behavior = "queues for next turn"
@@ -2989,18 +2988,17 @@ class GatewaySlashCommandsMixin:
             else:
                 behavior = "interrupts current run"
             return EphemeralReply(
-                f"**Busy input mode: `{mode}`**\n"
-                f"Messages while busy: _{behavior}_\n"
+                f"**Busy input mode: `{mode}`" + "\n"
+                f"Messages while busy: _{behavior}_" + "\n"
                 f"Change with `/busy queue`, `/busy steer`, or `/busy interrupt`."
             )
 
-        arg = parts[1].strip().lower()
         if arg not in {"queue", "interrupt", "steer"}:
             return EphemeralReply(
                 f"Unknown mode `{arg}`. Use `/busy queue`, `/busy steer`, or `/busy interrupt`."
             )
 
-        # Persist before mutate — prevents divergent state when save fails
+        # Persist before mutate
         try:
             from cli import save_config_value
             if save_config_value("display.busy_input_mode", arg):
@@ -3012,7 +3010,7 @@ class GatewaySlashCommandsMixin:
                 else:
                     behavior = "Messages will interrupt the current run while Hermes is busy."
                 return EphemeralReply(
-                    f"Busy input mode set to **`{arg}`** (saved).\n"
+                    f"Busy input mode set to **`{arg}`** (saved)." + "\n"
                     f"_{behavior}_"
                 )
             else:

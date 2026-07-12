@@ -1204,7 +1204,10 @@ export interface Translations {
     customPlaceholder: string
     customHint: string
     optional: string
+    promptRequired: string
     promptScheduleRequired: string
+    scheduleRequired: string
+    scriptOnlyEditHint: string
     saveChanges: string
     createAction: string
   }

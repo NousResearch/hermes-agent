@@ -25,6 +25,16 @@ from hermes_cli import kanban_db as kb
 from hermes_cli.kanban import run_slash
 
 
+def _record_owned_exit(conn, task_id, pid, raw_status):
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    kb._record_worker_exit(pid, raw_status)
+    kb._worker_exit_context[pid] = kb._WorkerProcess(
+        pid=pid, task_id=task_id, run_id=task.current_run_id, board="default",
+        proc=None, started_at=0, process_group=None, log_path="/tmp/test.log", route={},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1495,7 +1505,7 @@ def test_multiple_attempts_preserved_as_runs(kanban_home):
         kb._set_worker_pid(conn, tid, 98765)
         # A classified non-zero exit is transient and may be retried;
         # unknown PID loss is deliberately blocked by the v2 contract.
-        _kb._record_worker_exit(98765, 256)
+        _record_owned_exit(conn, tid, 98765, 256)
         original_alive = _kb._pid_alive
         _kb._pid_alive = lambda pid: False
         try:
@@ -1527,7 +1537,7 @@ def test_stale_run_cannot_complete_new_attempt(kanban_home, monkeypatch):
         kb.claim_task(conn, tid)
         run1 = kb.latest_run(conn, tid)
         kb._set_worker_pid(conn, tid, 98765)
-        _kb._record_worker_exit(98765, 256)
+        _record_owned_exit(conn, tid, 98765, 256)
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [tid]
 
@@ -1569,7 +1579,7 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         kb.claim_task(conn, tid)
         run1 = kb.latest_run(conn, tid)
         kb._set_worker_pid(conn, tid, 98765)
-        _kb._record_worker_exit(98765, 256)
+        _record_owned_exit(conn, tid, 98765, 256)
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [tid]
 
@@ -4395,7 +4405,7 @@ def test_detect_crashed_workers_increments_counter(kanban_home):
         kb.claim_task(conn, tid)
         kb._set_worker_pid(conn, tid, 99999)  # fake pid — not alive
         # A known non-zero status follows the normal retry/counter path.
-        kb._record_worker_exit(99999, 256)
+        _record_owned_exit(conn, tid, 99999, 256)
 
         kb.detect_crashed_workers(conn)
 
@@ -4429,7 +4439,7 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
 
         # Simulate the reap loop having recorded a clean exit for this pid.
         # os.W_EXITCODE(status=0, signal=0) == 0 on POSIX.
-        _kb._record_worker_exit(fake_pid, 0)
+        _record_owned_exit(conn, tid, fake_pid, 0)
         # Force liveness check to say "dead" for the fake pid.
         original_alive = _kb._pid_alive
         _kb._pid_alive = lambda p: False
@@ -4479,7 +4489,7 @@ def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
         kb._set_worker_pid(conn, tid, fake_pid)
 
         # W_EXITCODE(1, 0) == 256 — WIFEXITED True, WEXITSTATUS == 1.
-        _kb._record_worker_exit(fake_pid, 256)
+        _record_owned_exit(conn, tid, fake_pid, 256)
         original_alive = _kb._pid_alive
         _kb._pid_alive = lambda p: False
         try:

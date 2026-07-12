@@ -187,23 +187,73 @@ def test_exit_context_is_bounded_and_releases_exited_popen_references(kanban_hom
     assert len(kb._worker_exit_context) <= 8
 
 
-def test_child_inherits_parent_execution_route_and_validated_override(kanban_home):
+def test_child_inherits_parent_route_through_canonical_spawn_boundary(
+    kanban_home, tmp_path, monkeypatch,
+):
+    profile_home = tmp_path / ".hermes" / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "model:\n  provider: openrouter\n  default: anthropic/claude-fable-5\n",
+        encoding="utf-8",
+    )
+    reviewer_home = tmp_path / ".hermes" / "profiles" / "reviewer"
+    reviewer_home.mkdir(parents=True)
+    (reviewer_home / "config.yaml").write_text(
+        "model:\n  provider: openrouter\n  default: anthropic/claude-fable-5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test-only-not-billable")
+    popen_calls = []
+
+    class Proc:
+        def __init__(self):
+            self.pid = 6100 + len(popen_calls)
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(
+        kb.subprocess, "Popen", lambda *a, **kw: popen_calls.append((a, kw)) or Proc(),
+    )
     with kb.connect() as conn:
-        parent = kb.create_task(conn, title="parent", assignee="worker")
-        claimed = kb.claim_task(conn, parent)
-        assert claimed is not None
-        claimed.execution_route = {
-            "profile": "worker", "provider": "openai", "model": "gpt-parent",
-            "credential_ref": "pool:primary",
-        }
-        kb._persist_execution_route(conn, claimed)
+        parent = kb.create_task(
+            conn, title="parent", assignee="worker", workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        assert [row[0] for row in kb.dispatch_once(conn, max_spawn=1).spawned] == [parent]
+        parent_task = kb.get_task(conn, parent)
+        assert parent_task is not None
+        assert kb.complete_task(conn, parent, expected_run_id=parent_task.current_run_id)
         child = kb.create_task(
             conn, title="child", assignee="reviewer", parents=[parent],
-            execution_route_override={"model": "gpt-review"},
+            workspace_kind="dir", workspace_path=str(tmp_path),
+            execution_route_override={"model": "anthropic/claude-fable-5"},
         )
-        assert kb._latest_execution_route(conn, child) == {
-            "profile": "worker", "provider": "openai", "model": "gpt-review",
-            "credential_ref": "pool:primary",
+        inherited = kb._latest_execution_route(conn, child)
+        assert inherited == {
+            "profile": "worker", "provider": "openrouter",
+            "model": "anthropic/claude-fable-5",
+            "credential_ref": "env:OPENROUTER_API_KEY",
+        }
+        assert [row[0] for row in kb.dispatch_once(conn, max_spawn=1).spawned] == [child]
+        assert len(popen_calls) == 2
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None
+        assert kb.complete_task(conn, child, expected_run_id=child_task.current_run_id)
+
+        unavailable = kb.create_task(
+            conn, title="unavailable credential", assignee="reviewer", parents=[parent],
+            workspace_kind="dir", workspace_path=str(tmp_path),
+            execution_route_override={"credential_ref": "pool:unavailable"},
+        )
+        rejected = kb.dispatch_once(conn, max_spawn=1)
+        assert rejected.auto_blocked == [unavailable]
+        assert len(popen_calls) == 2
+        rejected_run = kb.list_runs(conn, unavailable)[0]
+        assert rejected_run.metadata is not None
+        assert rejected_run.metadata["preflight"] == {
+            "code": "route_invalid",
+            "detail": "requested credential reference is unavailable",
         }
         with pytest.raises(ValueError, match="unknown execution route override"):
             kb.create_task(
@@ -229,10 +279,62 @@ def test_exit_evidence_is_atomic_consume_once(kanban_home):
     assert second == ("unknown", None, None)
 
 
-def _prepare_claimed_task(conn, workspace: Path, *, skills=None):
+def test_poll_does_not_publish_exit_after_same_pid_registry_replacement(kanban_home):
+    pid = 4343
+    old_task = _task("t_old")
+    old_task.current_run_id = 1
+    new_task = _task("t_new")
+    new_task.current_run_id = 2
+
+    class NewProc:
+        def __init__(self):
+            self.pid = pid
+
+        def poll(self):
+            return None
+
+    class OldProc:
+        def __init__(self):
+            self.pid = pid
+
+        def poll(self):
+            kb._register_worker_process(
+                NewProc(), new_task, board="default", log_path="/tmp/new.log",
+            )
+            return 9
+
+    kb._register_worker_process(OldProc(), old_task, board="default", log_path="/tmp/old.log")
+
+    assert kb._poll_registered_workers() == []
+    assert kb._worker_registry[pid].task_id == new_task.id
+    assert pid not in kb._recent_worker_exits
+    assert kb._consume_worker_exit(pid, new_task.id, new_task.current_run_id) == (
+        "unknown", None, None,
+    )
+
+
+def test_mismatched_consumer_cannot_steal_same_pid_exit_evidence(kanban_home):
+    class Proc:
+        pid = 4343
+
+        def poll(self):
+            return 7
+
+    old_task = _task("t_old")
+    old_task.current_run_id = 1
+    kb._register_worker_process(Proc(), old_task, board="default", log_path="/tmp/old.log")
+    assert kb._poll_registered_workers() == [Proc.pid]
+
+    assert kb._consume_worker_exit(Proc.pid, "t_new", 2) == ("unknown", None, None)
+    rightful = kb._consume_worker_exit(Proc.pid, old_task.id, old_task.current_run_id)
+    assert rightful[:2] == ("nonzero_exit", 7)
+    assert rightful[2] is not None
+
+
+def _prepare_claimed_task(conn, workspace: Path, *, skills=None, **kwargs):
     task_id = kb.create_task(
         conn, title="preflight", assignee="worker", workspace_kind="dir",
-        workspace_path=str(workspace), skills=skills,
+        workspace_path=str(workspace), skills=skills, **kwargs,
     )
     task = kb.claim_task(conn, task_id, claimer="host:dispatcher")
     assert task is not None
@@ -245,47 +347,43 @@ def test_canonical_default_route_uses_temp_profile_and_makes_no_model_call(
     profile_home = tmp_path / ".hermes" / "profiles" / "worker"
     profile_home.mkdir(parents=True)
     (profile_home / "config.yaml").write_text(
-        "model:\n  provider: openrouter\n  default: gpt-from-profile\n", encoding="utf-8",
+        "model:\n  provider: openrouter\n  default: anthropic/claude-fable-5\n",
+        encoding="utf-8",
     )
-    monkeypatch.setattr(kb, "_claimer_id", lambda: "host:dispatcher")
-    monkeypatch.setattr(kb, "_resolve_worker_cli_toolsets", lambda home: ["file"])
-    calls = []
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test-only-not-billable")
+    spawned = []
 
-    def resolve(task, profile, provider, model):
-        calls.append((profile, provider, model))
-        return {"ok": True, "route": {
-            "profile": profile, "provider": provider, "model": model,
-            "credential_ref": "auth.json:openai:0",
-        }}
+    class Proc:
+        pid = 5252
 
-    monkeypatch.setattr(kb, "_resolve_worker_route", resolve)
+        def poll(self):
+            return 9
+
+    monkeypatch.setattr(kb.subprocess, "Popen", lambda *a, **kw: spawned.append((a, kw)) or Proc())
     with kb.connect() as conn:
-        task = _prepare_claimed_task(conn, tmp_path)
-        result = kb._preflight_worker_spawn(task, str(tmp_path), board="default")
-        assert result["ok"] is True
-        assert calls == [("worker", "openrouter", "gpt-from-profile")]
-        assert result["route"]["credential_ref"] == "auth.json:openai:0"
-        assert "api_key" not in json.dumps(result)
-        kb._persist_execution_route(conn, task)
-
-        class Proc:
-            pid = 5252
-
-            def poll(self):
-                return 9
-
+        task_id = kb.create_task(
+            conn, title="route", assignee="worker", workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        dispatch = kb.dispatch_once(conn, max_spawn=1, board="default")
+        assert [row[0] for row in dispatch.spawned] == [task_id]
+        assert len(spawned) == 1
+        route = kb._latest_execution_route(conn, task_id)
+        assert route == {
+            "profile": "worker", "provider": "openrouter",
+            "model": "anthropic/claude-fable-5",
+            "credential_ref": "env:OPENROUTER_API_KEY",
+        }
+        assert "sk-or-v1-test-only-not-billable" not in str(kb.list_events(conn, task_id))
         monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
         monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
-        kb._register_worker_process(
-            Proc(), task, board="default", log_path="/tmp/worker.log", route=result["route"],
-        )
-        kb._set_worker_pid(conn, task.id, Proc.pid)
         kb._poll_registered_workers()
-        assert kb.detect_crashed_workers(conn) == [task.id]
-        metadata = kb.list_runs(conn, task.id)[0].metadata
+        assert kb.detect_crashed_workers(conn) == [task_id]
+        metadata = kb.list_runs(conn, task_id)[0].metadata
         assert metadata is not None
-        assert metadata["route"] == result["route"]
+        assert metadata["route"] == route
         assert "api_key" not in json.dumps(metadata)
+        assert "sk-or-v1-test-only-not-billable" not in json.dumps(metadata)
 
 
 def test_unavailable_attached_skill_is_typed_preflight_failure_before_popen(
@@ -324,22 +422,26 @@ def test_invalid_explicit_model_is_rejected_before_popen(kanban_home, tmp_path, 
     profile_home = tmp_path / ".hermes" / "profiles" / "worker"
     profile_home.mkdir(parents=True)
     (profile_home / "config.yaml").write_text(
-        "model:\n  provider: openrouter\n  default: valid-model\n", encoding="utf-8",
+        "model:\n  provider: openrouter\n  default: anthropic/claude-fable-5\n", encoding="utf-8",
     )
-    monkeypatch.setattr(kb, "_claimer_id", lambda: "host:dispatcher")
-    monkeypatch.setattr(kb, "_resolve_worker_cli_toolsets", lambda home: ["file"])
-    monkeypatch.setattr(kb, "_resolve_worker_route", lambda *args: {
-        "ok": False, "code": "route_invalid", "detail": "model is unavailable for provider",
-    })
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test-only-not-billable")
     popen_calls = []
     monkeypatch.setattr(kb.subprocess, "Popen", lambda *a, **kw: popen_calls.append((a, kw)))
     with kb.connect() as conn:
-        task = _prepare_claimed_task(conn, tmp_path)
-        task.model_override = "not-in-catalog"
-        result = kb._preflight_worker_spawn(task, str(tmp_path), board="default")
-        assert result["code"] == "route_invalid"
-        assert result["detail"] == "model is unavailable for provider"
+        task_id = kb.create_task(
+            conn, title="invalid route", assignee="worker", workspace_kind="dir",
+            workspace_path=str(tmp_path),
+            execution_route_override={"model": "not-in-catalog"},
+        )
+        result = kb.dispatch_once(conn, max_spawn=1, board="default")
+        assert result.auto_blocked == [task_id]
         assert popen_calls == []
+        run = kb.list_runs(conn, task_id)[0]
+        assert run.outcome == "preflight_failed"
+        assert run.metadata is not None
+        assert run.metadata["preflight"] == {
+            "code": "route_invalid", "detail": "model is unavailable for provider",
+        }
 
 
 @pytest.mark.parametrize(

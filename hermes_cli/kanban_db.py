@@ -6085,10 +6085,10 @@ def _poll_registered_workers() -> list[int]:
             continue
         if returncode is None:
             continue
-        _record_worker_returncode(pid, int(returncode))
         with _worker_registry_lock:
             if _worker_registry.get(pid) is not record:
                 continue
+            _record_worker_returncode(pid, int(returncode))
             _worker_exit_context[pid] = record
             _worker_registry.pop(pid, None)
         reaped.append(pid)
@@ -6166,12 +6166,15 @@ def _consume_worker_exit(
 ) -> tuple[str, Optional[int], Optional[_WorkerProcess]]:
     """Atomically consume status and matching process evidence exactly once."""
     with _worker_registry_lock:
-        entry = _recent_worker_exits.pop(int(pid), None)
-        record = _worker_exit_context.pop(int(pid), None)
-        if record is not None and (record.task_id != task_id or record.run_id != run_id):
-            record = None
+        pid = int(pid)
+        record = _worker_exit_context.get(pid)
+        if record is None or record.task_id != task_id or record.run_id != run_id:
+            return ("unknown", None, None)
+        entry = _recent_worker_exits.get(pid)
         if entry is None:
             return ("unknown", None, None)
+        _recent_worker_exits.pop(pid, None)
+        _worker_exit_context.pop(pid, None)
         raw, _ = entry
         try:
             if os.WIFEXITED(raw):
@@ -8517,9 +8520,13 @@ def _default_spawn(
             reset_hermes_home_override(token)
     except Exception:
         provider = ""
+    registered_route = dict(task.execution_route or {})
+    registered_route.setdefault("profile", profile_arg)
+    registered_route.setdefault("provider", provider)
+    if task.model_override:
+        registered_route.setdefault("model", task.model_override)
     _register_worker_process(
-        proc, task, board=board, log_path=str(log_path),
-        route={"profile": profile_arg, "provider": provider, "model": task.model_override or ""},
+        proc, task, board=board, log_path=str(log_path), route=registered_route,
     )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The

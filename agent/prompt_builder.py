@@ -1096,7 +1096,10 @@ def build_environment_hints() -> str:
         else:
             host_lines.append(f"Host: {platform.system()} ({platform.release()})")
 
-        host_lines.append(f"User home directory: {os.path.expanduser('~')}")
+        user_home = os.environ.get("HOME", "").strip()
+        if not user_home:
+            user_home = os.path.expanduser("~")
+        host_lines.append(f"User home directory: {user_home}")
         try:
             host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
         except OSError:

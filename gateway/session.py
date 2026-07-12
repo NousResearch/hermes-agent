@@ -1156,12 +1156,14 @@ class SessionStore:
                 # end_reason not None -> session ended — prune
                 if row is not None and row.get("end_reason") is not None:
                     recovered_entry = None
+                    recovery_lookup_failed = False
                     if entry.origin is not None:
                         try:
                             recovered_entry = self._recover_session_from_db(
                                 session_key=key,
                                 source=entry.origin,
                                 now=_now(),
+                                raise_on_lookup_error=True,
                             )
                         except Exception as exc:
                             logger.debug(
@@ -1171,6 +1173,10 @@ class SessionStore:
                                 entry.session_id,
                                 exc,
                             )
+                            recovery_lookup_failed = True
+
+                    if recovery_lookup_failed:
+                        continue
 
                     # If the stale entry points at a compression-ended parent but
                     # a newer live child session exists for the exact same gateway
@@ -1394,6 +1400,7 @@ class SessionStore:
         session_key: str,
         source: SessionSource,
         now: datetime,
+        raise_on_lookup_error: bool = False,
     ) -> Optional[SessionEntry]:
         """Rebuild a missing session-key mapping from durable state.db data."""
         if not self._db:
@@ -1412,6 +1419,8 @@ class SessionStore:
             )
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
+            if raise_on_lookup_error:
+                raise
             return None
         if not recovered:
             return None

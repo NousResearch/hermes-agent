@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+from hermes_cli.nous_account import NousPaidServiceAccessInfo, NousPortalAccountInfo
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
 
@@ -64,7 +65,7 @@ def test_show_status_displays_legacy_string_model_and_custom_endpoint(monkeypatc
 
 
 def test_show_status_reports_managed_nous_features(monkeypatch, capsys, tmp_path):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("hermes_cli.status.managed_nous_tools_enabled", lambda: True)
     from hermes_cli import status as status_mod
 
     _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
@@ -87,7 +88,9 @@ def test_show_status_reports_managed_nous_features(monkeypatch, capsys, tmp_path
             features={
                 "web": NousFeatureState("web", "Web tools", True, True, True, True, False, True, "firecrawl"),
                 "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
+                "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
                 "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
+                "stt": NousFeatureState("stt", "Speech-to-text", True, True, True, True, False, True, "OpenAI Whisper"),
                 "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
                 "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
             },
@@ -98,13 +101,13 @@ def test_show_status_reports_managed_nous_features(monkeypatch, capsys, tmp_path
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
     out = capsys.readouterr().out
-    assert "Nous Subscription Features" in out
+    assert "Nous Tool Gateway" in out
     assert "Browser automation" in out
     assert "active via Nous subscription" in out
 
 
 def test_show_status_hides_nous_subscription_section_when_feature_flag_is_off(monkeypatch, capsys, tmp_path):
-    monkeypatch.delenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", raising=False)
+    monkeypatch.setattr("hermes_cli.status.managed_nous_tools_enabled", lambda: False)
     from hermes_cli import status as status_mod
 
     _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
@@ -121,4 +124,88 @@ def test_show_status_hides_nous_subscription_section_when_feature_flag_is_off(mo
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
     out = capsys.readouterr().out
-    assert "Nous Subscription Features" not in out
+    assert "Nous Tool Gateway" not in out
+
+
+def test_show_status_reports_exhausted_nous_credits(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr("hermes_cli.status.managed_nous_tools_enabled", lambda: False)
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(
+        auth_mod,
+        "get_nous_auth_status",
+        lambda: {
+            "logged_in": False,
+            "access_token": "jwt",
+            "portal_base_url": "https://portal.example.test",
+            "error": "credits exhausted",
+            "error_code": "insufficient_credits",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        status_mod,
+        "get_nous_portal_account_info",
+        lambda: NousPortalAccountInfo(
+            logged_in=True,
+            source="account_api",
+            fresh=True,
+            paid_service_access=False,
+            portal_base_url="https://portal.example.test",
+            paid_service_access_info=NousPaidServiceAccessInfo(
+                allowed=False,
+                reason="no_usable_credits",
+                has_active_subscription=True,
+                active_subscription_is_paid=True,
+                subscription_credits_remaining=0,
+                purchased_credits_remaining=0,
+                total_usable_credits=0,
+            ),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": {"provider": "nous"}}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "nous", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "nous", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "Nous Portal", raising=False)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    out = capsys.readouterr().out
+    assert "Nous Tool Gateway" in out
+    assert "credits are exhausted" in out
+    assert "https://portal.example.test/billing" in out
+    assert "free-tier Nous account" not in out
+
+
+def test_show_status_reports_empty_lmstudio_listing_as_reachable(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(
+        status_mod,
+        "load_config",
+        lambda: {
+            "model": {
+                "default": "qwen/qwen3-coder-30b",
+                "provider": "lmstudio",
+                "base_url": "http://127.0.0.1:1234/v1",
+            }
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "lmstudio", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "lmstudio", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "LM Studio", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_lmstudio_models",
+        lambda api_key=None, base_url=None, timeout=5.0: [],
+    )
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    out = capsys.readouterr().out
+    assert "LM Studio" in out
+    assert "reachable (0 model(s)) at http://127.0.0.1:1234/v1" in out

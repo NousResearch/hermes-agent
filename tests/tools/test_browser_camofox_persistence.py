@@ -1,8 +1,8 @@
 """Persistence tests for the Camofox browser backend.
 
 Tests that managed persistence uses stable identity while default mode
-uses random identity. The actual browser profile persistence is handled
-by the Camofox server (when CAMOFOX_PROFILE_DIR is set).
+uses random identity. Camofox automatically maps each userId to a
+dedicated persistent Firefox profile on the server side.
 """
 
 import json
@@ -16,8 +16,8 @@ from tools.browser_camofox import (
     _managed_persistence_enabled,
     camofox_close,
     camofox_navigate,
+    camofox_soft_cleanup,
     check_camofox_available,
-    cleanup_all_camofox_sessions,
     get_vnc_url,
 )
 from tools.browser_camofox_state import get_camofox_identity
@@ -151,7 +151,7 @@ class TestManagedPersistenceMode:
 
         requests_seen = []
 
-        def _capture_post(url, json=None, timeout=None):
+        def _capture_post(url, json=None, timeout=None, headers=None):
             requests_seen.append(json)
             return _mock_response(
                 json_data={"tabId": "tab-1", "url": "https://example.com"}
@@ -171,7 +171,7 @@ class TestManagedPersistenceMode:
 
         requests_seen = []
 
-        def _capture_post(url, json=None, timeout=None):
+        def _capture_post(url, json=None, timeout=None, headers=None):
             requests_seen.append(json)
             return _mock_response(
                 json_data={"tabId": f"tab-{len(requests_seen)}", "url": "https://example.com"}
@@ -191,6 +191,118 @@ class TestManagedPersistenceMode:
         tab_requests = [req for req in requests_seen if "userId" in req]
         assert len(tab_requests) == 2
         assert tab_requests[0]["userId"] == tab_requests[1]["userId"]
+
+
+class TestConfiguredCamofoxIdentity:
+    """Externally managed Camofox sessions can provide their own identity."""
+
+    def test_env_identity_overrides_default_identity(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_USER_ID", "shared-camofox")
+        monkeypatch.setenv("CAMOFOX_SESSION_KEY", "visible-tab")
+        monkeypatch.setenv("CAMOFOX_ADOPT_EXISTING_TAB", "true")
+
+        with patch("tools.browser_camofox._get", return_value={"tabs": []}) as mock_get:
+            session = _get_session("task-1")
+
+        assert session["user_id"] == "shared-camofox"
+        assert session["session_key"] == "visible-tab"
+        assert session["managed"] is True
+        assert session["adopt_existing_tab"] is True
+        mock_get.assert_called_once_with(
+            "/tabs",
+            params={"userId": "shared-camofox"},
+            timeout=5,
+        )
+
+    def test_config_identity_is_used_when_env_is_absent(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        config = {
+            "browser": {
+                "camofox": {
+                    "user_id": "config-user",
+                    "session_key": "config-session",
+                    "adopt_existing_tab": False,
+                }
+            }
+        }
+
+        with patch("tools.browser_camofox.load_config", return_value=config):
+            session = _get_session("task-1")
+
+        assert session["user_id"] == "config-user"
+        assert session["session_key"] == "config-session"
+        assert session["adopt_existing_tab"] is False
+
+    def test_env_identity_takes_precedence_over_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_USER_ID", "env-user")
+        monkeypatch.setenv("CAMOFOX_SESSION_KEY", "env-session")
+        monkeypatch.setenv("CAMOFOX_ADOPT_EXISTING_TAB", "false")
+        config = {
+            "browser": {
+                "camofox": {
+                    "user_id": "config-user",
+                    "session_key": "config-session",
+                    "adopt_existing_tab": True,
+                }
+            }
+        }
+
+        with patch("tools.browser_camofox.load_config", return_value=config):
+            session = _get_session("task-1")
+
+        assert session["user_id"] == "env-user"
+        assert session["session_key"] == "env-session"
+        assert session["adopt_existing_tab"] is False
+
+    def test_adopts_existing_tab_matching_session_key(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_USER_ID", "shared-camofox")
+        monkeypatch.setenv("CAMOFOX_SESSION_KEY", "visible-tab")
+        monkeypatch.setenv("CAMOFOX_ADOPT_EXISTING_TAB", "true")
+        tabs = {
+            "tabs": [
+                {"tabId": "tab-other", "listItemId": "other"},
+                {"tabId": "tab-visible", "listItemId": "visible-tab"},
+            ]
+        }
+
+        with patch("tools.browser_camofox._get", return_value=tabs):
+            session = _get_session("task-1")
+
+        assert session["tab_id"] == "tab-visible"
+
+    def test_managed_persistence_can_opt_into_tab_adoption(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        config = {"browser": {"camofox": {"managed_persistence": True, "adopt_existing_tab": True}}}
+
+        with (
+            patch("tools.browser_camofox.load_config", return_value=config),
+            patch("tools.browser_camofox._get", return_value={"tabs": [{"tabId": "tab-1"}]}),
+        ):
+            session = _get_session("task-1")
+
+        assert session["tab_id"] == "tab-1"
+
+    def test_soft_cleanup_preserves_externally_managed_session(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_USER_ID", "shared-camofox")
+
+        with patch("tools.browser_camofox._get", return_value={"tabs": []}):
+            _get_session("task-1")
+        result = camofox_soft_cleanup("task-1")
+
+        assert result is True
+        import tools.browser_camofox as mod
+        with mod._sessions_lock:
+            assert "task-1" not in mod._sessions
 
 
 class TestVncUrlDiscovery:
@@ -240,3 +352,50 @@ class TestVncUrlDiscovery:
 
         assert result["vnc_url"] == "http://localhost:6080"
         assert "vnc_hint" in result
+
+
+class TestCamofoxSoftCleanup:
+    """camofox_soft_cleanup drops local state only when managed persistence is on."""
+
+    def test_returns_true_and_drops_session_when_enabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        with _enable_persistence():
+            _get_session("task-1")
+            result = camofox_soft_cleanup("task-1")
+
+        assert result is True
+        # Session should have been dropped from in-memory store
+        import tools.browser_camofox as mod
+        with mod._sessions_lock:
+            assert "task-1" not in mod._sessions
+
+    def test_returns_false_when_disabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        _get_session("task-1")
+        config = {"browser": {"camofox": {"managed_persistence": False}}}
+        with patch("tools.browser_camofox.load_config", return_value=config):
+            result = camofox_soft_cleanup("task-1")
+
+        assert result is False
+        # Session should still be present — not dropped
+        import tools.browser_camofox as mod
+        with mod._sessions_lock:
+            assert "task-1" in mod._sessions
+
+    def test_does_not_call_server_delete(self, tmp_path, monkeypatch):
+        """Soft cleanup must never hit the Camofox /sessions DELETE endpoint."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        with (
+            _enable_persistence(),
+            patch("tools.browser_camofox.requests.delete") as mock_delete,
+        ):
+            _get_session("task-1")
+            camofox_soft_cleanup("task-1")
+
+        mock_delete.assert_not_called()

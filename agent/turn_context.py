@@ -263,6 +263,16 @@ def build_turn_context(
     from agent.agent_runtime_helpers import note_turn_start
     note_turn_start(agent, turn_id)
 
+    # P2.1 host contract: a turn-scoped execution_id tagged onto every ordinary
+    # per-turn hook so plugins can tell live turns from background forks without
+    # prompt-text/turn-id heuristics. The fork overrides this (sets its own
+    # before run_conversation), so only seed it when the agent has not already
+    # been tagged by the caller (e.g. background_review sets _execution_kind).
+    if not getattr(agent, "_execution_id", None):
+        agent._execution_id = uuid.uuid4().hex
+    if not hasattr(agent, "_execution_kind"):
+        agent._execution_kind = "live"
+
     # Reset retry counters and iteration budget at the start of each turn.
     agent._invalid_tool_retries = 0
     agent._invalid_json_retries = 0
@@ -406,6 +416,8 @@ def build_turn_context(
             conversation_history=messages[:current_turn_user_idx],
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            execution_kind=getattr(agent, "_execution_kind", "live"),
+            execution_id=getattr(agent, "_execution_id", None),
         )
         user_message = _compose_pre_persist_returns(user_message, _pp)
         # Returns are 'pre_persist' by contract — they must reach the persisted
@@ -622,6 +634,8 @@ def build_turn_context(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            execution_kind=getattr(agent, "_execution_kind", "live"),
+            execution_id=getattr(agent, "_execution_id", None),
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin

@@ -392,6 +392,51 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return global_disabled
 
 
+def get_always_on_skills() -> list[str]:
+    """Read ``skills.always_on`` from config.yaml.
+
+    Returns a list of skill name strings.  Invalid or absent config values
+    are silently replaced with an empty list (a warning is logged).
+    """
+    parsed = _load_raw_config()
+    if not parsed:
+        return []
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return []
+    always_on = skills_cfg.get("always_on")
+    if not isinstance(always_on, list):
+        if always_on is not None:
+            logger.warning(
+                "skills.always_on must be a list, got %r — ignoring", type(always_on).__name__
+            )
+        return []
+    result = [str(s).strip() for s in always_on if str(s).strip()]
+    return result
+
+
+def get_auto_inject_max_chars() -> int:
+    """Read ``skills.auto_inject_max_chars`` from config.yaml.
+
+    Returns a non-negative integer (default 50_000).
+    """
+    parsed = _load_raw_config()
+    if not parsed:
+        return 50_000
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return 50_000
+    value = skills_cfg.get("auto_inject_max_chars")
+    if isinstance(value, int) and value >= 0:
+        return value
+    if value is not None:
+        logger.warning(
+            "skills.auto_inject_max_chars must be a non-negative int, got %r — using default",
+            value,
+        )
+    return 50_000
+
+
 def _normalize_string_set(values) -> Set[str]:
     if values is None:
         return set()

@@ -22,7 +22,9 @@ from agent.skill_utils import (
     SKILL_SUPPORT_DIRS,
     extract_skill_conditions,
     extract_skill_description,
+    get_always_on_skills,
     get_all_skills_dirs,
+    get_auto_inject_max_chars,
     get_disabled_skill_names,
     iter_skill_index_files,
     parse_frontmatter,
@@ -1254,7 +1256,7 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1340,6 +1342,9 @@ def _build_snapshot_entry(
     skills_dir: Path,
     frontmatter: dict,
     description: str,
+    *,
+    body_content: str = "",
+    auto_inject: bool = False,
 ) -> dict:
     """Build a serialisable metadata dict for one skill."""
     rel_path = skill_file.relative_to(skills_dir)
@@ -1355,7 +1360,7 @@ def _build_snapshot_entry(
     if isinstance(platforms, str):
         platforms = [platforms]
 
-    return {
+    entry: dict = {
         "skill_name": skill_name,
         "category": category,
         "frontmatter_name": str(frontmatter.get("name", skill_name)),
@@ -1363,36 +1368,54 @@ def _build_snapshot_entry(
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
     }
+    if auto_inject:
+        entry["auto_inject"] = True
+        entry["body_content"] = body_content
+    return entry
 
 
 # =========================================================================
 # Skills index
 # =========================================================================
 
-def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
-    """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
+def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str, str, bool]:
+    """Read a SKILL.md once and return platform compatibility, frontmatter,
+    description, body content, and auto_inject flag.
 
-    Returns (is_compatible, frontmatter, description). On any error, returns
-    (True, {}, "") to err on the side of showing the skill.
+    Returns (is_compatible, frontmatter, description, body, auto_inject).
+    On any error, returns (True, {}, "", "", False) to err on the side of
+    showing the skill.
     """
     try:
         raw = skill_file.read_text(encoding="utf-8")
-        frontmatter, _ = parse_frontmatter(raw)
+        frontmatter, body = parse_frontmatter(raw)
 
         if not skill_matches_platform(frontmatter):
-            return False, frontmatter, ""
+            return False, frontmatter, "", "", False
 
         # Environment relevance gate (offer-time only): hide skills tagged for
         # a runtime environment that isn't active (e.g. kanban-only skills for
         # non-kanban users, s6-only skills outside the container). Explicit
         # loads (skill_view / --skills) bypass this — see skill_matches_environment.
         if not skill_matches_environment(frontmatter):
-            return False, frontmatter, ""
+            return False, frontmatter, "", "", False
 
-        return True, frontmatter, extract_skill_description(frontmatter)
+        # Parse auto_inject flag from frontmatter (AC-01.9: safe default)
+        raw_auto_inject = frontmatter.get("auto_inject")
+        if raw_auto_inject is True:
+            auto_inject = True
+        elif raw_auto_inject is False or raw_auto_inject is None:
+            auto_inject = False
+        else:
+            logger.warning(
+                "auto_inject must be true/false in %s, got %r", skill_file, raw_auto_inject
+            )
+            auto_inject = False
+
+        return True, frontmatter, extract_skill_description(frontmatter), body or "", auto_inject
     except Exception as e:
         logger.warning("Failed to parse skill file %s: %s", skill_file, e)
-        return True, {}, ""
+        return True, {}, "", "", False
 
 
 def _skill_should_show(
@@ -1442,6 +1465,67 @@ def _current_session_platform_hint() -> str:
         return ""
 
 
+def _build_active_skills_block(
+    skills: list[tuple[str, str]],
+    max_chars: int = 50_000,
+) -> str:
+    """Render the ``<active_skills>`` XML block for auto-injected skills.
+
+    Skills are rendered in alphabetical order.  Content is capped at
+    *max_chars* total; skills that don't fit are omitted with a note.
+    Returns ``""`` when no skills are provided or *max_chars* is 0.
+    """
+    if not skills or max_chars <= 0:
+        return ""
+
+    # Sort alphabetically by name
+    skills = sorted(skills, key=lambda x: x[0])
+
+    included: list[str] = []
+    current_len = 0
+    omitted: list[str] = []
+
+    # Budget overhead: XML wrapper tags + header + footer
+    header = (
+        "## Active Skills (always loaded)\n"
+        "The following skills are auto-injected and always active. Follow their\n"
+        "instructions directly — no need to call skill_view() for these.\n"
+        "\n"
+        "<active_skills>\n"
+    )
+    footer = "</active_skills>\n"
+    overhead = len(header) + len(footer)
+
+    for name, body in skills:
+        # Cost of this skill's XML wrapper
+        skill_xml = f"<active_skill name=\"{name}\">\n{body}\n</active_skill>\n"
+        skill_cost = len(skill_xml)
+        if overhead + current_len + skill_cost > max_chars:
+            omitted.append(name)
+            continue
+        included.append(skill_xml)
+        current_len += skill_cost
+
+    if not included:
+        return ""
+
+    block = header + "\n".join(included) + footer
+
+    if omitted:
+        block += (
+            "\n[Note: The following active skills were omitted due to character "
+            "budget limits:\n"
+            + ", ".join(omitted)
+            + "]\n"
+        )
+        logger.warning(
+            "Active skills budget exceeded — omitted %d skill(s): %s",
+            len(omitted),
+            ", ".join(omitted),
+        )
+
+    return block
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
@@ -1478,6 +1562,8 @@ def build_skills_system_prompt(
     # produce distinct cache entries (gateway serves multiple platforms).
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    always_on = get_always_on_skills()
+    auto_inject_max_chars = get_auto_inject_max_chars()
     cache_key = (
         str(skills_dir),
         tuple(str(d) for d in external_dirs),
@@ -1486,6 +1572,8 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        tuple(sorted(always_on)),
+        auto_inject_max_chars,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1498,6 +1586,8 @@ def build_skills_system_prompt(
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
+    # Collect (name, body) tuples for auto-inject candidates
+    auto_inject_candidates: dict[str, str] = {}  # name -> body (dict for dedup)
 
     if snapshot is not None:
         # Fast path: use pre-parsed metadata from disk
@@ -1521,6 +1611,9 @@ def build_skills_system_prompt(
             skills_by_category.setdefault(category, []).append(
                 (frontmatter_name, entry.get("description", ""))
             )
+            # Collect auto-inject candidate from snapshot
+            if entry.get("auto_inject") and entry.get("body_content"):
+                auto_inject_candidates[frontmatter_name] = entry["body_content"]
         category_descriptions = {
             str(k): str(v)
             for k, v in (snapshot.get("category_descriptions") or {}).items()
@@ -1529,8 +1622,11 @@ def build_skills_system_prompt(
         # Cold path: full filesystem scan + write snapshot for next time
         skill_entries: list[dict] = []
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
-            is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-            entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc)
+            is_compatible, frontmatter, desc, body, auto_inject = _parse_skill_file(skill_file)
+            entry = _build_snapshot_entry(
+                skill_file, skills_dir, frontmatter, desc,
+                body_content=body, auto_inject=auto_inject,
+            )
             skill_entries.append(entry)
             if not is_compatible:
                 continue
@@ -1546,6 +1642,9 @@ def build_skills_system_prompt(
             skills_by_category.setdefault(entry["category"], []).append(
                 (entry["frontmatter_name"], entry["description"])
             )
+            # Collect auto-inject candidate from cold scan
+            if auto_inject and body:
+                auto_inject_candidates[entry["frontmatter_name"]] = body
 
         # Read category-level DESCRIPTION.md files
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
@@ -1582,7 +1681,7 @@ def build_skills_system_prompt(
             continue
         for skill_file in iter_skill_index_files(ext_dir, "SKILL.md"):
             try:
-                is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+                is_compatible, frontmatter, desc, body, auto_inject = _parse_skill_file(skill_file)
                 if not is_compatible:
                     continue
                 entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
@@ -1602,6 +1701,9 @@ def build_skills_system_prompt(
                 skills_by_category.setdefault(entry["category"], []).append(
                     (frontmatter_name, entry["description"])
                 )
+                # Collect auto-inject candidate from external dirs
+                if auto_inject and body:
+                    auto_inject_candidates[frontmatter_name] = body
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
 
@@ -1618,6 +1720,62 @@ def build_skills_system_prompt(
                 category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
+
+    # ── Resolve always_on config overrides ────────────────────────────
+    # skills.always_on: list of names that should be auto-injected even
+    # without auto_inject: true in frontmatter.  We match by
+    # frontmatter_name first, then fall back to skill_name (dir name).
+    if always_on:
+        # Build a reverse map: all known names -> frontmatter_name
+        all_known_names: dict[str, str] = {}  # any_name -> frontmatter_name
+        for cat_skills in skills_by_category.values():
+            for fm_name, _desc in cat_skills:
+                all_known_names[fm_name.lower()] = fm_name
+        # Also map skill_name (dir name) from entries we've seen
+        for entry_name, body in list(auto_inject_candidates.items()):
+            all_known_names[entry_name.lower()] = entry_name
+        # External dir entries don't have a separate mapping yet, but
+        # frontmatter_name is already in skills_by_category above.
+
+        for wanted_name in always_on:
+            wanted_lower = wanted_name.lower()
+            matched = all_known_names.get(wanted_lower)
+            if matched and matched not in auto_inject_candidates:
+                # The skill exists but wasn't collected as auto-inject
+                # (no auto_inject: true).  We need its body — try to find
+                # it from the scanned entries.  For always_on skills without
+                # auto_inject, we skip body injection (they only appear in
+                # the index).  Log a debug note.
+                logger.debug(
+                    "always_on skill %r matched but has no auto_inject body — skipping injection",
+                    wanted_name,
+                )
+            elif not matched:
+                logger.warning(
+                    "skills.always_on references %r but no matching skill found",
+                    wanted_name,
+                )
+
+    # ── Render <active_skills> block ──────────────────────────────────
+    active_skills_block = ""
+    if auto_inject_candidates:
+        # Apply template variable substitution to bodies
+        try:
+            from agent.skill_preprocessing import substitute_template_vars
+            resolved_candidates: dict[str, str] = {}
+            for name, body in auto_inject_candidates.items():
+                resolved_candidates[name] = substitute_template_vars(body, None, None)
+            auto_inject_candidates = resolved_candidates
+        except Exception as e:
+            logger.debug("Could not apply template vars to active skills: %s", e)
+
+        active_skills_block = _build_active_skills_block(
+            list(auto_inject_candidates.items()),
+            auto_inject_max_chars,
+        )
+        if active_skills_block:
+            for name in auto_inject_candidates:
+                logger.debug("Auto-injecting active skill: %s", name)
 
     # Posture-driven category demotion (e.g. non-coding skills while pairing
     # on code). Demoted categories stay in the index as a single names-only
@@ -1695,6 +1853,13 @@ def build_skills_system_prompt(
             "Only proceed without loading a skill if genuinely none are relevant to the task."
             + hidden_note
         )
+
+    # ── Append <active_skills> block ──────────────────────────────────
+    if active_skills_block:
+        if not result:
+            result = active_skills_block
+        else:
+            result += "\n\n" + active_skills_block
 
     # ── Store in LRU cache ────────────────────────────────────────────
     with _SKILLS_PROMPT_CACHE_LOCK:

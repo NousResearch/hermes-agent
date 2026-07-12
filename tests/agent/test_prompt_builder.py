@@ -300,27 +300,28 @@ class TestParseSkillFile:
         skill_file.write_text(
             "---\nname: test-skill\ndescription: A useful test skill\n---\n\nBody here"
         )
-        is_compat, frontmatter, desc = _parse_skill_file(skill_file)
+        is_compat, frontmatter, desc, body, auto_inject = _parse_skill_file(skill_file)
         assert is_compat is True
         assert frontmatter.get("name") == "test-skill"
         assert desc == "A useful test skill"
+        assert auto_inject is False
 
     def test_missing_description_returns_empty(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text("No frontmatter here")
-        is_compat, frontmatter, desc = _parse_skill_file(skill_file)
+        is_compat, frontmatter, desc, body, auto_inject = _parse_skill_file(skill_file)
         assert desc == ""
 
     def test_long_description_truncated(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         long_desc = "A" * 100
         skill_file.write_text(f"---\ndescription: {long_desc}\n---\n")
-        _, _, desc = _parse_skill_file(skill_file)
+        _, _, desc, _, _ = _parse_skill_file(skill_file)
         assert len(desc) <= 60
         assert desc.endswith("...")
 
     def test_nonexistent_file_returns_defaults(self, tmp_path):
-        is_compat, frontmatter, desc = _parse_skill_file(tmp_path / "missing.md")
+        is_compat, frontmatter, desc, body, auto_inject = _parse_skill_file(tmp_path / "missing.md")
         assert is_compat is True
         assert frontmatter == {}
         assert desc == ""
@@ -334,7 +335,7 @@ class TestParseSkillFile:
 
         monkeypatch.setattr(type(skill_file), "read_text", boom)
         with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
-            is_compat, frontmatter, desc = _parse_skill_file(skill_file)
+            is_compat, frontmatter, desc, body, auto_inject = _parse_skill_file(skill_file)
 
         assert is_compat is True
         assert frontmatter == {}
@@ -351,7 +352,7 @@ class TestParseSkillFile:
 
         with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
-            is_compat, _, _ = _parse_skill_file(skill_file)
+            is_compat, _, _, _, _ = _parse_skill_file(skill_file)
         assert is_compat is False
 
     def test_returns_frontmatter_with_prerequisites(self, tmp_path, monkeypatch):
@@ -361,7 +362,7 @@ class TestParseSkillFile:
             "---\nname: gated\ndescription: Gated skill\n"
             "prerequisites:\n  env_vars: [NONEXISTENT_KEY_ABC]\n---\n"
         )
-        _, frontmatter, _ = _parse_skill_file(skill_file)
+        _, frontmatter, _, _, _ = _parse_skill_file(skill_file)
         assert frontmatter["prerequisites"]["env_vars"] == ["NONEXISTENT_KEY_ABC"]
 
 

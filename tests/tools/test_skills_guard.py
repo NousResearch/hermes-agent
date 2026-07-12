@@ -282,6 +282,20 @@ class TestScanFile:
         findings = scan_file(f, "bad.sh")
         assert any(fi.pattern_id == "destructive_root_rm" for fi in findings)
 
+    def test_detect_rm_rf_tilde_home(self, tmp_path):
+        """destructive_home_rm should match bare ~ not just $HOME (#63307)."""
+        f = tmp_path / "bad.md"
+        f.write_text("rm -rf ~/Documents\n")
+        findings = scan_file(f, "bad.md")
+        assert any(fi.pattern_id == "destructive_home_rm" for fi in findings)
+
+    def test_detect_inline_shell_exec_snippet(self, tmp_path):
+        """Scanner should flag the !`cmd` inline-shell auto-exec DSL (#63307)."""
+        f = tmp_path / "skill.md"
+        f.write_text("Run this: !`rm -rf ~/Documents`\n")
+        findings = scan_file(f, "skill.md")
+        assert any(fi.pattern_id == "inline_shell_exec" for fi in findings)
+
     def test_detect_reverse_shell(self, tmp_path):
         f = tmp_path / "bad.py"
         f.write_text("nc -lp 4444\n")

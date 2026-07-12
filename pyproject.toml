@@ -157,6 +157,7 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
+  "cloakbrowser>=0.4.10",
 ]
 
 [project.optional-dependencies]

@@ -31,6 +31,7 @@ import {
 import nodePty from 'node-pty'
 
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
+import { resolveDashboardWebDist as resolveDashboardWebDistPath } from './dashboard-web-dist'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
 import { canImportHermesCli, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
@@ -3222,24 +3223,17 @@ function resolveWebDist() {
   return fallback
 }
 
-// Python dashboard/serve backend reads HERMES_WEB_DIST → hermes_cli/web_dist
-// (the Vite-built web/ SPA). Do NOT pass the Electron renderer dist here.
 function resolveDashboardWebDist(hermesRoot?: string | null) {
-  const dashboardOverride = process.env.HERMES_DESKTOP_DASHBOARD_WEB_DIST
-
-  if (dashboardOverride && directoryExists(path.resolve(dashboardOverride))) {
-    return path.resolve(dashboardOverride)
-  }
-
-  if (hermesRoot) {
-    const cliDist = path.join(hermesRoot, 'hermes_cli', 'web_dist')
-
-    if (fileExists(path.join(cliDist, 'index.html'))) {
-      return cliDist
-    }
-  }
-
-  return resolveWebDist()
+  return resolveDashboardWebDistPath({
+    hermesRoot,
+    activeHermesRoot: ACTIVE_HERMES_ROOT,
+    sourceRepoRoot: SOURCE_REPO_ROOT,
+    isPackaged: IS_PACKAGED,
+    dashboardOverride: process.env.HERMES_DESKTOP_DASHBOARD_WEB_DIST,
+    hermesRootOverride:
+      process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT),
+    onWarning: rememberLog
+  })
 }
 
 function resolveRendererIndex() {

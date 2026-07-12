@@ -730,6 +730,20 @@ wheels = [
 ]
 
 [[package]]
+name = "cloakbrowser"
+version = "0.4.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "httpx" },
+    { name = "playwright" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/dd/1c/1afe133b22dd5fdd3914bd64da96d993e63760bf03b915632b7dc3a0ffd3/cloakbrowser-0.4.10.tar.gz", hash = "sha256:e3d0e8897c567f8a57b237d6ded617d660cceb6ee2b277e55c9818b3625e2030", size = 5596703, upload-time = "2026-07-09T21:24:34.225Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/47/ced5ba1ca7b9223e19318f83223a78ead39cd5dcf9a9fbc0cb8531376a1e/cloakbrowser-0.4.10-py3-none-any.whl", hash = "sha256:36342e97f02f82af43beda972ee785df69b9a17db374019109dd2b70b7c124d6", size = 105044, upload-time = "2026-07-09T21:24:32.782Z" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1636,6 +1650,7 @@ version = "0.18.2"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
+    { name = "cloakbrowser" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'" },
     { name = "croniter" },
     { name = "cryptography" },
@@ -1893,6 +1908,7 @@ requires-dist = [
     { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
     { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.1" },
     { name = "certifi", specifier = "==2026.5.20" },
+    { name = "cloakbrowser", specifier = ">=0.4.10" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'", specifier = "==0.9.29" },
     { name = "croniter", specifier = "==6.0.0" },
     { name = "cryptography", specifier = ">=48.0.1,<50" },

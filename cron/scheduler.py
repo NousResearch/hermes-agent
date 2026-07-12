@@ -2864,18 +2864,21 @@ def run_job(
         except Exception:
             pass
 
+        agent_cfg = _cfg.get("agent")
+        if not isinstance(agent_cfg, dict):
+            agent_cfg = {}
+
         # Reasoning config from config.yaml (raw value — a YAML boolean False
         # means thinking disabled, see parse_reasoning_effort)
         from hermes_constants import parse_reasoning_effort
         reasoning_config = parse_reasoning_effort(
-            _cfg.get("agent", {}).get("reasoning_effort", "")
+            agent_cfg.get("reasoning_effort", "")
         )
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is
         # retained as a legacy fallback for older CLI/godmode configs.
         prefill_messages = None
-        agent_cfg = _cfg.get("agent", {}) if isinstance(_cfg.get("agent", {}), dict) else {}
         prefill_file = (
             os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
             or _cfg.get("prefill_messages_file", "")
@@ -2896,7 +2899,7 @@ def run_job(
                     prefill_messages = None
 
         # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        max_iterations = agent_cfg.get("max_turns") or _cfg.get("max_turns") or 90
 
         # Provider routing
         pr = _cfg.get("provider_routing") or {}

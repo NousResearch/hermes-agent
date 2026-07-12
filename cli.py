@@ -16264,7 +16264,12 @@ def main(
                 # Surface security advisories before the agent runs — short
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()
-                cli.chat(query, images=single_query_images or None)
+                response = cli.chat(query, images=single_query_images or None)
+                if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
+                    try:
+                        _run_kanban_goal_loop_q(cli, response or "")
+                    except Exception as _goal_exc:
+                        logger.debug("kanban goal loop failed: %s", _goal_exc)
                 cli._print_exit_summary(clear_screen=False)
         finally:
             _finalize_single_query(cli)

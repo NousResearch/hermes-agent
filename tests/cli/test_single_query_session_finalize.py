@@ -9,6 +9,7 @@ import cli
 def reset_single_query_finalize_state(monkeypatch):
     monkeypatch.setattr(cli, "_single_query_finalize_attempted_session_ids", set())
     monkeypatch.setattr(cli, "_cleanup_done", False)
+    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
 
 
 def test_finalize_single_query_runs_cleanup_without_reemitting_finalize_before_release(monkeypatch):
@@ -197,6 +198,67 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
         ("chat", "hello", None),
         "summary",
         ("finalize", "single-query-session"),
+    ]
+
+
+def test_human_single_query_kanban_goal_mode_runs_goal_loop(monkeypatch):
+    calls = []
+
+    import cli as cli_mod
+
+    class _Console:
+        def print(self, *_args, **_kwargs):
+            calls.append("query-label")
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.console = _Console()
+            self.session_id = "kanban-query-session"
+            self.agent = SimpleNamespace(
+                session_id="kanban-query-session",
+                platform="cli",
+            )
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            calls.append(("claim", surface, stderr))
+            return True
+
+        def _show_security_advisories(self):
+            calls.append("advisories")
+
+        def chat(self, query, images=None):
+            calls.append(("chat", query, images))
+            return "first response"
+
+        def _print_exit_summary(self, clear_screen=True):
+            calls.append(("summary", clear_screen))
+
+    monkeypatch.setenv("HERMES_KANBAN_GOAL_MODE", "1")
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_run_kanban_goal_loop_q",
+        lambda fake_cli, response: calls.append(
+            ("goal-loop", fake_cli.session_id, response)
+        ),
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_finalize_single_query",
+        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
+    )
+
+    cli_mod.main(query="work kanban task t1", quiet=False, toolsets="terminal")
+
+    assert calls == [
+        ("claim", "cli", False),
+        "query-label",
+        "advisories",
+        ("chat", "work kanban task t1", None),
+        ("goal-loop", "kanban-query-session", "first response"),
+        ("summary", False),
+        ("finalize", "kanban-query-session"),
     ]
 
 

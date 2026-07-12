@@ -1246,6 +1246,44 @@ def _apply_pulled_update(
         node_failures=node_failures, update_complete=update_complete)
 
 
+def _update_index_lock_path(project_root: Path) -> Path | None:
+    """Return the checkout's index lock path, including linked worktrees."""
+    git_marker = project_root / ".git"
+    if git_marker.is_dir():
+        return git_marker / "index.lock"
+    if not git_marker.is_file():
+        return None
+    try:
+        marker = git_marker.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    prefix = "gitdir:"
+    if not marker.lower().startswith(prefix):
+        return None
+    git_dir = Path(marker[len(prefix):].strip())
+    if not git_dir.is_absolute():
+        git_dir = (project_root / git_dir).resolve()
+    return git_dir / "index.lock"
+
+
+def _abort_if_update_index_locked(project_root: Path) -> None:
+    """Refuse to update while Git's index lock exists; never delete it."""
+    lock_path = _update_index_lock_path(project_root)
+    if lock_path is None or not lock_path.exists():
+        return
+    if _m()._is_windows():
+        quoted_path = str(lock_path).replace("'", "''")
+        recovery = f"Remove-Item -LiteralPath '{quoted_path}'"
+    else:
+        recovery = f"rm -f -- {shlex.quote(str(lock_path))}"
+    print(f"✗ Git index lock exists: {lock_path}")
+    print("  Another Git operation may still be using this repository.")
+    print("  Close or wait for it to finish, then retry `hermes update`.")
+    print("  If no Git operation is running, remove the orphaned lock:")
+    print(f"    {recovery}")
+    sys.exit(2)
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always restore stdio even on
     ``sys.exit``. Self-lock deferral deliberately does NOT run here (pre-fetch it stranded users
@@ -1257,6 +1295,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     print()
 
     _pre_update_plan = _begin_update_receipt_and_plan(args)
+
+    # index.lock has no reliable ownership metadata. Refuse before backup or
+    # checkout mutation rather than guessing from its age and racing Git.
+    _m()._abort_if_update_index_locked(_m().PROJECT_ROOT)
 
     # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
     # the post-update cron-jobs safety net.

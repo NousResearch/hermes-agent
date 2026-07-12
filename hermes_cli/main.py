@@ -2029,6 +2029,7 @@ def select_provider_and_model(args=None):
 _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
     "hermes_cli.update_cmd": (
         "_abort_dependency_sync_if_self_locked", "_assess_parked_branch_switch",
+        "_abort_if_update_index_locked",
         "_capture_active_lazy_features", "_capture_active_tool_dependencies",
         "_cold_start_windows_gateway_after_update", "_defer_update_for_self_lock",
         "_dependency_sync_would_rewrite", "_detect_self_loaded_native_modules",

@@ -36,12 +36,24 @@ terminal points at a remote Docker / SSH / Modal backend.
 
 Compression resilience:
 
-If a long-running subagent triggers context compression, the compressor
-(``context_compressor.py``) truncates ``tool_call`` args > 500 chars for
-assistant messages outside the protected tail. To survive that, the handler
-spills the full ``content`` to ``cache/delegation/delegate_reply_*.txt`` and
-returns the absolute path in its result; the extraction layer prefers the
-spill file over the (possibly truncated) args.
+The deliverable is recorded in **two** places at call time:
+
+1. **Agent-instance state** (``child._delegate_reply_chunks``) — a list the
+   handler appends to at execution time. ``_run_single_child`` reads this list
+   after the child finishes; it is never touched by context compression,
+   which only mutates the ``messages`` transcript. This is the authoritative
+   source.
+2. **Spill file** (``cache/delegation/delegate_reply_*.txt``) — a backup on
+   disk, mirroring ``_spill_summary_to_file``. Useful if the agent instance
+   is somehow lost (e.g. timeout where the future result is unavailable but
+   the child object still exists).
+
+Because the agent-instance state lives outside the ``messages`` list, context
+compression — which replaces the middle transcript with a summary
+(``context_compressor.py`` Phase 4) — cannot destroy the recorded delivery.
+The earlier approach of scanning ``result["messages"]`` for tool-call args +
+spill paths was vulnerable: a delivery call that fell into the compacted
+window lost both its args *and* its tool-result spill path.
 """
 from __future__ import annotations
 
@@ -54,17 +66,16 @@ from tools.registry import registry
 logger = logging.getLogger(__name__)
 
 _TOOL_NAME = "delegate_tool_reply"
-_TRUNCATED_MARKER = "...[truncated]"
 
 DELEGATE_TOOL_REPLY_SCHEMA = {
     "name": _TOOL_NAME,
     "description": (
         "Hand back your final result to the parent agent. Call this with the "
         "complete deliverable text as `content`. You may call it multiple "
-        "times to deliver in chunks (they are concatenated in order), or "
-        "update it by calling again — the last value per chunk is used. This "
-        "does NOT stop you; finish any cleanup afterward. Always deliver your "
-        "real result through this tool, not as a trailing prose comment."
+        "times to deliver in chunks — every call's content is appended in "
+        "order to form the final result. This does NOT stop you; finish any "
+        "cleanup afterward. Always deliver your real result through this "
+        "tool, not as a trailing prose comment."
     ),
     "parameters": {
         "type": "object",
@@ -86,8 +97,7 @@ def _spill_reply_to_file(content: str, subagent_id: Optional[str]) -> Optional[s
     in ``cache/delegation`` which is mounted read-only into remote backends
     (Docker/Modal/SSH) via ``credential_files._CACHE_DIRS``, so the parent's
     ``terminal`` / ``read_file`` tools can page through the complete text on any
-    backend. Returns the absolute path, or ``None`` on failure (best-effort:
-    extraction then falls back to the in-memory args).
+    backend. Returns the absolute path, or ``None`` on failure (best-effort).
     """
     try:
         from hermes_constants import get_hermes_dir
@@ -108,22 +118,34 @@ def _spill_reply_to_file(content: str, subagent_id: Optional[str]) -> Optional[s
 
 
 def delegate_tool_reply(content: str, parent_agent=None, **kw) -> str:
-    """Acknowledge a subagent deliverable and spill it to disk.
+    """Record a subagent deliverable and spill it to disk.
 
-    No side effects beyond writing the spill file. Does **not** terminate the
-    subagent loop — the child keeps running (e.g. cleanup) to natural end.
-    The parent's extraction layer (``delegate_tool.py``) reads this call's
-    args/result after the child completes.
+    Appends ``content`` to ``parent_agent._delegate_reply_chunks`` (the
+    authoritative store) and writes a spill-file backup. Does **not** terminate
+    the subagent loop — the child keeps running (e.g. cleanup) to natural end.
+    ``_run_single_child`` in ``delegate_tool.py`` reads
+    ``child._delegate_reply_chunks`` after the child completes.
 
     Args:
-        content: the full deliverable text.
+        content: the full deliverable text (one chunk).
         parent_agent: the child AIAgent instance (threaded in by the registry
-            via ``kw["parent_agent"]``); used only for the subagent id when
-            naming the spill file.
+            via ``kw["parent_agent"]``).
 
     Returns:
         JSON string ``{"acknowledged": true, "path": <abs path or null>}``.
     """
+    if not isinstance(content, str):
+        content = str(content) if content is not None else ""
+
+    # Record in agent-instance state — compression-safe (not in messages[]).
+    if parent_agent is not None:
+        chunks = getattr(parent_agent, "_delegate_reply_chunks", None)
+        if chunks is None:
+            chunks = []
+            setattr(parent_agent, "_delegate_reply_chunks", chunks)
+        chunks.append(content)
+
+    # Spill to disk as a backup (best-effort).
     subagent_id = getattr(parent_agent, "_subagent_id", None) if parent_agent is not None else None
     spill_path = _spill_reply_to_file(content, subagent_id)
     return json.dumps(

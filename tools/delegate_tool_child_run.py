@@ -475,50 +475,12 @@ def _build_tool_trace(messages: Any) -> list[Dict[str, Any]]:
                 tool_trace[-1].update(result_meta)  # no tool_call_id: pair with the latest call
     return tool_trace
 
-def _extract_reply_deliverable(messages: list) -> Optional[str]:
-    """Join explicit deliveries in transcript order, preferring complete spill files."""
-    if not isinstance(messages, list) or not messages:
+def _extract_reply_deliverable(child) -> Optional[str]:
+    """Join append-only deliveries stored on the child, outside its compressible transcript."""
+    chunks = getattr(child, "_delegate_reply_chunks", None)
+    if not isinstance(chunks, list):
         return None
-    result_by_id = {
-        msg["tool_call_id"]: _stringify_tool_content(msg.get("content", ""))
-        for msg in messages if isinstance(msg, dict) and msg.get("role") == "tool" and msg.get("tool_call_id")
-    }
-    chunks = []
-    found = False
-    for msg in messages:
-        if not isinstance(msg, dict) or msg.get("role") != "assistant":
-            continue
-        for tc in msg.get("tool_calls") or []:
-            if not isinstance(tc, dict):
-                continue
-            fn = tc.get("function", {})
-            if fn.get("name") != "delegate_tool_reply":
-                continue
-            found = True
-            content_arg = ""
-            try:
-                parsed = json.loads(fn.get("arguments") or "{}")
-                if isinstance(parsed, dict):
-                    content_arg = parsed.get("content", "")
-                    if not isinstance(content_arg, str):
-                        content_arg = str(content_arg) if content_arg is not None else ""
-            except (ValueError, TypeError):
-                pass
-            spill_content = None
-            try:
-                res_obj = json.loads(result_by_id.get(tc.get("id"), "{}"))
-                if isinstance(res_obj, dict) and isinstance(res_obj.get("path"), str) and res_obj["path"]:
-                    from pathlib import Path
-                    spill_content = Path(res_obj["path"]).read_text(encoding="utf-8")
-            except (ValueError, TypeError, OSError):
-                pass
-            if spill_content is not None:
-                chunks.append(spill_content)
-            elif content_arg:
-                if content_arg.endswith("...[truncated]"):
-                    content_arg += "\n[NOTE: this chunk was truncated by context compression; spill file unreadable]"
-                chunks.append(content_arg)
-    return "\n\n".join(chunks) if found else None
+    return "\n\n".join(chunks)
 
 
 def _build_result_entry(
@@ -527,7 +489,7 @@ def _build_result_entry(
     """Parent-visible result entry (status, exit_reason, tool trace, tokens, cost).
     ``status``/``exit_reason``/``truncated`` follow the ``_run_single_child`` contract; a structured failure always
     wins over the summary-presence heuristic (a fallback for legacy/mock results only)."""
-    delivery = _extract_reply_deliverable(result.get("messages") or [])
+    delivery = _extract_reply_deliverable(child)
     summary = delivery if delivery is not None else result.get("final_response") or ""
     # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
     # responses (usually a transport bug) — a failure, not a success.

@@ -3692,6 +3692,11 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             def _run_and_release(j=job, ctx=_ctx):
                 try:
                     return ctx.run(_process_job, j)
+                except RuntimeError as e:
+                    if _interpreter_shutting_down(e):
+                        logger.debug("Job '%s': suppressed error during interpreter shutdown: %s", j.get("name", j["id"]), e)
+                        return None
+                    raise
                 finally:
                     with _running_lock:
                         _running_job_ids.discard(j["id"])

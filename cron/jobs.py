@@ -1820,8 +1820,13 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             if kind == "once":
                 repeat = job.get("repeat")
                 if repeat:
-                    times = repeat.get("times")
-                    completed = repeat.get("completed", 0)
+                    # v0.18+ can store repeat as a plain int (max count)
+                    if isinstance(repeat, int):
+                        times = repeat
+                        completed = 0
+                    else:
+                        times = repeat.get("times")
+                        completed = repeat.get("completed", 0)
                     if times is not None and times > 0 and completed >= times:
                         logger.info(
                             "Job '%s': one-shot dispatch limit reached (%d/%d) "

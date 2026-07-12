@@ -24,8 +24,9 @@ def _parse_gemma_tool_marker(content: Any) -> tuple[str, str] | None:
     if not isinstance(content, str):
         return None
     match = re.match(
-        r"^\s*<\|tool\|>(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
-        r"\((?P<arguments>[^)]*)\)\s*(?:<\|turn\|>.*)?$",
+        r"^\s*(?:<\|tool\|>|<\|call:)(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
+        r"\((?P<arguments>[^)]*)\)"
+        r"(?:\s*(?:>|<\|turn\|>|<\|end\|>).*)?$",
         content,
         flags=re.DOTALL,
     )

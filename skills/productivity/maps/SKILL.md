@@ -39,12 +39,12 @@ functionality is covered by the `nearby` command below, with the same
 
 Python 3.8+ (stdlib only — no pip installs needed).
 
-Script path: `SKILL_DIR/scripts/maps_client.py`
+Script path: `${HERMES_SKILL_DIR}/scripts/maps_client.py`
 
 ## Commands
 
 ```bash
-MAPS=SKILL_DIR/scripts/maps_client.py
+MAPS=${HERMES_SKILL_DIR}/scripts/maps_client.py
 ```
 
 ### search — Geocode a place name
@@ -187,9 +187,9 @@ current.
 ## Verification
 
 ```bash
-python3 SKILL_DIR/scripts/maps_client.py search "Statue of Liberty"
+python3 ${HERMES_SKILL_DIR}/scripts/maps_client.py search "Statue of Liberty"
 # Should return lat ~40.689, lon ~-74.044
 
-python3 SKILL_DIR/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
+python3 ${HERMES_SKILL_DIR}/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
 # Should return a list of restaurants within ~500m of Times Square
 ```

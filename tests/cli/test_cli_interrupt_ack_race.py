@@ -192,3 +192,47 @@ def test_acknowledged_interrupt_still_requeues_message():
         queued.append(cli._pending_input.get_nowait())
     assert any("redirect please" in str(q) for q in queued)
     assert cli._last_turn_interrupted is True
+
+
+def test_empty_string_interrupt_cancels_without_requeueing_prompt():
+    """ESC cancel is represented by an empty-string interrupt sentinel.
+
+    It should call agent.interrupt(None) but must not enqueue an empty follow-up
+    message as the next user prompt.
+    """
+    cli = _make_cli()
+
+    class _AckCancelAgent(_StubAgent):
+        def run_conversation(self, **kwargs):
+            for _ in range(100):
+                if self._interrupt_requested:
+                    break
+                time.sleep(0.05)
+            return {
+                "final_response": "cancelled",
+                "messages": [{"role": "assistant", "content": "cancelled"}],
+                "api_calls": 1,
+                "completed": False,
+                "interrupted": True,
+                "interrupt_message": self._interrupt_message,
+                "partial": True,
+                "response_previewed": True,
+            }
+
+    agent = _AckCancelAgent(cli.session_id)
+    cli.agent = agent
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+    cli._interrupt_queue.put("")
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        cli.chat("original")
+
+    assert agent.interrupt_calls == [None]
+    assert cli._pending_input.empty()
+    assert cli._last_turn_interrupted is True

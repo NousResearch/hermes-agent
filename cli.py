@@ -12418,24 +12418,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if hasattr(self, '_interrupt_queue'):
                     try:
                         interrupt_msg = self._interrupt_queue.get(timeout=0.1)
-                        if interrupt_msg:
+                        if interrupt_msg is not None:
                             # If clarify is active, the Enter handler routes
                             # input directly; this queue shouldn't have anything.
                             # But if it does (race condition), don't interrupt —
-                            # and don't drop the message either: park it in
-                            # _pending_input so it runs as the next turn.
-                            if self._clarify_state or self._clarify_freetext:
+                            # and don't drop real follow-up messages either: park
+                            # them in _pending_input so they run as the next turn.
+                            # ESC cancel uses an empty-string sentinel, which must
+                            # not be re-queued as a follow-up prompt.
+                            if (self._clarify_state or self._clarify_freetext) and interrupt_msg:
                                 try:
                                     self._pending_input.put(interrupt_msg)
                                 except Exception:
                                     pass
                                 interrupt_msg = None
                                 continue
-                            print("\n⚡ New message detected, interrupting...")
+                            if interrupt_msg:
+                                print("\n⚡ New message detected, interrupting...")
+                            else:
+                                print("\n⚡ ESC pressed, cancelling current run...")
                             # Signal TTS to stop on interrupt
                             if stop_event is not None:
                                 stop_event.set()
-                            self.agent.interrupt(interrupt_msg)
+                            if self.agent is not None:
+                                self.agent.interrupt(interrupt_msg or None)
+                            else:
+                                continue
                             # Clear any active overlay states the interrupted agent
                             # left behind.  approval/clarify/sudo/secret prompts gate
                             # input (read_only condition + keypress filter) until
@@ -13568,6 +13576,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 event.app.current_buffer.reset(append_to_history=True)
 
         _bind_prompt_submit_keys(kb, handle_enter)
+
+        @kb.add('escape', eager=True, filter=Condition(lambda: bool(self._agent_running)))
+        def handle_escape_cancel_run(event):
+            """ESC while the agent is busy cancels the current run.
+
+            Normal busy Enter uses _interrupt_queue with the typed text as the
+            next message.  ESC is a pure cancel, so it enqueues an empty-string
+            sentinel: the chat monitor treats it as an interrupt request but the
+            post-turn logic does not re-submit it as a follow-up prompt.
+            """
+            try:
+                self._interrupt_queue.put("")
+                _cprint(f"\n{_ACCENT}⚡ Cancelling current run...{_RST}")
+            except Exception:
+                try:
+                    if self.agent is not None and hasattr(self.agent, "interrupt"):
+                        self.agent.interrupt()
+                except Exception:
+                    pass
+            event.app.current_buffer.reset()
+            event.app.invalidate()
         
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):

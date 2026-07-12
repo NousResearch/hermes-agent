@@ -1243,6 +1243,19 @@ class TestEnvironmentHints:
         _pb._clear_backend_probe_cache()
         assert f"Current working directory: {tmp_path}" in _pb.build_environment_hints()
 
+    def test_build_environment_hints_uses_home_env_over_expanduser(self, monkeypatch, tmp_path):
+        """Fix for #63093: HOME env var should take precedence over expanduser(~)."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        # Set HOME to a different path than what expanduser would return
+        custom_home = tmp_path / "custom_home"
+        custom_home.mkdir()
+        monkeypatch.setenv("HOME", str(custom_home))
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert f"User home directory: {custom_home}" in result
+
     def test_build_environment_hints_uses_live_probe_when_available(self, monkeypatch):
         """When the probe succeeds, its output must appear in the hint block."""
         import agent.prompt_builder as _pb

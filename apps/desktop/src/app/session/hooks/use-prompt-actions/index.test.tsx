@@ -289,6 +289,60 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(renderedText).not.toContain('/goal: no output')
   })
 
+  it('reuses the slash-created runtime session for the immediate /goal kickoff send', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = 'rt-goal-kickoff'
+
+      return 'rt-goal-kickoff'
+    })
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set. Starting now.',
+          message: 'write the implementation plan'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    const ok = await handle!.submitText('/goal write the implementation plan')
+
+    expect(ok).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    expect(calls.map(c => c.method)).toEqual(['slash.exec', 'prompt.submit'])
+    expect(calls[0]?.params).toEqual({
+      command: 'goal write the implementation plan',
+      session_id: 'rt-goal-kickoff'
+    })
+    expect(calls[1]?.params).toEqual({
+      session_id: 'rt-goal-kickoff',
+      text: 'write the implementation plan'
+    })
+  })
+
   it('dispatches a slash command with a multiline arg instead of "empty slash command" (#41323, #55510)', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     const states: Record<string, unknown>[] = []
@@ -1390,6 +1444,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
   it('aborts recovery submit when the user switches sessions during timeout resume', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     let submitAttempts = 0
+
     let releaseResume: () => void = () => {}
 
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_A }

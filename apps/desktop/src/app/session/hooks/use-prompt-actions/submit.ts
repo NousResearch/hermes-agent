@@ -226,7 +226,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       setAwaitingResponse(true)
       clearNotifications()
 
-      let sessionId: null | string = activeSessionId
+      // Slash flows can create/bind a runtime session and then immediately
+      // submit a send-directive in the same tick (e.g. `/goal <text>`). The
+      // prop can still be stale for that render, so prefer the live ref to
+      // avoid minting a second session for the follow-up prompt.
+      let sessionId: null | string = activeSessionId || activeSessionIdRef.current
 
       if (sessionId) {
         seedOptimistic(sessionId)

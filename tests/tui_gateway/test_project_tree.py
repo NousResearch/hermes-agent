@@ -237,6 +237,31 @@ def test_windows_path_identity_preserves_explicit_project_priority():
     assert tree["scoped_session_ids"] == [session["id"]]
 
 
+def test_wsl_localhost_cwds_collapse_into_one_auto_project():
+    # Root-relative WSL spellings (single leading backslash) are Windows paths,
+    # so case/separator variants collapse instead of spawning duplicate autos.
+    sessions = [
+        _session(r"\wsl.localhost\Ubuntu\home\alice\proj"),
+        _session("//wsl.localhost/Ubuntu/home/alice/PROJ"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve=lambda _cwd: None, hydrate=True)
+
+    assert len(tree["projects"]) == 1
+    assert tree["projects"][0]["sessionCount"] == 2
+
+
+def test_wsl_localhost_path_cannot_bypass_explicit_project():
+    explicit = _project("p_proj", "Proj", [r"\wsl.localhost\Ubuntu\home\alice\proj"])
+    session = _session("//wsl.localhost/Ubuntu/home/alice/PROJ/")
+
+    tree = pt.build_tree([explicit], [session], [], resolve=lambda _cwd: None, hydrate=True)
+
+    assert [p["id"] for p in tree["projects"]] == ["p_proj"]
+    assert tree["projects"][0]["sessionCount"] == 1
+    assert tree["scoped_session_ids"] == [session["id"]]
+
+
 def test_posix_path_identity_remains_case_sensitive():
     explicit = _project("p_notes", "Notes", ["/Work/Notes"])
     session = _session("/work/notes")

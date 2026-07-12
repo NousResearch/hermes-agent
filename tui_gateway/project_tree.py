@@ -62,7 +62,10 @@ def _segments(path: str) -> list[str]:
 
 def _is_windows_path(path: str) -> bool:
     value = (path or "").strip()
-    return bool(re.match(r"^[A-Za-z]:[/\\]", value)) or value.startswith(("\\\\", "//"))
+    # Drive-letter (`C:\…`), UNC (`\\srv`, `//srv`), or any backslash-rooted path
+    # — the root-relative `\wsl.localhost\…` / `\Users\…` spellings included. A
+    # single leading `/` stays POSIX (case-sensitive).
+    return bool(re.match(r"^[A-Za-z]:[/\\]", value)) or value.startswith(("\\", "//"))
 
 
 def _comparison_segments(path: str) -> list[str]:

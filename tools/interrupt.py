@@ -14,7 +14,22 @@ Usage in tools:
         return {"output": "[interrupted]", "returncode": 130}
 """
 
+import logging
+import os
 import threading
+
+logger = logging.getLogger(__name__)
+
+# Opt-in debug tracing — pairs with HERMES_DEBUG_INTERRUPT in
+# tools/environments/base.py.  Enables per-call logging of set/check so the
+# caller thread, target thread, and current state are visible when
+# diagnosing "interrupt signaled but tool never saw it" reports.
+_DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
+
+if _DEBUG_INTERRUPT:
+    # AIAgent's quiet_mode path forces `tools` logger to ERROR on CLI startup.
+    # Force our own logger back to INFO so the trace is visible in agent.log.
+    logger.setLevel(logging.INFO)
 
 # Set of thread idents that have been interrupted.
 _interrupted_threads: set[int] = set()
@@ -35,6 +50,13 @@ def set_interrupt(active: bool, thread_id: int | None = None) -> None:
             _interrupted_threads.add(tid)
         else:
             _interrupted_threads.discard(tid)
+        _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
+    if _DEBUG_INTERRUPT:
+        logger.info(
+            "[interrupt-debug] set_interrupt(active=%s, target_tid=%s) "
+            "called_from_tid=%s current_set=%s",
+            active, tid, threading.current_thread().ident, _snapshot,
+        )
 
 
 def is_interrupted() -> bool:
@@ -46,6 +68,21 @@ def is_interrupted() -> bool:
     tid = threading.current_thread().ident
     with _lock:
         return tid in _interrupted_threads
+
+
+def clear_current_thread_interrupt() -> None:
+    """Clear any interrupt bit on the CURRENT thread.
+
+    Gives a user-approved command a clean interrupt slate immediately before
+    it spawns its child process, so a stale bit that landed on this thread
+    during the blocking approval-wait cannot SIGINT the just-approved run
+    (exit 130 + "[Command interrupted]").  Single-thread ordering on this tid
+    keeps the DO-NOT-BREAK invariant intact: a *genuine* interrupt arriving
+    after this call re-sets the bit on the same thread and is still observed by
+    the executor's poll loop.  Call this directly, never via the
+    _interrupt_event proxy (its .clear() binds to whatever thread runs it).
+    """
+    set_interrupt(False)  # thread_id=None -> current thread (see set_interrupt)
 
 
 # ---------------------------------------------------------------------------

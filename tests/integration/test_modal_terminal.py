@@ -53,7 +53,6 @@ terminal_tool = terminal_module.terminal_tool
 check_terminal_requirements = terminal_module.check_terminal_requirements
 _get_env_config = terminal_module._get_env_config
 cleanup_vm = terminal_module.cleanup_vm
-get_active_environments_info = terminal_module.get_active_environments_info
 
 
 def test_modal_requirements():
@@ -70,7 +69,7 @@ def test_modal_requirements():
     modal_token = os.getenv("MODAL_TOKEN_ID")
     modal_toml = Path.home() / ".modal.toml"
     
-    print(f"\nModal authentication:")
+    print("\nModal authentication:")
     print(f"  MODAL_TOKEN_ID env var: {'✅ Set' if modal_token else '❌ Not set'}")
     print(f"  ~/.modal.toml file: {'✅ Exists' if modal_toml.exists() else '❌ Not found'}")
     
@@ -97,7 +96,7 @@ def test_simple_command():
     result = terminal_tool("echo 'Hello from Modal!'", task_id=test_task_id)
     result_json = json.loads(result)
     
-    print(f"\nResult:")
+    print("\nResult:")
     print(f"  Output: {result_json.get('output', '')[:200]}")
     print(f"  Exit code: {result_json.get('exit_code')}")
     print(f"  Error: {result_json.get('error')}")
@@ -125,7 +124,7 @@ def test_python_execution():
     result = terminal_tool(python_cmd, task_id=test_task_id)
     result_json = json.loads(result)
     
-    print(f"\nResult:")
+    print("\nResult:")
     print(f"  Output: {result_json.get('output', '')[:200]}")
     print(f"  Exit code: {result_json.get('exit_code')}")
     print(f"  Error: {result_json.get('error')}")
@@ -157,7 +156,7 @@ def test_pip_install():
     )
     result_json = json.loads(result)
     
-    print(f"\nResult:")
+    print("\nResult:")
     output = result_json.get('output', '')
     print(f"  Output (last 500 chars): ...{output[-500:] if len(output) > 500 else output}")
     print(f"  Exit code: {result_json.get('exit_code')}")
@@ -245,7 +244,7 @@ def main():
     
     # Check current config
     config = _get_env_config()
-    print(f"\nCurrent configuration:")
+    print("\nCurrent configuration:")
     print(f"  TERMINAL_ENV: {config['env_type']}")
     print(f"  TERMINAL_MODAL_IMAGE: {config['modal_image']}")
     print(f"  TERMINAL_TIMEOUT: {config['timeout']}s")
@@ -286,12 +285,6 @@ def main():
         print(f"  {test_name}: {status}")
     
     print(f"\nTotal: {passed}/{total} tests passed")
-    
-    # Show active environments
-    env_info = get_active_environments_info()
-    print(f"\nActive environments after tests: {env_info['count']}")
-    if env_info['count'] > 0:
-        print(f"  Task IDs: {env_info['task_ids']}")
     
     return passed == total
 

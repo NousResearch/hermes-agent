@@ -9,10 +9,8 @@ import os
 import signal
 import subprocess
 import sys
-import time
 import threading
 
-import pytest
 
 
 def _spawn_sleep(seconds: float = 60) -> subprocess.Popen:
@@ -110,8 +108,8 @@ class TestAgentCloseMethod:
             agent.client = None
 
             with patch("tools.process_registry.process_registry") as mock_registry, \
-                 patch("tools.terminal_tool.cleanup_vm") as mock_cleanup_vm, \
-                 patch("tools.browser_tool.cleanup_browser") as mock_cleanup_browser:
+                 patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
+                 patch("run_agent.cleanup_browser") as mock_cleanup_browser:
                 agent.close()
 
                 mock_registry.kill_all.assert_called_once_with(
@@ -157,6 +155,59 @@ class TestAgentCloseMethod:
             child_2.close.assert_called_once()
             assert agent._active_children == []
 
+    def test_close_ends_owned_session_row(self):
+        """close() finalizes the agent's owned SQLite session row."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-close-session-row"
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            agent._end_session_on_close = True
+            agent._session_db = MagicMock()
+
+            agent.close()
+
+            agent._session_db.end_session.assert_called_once_with(
+                "test-close-session-row", "agent_close"
+            )
+
+    def test_close_skips_session_end_for_forwarded_continuation_agents(self):
+        """Helper agents that handed session ownership forward opt out."""
+        from unittest.mock import MagicMock, patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-close-forwarded-session"
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            agent._end_session_on_close = False
+            agent._session_db = MagicMock()
+
+            agent.close()
+
+            agent._session_db.end_session.assert_not_called()
+
+    def test_close_session_end_noops_without_session_db(self):
+        """close() is a no-op for session finalization when no DB is wired in."""
+        from unittest.mock import patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.session_id = "test-close-no-db"
+            agent._active_children = []
+            agent._active_children_lock = threading.Lock()
+            agent.client = None
+            # No _session_db / _end_session_on_close attributes at all —
+            # getattr defaults must keep close() from raising.
+            agent.close()  # must not raise
+
     def test_close_survives_partial_failures(self):
         """close() continues cleanup even if one step fails."""
         from unittest.mock import patch
@@ -172,9 +223,9 @@ class TestAgentCloseMethod:
             with patch(
                 "tools.process_registry.process_registry"
             ) as mock_reg, patch(
-                "tools.terminal_tool.cleanup_vm"
+                "run_agent.cleanup_vm"
             ) as mock_vm, patch(
-                "tools.browser_tool.cleanup_browser"
+                "run_agent.cleanup_browser"
             ) as mock_browser:
                 mock_reg.kill_all.side_effect = RuntimeError("boom")
 
@@ -190,17 +241,38 @@ class TestGatewayCleanupWiring:
     def test_gateway_stop_calls_close(self):
         """gateway stop() should call close() on all running agents."""
         import asyncio
+        import threading
         from unittest.mock import MagicMock, patch
 
-        runner = MagicMock()
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
         runner._running = True
         runner._running_agents = {}
+        runner._running_agents_ts = {}
         runner.adapters = {}
         runner._background_tasks = set()
         runner._pending_messages = {}
         runner._pending_approvals = {}
+        runner._pending_model_notes = {}
         runner._shutdown_event = asyncio.Event()
         runner._exit_reason = None
+        runner._exit_code = None
+        runner._stop_task = None
+        runner._draining = False
+        runner._restart_requested = False
+        runner._restart_task_started = False
+        runner._restart_detached = False
+        runner._restart_via_service = False
+        runner._restart_drain_timeout = 0.1
+        runner._voice_mode = {}
+        runner._session_model_overrides = {}
+        runner._update_prompt_pending = {}
+        runner._busy_input_mode = "interrupt"
+        runner._agent_cache = {}
+        runner._agent_cache_lock = threading.Lock()
+        runner._shutdown_all_gateway_honcho = lambda: None
+        runner._update_runtime_status = MagicMock()
 
         mock_agent_1 = MagicMock()
         mock_agent_2 = MagicMock()
@@ -208,8 +280,6 @@ class TestGatewayCleanupWiring:
             "session-1": mock_agent_1,
             "session-2": mock_agent_2,
         }
-
-        from gateway.run import GatewayRunner
 
         loop = asyncio.new_event_loop()
         try:

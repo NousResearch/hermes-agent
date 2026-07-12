@@ -30,7 +30,7 @@ class TestParseReasoningConfig(unittest.TestCase):
         self.assertEqual(result, {"enabled": False})
 
     def test_valid_levels(self):
-        for level in ("low", "medium", "high", "xhigh", "minimal"):
+        for level in ("low", "medium", "high", "xhigh", "max", "ultra", "minimal"):
             result = self._parse(level)
             self.assertIsNotNone(result)
             self.assertTrue(result.get("enabled"))
@@ -41,7 +41,6 @@ class TestParseReasoningConfig(unittest.TestCase):
         self.assertIsNone(self._parse("  "))
 
     def test_unknown_returns_none(self):
-        self.assertIsNone(self._parse("ultra"))
         self.assertIsNone(self._parse("turbo"))
 
     def test_case_insensitive(self):
@@ -70,7 +69,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
         stub = self._make_cli(show_reasoning=False)
         # Simulate /reasoning show
         arg = "show"
-        if arg in ("show", "on"):
+        if arg in {"show", "on"}:
             stub.show_reasoning = True
             stub.agent.reasoning_callback = lambda x: None
         self.assertTrue(stub.show_reasoning)
@@ -79,7 +78,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
         stub = self._make_cli(show_reasoning=True)
         # Simulate /reasoning hide
         arg = "hide"
-        if arg in ("hide", "off"):
+        if arg in {"hide", "off"}:
             stub.show_reasoning = False
             stub.agent.reasoning_callback = None
         self.assertFalse(stub.show_reasoning)
@@ -88,14 +87,14 @@ class TestHandleReasoningCommand(unittest.TestCase):
     def test_on_enables_display(self):
         stub = self._make_cli(show_reasoning=False)
         arg = "on"
-        if arg in ("show", "on"):
+        if arg in {"show", "on"}:
             stub.show_reasoning = True
         self.assertTrue(stub.show_reasoning)
 
     def test_off_disables_display(self):
         stub = self._make_cli(show_reasoning=True)
         arg = "off"
-        if arg in ("hide", "off"):
+        if arg in {"hide", "off"}:
             stub.show_reasoning = False
         self.assertFalse(stub.show_reasoning)
 
@@ -178,6 +177,8 @@ class TestLastReasoningInResult(unittest.TestCase):
         messages = self._build_messages(reasoning="Let me think...")
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -187,6 +188,8 @@ class TestLastReasoningInResult(unittest.TestCase):
         messages = self._build_messages(reasoning=None)
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -201,6 +204,8 @@ class TestLastReasoningInResult(unittest.TestCase):
         ]
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -210,6 +215,8 @@ class TestLastReasoningInResult(unittest.TestCase):
         messages = self._build_messages(reasoning="")
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -473,6 +480,7 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         agent.verbose_logging = False
         agent.reasoning_callback = None
         agent.stream_delta_callback = None  # non-streaming by default
+        agent._stream_callback = None  # non-streaming by default
         return agent
 
     def test_single_think_block_extracted(self):
@@ -541,7 +549,10 @@ class TestConfigDefault(unittest.TestCase):
         from hermes_cli.config import DEFAULT_CONFIG
         display = DEFAULT_CONFIG.get("display", {})
         self.assertIn("show_reasoning", display)
-        self.assertFalse(display["show_reasoning"])
+        # Default ON (July 2026 TTFT-perception change): thinking models
+        # stream reasoning for tens of seconds; hiding it left users staring
+        # at a spinner. The key must exist and be a bool.
+        self.assertTrue(display["show_reasoning"])
 
 
 class TestCommandRegistered(unittest.TestCase):
@@ -583,6 +594,8 @@ class TestEndToEndPipeline(unittest.TestCase):
 
         last_reasoning = None
         for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
@@ -619,6 +632,7 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent = AIAgent.__new__(AIAgent)
         agent.reasoning_callback = None
         agent.stream_delta_callback = None
+        agent._stream_callback = None
         agent.verbose_logging = False
         return agent
 

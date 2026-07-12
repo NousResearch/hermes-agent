@@ -12,6 +12,10 @@ Hermes supports two WeCom integration modes:
 - **WeCom Callback** (this page) — self-built app, receives encrypted XML callbacks. Shows as a first-class app in users' WeCom sidebar. Supports multi-corp routing.
 :::
 
+See also: [WeCom Bot](./wecom.md) for the bot-style integration.
+
+> Run `hermes gateway setup` and pick **WeCom Callback** for a guided walk-through.
+
 ## How It Works
 
 1. You register a self-built application in the WeCom Admin Console
@@ -60,8 +64,10 @@ WECOM_CALLBACK_ALLOWED_USERS=user1,user2
 ### 3. Start the Gateway
 
 ```bash
-hermes gateway start
+hermes gateway
 ```
+
+(Use `hermes gateway start` only after `hermes gateway install` has registered the systemd/launchd service.)
 
 The callback adapter starts an HTTP server on the configured port. WeCom will verify the callback URL via a GET request, then begin sending messages via POST.
 
@@ -143,5 +149,30 @@ The crypto implementation is compatible with Tencent's official WXBizMsgCrypt SD
 
 - **No streaming** — replies arrive as complete messages after the agent finishes
 - **No typing indicators** — the callback model doesn't support typing status
-- **Text only** — currently supports text messages; image/file/voice not yet implemented
+- **Text only** — currently supports text messages for input; image/file/voice input not yet implemented. The agent is aware of outbound media capabilities via the WeCom platform hint (images, documents, video, voice).
 - **Response latency** — agent sessions take 3–30 minutes; users see the reply when processing completes
+
+## Troubleshooting
+
+**Signature verification failing.**
+WeCom signs every request with the **Token** you registered in the admin
+console. A mismatch between the token configured in Hermes and the token the
+admin console expects is the most common cause. Re-copy both the **Token** and
+**EncodingAESKey** from the admin console — they're easy to truncate. Whitespace
+in `~/.hermes/.env` values around `=` will also break signature checks. After
+fixing, restart `hermes gateway run`.
+
+**Callback URL not reachable / verification step fails.**
+WeCom hits the public URL you registered. Confirm:
+1. Your reverse proxy / tunnel forwards `/wecom/callback` to the gateway's port.
+2. The URL in the admin console is HTTPS (WeCom rejects plain HTTP).
+3. From outside your network, `curl -i https://<your-domain>/wecom/callback`
+   returns something other than a timeout (a 4xx without query params is fine —
+   it just means the listener is reachable).
+
+**Port not reachable / listener not bound.**
+Check `hermes gateway run` logs for the bound host/port. If the adapter bound to
+`127.0.0.1` you must front it with a reverse proxy or tunnel — WeCom's servers
+can't reach loopback. Set `extra.host: 0.0.0.0` in `config.yaml` (plus
+`allowed_source_cidrs` if exposing directly) or keep loopback and use a tunnel
+such as Cloudflare Tunnel / nginx.

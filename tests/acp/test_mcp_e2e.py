@@ -7,9 +7,6 @@ Exercises the full flow through the ACP server layer:
     session_update events arrive at the mock client
 """
 
-import asyncio
-from collections import deque
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,6 +26,7 @@ from acp.schema import (
 
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
+from acp_adapter.tools import build_tool_start
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +121,7 @@ class TestMcpRegistrationE2E:
         mock_conn.request_permission = AsyncMock()
         acp_agent._conn = mock_conn
 
-        def mock_run_conversation(user_message, conversation_history=None, task_id=None):
+        def mock_run_conversation(user_message, conversation_history=None, task_id=None, **kwargs):
             """Simulate an agent turn that calls terminal, gets a result, then responds."""
             agent = state.agent
 
@@ -177,9 +175,24 @@ class TestMcpRegistrationE2E:
         complete_event = completions[0]
         assert isinstance(complete_event, ToolCallProgress)
         assert complete_event.status == "completed"
-        # rawOutput should contain the tool result string
-        assert complete_event.raw_output is not None
-        assert "hello" in str(complete_event.raw_output)
+        # Completion should contain human-readable output rather than forcing raw JSON panes.
+        assert complete_event.content
+        assert "hello" in complete_event.content[0].content.text
+        assert complete_event.raw_output is None
+
+    def test_patch_mode_tool_start_defers_diff_to_edit_approval_prompt(self):
+        update = build_tool_start(
+            "tc-1",
+            "patch",
+            {
+                "mode": "patch",
+                "patch": "*** Begin Patch\n*** Update File: src/app.py\n@@\n-old line\n+new line\n*** Add File: src/new.py\n+hello\n*** End Patch",
+            },
+        )
+
+        assert len(update.content) == 1
+        assert update.content[0].type == "content"
+        assert "Approval prompt shows the diff" in update.content[0].content.text
 
     @pytest.mark.asyncio
     async def test_prompt_tool_results_paired_by_call_id(self, acp_agent, mock_manager):
@@ -193,7 +206,7 @@ class TestMcpRegistrationE2E:
         mock_conn.request_permission = AsyncMock()
         acp_agent._conn = mock_conn
 
-        def mock_run(user_message, conversation_history=None, task_id=None):
+        def mock_run(user_message, conversation_history=None, task_id=None, **kwargs):
             agent = state.agent
             # Fire two tool calls
             if agent.tool_progress_callback:

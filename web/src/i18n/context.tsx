@@ -14,6 +14,7 @@ import { ko } from "./ko";
 import { it } from "./it";
 import { ga } from "./ga";
 import { pt } from "./pt";
+import { ptBR } from "./pt-BR";
 import { ru } from "./ru";
 import { hu } from "./hu";
 
@@ -32,6 +33,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   it,
   ga,
   pt,
+  "pt-BR": ptBR,
   ru,
   hu,
 };
@@ -42,7 +44,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
 // can share the same list.
 //
 // We intentionally do NOT pair locales with country flags. Languages are not
-// countries (English ≠ GB, Portuguese ≠ PT, Spanish ≠ ES, Chinese variants ≠
+// countries (English = GB, Portuguese = PT, Spanish = ES, Chinese variants =
 // any single jurisdiction). Endonyms are unambiguous and avoid the political
 // mismapping that flag pairings inevitably create.
 export const LOCALE_META: Record<Locale, { name: string }> = {
@@ -60,6 +62,7 @@ export const LOCALE_META: Record<Locale, { name: string }> = {
   it: { name: "Italiano" },
   ga: { name: "Gaeilge" },
   pt: { name: "Português" },
+  "pt-BR": { name: "Português (Brasil)" },
   ru: { name: "Русский" },
   hu: { name: "Magyar" },
 };
@@ -72,11 +75,24 @@ function isLocale(value: string): value is Locale {
 }
 
 function getInitialLocale(): Locale {
+  // Precedence: 1) localStorage (explicit user choice)
+  //             2) navigator.language (browser locale, first visit)
+  //             3) English (final fallback)
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored && isLocale(stored)) return stored;
   } catch {
     // SSR or privacy mode
+  }
+  try {
+    const browserLang = (navigator.language || "");
+    // Try an exact match first (e.g. "pt-BR" -> "pt-BR")
+    if (isLocale(browserLang)) return browserLang;
+    // Fallback to base language subtag (e.g. "pt-BR" -> "pt", "es-MX" -> "es")
+    const base = browserLang.split("-")[0].split("_")[0];
+    if (base && isLocale(base)) return base;
+  } catch {
+    // navigator not available
   }
   return "en";
 }

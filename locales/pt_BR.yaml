@@ -1,0 +1,173 @@
+# Catálogo de mensagens estáticas do Hermes -- Português (Brasil)
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  COMANDO PERIGOSO: {description}"
+  choose_long:     "      [o]uma vez  |  [s]sessão  |  [a]sempre  |  [d]negar"
+  choose_short:    "      [o]uma vez  |  [s]sessão  |  [d]negar"
+  prompt_long:     "      Escolha [o/s/a/D]: "
+  prompt_short:    "      Escolha [o/s/D]: "
+  timeout:         "      ⏱ Tempo esgotado — comando negado"
+  allowed_once:    "      ✓ Permitido uma vez"
+  allowed_session: "      ✓ Permitido nesta sessão"
+  allowed_always:  "      ✓ Adicionado à lista de permissões permanente"
+  denied:          "      ✗ Negado"
+  cancelled:       "      ✗ Cancelado"
+  blocklist_message: "Este comando está na lista de bloqueio incondicional e não pode ser aprovado."
+
+gateway:
+  approval_expired: "⚠️ A aprovação expirou (o agente já não está aguardando). Peça ao agente para tentar novamente."
+  draining:         "⏳ Aguardando que {count} agente(s) ativo(s) terminem antes de reiniciar..."
+  goal_cleared:     "✓ Objetivo removido."
+  no_active_goal:   "Não há objetivo ativo."
+  config_read_failed: "⚠️ Não foi possível ler config.yaml: {error}"
+  config_save_failed: "⚠️ Não foi possível salvar a configuração: {error}"
+
+  model:
+    error_prefix:           "Erro: {error}"
+    switched:               "Modelo alterado para `{model}`"
+    provider_label:         "Provedor: {provider}"
+    context_label:          "Contexto: {tokens} tokens"
+    max_output_label:       "Saída máxima: {tokens} tokens"
+    cost_label:             "Custo: {cost}"
+    capabilities_label:     "Capacidades: {capabilities}"
+    prompt_caching_enabled: "Cache de prompts: ativado"
+    warning_prefix:         "Aviso: {warning}"
+    saved_global:           "Salvo em config.yaml (`--global`)"
+    session_only_hint:      "_(apenas para esta sessão — adicione `--global` para tornar permanente)_"
+    current_label:          "Atual: `{model}` em {provider}"
+    current_tag:            " (atual)"
+    more_models_suffix:     " (+{count} mais)"
+
+  session:
+    started:          "→ Sessão iniciada"
+    ended:            "← Sessão encerrada"
+    expired:          "← Sessão expirada ({reason})"
+    mode_changed:     "Modo alterado para `{mode}`"
+    instruction:      "⚠️  Instrução personalizada definida. Esta instrução será usada no início desta sessão."
+    stale:            "⚠️  Esta sessão expirou há algum tempo — iniciou uma nova."
+    interrupted:      "⚠️  Interrompido pelo usuário"
+    auto_hint:        "Dica: "
+    cancelled_by_parent: "A sessão foi cancelada pelo agente pai (subagentes não podem continuar quando o pai termina)."
+
+  error:
+    no_api_key:             "⚠️  Sem chave de API para {provider}. Configure uma em `hermes config`."
+    reasoning_unsupported:  "⚠️  Este modelo não suporta pensamento visível (reasoning)."
+
+  skill:
+    loaded:       "✓ Habilidade '{name}' carregada"
+    loaded_list:  "✓ Habilidades carregadas: {names}"
+    not_found:    "⚠️  Habilidade '{name}' não encontrada. Use `/skills` para listar habilidades disponíveis."
+    not_enabled:  "⚠️  Habilidade '{name}' não ativada. Use `/skill enable {name}` para ativar."
+    conflict:     "⚠️  Múltiplas habilidades correspondem a '{query}'. Seja mais específico."
+
+  agent:
+    delegating:   "Delegando para subagente: {goal}"
+    delegation_done: "Subagente concluído: {result}"
+    delegation_error: "Erro na delegação: {error}"
+
+  cron:
+    triggered: "⏰ Tarefa acionada: {name}"
+    failed:    "⏰ Tarefa falhou: {name} — {error}"
+    skipped:   "⏰ Tarefa ignorada: {name} — sessão do usuário ativa"
+
+sets:
+  reloaded:  "Conjuntos de ferramentas recarregados."
+
+settings:
+  cleared:     "Configuração limpa: `{key}`"
+  set:         "Configuração definida: `{key}` = `{value}`"
+  sensitivity: "Sensibilidade de aprovação definida para `{level}`"
+  display:
+    language: "Idioma definido para `{lang}`"
+
+env:
+  set:   "{key} definido"
+  unset: "{key} removido"
+
+memory:
+  saved: "✓ Lembrei: {content}"
+  merged: "Memória consolidada."
+
+skills:
+  enabled:  "Habilidade '{name}' ativada."
+  disabled: "Habilidade '{name}' desativada."
+  toggling: "Alternando habilidade '{name}' para: {action}"
+  installing: "Instalando habilidade '{name}'..."
+  installed: "Habilidade '{name}' instalada."
+  installing_from: "Instalando habilidades de '{source}'..."
+  installing_from_success: "Habilidades instaladas de '{source}'."
+  not_found: "Habilidade '{name}' não encontrada."
+  list_header: "Habilidades instaladas:"
+  list_empty: "Nenhuma habilidade instalada."
+
+mcp:
+  loaded:    "Servidor MCP carregado: {name}"
+  error:     "Erro no servidor MCP {name}: {error}"
+  timeout:   "Servidor MCP {name} excedeu o tempo limite"
+  not_found: "Servidor MCP '{name}' não encontrado."
+
+config:
+  saved:   "Configuração salva."
+  reloaded: "Configuração recarregada."
+
+update:
+  checking:    "Verificando atualizações..."
+  available:   "Atualização disponível: {version}. Execute `hermes update`."
+  up_to_date:  "Hermes está atualizado."
+  downloading: "Baixando atualização..."
+  installing:  "Instalando atualização..."
+  done:        "Atualizado para {version}. Reinicie o gateway se estiver executando."
+  error:       "Erro na atualização: {error}"
+
+help:
+  header:        "📋 Comandos disponíveis"
+  legend_header: "Legenda"
+  legend:
+    action:      "Ação"
+    description: "Descrição"
+    aliases:     "Atalho"
+  note_fallback: "Observação: Alguns comandos podem não estar disponíveis dependendo do modo de sessão."
+
+sessions:
+  list_header:          "Sessões recentes:"
+  list_empty:           "Nenhuma sessão."
+  current:              "Sessão atual"
+  delete_confirm:       "Tem certeza que deseja excluir a sessão '{id}'?"
+  deleted:              "Sessão '{id}' excluída."
+  clear_confirm:        "Tem certeza que deseja limpar o contexto da sessão atual?"
+  cleared:              "Contexto da sessão limpo."
+  retry_confirm:        "Tem certeza? Isto irá reiniciar a última parte."
+  context_full:         "O contexto esgotou-se. Redefina com /clear ou inicie uma nova sessão com /new."
+  fork_created:         "Sessão bifurcada para {id}. Você está agora na nova sessão."
+  fork_from_last:       "Criado um ramo (fork) da sessão anterior como uma nova sessão."
+  unread_marker:        "📌 Você está aqui — há mensagens não lidas acima"
+
+channel:
+  set:   "Canal definido para `{channel}`"
+  reset: "Canal limpo (volta a usar o prompt de sessão global)"
+  list:  "Prompt específico do canal atual"
+  no_prompts: "Nenhum prompt de canal configurado para este perfil."
+
+misc:
+  ok:       "Ok"
+  error:    "Erro"
+  error_prefix: "Erro: {error}"
+  yes:      "Sim"
+  no:       "Não"
+  all:      "Tudo"
+  done:     "✓"
+  platform_bot_name: "🤖 Hermes"
+  thinking: "Pensando…"
+  ctrl_c:   "⚠️  Brusca interrupção (Ctrl+C). Salvando estado..."
+  goodbye:  "Até logo!"
+
+new:
+  started: "Nova sessão iniciada"
+  forked:  "Nova sessão iniciada a partir da {source}"
+
+welcome:
+  message: "👋 Olá! Sou o Hermes Agent, seu assistente de IA. Como posso ajudar?"
+
+system:
+  message_header: "[Sistema]"

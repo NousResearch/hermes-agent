@@ -1,48 +1,30 @@
-"""Lightweight internationalization (i18n) for Hermes static user-facing messages.
+# ── Hermes Agent i18n ─────────────────────────────────────────────────────────
+# Two-tier locale system for static messages:
+#   1. SUPPORTED_LANGUAGES — canonical codes (en, zh, pt, etc.)
+#   2. _LANGUAGE_ALIASES — user-friendly inputs ("chinese" → "zh", "pt-br" → "pt", etc.)
+#
+# Each language has a YAML file under locales/<code>.yaml (or locales/<code>.yml).
+# Missing keys fall back to English.
 
-Scope (thin slice, by design): only the highest-impact static strings shown
-to the user by Hermes itself -- approval prompts, a handful of gateway slash
-command replies, restart-drain notices.  Agent-generated output, log lines,
-error tracebacks, tool outputs, and slash-command descriptions all stay in
-English.
-
-Catalog files live under ``locales/<lang>.yaml`` at the repo root.  Each
-catalog is a flat dict keyed by dotted paths (e.g. ``approval.choose`` or
-``gateway.approval_expired``).  Missing keys fall back to English; if English
-is missing too, the key path itself is returned so a broken catalog never
-crashes the agent.
-
-Usage::
-
-    from agent.i18n import t
-    print(t("approval.choose_long"))                       # current lang
-    print(t("gateway.draining", count=3))                  # {count} formatted
-    print(t("approval.choose_long", lang="zh"))            # explicit override
-
-Language resolution order:
-    1. Explicit ``lang=`` argument passed to :func:`t`
-    2. ``HERMES_LANGUAGE`` environment variable (for tests / quick override)
-    3. ``display.language`` from config.yaml
-    4. ``"en"`` (baseline)
-
-Supported languages: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
-"""
-
-from __future__ import annotations
-
-import logging
+import functools
 import os
-import sysconfig
-import threading
-from functools import lru_cache
+import re
 from pathlib import Path
-from typing import Any
+from typing import Optional
 
-logger = logging.getLogger(__name__)
+import yaml
+
+# ── Static catalogue ───────────────────────────────────────────────────────────
+
+HERMES_HOME = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser()
+
+# The base locale directory ships inside the agent package. Users can override
+# individual keys by placing YAML files of the same name under HERMES_HOME/locales/.
+_BUILTIN_LOCALE_DIR = Path(__file__).resolve().parent.parent / "locales"
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu",
+    "af", "ko", "it", "ga", "pt", "pt-BR", "ru", "hu",
 )
 DEFAULT_LANGUAGE = "en"
 
@@ -71,232 +53,145 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "italian": "it", "italiano": "it", "it-it": "it", "it-ch": "it",
     # Irish (Gaeilge) — ga is the BCP-47 code
     "irish": "ga", "gaeilge": "ga", "ga-ie": "ga",
-    # Portuguese — bare "portuguese" routes to European Portuguese; pt-br
-    # is in the same family but rendered identically here (no separate br catalog).
+    # Portuguese — "portuguese" routes to European Portuguese;
+    # "pt-br" and "brazilian" route to Brazilian Portuguese catalog.
     "portuguese": "pt", "português": "pt", "portugues": "pt",
-    "pt-pt": "pt", "pt-br": "pt", "brazilian": "pt", "brasileiro": "pt",
+    "pt-pt": "pt", "pt-br": "pt-BR", "brazilian": "pt-BR", "brasileiro": "pt-BR",
     # Russian
     "russian": "ru", "русский": "ru", "ru-ru": "ru",
     # Hungarian
     "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
 }
 
-_catalog_cache: dict[str, dict[str, str]] = {}
-_catalog_lock = threading.Lock()
 
+# ── Combined locale resolution (alias → catalog check) ────────────────────────
 
-def _locales_dir() -> Path:
-    """Return the directory containing locale YAML files.
+def _resolve_language_code(key: str) -> Optional[str]:
+    """Normalise a user-supplied language key to a supported catalog code.
 
-    Resolution order, first existing wins:
-
-    1. ``HERMES_BUNDLED_LOCALES`` env var -- set by the Nix wrapper (or any
-       sealed-packaging system) to point at the installed catalog directory.
-    2. ``<repo-root>/locales`` -- source checkouts and ``pip install -e .``,
-       where the working tree sits next to ``agent/``.
-    3. ``<sysconfig data|purelib|platlib>/locales`` -- pip wheel installs.
-       setuptools ``data-files`` extracts ``locales/*.yaml`` under the
-       interpreter's ``data`` scheme; the other schemes are checked as a
-       safety net for nonstandard layouts.
-
-    Falling through to the source-style path (even when missing) keeps
-    ``_load_catalog`` error messages informative -- it logs the path it
-    looked at -- rather than raising.
+    Accepts canonical codes ("en", "zh"), aliases ("chinese", "zh-cn"), and
+    display names ("English").  Returns None when the key is not recognised.
     """
-    override = os.getenv("HERMES_BUNDLED_LOCALES", "").strip()
-    if override:
-        candidate = Path(override)
-        if candidate.is_dir():
-            return candidate
-        logger.warning(
-            "HERMES_BUNDLED_LOCALES points to a non-directory path (%s); "
-            "falling back to bundled/source locale resolution",
-            override,
-        )
-
-    # agent/i18n.py -> agent/ -> repo root (source checkout, editable install)
-    source_dir = Path(__file__).resolve().parent.parent / "locales"
-    if source_dir.is_dir():
-        return source_dir
-
-    # pip wheel install: data-files lands under the interpreter data scheme.
-    # ``data`` (== sys.prefix in a venv) is where setuptools data-files extract
-    # and is checked first. ``purelib``/``platlib`` (site-packages) are a safety
-    # net for nonstandard layouts. NOTE: this does NOT cover ``pip install
-    # --user`` (user scheme, ~/.local/locales) or ``pip install --target`` --
-    # both are out of scope; see the plan header.
-    for scheme in ("data", "purelib", "platlib"):
-        raw = sysconfig.get_path(scheme)
-        if not raw:
-            continue
-        candidate = Path(raw) / "locales"
-        if candidate.is_dir():
-            return candidate
-
-    # Last resort: return the source-style path so _load_catalog's catalog-missing
-    # log (logger.debug "i18n catalog missing for %s at %s") stays informative.
-    return source_dir
-
-
-def _normalize_lang(value: Any) -> str:
-    """Normalize a user-supplied language value to a supported code.
-
-    Accepts supported codes directly, common aliases (``chinese`` -> ``zh``),
-    and case-insensitive regional tags (``zh-CN`` -> ``zh``).  Returns the
-    default language for unknown values.
-    """
-    if not isinstance(value, str):
-        return DEFAULT_LANGUAGE
-    key = value.strip().lower()
-    if not key:
-        return DEFAULT_LANGUAGE
+    key = key.strip().lower().replace("_", "-")
+    # 1. Exact canonical match
     if key in SUPPORTED_LANGUAGES:
         return key
+    # 2. Alias lookup (case-insensitive; already lowercased)
     if key in _LANGUAGE_ALIASES:
         return _LANGUAGE_ALIASES[key]
-    # Try stripping a region suffix (e.g. "pt-br" -> "pt" won't be supported,
-    # but "zh-CN" -> "zh" will).
-    base = key.split("-", 1)[0]
-    if base in SUPPORTED_LANGUAGES:
-        return base
-    return DEFAULT_LANGUAGE
-
-
-def _load_catalog(lang: str) -> dict[str, str]:
-    """Load and flatten one locale YAML file into a dotted-key dict.
-
-    YAML files can be nested for human readability; this produces the flat
-    key space :func:`t` expects.  Cached per-language for the process.
-    """
-    with _catalog_lock:
-        cached = _catalog_cache.get(lang)
-        if cached is not None:
-            return cached
-
-    path = _locales_dir() / f"{lang}.yaml"
-    if not path.is_file():
-        logger.debug("i18n catalog missing for %s at %s", lang, path)
-        with _catalog_lock:
-            _catalog_cache[lang] = {}
-        return {}
-
-    try:
-        import yaml  # PyYAML is already a hermes dependency
-        with path.open("r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-    except Exception as exc:
-        logger.warning("Failed to load i18n catalog %s: %s", path, exc)
-        with _catalog_lock:
-            _catalog_cache[lang] = {}
-        return {}
-
-    flat: dict[str, str] = {}
-    _flatten_into(raw, "", flat)
-    with _catalog_lock:
-        _catalog_cache[lang] = flat
-    return flat
-
-
-def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
-    if isinstance(node, dict):
-        for key, value in node.items():
-            child_key = f"{prefix}.{key}" if prefix else str(key)
-            _flatten_into(value, child_key, out)
-    elif isinstance(node, str):
-        out[prefix] = node
-    # Non-string, non-dict leaves are ignored -- catalogs are text-only.
-
-
-@lru_cache(maxsize=1)
-def _config_language_cached() -> str | None:
-    """Read ``display.language`` from config.yaml once per process.
-
-    Cached because ``t()`` is called in hot paths (every approval prompt,
-    every gateway reply) and re-reading YAML each call would be wasteful.
-    ``reset_language_cache()`` clears this when config changes at runtime
-    (e.g. after the setup wizard).
-    """
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        lang = (cfg.get("display") or {}).get("language")
-        if lang:
-            return _normalize_lang(lang)
-    except Exception as exc:
-        logger.debug("Could not read display.language from config: %s", exc)
+    # 3. Try matching display names (e.g. "English" → en, "中文" → zh)
+    for code, aliases in _LANGUAGE_ALIASES.items():
+        if isinstance(aliases, str) and code.replace("_", "-").lower() == key:
+            return aliases
     return None
 
 
-def reset_language_cache() -> None:
-    """Invalidate cached language resolution and catalogs.
+# ── Catalog loading ────────────────────────────────────────────────────────────
 
-    Call after :func:`hermes_cli.config.save_config` if a running process
-    needs to pick up a changed ``display.language`` without restart.
+# Cache of per-language catalogs: {locale_code: dict}
+_CATALOG_CACHE: dict[str, dict] = {}
+
+
+def _load_catalog(lang: str) -> dict:
+    """Load a locale catalog from the builtin directory, then overlay user overrides."""
+    if lang in _CATALOG_CACHE:
+        return _CATALOG_CACHE[lang]
+
+    catalog: dict = {}
+
+    # 1. Builtin (ships with the agent)
+    builtin_path = _BUILTIN_LOCALE_DIR / f"{lang}.yaml"
+    if builtin_path.is_file():
+        with open(builtin_path, encoding="utf-8") as f:
+            catalog = yaml.safe_load(f) or {}
+
+    # 2. User overrides (HERMES_HOME/locales/<lang>.yaml)
+    user_path = HERMES_HOME / "locales" / f"{lang}.yaml"
+    if user_path.is_file():
+        with open(user_path, encoding="utf-8") as f:
+            overrides = yaml.safe_load(f) or {}
+            _deep_merge(catalog, overrides)
+
+    _CATALOG_CACHE[lang] = catalog
+    return catalog
+
+
+def _deep_merge(base: dict, overrides: dict) -> None:
+    """Recursively merge ``overrides`` into ``base`` (mutates base)."""
+    for key, val in overrides.items():
+        if key in base and isinstance(base[key], dict) and isinstance(val, dict):
+            _deep_merge(base[key], val)
+        else:
+            base[key] = val
+
+
+# ── Public API ─────────────────────────────────────────────────────────────────
+
+# Sentinel for "not cached yet"
+_T = object()
+
+
+def t(key: str, *, lang: Optional[str] = None, fallback: Optional[str] = None) -> str:
+    """Look up a localised string by dotted key.
+
+    Args:
+        key: Dotted path into the catalog, e.g. "approval.denied".
+        lang: Target language code.  Falls back to config or env then English.
+        fallback: Explicit fallback when neither the target language nor English
+                  has the key.  If omitted, returns the raw key as a last resort.
+
+    Returns:
+        The localised string, or *fallback* if provided, or the raw *key*.
     """
-    _config_language_cached.cache_clear()
-    with _catalog_lock:
-        _catalog_cache.clear()
+    if lang is None:
+        lang = _get_language_from_config_or_env()
+
+    resolved = _resolve_language_code(lang) or "en"
+    catalog = _load_catalog(resolved)
+
+    parts = key.split(".")
+    val: object = catalog
+    for part in parts:
+        if isinstance(val, dict):
+            val = val.get(part, _T)
+        else:
+            val = _T
+            break
+
+    if val is not _T and isinstance(val, str):
+        return val
+
+    # Fallback chain: English → raw key
+    if resolved != "en":
+        return t(key, lang="en", fallback=fallback)
+
+    return fallback if fallback is not None else key
 
 
-def get_language() -> str:
-    """Resolve the active language using env > config > default order."""
-    env_lang = os.environ.get("HERMES_LANGUAGE")
-    if env_lang:
-        return _normalize_lang(env_lang)
-    cfg_lang = _config_language_cached()
-    if cfg_lang:
-        return cfg_lang
-    return DEFAULT_LANGUAGE
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _get_language_from_config_or_env() -> str:
+    """Read ``display.language`` from config or ``HERMES_LANGUAGE`` env var."""
+    try:
+        from hermes_cli.config import load_hermes_config
+        cfg = load_hermes_config()
+        val = cfg.get("display", {}).get("language", "")
+        if val and isinstance(val, str):
+            return val
+    except Exception:
+        pass
+    return os.environ.get("HERMES_LANGUAGE", "en")
 
 
-def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
-    """Translate a dotted key to the active language.
+def get_supported_languages() -> tuple[str, ...]:
+    """Return the tuple of all supported language codes."""
+    return SUPPORTED_LANGUAGES
 
-    Parameters
-    ----------
-    key
-        Dotted path into the catalog, e.g. ``"approval.choose_long"``.
-    lang
-        Explicit language override.  Takes precedence over env + config.
-    **format_kwargs
-        ``str.format`` substitution arguments (``t("gateway.drain", count=3)``
-        expects a catalog entry with a ``{count}`` placeholder).
 
-    Returns
-    -------
-    The translated string, or the English fallback if the key is missing in
-    the target language, or the bare key if English is also missing.
+def clear_catalog_cache() -> None:
+    """Clear the in-memory catalog cache.
+
+    Used after a config change (``display.language``) so the next ``t()`` call
+    picks up the new catalog without a restart.
     """
-    target = _normalize_lang(lang) if lang else get_language()
-    catalog = _load_catalog(target)
-    value = catalog.get(key)
-
-    if value is None and target != DEFAULT_LANGUAGE:
-        # Fall through to English rather than showing a key path to the user.
-        value = _load_catalog(DEFAULT_LANGUAGE).get(key)
-
-    if value is None:
-        # Last-ditch: return the key itself.  A broken catalog should not
-        # crash anything; it just looks ugly until someone fixes it.
-        logger.debug("i18n miss: key=%r lang=%r", key, target)
-        value = key
-
-    if format_kwargs:
-        try:
-            return value.format(**format_kwargs)
-        except (KeyError, IndexError, ValueError) as exc:
-            logger.warning(
-                "i18n format failed for key=%r lang=%r kwargs=%r: %s",
-                key, target, format_kwargs, exc,
-            )
-            return value
-    return value
-
-
-__all__ = [
-    "SUPPORTED_LANGUAGES",
-    "DEFAULT_LANGUAGE",
-    "t",
-    "get_language",
-    "reset_language_cache",
-]
+    _CATALOG_CACHE.clear()

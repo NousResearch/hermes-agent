@@ -116,6 +116,24 @@ def test_respects_recent_window():
     assert "of 30/30 total" in out
 
 
+def test_recent_line_reports_windowed_tool_count_not_whole_session():
+    # 30 [user, assistant, tool] turns (90 messages). The recent 20-turn window
+    # (user+assistant) covers ~10 turns, so ~10 tool results — but the "Recent:"
+    # line used to print the whole-session count (30), overstating activity by
+    # the entire out-of-window history.
+    msgs = []
+    for i in range(30):
+        msgs.append(_user(f"question {i}"))
+        msgs.append(_assistant(f"answer {i}"))
+        msgs.append(_tool_result(f"result {i}"))
+    out = build_recap(msgs)
+    recent_line = next(line for line in out.splitlines() if "Recent:" in line)
+    # Windowed count is reported; the global total rides along as an annotation.
+    assert "10 tool results" in recent_line
+    assert "(of 30 total)" in recent_line
+    assert "30 tool results" not in recent_line
+
+
 def test_multimodal_content_blocks_flattened():
     msgs = [
         {

@@ -272,7 +272,7 @@ def build_recap(
 
     users, assistants, tool_msgs = _count_visible_turns(messages)
     window = _recent_window(messages)
-    win_users, win_assistants, _ = _count_visible_turns(window)
+    win_users, win_assistants, win_tools = _count_visible_turns(window)
 
     scope = (
         f"{win_users} user turn{'s' if win_users != 1 else ''} / "
@@ -280,7 +280,14 @@ def build_recap(
     )
     if (users, assistants) != (win_users, win_assistants):
         scope += f" (of {users}/{assistants} total)"
-    lines.append(f"  Recent: {scope}, {tool_msgs} tool result{'s' if tool_msgs != 1 else ''}")
+    # The "Recent:" line is scoped to the window, so its tool-result count must be
+    # the windowed one too — reporting the whole-session ``tool_msgs`` here
+    # overstated recent activity by the entire out-of-window history. Mirror the
+    # turn-count "(of … total)" annotation when the window omits earlier results.
+    tool_scope = f"{win_tools} tool result{'s' if win_tools != 1 else ''}"
+    if win_tools != tool_msgs:
+        tool_scope += f" (of {tool_msgs} total)"
+    lines.append(f"  Recent: {scope}, {tool_scope}")
 
     tool_calls = list(_iter_assistant_tool_calls(window))
     tool_counts, files = _summarise_tool_activity(tool_calls)

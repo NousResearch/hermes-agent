@@ -19,9 +19,14 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent.profile import AgentProfile, DEFAULT_AGENT_ID, get_active_profile
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import (
+    APIServerAdapter,
+    _use_profile_and_secret_scope,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -370,3 +375,150 @@ class TestBackwardCompatibility:
     def test_default_agent_id_constant_is_main(self):
         """Anchor the default-agent contract."""
         assert DEFAULT_AGENT_ID == "main"
+
+
+class TestSecretScopeBinding:
+    """Regression coverage for the credential-scope half of profile routing.
+
+    The gap this guards against (found in architectural review of the api_server routing):
+    ``use_profile`` alone routes the *home* (``get_hermes_home`` → SOUL / memory / skills) but
+    leaves ``get_secret`` **unscoped**.  Under ``gateway.multiplex_profiles`` the routed agent's
+    LLM/provider key — resolved in the run via ``credential_pool`` → ``get_secret`` — would then
+    fail closed (``UnscopedSecretError``) or read another profile's process-global value.  The
+    api_server path must therefore install the profile's fail-closed secret scope alongside the
+    home, mirroring the base adapter's ``_profile_runtime_scope``.
+    """
+
+    def test_profile_guard_installs_fail_closed_secret_scope(self, tmp_path, monkeypatch):
+        from agent import secret_scope as ss
+
+        home = tmp_path / "coder"
+        home.mkdir()
+        (home / ".env").write_text("AGENT_API_KEY=sk-coder-scoped\n")
+        profile = AgentProfile(id="coder", home_dir=home, api_key_env="AGENT_API_KEY")
+
+        # A process-global value that must NEVER leak into the scoped read.
+        monkeypatch.setenv("AGENT_API_KEY", "sk-global-leak")
+        monkeypatch.setattr(ss, "_MULTIPLEX_ACTIVE", True)
+
+        # Before entering the guard: exactly the failure the gap produced —
+        # multiplex on + no scope → fail closed rather than leak the global.
+        with pytest.raises(ss.UnscopedSecretError):
+            ss.get_secret("AGENT_API_KEY")
+
+        # Inside the api_server profile guard: resolves the PROFILE's scoped key
+        # (from its .env), never the process-global leak, and never fail-closed —
+        # while the home binding (get_active_profile) is simultaneously in place.
+        with _use_profile_and_secret_scope(profile):
+            assert ss.get_secret("AGENT_API_KEY") == "sk-coder-scoped"
+            assert get_active_profile() is profile
+
+        # Scope is torn down on exit — no leakage past the run.
+        with pytest.raises(ss.UnscopedSecretError):
+            ss.get_secret("AGENT_API_KEY")
+        assert get_active_profile() is None
+
+    def test_two_profiles_resolve_their_own_scoped_key(self, tmp_path, monkeypatch):
+        """Sequential runs for different agents each see only their own credential —
+        the cross-profile isolation that multiplexing exists to guarantee."""
+        from agent import secret_scope as ss
+
+        monkeypatch.setattr(ss, "_MULTIPLEX_ACTIVE", True)
+        monkeypatch.setenv("AGENT_API_KEY", "sk-global-leak")
+
+        seen = {}
+        for name, key in (("coder", "sk-coder"), ("research", "sk-research")):
+            home = tmp_path / name
+            home.mkdir()
+            (home / ".env").write_text(f"AGENT_API_KEY={key}\n")
+            profile = AgentProfile(id=name, home_dir=home, api_key_env="AGENT_API_KEY")
+            with _use_profile_and_secret_scope(profile):
+                seen[name] = ss.get_secret("AGENT_API_KEY")
+
+        assert seen == {"coder": "sk-coder", "research": "sk-research"}
+
+    def test_none_profile_is_noop_no_scope_installed(self, monkeypatch):
+        """Single-agent path (no routed profile): no scope is installed, so legacy
+        ``os.environ`` behavior is preserved and callers pay nothing."""
+        from agent import secret_scope as ss
+
+        # Even with multiplex flag on, a None profile must not install a scope
+        # (there is no profile home to scope to) — it is a pure home no-op.
+        monkeypatch.setattr(ss, "_MULTIPLEX_ACTIVE", False)
+        monkeypatch.setenv("SOME_KEY", "from-env")
+
+        with _use_profile_and_secret_scope(None):
+            assert ss.current_secret_scope() is None
+            assert ss.get_secret("SOME_KEY") == "from-env"
+            assert get_active_profile() is None
+
+
+class TestRunAgentInstallsScope:
+    """The *wiring* regression — proves ``_run_agent`` itself enters the profile's
+    credential scope, not merely that the helper works in isolation.
+
+    This is the test that would have caught the original gap.  Before the fix the
+    executor closure bound ``use_profile(agent_profile)`` alone, so ``_create_agent``
+    (and the ``run_conversation`` it drives) ran with the *home* routed but the
+    *secret scope* absent — under ``multiplex_profiles`` the agent's LLM key would
+    fail closed or read another profile's process-global value.  Here we spy on
+    ``_create_agent`` and assert that, at the moment the agent is built inside the
+    executor thread, the profile's scoped credential resolves and the process-global
+    leak does not.
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_agent_creates_agent_inside_profile_secret_scope(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope as ss
+
+        home = tmp_path / "coder"
+        home.mkdir()
+        (home / ".env").write_text("AGENT_API_KEY=sk-coder-scoped\n")
+        profile = AgentProfile(
+            id="coder", home_dir=home, api_key_env="AGENT_API_KEY"
+        )
+
+        # Multiplex on + a process-global value that must NOT leak into the run.
+        monkeypatch.setattr(ss, "_MULTIPLEX_ACTIVE", True)
+        monkeypatch.setenv("AGENT_API_KEY", "sk-global-leak")
+        # clear_session_vars is imported inside the executor closure; neutralise it.
+        monkeypatch.setattr(
+            "gateway.session_context.clear_session_vars", lambda tokens: None
+        )
+
+        adapter = _make_adapter(registry={"coder": profile})
+        adapter._bind_api_server_session = lambda **kwargs: None
+
+        # Capture the credential/profile state AT AGENT-CREATION TIME (executor thread).
+        seen = {}
+
+        def _spy_create_agent(**kwargs):
+            seen["scope"] = ss.current_secret_scope()
+            seen["profile"] = get_active_profile()
+            try:
+                seen["key"] = ss.get_secret("AGENT_API_KEY")
+            except ss.UnscopedSecretError as exc:  # the bug's signature
+                seen["key"] = exc
+            agent = MagicMock()
+            agent.run_conversation.return_value = {}
+            return agent
+
+        adapter._create_agent = _spy_create_agent
+
+        await adapter._run_agent(
+            user_message="hi",
+            conversation_history=[],
+            agent_profile=profile,
+        )
+
+        # The scope was live when the agent was built — not fail-closed, not leaked.
+        assert seen["profile"] is profile
+        assert seen["scope"] is not None
+        assert seen["key"] == "sk-coder-scoped"
+
+        # And it is torn down once the run returns.
+        assert get_active_profile() is None
+        with pytest.raises(ss.UnscopedSecretError):
+            ss.get_secret("AGENT_API_KEY")

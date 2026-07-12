@@ -2913,6 +2913,7 @@ def delegate_task(
             session_key=_session_key,
             origin_ui_session_id=_origin_ui_session_id,
             parent_session_id=_parent_session_id,
+            parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),

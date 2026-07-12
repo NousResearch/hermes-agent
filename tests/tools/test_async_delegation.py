@@ -143,6 +143,36 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["delegation_id"] == res["delegation_id"]
 
 
+def test_single_completion_event_carries_parent_turn_id():
+    """The async completion event remains correlated to its spawning turn."""
+    res = ad.dispatch_async_delegation(
+        goal="compute X", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", parent_turn_id="turn-single-123",
+        runner=lambda: {"status": "completed", "summary": "done"},
+        max_async_children=3,
+    )
+
+    assert res["status"] == "dispatched"
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["parent_turn_id"] == "turn-single-123"
+
+
+def test_batch_completion_event_carries_parent_turn_id():
+    """A consolidated async batch event keeps its spawning-turn correlation."""
+    res = ad.dispatch_async_delegation_batch(
+        goals=["compute X"], context=None, toolsets=None, role="leaf", model="m",
+        session_key="", parent_turn_id="turn-batch-456",
+        runner=lambda: {"results": [{"status": "completed", "summary": "done"}]},
+        max_async_children=3,
+    )
+
+    assert res["status"] == "dispatched"
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["parent_turn_id"] == "turn-batch-456"
+
+
 def test_rich_reinjection_block_is_self_contained():
     def runner():
         return {"status": "completed", "summary": "The answer is 42.",
@@ -485,6 +515,38 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     text = format_process_notification(evt)
     assert text is not None
     assert "the real task" in text
+
+
+def test_delegate_task_background_forwards_parent_turn_id_to_batch_dispatcher(monkeypatch):
+    """Background delegation passes the parent agent's current turn to its dispatcher."""
+    import json
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent._current_turn_id = "turn-parent-789"
+    parent.session_id = "sess"
+    parent._active_children = []
+    parent._active_children_lock = None
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    dispatcher = MagicMock(return_value={
+        "status": "dispatched", "delegation_id": "deleg_parent_turn",
+    })
+
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(ad, "dispatch_async_delegation_batch", dispatcher)
+
+    out = dt.delegate_task(goal="track this turn", background=True, parent_agent=parent)
+
+    assert json.loads(out)["status"] == "dispatched"
+    assert dispatcher.call_args.kwargs["parent_turn_id"] == "turn-parent-789"
 
 
 def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):

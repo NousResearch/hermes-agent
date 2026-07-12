@@ -88,9 +88,14 @@ export const zhHant = defineLocale({
       retry: '重試',
       repairInstall: '修復安裝',
       useLocalGateway: '使用本機閘道',
+      gatewaySettings: '閘道設定',
+      back: '返回',
       openLogs: '開啟記錄',
       repairHint: '修復會重新執行安裝程式，在新機器上可能需要幾分鐘。',
-      remoteSignInHint: '開啟閘道登入視窗。使用本機閘道可切換至內建後端。',
+      remoteSignInHint: signInLabel =>
+        `先登出已儲存的遠端瀏覽器工作階段，然後開啟${signInLabel}。使用本機閘道可切換至內建後端。`,
+      signOutAndSignIn: '登出並重新登入',
+      remoteFailureHint: '在「閘道設定」中檢查閘道 URL 與登入，或切換至本機閘道。',
       hideRecentLogs: '隱藏最近記錄',
       showRecentLogs: '顯示最近記錄',
       signedInTitle: '已登入',
@@ -1368,7 +1373,10 @@ export const zhHant = defineLocale({
     customPlaceholder: '0 9 * * * 或 weekdays at 9am',
     customHint: 'Cron 表達式，或類似「每小時」「工作日上午 9 點」的短語。',
     optional: '選填',
+    promptRequired: '提示詞為必填項目。',
     promptScheduleRequired: '提示詞和排程為必填項目。',
+    scheduleRequired: '排程為必填項目。',
+    scriptOnlyEditHint: '僅腳本任務（無 AI 提示詞）。任務 ID：',
     saveChanges: '儲存變更',
     createAction: '建立排程工作'
   },
@@ -1916,7 +1924,9 @@ export const zhHant = defineLocale({
       low: '低',
       medium: '中',
       high: '高',
+      xhigh: '極高',
       max: '最高',
+      ultra: '超高',
       updateFailed: '模型選項更新失敗',
       fastFailed: '快速模式更新失敗'
     },
@@ -2187,6 +2197,7 @@ export const zhHant = defineLocale({
       other: '其他（輸入您的答案）',
       placeholder: '輸入您的答案…',
       skip: '略過',
+      skipped: '已略過',
       continueLabel: '繼續'
     },
     tool: {

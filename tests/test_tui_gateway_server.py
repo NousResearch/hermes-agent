@@ -3327,6 +3327,30 @@ def test_complete_slash_drops_removed_provider_alias():
     assert any(item["text"] == "model" for item in resp_model["result"]["items"])
 
 
+def test_complete_slash_hides_underscore_reload_aliases_but_keeps_them_executable():
+    from hermes_cli.commands import resolve_command
+
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/reload"}}
+    )
+    assert resp is not None
+    result = resp.get("result")
+    assert isinstance(result, dict)
+    completion_texts = {item["text"].strip() for item in result["items"]}
+
+    assert "reload-mcp" in completion_texts
+    assert "reload-skills" in completion_texts
+    assert "reload_mcp" not in completion_texts
+    assert "reload_skills" not in completion_texts
+
+    reload_mcp = resolve_command("reload_mcp")
+    reload_skills = resolve_command("reload_skills")
+    assert reload_mcp is not None
+    assert reload_skills is not None
+    assert reload_mcp.name == "reload-mcp"
+    assert reload_skills.name == "reload-skills"
+
+
 def test_complete_slash_returns_plain_string_fields():
     # prompt_toolkit hands us FormattedText (a list subclass) for
     # display/display_meta; the TUI's CompletionItem contract is plain

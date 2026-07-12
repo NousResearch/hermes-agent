@@ -50,6 +50,7 @@ class CommandDef:
     description: str                   # human-readable description
     category: str                      # "Session", "Configuration", etc.
     aliases: tuple[str, ...] = ()      # alternative names: ("bg",)
+    hidden_completion_aliases: tuple[str, ...] = ()  # accepted but omitted from autocomplete
     args_hint: str = ""                # argument placeholder: "<prompt>", "[name]"
     subcommands: tuple[str, ...] = ()  # tab-completable subcommands
     cli_only: bool = False             # only available in CLI
@@ -213,9 +214,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
-               aliases=("reload_mcp",)),
+               aliases=("reload_mcp",), hidden_completion_aliases=("reload_mcp",)),
     CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
-               "Tools & Skills", aliases=("reload_skills",)),
+               "Tools & Skills", aliases=("reload_skills",),
+               hidden_completion_aliases=("reload_skills",)),
     CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP", "Tools & Skills",
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
@@ -294,6 +296,13 @@ for _cmd in COMMAND_REGISTRY:
         COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
         for _alias in _cmd.aliases:
             COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
+
+# Compatibility aliases stay executable but can be omitted from autocomplete
+# when listing them beside the canonical spelling would create visual duplicates.
+COMPLETION_COMMANDS: dict[str, str] = dict(COMMANDS)
+for _cmd in COMMAND_REGISTRY:
+    for _alias in _cmd.hidden_completion_aliases:
+        COMPLETION_COMMANDS.pop(f"/{_alias}", None)
 
 # Backwards-compatible categorized dict
 COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
@@ -2002,7 +2011,7 @@ class SlashCommandCompleter(Completer):
 
         word = text[1:]
 
-        for cmd, desc in COMMANDS.items():
+        for cmd, desc in COMPLETION_COMMANDS.items():
             if not self._command_allowed(cmd):
                 continue
             cmd_name = cmd[1:]
@@ -2091,7 +2100,7 @@ class SlashCommandAutoSuggest(AutoSuggest):
         if len(parts) == 1 and not text.endswith(" "):
             # Still typing the command name: /upd → suggest "ate"
             word = text[1:].lower()
-            for cmd in COMMANDS:
+            for cmd in COMPLETION_COMMANDS:
                 if self._completer is not None and not self._completer._command_allowed(cmd):
                     continue
                 cmd_name = cmd[1:]  # strip leading /

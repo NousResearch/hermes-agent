@@ -195,6 +195,7 @@ def finalize_turn(
     completed = (
         final_response is not None
         and not failed
+        and not interrupted
         and (
             api_call_count < agent.max_iterations
             or normal_text_response
@@ -289,7 +290,6 @@ def finalize_turn(
         if interrupted:
             from agent.message_sanitization import close_interrupted_tool_sequence
             close_interrupted_tool_sequence(messages, final_response)
-
         # Some recovery/fallback paths return a real final_response without
         # adding a closing assistant message to the transcript (e.g. the
         # partial-stream and prior-turn-content recovery ``break`` sites in

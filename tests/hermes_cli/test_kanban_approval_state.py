@@ -713,6 +713,7 @@ def test_default_spawn_scrubs_parent_authority_and_resumes_session(
         approval_request_id="ka_request",
         approval_grant_nonce="opaque-nonce",
         approval_worker_session_id="20260712_120000_abcdef",
+        owner_bootstrap_nonce="owner-bootstrap",
     )
 
     kb._default_spawn(task, str(workspace))
@@ -731,6 +732,7 @@ def test_default_spawn_scrubs_parent_authority_and_resumes_session(
     ):
         assert key not in env
     assert env["HERMES_KANBAN_SESSION"] == "1"
+    assert env["HERMES_KANBAN_OWNER_BOOTSTRAP_NONCE"] == "owner-bootstrap"
     assert env["HERMES_KANBAN_APPROVAL_ID"] == "ka_request"
     assert env["HERMES_KANBAN_APPROVAL_NONCE"] == "opaque-nonce"
     cmd = captured["cmd"]

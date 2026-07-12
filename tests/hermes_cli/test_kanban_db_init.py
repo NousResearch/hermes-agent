@@ -210,6 +210,22 @@ def test_legacy_board_gains_immutable_approval_routes_table(
     assert {"task_id", "platform", "chat_id", "user_id", "notifier_profile"} <= columns
 
 
+def test_legacy_runs_gain_owner_bootstrap_nonce(tmp_path, monkeypatch):
+    db_path = _setup_home(tmp_path, monkeypatch)
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(kb.SCHEMA_SQL)
+    conn.execute("ALTER TABLE task_runs DROP COLUMN owner_bootstrap_nonce")
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path) as migrated:
+        columns = {
+            row["name"]
+            for row in migrated.execute("PRAGMA table_info(task_runs)")
+        }
+    assert "owner_bootstrap_nonce" in columns
+
+
 def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):
     """The crash that motivated #35096 — ``int(None)`` on a NULL cursor — is
     gone after migration; the notifier query returns an integer cursor."""

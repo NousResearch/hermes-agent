@@ -166,6 +166,7 @@ _HERMES_CHILD_ALLOWED = frozenset({
     "HERMES_PROFILE",
     "HERMES_CONFIG",
     "HERMES_ENV",
+    "HERMES_KANBAN_DELEGATE_SESSION",
 })
 
 # Windows-only: a handful of variables are required by the OS/CRT itself.
@@ -261,6 +262,24 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             len(_dropped_hermes),
             ", ".join(sorted(_dropped_hermes)),
         )
+    # Never pass the single-use owner marker into model-authored code. A
+    # nested Hermes process must remain a Kanban delegate (and therefore use
+    # the explicit subagent policy) rather than falling into direct/headless
+    # fail-open behavior.
+    _kanban_child_is_delegate = (
+        source_env.get("HERMES_KANBAN_SESSION") == "1"
+        or source_env.get("HERMES_KANBAN_DELEGATE_SESSION") == "1"
+    )
+    for _sensitive_marker in (
+        "HERMES_KANBAN_SESSION",
+        "HERMES_KANBAN_OWNER_BOOTSTRAP_NONCE",
+        "HERMES_KANBAN_CLAIM_LOCK",
+        "HERMES_KANBAN_APPROVAL_ID",
+        "HERMES_KANBAN_APPROVAL_NONCE",
+    ):
+        scrubbed.pop(_sensitive_marker, None)
+    if _kanban_child_is_delegate:
+        scrubbed["HERMES_KANBAN_DELEGATE_SESSION"] = "1"
     return scrubbed
 
 

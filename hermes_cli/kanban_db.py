@@ -970,6 +970,7 @@ class Task:
     approval_request_id: Optional[str] = None
     approval_grant_nonce: Optional[str] = None
     approval_worker_session_id: Optional[str] = None
+    owner_bootstrap_nonce: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1084,6 +1085,7 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    owner_bootstrap_nonce: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -1108,6 +1110,11 @@ class Run:
             summary=row["summary"],
             metadata=meta,
             error=row["error"],
+            owner_bootstrap_nonce=(
+                row["owner_bootstrap_nonce"]
+                if "owner_bootstrap_nonce" in row.keys()
+                else None
+            ),
         )
 
 
@@ -1370,7 +1377,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | approval_pending | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    owner_bootstrap_nonce TEXT
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -2239,6 +2247,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 "notified_at INTEGER",
             )
 
+    run_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+    }
+    if "owner_bootstrap_nonce" not in run_cols:
+        _add_column_if_missing(
+            conn,
+            "task_runs",
+            "owner_bootstrap_nonce",
+            "owner_bootstrap_nonce TEXT",
+        )
+
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
     # Synthesize a matching task_runs row so subsequent end-run / heartbeat
@@ -2351,7 +2370,7 @@ _REBUILD_SPECS = {
         " worker_pid INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
-        " error TEXT)",
+        " error TEXT, owner_bootstrap_nonce TEXT)",
         (
             "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",
             "CREATE INDEX idx_runs_status ON task_runs(status)",
@@ -3957,9 +3976,13 @@ def request_task_approval(
     )
     if deadline <= now:
         raise ValueError("approval request expiry must be in the future")
-    normalized_route = _approval_route_for_task(conn, task_id)
-
     with write_txn(conn):
+        # Resolve the immutable principal and its active delivery row under
+        # the same write lock as the request insert. A concurrent unsubscribe
+        # therefore wins before this transaction (fail closed) or waits until
+        # after the request is durably routable; it cannot race between check
+        # and insert.
+        normalized_route = _approval_route_for_task(conn, task_id)
         existing = conn.execute(
             "SELECT * FROM kanban_approval_requests "
             "WHERE task_id = ? AND state = 'pending'",
@@ -4717,13 +4740,14 @@ def claim_task(
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
+        owner_bootstrap_nonce = secrets.token_urlsafe(32)
         run_cur = conn.execute(
             """
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, owner_bootstrap_nonce
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -4733,6 +4757,7 @@ def claim_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                owner_bootstrap_nonce,
             ),
         )
         run_id = run_cur.lastrowid
@@ -4755,6 +4780,8 @@ def claim_task(
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
+        if claimed is not None:
+            claimed.owner_bootstrap_nonce = owner_bootstrap_nonce
         if claimed is not None and approval is not None:
             claimed.approval_request_id = approval.id
             claimed.approval_grant_nonce = approval.grant_nonce
@@ -4812,13 +4839,14 @@ def claim_review_task(
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
+        owner_bootstrap_nonce = secrets.token_urlsafe(32)
         run_cur = conn.execute(
             """
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, owner_bootstrap_nonce
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -4828,6 +4856,7 @@ def claim_review_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                owner_bootstrap_nonce,
             ),
         )
         run_id = run_cur.lastrowid
@@ -4841,7 +4870,69 @@ def claim_review_task(
              "source_status": "review"},
             run_id=run_id,
         )
-        return get_task(conn, task_id)
+        claimed = get_task(conn, task_id)
+        if claimed is not None:
+            claimed.owner_bootstrap_nonce = owner_bootstrap_nonce
+        return claimed
+
+
+def consume_task_owner_bootstrap(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    run_id: int,
+    profile: str,
+    claim_lock: str,
+    nonce: str,
+) -> bool:
+    """Atomically authenticate one top-level worker construction.
+
+    The nonce is bound to the exact active task/run/profile/claim tuple and is
+    deleted in the same statement that validates it. A second construction,
+    a stale run, a reassigned profile, or a copied/forged environment cannot
+    claim card-owner authority. PID is deliberately absent: worker bootstrap
+    races the dispatcher's post-``Popen`` PID registration.
+    """
+    raw_profile = str(profile or "").strip()
+    canonical_profile = _canonical_assignee(raw_profile) if raw_profile else None
+    task_id = str(task_id).strip()
+    claim_lock = str(claim_lock).strip()
+    nonce = str(nonce).strip()
+    try:
+        run_id = int(run_id)
+    except (TypeError, ValueError):
+        return False
+    if (
+        not task_id
+        or run_id <= 0
+        or not canonical_profile
+        or not claim_lock
+        or not nonce
+    ):
+        return False
+    with write_txn(conn):
+        changed = conn.execute(
+            "UPDATE task_runs SET owner_bootstrap_nonce = NULL "
+            "WHERE id = ? AND task_id = ? AND profile = ? "
+            "  AND status = 'running' AND ended_at IS NULL "
+            "  AND claim_lock = ? AND owner_bootstrap_nonce = ? "
+            "  AND EXISTS ("
+            "      SELECT 1 FROM tasks "
+            "      WHERE tasks.id = task_runs.task_id "
+            "        AND tasks.status = 'running' "
+            "        AND tasks.current_run_id = task_runs.id "
+            "        AND tasks.assignee = task_runs.profile "
+            "        AND tasks.claim_lock = task_runs.claim_lock"
+            "  )",
+            (
+                run_id,
+                task_id,
+                canonical_profile,
+                claim_lock,
+                nonce,
+            ),
+        )
+        return changed.rowcount == 1
 
 
 def heartbeat_claim(
@@ -9502,13 +9593,25 @@ def _default_spawn(
         "HERMES_GATEWAY_ELEVATED_HANDOFF",
         "HERMES_GATEWAY_SESSION",
         "HERMES_INTERACTIVE",
+        "HERMES_KANBAN_SESSION",
+        "HERMES_KANBAN_OWNER_BOOTSTRAP_NONCE",
+        "HERMES_KANBAN_CLAIM_LOCK",
         "HERMES_KANBAN_APPROVAL_ID",
         "HERMES_KANBAN_APPROVAL_NONCE",
+        "HERMES_KANBAN_DELEGATE_SESSION",
         "HERMES_TUI",
         "HERMES_YOLO_MODE",
     ):
         env.pop(key, None)
-    env["HERMES_KANBAN_SESSION"] = "1"
+    if task.owner_bootstrap_nonce:
+        env["HERMES_KANBAN_SESSION"] = "1"
+        env["HERMES_KANBAN_OWNER_BOOTSTRAP_NONCE"] = (
+            task.owner_bootstrap_nonce
+        )
+    else:
+        # A task without the dispatcher-minted one-use nonce can still run,
+        # but it cannot claim owner approval authority.
+        env["HERMES_KANBAN_DELEGATE_SESSION"] = "1"
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root

@@ -301,7 +301,15 @@ export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
-export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
+export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
+  updateAtom($selectedStoredSessionId, next)
+  // Selecting a session is the user reading it — drop its "completed while you
+  // were away" unread flag. This is the single chokepoint every selection path
+  // (resume / create / branch / restore) routes through, so the flag clears no
+  // matter how the session was opened.
+  clearSessionUnread($selectedStoredSessionId.get())
+}
+
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
@@ -497,6 +505,23 @@ export function setSessionAttention(sessionId: string | null | undefined, needsI
   }
 }
 
+// Stored session ids whose turn finished while the user was viewing a DIFFERENT
+// session — a completed reply they have not seen yet. Like $attentionSessionIds,
+// this powers a persistent sidebar dot that survives window blur / alt-tab, so a
+// user who steps away and returns can tell at a glance which conversations have
+// fresh, unread output waiting. In-memory only by design: an app restart counts
+// as a fresh look, so the set legitimately resets.
+export const $unreadSessionIds = atom<string[]>([])
+export const setUnreadSessionIds = (next: Updater<string[]>) => updateAtom($unreadSessionIds, next)
+
+/** Drop a session from the unread set — the user is now looking at it. No-ops on
+ *  null (new chat) and on ids not in the set, so it's safe at every call site. */
+export function clearSessionUnread(sessionId: string | null | undefined) {
+  if (sessionId) {
+    toggleMembership(setUnreadSessionIds, sessionId, false)
+  }
+}
+
 export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {
   if (!sessionId) {
     return
@@ -520,6 +545,14 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
     // aggregator to return its now-persisted row.
     if (wasWorking) {
       markSessionSettled(sessionId)
+
+      // A turn that ends while the user is viewing a DIFFERENT session produced a
+      // reply they haven't seen — flag it unread so the sidebar dot reads "fresh"
+      // instead of collapsing to the same gray as a long-read chat. A turn that
+      // finishes in the chat you're watching is read by definition.
+      if ($selectedStoredSessionId.get() !== sessionId) {
+        toggleMembership(setUnreadSessionIds, sessionId, true)
+      }
     }
   }
 }

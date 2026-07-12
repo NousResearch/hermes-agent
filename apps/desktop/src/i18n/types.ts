@@ -1343,6 +1343,7 @@ export interface Translations {
       sessionRunning: string
       needsInput: string
       waitingForAnswer: string
+      unreadReply: string
       handoffOrigin: (platform: string) => string
       renamed: string
       renameFailed: string

@@ -540,7 +540,11 @@ class TestRunLifecycleSweep:
                 adapter._sweep_orphaned_runs_once(time.time())
                 before = expired_queue.qsize()
                 stream_delta("must-not-buffer")
-                await asyncio.sleep(0)
+                mock_agent.interrupt("finish test")
+                for _ in range(40):
+                    if run_id not in adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
 
                 assert expired_queue.qsize() == before
 

@@ -1,33 +1,22 @@
 import { type RefObject, useEffect } from 'react'
 
-import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { $petMotion, $petRoamDir, type PetState } from '@/store/pet'
+
+import { chooseMove, dwellMs, PAUSE_DWELL, pickStrollTarget } from './roam-behavior'
+import {
+  GROUND_EPS,
+  groundTop,
+  type Ledge,
+  overlapsX,
+  overlayLedge,
+  resolveLedge,
+  snapshotLedges
+} from './roam-geometry'
 
 interface Point {
   x: number
   y: number
 }
-
-/**
- * A horizontal surface the pet can stand and walk on. `y` is the surface line
- * (where the pet's feet rest); `left`/`right` bound the pet's top-left x so the
- * whole sprite stays on the ledge.
- */
-interface Ledge {
-  y: number
-  left: number
-  right: number
-}
-
-// Elements the pet can perch on top of, measured fresh each beat. The bottom
-// floor is always a ledge; these add app furniture the pet can climb onto (the
-// composer, the profile rail). Add a `data-slot` here to grow the playground.
-const PERCH_SELECTORS = ['[data-slot="composer-surface"]', '[data-slot="profile-rail"]']
-
-// A full-width bar pinned to the window bottom (the status bar). When present,
-// the pet walks along its TOP edge instead of the window edge, so it stands on
-// the bar rather than covering it.
-const FLOOR_BAR_SELECTOR = '[data-slot="statusbar"]'
 
 // Foot-sync: advance this many body-widths per animation loop so the walk reads
 // as steps, not a glide. Actual px/s is derived from the sprite's loop duration
@@ -37,22 +26,10 @@ const STRIDE_PER_LOOP = 0.8
 const GRAVITY_PX_S2 = 5200
 // Time to spring up onto a higher ledge.
 const JUMP_DUR_MS = 460
-const PAUSE_MIN_MS = 1800
-const PAUSE_MAX_MS = 5200
 // Tiny settle after a drag release before the pet re-plans (and usually falls),
 // so dropping it in mid-air snaps down promptly instead of hanging for a beat.
 const DROP_SETTLE_MS = 90
-// Chance a beat hops to another ledge instead of strolling the current one.
-const HOP_CHANCE = 0.45
-// Strolls should cover ground, not shuffle: travel at least this fraction of the
-// ledge (or this many px, whichever is larger), up to the room available.
-const STROLL_MIN_FRACTION = 0.45
-const STROLL_MIN_PX = 110
-// Sprites carry a few px of transparent padding below the feet; sink the pet by
-// this much so the visible feet meet the surface instead of hovering above it.
-const FEET_DROP_PX = 4
-// Snap distances: "on this ledge" / arrived at a walk target.
-const GROUND_EPS = 2
+// Arrived at a walk target.
 const ARRIVE_EPS = 1.5
 // Cap dt so a backgrounded/throttled tab can't teleport the pet on resume.
 const MAX_DT_S = 0.05
@@ -62,60 +39,6 @@ type Phase = 'pause' | 'walk' | 'fall' | 'jump'
 const rand = (min: number, max: number): number => min + Math.random() * (max - min)
 const easeOutCubic = (t: number): number => 1 - (1 - t) ** 3
 const signDir = (n: number): -1 | 0 | 1 => (n > 0 ? 1 : n < 0 ? -1 : 0)
-
-function vw(): number {
-  return window.innerWidth || 800
-}
-
-function vh(): number {
-  return window.innerHeight || 600
-}
-
-/** The bottom ground line: the top of the status bar if it's pinned full-width
- *  across the window bottom, otherwise the window edge. */
-function floorY(width: number, height: number, petH: number): number {
-  const bar = document.querySelector(FLOOR_BAR_SELECTOR)
-
-  if (bar) {
-    const rect = bar.getBoundingClientRect()
-
-    if (rect.width >= width * 0.5 && height - rect.bottom < 4 && rect.top - petH >= 0) {
-      return rect.top
-    }
-  }
-
-  return height
-}
-
-/** Snapshot the walkable surfaces right now: the bottom floor plus any on-screen
- *  perch element with room above it for the pet to stand. */
-function snapshotLedges(petW: number, petH: number): Ledge[] {
-  const width = vw()
-  const height = vh()
-  const ledges: Ledge[] = [{ left: 0, right: Math.max(0, width - petW), y: floorY(width, height, petH) }]
-
-  for (const selector of PERCH_SELECTORS) {
-    const el = document.querySelector(selector)
-
-    if (!el) {
-      continue
-    }
-
-    const rect = el.getBoundingClientRect()
-    const left = Math.max(0, rect.left)
-    const right = Math.min(width - petW, rect.right - petW)
-
-    // Skip surfaces that are too narrow for the pet, have no headroom above, or
-    // sit off-screen / flush with the floor (no daylight between them).
-    if (right <= left + 2 || rect.top - petH < 0 || rect.top > height - 8 || height - rect.top < 12) {
-      continue
-    }
-
-    ledges.push({ left, right, y: rect.top })
-  }
-
-  return ledges
-}
 
 interface PetRoamOptions {
   /** Run the wander loop (roam opt-in + pet active + in-window + agent at rest). */
@@ -134,13 +57,13 @@ interface PetRoamOptions {
 }
 
 /**
- * Make the floating pet wander the app like a platformer character: it walks
- * along surfaces (the window floor, the top of the composer, …), hops up onto
- * higher ledges, and drops off them — instead of drifting diagonally through
- * empty space. Surfaces are re-measured from the live DOM at the start of every
- * beat (`snapshotLedges`), so the pet tracks the composer growing, the sidebar
- * opening, the window resizing, and even falls back to the floor when its perch
- * disappears.
+ * Drive the floating pet's wander as a platformer state machine: it loafs, then
+ * walks along surfaces (the window floor, the top of the composer, …), hops up
+ * onto higher ledges, and drops off them — instead of drifting through empty
+ * space. The walkable surfaces come from `roam-geometry` (re-measured from the
+ * live DOM every beat, so the pet tracks the composer growing, the sidebar
+ * opening, the window resizing) and the beat-to-beat choices from
+ * `roam-behavior`; this hook owns only the physics and the DOM writes.
  *
  * Movement mutates `el.style.left/top` directly each frame — like the drag
  * handler — so a steady wander triggers no React re-renders, and because it
@@ -180,28 +103,7 @@ export function usePetRoam({
 
     // Pace the stride to the sprite: one body-width per animation loop.
     const walkSpeedPxS = (petW * STRIDE_PER_LOOP) / (loopMs / 1000)
-
-    const groundTop = (ledge: Ledge): number => ledge.y - petH + FEET_DROP_PX
-
-    // A stroll destination on `ledge` that actually goes somewhere: lean toward
-    // the side with more room (so the pet crosses the app rather than shuffling
-    // in place) and guarantee a decent minimum travel distance.
-    const pickStrollTarget = (ledge: Ledge): number => {
-      const span = ledge.right - ledge.left
-
-      if (span <= 4) {
-        return ledge.left
-      }
-
-      const roomLeft = cur.x - ledge.left
-      const roomRight = ledge.right - cur.x
-      const goRight = roomRight >= roomLeft ? Math.random() < 0.85 : Math.random() < 0.15
-      const room = Math.max(0, goRight ? roomRight : roomLeft)
-      const minDist = Math.min(room, Math.max(span * STROLL_MIN_FRACTION, STROLL_MIN_PX))
-      const dist = minDist + Math.random() * Math.max(0, room - minDist)
-
-      return goRight ? cur.x + dist : cur.x - dist
-    }
+    const restY = (ledge: Ledge): number => groundTop(ledge, petH)
 
     // Seed from the live DOM rect so we resume from wherever the pet actually is
     // (after a drag, reclamp, or activity pause) rather than a stale closure.
@@ -237,14 +139,14 @@ export function usePetRoam({
 
     const beginPause = (now: number) => {
       phase = 'pause'
-      pauseUntil = now + rand(PAUSE_MIN_MS, PAUSE_MAX_MS)
+      pauseUntil = now + dwellMs(PAUSE_DWELL)
       signal(null, 0)
       commit({ ...cur })
     }
 
     // Land flush on a ledge, then settle into the next idle beat.
     const settleOn = (ledge: Ledge, now: number) => {
-      cur.y = groundTop(ledge)
+      cur.y = restY(ledge)
       curLedge = ledge
       applyDom()
       beginPause(now)
@@ -253,7 +155,7 @@ export function usePetRoam({
     const beginVertical = (ledge: Ledge) => {
       targetLedge = ledge
 
-      if (groundTop(ledge) < cur.y - 1) {
+      if (restY(ledge) < cur.y - 1) {
         // Up onto a higher ledge: a quick spring.
         phase = 'jump'
         jumpFromY = cur.y
@@ -267,51 +169,14 @@ export function usePetRoam({
       signal('jump', 0)
     }
 
-    // Does the pet, standing at cur.x, have a stretch of `to` it can step across
-    // to from `from` (their walkable x-ranges overlap)?
-    const overlapsX = (from: Ledge, to: Ledge): boolean =>
-      Math.min(from.right, to.right) > Math.max(from.left, to.left) + 2
-
-    // Find the highest surface at or below the pet's feet under its current x —
-    // i.e. what it's standing on, or what it would fall onto.
-    const resolveLedge = (ledges: Ledge[]): Ledge => {
-      const bottom = cur.y + petH
-      let best: Ledge | null = null
-
-      for (const ledge of ledges) {
-        if (cur.x < ledge.left - 2 || cur.x > ledge.right + 2) {
-          continue
-        }
-
-        if (ledge.y >= bottom - GROUND_EPS && (!best || ledge.y < best.y)) {
-          best = ledge
-        }
-      }
-
-      // Floor always spans the clamped x-range, so this only falls back if the
-      // pet is somehow below everything — drop it to the floor.
-      return best ?? ledges[0]!
-    }
-
-    // While an overlay is up, it's the only walkable surface: a single ledge at
-    // the overlay card's bottom inner edge. The card uses `OverlayView`'s equal
-    // inset on every side — `titlebar-height + padding` — so derive it from that
-    // (never measured).
-    const overlayLedge = (): Ledge => {
-      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
-      const inset = TITLEBAR_HEIGHT + (vw() >= 640 ? 0.875 : 0.625) * rem
-
-      return { left: inset, right: Math.max(0, vw() - inset - petW), y: vh() - inset }
-    }
-
-    const planNext = () => {
+    const planNext = (now: number) => {
       // An open overlay swaps the surface set to just its bottom edge, so the pet
       // patrols along it; closing it restores the normal surfaces (and the pet
       // drops to whatever's below).
-      const ledges = overlayOpen ? [overlayLedge()] : snapshotLedges(petW, petH)
-      curLedge = resolveLedge(ledges)
+      const ledges = overlayOpen ? [overlayLedge(petW)] : snapshotLedges(petW, petH)
+      curLedge = resolveLedge(ledges, cur.x, cur.y, petH)
 
-      if (Math.abs(cur.y - groundTop(curLedge)) > GROUND_EPS) {
+      if (Math.abs(cur.y - restY(curLedge)) > GROUND_EPS) {
         // Dragged into the air, or the surface moved out from under it: fall.
         beginVertical(curLedge)
 
@@ -319,8 +184,16 @@ export function usePetRoam({
       }
 
       const reachable = ledges.filter(ledge => ledge !== curLedge && overlapsX(curLedge!, ledge))
+      const move = chooseMove(reachable.length > 0)
 
-      if (reachable.length > 0 && Math.random() < HOP_CHANCE) {
+      if (move === 'rest') {
+        // Stay put and loaf another beat — movement is the exception.
+        beginPause(now)
+
+        return
+      }
+
+      if (move === 'hop') {
         const next = reachable[Math.floor(Math.random() * reachable.length)]!
         const lo = Math.max(curLedge.left, next.left)
         const hi = Math.min(curLedge.right, next.right)
@@ -328,7 +201,7 @@ export function usePetRoam({
         walkTargetX = lo + Math.random() * (hi - lo)
       } else {
         pendingHop = null
-        walkTargetX = pickStrollTarget(curLedge)
+        walkTargetX = pickStrollTarget(curLedge, cur.x)
       }
 
       phase = 'walk'
@@ -358,7 +231,7 @@ export function usePetRoam({
       switch (phase) {
         case 'pause': {
           if (now >= pauseUntil) {
-            planNext()
+            planNext(now)
           }
 
           break
@@ -397,7 +270,7 @@ export function usePetRoam({
           fallVel += GRAVITY_PX_S2 * dt
           cur.y += fallVel * dt
 
-          if (cur.y >= groundTop(targetLedge)) {
+          if (cur.y >= restY(targetLedge)) {
             settleOn(targetLedge, now)
           } else {
             applyDom()
@@ -415,7 +288,7 @@ export function usePetRoam({
 
           jumpElapsed += dt * 1000
           const t = Math.min(1, jumpElapsed / JUMP_DUR_MS)
-          cur.y = jumpFromY + (groundTop(targetLedge) - jumpFromY) * easeOutCubic(t)
+          cur.y = jumpFromY + (restY(targetLedge) - jumpFromY) * easeOutCubic(t)
 
           if (t >= 1) {
             settleOn(targetLedge, now)

@@ -3,20 +3,23 @@ import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
-import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
+import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
-import { Activity, AlertCircle, Clock, Command, Hash, Loader2, Terminal, Zap, ZapFilled } from '@/lib/icons'
+import { Activity, AlertCircle, Clock, Command, FolderOpen, Hash, Loader2, Terminal, Zap, ZapFilled } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
 import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
+import { copyFilePath, revealFile } from '@/store/file-actions'
+import { revealFileInTree } from '@/store/layout'
 import {
   $activeSessionId,
   $busy,
   $connection,
+  $currentCwd,
   $currentUsage,
   $sessionStartedAt,
   $turnStartedAt,
@@ -37,6 +40,13 @@ import type { StatusResponse } from '@/types/hermes'
 
 import { CRON_ROUTE } from '../../routes'
 import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
+
+function workspaceLabel(cwd: string): string {
+  const normalized = cwd.replace(/[\\/]+$/, '')
+  const leaf = normalized.split(/[\\/]/).filter(Boolean).pop()
+
+  return leaf || cwd
+}
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
@@ -71,10 +81,12 @@ export function useStatusbarItems({
 }: StatusbarItemsOptions) {
   const { t } = useI18n()
   const copy = t.shell.statusbar
+  const fileMenu = t.fileMenu
   const activeSessionId = useStore($activeSessionId)
   const terminalTakeover = useStore($terminalTakeover)
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
+  const currentCwd = useStore($currentCwd)
   const currentUsage = useStore($currentUsage)
   const gatewayRestarting = useStore($gatewayRestarting)
   const sessionStartedAt = useStore($sessionStartedAt)
@@ -300,6 +312,36 @@ export function useStatusbarItems({
         variant: 'menu'
       },
       {
+        hidden: !currentCwd,
+        icon: <FolderOpen className="size-3" />,
+        id: 'workspace-cwd',
+        label: currentCwd ? workspaceLabel(currentCwd) : undefined,
+        menuItems: currentCwd
+          ? [
+              {
+                id: 'copy-workspace-path',
+                label: fileMenu.copyPath,
+                onSelect: () => void copyFilePath(currentCwd),
+                title: currentCwd
+              },
+              {
+                id: 'reveal-workspace-finder',
+                label: fileMenu.revealFileManager,
+                onSelect: () => void revealFile(currentCwd),
+                title: currentCwd
+              },
+              {
+                id: 'reveal-workspace-sidebar',
+                label: fileMenu.revealInSidebar,
+                onSelect: () => revealFileInTree(currentCwd),
+                title: currentCwd
+              }
+            ]
+          : undefined,
+        title: currentCwd || undefined,
+        variant: 'menu'
+      },
+      {
         className: cn(
           agentsOpen && 'bg-accent/55 text-foreground',
           subagentsFailed > 0 && 'text-destructive hover:text-destructive'
@@ -337,6 +379,10 @@ export function useStatusbarItems({
       agentsOpen,
       commandCenterOpen,
       copy,
+      currentCwd,
+      fileMenu.copyPath,
+      fileMenu.revealFileManager,
+      fileMenu.revealInSidebar,
       gatewayMenuContent,
       gatewayClassName,
       gatewayDetail,
@@ -369,11 +415,7 @@ export function useStatusbarItems({
         menuAlign: 'end',
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
-          <ContextUsagePanel
-            currentUsage={currentUsage}
-            requestGateway={requestGateway}
-            sessionId={activeSessionId}
-          />
+          <ContextUsagePanel currentUsage={currentUsage} requestGateway={requestGateway} sessionId={activeSessionId} />
         ),
         title: copy.openContextUsage,
         variant: 'menu'

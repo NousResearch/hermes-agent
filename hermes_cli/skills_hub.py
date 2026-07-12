@@ -1160,6 +1160,8 @@ def do_reset(name: str, restore: bool = False,
         c.print(f"[dim]Copied: {', '.join(synced['copied'])}[/]")
     if synced.get("updated"):
         c.print(f"[dim]Updated: {', '.join(synced['updated'])}[/]")
+    if synced.get("migrated"):
+        c.print(f"[dim]Migrated optional→bundled: {', '.join(synced['migrated'])}[/]")
     c.print()
 
     if invalidate_cache:

@@ -922,6 +922,79 @@ class TestSyncSkills:
         assert "agentmail" in out
         assert "migrated" in out.lower()
 
+    def test_migration_lock_removal_survives_backfill_when_optional_still_ships(self, tmp_path):
+        """If the skill still ships in optional-skills/ byte-identical to bundled,
+        backfill re-adds the official lock entry — the reconcile pass must undo it
+        so the skill isn't left double-managed."""
+        bundled = self._setup_bundled(tmp_path)
+        same = "---\nname: agentmail\n---\n# identical in both trees\n"
+        (bundled / "email" / "agentmail").mkdir(parents=True)
+        (bundled / "email" / "agentmail" / "SKILL.md").write_text(same)
+        # _patches points _get_optional_dir at tmp_path/"optional-skills".
+        optional = tmp_path / "optional-skills" / "email" / "agentmail"
+        optional.mkdir(parents=True)
+        (optional / "SKILL.md").write_text(same)
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        # On-disk installed copy is identical to both bundled and optional.
+        self._seed_optional_install(skills_dir, "email/agentmail", same)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert result["migrated"] == ["agentmail"]
+        lock = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+        assert "agentmail" not in lock["installed"], (
+            "reconcile must undo backfill's re-add of the migrated skill's "
+            "official lock entry"
+        )
+        assert "agentmail" not in result["optional_provenance_backfilled"], (
+            "a migrated skill must not be reported as backfilled"
+        )
+
+    def test_failed_lock_removal_self_heals_on_next_sync(self, tmp_path):
+        """A hub-lock write failure during migration must not abort the sync,
+        and the idempotent reconcile pass must clean the stale entry next sync."""
+        from utils import atomic_replace as real_atomic_replace
+
+        bundled = self._setup_bundled(tmp_path)
+        (bundled / "email" / "agentmail").mkdir(parents=True)
+        (bundled / "email" / "agentmail" / "SKILL.md").write_text(
+            "---\nname: agentmail\n---\n# CLI-first (bundled)\n"
+        )
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        self._seed_optional_install(
+            skills_dir, "email/agentmail",
+            "---\nname: agentmail\n---\n# MCP-first\n",
+        )
+
+        state = {"failed_lock_write": False}
+
+        def flaky_atomic(src, dst):
+            # Fail only the first hub-lock write; let manifest writes and the
+            # retry on the next sync through.
+            if str(dst).endswith("lock.json") and not state["failed_lock_write"]:
+                state["failed_lock_write"] = True
+                raise OSError("simulated disk full")
+            return real_atomic_replace(src, dst)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync.atomic_replace", side_effect=flaky_atomic):
+                result1 = sync_skills(quiet=True)  # lock removal fails, no crash
+                lock1 = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+                result2 = sync_skills(quiet=True)  # reconcile retries removal
+
+        assert state["failed_lock_write"], "test did not exercise the lock-write failure"
+        assert result1["migrated"] == ["agentmail"], "sync must complete despite lock-write failure"
+        assert "agentmail" in lock1["installed"], "stale entry lingers after the failed write"
+        assert result2["migrated"] == [], "skill already migrated; branch must not re-fire"
+        lock2 = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+        assert "agentmail" not in lock2["installed"], (
+            "reconcile pass must self-heal the stale official lock entry"
+        )
+
     def test_backfills_official_optional_provenance_for_existing_identical_skill(self, tmp_path):
         bundled = self._setup_bundled(tmp_path)
         optional = tmp_path / "optional-skills"

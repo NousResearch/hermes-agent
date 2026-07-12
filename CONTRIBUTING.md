@@ -30,7 +30,7 @@ A quick search before you build saves your time and keeps the PR queue clean —
   Or use the web UI: [issues](https://github.com/NousResearch/hermes-agent/issues?q=) · [PRs (all states)](https://github.com/NousResearch/hermes-agent/pulls?q=is%3Apr).
 - **The issue tracker can lag the code.** Many requested features are already implemented in-tree, so also search the source (`search_files`, or your editor's grep) for the capability before proposing it.
 - **If an open PR already addresses it**, consider reviewing or improving that one instead of opening a competing duplicate.
-- **For larger work**, comment on the issue to signal you're working on it, so others don't start the same thing. Comment `/assign` to assign the issue to yourself (and `/unassign` to release it); claims with no linked PR and no activity for 14 days are released automatically so nothing stays blocked by an abandoned claim.
+- **For larger work**, comment on the issue to signal you're working on it, so others don't start the same thing. Comment `/assign` to claim it (and `/unassign` to release it): if your account has repository access it goes straight into the Assignees field, otherwise the claim is recorded as a comment and a maintainer can formalize it. Either way, claims with no linked PR and no activity for 14 days are released automatically so nothing stays blocked by an abandoned claim.
 
 Related: #38284 covers the agent-side analog — Hermes itself checking existing issues and PRs before deep self-troubleshooting. This section is the human-contributor complement.
 

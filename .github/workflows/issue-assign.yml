@@ -100,6 +100,40 @@ jobs:
               return;
             }
 
+            // GitHub's Assignees field only accepts users it considers
+            // assignable (collaborators / prior assignees). For everyone else
+            // `addAssignees` fails with a 404, so preflight eligibility and
+            // degrade gracefully instead of surfacing a red workflow run.
+            let assignable = false;
+            try {
+              await github.rest.issues.checkUserCanBeAssigned({
+                owner,
+                repo,
+                assignee: commenter,
+              });
+              assignable = true;
+            } catch (err) {
+              if (err.status !== 404) {
+                throw err;
+              }
+            }
+
+            if (!assignable) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body:
+                  `Thanks for offering to take this on, @${commenter}! GitHub only lets ` +
+                  `accounts with repository access be set in the Assignees field, so I can't ` +
+                  `assign it to you directly — but your claim is recorded right here. Open a ` +
+                  `pull request that references this issue (e.g. \`Closes #${issue_number}\`) ` +
+                  `and a maintainer can formalize the assignment.`,
+              });
+              await react("+1");
+              return;
+            }
+
             await github.rest.issues.addAssignees({
               owner,
               repo,
@@ -150,12 +184,19 @@ jobs:
                 github.rest.issues.listEventsForTimeline,
                 { owner, repo, issue_number: issue.number, per_page: 100 },
               );
+              // A PR referenced from a comment/description surfaces as a
+              // `cross-referenced` event carrying the source PR; a PR linked
+              // through the "Development" sidebar surfaces as a `connected`
+              // event, which the REST timeline does not expand into a source.
+              // Treat either form as a live link so a manually linked PR keeps
+              // the claim from being swept.
               const hasLinkedPR = timeline.some(
                 (e) =>
-                  e.event === "cross-referenced" &&
-                  e.source &&
-                  e.source.issue &&
-                  e.source.issue.pull_request,
+                  (e.event === "cross-referenced" &&
+                    e.source &&
+                    e.source.issue &&
+                    e.source.issue.pull_request) ||
+                  e.event === "connected",
               );
               if (hasLinkedPR) {
                 continue;

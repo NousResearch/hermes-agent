@@ -7295,16 +7295,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # a one-shot signal by the /restart redelivery guard so a missing
         # dedup marker only suppresses a /restart when we KNOW we just came out
         # of a restart cycle (see _is_stale_restart_redelivery).
-        if _restart_notification_pending() or planned_restart_notification_pending:
+        chat_originated_restart = _restart_notification_pending()
+        if chat_originated_restart or planned_restart_notification_pending:
             self._booted_from_restart = True
         await self._send_restart_notification()
 
         # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
+        # channels on every startup EXCEPT chat-originated /restart (which
+        # already has a precise reply target in .restart_notify.json so the
+        # reply notification is the lifecycle signal — no duplicate). Fresh
+        # starts and planned restarts (terminal/SIGUSR1/service paths) always
+        # notify the home channel so the operator knows the gateway is online.
+        if not chat_originated_restart:
             try:
                 await self._send_home_channel_startup_notifications(
                     skip_targets=None,

@@ -15,7 +15,7 @@ from tools.tirith_security import check_command_security, ensure_installed
 
 
 @pytest.fixture(autouse=True)
-def _reset_resolved_path(monkeypatch, request):
+def _reset_resolved_path():
     """Pre-set cached path to skip auto-install in scan tests.
     Tests that specifically test ensure_installed / resolve behavior
     reset this to None themselves.
@@ -25,8 +25,6 @@ def _reset_resolved_path(monkeypatch, request):
     _tirith_mod._install_failure_reason = ""
     _tirith_mod._crash_count = 0
     _tirith_mod._circuit_open = False
-    if not request.cls or request.cls.__name__ != "TestUnsupportedPlatform":
-        monkeypatch.setattr(_tirith_mod, "is_platform_supported", lambda: True)
     yield
     _tirith_mod._resolved_path = None
     _tirith_mod._install_thread = None
@@ -634,6 +632,7 @@ class TestCosignVerification:
     def test_install_proceeds_without_cosign(self, mock_target, mock_dl,
                                               mock_which, mock_checksum,
                                               mock_tarfile):
+        """_install_tirith proceeds with SHA-256 only when cosign is not on PATH."""
         from tools.tirith_security import _install_tirith
         mock_tar = MagicMock()
         mock_tar.__enter__ = MagicMock(return_value=mock_tar)
@@ -642,9 +641,10 @@ class TestCosignVerification:
         mock_tarfile.return_value = mock_tar
 
         path, reason = _install_tirith()
+        # Reaches extraction (no binary in mock archive), but got past cosign
         assert path is None
         assert reason == "binary_not_in_archive"
-        assert mock_checksum.called
+        assert mock_checksum.called  # SHA-256 verification ran
 
     @patch("tools.tirith_security.tarfile.open")
     @patch("tools.tirith_security._verify_checksum", return_value=True)
@@ -655,6 +655,7 @@ class TestCosignVerification:
     def test_install_proceeds_when_cosign_exec_fails(self, mock_target, mock_dl,
                                                        mock_which, mock_cosign,
                                                        mock_checksum, mock_tarfile):
+        """_install_tirith falls back to SHA-256 when cosign exists but fails to execute."""
         from tools.tirith_security import _install_tirith
         mock_tar = MagicMock()
         mock_tar.__enter__ = MagicMock(return_value=mock_tar)
@@ -664,7 +665,7 @@ class TestCosignVerification:
 
         path, reason = _install_tirith()
         assert path is None
-        assert reason == "binary_not_in_archive"
+        assert reason == "binary_not_in_archive"  # got past cosign
         assert mock_checksum.called
 
     @patch("tools.tirith_security.tarfile.open")
@@ -675,6 +676,7 @@ class TestCosignVerification:
     def test_install_proceeds_when_cosign_artifacts_missing(self, mock_target,
                                                               mock_dl, mock_which,
                                                               mock_checksum, mock_tarfile):
+        """_install_tirith proceeds with SHA-256 when .sig/.pem downloads fail."""
         from tools.tirith_security import _install_tirith
         import urllib.request
 
@@ -691,7 +693,7 @@ class TestCosignVerification:
 
         path, reason = _install_tirith()
         assert path is None
-        assert reason == "binary_not_in_archive"
+        assert reason == "binary_not_in_archive"  # got past cosign
         assert mock_checksum.called
 
     @patch("tools.tirith_security.tarfile.open")
@@ -753,8 +755,7 @@ class TestInstallArchiveMemberValidation:
     @patch("tools.tirith_security.shutil.which", return_value=None)
     @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
     def test_install_extracts_regular_tirith_member(self, mock_target, mock_which,
-                                                    mock_checksum,
-                                                    tmp_path, monkeypatch):
+                                                    mock_checksum, tmp_path, monkeypatch):
         """A valid regular-file tirith member is installed as a plain file."""
         del mock_target, mock_which, mock_checksum
         from tools.tirith_security import _install_tirith
@@ -782,8 +783,7 @@ class TestInstallArchiveMemberValidation:
     @patch("tools.tirith_security.shutil.which", return_value=None)
     @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
     def test_install_rejects_non_regular_tirith_member(self, mock_target, mock_which,
-                                                       mock_checksum,
-                                                       tmp_path, monkeypatch):
+                                                       mock_checksum, tmp_path, monkeypatch):
         """Symlink or hardlink tar members must not be installed as tirith."""
         del mock_target, mock_which, mock_checksum
         from tools.tirith_security import _install_tirith
@@ -1174,9 +1174,7 @@ class TestHermesHomeIsolation:
         from tools.tirith_security import _failure_marker_path
         with patch.dict(os.environ, {"HERMES_HOME": "/custom/hermes"}):
             result = _failure_marker_path()
-        assert os.path.normpath(result) == os.path.normpath(
-            "/custom/hermes/.tirith-install-failed"
-        )
+        assert result == "/custom/hermes/.tirith-install-failed"
 
     def test_conftest_isolation_prevents_real_home_writes(self):
         """The conftest autouse fixture sets HERMES_HOME; verify it's active."""
@@ -1187,17 +1185,14 @@ class TestHermesHomeIsolation:
     def test_get_hermes_home_fallback(self):
         """Without HERMES_HOME set, falls back to the active OS home."""
         from tools.tirith_security import _get_hermes_home
-        env = {}
-        if os.name == "nt":
-            env["LOCALAPPDATA"] = r"C:\Users\test\AppData\Local"
-        with patch.dict(os.environ, env, clear=True):
-            expected = (
-                os.path.join(env["LOCALAPPDATA"], "hermes")
-                if os.name == "nt"
-                else os.path.join(os.path.expanduser("~"), ".hermes")
-            )
+        with patch.dict(os.environ, {}, clear=True):
+            # Remove HERMES_HOME entirely. With HOME also absent, expanduser
+            # falls back to the account database; compute expected under the
+            # same environment instead of after patch.dict restores HOME.
+            os.environ.pop("HERMES_HOME", None)
+            expected = os.path.join(os.path.expanduser("~"), ".hermes")
             result = _get_hermes_home()
-        assert os.path.normpath(result) == os.path.normpath(expected)
+        assert result == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1462,13 +1457,8 @@ class TestMkdtempOSErrorNoSpace:
     def test_mkdtemp_oserror_returns_no_space(self):
         from tools.tirith_security import _install_tirith
 
-        with patch(
-            "tools.tirith_security._detect_target",
-            return_value="x86_64-unknown-linux-gnu",
-        ), patch(
-            "tools.tirith_security.tempfile.mkdtemp",
-            side_effect=OSError(28, "No space left on device"),
-        ):
+        with patch("tools.tirith_security.tempfile.mkdtemp",
+                   side_effect=OSError(28, "No space left on device")):
             result, reason = _install_tirith(log_failures=False)
             assert result is None
             assert reason == "no_space"
@@ -1490,10 +1480,7 @@ class TestMkdtempOSErrorNoSpace:
         from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
 
         _tirith_mod._resolved_path = None
-        with patch(
-            "tools.tirith_security._detect_target",
-            return_value="x86_64-unknown-linux-gnu",
-        ), patch("tools.tirith_security.tempfile.mkdtemp",
+        with patch("tools.tirith_security.tempfile.mkdtemp",
                    side_effect=OSError(28, "No space left on device")), \
              patch("tools.tirith_security.shutil.which",
                    return_value=None), \

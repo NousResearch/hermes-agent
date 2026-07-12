@@ -981,7 +981,23 @@ def _load_global_auth_store() -> Dict[str, Any]:
 
 
 def _auth_lock_path() -> Path:
-    return _auth_file_path().with_suffix(".lock")
+    # Resolve symlinks so shared-auth setups (profiled workers, delegated
+    # agents, or multi-agent hosts symlinking ~/.hermes/auth.json to a
+    # single canonical file — cf. #19436 / #29530 / #38176) all lock the
+    # SAME file. Without this resolution each process locks its own local
+    # auth.lock while writing to the shared target, and cross-process
+    # load-modify-save races can persist a partial store that purges
+    # providers a peer just added (see #8040).
+    #
+    # Non-symlink setups: realpath returns the original path, behavior
+    # unchanged. Broken symlinks: realpath returns the (non-existent)
+    # target path; the caller's flock still coordinates on that path.
+    auth = _auth_file_path()
+    try:
+        target = Path(os.path.realpath(str(auth)))
+    except OSError:
+        target = auth
+    return target.with_suffix(".lock")
 
 
 _auth_lock_holder = threading.local()

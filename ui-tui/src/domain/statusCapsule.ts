@@ -1,0 +1,392 @@
+import type { GatewayEvent } from '../gatewayTypes.js'
+import type { Usage } from '../types.js'
+
+export type StatusCapsuleObservation = 'observed' | 'unknown'
+export type StatusCapsulePrecision = 'observed' | 'unknown'
+export type StatusCapsuleRoute = 'Auto Session' | 'Hermes' | 'MoA'
+export type StatusCapsuleState = 'delegating' | 'error' | 'idle' | 'interrupted' | 'running' | 'session_starting' | 'tooling'
+export type StatusCapsuleTokenSource = 'context_window' | 'provider_usage' | 'unknown'
+export type StatusCapsuleElapsedSource = 'local_wall_clock' | 'unknown'
+export type StatusMechanismKind = 'delegate' | 'moa' | 'mode' | 'provider' | 'runtime' | 'skill' | 'tool'
+export type StatusMechanismScope = 'session' | 'turn'
+export type StatusMechanismPhase = 'active' | 'complete' | 'start'
+
+export interface StatusCapsuleObserved {
+  deep: StatusCapsuleObservation
+  delegate: StatusCapsuleObservation
+  moa: StatusCapsuleObservation
+  opencode: StatusCapsuleObservation
+}
+
+export interface StatusCapsulePrecisionBlock {
+  elapsed: StatusCapsulePrecision
+  tokens: StatusCapsulePrecision
+}
+
+export interface StatusMechanismObservation {
+  eventId?: string
+  key: string
+  kind: StatusMechanismKind
+  label: string
+  name: string
+  observedAt?: number
+  phase?: StatusMechanismPhase
+  scope: StatusMechanismScope
+  source: string
+  turnId?: string
+}
+
+export interface StatusCapsule {
+  elapsedSource: StatusCapsuleElapsedSource
+  mechanisms: StatusMechanismObservation[]
+  observed: StatusCapsuleObserved
+  precision: StatusCapsulePrecisionBlock
+  route: StatusCapsuleRoute
+  schemaVersion: 1
+  state: StatusCapsuleState
+  tokenSource: StatusCapsuleTokenSource
+  tools: string[]
+}
+
+export interface BuildStatusCapsuleInput {
+  autoSession?: boolean
+  busy: boolean
+  lastTurnEndedAt?: null | number
+  prior?: null | StatusCapsule
+  sessionStartedAt?: null | number
+  status: string
+  turnStartedAt?: null | number
+  usage: Usage
+}
+
+const UNKNOWN_OBSERVED: StatusCapsuleObserved = {
+  deep: 'unknown',
+  delegate: 'unknown',
+  moa: 'unknown',
+  opencode: 'unknown'
+}
+
+const uniqAppend = (items: string[], item: string): string[] => {
+  const value = item.trim()
+
+  if (!value) {
+    return items
+  }
+
+  return items.includes(value) ? items : [...items, value].slice(-4)
+}
+
+const hasProviderUsage = (usage?: Partial<Usage> | null): boolean =>
+  Boolean(usage && ((usage.total ?? 0) > 0 || (usage.calls ?? 0) > 0 || (usage.input ?? 0) > 0 || (usage.output ?? 0) > 0))
+
+const hasContextWindowUsage = (usage?: Partial<Usage> | null): boolean =>
+  Boolean(usage && ((usage.context_used ?? 0) > 0 || (usage.context_max ?? 0) > 0))
+
+const tokenPrecisionFromUsage = (usage?: Partial<Usage> | null): StatusCapsulePrecision => {
+  return hasProviderUsage(usage) || hasContextWindowUsage(usage) ? 'observed' : 'unknown'
+}
+
+const tokenSourceFromUsage = (usage?: Partial<Usage> | null): StatusCapsuleTokenSource => {
+  if (hasProviderUsage(usage)) {
+    return 'provider_usage'
+  }
+
+  return hasContextWindowUsage(usage) ? 'context_window' : 'unknown'
+}
+
+const isAutoSessionStatus = (status: string): boolean => /forging|resuming|recovering|starting agent/i.test(status)
+
+const observedFromMechanisms = (mechanisms: StatusMechanismObservation[], base: StatusCapsuleObserved = { ...UNKNOWN_OBSERVED }): StatusCapsuleObserved => {
+  const observed = { ...base }
+
+  for (const mechanism of mechanisms) {
+    const name = mechanism.name.toLowerCase()
+
+    if (mechanism.kind === 'skill' && name === 'deep') {
+      observed.deep = 'observed'
+    }
+  }
+
+  return observed
+}
+
+const mechanismString = (value: unknown): string => (typeof value === 'string' ? value.trim() : '')
+
+const normalizeMechanism = (payload: unknown): StatusMechanismObservation | null => {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return null
+  }
+
+  const raw = payload as Record<string, unknown>
+  const kind = mechanismString(raw.kind) as StatusMechanismKind
+  const name = mechanismString(raw.name).toLowerCase()
+  const scope = mechanismString(raw.scope) as StatusMechanismScope
+  const source = mechanismString(raw.source)
+  const validKind = ['delegate', 'moa', 'mode', 'provider', 'runtime', 'skill', 'tool'].includes(kind)
+
+  if (!validKind || !name || !source || (scope !== 'session' && scope !== 'turn')) {
+    return null
+  }
+
+  const key = mechanismString(raw.key) || `${kind}:${name}`
+  const label = mechanismString(raw.label) || name
+  const phaseValue = mechanismString(raw.phase) as StatusMechanismPhase
+  const phase = phaseValue === 'active' || phaseValue === 'complete' || phaseValue === 'start' ? phaseValue : undefined
+  const eventId = mechanismString(raw.event_id) || mechanismString(raw.eventId)
+  const turnId = mechanismString(raw.turn_id) || mechanismString(raw.turnId)
+  const observedAtRaw = raw.observed_at ?? raw.observedAt
+  const observedAt = typeof observedAtRaw === 'number' && Number.isFinite(observedAtRaw) ? observedAtRaw : undefined
+
+  return {
+    ...(eventId ? { eventId } : {}),
+    key,
+    kind,
+    label,
+    name,
+    ...(observedAt ? { observedAt } : {}),
+    ...(phase ? { phase } : {}),
+    scope,
+    source,
+    ...(turnId ? { turnId } : {})
+  }
+}
+
+const appendMechanism = (items: StatusMechanismObservation[], item: StatusMechanismObservation): StatusMechanismObservation[] => {
+  const withoutSame = items.filter(existing => !(existing.key === item.key && existing.scope === item.scope))
+  const next = [...withoutSame, item]
+  const sessionItems = next.filter(existing => existing.scope === 'session')
+  const turnItems = next.filter(existing => existing.scope === 'turn').slice(-8)
+
+  return [...sessionItems, ...turnItems]
+}
+
+const routeFrom = (input: BuildStatusCapsuleInput): StatusCapsuleRoute => {
+  if (input.autoSession || isAutoSessionStatus(input.status)) {
+    return 'Auto Session'
+  }
+
+  if (input.prior?.route === 'MoA' || input.prior?.observed.moa === 'observed') {
+    return 'MoA'
+  }
+
+  return 'Hermes'
+}
+
+const stateFrom = (input: BuildStatusCapsuleInput, prior: StatusCapsule): StatusCapsuleState => {
+  if (input.autoSession || isAutoSessionStatus(input.status)) {
+    return 'session_starting'
+  }
+
+  if (prior.state === 'error' || prior.state === 'interrupted') {
+    return prior.state
+  }
+
+  if ((input.usage.active_subagents ?? 0) > 0) {
+    return 'delegating'
+  }
+
+  if (input.busy && (prior.state === 'tooling' || prior.state === 'delegating')) {
+    return prior.state
+  }
+
+  return input.busy ? 'running' : 'idle'
+}
+
+export const initialStatusCapsule = (): StatusCapsule => ({
+  elapsedSource: 'unknown',
+  mechanisms: [],
+  observed: { ...UNKNOWN_OBSERVED },
+  precision: { elapsed: 'unknown', tokens: 'unknown' },
+  route: 'Hermes',
+  schemaVersion: 1,
+  state: 'idle',
+  tokenSource: 'unknown',
+  tools: []
+})
+
+export function buildStatusCapsule(input: BuildStatusCapsuleInput): StatusCapsule {
+  const prior = input.prior ?? initialStatusCapsule()
+  const tokens = tokenPrecisionFromUsage(input.usage)
+
+  const elapsed: StatusCapsulePrecision =
+    input.turnStartedAt || input.lastTurnEndedAt || input.sessionStartedAt ? 'observed' : 'unknown'
+
+  const delegate = (input.usage.active_subagents ?? 0) > 0 ? 'observed' : prior.observed.delegate
+  const route = routeFrom(input)
+  const mechanisms = prior.mechanisms ?? []
+
+  const observed = observedFromMechanisms(mechanisms, {
+    ...prior.observed,
+    delegate,
+    moa: route === 'MoA' ? 'observed' : prior.observed.moa
+  })
+
+  return {
+    elapsedSource: elapsed === 'observed' ? 'local_wall_clock' : 'unknown',
+    mechanisms,
+    observed,
+    precision: { elapsed, tokens },
+    route,
+    schemaVersion: 1,
+    state: stateFrom(input, prior),
+    tokenSource: tokenSourceFromUsage(input.usage),
+    tools: prior.tools
+  }
+}
+
+export function foldStatusCapsuleEvent(previous: StatusCapsule | null | undefined, event: Pick<GatewayEvent, 'payload' | 'type'>): StatusCapsule {
+  const next: StatusCapsule = previous
+    ? { ...previous, mechanisms: [...(previous.mechanisms ?? [])], observed: { ...previous.observed }, precision: { ...previous.precision }, tools: [...previous.tools] }
+    : initialStatusCapsule()
+
+  switch (event.type) {
+    case 'message.start': {
+      const sessionMechanisms = next.mechanisms.filter(mechanism => mechanism.scope === 'session')
+
+      return {
+        ...next,
+        elapsedSource: 'local_wall_clock',
+        mechanisms: sessionMechanisms,
+        observed: observedFromMechanisms(sessionMechanisms),
+        precision: { elapsed: 'observed', tokens: 'unknown' },
+        route: 'Hermes',
+        state: 'running',
+        tokenSource: 'unknown',
+        tools: []
+      }
+    }
+
+    case 'tool.start': {
+      const payload = (event.payload ?? {}) as { name?: unknown }
+      const name = typeof payload.name === 'string' ? payload.name : 'tool'
+      const lower = name.toLowerCase()
+
+      return {
+        ...next,
+        observed: {
+          ...next.observed,
+          delegate: lower === 'delegate_task' ? 'observed' : next.observed.delegate,
+          opencode: lower === 'opencode' ? 'observed' : next.observed.opencode
+        },
+        state: lower === 'delegate_task' ? 'delegating' : 'tooling',
+        tools: uniqAppend(next.tools, name)
+      }
+    }
+
+    case 'subagent.spawn_requested':
+
+    case 'subagent.start':
+
+    case 'subagent.thinking':
+
+    case 'subagent.tool':
+
+    case 'subagent.progress':
+      return {
+        ...next,
+        observed: { ...next.observed, delegate: 'observed' },
+        state: 'delegating'
+      }
+
+    case 'subagent.complete':
+      return {
+        ...next,
+        observed: { ...next.observed, delegate: 'observed' }
+      }
+
+    case 'moa.aggregating':
+
+    case 'moa.reference':
+      return {
+        ...next,
+        observed: { ...next.observed, moa: 'observed' },
+        route: 'MoA',
+        state: next.state === 'idle' ? 'running' : next.state
+      }
+    case 'mechanism.observed': {
+      const mechanism = normalizeMechanism(event.payload)
+
+      if (!mechanism) {
+        return next
+      }
+
+      const mechanisms = appendMechanism(next.mechanisms, mechanism)
+
+      return {
+        ...next,
+        mechanisms,
+        observed: observedFromMechanisms(mechanisms, next.observed)
+      }
+    }
+
+    case 'message.complete': {
+      const usage = event.payload && 'usage' in event.payload ? event.payload.usage : undefined
+      const status = event.payload && 'status' in event.payload ? String(event.payload.status ?? '') : ''
+      const tokens = tokenPrecisionFromUsage(usage)
+      const state: StatusCapsuleState = status === 'interrupted' ? 'interrupted' : status === 'error' ? 'error' : 'idle'
+
+      return {
+        ...next,
+        elapsedSource: 'local_wall_clock',
+        precision: {
+          elapsed: 'observed',
+          tokens: tokens === 'observed' ? 'observed' : next.precision.tokens
+        },
+        state,
+        tokenSource: tokens === 'observed' ? tokenSourceFromUsage(usage) : next.tokenSource
+      }
+    }
+
+    case 'error':
+      return {
+        ...next,
+        elapsedSource: 'local_wall_clock',
+        precision: { ...next.precision, elapsed: 'observed' },
+        state: 'error'
+      }
+
+    default:
+      return next
+  }
+}
+
+const stateLabel: Record<StatusCapsuleState, string> = {
+  delegating: 'delegating',
+  error: 'error',
+  idle: 'idle',
+  interrupted: 'interrupted',
+  running: 'running',
+  session_starting: 'starting',
+  tooling: 'tool'
+}
+
+export function formatStatusCapsule(capsule: StatusCapsule): string {
+  const parts = [`⚙ ${capsule.route}`]
+
+  if (capsule.state === 'session_starting' || capsule.state === 'tooling' || capsule.state === 'error' || capsule.state === 'interrupted') {
+    parts.push(stateLabel[capsule.state])
+  }
+
+  if (capsule.observed.delegate === 'observed') {
+    parts.push('delegate')
+  } else if (capsule.state === 'delegating') {
+    parts.push('delegating')
+  }
+
+  if (capsule.observed.moa === 'observed' && capsule.route !== 'MoA') {
+    parts.push('moa')
+  }
+
+  if (capsule.route === 'MoA' || capsule.observed.delegate === 'observed') {
+    parts.push(capsule.observed.opencode === 'observed' ? 'opencode' : 'opencode?')
+  }
+
+  if (capsule.observed.deep === 'observed') {
+    parts.push('deep')
+  }
+
+  parts.push(capsule.precision.tokens === 'observed' ? 'tok obs' : 'tok?')
+  parts.push(capsule.precision.elapsed === 'observed' ? 'time obs' : 'time?')
+
+  return parts.join(' · ')
+}

@@ -179,6 +179,56 @@ describe('StatusRule background-subagent indicator', () => {
   })
 })
 
+describe('StatusRule mechanism capsule', () => {
+  it('renders the Auto Session mechanism entry with token/elapsed uncertainty', () => {
+    const element = StatusRule({
+      ...baseProps,
+      statusCapsule: {
+        elapsedSource: 'unknown',
+        observed: { deep: 'unknown', delegate: 'unknown', moa: 'unknown', opencode: 'unknown' },
+        precision: { elapsed: 'unknown', tokens: 'unknown' },
+        route: 'Auto Session',
+        schemaVersion: 1,
+        state: 'session_starting',
+        tokenSource: 'unknown',
+        tools: []
+      }
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('Auto Session')
+    expect(rendered).toContain('50k/200k')
+    expect(rendered).toContain('tok?')
+    expect(rendered).toContain('time?')
+    expect(rendered).not.toContain('exact')
+  })
+
+  it('shows observed delegate/MoA mechanisms but keeps OpenCode unknown unless directly observed', () => {
+    const element = StatusRule({
+      ...baseProps,
+      statusCapsule: {
+        elapsedSource: 'local_wall_clock',
+        observed: { deep: 'unknown', delegate: 'observed', moa: 'observed', opencode: 'unknown' },
+        precision: { elapsed: 'observed', tokens: 'observed' },
+        route: 'MoA',
+        schemaVersion: 1,
+        state: 'delegating',
+        tokenSource: 'provider_usage',
+        tools: ['delegate_task']
+      }
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('MoA')
+    expect(rendered).toContain('delegate')
+    expect(rendered).toContain('opencode?')
+    expect(rendered).toContain('tok obs')
+    expect(rendered).toContain('time obs')
+  })
+})
+
 describe('StatusRule session count click target', () => {
   it('makes the live session count itself clickable', () => {
     const openSwitcher = vi.fn()

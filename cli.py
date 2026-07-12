@@ -4124,6 +4124,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        # Turn-scoped runtime mechanisms observed by the classic CLI.  The
+        # React/Ink TUI has a typed StatusCapsule fed by gateway events; the
+        # prompt_toolkit CLI has no gateway, so it must maintain the same
+        # positive-only evidence locally.  Cleared at the start of each chat
+        # turn; e.g. `deep:` should show `deep` for that turn and not leak into
+        # the next ordinary prompt.
+        self._observed_mechanisms = []
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
@@ -4546,6 +4553,73 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         idle = max(0.0, time.time() - last_finished_at)
         return f"✓ {format_duration_compact(idle)}"
 
+    @staticmethod
+    def _deep_prefix_instruction(text: str) -> Optional[str]:
+        """Return the instruction for an explicit leading `deep:` invocation.
+
+        This mirrors the gateway path: only a prompt whose first non-whitespace
+        characters are exactly `deep:` activates the skill. Ordinary text that
+        mentions deep remains ordinary text.
+        """
+        stripped = text.lstrip()
+        if not stripped.lower().startswith("deep:"):
+            return None
+        return stripped[len("deep:") :].lstrip()
+
+    @staticmethod
+    def _deep_mechanism_payload(source: str) -> dict:
+        return {
+            "key": "skill:deep",
+            "kind": "skill",
+            "label": "deep",
+            "name": "deep",
+            "phase": "start",
+            "scope": "turn",
+            "source": source,
+        }
+
+    def _observe_cli_mechanism(self, payload: dict) -> None:
+        """Record a positive runtime mechanism observation for the current turn."""
+        if not isinstance(payload, dict):
+            return
+        mechanisms = getattr(self, "_observed_mechanisms", None)
+        if not isinstance(mechanisms, list):
+            mechanisms = []
+            self._observed_mechanisms = mechanisms
+        mechanisms.append(payload)
+        del mechanisms[:-8]
+
+    def _prepare_deep_prompt_for_cli(self, message: Any) -> tuple[Any, Optional[dict]]:
+        """Expand classic-CLI `deep:` prompts into a real deep skill invocation."""
+        if not isinstance(message, str):
+            return message, None
+        instruction = self._deep_prefix_instruction(message)
+        if instruction is None:
+            return message, None
+        try:
+            from agent.skill_commands import build_skill_invocation_message
+
+            expanded = build_skill_invocation_message(
+                "/deep",
+                user_instruction=instruction,
+                task_id=str(getattr(self, "session_id", "") or "") or None,
+            )
+        except Exception:
+            expanded = None
+        if not expanded:
+            return message, None
+        return expanded, self._deep_mechanism_payload("explicit_skill_invocation")
+
+    def _observed_mechanism_names(self) -> list[str]:
+        names: list[str] = []
+        for payload in getattr(self, "_observed_mechanisms", []) or []:
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("kind") == "skill" and str(payload.get("name") or "").lower() == "deep":
+                if "deep" not in names:
+                    names.append("deep")
+        return names
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -4588,6 +4662,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
+            "observed_mechanisms": self._observed_mechanism_names(),
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -5069,15 +5144,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
+            mechanisms = list(snapshot.get("observed_mechanisms") or [])
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                parts = [f"⚕ {snapshot['model_short']}"]
+                parts.extend(mechanisms)
+                parts.append(duration_label)
                 if yolo_active:
-                    text += " · ⚠ YOLO"
-                return self._trim_status_bar_text(text, width)
+                    parts.append("⚠ YOLO")
+                return self._trim_status_bar_text(" · ".join(parts), width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {snapshot['model_short']}"]
+                parts.extend(mechanisms)
+                parts.append(percent_label)
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -5103,7 +5183,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {snapshot['model_short']}"]
+            parts.extend(mechanisms)
+            parts.extend([context_label, percent_label])
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5140,15 +5222,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
+            mechanisms = list(snapshot.get("observed_mechanisms") or [])
             yolo_active = self._is_session_yolo_active()
 
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
+                ]
+                for mechanism in mechanisms:
+                    frags.append(("class:status-bar-dim", " · "))
+                    frags.append(("class:status-bar-strong", mechanism))
+                frags.extend([
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
-                ]
+                ])
                 if yolo_active:
                     frags.append(("class:status-bar-dim", " · "))
                     frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -5164,9 +5252,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                    ]
+                    for mechanism in mechanisms:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-strong", mechanism))
+                    frags.extend([
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
-                    ]
+                    ])
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -5203,13 +5296,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                    ]
+                    for mechanism in mechanisms:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", mechanism))
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
-                    ]
+                    ])
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -12101,6 +12199,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # this to True. Early returns (credential refresh failure, etc.)
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
+        self._observed_mechanisms = []
 
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
@@ -12206,6 +12305,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if isinstance(message, str):
             from run_agent import _sanitize_surrogates
             message = _sanitize_surrogates(message)
+
+        agent_api_message = message
+        persist_user_message_override = None
+        if isinstance(message, str):
+            agent_api_message, mechanism_payload = self._prepare_deep_prompt_for_cli(message)
+            if mechanism_payload:
+                self._observe_cli_mechanism(mechanism_payload)
+                # The API-facing prompt is the loaded skill scaffold, but the
+                # transcript should preserve the clean user text (`deep: ...`).
+                persist_user_message_override = message
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
@@ -12324,7 +12433,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 except Exception:
                     reset_current_session_key = None  # type: ignore[assignment]
                     _approval_session_token = None
-                agent_message = _voice_prefix + message if _voice_prefix else message
+                agent_message = agent_api_message
+                if _voice_prefix and isinstance(agent_message, str):
+                    agent_message = _voice_prefix + agent_message
                 # Prepend pending notes via _prepend_note_to_message, which
                 # handles both plain-string and multimodal content-parts list
                 # messages. Naive ``note + "\n\n" + agent_message`` crashed with
@@ -12351,7 +12462,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
                         stream_callback=stream_callback,
                         task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
+                        persist_user_message=(
+                            persist_user_message_override
+                            if persist_user_message_override is not None
+                            else (message if _voice_prefix else None)
+                        ),
                         moa_config=_moa_cfg,
                     )
                     if getattr(self, "_pending_moa_disable_after_turn", False):

@@ -8897,6 +8897,110 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
+def _deep_prefix_instruction(text: str) -> Optional[str]:
+    """Return the instruction for an explicit leading `deep:` invocation.
+
+    This is deliberately not a text classifier: only a turn whose first
+    non-whitespace characters are exactly `deep:` activates the skill. Plain
+    mentions such as "why did deep skill not appear?" remain ordinary text.
+    """
+    stripped = text.lstrip()
+    if not stripped.lower().startswith("deep:"):
+        return None
+    return stripped[len("deep:") :].lstrip()
+
+
+def _is_deep_skill_invocation_scaffold(text: str) -> bool:
+    """Detect Hermes' own skill-invocation scaffold for the deep skill."""
+    return text.startswith('[IMPORTANT: The user has invoked the "deep" skill')
+
+
+def _deep_mechanism_payload(source: str) -> dict:
+    return {
+        "key": "skill:deep",
+        "kind": "skill",
+        "label": "deep",
+        "name": "deep",
+        "phase": "start",
+        "scope": "turn",
+        "source": source,
+    }
+
+
+def _prompt_fingerprint(prompt: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(prompt.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
+def _record_pending_mechanism_observation(session: Optional[dict], prompt: str, payload: dict) -> None:
+    if not session or not prompt:
+        return
+
+    pending = session.setdefault("pending_mechanism_observations", [])
+    if not isinstance(pending, list):
+        pending = []
+        session["pending_mechanism_observations"] = pending
+    pending.append({"fingerprint": _prompt_fingerprint(prompt), "payload": payload})
+    del pending[:-8]
+
+
+def _consume_pending_mechanism_observation(session: dict, prompt: str) -> Optional[dict]:
+    pending = session.get("pending_mechanism_observations")
+    if not isinstance(pending, list) or not pending:
+        return None
+
+    fingerprint = _prompt_fingerprint(prompt)
+    session["pending_mechanism_observations"] = []
+    for item in pending:
+        if not isinstance(item, dict) or item.get("fingerprint") != fingerprint:
+            continue
+        payload = item.get("payload")
+        return payload if isinstance(payload, dict) else None
+
+    return None
+
+
+def _build_skill_invocation_message_for_gateway(
+    cmd_key: str,
+    user_instruction: str = "",
+    task_id: Optional[str] = None,
+    runtime_note: str = "",
+) -> Optional[str]:
+    from agent.skill_commands import build_skill_invocation_message
+
+    return build_skill_invocation_message(
+        cmd_key,
+        user_instruction=user_instruction,
+        task_id=task_id,
+        runtime_note=runtime_note,
+    )
+
+
+def _emit_mechanism_observed(sid: str, payload: dict) -> None:
+    _emit("mechanism.observed", sid, payload)
+
+
+def _prepare_deep_prompt_for_gateway(prompt: str, session: dict) -> tuple[str, Optional[dict]]:
+    """Expand explicit deep invocations and return runtime-backed observation payload."""
+    pending_payload = _consume_pending_mechanism_observation(session, prompt)
+    instruction = _deep_prefix_instruction(prompt)
+    if instruction is not None:
+        expanded = _build_skill_invocation_message_for_gateway(
+            "/deep",
+            instruction,
+            task_id=str(session.get("session_key") or "") or None,
+        )
+        if expanded:
+            return expanded, _deep_mechanism_payload("explicit_skill_invocation")
+        return prompt, None
+
+    if pending_payload and _is_deep_skill_invocation_scaffold(prompt):
+        return prompt, pending_payload
+
+    return prompt, None
+
+
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     with session["history_lock"]:
         history = list(session["history"])
@@ -8945,6 +9049,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             cols = session.get("cols", 80)
             streamer = make_stream_renderer(cols)
             prompt = text
+            if isinstance(prompt, str):
+                prompt, mechanism_payload = _prepare_deep_prompt_for_gateway(prompt, session)
+                if mechanism_payload:
+                    _emit_mechanism_observed(sid, mechanism_payload)
 
             if isinstance(prompt, str) and "@" in prompt:
                 from agent.context_references import preprocess_context_references
@@ -11958,12 +12066,19 @@ def _(rid, params: dict) -> dict:
                 key, arg, task_id=session.get("session_key", "") if session else ""
             )
             if msg:
+                skill_name = str(cmds[key].get("name", name))
+                if key == "/deep" or skill_name == "deep":
+                    _record_pending_mechanism_observation(
+                        session,
+                        msg,
+                        _deep_mechanism_payload("slash_command"),
+                    )
                 return _ok(
                     rid,
                     {
                         "type": "skill",
                         "message": msg,
-                        "name": cmds[key].get("name", name),
+                        "name": skill_name,
                     },
                 )
     except Exception:

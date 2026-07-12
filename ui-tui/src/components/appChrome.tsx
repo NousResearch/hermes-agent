@@ -10,6 +10,7 @@ import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
+import { formatStatusCapsule, type StatusCapsule } from '../domain/statusCapsule.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
@@ -248,6 +249,7 @@ export interface StatusBarSegments {
   bg: boolean
   compactCtx: boolean
   compressions: boolean
+  cost: boolean
   duration: boolean
   subagents: boolean
   voice: boolean
@@ -263,7 +265,8 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     compressions: w >= 80,
     voice: w >= 84,
     bg: w >= 88,
-    subagents: w >= 92
+    subagents: w >= 92,
+    cost: w >= 96
   }
 }
 
@@ -418,6 +421,7 @@ export function StatusRule({
   lastTurnEndedAt,
   liveSessionCount,
   sessionStartedAt,
+  statusCapsule,
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
@@ -474,9 +478,9 @@ export function StatusRule({
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
-  // descending priority order — bar, duration, compressions, voice, session
-  // count, bg, cost. Lower-priority segments drop first and nothing truncates
-  // mid-segment, so status/model/context are never crushed.
+  // descending priority order — mechanism capsule, bar, duration, compressions,
+  // voice, session count, bg, cost. Lower-priority segments drop first and
+  // nothing truncates mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
 
@@ -492,6 +496,7 @@ export function StatusRule({
 
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+  const capsuleText = statusCapsule ? formatStatusCapsule(statusCapsule) : ''
 
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
@@ -502,6 +507,7 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
+  const showCapsule = !!capsuleText && fits(SEP + stringWidth(capsuleText))
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
@@ -530,7 +536,7 @@ export function StatusRule({
   const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
-  const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
+  const showDevCredits = segs.cost && !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
 
   const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
     event.stopImmediatePropagation?.()
@@ -590,6 +596,12 @@ export function StatusRule({
             </Text>
           ) : null}
         </Box>
+        {showCapsule ? (
+          <Text color={t.color.accent} wrap="truncate-end">
+            {' │ '}
+            {capsuleText}
+          </Text>
+        ) : null}
         {showBar ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
@@ -783,6 +795,7 @@ interface StatusRuleProps {
   notice?: Notice | null
   sessionStartedAt?: null | number
   status: string
+  statusCapsule?: null | StatusCapsule
   statusColor: string
   t: Theme
   turnStartedAt?: null | number

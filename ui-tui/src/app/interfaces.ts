@@ -2,6 +2,7 @@ import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
+import type { StatusCapsule } from '../domain/statusCapsule.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { BillingStateResponse, ImageAttachResponse, SessionCloseResponse } from '../gatewayTypes.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
@@ -167,6 +168,7 @@ export interface UiState {
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean
+  mechanismStatusBar: boolean
   mouseTracking: MouseTrackingMode
   notice: Notice | null
   pasteCollapseLines: number
@@ -179,6 +181,7 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
+  statusCapsule: StatusCapsule
   streaming: boolean
   theme: Theme
   usage: Usage

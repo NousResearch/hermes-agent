@@ -4146,6 +4146,324 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
     assert captured["session_key"] == "session-key"
 
 
+def test_prompt_submit_expands_deep_prefix_and_emits_mechanism_observation(monkeypatch):
+    captured = {}
+    emitted = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            captured["prompt"] = prompt
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    def fake_skill_message(cmd_key, user_instruction, task_id=None, runtime_note=""):
+        assert cmd_key == "/deep"
+        assert user_instruction == "write the plan"
+        return (
+            '[IMPORTANT: The user has invoked the "deep" skill, indicating they want you to follow its instructions. '
+            'The full skill content is loaded below.]\n\n# deep\n\n'
+            f'The user has provided the following instruction alongside the skill invocation: {user_instruction}'
+        )
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_build_skill_invocation_message_for_gateway", fake_skill_message, raising=False)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "deep: write the plan"},
+            }
+        )
+
+        assert resp["result"]["status"] == "streaming"
+        assert captured["prompt"].startswith('[IMPORTANT: The user has invoked the "deep" skill')
+        assert any(
+            len(call) == 3
+            and call[0] == "mechanism.observed"
+            and call[1] == "sid"
+            and call[2] == {
+                "key": "skill:deep",
+                "kind": "skill",
+                "label": "deep",
+                "name": "deep",
+                "phase": "start",
+                "scope": "turn",
+                "source": "explicit_skill_invocation",
+            }
+            for call in emitted
+        )
+        assert [event for event, *_ in emitted].index("message.start") < [event for event, *_ in emitted].index("mechanism.observed")
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_does_not_emit_deep_for_plain_text_mentions(monkeypatch):
+    emitted = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "why did deep skill not appear?"},
+            }
+        )
+
+        assert all(event != "mechanism.observed" for event, *_ in emitted)
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_does_not_emit_deep_for_unmarked_skill_scaffold(monkeypatch):
+    emitted = []
+    skill_scaffold = (
+        '[IMPORTANT: The user has invoked the "deep" skill, indicating they want you to follow its instructions. '
+        'The full skill content is loaded below.]\n\n# deep'
+    )
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": skill_scaffold},
+            }
+        )
+
+        assert all(event != "mechanism.observed" for event, *_ in emitted)
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_command_dispatch_deep_skill_payload_marks_only_next_same_session_submit(monkeypatch):
+    captured = {}
+    emitted = []
+    skill_scaffold = (
+        '[IMPORTANT: The user has invoked the "deep" skill, indicating they want you to follow its instructions. '
+        'The full skill content is loaded below.]\n\n# deep'
+    )
+
+    class _Agent:
+        def __init__(self, label):
+            self.label = label
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            captured[self.label] = prompt
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    from agent import skill_commands
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"quick_commands": {}})
+    monkeypatch.setattr(skill_commands, "scan_skill_commands", lambda: {"/deep": {"name": "deep", "skill_dir": "unused"}})
+    monkeypatch.setattr(skill_commands, "build_skill_invocation_message", lambda key, arg, task_id=None, runtime_note="": skill_scaffold)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    server._sessions["sid-a"] = _session(agent=_Agent("a"), session_key="session-a")
+    server._sessions["sid-b"] = _session(agent=_Agent("b"), session_key="session-b")
+    try:
+        dispatch = server.handle_request(
+            {
+                "id": "dispatch",
+                "method": "command.dispatch",
+                "params": {"arg": "write the plan", "name": "deep", "session_id": "sid-a"},
+            }
+        )
+
+        assert dispatch["result"] == {"message": skill_scaffold, "name": "deep", "type": "skill"}
+
+        server.handle_request(
+            {
+                "id": "unrelated-same-session",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid-a", "text": "ordinary unrelated turn"},
+            }
+        )
+        assert all(event != "mechanism.observed" for event, *_ in emitted)
+        assert server._sessions["sid-a"].get("pending_mechanism_observations") == []
+
+        dispatch = server.handle_request(
+            {
+                "id": "dispatch-again",
+                "method": "command.dispatch",
+                "params": {"arg": "write the plan", "name": "deep", "session_id": "sid-a"},
+            }
+        )
+        assert dispatch["result"] == {"message": skill_scaffold, "name": "deep", "type": "skill"}
+
+        server.handle_request(
+            {
+                "id": "wrong-session",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid-b", "text": skill_scaffold},
+            }
+        )
+        assert all(event != "mechanism.observed" for event, *_ in emitted)
+
+        server.handle_request(
+            {
+                "id": "same-session",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid-a", "text": skill_scaffold},
+            }
+        )
+
+        assert captured["a"] == skill_scaffold
+        assert any(
+            len(call) == 3
+            and call[0] == "mechanism.observed"
+            and call[1] == "sid-a"
+            and call[2]["key"] == "skill:deep"
+            and call[2]["source"] == "slash_command"
+            for call in emitted
+        )
+        assert server._sessions["sid-a"].get("pending_mechanism_observations") == []
+    finally:
+        server._sessions.pop("sid-a", None)
+        server._sessions.pop("sid-b", None)
+
+
+def test_deep_prefix_submit_clears_stale_slash_marker(monkeypatch):
+    emitted = []
+    skill_scaffold = (
+        '[IMPORTANT: The user has invoked the "deep" skill, indicating they want you to follow its instructions. '
+        'The full skill content is loaded below.]\n\n# deep'
+    )
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    from agent import skill_commands
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"quick_commands": {}})
+    monkeypatch.setattr(skill_commands, "scan_skill_commands", lambda: {"/deep": {"name": "deep", "skill_dir": "unused"}})
+    monkeypatch.setattr(skill_commands, "build_skill_invocation_message", lambda key, arg, task_id=None, runtime_note="": skill_scaffold)
+    monkeypatch.setattr(server, "_build_skill_invocation_message_for_gateway", lambda key, instruction, task_id=None, runtime_note="": "expanded deep prefix")
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    server._sessions["sid"] = _session(agent=_Agent(), session_key="session-key")
+    try:
+        dispatch = server.handle_request(
+            {
+                "id": "dispatch",
+                "method": "command.dispatch",
+                "params": {"arg": "write the plan", "name": "deep", "session_id": "sid"},
+            }
+        )
+        assert dispatch["result"] == {"message": skill_scaffold, "name": "deep", "type": "skill"}
+
+        server.handle_request(
+            {
+                "id": "deep-prefix",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "deep: other instruction"},
+            }
+        )
+        assert server._sessions["sid"].get("pending_mechanism_observations") == []
+
+        server.handle_request(
+            {
+                "id": "stale-scaffold",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": skill_scaffold},
+            }
+        )
+
+        assert any(
+            len(call) == 3
+            and call[0] == "mechanism.observed"
+            and call[2]["source"] == "explicit_skill_invocation"
+            for call in emitted
+        )
+        assert all(
+            not (len(call) == 3 and call[0] == "mechanism.observed" and call[2]["source"] == "slash_command")
+            for call in emitted
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_expands_context_refs(monkeypatch):
     captured = {}
 

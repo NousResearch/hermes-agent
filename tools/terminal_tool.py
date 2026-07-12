@@ -2236,7 +2236,7 @@ def terminal_tool(
         # Use a per-task creation lock so concurrent tool calls for the same
         # task_id wait for the first one to finish creating the sandbox,
         # instead of each creating their own (wasting Modal resources).
-        env = None
+        env: Any = None
         with _env_lock:
             # Prefer the collapsed container id, but fall back to an env cached
             # under the raw task_id. Per-session surfaces (ACP/gateway/dashboard)
@@ -2338,15 +2338,7 @@ def terminal_tool(
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
-        if env is None:
-            # Unreachable in practice (either the cached branch or the creation
-            # branch assigned env above); guard for type-safety and so a future
-            # refactor of the branches can't fall through to an AttributeError.
-            return json.dumps({
-                "output": "",
-                "exit_code": -1,
-                "error": "Terminal environment unavailable (creation raced cleanup)",
-            }, ensure_ascii=False)
+        assert env is not None  # all creation failure paths return above
 
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
         # restart|stop targeting hermes-gateway) must never run inside the
@@ -2372,9 +2364,14 @@ def terminal_tool(
                     ),
                     "status": "error",
                 }, ensure_ascii=False)
+            guard_cwd = _resolve_command_cwd(
+                workdir=workdir,
+                env=env,
+                default_cwd=cwd,
+            )
             if contains_gateway_lifecycle_command_or_referenced_script(
                 command,
-                cwd=workdir or cwd,
+                cwd=guard_cwd,
             ):
                 return json.dumps({
                     "output": "",

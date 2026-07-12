@@ -848,6 +848,49 @@ def test_installed_runtime_requires_copied_venv_and_no_dynamic_site_path(tmp_pat
         writer_release._validate_installed_runtime(spec, managed)
 
 
+def test_removes_only_exact_uv_virtualenv_site_hook(tmp_path, monkeypatch):
+    _allow_local_materialization_owner(monkeypatch)
+    spec = _spec(tmp_path)
+    spec.site_packages.mkdir(parents=True)
+    hook = spec.site_packages / writer_release._VIRTUALENV_SITE_HOOK_NAME
+    hook.write_bytes(writer_release._VIRTUALENV_SITE_HOOK_BYTES)
+    hook.chmod(0o644)
+
+    assert writer_release._remove_exact_virtualenv_site_hook(spec) is True
+    assert not hook.exists()
+    assert writer_release._remove_exact_virtualenv_site_hook(spec) is False
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("content", "symlink", "mode"),
+)
+def test_virtualenv_site_hook_removal_rejects_drift(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    _allow_local_materialization_owner(monkeypatch)
+    spec = _spec(tmp_path)
+    spec.site_packages.mkdir(parents=True)
+    hook = spec.site_packages / writer_release._VIRTUALENV_SITE_HOOK_NAME
+    hook.write_bytes(writer_release._VIRTUALENV_SITE_HOOK_BYTES)
+    hook.chmod(0o644)
+    if mutation == "content":
+        hook.write_bytes(b"import attacker\n")
+    elif mutation == "symlink":
+        target = tmp_path / "target.pth"
+        target.write_bytes(writer_release._VIRTUALENV_SITE_HOOK_BYTES)
+        hook.unlink()
+        hook.symlink_to(target)
+    else:
+        hook.chmod(0o444)
+
+    with pytest.raises(RuntimeError, match="site hook"):
+        writer_release._remove_exact_virtualenv_site_hook(spec)
+    assert os.path.lexists(hook)
+
+
 def test_hardened_writer_only_units_pin_identity_config_and_readiness():
     manifest = _manifest()
 

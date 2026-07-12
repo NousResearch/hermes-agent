@@ -82,6 +82,8 @@ _PINNED_BUILD_CONSTRAINTS = (
     f"--hash=sha256:{_SETUPTOOLS_BUILD_WHEEL_SHA256}\n"
 ).encode("ascii")
 _SAFE_WHEEL_NAME_RE = re.compile(r"^[A-Za-z0-9_.+-]+\.whl$")
+_VIRTUALENV_SITE_HOOK_NAME = "_virtualenv.pth"
+_VIRTUALENV_SITE_HOOK_BYTES = b"import _virtualenv\n"
 
 def _effective_uid() -> int:
     getter = getattr(os, "geteuid", None)
@@ -1121,6 +1123,100 @@ def _validate_installed_runtime(
         raise RuntimeError("release contains a legacy scripts bootstrap")
 
 
+def _remove_exact_virtualenv_site_hook(spec: ReleaseBuildSpec) -> bool:
+    """Remove uv's exact build-time hook before sealing the runtime."""
+
+    _validate_root_directory(spec.site_packages)
+    hook = spec.site_packages / _VIRTUALENV_SITE_HOOK_NAME
+    if not os.path.lexists(hook):
+        return False
+    before = os.lstat(hook)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or before.st_uid != _BUILD_OWNER_UID
+        or before.st_gid != _BUILD_OWNER_GID
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) != 0o644
+        or before.st_size != len(_VIRTUALENV_SITE_HOOK_BYTES)
+        or _list_xattrs(hook)
+    ):
+        raise RuntimeError("release virtualenv site hook identity is not exact")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(hook, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+            opened.st_nlink,
+            opened.st_uid,
+            opened.st_gid,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        ) != (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_nlink,
+            before.st_uid,
+            before.st_gid,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ):
+            raise RuntimeError("release virtualenv site hook changed during open")
+        raw = os.read(descriptor, len(_VIRTUALENV_SITE_HOOK_BYTES) + 1)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    if raw != _VIRTUALENV_SITE_HOOK_BYTES or (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    ) != (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    ):
+        raise RuntimeError("release virtualenv site hook content drifted")
+    current = os.lstat(hook)
+    if (
+        current.st_dev,
+        current.st_ino,
+        current.st_size,
+        current.st_mtime_ns,
+        current.st_ctime_ns,
+    ) != (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    ):
+        raise RuntimeError("release virtualenv site hook changed before removal")
+    hook.unlink()
+    directory_fd = os.open(
+        spec.site_packages,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    if os.path.lexists(hook):
+        raise RuntimeError("release virtualenv site hook removal did not persist")
+    return True
+
+
 def _require_root_owned_regular_executable(
     item: os.stat_result,
     *,
@@ -1362,6 +1458,7 @@ def build_release(
             label="exact release wheel install",
         )
         _materialize_copied_interpreter(spec, managed_python)
+        _remove_exact_virtualenv_site_hook(spec)
         _validate_installed_runtime(spec, managed_python)
     except Exception as build_error:
         try:

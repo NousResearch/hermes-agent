@@ -1,0 +1,5 @@
+name: venice-provider
+kind: model-provider
+version: 1.0.0
+description: Venice AI — OpenAI-compatible private inference
+author: Elkim (@elkimek) + Hermes Agent

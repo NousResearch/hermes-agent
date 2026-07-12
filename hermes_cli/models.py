@@ -1846,7 +1846,7 @@ _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 # Zen / Go re-expose dozens of upstream vendors and rotate them frequently, so
 # their stale curated entries must not pollute the top of the picker. (#49129)
 _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
-    {"opencode-zen", "opencode-go"}
+    {"opencode-zen", "opencode-go", "venice"}
 )
 
 
@@ -3547,13 +3547,16 @@ def probe_api_models(
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
     request_headers: Optional[dict[str, str]] = None,
+    query_params: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Probe a ``/models`` endpoint with light URL heuristics.
 
     For ``anthropic_messages`` mode, uses ``x-api-key`` and
     ``anthropic-version`` headers (Anthropic's native auth) instead of
     ``Authorization: Bearer``.  The response shape (``data[].id``) is
-    identical, so the same parser works for both.
+    identical, so the same parser works for both. ``query_params`` are added
+    to each candidate models URL for providers whose catalog supports server-
+    side filtering (for example Venice's ``type=text`` filter).
     """
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
@@ -3602,6 +3605,8 @@ def probe_api_models(
 
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
+        if query_params:
+            url += "?" + urllib.parse.urlencode(query_params)
         tried.append(url)
         req = urllib.request.Request(url, headers=headers)
         try:
@@ -3632,6 +3637,7 @@ def fetch_api_models(
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
     headers: Optional[dict[str, str]] = None,
+    query_params: Optional[dict[str, str]] = None,
 ) -> Optional[list[str]]:
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
 
@@ -3644,6 +3650,7 @@ def fetch_api_models(
         timeout=timeout,
         api_mode=api_mode,
         request_headers=headers,
+        query_params=query_params,
     ).get("models")
 
 

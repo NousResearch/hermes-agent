@@ -1840,14 +1840,29 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         and raw_idx in _last_id_at_idx
                         and delta_id != _last_id_at_idx[raw_idx]
                     ):
-                        # Genuinely new tool calls always carry the function name
-                        # in the first chunk (OpenAI streaming spec). If the name
-                        # is missing but the ID changed, this is a fragment of the
-                        # current tool call's arguments (Kimi/LM-Studio bug).
+                        # ID changed at a reused raw index — ambiguous.
+                        # It could be:
+                        #   1. A new parallel tool call (Ollama)     → redirect to fresh slot
+                        #   2. Argument fragmentation (Kimi/LM-Studio) → keep accumulating
+                        #   3. Redundant name on every chunk (MiniMax) → keep accumulating
+                        #
+                        # Per the OpenAI streaming spec, a delta without a function.name
+                        # cannot be the start of a new tool call — always accumulate.
+                        #
+                        # For deltas that DO carry a name, only create a new slot if the
+                        # name differs from the current slot's name. A matching name means
+                        # the provider is redundantly resending the name on every chunk
+                        # (known pattern: MiniMax M2.7 via NVIDIA NIM), which is still the
+                        # same tool call, not a new one.
                         has_name = tc_delta.function and tc_delta.function.name
                         if has_name:
-                            new_slot = max(tool_calls_acc, default=-1) + 1
-                            _active_slot_by_idx[raw_idx] = new_slot
+                            cur_slot = _active_slot_by_idx[raw_idx]
+                            cur_name = (
+                                (tool_calls_acc.get(cur_slot, {}).get("function", {}) or {}).get("name", "") or ""
+                            )
+                            if cur_name != tc_delta.function.name:
+                                new_slot = max(tool_calls_acc, default=-1) + 1
+                                _active_slot_by_idx[raw_idx] = new_slot
                     if delta_id:
                         _last_id_at_idx[raw_idx] = delta_id
                     idx = _active_slot_by_idx[raw_idx]

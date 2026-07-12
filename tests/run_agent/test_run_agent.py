@@ -5899,6 +5899,30 @@ class TestStreamingApiCall:
         assert tc[1].function.name == "read_file"
         assert tc[1].function.arguments == '{"path":"x.py"}'
 
+    def test_fragmented_with_redundant_name_every_chunk(self, agent):
+        """Provider resends function name on every fragment chunk (MiniMax pattern).
+
+        Some providers (MiniMax M2.7 via NVIDIA NIM) send the function name
+        on every delta chunk, combined with unique IDs per chunk. The name
+        comparison guard should prevent this from creating extra tool call slots.
+        """
+        chunks = [
+            # First chunk: has name, empty args
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "shell", "")]),
+            # Fragments: same name repeated, unique IDs
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_2", "shell", '{"cmd"')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_3", "shell", ':"ls"}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 1, f"Expected 1 tool call, got {len(tc)}"
+        assert tc[0].function.name == "shell"
+        assert tc[0].function.arguments == '{"cmd":"ls"}'
+
     def test_content_and_tool_calls_together(self, agent):
         chunks = [
             _make_chunk(content="I'll search"),

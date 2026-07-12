@@ -288,10 +288,10 @@ def _assistant_copy_text(content: Any) -> str:
 
 def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
     """Load ephemeral prefill messages from a JSON file.
-    
+
     The file should contain a JSON array of {role, content} dicts, e.g.:
         [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]
-    
+
     Relative paths are resolved from ~/.hermes/.
     Returns an empty list if the path is empty or the file doesn't exist.
     """
@@ -360,11 +360,11 @@ def _parse_service_tier_config(raw: str) -> str | None:
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
-    
+
     Config lookup order:
     1. ~/.hermes/config.yaml (user config - preferred)
     2. ./cli-config.yaml (project config - fallback)
-    
+
     Environment variables take precedence over config file values.
     Returns default values if no config file exists.
 
@@ -503,7 +503,7 @@ def load_cli_config() -> Dict[str, Any]:
             "seen": {},
         },
     }
-    
+
     # Track whether the config file explicitly set terminal config.
     # When using defaults (no config file / no terminal section), we should NOT
     # overwrite env vars that were already set by .env -- only a user's config
@@ -517,7 +517,7 @@ def load_cli_config() -> Dict[str, Any]:
                 from hermes_cli.config import _normalize_root_model_keys
 
                 file_config = _normalize_root_model_keys(fast_safe_load(f) or {})
-            
+
             _file_has_terminal_config = "terminal" in file_config
 
             # Handle model config - can be string (new format) or dict (old format)
@@ -549,13 +549,13 @@ def load_cli_config() -> Dict[str, Any]:
                         defaults[key].update(file_config[key])
                     else:
                         defaults[key] = file_config[key]
-            
+
             # Second: carry over keys from file_config that aren't in defaults
             # (e.g. platform_toolsets, provider_routing, memory, honcho, etc.)
             for key in file_config:
                 if key not in defaults and key != "model":
                     defaults[key] = file_config[key]
-            
+
             # Handle legacy root-level max_turns (backwards compat) - copy to
             # agent.max_turns whenever the nested key is missing.
             agent_file_config = file_config.get("agent")
@@ -585,13 +585,13 @@ def load_cli_config() -> Dict[str, Any]:
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
-    
+
     # Normalize config key: the new config system (hermes_cli/config.py) and all
     # documentation use "backend", the legacy cli-config.yaml uses "env_type".
     # Accept both, with "backend" taking precedence (it's the documented key).
     if "backend" in terminal_config:
         terminal_config["env_type"] = terminal_config["backend"]
-    
+
     # CWD resolution for CLI/TUI. The gateway has its own config bridge in
     # gateway/run.py but may lazily import cli.py (triggering this code).
     # Local backend: always os.getcwd(). Use `cd /dir && hermes` to control it.
@@ -605,7 +605,7 @@ def load_cli_config() -> Dict[str, Any]:
         defaults["terminal"]["cwd"] = terminal_config["cwd"]
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
         terminal_config.pop("cwd", None)
-    
+
     env_mappings = {
         "env_type": "TERMINAL_ENV",
         "cwd": "TERMINAL_CWD",
@@ -641,7 +641,7 @@ def load_cli_config() -> Dict[str, Any]:
         # Sudo support (works with all backends)
         "sudo_password": "SUDO_PASSWORD",
     }
-    
+
     # Bridge config → env vars for terminal_tool. TERMINAL_CWD is force-exported
     # UNLESS we're inside a gateway process (detected by _HERMES_GATEWAY marker)
     # where it was already set correctly by gateway/run.py's config bridge.
@@ -660,17 +660,17 @@ def load_cli_config() -> Dict[str, Any]:
                     os.environ[env_var] = json.dumps(val)
                 else:
                     os.environ[env_var] = str(val)
-    
+
     # Apply browser config to environment variables
     browser_config = defaults.get("browser", {})
     browser_env_mappings = {
         "inactivity_timeout": "BROWSER_INACTIVITY_TIMEOUT",
     }
-    
+
     for config_key, env_var in browser_env_mappings.items():
         if config_key in browser_config:
             os.environ[env_var] = str(browser_config[config_key])
-    
+
     # Apply auxiliary model/direct-endpoint overrides to environment variables.
     # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
     # Compression config is read directly from config.yaml by run_agent.py and
@@ -699,7 +699,7 @@ def load_cli_config() -> Dict[str, Any]:
             "api_key": "AUXILIARY_APPROVAL_API_KEY",
         },
     }
-    
+
     for task_key, env_map in auxiliary_task_env.items():
         task_cfg = auxiliary_config.get(task_key, {})
         if not isinstance(task_cfg, dict):
@@ -716,7 +716,7 @@ def load_cli_config() -> Dict[str, Any]:
             os.environ[env_map["base_url"]] = base_url
         if api_key:
             os.environ[env_map["api_key"]] = api_key
-    
+
     # Security settings
     security_config = defaults.get("security", {})
     if isinstance(security_config, dict):
@@ -3630,15 +3630,15 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
 def save_config_value(key_path: str, value: any) -> bool:
     """
     Save a value to the active config file at the specified key path.
-    
+
     Respects the same lookup order as load_cli_config():
     1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
     2. ./cli-config.yaml (project config - fallback)
-    
+
     Args:
         key_path: Dot-separated path like "agent.system_prompt"
         value: Value to save
-    
+
     Returns:
         True if successful, False otherwise
     """
@@ -3646,22 +3646,22 @@ def save_config_value(key_path: str, value: any) -> bool:
     user_config_path = _hermes_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
     config_path = user_config_path if user_config_path.exists() else project_config_path
-    
+
     try:
         # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Save back atomically while preserving comments, ordering, quotes, and
         # readable Unicode in user-edited config.yaml.
         from utils import atomic_roundtrip_yaml_update
         atomic_roundtrip_yaml_update(config_path, key_path, value)
-        
+
         # Enforce owner-only permissions on config files (contain API keys)
         try:
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
             pass
-        
+
         return True
     except Exception as e:
         logger.error("Failed to save config: %s", e)
@@ -3677,11 +3677,11 @@ def save_config_value(key_path: str, value: any) -> bool:
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     """
     Interactive CLI for the Hermes Agent.
-    
+
     Provides a REPL interface with rich formatting, command history,
     and tool execution capabilities.
     """
-    
+
     def __init__(
         self,
         model: str = None,
@@ -3750,7 +3750,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Coupling the two (PR #6a1aa420e) caused all module DEBUG logs to spew
         # to console whenever a user set tool_progress: verbose in config.
         self.verbose = bool(verbose) if verbose is not None else False
-        
+
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
         # show_timestamps: prefix user and assistant labels with timestamps
@@ -3794,7 +3794,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._pending_edit_snapshots = {}
         self._last_input_mode_recovery = 0.0
         self._input_mode_recovery_notice_shown = False
-        
+
         # Configuration - priority: CLI args > env vars > config file
         # Model comes from: CLI arg or config.yaml (single source of truth).
         # LLM_MODEL/OPENAI_MODEL env vars are NOT checked — config.yaml is
@@ -3875,7 +3875,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self.max_turns = 90
         else:
             self.max_turns = 90
-        
+
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
         self.disabled_toolsets = CLI_CONFIG["agent"].get("disabled_toolsets") or []
@@ -3888,7 +3888,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
             if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
-        
+
         # Filesystem checkpoints: CLI flag > config
         cp_cfg = CLI_CONFIG.get("checkpoints", {})
         if isinstance(cp_cfg, bool):
@@ -3903,19 +3903,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # pass skip_context_files=True and skip_memory=True to AIAgent so
         # AGENTS.md/SOUL.md/.cursorrules and persistent memory are not loaded.
         self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
-        
+
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
             os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
             or CLI_CONFIG["agent"].get("system_prompt", "")
         )
         self.personalities = CLI_CONFIG["agent"].get("personalities", {})
-        
+
         # Ephemeral prefill messages (few-shot priming, never persisted)
         self.prefill_messages = _load_prefill_messages(
             _resolve_prefill_messages_file(CLI_CONFIG)
         )
-        
+
         # Reasoning config (OpenRouter reasoning effort level)
         self.reasoning_config = _parse_reasoning_config(
             CLI_CONFIG["agent"].get("reasoning_effort", "")
@@ -3923,7 +3923,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
-        
+
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
         self._provider_sort = pr.get("sort")
@@ -3946,7 +3946,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._openrouter_min_coding_score = _f
             except (TypeError, ValueError):
                 pass
-        
+
         # Fallback provider chain — tried in order when primary fails after retries.
         # Merge new ``fallback_providers`` entries with any legacy
         # ``fallback_model`` entries so old configs still participate.
@@ -3962,7 +3962,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._tool_callbacks_installed = False
         self._tirith_security_checked = False
         self._app = None  # prompt_toolkit Application (set in run())
-        
+
         # Conversation state
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_start = datetime.now()
@@ -4018,7 +4018,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Deferred title: stored in memory until the session is created in the DB
         self._pending_title: Optional[str] = None
-        
+
         # Session ID: reuse existing one when resuming, otherwise generate fresh
         if resume:
             self.session_id = resume
@@ -4027,7 +4027,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
-        
+
         # History file for persistent input recall across sessions
         self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
@@ -6137,7 +6137,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
-    
+
     def _show_security_advisories(self):
         """Show a startup banner if any unacked security advisories match.
 
@@ -6169,22 +6169,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
-        
+
         # Auto-compact for narrow terminals — the full banner with caduceus
         # + tool list needs ~80 columns minimum to render without wrapping.
         term_width = shutil.get_terminal_size().columns
         use_compact = self.compact or term_width < 80
-        
+
         if use_compact:
             self._console_print(_build_compact_banner())
             self._show_status()
         else:
             # Get tools for display
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-            
+
             # Get terminal working directory (where commands will execute)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-            
+
             # Build and display the banner
             build_welcome_banner(
                 console=self.console,
@@ -6196,7 +6196,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 context_length=ctx_len,
                 provider=self.provider,
             )
-        
+
         # Tool discovery is intentionally deferred on the Termux bare prompt
         # path; availability warnings are shown once tools are initialized.
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
@@ -6477,12 +6477,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Show warnings about disabled tools due to missing API keys."""
         try:
             from model_tools import check_tool_availability
-            
+
             available, unavailable = check_tool_availability()
-            
+
             # Filter to only those missing API keys (not system deps)
             api_key_missing = [u for u in unavailable if u["missing_vars"]]
-            
+
             if api_key_missing:
                 self._console_print()
                 self._console_print("[yellow]⚠️  Some tools disabled (missing API keys):[/]")
@@ -6494,7 +6494,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._console_print("[dim]   Run 'hermes setup' to configure[/]")
         except Exception:
             pass  # Don't crash on import errors
-    
+
     def _show_status(self):
         """Show compact startup status line."""
         # Avoid pulling the full tool registry into the bare Termux prompt path.
@@ -6591,7 +6591,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
         self._console_print("\n".join(lines), highlight=False, markup=False)
-    
+
     def _fast_command_available(self) -> bool:
         try:
             from hermes_cli.models import model_supports_fast_mode
@@ -6665,15 +6665,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
         else:
             _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
-    
+
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
         tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-        
+
         if not tools:
             print("(;_;) No tools available")
             return
-        
+
         # Header
         print()
         title = "(^_^)/ Available Tools"
@@ -6683,7 +6683,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
         print("+" + "-" * width + "+")
         print()
-        
+
         # Group tools by toolset
         toolsets = {}
         for tool in sorted(tools, key=lambda t: t["function"]["name"]):
@@ -6697,14 +6697,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if ". " in desc:
                 desc = desc[:desc.index(". ") + 1]
             toolsets[toolset].append((name, desc))
-        
+
         # Display by toolset
         for toolset in sorted(toolsets.keys()):
             print(f"  [{toolset}]")
             for name, desc in toolsets[toolset]:
                 print(f"    * {name:<20} - {desc}")
             print()
-        
+
         print(f"  Total: {len(tools)} tools  ヽ(^o^)ノ")
         print()
 
@@ -6712,7 +6712,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""
         all_toolsets = get_all_toolsets()
-        
+
         # Header
         print()
         title = "(^_^)b Available Toolsets"
@@ -6722,24 +6722,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
         print("+" + "-" * width + "+")
         print()
-        
+
         for name in sorted(all_toolsets.keys()):
             info = get_toolset_info(name)
             if info:
                 tool_count = info["tool_count"]
                 desc = info["description"]
-                
+
                 # Mark if currently enabled
                 marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
                 print(f"  {marker} {name:<18} [{tool_count:>2} tools] - {desc}")
-        
+
         print()
         print("  (*) = currently enabled")
         print()
         print("  Tip: Use 'all' or '*' to enable all toolsets")
         print("  Example: python cli.py --toolsets web,terminal")
         print()
-    
+
 
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
@@ -6747,7 +6747,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
-        
+
         user_config_path = _hermes_home / 'config.yaml'
         project_config_path = Path(__file__).parent / 'cli-config.yaml'
         if user_config_path.exists():
@@ -6755,7 +6755,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             config_path = project_config_path
         config_status = "(loaded)" if config_path.exists() else "(not found)"
-        
+
         # ``self.api_key`` may be a callable (Azure Foundry Entra ID bearer
         # provider). Never invoke it; just identify the auth surface.
         from agent.azure_identity_adapter import is_token_provider
@@ -6765,7 +6765,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             api_key_display = f"{self.api_key[:8]}...{self.api_key[-4:]}"
         else:
             api_key_display = "Not set!"
-        
+
         print()
         title = "(^_^) Configuration"
         width = 50
@@ -6798,7 +6798,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  Started:     {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"  Config File: {config_path} {config_status}")
         print()
-    
+
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
         """Return recent CLI sessions for in-chat browsing/resume affordances."""
         if not self._session_db:
@@ -6930,7 +6930,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         flush_tool_summary()
         _cli_visible_print()
-    
+
     def _notify_session_boundary(self, event_type: str) -> None:
         """Fire a session-boundary plugin hook (on_session_finalize or on_session_reset).
 
@@ -7235,10 +7235,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 print(f"       Resume the live session with: hermes --resume {self.session_id}")
         except Exception as e:
             print(f"(x_x) Failed to save: {e}")
-    
+
     def retry_last(self):
         """Retry the last user message by removing the last exchange and re-sending.
-        
+
         Removes the last assistant response (and any tool-call messages) and
         the last user message, then re-sends that user message to the agent.
         Returns the message to re-send, or None if there's nothing to retry.
@@ -7246,25 +7246,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not self.conversation_history:
             print("(._.) No messages to retry.")
             return None
-        
+
         # Walk backwards to find the last user message
         last_user_idx = None
         for i in range(len(self.conversation_history) - 1, -1, -1):
             if self.conversation_history[i].get("role") == "user":
                 last_user_idx = i
                 break
-        
+
         if last_user_idx is None:
             print("(._.) No user message found to retry.")
             return None
-        
+
         # Extract the message text and remove everything from that point forward
         last_message = self.conversation_history[last_user_idx].get("content", "")
         self.conversation_history = self.conversation_history[:last_user_idx]
-        
+
         print(f"(^_^)b Retrying: \"{last_message[:60]}{'...' if len(last_message) > 60 else ''}\"")
         return last_message
-    
+
     def undo_last(self, n: int = 1, prefill: bool = True):
         """Back up N user turns: truncate history, soft-delete on disk, prefill.
 
@@ -7415,7 +7415,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             app.invalidate()
         except Exception as e:
             logger.debug("undo: prefill buffer failed: %s", e)
-    
+
     def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
         """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
         import threading
@@ -8369,33 +8369,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return str(value)
 
 
-    
+
 
 
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
-        
+
         print()
         print("+" + "-" * 60 + "+")
         print("|" + " " * 15 + "(✿◠‿◠) Gateway Status" + " " * 17 + "|")
         print("+" + "-" * 60 + "+")
         print()
-        
+
         try:
             config = load_gateway_config()
-            
+
             print("  Messaging Platform Configuration:")
             print("  " + "-" * 55)
-            
+
             platform_status = {
                 Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
                 Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
                 Platform.SLACK: ("Slack", "SLACK_BOT_TOKEN"),
                 Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED"),
             }
-            
+
             for platform, (name, env_var) in platform_status.items():
                 pconfig = config.platforms.get(platform)
                 if pconfig and pconfig.enabled:
@@ -8404,7 +8404,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     print(f"    ✓ {name:<12} Enabled{home_str}")
                 else:
                     print(f"    ○ {name:<12} Not configured ({env_var})")
-            
+
             print()
             print("  Session Reset Policy:")
             print("  " + "-" * 55)
@@ -8412,14 +8412,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print(f"    Mode: {policy.mode}")
             print(f"    Daily reset at: {policy.at_hour}:00")
             print(f"    Idle timeout: {policy.idle_minutes} minutes")
-            
+
             print()
             print("  To start the gateway:")
             print("    python cli.py --gateway")
             print()
             print(f"  Configuration file: {display_hermes_home()}/config.yaml")
             print()
-            
+
         except Exception as e:
             print(f"  Error loading gateway config: {e}")
             print()
@@ -8429,14 +8429,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print("       DISCORD_BOT_TOKEN=your_token")
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()
-    
+
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
-        
+
         Args:
             command: The command string (starting with /)
-            
+
         Returns:
             bool: True to continue, False to exit
         """
@@ -9092,9 +9092,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 else:
                     _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
                     _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
-        
+
         return True
-    
+
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:
@@ -11637,7 +11637,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _sudo_password_callback(self) -> str:
         """
         Prompt for sudo password through the prompt_toolkit UI.
-        
+
         Called from the agent thread when a sudo command is encountered.
         Uses the same clarify-style mechanism: sets UI state, waits on a
         queue for the user's response via the Enter key binding.
@@ -12076,19 +12076,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def chat(self, message, images: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
-        
+
         Handles streaming output, interrupt detection (user typing while agent
         is working), and re-queueing of interrupted messages.
-        
+
         Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
         race conditions between the process_loop and interrupt monitoring. Messages
         typed while the agent is running go to _interrupt_queue; messages typed while
         idle go to _pending_input.
-        
+
         Args:
             message: The user's message (str or multimodal content list)
             images: Optional list of Path objects for attached images
-            
+
         Returns:
             The agent's response, or None on error
         """
@@ -12119,7 +12119,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             request_overrides=turn_route.get("request_overrides"),
         ):
             return None
-        
+
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
         #            translate for Anthropic/Gemini/Bedrock).
@@ -12212,7 +12212,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
-        
+
         try:
             # Run the conversation with interrupt monitoring
             result = None
@@ -12748,7 +12748,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._pending_input.put(_leftover_steer)
 
             return response
-            
+
         except Exception as e:
             print(f"Error: {e}")
             return None
@@ -12766,7 +12766,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 stop_event.set()
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
-    
+
     def _clear_terminal_on_exit(self):
         """Clear screen + scrollback so nothing is stranded above the exit summary.
 
@@ -12866,7 +12866,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 duration_str = f"{minutes}m {seconds}s"
             else:
                 duration_str = f"{seconds}s"
-            
+
             # Look up session title for resume-by-name hint
             session_title = None
             if self._session_db:
@@ -13278,7 +13278,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             )
             self._startup_skills_line_shown = True
         self._console_print()
-        
+
         # State for async operation
         self._agent_running = False
         self._pending_input = queue.Queue()     # For normal input (commands + new queries)
@@ -13352,7 +13352,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._ensure_tirith_security()
-        
+
         # Key bindings for the input area
         kb = KeyBindings()
 
@@ -13372,7 +13372,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         def handle_enter(event):
             """Handle Enter key - submit input.
-            
+
             Routes to the correct queue based on active UI state:
             - Sudo password prompt: password goes to sudo response queue
             - Approval selection: selected choice goes to approval response queue
@@ -13568,7 +13568,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 event.app.current_buffer.reset(append_to_history=True)
 
         _bind_prompt_submit_keys(kb, handle_enter)
-        
+
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
             """Alt+Enter inserts a newline for multi-line input.
@@ -13799,7 +13799,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         @kb.add('c-c')
         def handle_ctrl_c(event):
             """Handle Ctrl+C - cancel interactive prompts, interrupt agent, or exit.
-            
+
             Priority:
             0. Cancel active voice recording
             1. Cancel active sudo/approval/clarify prompt
@@ -13871,7 +13871,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._should_exit = True
                     event.app.exit()
                     return
-                
+
                 self._last_ctrl_c_time = now
                 print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
                 self.agent.interrupt()
@@ -14686,7 +14686,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     other_num_prefix = '0'
                 else:
                     other_num_prefix = ' '
-                
+
                 if selected == other_idx and not cli_ref._clarify_freetext:
                     other_style = 'class:clarify-selected'
                 elif cli_ref._clarify_freetext:
@@ -14959,7 +14959,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 )
             )
         )
-        
+
         # Style for the application
         self._tui_style_base = {
             # Input area / prompt: empty style strings inherit the
@@ -15160,7 +15160,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()
-        
+
         # Background thread to process inputs and run agent
         def process_loop():
             while not self._should_exit:
@@ -15183,7 +15183,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             except Exception:
                                 pass
                         continue
-                    
+
                     if not user_input:
                         continue
 
@@ -15201,7 +15201,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
                         if _had_mouse_reports:
                             self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
-                    
+
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.
                     _file_drop = _detect_file_drop(user_input) if isinstance(user_input, str) else None
@@ -15256,7 +15256,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             user_input = _seed
                         else:
                             continue
-                    
+
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
                     paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
@@ -15264,7 +15264,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         user_input = self._expand_paste_references(user_input)
                     print()
                     self._print_user_message_preview(user_input)
-                    
+
                     # Show image attachment count
                     if submit_images:
                         n = len(submit_images)
@@ -15347,14 +15347,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
                 except Exception as e:
                     logger.warning("process_loop unhandled error (msg may be lost): %s", e)
-        
+
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)
         process_thread.start()
-        
+
         # Register atexit cleanup so resources are freed even on unexpected exit
         atexit.register(_run_cleanup)
-        
+
         # Register signal handlers for graceful shutdown on SSH disconnect / SIGTERM
         def _signal_handler(signum, frame):
             """Handle SIGHUP/SIGTERM by triggering graceful cleanup.
@@ -15425,7 +15425,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             except Exception:
                 pass
             raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
-        
+
         try:
             import signal as _signal
             _signal.signal(_signal.SIGTERM, _signal_handler)
@@ -15463,7 +15463,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _signal.signal(_signal.SIGINT, _sigint_absorb)
         except Exception:
             pass  # Signal handlers may fail in restricted environments
-        
+
         # Install a custom asyncio exception handler that suppresses the
         # "Event loop is closed" RuntimeError from httpx transport cleanup
         # and the "0 is not registered" KeyError from broken stdin (#6393).
@@ -15789,7 +15789,7 @@ def main(
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
-    
+
     Args:
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
@@ -15808,7 +15808,7 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
-    
+
     Examples:
         python cli.py                            # Start interactive mode
         python cli.py --toolsets web,terminal    # Use specific toolsets
@@ -15834,7 +15834,7 @@ def main(
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
     os.environ["HERMES_INTERACTIVE"] = "1"
-    
+
     # Handle gateway mode (messaging + cron)
     if gateway:
         import asyncio
@@ -15870,10 +15870,10 @@ def main(
                 return
     else:
         wt_info = None
-    
+
     # Handle query shorthand
     query = query or q
-    
+
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools
     toolsets_list = None
@@ -15904,7 +15904,7 @@ def main(
             # Use the shared resolver so MCP servers are included at runtime
             from hermes_cli.tools_config import _get_platform_tools
             toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
-    
+
     parsed_skills = _parse_skills_argument(skills)
 
     # Create CLI instance
@@ -15961,18 +15961,18 @@ def main(
             f"The original repo is at {wt_info['repo_root']}.]"
         )
         cli.system_prompt = (cli.system_prompt or "") + wt_note
-    
+
     # Handle list commands (don't init agent for these)
     if list_tools:
         cli.show_banner()
         cli.show_tools()
         sys.exit(0)
-    
+
     if list_toolsets:
         cli.show_banner()
         cli.show_toolsets()
         sys.exit(0)
-    
+
     # Register cleanup for single-query mode (interactive mode registers in run())
     atexit.register(_run_cleanup)
 
@@ -16047,7 +16047,7 @@ def main(
             _signal.signal(_signal.SIGHUP, _signal_handler_q)
     except Exception:
         pass  # signal handler may fail in restricted environments
-    
+
     # Handle single query mode
     if query or image:
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
@@ -16269,7 +16269,7 @@ def main(
         finally:
             _finalize_single_query(cli)
         return
-    
+
     # Run interactive mode
     cli.run()
 

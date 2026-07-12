@@ -9,6 +9,8 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
+import json
+import re
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -16,6 +18,30 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+
+
+def _parse_gemma_tool_marker(content: Any) -> tuple[str, str] | None:
+    if not isinstance(content, str):
+        return None
+    match = re.match(
+        r"^\s*<\|tool\|>(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
+        r"\((?P<arguments>[^)]*)\)\s*(?:<\|turn\|>.*)?$",
+        content,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        return None
+    raw_arguments = match.group("arguments").strip()
+    if not raw_arguments:
+        arguments = {}
+    else:
+        try:
+            arguments = json.loads(raw_arguments)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(arguments, dict):
+            return None
+    return match.group("name"), json.dumps(arguments, separators=(",", ":"))
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -651,6 +677,7 @@ class ChatCompletionsTransport(ProviderTransport):
         finish_reason = _fr or "stop"
 
         tool_calls = None
+        gemma_tool = None
         if msg.tool_calls:
             tool_calls = []
             for tc in msg.tool_calls:
@@ -677,6 +704,19 @@ class ChatCompletionsTransport(ProviderTransport):
                         provider_data=tc_provider_data or None,
                     )
                 )
+
+        if not tool_calls:
+            gemma_tool = _parse_gemma_tool_marker(msg.content)
+            if gemma_tool is not None:
+                gemma_name, gemma_arguments = gemma_tool
+                tool_calls = [
+                    ToolCall(
+                        id=None,
+                        name=gemma_name,
+                        arguments=gemma_arguments,
+                    )
+                ]
+                finish_reason = "tool_calls"
 
         usage = None
         if hasattr(response, "usage") and response.usage:
@@ -716,7 +756,7 @@ class ChatCompletionsTransport(ProviderTransport):
         # Promote it to content + a ``content_filter`` finish reason so the
         # loop's refusal handler surfaces it clearly and stops. ``refusal`` is
         # ``None`` for normal responses, so this is a no-op in the common case.
-        content = msg.content
+        content = None if gemma_tool is not None else msg.content
         refusal = getattr(msg, "refusal", None)
         if refusal is None and hasattr(msg, "model_extra"):
             _msg_extra = getattr(msg, "model_extra", None) or {}

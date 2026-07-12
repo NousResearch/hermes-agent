@@ -868,6 +868,41 @@ class TestChatCompletionsNormalize:
         assert nr.tool_calls[0].name == "terminal"
         assert nr.tool_calls[0].id == "call_123"
 
+    def test_gemma_tool_marker_response(self, transport):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="<|tool|>get_datetime()\n<|turn|>model\nThe current date is...",
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.finish_reason == "tool_calls"
+        assert nr.content is None
+        assert nr.tool_calls is not None
+        assert nr.tool_calls[0].name == "get_datetime"
+        assert nr.tool_calls[0].arguments == "{}"
+
+    def test_gemma_tool_marker_json_arguments(self, transport):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content='<|tool|>web_search({"query":"llama.cpp"})',
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.tool_calls[0].name == "web_search"
+        assert nr.tool_calls[0].arguments == '{"query":"llama.cpp"}'
+
     def test_tool_call_extra_content_preserved(self, transport):
         """Gemini 3 thinking models attach extra_content with thought_signature
         on tool_calls.  Without this replay on the next turn, the API rejects

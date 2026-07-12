@@ -18,7 +18,10 @@ permissions:
 concurrency:
   group: skills-index-${{ github.ref }}
   # Never cancel an in-flight index build: the deploy trigger downstream
-  # depends on a complete run, so we queue duplicates instead of dropping one.
+  # depends on a complete run. queue: max lets every duplicate wait its turn
+  # (up to 100) instead of the default single-pending slot silently dropping
+  # all but the newest queued run.
+  queue: max
   cancel-in-progress: false
 
 jobs:

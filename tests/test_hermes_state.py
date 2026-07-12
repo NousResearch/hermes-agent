@@ -4102,6 +4102,43 @@ class TestCompressionChainProjection:
         assert tip_row["ended_at"] is None  # tip is still live
         assert tip_row["end_reason"] is None
 
+    def test_archiving_tip_archives_entire_compression_lineage(self, db):
+        """Archiving a projected tip must not let the root/mid row leak back.
+
+        Desktop sends the projected tip id when the user archives the visible
+        row, but default listing is seeded from the root. Archive state must
+        therefore move as one logical conversation.
+        """
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+
+        assert db.set_session_archived("tip1", True) is True
+        assert {
+            sid: db.get_session(sid)["archived"]
+            for sid in ("root1", "mid1", "tip1")
+        } == {"root1": 1, "mid1": 1, "tip1": 1}
+
+        default_ids = [s["id"] for s in db.list_sessions_rich(source="cli", limit=20)]
+        assert "root1" not in default_ids
+        assert "mid1" not in default_ids
+        assert "tip1" not in default_ids
+
+        archived_ids = [
+            s["id"]
+            for s in db.list_sessions_rich(source="cli", archived_only=True, limit=20)
+        ]
+        assert "tip1" in archived_ids
+        assert "root1" not in archived_ids
+
+        assert db.set_session_archived("tip1", False) is True
+        assert {
+            sid: db.get_session(sid)["archived"]
+            for sid in ("root1", "mid1", "tip1")
+        } == {"root1": 0, "mid1": 0, "tip1": 0}
+        restored_ids = [s["id"] for s in db.list_sessions_rich(source="cli", limit=20)]
+        assert "tip1" in restored_ids
+
     def test_list_projection_uses_tip_cwd(self, db):
         """Projected lineage rows should carry cwd from the live tip row.
 

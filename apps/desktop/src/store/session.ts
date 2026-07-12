@@ -125,6 +125,16 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
 
+type SessionAliasSource = Pick<SessionInfo, '_lineage_root_id' | 'id'> & { _lineage_ids?: string[] | null }
+
+export const sessionAliasIds = (session: SessionAliasSource): string[] => {
+  const aliases = [session.id, session._lineage_root_id, ...(session._lineage_ids ?? [])].filter(
+    (id): id is string => typeof id === 'string' && id.length > 0
+  )
+
+  return [...new Set(aliases)]
+}
+
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
  *  sessions and pinned sessions.

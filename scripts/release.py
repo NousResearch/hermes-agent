@@ -509,6 +509,7 @@ AUTHOR_MAP = {
     "m@mobrienv.dev": "mikeyobrien",
     "saeed919@pm.me": "falasi",
     "chrisdlc119@outlook.com": "chdlc",
+    "omar@kostudios.io": "OmarB97",
     "omar@techdeveloper.site": "nycomar",
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "mr.aashiz@gmail.com": "aashizpoudel",

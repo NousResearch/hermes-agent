@@ -23,6 +23,33 @@ from utils import is_truthy_value
 logger = logging.getLogger(__name__)
 
 
+_STREAMING_TRANSPORT_VALUES = frozenset({"edit", "draft", "auto", "off"})
+
+
+def _coerce_streaming_transport(value: Any) -> str:
+    """Normalize a YAML-loaded transport value to a documented string.
+
+    yaml.safe_load() converts bare ``true``/``false`` in config.yaml to
+    Python booleans before from_dict sees them.  The active streaming gates
+    compare transport against the string "off" (gateway/run.py), so a
+    boolean False silently evaluates as truthy transport and streaming is
+    never suppressed when the user writes ``transport: false``.
+
+    Rules (only documented values are produced):
+    - False  → "off"   (user explicitly disabled streaming)
+    - True   → "auto"  (user enabled without specifying a mode; safe default)
+    - Known string ("edit", "draft", "auto", "off") → unchanged
+    - Anything else  → "auto"  (safe fallback to documented default)
+    """
+    if value is False:
+        return "off"
+    if value is True:
+        return "auto"
+    if isinstance(value, str) and value in _STREAMING_TRANSPORT_VALUES:
+        return value
+    return "auto"
+
+
 def _coerce_bool(value: Any, default: bool = True) -> bool:
     """Coerce bool-ish config values, preserving a caller-provided default."""
     if value is None:
@@ -548,7 +575,7 @@ class StreamingConfig:
             return cls()
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
-            transport=data.get("transport", "auto"),
+            transport=_coerce_streaming_transport(data.get("transport", "auto")),
             edit_interval=_coerce_float(
                 data.get("edit_interval"), DEFAULT_STREAMING_EDIT_INTERVAL,
             ),

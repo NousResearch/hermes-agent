@@ -263,6 +263,42 @@ class TestStreamingConfig:
         assert restored.buffer_threshold == 24
         assert restored.fresh_final_after_seconds == 0.0
 
+    def test_yaml_boolean_false_transport_maps_to_off(self):
+        """yaml.safe_load() converts bare ``false`` to Python False before
+        from_dict; without normalization the boolean silently evaluates as
+        a truthy non-"off" transport and streaming is never suppressed.
+        This is the YAML scalar-type issue reported in the gateway PR.
+        """
+        import yaml
+        raw = yaml.safe_load("enabled: true\ntransport: false\n")
+        assert raw["transport"] is False  # confirm yaml produced a bool
+        restored = StreamingConfig.from_dict(raw)
+        assert restored.transport == "off", (
+            f"Expected 'off', got {restored.transport!r} -- "
+            "boolean False transport not normalized"
+        )
+
+    def test_yaml_boolean_true_transport_maps_to_auto(self):
+        """``transport: true`` in YAML should map to 'auto' (documented default),
+        not introduce an undocumented 'on' value.
+        """
+        import yaml
+        raw = yaml.safe_load("enabled: true\ntransport: true\n")
+        assert raw["transport"] is True
+        restored = StreamingConfig.from_dict(raw)
+        assert restored.transport == "auto"
+
+    def test_documented_string_transports_pass_through_unchanged(self):
+        """All four documented transport values must round-trip unchanged."""
+        for val in ("edit", "draft", "auto", "off"):
+            restored = StreamingConfig.from_dict({"transport": val})
+            assert restored.transport == val, f"transport={val!r} was rewritten"
+
+    def test_unknown_transport_value_falls_back_to_auto(self):
+        """An unknown transport string is normalized to 'auto' (safe default)."""
+        restored = StreamingConfig.from_dict({"transport": "mystery_mode"})
+        assert restored.transport == "auto"
+
 
 class TestGatewayConfigRoundtrip:
     def test_full_roundtrip(self):

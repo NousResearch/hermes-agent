@@ -24,11 +24,17 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.session_presence import (
+    clear_session_presence,
+    list_session_presence,
+    write_session_presence,
+)
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
 from tui_gateway.transport import (
+    FanoutTransport,
     StdioTransport,
     Transport,
     bind_transport,
@@ -270,6 +276,67 @@ _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 # the gateway in-process and captures stdout into logs, so stale JSON-RPC frames
 # must not fall through there while the session waits for resume or reap.
 _detached_ws_transport = _DropTransport()
+
+
+def _session_has_live_transport(session: dict | None) -> bool:
+    if not session or session.get("_finalized"):
+        return False
+    transport = session.get("transport")
+    if isinstance(transport, FanoutTransport):
+        return transport.has_transports(
+            excluding={id(_stdio_transport), id(_detached_ws_transport)}
+        )
+    return (
+        transport is not None
+        and transport is not _stdio_transport
+        and transport is not _detached_ws_transport
+    )
+
+
+def _attach_session_transport(session: dict | None, transport: Transport | None) -> None:
+    if not session or transport is None:
+        return
+    current = session.get("transport")
+    if current is transport:
+        return
+    if isinstance(current, FanoutTransport):
+        current.attach(transport)
+        return
+    if current is None or current is _stdio_transport or current is _detached_ws_transport:
+        session["transport"] = transport
+        return
+    fanout = FanoutTransport(current)
+    fanout.attach(transport)
+    session["transport"] = fanout
+
+
+def _detach_session_transport(session: dict | None, transport: Transport | None) -> bool:
+    if not session or transport is None:
+        return False
+    current = session.get("transport")
+    if current is transport:
+        # Park on the drop sentinel (NOT real stdio): in the desktop's
+        # in-process gateway stdout is captured into logs, and the sentinel is
+        # what _ws_session_is_orphaned / the idle reaper recognize as dead.
+        session["transport"] = _detached_ws_transport
+        return True
+    if isinstance(current, FanoutTransport) and current.detach(transport):
+        if not current.has_transports():
+            session["transport"] = _detached_ws_transport
+        return True
+    return False
+
+
+def _detach_transport_from_sessions(transport: Transport | None) -> list[str]:
+    if transport is None:
+        return []
+    detached: list[str] = []
+    with _sessions_lock:
+        snapshot = list(_sessions.items())
+    for sid, session in snapshot:
+        if _detach_session_transport(session, transport):
+            detached.append(sid)
+    return detached
 
 
 class _SlashWorker:
@@ -615,7 +682,16 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             pass
 
     session_key = session.get("session_key")
+    runtime_session_id = session.get("runtime_session_id")
     session_id = getattr(agent, "session_id", None) or session_key
+    if runtime_session_id:
+        try:
+            clear_session_presence(
+                session_id=runtime_session_id,
+                hermes_home=_session_presence_home(session),
+            )
+        except Exception:
+            logger.debug("failed to clear session presence", exc_info=True)
     _notify_session_boundary("on_session_finalize", session_id, _session_source(session))
 
     # Mark session ended in DB so it doesn't linger as a ghost row in /resume.
@@ -751,15 +827,17 @@ def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
 def _ws_session_is_orphaned(session: dict | None) -> bool:
     """True if a WS session has no live transport and no in-flight turn.
 
-    After ``handle_ws`` detaches a disconnected client it points the session at
-    ``_detached_ws_transport``. A session left on that transport (and not
-    mid-turn) is genuinely orphaned and safe to reap.
+    After ``handle_ws`` detaches a disconnected client the session may either
+    be parked on ``_detached_ws_transport`` or keep a fanout with other live
+    clients. In the dashboard's in-process gateway there is no real peer
+    reading the parked frames, so only sessions with no live non-stdio
+    transport are safe to reap.
     """
     if not session or session.get("_finalized"):
         return False
     if session.get("running"):
         return False
-    return session.get("transport") is _detached_ws_transport
+    return not _session_has_live_transport(session)
 
 
 def _schedule_ws_orphan_reap(sid: str) -> None:
@@ -795,32 +873,38 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
 def _close_sessions_for_transport(
     transport, *, end_reason: str = "ws_disconnect"
 ) -> tuple[int, int]:
-    """On transport disconnect, reap the sessions that opted into
-    close_on_disconnect (sidecar/dashboard) immediately via the unified
-    ``_close_session_by_id`` path, and re-point the rest back to stdio so later
-    emits don't hit a dead socket.
+    """On transport disconnect, detach the disconnected transport from every
+    session it was attached to. A session may keep other live clients attached
+    through its fanout transport — those sessions stay live and keep streaming
+    to the remaining clients.
 
-    Non-flagged detached sessions are handed to the grace-windowed WS-orphan
-    reaper (``_schedule_ws_orphan_reap``): a quick reconnect / session.resume
-    that re-binds a live transport cancels the reap, otherwise the orphan is
-    torn down through the same idempotent ``_teardown_session`` path. This is
-    the single WS-disconnect teardown entry point — there is no second
-    independent reap loop in ``handle_ws``.
+    When no live transport remains, sessions that opted into
+    close_on_disconnect (sidecar/dashboard) are reaped immediately via the
+    unified ``_close_session_by_id`` path; the rest are parked on the drop
+    sentinel (NOT real stdio — a standalone `hermes --tui` keeps real _stdio)
+    and handed to the grace-windowed WS-orphan reaper
+    (``_schedule_ws_orphan_reap``): a quick reconnect / session.resume that
+    re-binds a live transport cancels the reap, otherwise the orphan is torn
+    down through the same idempotent ``_teardown_session`` path. This is the
+    single WS-disconnect teardown entry point — there is no second independent
+    reap loop in ``handle_ws``.
 
     Returns ``(reaped, detached)`` counts for disconnect-path observability."""
-    with _sessions_lock:
-        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
     reaped = 0
     detached = 0
-    for sid, session in owned:
+    for sid in _detach_transport_from_sessions(transport):
+        session = _sessions.get(sid)
+        if session is None:
+            continue
+        if _session_has_live_transport(session):
+            # Another client is still attached through the fanout — the
+            # session is not orphaned by this disconnect.
+            detached += 1
+            continue
         if session.get("close_on_disconnect"):
             _close_session_by_id(sid, end_reason=end_reason)
             reaped += 1
         else:
-            # Point detached sessions at the drop sentinel (NOT real stdio) so
-            # _ws_session_is_orphaned recognizes them and the grace-reap can
-            # actually fire; a standalone `hermes --tui` keeps real _stdio.
-            session["transport"] = _detached_ws_transport
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)
@@ -4650,6 +4734,7 @@ def _init_session(
     with _sessions_lock:
         _sessions[sid] = {
             "agent": agent,
+            "runtime_session_id": sid,
             "session_key": key,
             "history": history,
             "history_lock": threading.Lock(),
@@ -4730,6 +4815,7 @@ def _init_session(
         # session startup resilient).
         pass
     _wire_callbacks(sid)
+    _publish_session_presence(sid, _sessions.get(sid) or {})
     with _sessions_lock:
         if sid in _sessions:
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
@@ -5188,6 +5274,9 @@ def _(rid, params: dict) -> dict:
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    presence_client = str(params.get("presence_client") or "").strip()
+    presence_endpoint = str(params.get("presence_endpoint") or "").strip()
+    presence_profile = str(params.get("presence_profile") or "").strip()
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -5244,6 +5333,9 @@ def _(rid, params: dict) -> dict:
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id,
             "pending_title": title or None,
+            "presence_client": presence_client,
+            "presence_endpoint": presence_endpoint,
+            "presence_profile": presence_profile,
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False,
             "session_key": key,
@@ -5993,6 +6085,7 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
         "message_count": len(history),
         "model": str(getattr(agent, "model", "") or _resolve_model()),
         "preview": preview,
+        "session_id": sid,
         "session_key": key,
         "started_at": float(session.get("created_at") or now),
         "status": status,
@@ -6008,6 +6101,51 @@ def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
         or fallback
         or ""
     )
+
+
+def _session_presence_home(session: dict) -> Path:
+    profile_home = str(session.get("profile_home") or "").strip()
+    return Path(profile_home) if profile_home else _hermes_home
+
+
+def _publish_session_presence(sid: str, session: dict) -> None:
+    if not sid or not session or session.get("_finalized"):
+        return
+    try:
+        item = _session_live_item(sid, session)
+        route_profile = (
+            str(session.get("presence_profile") or "").strip()
+            or os.environ.get("HERMES_SESSION_PRESENCE_PROFILE", "").strip()
+            or _current_profile_name()
+        )
+        presence_client = (
+            str(session.get("presence_client") or "").strip()
+            or os.environ.get("HERMES_CLIENT_NAME", "tui")
+        )
+        presence_endpoint = (
+            str(session.get("presence_endpoint") or "").strip()
+            or os.environ.get("HERMES_SESSION_PRESENCE_ENDPOINT", "").strip()
+        )
+        write_session_presence(
+            session_id=sid,
+            session_key=str(session.get("session_key") or sid),
+            status=str(item.get("status") or "idle"),
+            title=str(item.get("title") or ""),
+            model=str(item.get("model") or ""),
+            cwd=str(session.get("cwd") or ""),
+            source="tui_gateway",
+            client=presence_client,
+            profile=route_profile,
+            endpoint=presence_endpoint,
+            metadata={
+                "message_count": item.get("message_count", 0),
+                "route_profile": route_profile,
+                "session_key": item.get("session_key") or sid,
+            },
+            hermes_home=_session_presence_home(session),
+        )
+    except Exception:
+        logger.debug("failed to publish session presence", exc_info=True)
 
 
 def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
@@ -6043,8 +6181,7 @@ def _live_session_payload(
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
-        if transport is not None:
-            session["transport"] = transport
+        _attach_session_transport(session, transport)
         if touch:
             session["last_active"] = time.time()
         history = list(session.get("display_history_prefix") or []) + list(
@@ -6064,6 +6201,7 @@ def _live_session_payload(
     }
     if inflight:
         payload["inflight"] = inflight
+    _publish_session_presence(sid, session)
     return payload
 
 
@@ -6102,7 +6240,28 @@ def _(rid, params: dict) -> dict:
         for sid, session in snapshot
         if not session.get("_finalized")
     ]
+    for sid, session in snapshot:
+        if not session.get("_finalized"):
+            _publish_session_presence(sid, session)
     return _ok(rid, {"sessions": rows})
+
+
+@method("session.presence_list")
+def _(rid, params: dict) -> dict:
+    """Return active Hermes session presence records visible to this profile."""
+    include_expired = bool(params.get("include_expired", False))
+    try:
+        return _ok(
+            rid,
+            {
+                "sessions": list_session_presence(
+                    hermes_home=_hermes_home,
+                    include_expired=include_expired,
+                )
+            },
+        )
+    except Exception as e:
+        return _err(rid, 5037, f"could not enumerate session presence: {e}")
 
 
 @method("session.activate")
@@ -8424,11 +8583,11 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    # Re-bind to the current client transport for this request. This keeps
-    # streaming events on the active websocket even if an earlier disconnect
-    # or fallback moved the session transport to stdio.
+    # Attach the current client transport for this request. Session events fan
+    # out to every live client attached to this session instead of letting the
+    # newest client steal the stream from earlier clients.
     if (t := current_transport()) is not None:
-        session["transport"] = t
+        _attach_session_transport(session, t)
     with session["history_lock"]:
         if session.get("running"):
             # Don't reject a mid-turn prompt — queue it (and, by default,

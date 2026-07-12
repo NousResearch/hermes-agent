@@ -1964,6 +1964,167 @@ def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     assert server._ws_session_is_orphaned(done) is False
 
 
+def test_session_event_transport_fans_out_to_attached_clients():
+    """Live session events should reach every attached client transport."""
+
+    class _CaptureTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            return None
+
+    first = _CaptureTransport()
+    second = _CaptureTransport()
+    session = _session(transport=first)
+    server._sessions["fanout-sid"] = session
+
+    try:
+        server._attach_session_transport(session, second)
+        server._emit("status.update", "fanout-sid", {"text": "hello"})
+
+        assert [f["params"]["type"] for f in first.frames] == ["status.update"]
+        assert [f["params"]["type"] for f in second.frames] == ["status.update"]
+    finally:
+        server._sessions.pop("fanout-sid", None)
+
+
+def test_session_activate_attaches_request_transport():
+    """Switching to a live session should subscribe the new client to events."""
+
+    class _CaptureTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            return None
+
+    first = _CaptureTransport()
+    second = _CaptureTransport()
+    session = _session(transport=first)
+    server._sessions["activate-fanout-sid"] = session
+
+    try:
+        response = server.dispatch(
+            {
+                "id": "activate",
+                "method": "session.activate",
+                "params": {"session_id": "activate-fanout-sid"},
+            },
+            transport=second,
+        )
+
+        assert response["result"]["session_id"] == "activate-fanout-sid"
+        server._emit("session.info", "activate-fanout-sid", {"cwd": "/tmp"})
+
+        assert [f["params"]["type"] for f in first.frames] == ["session.info"]
+        assert [f["params"]["type"] for f in second.frames] == ["session.info"]
+    finally:
+        server._sessions.pop("activate-fanout-sid", None)
+
+
+def test_session_transport_detach_keeps_remaining_clients():
+    """Disconnecting one client should not orphan a session with another client."""
+
+    class _CaptureTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            return None
+
+    first = _CaptureTransport()
+    second = _CaptureTransport()
+    session = _session(transport=first)
+    server._sessions["fanout-detach-sid"] = session
+
+    try:
+        server._attach_session_transport(session, second)
+
+        assert server._detach_transport_from_sessions(first) == ["fanout-detach-sid"]
+        assert server._ws_session_is_orphaned(session) is False
+
+        server._emit("message.delta", "fanout-detach-sid", {"text": "after"})
+        assert first.frames == []
+        assert [f["params"]["type"] for f in second.frames] == ["message.delta"]
+    finally:
+        server._sessions.pop("fanout-detach-sid", None)
+
+
+def test_session_fanout_drops_stale_clients():
+    """A broken fanout member should be removed without blocking healthy peers."""
+
+    class _DeadTransport:
+        def __init__(self):
+            self.calls = 0
+
+        def write(self, obj):
+            self.calls += 1
+            return False
+
+        def close(self):
+            return None
+
+    class _CaptureTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            return None
+
+    dead = _DeadTransport()
+    live = _CaptureTransport()
+    session = _session(transport=dead)
+    server._sessions["fanout-stale-sid"] = session
+
+    try:
+        server._attach_session_transport(session, live)
+
+        server._emit("status.update", "fanout-stale-sid", {"text": "one"})
+        server._emit("status.update", "fanout-stale-sid", {"text": "two"})
+
+        assert dead.calls == 1
+        assert [f["params"]["payload"]["text"] for f in live.frames] == ["one", "two"]
+    finally:
+        server._sessions.pop("fanout-stale-sid", None)
+
+
+def test_ws_orphan_reap_handles_empty_fanout():
+    class _LiveTransport:
+        def write(self, *a, **k):
+            return True
+
+        def close(self):
+            return None
+
+    first = _LiveTransport()
+    second = _LiveTransport()
+    session = _session(transport=first)
+    server._attach_session_transport(session, second)
+
+    assert server._ws_session_is_orphaned(session) is False
+    server._detach_session_transport(session, first)
+    assert server._ws_session_is_orphaned(session) is False
+    server._detach_session_transport(session, second)
+    assert server._ws_session_is_orphaned(session) is True
+
+
 def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
     """Grace=0 disables the reaper entirely (pre-fix park-forever behaviour)."""
     fired = {"timer": False}
@@ -6434,6 +6595,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         "message_count": 1,
         "model": "model-a",
         "preview": "find docs",
+        "session_id": "sid-a",
         "session_key": "key-a",
         "started_at": 10.0,
         "status": "idle",
@@ -6493,6 +6655,73 @@ def test_session_active_list_excludes_finalized_sessions(monkeypatch):
     session_rows = resp["result"]["sessions"]
     assert [row["id"] for row in session_rows] == ["sid-live"]
 
+
+def test_session_active_list_publishes_presence(monkeypatch):
+    published = []
+
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+    monkeypatch.setenv("HERMES_CLIENT_NAME", "desktop")
+    monkeypatch.setenv("HERMES_SESSION_PRESENCE_ENDPOINT", "ws://private-gateway")
+    monkeypatch.setenv("HERMES_SESSION_PRESENCE_PROFILE", "default")
+    monkeypatch.setattr(
+        server,
+        "write_session_presence",
+        lambda **kwargs: published.append(kwargs) or {"session_id": kwargs["session_id"]},
+    )
+    server._sessions["sid-live"] = _session(
+        agent=types.SimpleNamespace(model="model-live"),
+        cwd="/repo",
+        history=[{"role": "user", "content": "continue here"}],
+        presence_client="hphone",
+        presence_endpoint="tmux://taro/hermes-phone",
+        presence_profile="taro",
+        session_key="stored-live",
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.active_list", "params": {}}
+        )
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    assert resp["result"]["sessions"][0]["id"] == "sid-live"
+    assert resp["result"]["sessions"][0]["session_id"] == "sid-live"
+    assert published
+    assert published[0]["session_id"] == "sid-live"
+    assert published[0]["session_key"] == "stored-live"
+    assert published[0]["client"] == "hphone"
+    assert published[0]["endpoint"] == "tmux://taro/hermes-phone"
+    assert published[0]["profile"] == "taro"
+    assert published[0]["source"] == "tui_gateway"
+    assert published[0]["metadata"]["route_profile"] == "taro"
+    assert published[0]["metadata"]["session_key"] == "stored-live"
+
+
+def test_session_presence_list_reads_registry(monkeypatch):
+    calls = []
+
+    def _fake_list(**kwargs):
+        calls.append(kwargs)
+        return [{"session_id": "remote-sid", "status": "working"}]
+
+    monkeypatch.setattr(server, "list_session_presence", _fake_list)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.presence_list",
+            "params": {"include_expired": True},
+        }
+    )
+
+    assert resp["result"]["sessions"] == [
+        {"session_id": "remote-sid", "status": "working"}
+    ]
+    assert calls[0]["include_expired"] is True
 
 
 def test_session_activate_returns_inflight_stream_before_completion(monkeypatch):

@@ -4,7 +4,9 @@ import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages, type SessionInfo } from '@/hermes'
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -590,5 +592,178 @@ describe('resumeSession warm-cache mapping integrity', () => {
     const methods = requestGateway.mock.calls.map(([method]) => method)
     expect(methods).not.toContain('session.resume')
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+  })
+})
+
+// ── In-flight turn recovery (crash-survivable turn progress) ──────────────────
+// After an app/renderer crash mid-turn, the backend's stored transcript lacks
+// the streaming assistant. On resume, the persisted in-flight journal must fold
+// that tail back onto the restored messages and re-arm the live streaming state
+// (busy, streamId, turn clock) instead of showing a bare, idle transcript.
+function inFlightMessage(role: ChatMessage['role'], text: string, id: string, pending = false): ChatMessage {
+  return { id, parts: [{ text, type: 'text' }], pending, role }
+}
+
+function RecoveryHarness({
+  onReady,
+  onState,
+  requestGateway
+}: {
+  onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
+  onState: (state: ClientSessionState) => void
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+}) {
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
+  const actions = useSessionActions({
+    activeSessionId: null,
+    activeSessionIdRef: ref<string | null>(null),
+    busyRef: ref(false),
+    creatingSessionRef: ref(false),
+    ensureSessionState: () => ({}) as ClientSessionState,
+    getRouteToken: () => 'token',
+    navigate: vi.fn() as never,
+    requestGateway,
+    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    selectedStoredSessionId: null,
+    selectedStoredSessionIdRef: ref<string | null>(null),
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: (_sessionId, updater, storedSessionId) => {
+      const next = updater(createClientSessionState(storedSessionId ?? null))
+      onState(next)
+
+      return next
+    }
+  })
+
+  useEffect(() => {
+    onReady(actions.resumeSession)
+  }, [actions.resumeSession, onReady])
+
+  return null
+}
+
+describe('resumeSession in-flight recovery', () => {
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setResumeFailedSessionId(null)
+    setMessages([])
+    setSessions([])
+    window.localStorage.clear()
+    vi.restoreAllMocks()
+  })
+
+  it('folds a persisted in-flight turn back onto the resumed transcript and re-arms streaming state', async () => {
+    setSessions([storedSession({ message_count: 2 })])
+
+    // The renderer journaled an optimistic user + streaming assistant before the crash.
+    persistInFlightTurnState('rt-old', {
+      awaitingResponse: false,
+      busy: true,
+      messages: [
+        inFlightMessage('user', 'fix crash', 'optimistic-user'),
+        inFlightMessage('assistant', 'partial answer', 'assistant-stream-1', true)
+      ],
+      storedSessionId: 'stored-1',
+      streamId: 'assistant-stream-1',
+      turnStartedAt: 4242
+    })
+
+    // Restarted backend: stored transcript has only the user prompt; turn still running.
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          messages: [{ content: 'fix crash', role: 'user', timestamp: 1 }],
+          resumed: params?.session_id,
+          running: true,
+          session_id: 'runtime-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'fix crash', role: 'user', timestamp: 1 }],
+      session_id: 'stored-1'
+    } as never)
+
+    let captured: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<RecoveryHarness onReady={r => (resume = r)} onState={s => (captured = s)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-1', true)
+
+    expect(captured).toBeDefined()
+    // The streaming assistant tail is grafted back after the stored user prompt.
+    expect(captured?.messages).toHaveLength(2)
+    expect(captured?.messages[0].role).toBe('user')
+    expect(captured?.messages[1].id).toBe('assistant-stream-1')
+    expect(chatMessageText(captured!.messages[1])).toBe('partial answer')
+    expect(captured?.messages[1].pending).toBe(true)
+    // Running state is re-armed as an in-progress stream, not "awaiting first token".
+    expect(captured?.busy).toBe(true)
+    expect(captured?.awaitingResponse).toBe(false)
+    expect(captured?.streamId).toBe('assistant-stream-1')
+    expect(captured?.sawAssistantPayload).toBe(true)
+    expect(captured?.turnStartedAt).toBe(4242)
+  })
+
+  it('does not resurrect a journal turn once the resumed transcript already has the answer', async () => {
+    setSessions([storedSession({ message_count: 3 })])
+
+    persistInFlightTurnState('rt-old', {
+      awaitingResponse: false,
+      busy: true,
+      messages: [
+        inFlightMessage('user', 'fix crash', 'optimistic-user'),
+        inFlightMessage('assistant', 'partial answer', 'assistant-stream-1', true)
+      ],
+      storedSessionId: 'stored-1',
+      streamId: 'assistant-stream-1',
+      turnStartedAt: 4242
+    })
+
+    // The backend completed the turn: stored history now has the final assistant reply.
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          messages: [
+            { content: 'fix crash', role: 'user', timestamp: 1 },
+            { content: 'final answer', role: 'assistant', timestamp: 2 }
+          ],
+          resumed: params?.session_id,
+          running: false,
+          session_id: 'runtime-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'fix crash', role: 'user', timestamp: 1 },
+        { content: 'final answer', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'stored-1'
+    } as never)
+
+    let captured: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<RecoveryHarness onReady={r => (resume = r)} onState={s => (captured = s)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-1', true)
+
+    expect(captured).toBeDefined()
+    // No stale tail grafted on; the completed turn stands and the journal is cleared.
+    expect(captured?.messages.map(message => chatMessageText(message))).toEqual(['fix crash', 'final answer'])
+    expect(captured?.busy).toBe(false)
+    expect(captured?.streamId).toBeNull()
+    expect(window.localStorage.getItem('hermes.desktop.inflightTurnJournal.v1')).toBeNull()
   })
 })

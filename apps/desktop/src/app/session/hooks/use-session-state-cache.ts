@@ -4,6 +4,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { clearInFlightTurnJournal, persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $busy,
@@ -256,10 +257,15 @@ export function useSessionStateCache({
         setSessionWorking(previous.storedSessionId, false)
       }
 
+      if (previous.storedSessionId && previous.storedSessionId !== next.storedSessionId) {
+        clearInFlightTurnJournal(previous.storedSessionId)
+      }
+
       if (previous.storedSessionId !== next.storedSessionId || !next.needsInput) {
         setSessionAttention(previous.storedSessionId, false)
       }
 
+      persistInFlightTurnState(sessionId, next)
       setSessionWorking(next.storedSessionId, next.busy)
       setSessionAttention(next.storedSessionId, next.needsInput)
 

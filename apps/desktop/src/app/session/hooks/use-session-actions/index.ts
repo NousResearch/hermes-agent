@@ -4,7 +4,13 @@ import type { NavigateFunction } from 'react-router-dom'
 
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import {
+  type BackendInFlightTurn,
+  type InFlightRecoveryResult,
+  mergeBackendInFlightTurn,
+  recoverInFlightTurnJournal
+} from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
@@ -62,6 +68,40 @@ import {
   toBranchMessages,
   upsertOptimisticSession
 } from './utils'
+
+function noInFlightRecovery(messages: ChatMessage[]): InFlightRecoveryResult {
+  return {
+    applied: false,
+    caughtUp: false,
+    messages,
+    streamId: null,
+    turnStartedAt: null
+  }
+}
+
+// Fold a crashed/mid-flight turn back onto the restored transcript. The renderer
+// journal (survives an app/renderer crash) wins over the backend's `inflight`
+// payload (only present when the backend is still alive mid-turn); a no-op
+// returns `baseMessages` by reference so callers can keep the fast-path ref.
+function recoverResumeInFlight(
+  storedSessionId: null | string,
+  baseMessages: ChatMessage[],
+  backendInFlight: BackendInFlightTurn | null | undefined,
+  keepPending: boolean
+): InFlightRecoveryResult {
+  const backend = mergeBackendInFlightTurn(baseMessages, backendInFlight, { keepPending })
+  const local = recoverInFlightTurnJournal(storedSessionId, backend.messages, { keepPending })
+
+  if (local.applied) {
+    return local
+  }
+
+  if (backend.applied) {
+    return backend
+  }
+
+  return local.caughtUp ? local : noInFlightRecovery(baseMessages)
+}
 
 interface SessionActionsOptions {
   activeSessionId: string | null
@@ -445,7 +485,8 @@ export function useSessionActions({
         }))
       }
 
-      let resumedRunning = false
+      let resumedTurnStillRunning = false
+      let resumedTurnAwaitingResponse = false
 
       try {
         const watchWindow = isWatchWindow()
@@ -516,30 +557,55 @@ export function useSessionActions({
                 return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
               })()
 
-        // Prefetch-hit fast path: `preferredMessages` IS the live `$messages`
-        // array (already error-merged when `localSnapshot` was built), so reuse
-        // the ref instead of rebuilding a throwaway transcript+Map every switch.
-        const messagesForView =
-          preferredMessages === currentMessages
-            ? currentMessages
-            : preserveLocalAssistantErrors(preferredMessages, currentMessages)
-
-        if (sessionShouldHaveTranscript(stored) && messagesForView.length === 0) {
+        // A genuinely empty transcript for a session that should have one is a
+        // failed resume — fail-latch it. Checked on the pre-recovery messages so
+        // an orphan in-flight journal entry can't mask a lost transcript (a retry
+        // that reloads the real history is safer than surfacing the turn alone).
+        // Recovery below only ever APPENDS the in-flight tail, so this equals the
+        // final transcript's emptiness.
+        if (sessionShouldHaveTranscript(stored) && preferredMessages.length === 0) {
           setActiveSessionId(null)
           activeSessionIdRef.current = null
           setResumeFailedSessionId(storedSessionId)
-          resumedRunning = false
 
           return
         }
+
+        // Crash-survivable turn progress: if the renderer persisted an in-flight
+        // turn (local journal, survives an app/renderer crash) or the backend is
+        // still mid-turn (`resumed.inflight`), fold that tail back onto the
+        // restored transcript. Runs AFTER `preferredMessages` resolves so it
+        // coexists with the prefetch-hit fast path above — a no-op (same ref)
+        // whenever there's nothing to recover, so the common resume pays only a
+        // small bounded localStorage read, never a second transcript reconcile.
+        const resumedRunning = Boolean(resumed.running || resumed.info?.running)
+        const inFlightRecovery = recoverResumeInFlight(
+          storedSessionId,
+          preferredMessages,
+          resumed.inflight,
+          resumedRunning
+        )
+
+        // Prefetch-hit fast path: when recovery is a no-op and `preferredMessages`
+        // IS the live `$messages` array (already error-merged when `localSnapshot`
+        // was built), reuse the ref instead of rebuilding a throwaway
+        // transcript+Map every switch.
+        const messagesForView =
+          !inFlightRecovery.applied && preferredMessages === currentMessages
+            ? currentMessages
+            : preserveLocalAssistantErrors(inFlightRecovery.messages, currentMessages)
+
+        resumedTurnStillRunning = resumedRunning
+        // A recovered assistant tail means the turn already emitted output, so the
+        // composer shows the live "streaming" state rather than the
+        // "awaiting first token" spinner.
+        resumedTurnAwaitingResponse = resumedRunning && !inFlightRecovery.applied
 
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
         const runtimeInfo = applyRuntimeInfo(resumed.info)
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
-
-        resumedRunning = Boolean((resumed as { running?: boolean }).running)
 
         updateSessionState(
           resumed.session_id,
@@ -548,7 +614,15 @@ export function useSessionActions({
             ...(runtimeInfo ?? {}),
             messages: messagesForView,
             busy: resumedRunning,
-            awaitingResponse: resumedRunning
+            awaitingResponse: resumedTurnAwaitingResponse,
+            sawAssistantPayload: inFlightRecovery.applied ? true : state.sawAssistantPayload,
+            streamId: resumedRunning && inFlightRecovery.applied ? inFlightRecovery.streamId : null,
+            turnStartedAt:
+              resumedRunning && inFlightRecovery.applied
+                ? (inFlightRecovery.turnStartedAt ?? Date.now())
+                : resumedRunning
+                  ? (state.turnStartedAt ?? Date.now())
+                  : null
           }),
           storedSessionId
         )
@@ -574,7 +648,8 @@ export function useSessionActions({
             return
           }
 
-          setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
+          const recovered = recoverInFlightTurnJournal(storedSessionId, toChatMessages(fallback.messages))
+          setMessages(preserveLocalAssistantErrors(recovered.messages, $messages.get()))
         } catch (e) {
           // Fallback also failed: nothing to paint. Leave whatever messages are
           // already shown and fall through to arm the resume-failure latch so
@@ -614,9 +689,9 @@ export function useSessionActions({
         notifyError(err, copy.resumeFailed)
       } finally {
         if (isCurrentResume()) {
-          busyRef.current = resumedRunning
-          setBusy(resumedRunning)
-          setAwaitingResponse(resumedRunning)
+          busyRef.current = resumedTurnStillRunning
+          setBusy(resumedTurnStillRunning)
+          setAwaitingResponse(resumedTurnAwaitingResponse)
         }
       }
     },

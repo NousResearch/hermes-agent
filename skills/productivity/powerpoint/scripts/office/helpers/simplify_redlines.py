@@ -10,9 +10,10 @@ Rules:
 - Only merges if truly adjacent (only whitespace between them)
 """
 
-import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
+
+from defusedxml import ElementTree as ET
 
 import defusedxml.minidom
 

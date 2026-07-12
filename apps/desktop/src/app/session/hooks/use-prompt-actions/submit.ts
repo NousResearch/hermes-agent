@@ -29,12 +29,18 @@ import {
   withSessionBusyRetry
 } from './utils'
 
+interface CreatedSessionBinding {
+  routeToken: string | null
+  runtimeSessionId: string
+  storedSessionId: string | null
+}
+
 interface SubmitPromptDeps {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
-  createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  createBackendSessionForSend: (preview?: string | null) => Promise<CreatedSessionBinding | null>
   getRouteToken: () => string
   requestGateway: GatewayRequest
   selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -120,11 +126,28 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // redirect the user's text into a different chat (#54527).
       const startingActiveSessionId = activeSessionIdRef.current
       const startingStoredSessionId = selectedStoredSessionIdRef.current
-      const startingRouteToken = getRouteToken()
+      let expectedRuntimeSessionId = startingActiveSessionId
+      let expectedStoredSessionId = startingStoredSessionId
+      let expectedRouteToken = getRouteToken()
+      let pendingCreatedRouteToken: string | null = null
 
-      const sessionContextDrifted = (): boolean =>
-        selectedStoredSessionIdRef.current !== startingStoredSessionId ||
-        getRouteToken() !== startingRouteToken
+      const sessionContextDrifted = (): boolean => {
+        if (
+          pendingCreatedRouteToken &&
+          activeSessionIdRef.current === expectedRuntimeSessionId &&
+          selectedStoredSessionIdRef.current === expectedStoredSessionId &&
+          getRouteToken() === pendingCreatedRouteToken
+        ) {
+          expectedRouteToken = pendingCreatedRouteToken
+          pendingCreatedRouteToken = null
+        }
+
+        return (
+          activeSessionIdRef.current !== expectedRuntimeSessionId ||
+          selectedStoredSessionIdRef.current !== expectedStoredSessionId ||
+          getRouteToken() !== expectedRouteToken
+        )
+      }
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
@@ -254,6 +277,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           if (resumed?.session_id) {
             sessionId = resumed.session_id
             activeSessionIdRef.current = sessionId
+            expectedRuntimeSessionId = sessionId
           }
         } catch {
           // Resume failed (session gone from state.db, gateway hiccup) —
@@ -271,8 +295,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
 
       if (!sessionId) {
+        let createdBinding: CreatedSessionBinding | null
+
         try {
-          sessionId = await createBackendSessionForSend(visibleText)
+          createdBinding = await createBackendSessionForSend(visibleText)
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()
@@ -281,11 +307,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
-        if (sessionContextDrifted()) {
-          return abortForSessionSwitch(sessionId)
-        }
-
-        if (!sessionId) {
+        if (!createdBinding) {
           dropOptimistic(null)
           releaseBusy()
           notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
@@ -293,6 +315,22 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
+        sessionId = createdBinding.runtimeSessionId
+
+        // Only accept the exact binding produced by this create operation. The
+        // UI may already point at another stored route while its runtime resume
+        // is still pending, so reading current stored/route state here is unsafe.
+        if (
+          activeSessionIdRef.current !== createdBinding.runtimeSessionId ||
+          selectedStoredSessionIdRef.current !== createdBinding.storedSessionId
+        ) {
+          return abortForSessionSwitch(sessionId)
+        }
+
+        expectedRuntimeSessionId = createdBinding.runtimeSessionId
+        expectedStoredSessionId = createdBinding.storedSessionId
+        expectedRouteToken = getRouteToken()
+        pendingCreatedRouteToken = createdBinding.routeToken
         seedOptimistic(sessionId)
       }
 

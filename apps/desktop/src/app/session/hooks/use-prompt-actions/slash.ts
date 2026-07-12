@@ -48,7 +48,9 @@ interface SlashCommandDeps {
   branchCurrentSession: () => Promise<boolean>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
-  createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  createBackendSessionForSend: (
+    preview?: string | null
+  ) => Promise<{ routeToken: string | null; runtimeSessionId: string; storedSessionId: string | null } | null>
   handleSkinCommand: (arg: string) => string
   handoffSession: (
     platform: string,
@@ -86,8 +88,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
   return useCallback(
     async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
-      const ensureSessionId = async (sessionHint?: string) =>
-        sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
+      const ensureSessionId = async (sessionHint?: string) => {
+        if (sessionHint || activeSessionIdRef.current) {
+          return sessionHint || activeSessionIdRef.current
+        }
+
+        return (await createBackendSessionForSend())?.runtimeSessionId ?? null
+      }
 
       // Resolve the target session plus a writer for inline slash output, or
       // notify + return null when none can be created. Folds the ensure / bail /

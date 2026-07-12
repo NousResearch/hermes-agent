@@ -175,7 +175,9 @@ export function useSessionActions({
   )
 
   const createBackendSessionForSend = useCallback(
-    async (preview: string | null = null): Promise<string | null> => {
+    async (
+      preview: string | null = null
+    ): Promise<{ routeToken: string | null; runtimeSessionId: string; storedSessionId: string | null } | null> => {
       const startingActiveSessionId = activeSessionIdRef.current
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
@@ -271,7 +273,21 @@ export function useSessionActions({
           await setSessionYolo(requestGateway, created.session_id, true).catch(() => undefined)
         }
 
-        return created.session_id
+        // The optional post-create setup above can yield after the self-navigation.
+        // If the user selected another chat meanwhile, do not return a stale
+        // binding to prompt or slash callers.
+        if (
+          activeSessionIdRef.current !== created.session_id ||
+          selectedStoredSessionIdRef.current !== stored
+        ) {
+          return null
+        }
+
+        return {
+          routeToken: stored ? `${sessionRoute(stored)}::` : null,
+          runtimeSessionId: created.session_id,
+          storedSessionId: stored
+        }
       } finally {
         window.setTimeout(() => {
           creatingSessionRef.current = false

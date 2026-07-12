@@ -561,11 +561,15 @@ class CodexAppServerSession:
                 # tool-shaped item completes.
                 last_tool_completion_at = time.monotonic()
             else:
-                # Any non-tool projected activity (assistant message,
-                # status update, etc.) means codex is still producing
-                # output — clear the quiet timer so we don't fast-fail.
-                if projection.messages or projection.final_text is not None:
-                    last_tool_completion_at = None
+                # We only get here after take_notification returned a real
+                # notification (None already `continue`d above), so codex is
+                # still alive — clear the quiet timer unconditionally. Empty
+                # projections (item/started for the next tool, *outputDelta,
+                # reasoning items) are liveness too, matching the watchdog's
+                # documented "goes quiet without emitting another item" intent.
+                # Gating this on messages/final_text let a long second tool or
+                # reasoning phase trip the watchdog and kill a live turn.
+                last_tool_completion_at = None
             if projection.final_text is not None:
                 # Codex can emit multiple agentMessage items in one turn
                 # (e.g. partial then final). Take the last one as canonical.

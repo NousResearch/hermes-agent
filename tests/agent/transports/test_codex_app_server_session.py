@@ -950,6 +950,58 @@ class TestSessionRetirement:
         assert r.should_retire is False
         assert r.interrupted is False
 
+    def test_post_tool_watchdog_reset_on_empty_projection_activity(self):
+        """A tool completion followed by a notification that projects to
+        nothing (a reasoning item, the next tool's item/started, an
+        outputDelta) still means codex is alive and must reset the quiet
+        watchdog. Regression: a long second tool or reasoning phase used to
+        trip the watchdog and kill a live turn."""
+        clock = [1000.0]
+
+        class BumpingClient(FakeClient):
+            def take_notification(self, timeout: float = 0.0):
+                note = super().take_notification(timeout)
+                if note is not None and note.get("method") == "item/completed":
+                    item = (note.get("params") or {}).get("item") or {}
+                    if item.get("type") == "reasoning":
+                        # >post_tool_quiet_timeout passes while codex is still
+                        # streaming reasoning, but well under the turn deadline.
+                        clock[0] += 0.5
+                return note
+
+        client = BumpingClient()
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "commandExecution", "id": "ex1",
+                "command": "echo hi", "cwd": "/tmp",
+                "status": "completed", "aggregatedOutput": "hi",
+                "exitCode": 0, "commandActions": [],
+            },
+            threadId="t", turnId="tu1",
+        )
+        # Empty-projection activity (reasoning) after the tool — still alive.
+        client.queue_notification(
+            "item/completed",
+            item={"type": "reasoning", "id": "r1", "content": ["thinking..."]},
+            threadId="t", turnId="tu1",
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client)
+        with patch.object(
+            session_mod.time, "monotonic", side_effect=lambda: clock[0]
+        ):
+            r = s.run_turn(
+                "tool then reasoning then done", turn_timeout=30.0,
+                notification_poll_timeout=0.0,
+                post_tool_quiet_timeout=0.15,
+            )
+        assert r.interrupted is False
+        assert r.should_retire is False
+
     def test_turn_aborted_marker_in_text_is_terminal(self):
         """If codex emits `<turn_aborted>` in agent text and never sends
         turn/completed, we still exit promptly instead of burning the

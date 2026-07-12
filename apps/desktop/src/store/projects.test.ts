@@ -15,6 +15,7 @@ import {
   exitProjectScope,
   openProjectCreate,
   pickProjectFolder,
+  projectIdForCwd,
   projectNameForCwd,
   refreshProjects,
   refreshWorktrees
@@ -229,6 +230,41 @@ describe('createProject', () => {
       'sidebar.projects.staleBackend'
     )
     expect($projectsRpcAvailable.get()).toBe(false)
+  })
+})
+
+describe('projectIdForCwd path membership', () => {
+  const projectNode = (id: string, path: string): SidebarProjectTree => ({
+    id,
+    label: id,
+    path,
+    repos: [],
+    sessionCount: 0
+  })
+
+  beforeEach(() => {
+    $projectTree.set([])
+  })
+
+  it('matches a nested Windows cwd to its project root (backslash-separated)', () => {
+    $projectTree.set([projectNode('p_win', 'C:\\Users\\me\\repo')])
+    // A `\`-separated nested cwd never matched the `/`-only prefix check.
+    expect(projectIdForCwd('C:\\Users\\me\\repo\\sub')).toBe('p_win')
+  })
+
+  it('folds case on Windows so a differently-cased drive/segments still match', () => {
+    $projectTree.set([projectNode('p_win', 'C:\\Users\\me\\repo')])
+    expect(projectIdForCwd('c:\\Users\\ME\\repo\\sub')).toBe('p_win')
+  })
+
+  it('keeps POSIX membership case-sensitive (no false match on case difference)', () => {
+    $projectTree.set([projectNode('p_posix', '/Users/me/repo')])
+    expect(projectIdForCwd('/Users/me/Repo/sub')).toBeNull()
+  })
+
+  it('still matches a nested POSIX cwd to its project root', () => {
+    $projectTree.set([projectNode('p_posix', '/Users/me/repo')])
+    expect(projectIdForCwd('/Users/me/repo/sub')).toBe('p_posix')
   })
 })
 

@@ -151,8 +151,38 @@ export function resolveNewSessionCwd(): string {
   return workspaceCwdForNewSession()
 }
 
-const underPath = (parent: string, child: string): boolean =>
-  child === parent || child.startsWith(parent.endsWith('/') ? parent : `${parent}/`)
+// Windows spellings: drive-letter (`C:\…`), UNC (`\\srv`, `//srv`), or any
+// backslash-rooted path. A single leading `/` stays POSIX. Mirrors the identity
+// helpers in app/chat/sidebar/projects/workspace-groups.ts (isWindowsPath /
+// comparisonSegments / isPathUnder) — reimplemented inline to keep membership
+// Windows-aware without inverting the store→app dependency direction.
+const isWindowsPath = (path: string): boolean =>
+  /^[A-Za-z]:[/\\]/.test(path) || path.startsWith('\\') || path.startsWith('//')
+
+// Segments for identity comparison: Windows folds case (and separators) so
+// `C:\Work` and `c:/work` are one path; POSIX stays case-sensitive.
+const comparisonSegments = (path: string): string[] => {
+  const segs = path
+    .replace(/[/\\]+$/, '')
+    .split(/[/\\]/)
+    .filter(Boolean)
+
+  return isWindowsPath(path) ? segs.map(seg => seg.toLowerCase()) : segs
+}
+
+// True when `child` equals `parent` or is nested under it, compared segment-wise
+// so a `\`-separated / drive-letter Windows cwd matches its project root (the
+// old `/`-only prefix check missed every nested Windows cwd).
+const underPath = (parent: string, child: string): boolean => {
+  const p = comparisonSegments(parent)
+  const c = comparisonSegments(child)
+
+  if (!p.length || p.length > c.length) {
+    return false
+  }
+
+  return p.every((seg, i) => seg === c[i])
+}
 
 // The project (explicit or auto) that owns `cwd`, by longest path match across
 // the live tree. Null when no project covers it (it'll surface as a fresh

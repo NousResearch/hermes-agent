@@ -12,6 +12,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from hermes_cli import __release_date__, __version__
+from tui_gateway.mobile_sync import (
+    DEFAULT_REPLAY_MAX_BYTES,
+    DEFAULT_REPLAY_MAX_EVENTS,
+)
 
 MOBILE_AUDIENCE = "hermes.mobile"
 LEGACY_AUDIENCE = "dashboard"
@@ -27,13 +31,15 @@ SERVER_RELEASE_DATE = __release_date__
 # durable deployment identity remains outside this first contract slice.
 SERVER_INSTANCE_ID = str(uuid.uuid4())
 
-# Advertise only schemas this slice actually defines.  Conversation snapshots,
-# replay, mutation idempotency, and recoverable approvals land in later slices
-# and must not be inferred from Mobile Client Contract v1 alone.
+# Advertise only schemas implemented by the stacked contract slices. Mutation
+# idempotency and recoverable approvals still land later and must not be
+# inferred from Mobile Client Contract v1 alone.
 CLIENT_SCHEMA_MAJORS = {
     "gateway.ready": 1,
     "authorization.grant": 1,
     "authorization.error": 1,
+    "session.synchronization": 1,
+    "session.event": 1,
 }
 
 CONVERSATION_READ_SCOPE = "conversation.read"
@@ -92,7 +98,7 @@ MOBILE_METHOD_POLICIES = {
     ),
     "session.resume": MobileMethodPolicy(
         (CONVERSATION_CONTROL_SCOPE,),
-        frozenset({"cols", "session_id"}),
+        frozenset({"cols", "cursor", "session_id"}),
     ),
     "prompt.submit": MobileMethodPolicy(
         (CONVERSATION_WRITE_SCOPE,),
@@ -152,7 +158,17 @@ def gateway_ready_payload(*, skin: str, authorization: dict | None = None) -> di
             "major": MOBILE_CONTRACT_MAJOR,
         },
         "schemas": dict(CLIENT_SCHEMA_MAJORS),
-        "capabilities": {"auth.ws_scopes": {"version": 1}},
+        "capabilities": {
+            "auth.ws_scopes": {"version": 1},
+            "conversation.sync": {
+                "version": 1,
+                "delta_offsets": {"unit": "utf8_bytes"},
+                "replay": {
+                    "max_events": DEFAULT_REPLAY_MAX_EVENTS,
+                    "max_bytes": DEFAULT_REPLAY_MAX_BYTES,
+                },
+            },
+        },
         "authorization": effective_authorization(authorization),
     }
 

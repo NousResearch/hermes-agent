@@ -52,6 +52,15 @@ _PEER_CREDENTIALS = struct.Struct("3i")
 _SYSTEMD_UNIT_RE = re.compile(r"^[A-Za-z0-9_.@:-]+\.service$")
 
 
+def _effective_uid() -> int:
+    """Return the POSIX effective UID without breaking imports on Windows."""
+
+    getter = getattr(os, "geteuid", None)
+    if getter is None:
+        raise OSError("Discord edge socket ownership requires POSIX effective UID")
+    return int(getter())
+
+
 class _FrameError(RuntimeError):
     pass
 
@@ -269,7 +278,7 @@ class DiscordEdgeUnixServer:
         parent_stat = os.stat(resolved_parent, follow_symlinks=False)
         if not stat.S_ISDIR(parent_stat.st_mode):
             raise ValueError("Discord edge socket parent must be a directory")
-        if parent_stat.st_uid != os.geteuid():
+        if parent_stat.st_uid != _effective_uid():
             raise PermissionError("Discord edge socket parent has the wrong owner")
         if parent_stat.st_mode & 0o022:
             raise PermissionError("Discord edge socket parent is group/world writable")
@@ -281,7 +290,7 @@ class DiscordEdgeUnixServer:
         parent_stat = os.stat(self.socket_path.parent, follow_symlinks=False)
         if (
             not stat.S_ISDIR(parent_stat.st_mode)
-            or parent_stat.st_uid != os.geteuid()
+            or parent_stat.st_uid != _effective_uid()
             or parent_stat.st_mode & 0o022
             or (parent_stat.st_dev, parent_stat.st_ino) != self._parent_identity
         ):
@@ -306,7 +315,7 @@ class DiscordEdgeUnixServer:
             self._listener_identity = (socket_stat.st_dev, socket_stat.st_ino)
             if (
                 not stat.S_ISSOCK(socket_stat.st_mode)
-                or socket_stat.st_uid != os.geteuid()
+                or socket_stat.st_uid != _effective_uid()
                 or socket_stat.st_nlink != 1
             ):
                 raise PermissionError("bound Discord edge endpoint identity is invalid")

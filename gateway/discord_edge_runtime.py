@@ -62,6 +62,15 @@ _RECONCILIATION_PROOF_DEADLINE_MS = 30_000
 _UNCERTAIN_RECEIPT_NAMESPACE = uuid.UUID("802db0b2-a512-4c20-b97c-e23c42cd0665")
 
 
+def _effective_uid() -> int:
+    """Return the POSIX effective UID without breaking imports on Windows."""
+
+    getter = getattr(os, "geteuid", None)
+    if getter is None:
+        raise OSError("Discord edge journal ownership requires POSIX effective UID")
+    return int(getter())
+
+
 class DiscordEdgeJournalState(StrEnum):
     PREPARED = "prepared"
     DISPATCHING = "dispatching"
@@ -397,7 +406,7 @@ class DurableDiscordEdgeJournal:
         parent_stat = os.stat(resolved_parent, follow_symlinks=False)
         if not stat.S_ISDIR(parent_stat.st_mode):
             raise ValueError("Discord edge journal parent must be a directory")
-        if parent_stat.st_uid != os.geteuid():
+        if parent_stat.st_uid != _effective_uid():
             raise PermissionError("Discord edge journal parent must be owned by the service")
         if stat.S_IMODE(parent_stat.st_mode) != 0o700:
             raise PermissionError(
@@ -438,7 +447,7 @@ class DurableDiscordEdgeJournal:
             raise RuntimeError(f"Discord edge {label} disappeared") from exc
         if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
             raise PermissionError(f"Discord edge {label} must be one regular file")
-        if file_stat.st_uid != os.geteuid():
+        if file_stat.st_uid != _effective_uid():
             raise PermissionError(f"Discord edge {label} has the wrong owner")
         if stat.S_IMODE(file_stat.st_mode) != 0o600:
             raise PermissionError(

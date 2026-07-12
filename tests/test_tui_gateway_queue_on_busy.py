@@ -13,6 +13,9 @@ import threading
 import time
 import types
 
+from hermes_state import SessionDB
+from run_agent import AIAgent
+
 from tui_gateway import server
 
 
@@ -35,16 +38,57 @@ def _session(agent=None, **extra):
 def test_enqueue_pins_text_and_transport():
     session = _session()
     server._enqueue_prompt(session, "hello", "ws-1")
-    assert session["queued_prompt"] == {"text": "hello", "transport": "ws-1"}
+    assert session["queued_prompt"]["text"] == "hello"
+    assert session["queued_prompt"]["transport"] == "ws-1"
 
 
-def test_enqueue_merges_second_arrival_losslessly():
+def test_enqueue_preserves_distinct_messages_and_submission_metadata():
     session = _session()
-    server._enqueue_prompt(session, "first", "ws-1")
-    server._enqueue_prompt(session, "second", "ws-2")
-    assert session["queued_prompt"]["text"] == "first\n\nsecond"
-    # Latest transport wins so the drain streams to the most recent client.
-    assert session["queued_prompt"]["transport"] == "ws-2"
+    server._enqueue_prompt(
+        session,
+        "first",
+        "ws-1",
+        submitted_at=101.25,
+        message_id="desktop-1",
+    )
+    server._enqueue_prompt(
+        session,
+        "second",
+        "ws-2",
+        submitted_at=102.5,
+        message_id="desktop-2",
+    )
+
+    assert session["queued_prompt"] == {
+        "text": "first",
+        "transport": "ws-1",
+        "submitted_at": 101.25,
+        "message_id": "desktop-1",
+    }
+    assert session["queued_prompts"] == [
+        {
+            "text": "second",
+            "transport": "ws-2",
+            "submitted_at": 102.5,
+            "message_id": "desktop-2",
+        }
+    ]
+
+
+def test_enqueue_keeps_one_multi_paragraph_prompt_as_one_message():
+    session = _session()
+    text = "first paragraph\n\nsecond paragraph"
+
+    server._enqueue_prompt(
+        session,
+        text,
+        "ws-1",
+        submitted_at=101.25,
+        message_id="desktop-1",
+    )
+
+    assert session["queued_prompt"]["text"] == text
+    assert session.get("queued_prompts", []) == []
 
 
 # ── _handle_busy_submit (policy) ───────────────────────────────────────────
@@ -153,6 +197,77 @@ def test_busy_helper_retries_when_turn_finished(monkeypatch):
 
     assert server._handle_busy_submit("r1", "sid", session, "run now", "ws-1") is None
     assert session.get("queued_prompt") is None
+def test_prompt_submit_dedupes_explicit_id_already_inflight(monkeypatch):
+    calls = {"interrupt": 0}
+    agent = types.SimpleNamespace(
+        interrupt=lambda: calls.__setitem__("interrupt", calls["interrupt"] + 1)
+    )
+    session = _session(
+        agent=agent,
+        running=True,
+        inflight_turn={"message_id": "desktop-1", "user": "first"},
+    )
+    monkeypatch.setattr(server, "_sess_nowait", lambda *_a, **_k: (session, None))
+    monkeypatch.setattr(server, "current_transport", lambda: "ws-2")
+
+    response = server.handle_request(
+        {
+            "id": "rpc-2",
+            "method": "prompt.submit",
+            "params": {
+                "message_id": "desktop-1",
+                "session_id": "sid",
+                "text": "first",
+            },
+        }
+    )
+
+    assert response is not None
+    assert response["result"]["status"] == "duplicate"
+    assert session.get("queued_prompt") is None
+    assert calls["interrupt"] == 0
+
+
+def test_prompt_submit_does_not_dedupe_reused_rpc_id_without_explicit_id(
+    monkeypatch,
+):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    session = _session(
+        running=True,
+        inflight_turn={"message_id": "rpc-1", "user": "prior connection"},
+    )
+    monkeypatch.setattr(server, "_sess_nowait", lambda *_a, **_k: (session, None))
+    monkeypatch.setattr(server, "current_transport", lambda: "ws-new")
+
+    response = server.handle_request(
+        {
+            "id": "rpc-1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "new connection prompt"},
+        }
+    )
+
+    assert response is not None
+    assert response["result"]["status"] == "queued"
+    assert session["queued_prompt"]["text"] == "new connection prompt"
+
+
+def test_prompt_id_dedupe_uses_persisted_source_id(tmp_path):
+    db = SessionDB(tmp_path / "dedupe.db")
+    try:
+        db.create_session("session-key", source="desktop", model="test/model")
+        db.append_message(
+            session_id="session-key",
+            role="user",
+            content="already accepted",
+            platform_message_id="desktop-persisted",
+        )
+        session = _session(agent=types.SimpleNamespace(_session_db=db))
+
+        assert server._has_prompt_message_id(session, "desktop-persisted") is True
+        assert server._has_prompt_message_id(session, "desktop-new") is False
+    finally:
+        db.close()
 
 
 def test_busy_interrupt_mode_normalizes_rich_text_before_redirect(monkeypatch):
@@ -249,12 +364,175 @@ def test_drain_noop_when_session_already_running(monkeypatch):
     assert session["queued_prompt"]["text"] == "go"
 
 
-def test_drain_releases_running_on_dispatch_failure(monkeypatch):
+def test_drain_requeues_prompt_on_dispatch_failure(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("dispatch failed")
+
     monkeypatch.setattr(server, "_run_prompt_submit", _boom)
-    session = _session(queued_prompt={"text": "go", "transport": None})
+    queued = {"text": "go", "transport": "ws-1"}
+    session = _session(queued_prompt=queued)
 
     assert server._drain_queued_prompt("r1", "sid", session) is True
-    # Failure must not leave the session wedged as running.
+    # Failure must neither wedge the session nor drop the claimed prompt.
     assert session["running"] is False
+    assert session["queued_prompt"] == queued
+
+
+def test_repeated_arrivals_drain_once_in_order_to_their_own_transports(monkeypatch):
+    fired = []
+
+    def _run(rid, sid, session, text, **kwargs):
+        fired.append(
+            {
+                "rid": rid,
+                "sid": sid,
+                "text": text,
+                "transport": session["transport"],
+                **kwargs,
+            }
+        )
+        session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _run)
+    session = _session()
+    for index in range(3):
+        server._enqueue_prompt(
+            session,
+            f"message-{index}",
+            f"ws-{index}",
+            submitted_at=100.0 + index,
+            message_id=f"desktop-{index}",
+        )
+
+    assert server._drain_queued_prompt("r1", "sid", session) is True
+    assert server._drain_queued_prompt("r1", "sid", session) is True
+    assert server._drain_queued_prompt("r1", "sid", session) is True
+    assert server._drain_queued_prompt("r1", "sid", session) is False
+
+    assert fired == [
+        {
+            "rid": "r1",
+            "sid": "sid",
+            "text": f"message-{index}",
+            "transport": f"ws-{index}",
+            "submitted_at": 100.0 + index,
+            "message_id": f"desktop-{index}",
+        }
+        for index in range(3)
+    ]
+    assert session["queued_prompt"] is None
+    assert session.get("queued_prompts", []) == []
+
+
+def _model_response(text):
+    message = types.SimpleNamespace(
+        content=text,
+        tool_calls=None,
+        reasoning_content=None,
+        reasoning=None,
+    )
+    choice = types.SimpleNamespace(message=message, finish_reason="stop")
+    return types.SimpleNamespace(choices=[choice], model="test/model", usage=None)
+
+
+def test_drain_persists_distinct_users_and_sends_valid_ordered_wire_history(
+    monkeypatch,
+    tmp_path,
+):
+    """Exercise the real gateway drain, AIAgent loop, SessionDB, and wire copy."""
+    db = SessionDB(tmp_path / "state.db")
+    session_key = "queued-boundaries"
+    db.create_session(session_key, source="desktop", model="test/model")
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        provider="custom",
+        model="test/model",
+        api_mode="chat_completions",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        session_db=db,
+        session_id=session_key,
+    )
+    agent._session_db_created = True
+    agent._cached_system_prompt = "You are a test assistant."
+    agent._disable_streaming = True
+
+    wire_requests = []
+    replies = iter(("ack-first", "ack-second"))
+
+    def _api_call(api_kwargs):
+        wire_requests.append(api_kwargs["messages"])
+        return _model_response(next(replies))
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _api_call)
+    monkeypatch.setattr(agent, "_cleanup_task_resources", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_session_info", lambda *_a, **_k: {})
+    monkeypatch.setattr(server, "_get_usage", lambda *_a, **_k: {})
+    monkeypatch.setattr(server, "_voice_tts_enabled", lambda: False)
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *_a, **_k: None)
+
+    completed = threading.Event()
+    completion_count = 0
+
+    def _emit(event, _sid, _payload=None):
+        nonlocal completion_count
+        if event == "message.complete":
+            completion_count += 1
+            if completion_count == 2:
+                completed.set()
+
+    monkeypatch.setattr(server, "_emit", _emit)
+
+    session = _session(agent=agent, session_key=session_key)
+    server._enqueue_prompt(
+        session,
+        "first queued prompt",
+        "ws-1",
+        submitted_at=101.25,
+        message_id="desktop-1",
+    )
+    server._enqueue_prompt(
+        session,
+        "second queued prompt",
+        "ws-2",
+        submitted_at=102.5,
+        message_id="desktop-2",
+    )
+
+    assert server._drain_queued_prompt("r1", "ui-session", session) is True
+    assert completed.wait(10), "queued turns did not both complete"
+
+    user_rows = [row for row in db.get_messages(session_key) if row["role"] == "user"]
+    assert [row["content"] for row in user_rows] == [
+        "first queued prompt",
+        "second queued prompt",
+    ]
+    assert [row["timestamp"] for row in user_rows] == [101.25, 102.5]
+    assert [row["platform_message_id"] for row in user_rows] == [
+        "desktop-1",
+        "desktop-2",
+    ]
+
+    assert len(wire_requests) == 2
+    assert [
+        message["content"]
+        for message in wire_requests[1]
+        if message.get("role") == "user"
+    ] == ["first queued prompt", "second queued prompt"]
+    for request in wire_requests:
+        non_system_roles = [
+            message["role"] for message in request if message.get("role") != "system"
+        ]
+        assert all(
+            left != right
+            for left, right in zip(non_system_roles, non_system_roles[1:])
+        )
+        assert all("timestamp" not in message for message in request)
+        assert all("_source_message_id" not in message for message in request)
+        assert all("message_id" not in message for message in request)
+        assert all("platform_message_id" not in message for message in request)

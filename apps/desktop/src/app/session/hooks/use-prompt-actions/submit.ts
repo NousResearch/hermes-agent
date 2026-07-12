@@ -510,7 +510,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         rewriteOptimistic(sessionId)
         const text = buildContextText(syncedAttachments)
 
+        const sourceMetadata = {
+          ...(options?.messageId ? { message_id: options.messageId } : {}),
+          ...(options?.submittedAt !== undefined ? { submitted_at: options.submittedAt / 1000 } : {})
+        }
         const submitParams = (targetId: string) => ({
+          ...sourceMetadata,
           session_id: targetId,
           text,
           ...(interrupted && { interrupted })

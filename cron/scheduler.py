@@ -725,10 +725,11 @@ def _maybe_mirror_cron_delivery(
         # The brief is not the agent speaking; an assistant-role mirror lands as
         # assistant→assistant after the agent's last turn and breaks strict
         # alternation (issue #2221, the exact failure #2313 removed). A
-        # user-role turn collapses safely via repair_message_sequence's
-        # consecutive-user merge on every provider, and the prefix preserves the
-        # "this came from cron" context that the dropped SQLite mirror metadata
-        # would otherwise lose on replay.
+        # user-role turn merges safely on the per-request API copy through
+        # ``_drop_thinking_only_and_merge_users`` for strict providers, while
+        # remaining a distinct canonical source message. The prefix preserves
+        # the "this came from cron" context that the dropped SQLite mirror
+        # metadata would otherwise lose on replay.
         ok = mirror_to_session(
             platform_name,
             str(chat_id),

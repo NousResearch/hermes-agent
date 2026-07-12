@@ -78,31 +78,72 @@ def test_drop_scaffolding_handles_multiple_parallel_tool_results():
 
 # ── _repair_message_sequence ───────────────────────────────────────────────
 
-def test_repair_merges_consecutive_user_messages():
+def test_canonical_repair_preserves_adjacent_user_source_boundaries():
+    """Canonical repair must not collapse separately sourced user turns."""
+    agent = _bare_agent()
+    first = {
+        "role": "user",
+        "content": "interrupted turn tail",
+        "timestamp": 101.25,
+        "_source_message_id": "desktop-1",
+    }
+    second = {
+        "role": "user",
+        "content": "first queued prompt",
+        "timestamp": 102.5,
+        "_source_message_id": "desktop-2",
+    }
+    messages = [first, second]
+    original = [dict(message) for message in messages]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert messages == original
+    assert messages[0] is first
+    assert messages[1] is second
+    wire_messages = [
+        {"role": message["role"], "content": message["content"]}
+        for message in messages
+    ]
+    wire_messages = AIAgent._drop_thinking_only_and_merge_users(wire_messages)
+
+    assert wire_messages == [
+        {"role": "user", "content": "interrupted turn tail\n\nfirst queued prompt"}
+    ]
+    assert messages == original
+    assert messages[0] is first
+    assert messages[1] is second
+
+
+def test_repair_preserves_consecutive_plain_text_users():
     agent = _bare_agent()
     messages = [
         {"role": "user", "content": "first"},
         {"role": "user", "content": "second"},
     ]
+    original = [dict(message) for message in messages]
 
     repairs = AIAgent._repair_message_sequence(agent, messages)
 
-    assert repairs == 1
-    assert len(messages) == 1
-    assert messages[0]["role"] == "user"
-    assert messages[0]["content"] == "first\n\nsecond"
+    assert repairs == 0
+    assert messages == original
 
 
-def test_repair_preserves_user_content_when_one_side_empty():
+def test_repair_preserves_empty_user_source_boundary():
     agent = _bare_agent()
     messages = [
         {"role": "user", "content": ""},
         {"role": "user", "content": "real message"},
     ]
 
-    AIAgent._repair_message_sequence(agent, messages)
+    repairs = AIAgent._repair_message_sequence(agent, messages)
 
-    assert messages == [{"role": "user", "content": "real message"}]
+    assert repairs == 0
+    assert messages == [
+        {"role": "user", "content": ""},
+        {"role": "user", "content": "real message"},
+    ]
 
 
 def test_repair_does_not_rewind_ongoing_dialog_tool_pair():
@@ -260,7 +301,7 @@ def test_repair_leaves_valid_conversation_unchanged():
 
 
 def test_repair_preserves_multimodal_user_content():
-    """Multimodal (list) content must NOT be merged — risks mangling attachments."""
+    """Canonical repair preserves multimodal user boundaries unchanged."""
     agent = _bare_agent()
     messages = [
         {"role": "user", "content": [{"type": "text", "text": "hi"},
@@ -270,7 +311,7 @@ def test_repair_preserves_multimodal_user_content():
 
     AIAgent._repair_message_sequence(agent, messages)
 
-    # The multimodal user message stays as a distinct message — no merge
+    # The multimodal user message stays distinct and retains its attachment.
     assert len(messages) == 2
     assert isinstance(messages[0]["content"], list)
 
@@ -308,8 +349,8 @@ def test_cursor_clamped_when_compaction_shrinks_below_cursor():
     turn-end flush doesn't skip the assistant/tool chain (#44837)."""
     agent = _bare_agent()
     messages = [
-        {"role": "user", "content": "first"},
-        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "first"},
+        {"role": "assistant", "content": "second"},
     ]
     agent._last_flushed_db_idx = 2  # both rows already flushed
 
@@ -325,27 +366,27 @@ def test_cursor_rewinds_when_compaction_happens_before_cursor():
     rewind it by the number removed, or unflushed rows get skipped.
     A plain min() clamp does NOT catch this case."""
     agent = _bare_agent()
-    flushed_a = {"role": "user", "content": "first"}
-    flushed_b = {"role": "user", "content": "second"}  # merged into flushed_a
-    unflushed_assistant = {"role": "assistant", "content": "answer"}
-    messages = [flushed_a, flushed_b, unflushed_assistant]
-    agent._last_flushed_db_idx = 2  # the two user rows are flushed
+    flushed_a = {"role": "assistant", "content": "first"}
+    flushed_b = {"role": "assistant", "content": "second"}
+    unflushed_user = {"role": "user", "content": "question"}
+    messages = [flushed_a, flushed_b, unflushed_user]
+    agent._last_flushed_db_idx = 2  # the two assistant rows are flushed
 
     repairs = repair_message_sequence_with_cursor(agent, messages)
 
     assert repairs == 1
     assert len(messages) == 2
-    # Cursor must now point at the assistant (index 1), not stay at 2 —
+    # Cursor must now point at the user (index 1), not stay at 2 —
     # min(2, len=2) would leave it at 2 and the flush would skip it.
     assert agent._last_flushed_db_idx == 1
-    assert messages[agent._last_flushed_db_idx] is unflushed_assistant
+    assert messages[agent._last_flushed_db_idx] is unflushed_user
 
 
 def test_cursor_untouched_when_no_repairs():
     agent = _bare_agent()
     messages = [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": "second"},
     ]
     agent._last_flushed_db_idx = 1
 
@@ -353,14 +394,15 @@ def test_cursor_untouched_when_no_repairs():
 
     assert repairs == 0
     assert agent._last_flushed_db_idx == 1
+    assert len(messages) == 2
 
 
 def test_cursor_helper_safe_without_cursor_attribute():
     """Bare agents (no _last_flushed_db_idx) must not crash."""
     agent = _bare_agent()
     messages = [
-        {"role": "user", "content": "a"},
-        {"role": "user", "content": "b"},
+        {"role": "assistant", "content": "a"},
+        {"role": "assistant", "content": "b"},
     ]
 
     repairs = repair_message_sequence_with_cursor(agent, messages)

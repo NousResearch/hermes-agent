@@ -41,7 +41,10 @@ class TestIdentityFlush:
                 agent = _make_agent(db)
 
                 # Simulate history already loaded from state.db.
-                history = [{"role": "user", "content": f"u{i}"} for i in range(6)]
+                history = [
+                    {"role": "assistant", "content": f"a{i}"}
+                    for i in range(6)
+                ]
                 for msg in history:
                     db.append_message(
                         session_id=SESSION_ID,
@@ -49,10 +52,11 @@ class TestIdentityFlush:
                         content=msg["content"],
                     )
 
-                # repair_message_sequence merged the six history rows into one
-                # dict before this turn appended the new user/assistant pair.
+                # Simulate canonical repair compacting the six adjacent
+                # assistant rows before this turn appends a new user/assistant
+                # pair.
                 messages = [
-                    {"role": "user", "content": "\n\n".join(f"u{i}" for i in range(6))},
+                    {"role": "assistant", "content": "\n".join(f"a{i}" for i in range(6))},
                     {"role": "user", "content": "new question"},
                     {"role": "assistant", "content": "new answer"},
                 ]

@@ -1162,6 +1162,39 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect($busy.get()).toBe(false)
   })
 
+  it('forwards queued source identity and submission time to prompt.submit', async () => {
+    const busyRef = { current: true }
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('queued message', {
+      fromQueue: true,
+      messageId: 'queued-1700000000000-source',
+      submittedAt: 1_700_000_000_000
+    })
+
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        message_id: 'queued-1700000000000-source',
+        session_id: RUNTIME_SESSION_ID,
+        submitted_at: 1_700_000_000,
+        text: 'queued message'
+      },
+      1_800_000
+    )
+  })
+
   it('a rejected fromQueue drain returns false (entry stays queued) and a later retry sends it', async () => {
     // A stale-session 404 must not strand the queued entry: submitPrompt returns
     // false on failure so the composer keeps it, and the edge-independent

@@ -55,6 +55,16 @@ _get_env_config = terminal_module._get_env_config
 cleanup_vm = terminal_module.cleanup_vm
 
 
+@pytest.fixture(autouse=True)
+def require_modal_backend():
+    """Skip every collected test unless the Modal backend is selected."""
+    config = _get_env_config()
+    if config['env_type'] != 'modal':
+        pytest.skip(
+            f"TERMINAL_ENV='{config['env_type']}', skipping Modal test suite"
+        )
+
+
 def test_modal_requirements():
     """Test that Modal requirements are met."""
     print("\n" + "=" * 60)
@@ -277,12 +287,32 @@ def main():
         except AssertionError:
             results[name] = False
 
+    def _print_summary():
+        print("\n" + "=" * 60)
+        print("TEST SUMMARY")
+        print("=" * 60)
+
+        passed = sum(1 for v in results.values() if v is True)
+        total = sum(1 for v in results.values() if v is not None)
+
+        for test_name, result in results.items():
+            if result is True:
+                status = "✅ PASSED"
+            elif result is False:
+                status = "❌ FAILED"
+            else:
+                status = "⏭️  SKIPPED"
+            print(f"  {test_name}: {status}")
+
+        print(f"\nTotal: {passed}/{total} tests passed")
+        return passed == total
+
     # Run tests
     _run('requirements', test_modal_requirements)
 
     if results.get('requirements') is not True:
         print("\n❌ Requirements not met or skipped. Cannot continue with other tests.")
-        return
+        return _print_summary()
 
     _run('simple_command', test_simple_command)
     _run('python_execution', test_python_execution)
@@ -290,26 +320,7 @@ def main():
     _run('filesystem_persistence', test_filesystem_persistence)
     _run('environment_isolation', test_environment_isolation)
 
-    # Summary
-    print("\n" + "=" * 60)
-    print("TEST SUMMARY")
-    print("=" * 60)
-
-    passed = sum(1 for v in results.values() if v is True)
-    total = sum(1 for v in results.values() if v is not None)
-
-    for test_name, result in results.items():
-        if result is True:
-            status = "✅ PASSED"
-        elif result is False:
-            status = "❌ FAILED"
-        else:
-            status = "⏭️  SKIPPED"
-        print(f"  {test_name}: {status}")
-
-    print(f"\nTotal: {passed}/{total} tests passed")
-
-    return passed == total
+    return _print_summary()
 
 
 if __name__ == "__main__":

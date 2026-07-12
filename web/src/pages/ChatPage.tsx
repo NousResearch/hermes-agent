@@ -620,7 +620,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // react to the keypress.
       // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
-      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      // Paste on BARE Ctrl+V too (not only Ctrl+Shift+V). Bare Ctrl+V otherwise
+      // falls through to the TUI, whose server-side clipboard read can't see the
+      // browser/OS clipboard → "No image found in clipboard". Routing Ctrl+V
+      // through the same navigator.clipboard path below makes it paste
+      // image-or-text correctly, like Ctrl+Shift+V.
+      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey;
 
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
@@ -638,6 +643,40 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         }
         // No selection → fall through so the TUI receives Ctrl+Shift+C
         // (or the bare ev if the user used a different modifier).
+      }
+
+      // Ctrl+Backspace → delete previous word. xterm.js sends bare DEL
+      // regardless of modifier, so word-delete never reaches the TUI on its
+      // own. Send ^W (0x17), which readline / prompt_toolkit treat as
+      // delete-word-backward. (Ctrl+W can't be used in a browser tab — it's a
+      // reserved shortcut that closes the tab and preventDefault has no effect;
+      // for Ctrl+W muscle memory use the Electron desktop app.)
+      if (
+        ev.ctrlKey &&
+        !ev.shiftKey &&
+        !ev.altKey &&
+        !ev.metaKey &&
+        ev.key === "Backspace"
+      ) {
+        ev.preventDefault();
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send("\x17");
+        return false;
+      }
+
+      // Ctrl+Delete → delete next word. Mirror of Ctrl+Backspace; sends Alt+d
+      // (ESC d), the readline / prompt_toolkit kill-word-forward binding.
+      if (
+        ev.ctrlKey &&
+        !ev.shiftKey &&
+        !ev.altKey &&
+        !ev.metaKey &&
+        ev.key === "Delete"
+      ) {
+        ev.preventDefault();
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send("\x1bd");
+        return false;
       }
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {

@@ -52,9 +52,28 @@ class TestGatewayLifecyclePattern:
         # direct kickstart/unload/stop/restart on the existing service.
         "launchctl submit -l ai.hermes.gateway-hard-restart-no-photon-notice -- /bin/sh ~/.hermes/scripts/hard_restart_gateway_no_photon_notice.sh",
         "launchctl submit -l hermes-gateway-restart-helper -- /bin/sh helper.sh",
+        # The exact reported shape: split across shell line-continuations
+        # (`\` immediately followed by a newline). `[^\n]*` alone can't span
+        # that, so the verb and the gateway-label token land on different
+        # physical lines unless continuations are normalized first.
+        (
+            "launchctl submit \\\n"
+            "  -l ai.hermes.gateway-hard-restart-no-photon-notice \\\n"
+            "  -- /bin/sh ~/.hermes/scripts/hard_restart_gateway_no_photon_notice.sh"
+        ),
     ])
     def test_launchctl_submit_commands(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    def test_line_continuation_does_not_bridge_unrelated_lines(self):
+        # A backslash-newline is only normalized when it's a real shell
+        # continuation. Two genuinely separate lines of a longer prompt
+        # (no trailing backslash) must not be bridged into a false match.
+        text = (
+            "this restarts the payment gateway\n"
+            "unrelated hermes note on the next line"
+        )
+        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
 
     @pytest.mark.parametrize("text", [
         "kill hermes gateway process",

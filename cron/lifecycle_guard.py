@@ -71,11 +71,25 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 )
 
 
+# A backslash immediately followed by a newline is a POSIX shell line
+# continuation — the shell joins the two lines before parsing. Every branch
+# above uses `[^\n]*` between its verb and the gateway identifier so the
+# match can't span unrelated lines of a longer cron prompt/script, but that
+# also means a real multi-line shell invocation split across continuation
+# lines (e.g. `launchctl submit \` / `  -l ai.hermes.gateway-... \` / `  -- ...`,
+# the exact reported shape in #62891) would otherwise slip past. Collapse
+# continuations to a single space before matching, mirroring what the shell
+# itself does, rather than loosening `[^\n]*` and risking false positives
+# across genuinely separate lines.
+_SHELL_LINE_CONTINUATION = re.compile(r"\\\r?\n[ \t]*")
+
+
 def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern."""
     if not text:
         return False
-    return bool(_GATEWAY_LIFECYCLE_PATTERN.search(text))
+    normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
+    return bool(_GATEWAY_LIFECYCLE_PATTERN.search(normalized))
 
 
 def _resolve_script_path(script_path: str) -> Path:

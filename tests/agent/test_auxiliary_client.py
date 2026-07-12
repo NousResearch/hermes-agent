@@ -5708,14 +5708,20 @@ class TestAuxiliaryUsageRecording:
         import agent.auxiliary_client as aux
         from unittest.mock import MagicMock, patch
 
-        with patch("agent.auxiliary_client.getattr") as mock_getattr:
-            mock_getattr.return_value = False
+        # Ensure session is inactive
+        aux._aux_session.active = False
+
+        mock_db = MagicMock()
+        with patch("hermes_state.get_session_db", return_value=mock_db):
             response = MagicMock()
             response.choices = [MagicMock()]
             response.choices[0].message = MagicMock(content="test")
+            response.usage = MagicMock(prompt_tokens=5, completion_tokens=10)
 
-            # Should not raise
+            # Should not raise and should not record
             aux._validate_llm_response(response, task="vision")
+
+        mock_db.record_auxiliary_usage.assert_not_called()
 
     def test_recording_failure_does_not_block_response(self, monkeypatch):
         """A DB error during recording is silently caught — the response
@@ -5762,3 +5768,46 @@ class TestAuxiliaryUsageRecording:
 
             aux._validate_llm_response(response, task="vision")
             mock_clear.assert_called_once()
+
+    def test_no_cross_call_session_leak(self):
+        """After a failed call (exception raised, no response), the stale
+        session metadata must NOT leak into a subsequent successful call's
+        recording. Regression test for review finding."""
+        import agent.auxiliary_client as aux
+        from unittest.mock import MagicMock, patch
+
+        # Simulate a failed call: set session context, then raise before
+        # _validate_llm_response fires, then clear manually (as the finally
+        # block in async_call_llm would).
+        aux._aux_session.active = True
+        aux._aux_session.session_id = "stale"
+        aux._aux_session.provider = "old"
+        aux._aux_session.model = "old"
+        aux._aux_session.task = "old-task"
+        # Simulate cleanup (the finally block)
+        aux.clear_aux_session()
+
+        # Now a fresh call with a different session
+        aux._aux_session.active = True
+        aux._aux_session.session_id = "fresh"
+        aux._aux_session.provider = "new"
+        aux._aux_session.model = "new"
+        aux._aux_session.task = "new-task"
+
+        mock_db = MagicMock()
+        with patch("hermes_state.get_session_db", return_value=mock_db):
+            response = MagicMock()
+            response.usage = MagicMock(prompt_tokens=1, completion_tokens=2)
+            response.choices = [MagicMock()]
+            response.choices[0].message = MagicMock(content="ok")
+            aux._validate_llm_response(response, task="new-task")
+
+        # Must record the FRESH session, not the stale one
+        mock_db.record_auxiliary_usage.assert_called_once()
+        call_kwargs = mock_db.record_auxiliary_usage.call_args.kwargs
+        assert call_kwargs["session_id"] == "fresh"
+        assert call_kwargs["task"] == "new-task"
+        assert call_kwargs["provider"] == "new"
+
+        # Clean up
+        aux._aux_session.active = False

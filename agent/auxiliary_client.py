@@ -7549,3 +7549,8 @@ async def async_call_llm(
                 logger.debug("Auxiliary (async): cache eviction after connection error failed",
                              exc_info=True)
         raise
+    finally:
+        # Guarantee session context cleanup on every exit path (success,
+        # retry, or error) so stale metadata never leaks to a later call.
+        if session_id:
+            clear_aux_session()

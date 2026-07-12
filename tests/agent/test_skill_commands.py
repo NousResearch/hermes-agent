@@ -377,6 +377,63 @@ class TestScanSkillCommands:
         assert "/sonarr-v3v4-api" in result
         assert any("/" in k[1:] for k in result) is False  # no unescaped /
 
+    def test_chinese_name_registers_command(self, tmp_path):
+        """Skill with a pure Chinese name should register a slash command."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "novel-clipper"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: 小说拆条\ndescription: Split novels into clips.\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        assert "/小说拆条" in result
+        assert result["/小说拆条"]["name"] == "小说拆条"
+
+    def test_mixed_ascii_and_cjk_name_registers_command(self, tmp_path):
+        """Skill with mixed ASCII and CJK characters keeps both."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "daily-news"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: daily-新闻摘要\ndescription: Daily news summary.\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        assert "/daily-新闻摘要" in result
+
+    def test_japanese_name_registers_command(self, tmp_path):
+        """Skill with Japanese name should register correctly."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "recipe"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: レシピ検索\ndescription: Search recipes.\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        assert "/レシピ検索" in result
+
+    def test_unicode_name_special_chars_still_stripped(self, tmp_path):
+        """Special characters are still stripped from Unicode skill names."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "emoji-skill"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: 小说+拆条\ndescription: Plus stripped.\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        # The + should be stripped, CJK chars preserved
+        assert "/小说拆条" in result
+
+    def test_resolve_unicode_skill_command(self, tmp_path):
+        """resolve_skill_command_key works for Unicode command names."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "novel-clipper"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: 小说拆条\ndescription: Split novels.\n---\n\nBody.\n"
+            )
+            scan_skill_commands()
+            assert resolve_skill_command_key("小说拆条") == "/小说拆条"
+
 
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers

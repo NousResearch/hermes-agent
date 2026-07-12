@@ -1414,6 +1414,11 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
             created_by=args.created_by or _profile_author(),
             priority=args.priority,
             idempotency_key=getattr(args, "idempotency_key", None),
+            _trusted_gateway_origin=getattr(
+                args,
+                "_trusted_gateway_origin",
+                None,
+            ),
         )
     if getattr(args, "json", False):
         print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))

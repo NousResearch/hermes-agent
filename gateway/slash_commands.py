@@ -54,9 +54,7 @@ logger = logging.getLogger("gateway.run")
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 
-_DURABLE_KANBAN_APPROVAL_ID_RE = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$"
-)
+_DURABLE_KANBAN_APPROVAL_ID_RE = re.compile(r"^ka_[0-9a-f]{24}$")
 _LOCAL_APPROVAL_SCOPE_WORDS = {
     "all", "always", "permanent", "permanently", "session", "ses",
 }
@@ -85,6 +83,13 @@ def _parse_durable_kanban_approval_args(
         return None, None
     reason = " ".join(tokens[1:]).strip() if allow_reason else ""
     return request_id, (reason[:280].strip() or None)
+
+
+def _uses_reserved_kanban_approval_namespace(raw_args: str) -> bool:
+    """Return whether the first argument claims the durable ``ka_`` lane."""
+
+    tokens = raw_args.strip().split()
+    return bool(tokens) and tokens[0].casefold().startswith("ka_")
 
 
 def _durable_approval_route_matches(record: Any, route: dict[str, str]) -> bool:
@@ -176,6 +181,10 @@ def _decide_durable_kanban_approval(
                 thread_id=record.get("thread_id"),
                 user_id=record.get("user_id"),
                 notifier_profile=record.get("notifier_profile"),
+                decided_by=(
+                    f"{route.get('platform')}:"
+                    f"{route.get('user_id') or route.get('chat_id')}"
+                ),
                 reason=reason,
             )
             expected_status = "approved" if decision == "approve" else "denied"
@@ -608,7 +617,7 @@ class GatewaySlashCommandsMixin:
             action = tok
             break
 
-        is_create = action == "create"
+        is_create = action in {"create", "swarm"}
 
         trusted_gateway_origin = None
         if is_create:
@@ -648,7 +657,10 @@ class GatewaySlashCommandsMixin:
         # human success line only to append the UX confirmation; --json stays
         # machine-readable while retaining the same durable authorization.
         if is_create and trusted_gateway_origin and output:
-            m = re.search(r"Created\s+(t_[0-9a-f]+)\b", output)
+            m = re.search(
+                r"(?:Created\s+|Swarm root:\s*)(t_[0-9a-f]+)\b",
+                output,
+            )
             if m:
                 task_id = m.group(1)
                 output = (
@@ -4723,6 +4735,7 @@ class GatewaySlashCommandsMixin:
             /approve all session  — approve all + remember for session
             /approve always       — approve oldest + remember permanently
             /approve all always   — approve all + remember permanently
+            /approve ka_<id>      — approve one routed Kanban request once
         """
         source = event.source
         session_key = self._session_key_for_source(source)
@@ -4731,15 +4744,12 @@ class GatewaySlashCommandsMixin:
             resolve_gateway_approval, has_blocking_approval,
         )
 
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.approval_expired")
-            request_id, _ = _parse_durable_kanban_approval_args(
-                event.get_command_args(),
-            )
-            if not request_id:
-                return t("gateway.approve.no_pending")
+        # An explicit durable id names one exact request and must never be
+        # reinterpreted as a scope word for an unrelated process-local queue.
+        # Parse it first; bare/local syntax falls through to the legacy queue.
+        raw_args = event.get_command_args()
+        request_id, _ = _parse_durable_kanban_approval_args(raw_args)
+        if request_id:
             route = {
                 "platform": str(
                     getattr(source.platform, "value", source.platform) or ""
@@ -4777,9 +4787,25 @@ class GatewaySlashCommandsMixin:
                 f"No pending Kanban approval request `{request_id}` was found "
                 "for this chat."
             )
+        if _uses_reserved_kanban_approval_namespace(raw_args):
+            return (
+                "Invalid Kanban approval request id or syntax. Copy the exact "
+                "`/approve ka_…` command from the approval notice."
+            )
+
+        if not has_blocking_approval(session_key):
+            if session_key in self._pending_approvals:
+                self._pending_approvals.pop(session_key)
+                return t("gateway.approval_expired")
+            return t("gateway.approve.no_pending")
 
         # Parse args: support "all", "all session", "all always", "session", "always"
-        args = event.get_command_args().strip().lower().split()
+        args = raw_args.strip().lower().split()
+        if any(arg not in _LOCAL_APPROVAL_SCOPE_WORDS for arg in args):
+            return (
+                "Invalid /approve syntax. Use `/approve`, `/approve all`, "
+                "`/approve session`, or the exact Kanban request id."
+            )
         resolve_all = "all" in args
         remaining = [a for a in args if a != "all"]
 
@@ -4813,6 +4839,9 @@ class GatewaySlashCommandsMixin:
         ``/deny <reason>`` (or ``/deny all <reason>``) attaches a one-line
         reason that is relayed back to the agent so it can adapt instead of
         only hearing "denied". Ported from qwibitai/nanoclaw#2832.
+
+        ``/deny ka_<id> [reason]`` denies one durable Kanban request. The
+        request must be routed to this exact platform/chat/thread/user/profile.
         """
         source = event.source
         session_key = self._session_key_for_source(source)
@@ -4821,15 +4850,14 @@ class GatewaySlashCommandsMixin:
             resolve_gateway_approval, has_blocking_approval,
         )
 
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.deny.stale")
-            request_id, durable_reason = _parse_durable_kanban_approval_args(
-                event.get_command_args(), allow_reason=True,
-            )
-            if not request_id:
-                return t("gateway.deny.no_pending")
+        # As with /approve, an explicit durable id takes precedence over an
+        # unrelated process-local approval queue. Strict id parsing preserves
+        # free-form local denial reasons.
+        raw_args = event.get_command_args()
+        request_id, durable_reason = _parse_durable_kanban_approval_args(
+            raw_args, allow_reason=True,
+        )
+        if request_id:
             route = {
                 "platform": str(
                     getattr(source.platform, "value", source.platform) or ""
@@ -4866,11 +4894,22 @@ class GatewaySlashCommandsMixin:
                 f"No pending Kanban approval request `{request_id}` was found "
                 "for this chat."
             )
+        if _uses_reserved_kanban_approval_namespace(raw_args):
+            return (
+                "Invalid Kanban approval request id or syntax. Copy the exact "
+                "`/deny ka_…` command from the approval notice."
+            )
+
+        if not has_blocking_approval(session_key):
+            if session_key in self._pending_approvals:
+                self._pending_approvals.pop(session_key)
+                return t("gateway.deny.stale")
+            return t("gateway.deny.no_pending")
 
         # Parse args: a leading "all" token denies every pending command;
         # anything after it (or the whole arg string when "all" is absent) is
         # captured verbatim as the optional deny reason relayed to the agent.
-        raw_args = event.get_command_args().strip()
+        raw_args = raw_args.strip()
         tokens = raw_args.split()
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
         if resolve_all:

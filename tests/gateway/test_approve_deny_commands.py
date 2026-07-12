@@ -20,6 +20,8 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
+DURABLE_REQUEST_ID = "ka_1234567890abcdef12345678"
+
 
 def _make_source() -> SessionSource:
     return SessionSource(
@@ -273,6 +275,25 @@ class TestApproveCommand:
         assert session_key not in runner._pending_approvals
 
     @pytest.mark.asyncio
+    async def test_explicit_durable_id_bypasses_stale_old_style_marker(self):
+        runner = _make_runner()
+        runner._active_profile_name = lambda: "default"
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        runner._pending_approvals[session_key] = {"command": "stale"}
+
+        with patch(
+            "gateway.slash_commands._decide_durable_kanban_approval",
+            return_value="approved",
+        ) as decide:
+            result = await runner._handle_approve_command(
+                _make_event(f"/approve {DURABLE_REQUEST_ID}")
+            )
+
+        assert "approved" in result.lower()
+        decide.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_approve_explicit_durable_kanban_request(self):
         runner = _make_runner()
         runner._active_profile_name = lambda: "default"
@@ -282,13 +303,13 @@ class TestApproveCommand:
             return_value="approved",
         ) as decide:
             result = await runner._handle_approve_command(
-                _make_event("/approve kapr_12345678")
+                _make_event(f"/approve {DURABLE_REQUEST_ID}")
             )
 
         assert "approved" in result.lower()
         assert "once" in result.lower()
         decide.assert_called_once_with(
-            request_id="kapr_12345678",
+            request_id=DURABLE_REQUEST_ID,
             decision="approve",
             route={
                 "platform": "telegram",
@@ -300,7 +321,7 @@ class TestApproveCommand:
         )
 
     @pytest.mark.asyncio
-    async def test_local_approval_queue_precedes_durable_request_id(self):
+    async def test_explicit_durable_id_precedes_local_approval_queue(self):
         from tools.approval import _ApprovalEntry, _gateway_queues
 
         runner = _make_runner()
@@ -311,13 +332,41 @@ class TestApproveCommand:
 
         with patch(
             "gateway.slash_commands._decide_durable_kanban_approval",
+            return_value="approved",
         ) as durable_decide:
-            await runner._handle_approve_command(
-                _make_event("/approve kapr_12345678")
+            result = await runner._handle_approve_command(
+                _make_event(f"/approve {DURABLE_REQUEST_ID}")
             )
 
-        assert entry.result == "once"
-        durable_decide.assert_not_called()
+        assert "approved" in result.lower()
+        assert not entry.event.is_set()
+        durable_decide.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "args",
+        [
+            "ka_bad",
+            f"{DURABLE_REQUEST_ID} session",
+        ],
+    )
+    async def test_reserved_durable_approve_syntax_never_hits_local_queue(
+        self, args,
+    ):
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "local"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_approve_command(
+            _make_event(f"/approve {args}")
+        )
+
+        assert "invalid" in result.lower()
+        assert not entry.event.is_set()
 
     @pytest.mark.asyncio
     async def test_durable_approve_reports_expired_request(self):
@@ -329,7 +378,7 @@ class TestApproveCommand:
             return_value="expired",
         ):
             result = await runner._handle_approve_command(
-                _make_event("/approve kapr_12345678")
+                _make_event(f"/approve {DURABLE_REQUEST_ID}")
             )
 
         assert "no longer pending" in result.lower()
@@ -350,7 +399,7 @@ class TestApproveCommand:
             "notifier_profile": "default",
         }
         record = {
-            "id": "ka_12345678",
+            "id": DURABLE_REQUEST_ID,
             "status": "pending",
             **route,
         }
@@ -362,7 +411,7 @@ class TestApproveCommand:
         )
 
         state = _decide_durable_kanban_approval(
-            request_id="ka_12345678",
+            request_id=DURABLE_REQUEST_ID,
             decision="approve",
             route=route,
         )
@@ -383,14 +432,13 @@ class TestApproveCommand:
                 conn,
                 title="routed approval",
                 assignee="worker",
-            )
-            kb.add_notify_sub(
-                conn,
-                task_id=task_id,
-                platform="telegram",
-                chat_id="c1",
-                user_id="u1",
-                notifier_profile="default",
+                _trusted_gateway_origin={
+                    "platform": "telegram",
+                    "chat_id": "c1",
+                    "thread_id": "",
+                    "user_id": "u1",
+                    "notifier_profile": "default",
+                },
             )
             claimed = kb.claim_task(conn, task_id, claimer="test:gateway")
             assert claimed is not None
@@ -419,7 +467,9 @@ class TestApproveCommand:
         assert "approved" in result.lower()
         conn = kb.connect()
         try:
-            assert kb.get_task_approval(conn, request["id"])["status"] == "approved"
+            record = kb.get_task_approval(conn, request["id"])
+            assert record["status"] == "approved"
+            assert record["decided_by"] == "telegram:u1"
             assert kb.get_task(conn, task_id).status == "ready"
         finally:
             conn.close()
@@ -496,6 +546,41 @@ class TestDenyCommand:
         assert "that path is still in use" in result
 
     @pytest.mark.asyncio
+    async def test_long_free_form_deny_reason_stays_on_local_queue(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_deny_command(
+            _make_event("/deny dangerous command")
+        )
+
+        assert "denied" in result.lower()
+        assert entry.event.is_set()
+        assert entry.reason == "dangerous command"
+
+    @pytest.mark.asyncio
+    async def test_reserved_durable_deny_syntax_never_hits_local_queue(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_deny_command(
+            _make_event("/deny ka_bad changed target")
+        )
+
+        assert "invalid" in result.lower()
+        assert not entry.event.is_set()
+
+    @pytest.mark.asyncio
     async def test_deny_all_with_reason(self):
         """/deny all <reason> denies everything and relays one reason."""
         from tools.approval import _ApprovalEntry, _gateway_queues
@@ -541,13 +626,13 @@ class TestDenyCommand:
             return_value="denied",
         ) as decide:
             result = await runner._handle_deny_command(
-                _make_event("/deny kapr_12345678 wrong directory")
+                _make_event(f"/deny {DURABLE_REQUEST_ID} wrong directory")
             )
 
         assert "denied" in result.lower()
         assert "wrong directory" in result
         decide.assert_called_once_with(
-            request_id="kapr_12345678",
+            request_id=DURABLE_REQUEST_ID,
             decision="deny",
             route={
                 "platform": "telegram",
@@ -557,6 +642,40 @@ class TestDenyCommand:
                 "notifier_profile": "default",
             },
             reason="wrong directory",
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_durable_id_precedes_local_deny_queue(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        runner._active_profile_name = lambda: "default"
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "local"})
+        _gateway_queues[session_key] = [entry]
+
+        with patch(
+            "gateway.slash_commands._decide_durable_kanban_approval",
+            return_value="denied",
+        ) as durable_decide:
+            result = await runner._handle_deny_command(
+                _make_event(f"/deny {DURABLE_REQUEST_ID} changed target")
+            )
+
+        assert "denied" in result.lower()
+        assert not entry.event.is_set()
+        durable_decide.assert_called_once_with(
+            request_id=DURABLE_REQUEST_ID,
+            decision="deny",
+            route={
+                "platform": "telegram",
+                "chat_id": "c1",
+                "thread_id": "",
+                "user_id": "u1",
+                "notifier_profile": "default",
+            },
+            reason="changed target",
         )
 
 

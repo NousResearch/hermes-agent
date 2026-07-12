@@ -42,6 +42,42 @@ def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path)
         conn.close()
 
 
+def test_gateway_origin_is_bound_to_every_swarm_node(tmp_path):
+    conn = kb.connect(tmp_path / "kanban.db")
+    route = {
+        "platform": "telegram",
+        "chat_id": "chat-1",
+        "thread_id": "thread-1",
+        "user_id": "user-1",
+        "notifier_profile": "secondary",
+    }
+    try:
+        created = create_swarm(
+            conn,
+            goal="Route every node.",
+            workers=[
+                SwarmWorkerSpec(profile="researcher", title="Research", body="")
+            ],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+            _trusted_gateway_origin=route,
+        )
+
+        task_ids = [
+            created.root_id,
+            *created.worker_ids,
+            created.verifier_id,
+            created.synthesizer_id,
+        ]
+        for task_id in task_ids:
+            stored = kb.get_task_approval_route(conn, task_id)
+            assert stored is not None
+            assert stored["task_id"] == task_id
+            assert {key: stored[key] for key in route} == route
+    finally:
+        conn.close()
+
+
 def test_swarm_blackboard_merges_structured_updates(tmp_path):
     conn = kb.connect(tmp_path / "kanban.db")
     try:

@@ -769,6 +769,47 @@ async def test_gateway_create_without_user_principal_stays_unrouted(kanban_home)
 
 
 @pytest.mark.asyncio
+async def test_gateway_swarm_binds_origin_to_every_node(kanban_home):
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="swarm-chat",
+        thread_id="swarm-thread",
+        user_id="swarm-user",
+        profile="secondary",
+    )
+    event = SimpleNamespace(
+        text=(
+            '/kanban swarm "Investigate" --worker researcher:Research '
+            "--verifier reviewer --synthesizer writer"
+        ),
+        source=source,
+    )
+
+    out = await GatewayRunner._handle_kanban_command(runner, event)
+
+    assert "Swarm root:" in out
+    assert "subscribed" in out.lower()
+    expected = {
+        "platform": "telegram",
+        "chat_id": "swarm-chat",
+        "thread_id": "swarm-thread",
+        "user_id": "swarm-user",
+        "notifier_profile": "secondary",
+    }
+    with kb.connect() as conn:
+        tasks = kb.list_tasks(conn)
+        assert len(tasks) == 4
+        for task in tasks:
+            route = kb.get_task_approval_route(conn, task.id)
+            assert route is not None
+            assert {key: route[key] for key in expected} == expected
+
+
+@pytest.mark.asyncio
 async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, monkeypatch):
     """When a completed event carries ``artifacts`` in its payload, the
     notifier uploads each file to the subscribed chat as a native

@@ -208,7 +208,8 @@ def _nonnegative_integer(value: Any, label: str) -> int:
 
 
 def _require_root_linux() -> None:
-    if os.geteuid() != 0:
+    getter = getattr(os, "geteuid", None)
+    if not callable(getter) or int(getter()) != 0:
         raise PermissionError("canonical_writer_config_collector_requires_uid_0")
     if sys.platform != "linux":
         raise RuntimeError("canonical_writer_config_collector_requires_linux")

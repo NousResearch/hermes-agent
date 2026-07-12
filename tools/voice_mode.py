@@ -1175,8 +1175,8 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append(
             "STT provider: MISSING (uv pip install faster-whisper — "
             "`pip install faster-whisper` also works if pip is on PATH, "
-            "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY / XAI_API_KEY / "
-            "ELEVENLABS_API_KEY)"
+            "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY / MISTRAL_API_KEY / "
+            "XAI_API_KEY / ELEVENLABS_API_KEY)"
         )
 
     for warning in env_check["warnings"]:

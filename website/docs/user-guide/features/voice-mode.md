@@ -471,7 +471,7 @@ DISCORD_ALLOWED_USERS=...
 | **Mistral** | `voxtral-mini-latest` | Fast | Good | Paid | Yes |
 | **xAI** | `grok-stt` | Fast | Good | Paid | Yes |
 
-Provider priority (automatic fallback): **local** > **groq** > **elevenlabs** > **openai** > **mistral** > **xAI**
+Provider priority (automatic fallback): **local** > **groq** > **openai** > **mistral** > **xAI** > **elevenlabs**
 
 ElevenLabs Scribe supports multi-key quota fallback: set `ELEVENLABS_API_KEY_2`, `_3`, ... in `.env` to rotate to the next key when the primary returns 401/402/429.
 

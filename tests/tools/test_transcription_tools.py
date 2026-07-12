@@ -1467,9 +1467,10 @@ class TestGetProviderElevenLabs:
             from tools.transcription_tools import _get_provider
             assert _get_provider({}) == "groq"
 
-    def test_auto_detect_prefers_elevenlabs_over_openai(self, monkeypatch):
-        # Among paid providers, Scribe v2's accuracy beats whisper-1, so
-        # auto-detect prefers it when both keys are configured.
+    def test_auto_detect_prefers_openai_over_elevenlabs(self, monkeypatch):
+        # ElevenLabs stays last in the auto-detect chain (matching the
+        # established order on main); it wins only when nothing else is
+        # configured.
         monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
         monkeypatch.setenv("OPENAI_API_KEY", "openai-test")
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
@@ -1477,27 +1478,23 @@ class TestGetProviderElevenLabs:
              patch("tools.transcription_tools._HAS_OPENAI", True), \
              patch("tools.transcription_tools._has_openai_audio_backend", return_value=True):
             from tools.transcription_tools import _get_provider
-            assert _get_provider({}) == "elevenlabs"
+            assert _get_provider({}) == "openai"
 
-    def test_auto_detect_prefers_elevenlabs_over_mistral(self, monkeypatch):
-        monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
-        monkeypatch.setenv("MISTRAL_API_KEY", "ms-test")
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._has_local_command", return_value=False), \
-             patch("tools.transcription_tools._HAS_OPENAI", False), \
-             patch("tools.transcription_tools._HAS_MISTRAL", True):
-            from tools.transcription_tools import _get_provider
-            assert _get_provider({}) == "elevenlabs"
-
-    def test_auto_detect_prefers_elevenlabs_over_xai(self, monkeypatch):
-        monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
-        monkeypatch.setenv("XAI_API_KEY", "xai-test")
+    def test_auto_detect_uses_elevenlabs_with_fallback_key_only(self, monkeypatch):
+        # A fallback-only setup (no primary ELEVENLABS_API_KEY) still
+        # counts as configured credentials for auto-detection.
+        monkeypatch.setenv("ELEVENLABS_API_KEY_2", "sk-fallback")
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._has_local_command", return_value=False), \
              patch("tools.transcription_tools._HAS_OPENAI", False), \
              patch("tools.transcription_tools._HAS_MISTRAL", False):
             from tools.transcription_tools import _get_provider
             assert _get_provider({}) == "elevenlabs"
+
+    def test_explicit_elevenlabs_with_fallback_key_only(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY_2", "sk-fallback")
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "elevenlabs"}) == "elevenlabs"
 
 
 # ============================================================================

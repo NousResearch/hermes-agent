@@ -2,7 +2,7 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with seven providers:
+Provides speech-to-text transcription with six providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
@@ -780,11 +780,7 @@ def _get_provider(stt_config: dict) -> str:
 
     When ``stt.provider`` is explicitly set in config, that choice is
     honoured — no silent cloud fallback.  When no provider is configured,
-    auto-detect tries: local > groq > elevenlabs > openai > mistral > xai.  Free
-    providers (local, groq) come first; among paid providers, Scribe v2
-    is preferred over whisper-1 on accuracy and language coverage.
-    ``mistral`` is intentionally skipped while ``mistralai`` is quarantined
-    on PyPI (malicious 2.4.6 release on 2026-05-12).
+    auto-detect tries: local > groq > openai > mistral > xai > elevenlabs.
     """
     if not is_stt_enabled(stt_config):
         return "none"
@@ -865,12 +861,8 @@ def _get_provider(stt_config: dict) -> str:
 
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider) -------------------------------
-    # Priority: local > groq > elevenlabs > openai > mistral > xai.
-    # Free providers (local, groq) still beat paid ones; among paid, Scribe
-    # v2's accuracy and 99-language coverage make it the better default than
-    # whisper-1 when both keys happen to be present.  Anyone with a strong
-    # opinion sets ``stt.provider`` explicitly.
+    # --- Auto-detect (no explicit provider): local > groq > openai > mistral
+    # --- > xai > elevenlabs
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -882,9 +874,6 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
-    if _has_elevenlabs_credentials():
-        logger.info("No local STT available, using ElevenLabs Scribe API")
-        return "elevenlabs"
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
@@ -902,6 +891,9 @@ def _get_provider(stt_config: dict) -> str:
             return "xai"
     except Exception:
         pass
+    if _has_elevenlabs_credentials():
+        logger.info("No local STT available, using ElevenLabs Scribe STT API")
+        return "elevenlabs"
     return "none"
 
 
@@ -1570,7 +1562,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Provider: ElevenLabs (Scribe API)
+# Provider: ElevenLabs (Scribe STT API)
 # ---------------------------------------------------------------------------
 
 
@@ -1642,17 +1634,17 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
         )
 
     stt_config = _load_stt_config()
-    el_config = stt_config.get("elevenlabs") or {}
+    elevenlabs_config = stt_config.get("elevenlabs") or {}
     base_url = str(
-        el_config.get("base_url")
+        elevenlabs_config.get("base_url")
         or get_env_value("ELEVENLABS_STT_BASE_URL")
         or ELEVENLABS_STT_BASE_URL
     ).strip().rstrip("/")
-    language_code = str(el_config.get("language_code") or "").strip()
-    diarize = is_truthy_value(el_config.get("diarize", False))
-    tag_audio_events = is_truthy_value(el_config.get("tag_audio_events", False))
+    language_code = str(elevenlabs_config.get("language_code") or "").strip()
+    diarize = is_truthy_value(elevenlabs_config.get("diarize", False))
+    tag_audio_events = is_truthy_value(elevenlabs_config.get("tag_audio_events", False))
     timestamps_granularity = str(
-        el_config.get("timestamps_granularity") or ""
+        elevenlabs_config.get("timestamps_granularity") or ""
     ).strip().lower()
 
     try:
@@ -1664,13 +1656,13 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
             "error": "requests package not installed",
         }
 
-    form_data: Dict[str, str] = {"model_id": model_name}
+    form_data: Dict[str, str] = {
+        "model_id": model_name,
+        "tag_audio_events": "true" if tag_audio_events else "false",
+        "diarize": "true" if diarize else "false",
+    }
     if language_code:
         form_data["language_code"] = language_code
-    if diarize:
-        form_data["diarize"] = "true"
-    if tag_audio_events:
-        form_data["tag_audio_events"] = "true"
     if timestamps_granularity in {"none", "word", "character"}:
         form_data["timestamps_granularity"] = timestamps_granularity
 
@@ -1710,7 +1702,7 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
                 last_error = "ElevenLabs STT returned empty transcript"
                 break
             logger.info(
-                "Transcribed %s via ElevenLabs (%s, lang=%s, %d chars, %s)",
+                "Transcribed %s via ElevenLabs Scribe (%s, lang=%s, %d chars, %s)",
                 Path(file_path).name,
                 model_name,
                 result.get("language_code") or language_code or "auto",
@@ -1759,7 +1751,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     Provider priority:
       1. User config (``stt.provider`` in config.yaml)
-      2. Auto-detect: local > groq > elevenlabs > openai > mistral > xai
+      2. Auto-detect: local > Groq > OpenAI > Mistral > xAI > ElevenLabs
 
     Args:
         file_path: Absolute path to the audio file to transcribe.

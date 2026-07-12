@@ -500,12 +500,13 @@ class TestCheckVoiceRequirements:
         assert result["stt_available"] is False
         assert "STT provider: MISSING" in result["details"]
         # The MISSING hint should mention every supported provider's env var
-        # so users with xai/elevenlabs keys know to set them too.  Mistral is
-        # intentionally omitted while `mistralai` is quarantined on PyPI
-        # (malicious 2.4.6 release on 2026-05-12) — restore once available.
+        # so users with mistral/xai/elevenlabs keys know to set them too.
+        # (Mistral returned to the hint once the quarantined `mistralai`
+        # package was restored on PyPI as 2.4.8.)
         details = result["details"]
         assert "ELEVENLABS_API_KEY" in details
         assert "XAI_API_KEY" in details
+        assert "MISTRAL_API_KEY" in details
 
     @pytest.mark.parametrize(
         "provider,label",

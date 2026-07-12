@@ -1013,7 +1013,7 @@ stt:
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
   # elevenlabs:
-  #   model: "scribe_v2"             # scribe_v2 | scribe_v1 | scribe_v1_experimental
+  #   model_id: "scribe_v2"          # scribe_v2 | scribe_v1 | scribe_v1_experimental
   #   # language_code: "en"          # ISO code; omit for auto-detect (99 langs)
   #   # diarize: false                # speaker labels in `words[]`
   #   # tag_audio_events: false       # mark laughter/applause/etc.

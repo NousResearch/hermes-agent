@@ -1156,6 +1156,7 @@ export function ChatSidebar({
                 pinned={false}
                 rootClassName="min-h-32 flex-1 overflow-hidden p-0"
                 sessions={searchResults}
+                showOriginContext
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}

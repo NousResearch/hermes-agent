@@ -1904,9 +1904,10 @@ class SessionStore:
                     # Stale routing self-heal (#54878): the in-memory entry
                     # points at a session that has ALREADY been ended in
                     # state.db.  Drop it and fall through to recovery/create.
-                    # Recovery finder reopens ``agent_close`` rows (preserving
-                    # the transcript) but returns None for other end_reasons
-                    # (e.g. /new), starting a fresh session.
+                    # Recovery finder reopens ``agent_close`` and mistaken
+                    # ``ws_orphan_reap`` rows (preserving the transcript) but
+                    # returns None for other end_reasons (e.g. /new), starting
+                    # a fresh session.
                     logger.warning(
                         "gateway.session: routing key %r -> %s is ended in "
                         "state.db but still live in sessions.json; dropping "

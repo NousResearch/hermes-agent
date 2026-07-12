@@ -8163,6 +8163,16 @@ def set_config_value(key: str, value: str):
         value = int(value)
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
+    else:
+        # Try JSON parse for list/dict values (issue #60551)
+        stripped = value.strip()
+        if stripped.startswith(('{', '[')):
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, (dict, list)):
+                    value = parsed
+            except (json.JSONDecodeError, ValueError):
+                pass  # Keep original string value
 
     _set_nested(user_config, key, value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),

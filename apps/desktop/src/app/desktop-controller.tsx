@@ -17,6 +17,7 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { restoreFallbackNotices } from '../lib/fallback-notices'
 import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
@@ -506,7 +507,7 @@ export function DesktopController() {
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
           const latest = await getSessionMessages(storedSessionId, storedProfile)
-          const messages = toChatMessages(latest.messages)
+          const messages = restoreFallbackNotices(storedSessionId, toChatMessages(latest.messages))
           updateSessionState(
             runtimeSessionId,
             state => ({
@@ -568,7 +569,7 @@ export function DesktopController() {
       }
 
       messagingTranscriptSignatureRef.current.set(signatureKey, sig)
-      const messages = toChatMessages(latest.messages)
+      const messages = restoreFallbackNotices(storedSessionId, toChatMessages(latest.messages))
 
       updateSessionState(
         runtimeSessionId,

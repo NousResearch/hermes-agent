@@ -161,8 +161,51 @@ def build_turn_context(
     # fallback boundary before any restore or provider selection this turn.
     agent._refresh_fallback_policy()
 
+    def _fallback_entry_key(entry):
+        return (
+            str((entry or {}).get("provider") or "").strip().lower(),
+            str((entry or {}).get("model") or "").strip().lower(),
+            str((entry or {}).get("base_url") or "").strip().rstrip("/").lower(),
+        )
+
+    # An auth fallback selected during construction becomes the live runtime
+    # before the first turn. Config edits must still revoke that permission:
+    # never send a request to a route that ``off``/``local-only`` or a chain
+    # deletion removed after construction.
+    init_fallback_entry = getattr(agent, "_init_fallback_entry", None)
+    if init_fallback_entry is not None and not any(
+        _fallback_entry_key(candidate) == _fallback_entry_key(init_fallback_entry)
+        for candidate in (getattr(agent, "_fallback_chain", None) or [])
+    ):
+        agent._pending_fallback_notice = None
+        policy = getattr(agent, "_fallback_policy", "off")
+        message = (
+            f"❌ Fallback policy {policy}: the init-time route "
+            f"{init_fallback_entry.get('model')} via "
+            f"{init_fallback_entry.get('provider')} is no longer eligible after "
+            "the fallback configuration changed; no model request was sent."
+        )
+        agent._emit_fallback_status(message)
+        agent._fallback_terminal_status_emitted = True
+        raise RuntimeError(message)
+
+    # Init/auth fallback may happen before a gateway attaches its status
+    # callback. Surface that queued, non-terminal decision exactly once now,
+    # before the first request to the selected provider.
+    agent._emit_pending_fallback_notice()
+
     # Restore the primary runtime if the previous turn activated fallback.
     agent._restore_primary_runtime()
+    if getattr(agent, "_fallback_restore_required", False):
+        policy = getattr(agent, "_fallback_policy", "off")
+        message = (
+            f"❌ Fallback policy {policy}: the active fallback route is no "
+            "longer eligible and the primary runtime could not be restored; "
+            "no model request was sent."
+        )
+        agent._emit_fallback_status(message)
+        agent._fallback_terminal_status_emitted = True
+        raise RuntimeError(message)
 
     # Tell auxiliary_client what the restored live main provider/model are for
     # this turn. Doing this before restoration leaked the previous turn's

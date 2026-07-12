@@ -14,6 +14,7 @@ loaded) so this module never imports ``cli`` at import time -> no import cycle.
 
 from __future__ import annotations
 
+import os
 import sys
 
 from rich.markup import escape as _escape
@@ -46,32 +47,106 @@ class CLIAgentSetupMixin:
         except Exception as exc:
             _primary_exc = exc
 
+        if runtime is not None and _primary_exc is None:
+            _active_init_fallback = getattr(
+                self, "_initial_fallback_entry", None
+            )
+            if isinstance(_active_init_fallback, dict):
+                _active_provider = str(
+                    _active_init_fallback.get("provider") or ""
+                ).strip().lower()
+                _active_model = str(
+                    _active_init_fallback.get("model") or ""
+                ).strip()
+                if (
+                    str(self.requested_provider or "").strip().lower()
+                    != _active_provider
+                    or str(self.model or "").strip() != _active_model
+                ):
+                    self._initial_fallback_entry = None
+                    self._initial_fallback_decision = None
+
         # Primary provider auth failed — try fallback providers before giving up.
+        _fallback_resolution_note = ""
         if runtime is None and _primary_exc is not None:
             from hermes_cli.auth import AuthError
             if isinstance(_primary_exc, AuthError):
-                _fb_chain = self._fallback_model if isinstance(self._fallback_model, list) else []
+                try:
+                    from hermes_cli.config import load_config_readonly
+                    from hermes_cli.fallback_config import (
+                        filter_fallback_chain_for_policy,
+                        get_configured_fallback_chain,
+                        get_fallback_policy,
+                    )
+
+                    _fb_config = load_config_readonly()
+                    _fb_policy = get_fallback_policy(_fb_config)
+                    self._fallback_model = get_configured_fallback_chain(_fb_config)
+                    _fb_chain = filter_fallback_chain_for_policy(
+                        self._fallback_model,
+                        _fb_config,
+                    )
+                except Exception:
+                    # Auth fallback is a routing decision. If its policy cannot
+                    # be read, fail closed instead of silently widening it.
+                    _fb_policy = "off"
+                    _fb_chain = []
                 for _fb in _fb_chain:
                     _fb_provider = (_fb.get("provider") or "").strip().lower()
                     _fb_model = (_fb.get("model") or "").strip()
                     if not _fb_provider or not _fb_model:
                         continue
                     try:
-                        runtime = resolve_runtime_provider(requested=_fb_provider)
+                        _fb_runtime_kwargs = {
+                            "requested": _fb_provider,
+                            "target_model": _fb_model,
+                        }
+                        if _fb.get("base_url"):
+                            _fb_runtime_kwargs["explicit_base_url"] = _fb["base_url"]
+                        _fb_key = str(_fb.get("api_key") or "").strip()
+                        if not _fb_key:
+                            _fb_key_env = str(
+                                _fb.get("key_env") or _fb.get("api_key_env") or ""
+                            ).strip()
+                            if _fb_key_env:
+                                _fb_key = os.getenv(_fb_key_env, "").strip()
+                        if _fb_key:
+                            _fb_runtime_kwargs["explicit_api_key"] = _fb_key
+                        runtime = resolve_runtime_provider(**_fb_runtime_kwargs)
                         logger.warning(
-                            "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
-                            _primary_exc, _fb_provider, _fb_model,
+                            "Primary provider auth failed (%s). Fallback policy %s selected %s/%s",
+                            _primary_exc, _fb_policy, _fb_provider, _fb_model,
                         )
-                        _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
+                        _fallback_decision = (
+                            f"🔄 Fallback policy {_fb_policy}: primary provider could not initialize "
+                            f"(reason: {_primary_exc}); switching to {_fb_model} via {_fb_provider}."
+                        )
+                        _cprint(_fallback_decision)
+                        self._initial_fallback_entry = dict(_fb)
+                        self._initial_fallback_decision = _fallback_decision
                         self.requested_provider = _fb_provider
                         self.model = _fb_model
                         _primary_exc = None
                         break
                     except Exception:
                         continue
+                if runtime is None:
+                    if _fb_policy == "off":
+                        _fallback_resolution_note = (
+                            "\nFallback policy off: no backup provider was attempted."
+                        )
+                    elif _fb_policy == "local-only":
+                        _fallback_resolution_note = (
+                            "\nFallback policy local-only: no usable local backup route remained."
+                        )
+                    else:
+                        _fallback_resolution_note = (
+                            "\nFallback policy any: no usable configured backup route remained."
+                        )
 
         if runtime is None:
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
+            message += _fallback_resolution_note
             ChatConsole().print(f"[bold red]{message}[/]")
             return False
 
@@ -375,6 +450,13 @@ class CLIAgentSetupMixin:
                 reasoning_callback=self._current_reasoning_callback(),
 
                 fallback_model=self._fallback_model,
+                fallback_chain_from_config=True,
+                # Classic CLI already printed the decision during credential
+                # resolution. Pass route identity (for live policy revocation)
+                # without queueing a duplicate status line on turn preflight.
+                initial_fallback_entry=getattr(
+                    self, "_initial_fallback_entry", None
+                ),
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,

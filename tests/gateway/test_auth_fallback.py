@@ -23,9 +23,11 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
 
         call_count = {"n": 0}
+        calls = []
 
         def _mock_resolve(**kwargs):
             call_count["n"] += 1
+            calls.append(kwargs)
             # First call = primary path (gateway reads model.provider from
             # config.yaml internally; we simulate the auth failure here).
             # Second call = fallback path with explicit_api_key + explicit_base_url
@@ -51,8 +53,17 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
 
         assert result["provider"] == "openrouter"
         assert result["api_key"] == "fallback-key"
+        assert result["initial_fallback_entry"] == {
+            "provider": "openrouter",
+            "model": "meta-llama/llama-4-maverick",
+        }
+        assert "Codex token refresh failed" in result["initial_fallback_decision"]
+        assert "switching to meta-llama/llama-4-maverick via openrouter" in result[
+            "initial_fallback_decision"
+        ]
         # Should have been called at least twice (primary + fallback)
         assert call_count["n"] >= 2
+        assert calls[1]["target_model"] == "meta-llama/llama-4-maverick"
 
     def test_auth_error_no_fallback_raises(self, tmp_path, monkeypatch):
         """When primary fails and no fallback configured, RuntimeError is raised."""
@@ -68,8 +79,11 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             side_effect=AuthError("token expired"),
         ):
             from gateway.run import _resolve_runtime_agent_kwargs
-            with pytest.raises(RuntimeError):
+            with pytest.raises(RuntimeError) as exc_info:
                 _resolve_runtime_agent_kwargs()
+
+        assert "Fallback policy any" in str(exc_info.value)
+        assert "no usable configured backup route remained" in str(exc_info.value)
 
     def test_legacy_fallback_is_appended_after_fallback_providers(self, tmp_path, monkeypatch):
         """When both keys exist, the legacy entry still participates in resolution."""

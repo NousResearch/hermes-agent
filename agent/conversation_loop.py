@@ -967,7 +967,6 @@ def run_conversation(
         request_pressure_tokens = estimate_request_tokens_rough(
             api_messages, tools=agent.tools or None
         )
-
         _runtime_context_error = _ollama_context_limit_error(
             agent, request_pressure_tokens
         )
@@ -1870,12 +1869,7 @@ def run_conversation(
                             _cf_terminated
                             and agent._fallback_index < len(agent._fallback_chain)
                         ):
-                            agent._vprint(
-                                f"{agent.log_prefix}🛡️  Content filter terminated "
-                                f"stream — activating fallback provider...",
-                                force=True,
-                            )
-                            agent._emit_status(
+                            agent._buffer_status(
                                 "Content filter terminated stream; switching to fallback..."
                             )
                             if agent._try_activate_fallback(
@@ -5023,17 +5017,12 @@ def run_conversation(
                             agent.provider,
                         )
                         agent._buffer_status(
-                            "⚠️ Model returning empty responses — "
-                            "switching to fallback provider..."
+                            "⚠️ Model returned empty responses after retry exhaustion."
                         )
                         if agent._try_activate_fallback("empty response"):
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)
                             agent._empty_content_retries = 0
-                            agent._buffer_status(
-                                f"↻ Switched to fallback: {agent.model} "
-                                f"({agent.provider})"
-                            )
                             logger.info(
                                 "Fallback activated after empty responses: "
                                 "now using %s on %s",
@@ -5092,11 +5081,9 @@ def run_conversation(
                 # Reset retry counter/signature on successful content
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
-                # Successful content reached — surface the one-shot fallback
-                # switch notice (if a fallback activated this turn) before
-                # dropping the noisy retry buffer, so a provider/model switch
-                # stays visible even when the fallback succeeds.
-                agent._emit_pending_fallback_notice()
+                # Successful content reached. The fallback decision, if any,
+                # was already emitted before the fallback request; only noisy
+                # retry chatter remains buffered here.
                 agent._clear_status_buffer()
 
                 from agent.agent_runtime_helpers import (

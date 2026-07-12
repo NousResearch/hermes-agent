@@ -134,7 +134,7 @@ Prompt caches are keyed to the model (and on most providers, the account) servin
 :::
 
 :::info Per-Turn, Not Per-Session
-Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
+Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a turn, Hermes walks the eligible ordered chain and attempts each route at most once. Every actual switch is reported once as non-terminal status; only policy rejection or exhaustion is terminal. This bounds failover loops while still letting a later configured backup recover the turn.
 :::
 
 ### Examples

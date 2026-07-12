@@ -1865,10 +1865,31 @@ def _resolve_runtime_agent_kwargs() -> dict:
             logger.warning("Primary provider rate-limited (429): %s — trying fallback", auth_exc)
         else:
             logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
-        fb_config = _try_resolve_fallback_provider()
+        fb_config = _try_resolve_fallback_provider(primary_error=auth_exc)
         if fb_config is not None:
             return fb_config
-        raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+        try:
+            import yaml as _y
+            from hermes_cli.fallback_config import get_fallback_policy
+
+            cfg_path = _hermes_home / "config.yaml"
+            with open(cfg_path, encoding="utf-8") as _f:
+                policy = get_fallback_policy(_y.safe_load(_f) or {})
+        except Exception:
+            policy = "off"
+        if policy == "off":
+            fallback_detail = "Fallback policy off: no backup provider was attempted."
+        elif policy == "local-only":
+            fallback_detail = (
+                "Fallback policy local-only: no usable local backup route remained."
+            )
+        else:
+            fallback_detail = (
+                "Fallback policy any: no usable configured backup route remained."
+            )
+        raise RuntimeError(
+            f"{format_runtime_provider_error(auth_exc)}\n{fallback_detail}"
+        ) from auth_exc
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
@@ -1942,7 +1963,9 @@ def _credential_pool_for_provider(provider: Optional[str]):
         return None
 
 
-def _try_resolve_fallback_provider() -> dict | None:
+def _try_resolve_fallback_provider(
+    *, primary_error: Exception | None = None,
+) -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
@@ -1966,6 +1989,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                         explicit_api_key = os.getenv(key_env, "").strip() or None
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"),
+                    target_model=entry.get("model"),
                     explicit_base_url=entry.get("base_url"),
                     explicit_api_key=explicit_api_key,
                 )
@@ -1978,7 +2002,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     entry.get("provider") or runtime.get("provider"),
                     entry.get("model"),
                 )
-                return {
+                resolved = {
                     "api_key": runtime.get("api_key"),
                     "base_url": runtime.get("base_url"),
                     "provider": runtime.get("provider"),
@@ -1988,6 +2012,29 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "credential_pool": runtime.get("credential_pool"),
                     "model": entry.get("model"),
                 }
+                if primary_error is not None:
+                    from hermes_cli.fallback_config import get_fallback_policy
+
+                    model_cfg = cfg.get("model")
+                    if isinstance(model_cfg, dict):
+                        primary_model = str(
+                            model_cfg.get("default") or model_cfg.get("model") or "configured model"
+                        )
+                        primary_provider = str(
+                            model_cfg.get("provider") or "primary provider"
+                        )
+                    else:
+                        primary_model = str(model_cfg or "configured model")
+                        primary_provider = "primary provider"
+                    policy = get_fallback_policy(cfg)
+                    resolved["initial_fallback_decision"] = (
+                        f"🔄 Fallback policy {policy}: {primary_model} via "
+                        f"{primary_provider} could not initialize (reason: "
+                        f"{primary_error}); switching to {entry.get('model')} "
+                        f"via {entry.get('provider')}."
+                    )
+                    resolved["initial_fallback_entry"] = dict(entry)
+                return resolved
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
                 continue
@@ -3907,6 +3954,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
+            "initial_fallback_decision": runtime_kwargs.get(
+                "initial_fallback_decision"
+            ),
+            "initial_fallback_entry": runtime_kwargs.get(
+                "initial_fallback_entry"
+            ),
         }
         route = {
             "model": model,
@@ -13386,6 +13439,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            fallback_decisions: List[str] = []
+
+            def _background_status_callback(event_type: str, message: str) -> None:
+                if event_type != "fallback":
+                    return
+                text = str(message or "").strip()
+                if text and text not in fallback_decisions:
+                    fallback_decisions.append(text)
+
+            async def _deliver_background_fallback_decisions() -> None:
+                if not fallback_decisions:
+                    return
+                try:
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content="\n".join(fallback_decisions),
+                        metadata=_thread_metadata,
+                    )
+                except Exception as status_exc:
+                    logger.warning(
+                        "Background task %s fallback status delivery failed: %s",
+                        task_id,
+                        status_exc,
+                    )
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -13434,6 +13511,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
+                    fallback_chain_from_config=True,
+                    status_callback=_background_status_callback,
                 )
                 try:
                     return agent.run_conversation(
@@ -13443,7 +13522,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 finally:
                     self._cleanup_agent_resources(agent)
 
-            result = await self._run_in_executor_with_context(run_sync)
+            try:
+                result = await self._run_in_executor_with_context(run_sync)
+            except Exception:
+                await _deliver_background_fallback_decisions()
+                raise
+            await _deliver_background_fallback_decisions()
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
@@ -18321,6 +18405,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
+                    fallback_chain_from_config=True,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

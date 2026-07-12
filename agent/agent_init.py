@@ -164,6 +164,33 @@ def _codex_gpt55_autoraise_notice_seen(autoraise: Dict[str, Any]) -> bool:
         return False
 
 
+def _capture_fallback_entries(raw) -> List[Dict[str, Any]]:
+    """Normalize a caller-supplied chain without consulting live policy."""
+    candidates = (
+        raw
+        if isinstance(raw, list)
+        else [raw]
+        if isinstance(raw, dict)
+        else []
+    )
+    captured: List[Dict[str, Any]] = []
+    for entry in candidates:
+        if not isinstance(entry, dict):
+            continue
+        provider_name = str(entry.get("provider") or "").strip()
+        model_name = str(entry.get("model") or "").strip()
+        if not provider_name or not model_name:
+            continue
+        normalized = dict(entry)
+        normalized["provider"] = provider_name
+        normalized["model"] = model_name
+        base_url_hint = str(entry.get("base_url") or "").strip().rstrip("/")
+        if base_url_hint:
+            normalized["base_url"] = base_url_hint
+        captured.append(normalized)
+    return captured
+
+
 def _record_codex_gpt55_autoraise_notice(autoraise: Dict[str, Any]) -> None:
     """Persist that the autoraise notice was shown for this profile/config state.
 
@@ -324,6 +351,9 @@ def init_agent(
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
     fallback_model: Dict[str, Any] = None,
+    fallback_chain_from_config: Optional[bool] = None,
+    initial_fallback_decision: str = None,
+    initial_fallback_entry: Dict[str, Any] = None,
     credential_pool=None,
     checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20,
@@ -381,6 +411,51 @@ def init_agent(
             remain skipped.
     """
     _install_safe_stdio()
+
+    # Resolve the fallback boundary before any provider client resolution.
+    # Several entry points pass an already-captured chain into AIAgent; without
+    # filtering here, the init-time auth fallback below could silently switch
+    # to a cloud route even when the live policy is ``off`` or ``local-only``.
+    _captured_fallback_chain = _capture_fallback_entries(fallback_model)
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.fallback_config import (
+            filter_fallback_chain_for_policy,
+            get_configured_fallback_chain,
+            get_fallback_policy,
+        )
+
+        _fallback_config = load_config_readonly()
+        _fallback_policy = get_fallback_policy(_fallback_config)
+        _eligible_fallback_chain = filter_fallback_chain_for_policy(
+            _captured_fallback_chain,
+            _fallback_config,
+        )
+        _config_fallback_chain = get_configured_fallback_chain(_fallback_config)
+        _fallback_chain_from_config = (
+            bool(fallback_chain_from_config)
+            if fallback_chain_from_config is not None
+            else (
+                isinstance(initial_fallback_entry, dict)
+                or (
+                    bool(_captured_fallback_chain)
+                    and _captured_fallback_chain == _config_fallback_chain
+                )
+            )
+        )
+    except Exception:
+        # A config read failure must never widen routing.
+        _fallback_config = {}
+        _fallback_policy = "off"
+        _eligible_fallback_chain = []
+        # Preserve the caller's ownership hint even while failing closed. A
+        # config-managed cached agent can then repopulate the chain on its first
+        # turn after a transient read failure, without requiring recreation.
+        _fallback_chain_from_config = (
+            bool(fallback_chain_from_config)
+            if fallback_chain_from_config is not None
+            else isinstance(initial_fallback_entry, dict)
+        )
 
     agent.model = model
     agent.max_iterations = max_iterations
@@ -550,6 +625,19 @@ def init_agent(
     agent.event_callback = event_callback
     agent.reaction_callback = reaction_callback
     agent.tool_gen_callback = tool_gen_callback
+    agent._fallback_policy = _fallback_policy
+    agent._pending_fallback_notice = (
+        str(initial_fallback_decision).strip()
+        if initial_fallback_decision
+        else None
+    )
+    agent._init_fallback_entry = (
+        dict(initial_fallback_entry)
+        if isinstance(initial_fallback_entry, dict)
+        else None
+    )
+    agent._active_fallback_entry = None
+    agent._fallback_restore_required = False
 
     
     # Tool execution state — allows _vprint during tool execution
@@ -1001,14 +1089,7 @@ def init_agent(
                     except Exception:
                         pass
                     # --- Init-time fallback (#17929) ---
-                    _fb_entries = []
-                    if isinstance(fallback_model, list):
-                        _fb_entries = [
-                            f for f in fallback_model
-                            if isinstance(f, dict) and f.get("provider") and f.get("model")
-                        ]
-                    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-                        _fb_entries = [fallback_model]
+                    _fb_entries = _eligible_fallback_chain
                     _fb_resolved = False
                     for _fb in _fb_entries:
                         _fb_explicit_key = (_fb.get("api_key") or "").strip() or None
@@ -1022,8 +1103,23 @@ def init_agent(
                             explicit_api_key=_fb_explicit_key,
                         )
                         if _fb_client is not None:
+                            _old_model = agent.model
+                            _old_provider = agent.provider
+                            _resolved_model = _fb_model or _fb["model"]
+                            _decision = (
+                                f"🔄 Fallback policy {_fallback_policy}: "
+                                f"{_old_model} via {_old_provider} could not initialize "
+                                f"(reason: credentials unavailable); switching to "
+                                f"{_resolved_model} via {_fb['provider']}."
+                            )
+                            # Gateways normally attach their renderer after
+                            # construction. Queue the decision for the turn
+                            # preflight in that case so it is still emitted
+                            # before the first request to the fallback target.
+                            agent._pending_fallback_notice = _decision
+                            agent._init_fallback_entry = dict(_fb)
                             agent.provider = _fb["provider"]
-                            agent.model = _fb_model or _fb["model"]
+                            agent.model = _resolved_model
                             agent._fallback_activated = True
                             client_kwargs = {
                                 "api_key": _fb_client.api_key,
@@ -1041,10 +1137,23 @@ def init_agent(
                             _fb_resolved = True
                             break
                     if not _fb_resolved:
+                        if _fallback_policy == "off":
+                            _fallback_detail = (
+                                " Fallback policy is off, so no backup provider was attempted."
+                            )
+                        elif _fallback_policy == "local-only":
+                            _fallback_detail = (
+                                " Fallback policy local-only found no usable local backup route."
+                            )
+                        else:
+                            _fallback_detail = (
+                                " No usable configured fallback provider remained."
+                            )
                         raise RuntimeError(
                             f"Provider '{_explicit}' is set in config.yaml but no API key "
                             f"was found. Set the {_env_hint} environment "
                             f"variable, or switch to a different provider with `hermes model`."
+                            f"{_fallback_detail}"
                         )
                 if not getattr(agent, "_fallback_activated", False):
                     # No provider configured — reject with a clear message.
@@ -1141,27 +1250,19 @@ def init_agent(
     # when the primary is exhausted (rate-limit, overload, connection
     # failure).  Supports both legacy single-dict ``fallback_model`` and
     # new list ``fallback_providers`` format.
-    if isinstance(fallback_model, list):
-        agent._fallback_chain = [
-            f for f in fallback_model
-            if isinstance(f, dict) and f.get("provider") and f.get("model")
-        ]
-    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-        agent._fallback_chain = [fallback_model]
-    else:
-        agent._fallback_chain = []
-    try:
-        from hermes_cli.config import load_config_readonly
-        from hermes_cli.fallback_config import get_fallback_policy
-
-        agent._fallback_policy = get_fallback_policy(load_config_readonly())
-    except Exception:
-        # Config read failures must never widen provider routing.
-        agent._fallback_policy = "off"
+    agent._fallback_chain = list(_eligible_fallback_chain)
+    # Keep the normalized unfiltered seed separately. Programmatic AIAgent
+    # callers can supply a chain without writing config.yaml; config-managed
+    # agents replace this seed when the file changes, including deletion.
+    agent._fallback_chain_seed = list(_captured_fallback_chain)
+    agent._fallback_chain_from_config = _fallback_chain_from_config
+    agent._fallback_excluded_providers = set()
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     agent._fallback_terminal_status_emitted = False
-    agent._pending_fallback_notice = None
+    # Keep an init-time decision queued for gateways whose status callback is
+    # attached only after construction.
+    agent._pending_fallback_notice = getattr(agent, "_pending_fallback_notice", None)
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
     if agent._fallback_chain and not agent.quiet_mode:

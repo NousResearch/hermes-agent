@@ -25,9 +25,7 @@ describe('completionErrorText', () => {
 
 describe('fallbackStatusText', () => {
   it('returns only non-empty structured fallback status text', () => {
-    expect(fallbackStatusText(payload({ kind: 'fallback', text: '  switching locally  ' }))).toBe(
-      'switching locally'
-    )
+    expect(fallbackStatusText(payload({ kind: 'fallback', text: '  switching locally  ' }))).toBe('switching locally')
     expect(fallbackStatusText(payload({ kind: 'lifecycle', text: 'ignore' }))).toBeNull()
     expect(fallbackStatusText(payload({ kind: 'fallback', text: '   ' }))).toBeNull()
   })
@@ -44,10 +42,17 @@ describe('toTodoPayload', () => {
 
 describe('sessionInfoStatePatch / hasSessionInfoStatePatch', () => {
   it('extracts only present runtime fields', () => {
-    const patch = sessionInfoStatePatch(payload({ model: 'gpt', fast: true, branch: 'main' }))
-    expect(patch).toMatchObject({ model: 'gpt', fast: true, branch: 'main' })
+    const patch = sessionInfoStatePatch(
+      payload({ model: 'gpt', fast: true, branch: 'main', fallback_policy: 'local-only' })
+    )
+
+    expect(patch).toMatchObject({ model: 'gpt', fast: true, branch: 'main', fallbackPolicy: 'local-only' })
     expect(hasSessionInfoStatePatch(patch)).toBe(true)
     expect(hasSessionInfoStatePatch(sessionInfoStatePatch(payload({})))).toBe(false)
+  })
+
+  it('does not surface an unknown fallback policy as effective state', () => {
+    expect(sessionInfoStatePatch(payload({ fallback_policy: 'mystery' }))).toEqual({})
   })
 })
 

@@ -2013,6 +2013,65 @@ class TestRunJobConfigEnvVarExpansion:
         models = [e.get("model") for e in fb if isinstance(e, dict)]
         assert models == ["gpt-4o-mini", "claude-sonnet-4-6"]
 
+    def test_init_auth_fallback_decision_is_passed_to_cron_agent(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli.auth import AuthError
+
+        local = {
+            "provider": "custom",
+            "model": "local-backup",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "key_env": "CRON_LOCAL_FALLBACK_KEY",
+        }
+        (tmp_path / "config.yaml").write_text(
+            "model: primary-model\n"
+            "fallback_policy: local-only\n"
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: local-backup\n"
+            "    base_url: http://127.0.0.1:8000/v1\n"
+            "    key_env: CRON_LOCAL_FALLBACK_KEY\n"
+        )
+        monkeypatch.setenv("CRON_LOCAL_FALLBACK_KEY", "local-secret")
+        job = {"id": "auth-fallback", "name": "auth fallback", "prompt": "hi"}
+        fake_db = MagicMock()
+        fallback_runtime = {
+            **self._RUNTIME,
+            "provider": "custom",
+            "base_url": local["base_url"],
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 side_effect=[AuthError("primary token expired"), fallback_runtime],
+             ) as mock_resolve, \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["model"] == "local-backup"
+        assert kwargs["initial_fallback_entry"] == local
+        assert "policy local-only" in kwargs["initial_fallback_decision"]
+        assert "primary token expired" in kwargs["initial_fallback_decision"]
+        assert mock_resolve.call_args_list[1].kwargs == {
+            "requested": "custom",
+            "target_model": "local-backup",
+            "explicit_base_url": local["base_url"],
+            "explicit_api_key": "local-secret",
+        }
+
     def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
         """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
         (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")

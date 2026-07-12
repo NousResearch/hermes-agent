@@ -2125,6 +2125,8 @@ export const en: Translations = {
       openContextUsage: 'Open context usage breakdown',
       session: 'Session',
       runtimeSessionElapsed: 'Runtime session elapsed',
+      fallback: 'Fallback',
+      effectiveFallbackPolicy: policy => `Effective fallback policy: ${policy}`,
       yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off. Shift+click toggles it globally.',
       yoloOff: 'YOLO off — click to auto-approve dangerous commands. Shift+click toggles it globally.',
       modelNone: 'none',

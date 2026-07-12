@@ -28,7 +28,11 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.fallback_config import get_configured_fallback_chain
+from hermes_cli.fallback_config import (
+    filter_fallback_chain_for_policy,
+    get_configured_fallback_chain,
+    get_fallback_policy,
+)
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -307,7 +311,11 @@ def _run_agent(
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
     from hermes_cli.models import detect_provider_for_model
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import (
+        format_runtime_provider_error,
+        resolve_runtime_provider,
+    )
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
 
@@ -366,11 +374,79 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
-    runtime = resolve_runtime_provider(
-        requested=effective_provider,
-        target_model=effective_model or None,
-        explicit_base_url=explicit_base_url_from_alias,
-    )
+    # Capture the ordered chain before resolving the primary.  A credential
+    # failure happens before AIAgent exists, so relying on its init-time
+    # fallback would make ``hermes -z`` silently bypass the configured policy.
+    # Keep the unfiltered chain for AIAgent's later per-turn refresh, but apply
+    # the live policy before attempting any startup substitute here.
+    _fb = get_configured_fallback_chain(cfg)
+    _eligible_fb = filter_fallback_chain_for_policy(_fb, cfg)
+    _fallback_policy = get_fallback_policy(cfg)
+    _initial_fallback_decision = None
+    _initial_fallback_entry = None
+
+    try:
+        runtime = resolve_runtime_provider(
+            requested=effective_provider,
+            target_model=effective_model or None,
+            explicit_base_url=explicit_base_url_from_alias,
+        )
+    except AuthError as primary_exc:
+        runtime = None
+        primary_model = str(effective_model or "configured model")
+        primary_provider = str(
+            effective_provider
+            or (
+                model_cfg.get("provider")
+                if isinstance(model_cfg, dict)
+                else None
+            )
+            or "primary provider"
+        )
+        for entry in _eligible_fb:
+            try:
+                explicit_api_key = str(entry.get("api_key") or "").strip() or None
+                if not explicit_api_key:
+                    key_env = str(
+                        entry.get("key_env") or entry.get("api_key_env") or ""
+                    ).strip()
+                    if key_env:
+                        explicit_api_key = os.getenv(key_env, "").strip() or None
+
+                runtime = resolve_runtime_provider(
+                    requested=entry.get("provider"),
+                    target_model=entry.get("model"),
+                    explicit_base_url=entry.get("base_url"),
+                    explicit_api_key=explicit_api_key,
+                )
+            except Exception:
+                continue
+
+            effective_model = str(entry.get("model") or effective_model)
+            _initial_fallback_entry = dict(entry)
+            _initial_fallback_decision = (
+                f"🔄 Fallback policy {_fallback_policy}: {primary_model} via "
+                f"{primary_provider} could not initialize (reason: {primary_exc}); "
+                f"switching to {effective_model} via {entry.get('provider')}."
+            )
+            break
+
+        if runtime is None:
+            if _fallback_policy == "off":
+                fallback_note = (
+                    "Fallback policy off: no backup provider was attempted."
+                )
+            elif _fallback_policy == "local-only":
+                fallback_note = (
+                    "Fallback policy local-only: no usable local backup route remained."
+                )
+            else:
+                fallback_note = (
+                    "Fallback policy any: no usable configured backup route remained."
+                )
+            raise RuntimeError(
+                f"{format_runtime_provider_error(primary_exc)}\n{fallback_note}"
+            ) from primary_exc
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
@@ -396,6 +472,9 @@ def _run_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        fallback_chain_from_config=True,
+        initial_fallback_decision=_initial_fallback_decision,
+        initial_fallback_entry=_initial_fallback_entry,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

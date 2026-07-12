@@ -20,6 +20,7 @@ import {
   $busy,
   $connection,
   $currentCwd,
+  $currentFallbackPolicy,
   $currentUsage,
   $sessionStartedAt,
   $turnStartedAt,
@@ -88,6 +89,7 @@ export function useStatusbarItems({
   const busy = useStore($busy)
   const currentCwd = useStore($currentCwd)
   const currentUsage = useStore($currentUsage)
+  const currentFallbackPolicy = useStore($currentFallbackPolicy)
   const gatewayRestarting = useStore($gatewayRestarting)
   const sessionStartedAt = useStore($sessionStartedAt)
   const turnStartedAt = useStore($turnStartedAt)
@@ -429,6 +431,15 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
+        detail: currentFallbackPolicy || undefined,
+        hidden: !activeSessionId || !currentFallbackPolicy,
+        icon: <Codicon name="shield" size="0.75rem" />,
+        id: 'fallback-policy',
+        label: copy.fallback,
+        title: copy.effectiveFallbackPolicy(currentFallbackPolicy || copy.unknown),
+        variant: 'text'
+      },
+      {
         className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
         hidden: !showYoloToggle,
         icon: yoloActive ? (
@@ -462,6 +473,7 @@ export function useStatusbarItems({
       contextBar,
       contextUsage,
       copy,
+      currentFallbackPolicy,
       currentUsage,
       requestGateway,
       sessionStartedAt,

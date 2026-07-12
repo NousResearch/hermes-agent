@@ -32,7 +32,13 @@ def _make_agent(chain):
     agent._fallback_activated = False
     agent._fallback_index = 0
     agent._fallback_chain = list(chain)
+    agent._fallback_chain_seed = list(chain)
+    agent._fallback_chain_from_config = True
+    agent._fallback_excluded_providers = set()
     agent._fallback_model = chain[0] if chain else None
+    agent._active_fallback_entry = None
+    agent._init_fallback_entry = None
+    agent._pending_fallback_notice = None
 
     return agent
 
@@ -102,3 +108,31 @@ def test_switch_within_same_provider_preserves_chain():
         )
 
     assert agent._fallback_chain == chain
+
+
+def test_switch_pruning_survives_live_config_refresh():
+    chain = [
+        {"provider": "openrouter", "model": "x-ai/grok-4"},
+        {"provider": "anthropic", "model": "claude-sonnet-4-5"},
+        {"provider": "nous", "model": "hermes-4"},
+    ]
+    agent = _make_agent(chain)
+
+    _switch_to_anthropic(agent)
+
+    with patch(
+        "hermes_cli.config.load_config_readonly",
+        return_value={
+            "fallback_policy": "any",
+            "fallback_providers": chain,
+        },
+    ):
+        agent._refresh_fallback_policy()
+
+    assert agent._fallback_chain == [
+        {"provider": "nous", "model": "hermes-4"}
+    ]
+    assert agent._fallback_model == {
+        "provider": "nous",
+        "model": "hermes-4",
+    }

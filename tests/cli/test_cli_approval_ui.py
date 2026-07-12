@@ -59,6 +59,10 @@ def _make_background_cli_stub():
     cli._provider_data_collection = None
     cli._openrouter_min_coding_score = None
     cli._fallback_model = None
+    cli._initial_fallback_entry = {
+        "provider": "backup",
+        "model": "backup-model",
+    }
     cli._agent_running = False
     cli._spinner_text = ""
     cli.bell_on_complete = False
@@ -330,6 +334,7 @@ class TestCliApprovalUi:
 
         class FakeAgent:
             def __init__(self, **kwargs):
+                seen["agent_kwargs"] = kwargs
                 self._print_fn = None
                 self.thinking_callback = None
 
@@ -364,6 +369,10 @@ class TestCliApprovalUi:
         assert seen["approval"].__func__ is HermesCLI._approval_callback
         assert seen["sudo"].__self__ is cli
         assert seen["sudo"].__func__ is HermesCLI._sudo_password_callback
+        assert seen["agent_kwargs"]["initial_fallback_entry"] == {
+            "provider": "backup",
+            "model": "backup-model",
+        }
         assert not cli._background_tasks
 
 

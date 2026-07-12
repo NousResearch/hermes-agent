@@ -139,6 +139,8 @@ export interface ClientSessionState {
   cwd: string
   model: string
   provider: string
+  /** Effective runtime fallback policy reported by session.info. */
+  fallbackPolicy: '' | 'any' | 'local-only' | 'off'
   reasoningEffort: string
   serviceTier: string
   fast: boolean

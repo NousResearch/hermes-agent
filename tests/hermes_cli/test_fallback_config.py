@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from hermes_cli.fallback_config import (
+    filter_fallback_chain_for_policy,
     get_configured_fallback_chain,
     get_fallback_chain,
     get_fallback_policy,
@@ -107,3 +108,27 @@ def test_invalid_explicit_policy_fails_closed():
 
     assert get_fallback_policy(cfg) == "off"
     assert get_fallback_chain(cfg) == []
+
+
+def test_supplied_init_chain_is_filtered_by_policy():
+    entries = [
+        {"provider": "openrouter", "model": "remote"},
+        {
+            "provider": "custom",
+            "model": "local",
+            "base_url": "http://127.0.0.1:8000/v1",
+        },
+    ]
+
+    assert filter_fallback_chain_for_policy(
+        entries,
+        {"fallback_policy": "off"},
+    ) == []
+    assert filter_fallback_chain_for_policy(
+        entries,
+        {"fallback_policy": "local-only"},
+    ) == [entries[1]]
+    assert filter_fallback_chain_for_policy(
+        entries,
+        {"fallback_policy": "any"},
+    ) == entries

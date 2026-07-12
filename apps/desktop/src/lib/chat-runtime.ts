@@ -43,6 +43,7 @@ export function createClientSessionState(
     cwd: '',
     model: '',
     provider: '',
+    fallbackPolicy: '',
     reasoningEffort: '',
     serviceTier: '',
     fast: false,
@@ -57,6 +58,10 @@ export function createClientSessionState(
     needsInput: false,
     turnStartedAt: null
   }
+}
+
+export function normalizeFallbackPolicyValue(value: unknown): ClientSessionState['fallbackPolicy'] {
+  return value === 'off' || value === 'local-only' || value === 'any' ? value : ''
 }
 
 export function sessionTitle(session: SessionInfo): string {

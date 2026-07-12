@@ -1,12 +1,21 @@
 import type { GatewayEventPayload } from '@/lib/chat-messages'
-import { normalizePersonalityValue } from '@/lib/chat-runtime'
+import { normalizeFallbackPolicyValue, normalizePersonalityValue } from '@/lib/chat-runtime'
 
 import type { ClientSessionState } from '../../../types'
 
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    | 'branch'
+    | 'cwd'
+    | 'fallbackPolicy'
+    | 'fast'
+    | 'model'
+    | 'personality'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'serviceTier'
+    | 'yolo'
   >
 >
 
@@ -19,6 +28,14 @@ export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined):
 
   if (typeof payload?.provider === 'string') {
     patch.provider = payload.provider || ''
+  }
+
+  if (typeof payload?.fallback_policy === 'string') {
+    const fallbackPolicy = normalizeFallbackPolicyValue(payload.fallback_policy)
+
+    if (fallbackPolicy) {
+      patch.fallbackPolicy = fallbackPolicy
+    }
   }
 
   if (typeof payload?.cwd === 'string') {
@@ -87,6 +104,7 @@ export function fallbackStatusText(payload: GatewayEventPayload | undefined): st
   }
 
   const text = payload.text.trim()
+
   return text || null
 }
 

@@ -91,6 +91,9 @@ class _FakeAgent:
         self._fallback_events.append("refresh")
         return "any"
 
+    def _emit_pending_fallback_notice(self):
+        self._fallback_events.append("pending")
+
     def _cleanup_dead_connections(self):
         return False
 
@@ -204,7 +207,10 @@ def test_cached_agent_refreshes_policy_before_restore_on_every_turn():
     _build(agent)
 
     assert agent._fallback_policy_refreshes == 2
-    assert agent._fallback_events == ["refresh", "restore", "refresh", "restore"]
+    assert agent._fallback_events == [
+        "refresh", "pending", "restore",
+        "refresh", "pending", "restore",
+    ]
 
 
 def test_task_id_passthrough():

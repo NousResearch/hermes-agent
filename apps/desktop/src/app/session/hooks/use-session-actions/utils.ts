@@ -1,6 +1,6 @@
 import { getSession } from '@/hermes'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
-import { normalizePersonalityValue } from '@/lib/chat-runtime'
+import { normalizeFallbackPolicyValue, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -9,6 +9,7 @@ import {
   $sessions,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentFallbackPolicy,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -253,7 +254,16 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    | 'branch'
+    | 'cwd'
+    | 'fallbackPolicy'
+    | 'fast'
+    | 'model'
+    | 'personality'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'serviceTier'
+    | 'yolo'
   >
 >
 
@@ -280,6 +290,15 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
   if (typeof info.provider === 'string') {
     setCurrentProvider(info.provider)
     sessionState.provider = info.provider
+  }
+
+  if (typeof info.fallback_policy === 'string') {
+    const fallbackPolicy = normalizeFallbackPolicyValue(info.fallback_policy)
+
+    if (fallbackPolicy) {
+      setCurrentFallbackPolicy(fallbackPolicy)
+      sessionState.fallbackPolicy = fallbackPolicy
+    }
   }
 
   if (info.cwd) {
@@ -328,6 +347,7 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
 export function applyStoredSessionPreviewRuntimeInfo(stored: { model?: null | string } | undefined) {
   setCurrentModel(stored?.model || '')
   setCurrentProvider('')
+  setCurrentFallbackPolicy('')
   setCurrentReasoningEffort('')
   setCurrentServiceTier('')
   setCurrentFastMode(false)

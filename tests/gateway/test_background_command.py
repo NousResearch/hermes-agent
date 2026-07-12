@@ -268,6 +268,48 @@ class TestRunBackgroundTask:
         mock_agent_instance.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_fallback_decision_is_delivered_before_background_result(self):
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "fallback answer"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "fallback answer"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "test-key"},
+        ), patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+
+            def run_conversation(**_kwargs):
+                MockAgent.call_args.kwargs["status_callback"](
+                    "fallback",
+                    "Fallback policy local-only: switching to local-model via custom.",
+                )
+                return {"final_response": "fallback answer", "messages": []}
+
+            mock_agent_instance.run_conversation.side_effect = run_conversation
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say hello", source, "bg_test")
+
+        assert mock_adapter.send.await_count == 2
+        first = mock_adapter.send.await_args_list[0].kwargs["content"]
+        second = mock_adapter.send.await_args_list[1].kwargs["content"]
+        assert "Fallback policy local-only" in first
+        assert "fallback answer" in second
+
+    @pytest.mark.asyncio
     async def test_media_files_routed_by_type(self, monkeypatch):
         """Result media is routed to the type-specific sender, not send_document.
 
@@ -338,13 +380,21 @@ class TestRunBackgroundTask:
             await runner._run_background_task("make stuff", source, "bg_test")
 
             mock_adapter.send_voice.assert_called_once()
-            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _ogg
+            assert _os.path.realpath(
+                mock_adapter.send_voice.call_args.kwargs["audio_path"]
+            ) == _os.path.realpath(_ogg)
             mock_adapter.send_video.assert_called_once()
-            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _mp4
+            assert _os.path.realpath(
+                mock_adapter.send_video.call_args.kwargs["video_path"]
+            ) == _os.path.realpath(_mp4)
             mock_adapter.send_image_file.assert_called_once()
-            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _png
+            assert _os.path.realpath(
+                mock_adapter.send_image_file.call_args.kwargs["image_path"]
+            ) == _os.path.realpath(_png)
             mock_adapter.send_document.assert_called_once()
-            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _pdf
+            assert _os.path.realpath(
+                mock_adapter.send_document.call_args.kwargs["file_path"]
+            ) == _os.path.realpath(_pdf)
         finally:
             import shutil as _shutil
             _shutil.rmtree(_tmpdir, ignore_errors=True)
@@ -421,12 +471,22 @@ class TestRunBackgroundTask:
             mock_agent_instance = MagicMock()
             mock_agent_instance.shutdown_memory_provider = MagicMock()
             mock_agent_instance.close = MagicMock()
-            mock_agent_instance.run_conversation.side_effect = RuntimeError("boom")
+
+            def fail_after_fallback(**_kwargs):
+                MockAgent.call_args.kwargs["status_callback"](
+                    "fallback",
+                    "Fallback policy any: switching to backup-model via backup.",
+                )
+                raise RuntimeError("boom")
+
+            mock_agent_instance.run_conversation.side_effect = fail_after_fallback
             MockAgent.return_value = mock_agent_instance
 
             await runner._run_background_task("say hello", source, "bg_test")
 
-        mock_adapter.send.assert_called_once()
+        assert mock_adapter.send.await_count == 2
+        assert "Fallback policy any" in mock_adapter.send.await_args_list[0].kwargs["content"]
+        assert "failed: boom" in mock_adapter.send.await_args_list[1].kwargs["content"]
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 

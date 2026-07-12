@@ -850,6 +850,11 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     monkeypatch.setitem(sys.modules, "hermes_state", mod("hermes_state", SessionDB=FakeSessionDB))
     monkeypatch.setitem(
         sys.modules,
+        "hermes_cli.auth",
+        mod("hermes_cli.auth", AuthError=RuntimeError),
+    )
+    monkeypatch.setitem(
+        sys.modules,
         "hermes_cli.config",
         mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
     )
@@ -863,6 +868,7 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         "hermes_cli.runtime_provider",
         mod(
             "hermes_cli.runtime_provider",
+            format_runtime_provider_error=lambda exc: str(exc),
             resolve_runtime_provider=lambda **_kwargs: {
                 "api_key": "k",
                 "base_url": "u",

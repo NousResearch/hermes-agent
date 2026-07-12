@@ -1387,6 +1387,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
+            fallback_chain_from_config=True,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
         )

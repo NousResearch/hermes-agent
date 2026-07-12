@@ -191,3 +191,27 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     if policy == "local-only":
         return [entry for entry in chain if fallback_entry_is_local(entry, config)]
     return chain
+
+
+def filter_fallback_chain_for_policy(
+    entries: Any,
+    config: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Filter a caller-supplied chain through the effective routing policy.
+
+    Some runtime entry points resolve the primary provider before constructing
+    an :class:`AIAgent` and therefore cannot use :func:`get_fallback_chain`
+    directly: the ordered entries have already been captured by the caller.
+    This helper applies the same ``off | local-only | any`` boundary to that
+    captured chain so init/auth fallback can never bypass the configured
+    policy.  Returned entries are normalized fresh copies.
+    """
+    config = config or {}
+    policy = get_fallback_policy(config)
+    if policy == "off":
+        return []
+
+    chain = _iter_fallback_entries(entries)
+    if policy == "local-only":
+        return [entry for entry in chain if fallback_entry_is_local(entry, config)]
+    return chain

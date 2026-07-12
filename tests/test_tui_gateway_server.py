@@ -1796,6 +1796,7 @@ def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
         model="gpt-5.5",
         provider="openai-codex",
         _fallback_chain=chain,
+        _active_fallback_entry=chain[0],
     )
     monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
     monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
@@ -1804,6 +1805,7 @@ def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
     kwargs = server._background_agent_kwargs(agent, "task-id")
 
     assert kwargs["fallback_model"] == chain
+    assert kwargs["initial_fallback_entry"] == chain[0]
 
 
 def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):
@@ -8783,8 +8785,10 @@ class TestResolveRuntimeWithFallback:
         from hermes_cli.auth import AuthError
 
         fallback_runtime = {"provider": "deepseek", "api_key": "fb-tok"}
+        calls = []
 
         def fake_resolve(**kwargs):
+            calls.append(kwargs)
             if kwargs.get("requested") == "openai-codex":
                 raise AuthError("No Codex credentials stored")
             return fallback_runtime
@@ -8796,12 +8800,37 @@ class TestResolveRuntimeWithFallback:
         monkeypatch.setattr(
             server,
             "_load_fallback_model",
-            lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}],
+            lambda: [
+                {
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-pro",
+                    "base_url": "https://fallback.example/v1",
+                    "key_env": "TUI_FALLBACK_KEY",
+                }
+            ],
         )
+        monkeypatch.setenv("TUI_FALLBACK_KEY", "env-fallback-key")
         result = server._resolve_runtime_with_fallback(
             {"requested": "openai-codex"},
         )
-        assert result == fallback_runtime
+        assert result["provider"] == "deepseek"
+        assert result["api_key"] == "fb-tok"
+        assert result["model"] == "deepseek-v4-pro"
+        assert result["initial_fallback_entry"] == {
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro",
+            "base_url": "https://fallback.example/v1",
+            "key_env": "TUI_FALLBACK_KEY",
+        }
+        assert calls[1] == {
+            "requested": "deepseek",
+            "target_model": "deepseek-v4-pro",
+            "explicit_base_url": "https://fallback.example/v1",
+            "explicit_api_key": "env-fallback-key",
+        }
+        assert "No Codex credentials stored" in result[
+            "initial_fallback_decision"
+        ]
 
     def test_auth_error_all_fallbacks_fail_raises(self, monkeypatch):
         """When all fallbacks also fail, re-raise the original AuthError."""
@@ -8821,10 +8850,12 @@ class TestResolveRuntimeWithFallback:
         )
         import pytest
 
-        with pytest.raises(AuthError, match="No credentials for openai-codex"):
+        with pytest.raises(AuthError, match="No credentials for openai-codex") as exc_info:
             server._resolve_runtime_with_fallback(
                 {"requested": "openai-codex"},
             )
+        assert "Fallback policy" in str(exc_info.value)
+        assert "no usable configured backup route remained" in str(exc_info.value)
 
     def test_auth_error_skips_non_dict_entries(self, monkeypatch):
         """Fallback chain entries that are not dicts are skipped."""
@@ -8852,7 +8883,12 @@ class TestResolveRuntimeWithFallback:
         result = server._resolve_runtime_with_fallback(
             {"requested": "openai-codex"},
         )
-        assert result == fallback_runtime
+        assert result["provider"] == "anthropic"
+        assert result["api_key"] == "ant-tok"
+        assert result["initial_fallback_entry"] == {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+        }
 
     def test_make_agent_uses_fallback_on_auth_error(self, monkeypatch):
         """Integration: _make_agent falls back to configured fallback
@@ -8875,7 +8911,7 @@ class TestResolveRuntimeWithFallback:
 
         monkeypatch.delenv("HERMES_MODEL", raising=False)
         monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
-        monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+        monkeypatch.setenv("HERMES_TUI_PROVIDER", "openai-codex")
         monkeypatch.setattr(
             server,
             "_load_cfg",
@@ -8896,8 +8932,82 @@ class TestResolveRuntimeWithFallback:
 
         agent = server._make_agent("sid", "session-key")
 
-        assert agent.model == "gpt-5.5"
+        assert agent.model == "deepseek-v4-pro"
+        assert captured["model"] == "deepseek-v4-pro"
         assert captured["provider"] == "deepseek"
+        assert captured["initial_fallback_entry"] == {
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro",
+        }
+        assert "switching to deepseek-v4-pro via deepseek" in captured[
+            "initial_fallback_decision"
+        ]
+
+    def test_session_override_auth_fallback_does_not_reapply_primary_secrets(
+        self, monkeypatch
+    ):
+        import types
+
+        from hermes_cli.auth import AuthError
+
+        captured = {}
+
+        def fake_resolve(**kwargs):
+            if kwargs.get("requested") == "custom":
+                raise AuthError("primary override credentials expired")
+            return {
+                "provider": "deepseek",
+                "api_key": "fallback-key",
+                "base_url": "https://fallback.example/v1",
+                "api_mode": "chat_completions",
+            }
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(model=kwargs.get("model"))
+
+        monkeypatch.setattr(
+            server,
+            "_load_cfg",
+            lambda: {
+                "fallback_policy": "any",
+                "fallback_providers": [
+                    {"provider": "deepseek", "model": "deepseek-v4-pro"}
+                ],
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.canonical_custom_identity",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+        monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+
+        agent = server._make_agent(
+            "sid",
+            "session-key",
+            model_override={
+                "model": "primary-model",
+                "provider": "custom",
+                "base_url": "https://primary.example/v1",
+                "api_key": "primary-secret",
+                "api_mode": "codex_responses",
+            },
+        )
+
+        assert agent.model == "deepseek-v4-pro"
+        assert captured["base_url"] == "https://fallback.example/v1"
+        assert captured["api_key"] == "fallback-key"
+        assert captured["api_mode"] == "chat_completions"
+        assert captured["initial_fallback_entry"] == {
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro",
+        }
 
 
 def test_get_usage_does_not_substitute_cumulative_total_for_context_used():

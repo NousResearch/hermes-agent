@@ -17,6 +17,7 @@ import logging
 import os
 import html as _html
 import re
+import subprocess
 import threading
 import time
 from contextvars import ContextVar
@@ -4070,6 +4071,77 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         return InlineKeyboardMarkup(rows)
 
+    def _jaimes_pre_final_card_command(
+        self,
+        chat_id: str,
+        content: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[list[str]]:
+        """Build the completion-card edit that must precede final delivery."""
+        if str(thread_id or "") != "17" or not (metadata or {}).get("notify"):
+            return None
+        state_path = _Path.home() / ".openclaw" / "telegram" / "jaimes_fast_ack_state.json"
+        script = _Path.home() / ".openclaw" / "workspace" / "mission-control" / "scripts" / "jaimes_work_card.py"
+        if not state_path.exists() or not script.exists():
+            return None
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            candidates = []
+            for card in ((state.get("active_cards") or {}).values() if isinstance(state, dict) else []):
+                if not isinstance(card, dict) or card.get("status") != "active":
+                    continue
+                if str(card.get("telegram_chat_id") or "") != str(chat_id):
+                    continue
+                if str(card.get("telegram_thread_id") or "") != str(thread_id):
+                    continue
+                if card.get("key") and card.get("ack_message_id"):
+                    candidates.append(card)
+            if not candidates:
+                return None
+            card = max(candidates, key=lambda row: str(row.get("started_at") or row.get("updated_at") or ""))
+        except Exception as exc:
+            logger.warning("[%s] Could not resolve JAIMES pre-final card: %s", self.name, exc)
+            return None
+        model_match = re.search(r"(?im)^Model:\s*([^|\n]+)", content or "")
+        model = model_match.group(1).strip() if model_match else "JAIMES"
+        objective = str(card.get("objective") or "Complete the current Telegram task")
+        return [
+            sys.executable, str(script), "done",
+            "--key", str(card["key"]),
+            "--title", objective,
+            "--model", model,
+            "--now", "summary sent",
+            "--done", "summary sent",
+            "--blocker", "None",
+            "--next", "No action needed.",
+            "--chat-id", str(chat_id),
+            "--thread-id", str(thread_id),
+        ]
+
+    async def _jaimes_finalize_card_before_final(
+        self,
+        chat_id: str,
+        content: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        """Await the completion-card edit so the final can never overtake it."""
+        command = self._jaimes_pre_final_card_command(chat_id, content, thread_id, metadata)
+        if not command:
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=12)
+            if proc.returncode:
+                logger.warning("[%s] JAIMES pre-final card edit exited %s", self.name, proc.returncode)
+        except Exception as exc:
+            logger.warning("[%s] JAIMES pre-final card edit failed: %s", self.name, exc)
+
     async def send(
         self,
         chat_id: str,
@@ -4090,6 +4162,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
+            thread_id = self._metadata_thread_id(metadata)
+            await self._jaimes_finalize_card_before_final(chat_id, content, thread_id, metadata)
+
             # Final/direct sends may not have an active gateway refresh loop
             # (cron deliveries, queued notifications, or platforms with
             # streaming disabled).  Fire one pre-send action so Telegram still
@@ -4102,7 +4177,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception:
                     pass  # Typing failures are non-fatal
 
-            thread_id = self._metadata_thread_id(metadata)
             jaimes_reply_markup = self._jaimes_topic17_reply_markup(content, thread_id, metadata)
 
             # Bot API 10.1 rich fast-path: send the raw agent markdown via

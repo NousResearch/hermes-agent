@@ -1,3 +1,5 @@
+import inspect
+import json
 from unittest.mock import patch
 
 from plugins.platforms.telegram import adapter as telegram_adapter
@@ -83,3 +85,39 @@ def test_jaimes_final_no_action_with_explanation_has_no_buttons():
             {"notify": True},
         )
     assert markup is None
+
+
+def test_jaimes_final_builds_completion_edit_for_current_active_card(tmp_path):
+    state_path = tmp_path / ".openclaw" / "telegram" / "jaimes_fast_ack_state.json"
+    script = tmp_path / ".openclaw" / "workspace" / "mission-control" / "scripts" / "jaimes_work_card.py"
+    state_path.parent.mkdir(parents=True)
+    script.parent.mkdir(parents=True)
+    script.write_text("# test\n")
+    state_path.write_text(json.dumps({"active_cards": {
+        "current": {
+            "status": "active",
+            "key": "turn-123",
+            "ack_message_id": "44",
+            "objective": "Verify the KALEIDO dip against tactical entry gates",
+            "telegram_chat_id": "-1003589561528",
+            "telegram_thread_id": "17",
+            "started_at": "2026-07-12T23:22:00Z",
+        }
+    }}))
+    content = "Model: openai-codex/gpt-5.6-sol | Route: live market check | Why: verified\nComplete: Yes"
+    with patch.object(telegram_adapter._Path, "home", return_value=tmp_path):
+        command = _adapter()._jaimes_pre_final_card_command(
+            "-1003589561528", content, "17", {"notify": True}
+        )
+    assert command is not None
+    assert command[2] == "done"
+    assert command[command.index("--key") + 1] == "turn-123"
+    assert command[command.index("--now") + 1] == "summary sent"
+    assert command[command.index("--model") + 1] == "openai-codex/gpt-5.6-sol"
+
+
+def test_jaimes_completion_edit_is_awaited_before_final_send_path():
+    source = inspect.getsource(TelegramAdapter.send)
+    close_at = source.index("await self._jaimes_finalize_card_before_final")
+    format_at = source.index("formatted = self.format_message")
+    assert close_at < format_at

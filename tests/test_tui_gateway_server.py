@@ -2142,6 +2142,77 @@ def test_session_title_falls_back_to_queue_when_row_create_fails(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_session_pin_updates_db_and_echoes_session_info(monkeypatch):
+    calls = []
+    emitted = []
+
+    class _FakeDB:
+        def set_session_pinned(self, key, pinned):
+            calls.append((key, pinned))
+            return True
+
+    session = _session(session_key="session-key")
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(
+        server,
+        "_emit_session_info_for_session",
+        lambda sid, sess: emitted.append((sid, dict(sess))),
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.pin",
+                "params": {"session_id": "sid", "pinned": True},
+            }
+        )
+
+        assert resp["result"] == {"pinned": True, "session_key": "session-key"}
+        assert calls == [("session-key", True)]
+        assert session["pinned"] is True
+        assert emitted == [("sid", {**session})]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_pin_missing_session_matches_title_error_contract():
+    title = server.handle_request(
+        {"id": "same", "method": "session.title", "params": {"session_id": "dead"}}
+    )
+    pin = server.handle_request(
+        {
+            "id": "same",
+            "method": "session.pin",
+            "params": {"session_id": "dead", "pinned": True},
+        }
+    )
+
+    assert pin == title == {
+        "jsonrpc": "2.0",
+        "id": "same",
+        "error": {"code": 4001, "message": "session not found"},
+    }
+
+
+def test_session_pin_db_unavailable_uses_title_db_error_code(monkeypatch):
+    server._sessions["sid"] = _session(session_key="session-key")
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_db_error", "missing state")
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.pin",
+                "params": {"session_id": "sid", "pinned": True},
+            }
+        )
+        assert resp["error"]["code"] == 5007
+        assert resp["error"]["message"] == "state.db unavailable: missing state"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_notification_event_routing_by_session_key(monkeypatch):
     """Background-process events surface only in the session that owns them."""
     mine = _session(session_key="mine")
@@ -6433,6 +6504,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         "last_active": 20.0,
         "message_count": 1,
         "model": "model-a",
+        "pinned": False,
         "preview": "find docs",
         "session_key": "key-a",
         "started_at": 10.0,

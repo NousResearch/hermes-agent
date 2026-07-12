@@ -3307,7 +3307,8 @@ def _current_profile_name() -> str:
 # checkout), surfacing a one-click "update to align" prompt instead of failing
 # cryptically downstream. Bump whenever the desktop's backend contract changes.
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
-DESKTOP_BACKEND_CONTRACT = 2
+# v3: adds server-side pinned sessions (`pinned` session rows + session.pin).
+DESKTOP_BACKEND_CONTRACT = 3
 
 
 def _session_info(agent, session: dict | None = None) -> dict:
@@ -3368,6 +3369,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "personality": str(personality or ""),
         "running": bool((session or {}).get("running")),
         "title": _session_live_title(session or {}, session_key) if session_key else "",
+        "pinned": _session_live_pinned(session or {}, session_key) if session_key else False,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "",
         "release_date": "",
@@ -5341,6 +5343,7 @@ def _(rid, params: dict) -> dict:
                         "started_at": s.get("started_at") or 0,
                         "message_count": s.get("message_count") or 0,
                         "source": s.get("source") or "",
+                        "pinned": bool(s.get("pinned")),
                     }
                     for s in rows
                 ]
@@ -5975,6 +5978,22 @@ def _session_live_title(session: dict, key: str) -> str:
     return title
 
 
+def _session_live_pinned(session: dict, key: str) -> bool:
+    if "pinned" in session:
+        return bool(session.get("pinned"))
+    db = _get_db()
+    if db is not None:
+        try:
+            row = db.get_session(key)
+            if row is not None:
+                pinned = bool(row.get("pinned"))
+                session["pinned"] = pinned
+                return pinned
+        except Exception:
+            pass
+    return False
+
+
 def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     key = _session_lookup_key(session, fallback=sid)
     agent = session.get("agent")
@@ -5993,6 +6012,7 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
         "message_count": len(history),
         "model": str(getattr(agent, "model", "") or _resolve_model()),
         "preview": preview,
+        "pinned": _session_live_pinned(session, key),
         "session_key": key,
         "started_at": float(session.get("created_at") or now),
         "status": status,
@@ -6251,6 +6271,30 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"pending": True, "title": title})
     except ValueError as e:
         return _err(rid, 4022, str(e))
+    except Exception as e:
+        return _err(rid, 5007, str(e))
+
+
+@method("session.pin")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    assert session is not None
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5007)
+    key = session["session_key"]
+    pinned = bool(params.get("pinned"))
+    try:
+        if not db.set_session_pinned(key, pinned):
+            _ensure_session_db_row(session)
+            with _session_db(session) as scoped_db:
+                if scoped_db is None or not scoped_db.set_session_pinned(key, pinned):
+                    return _err(rid, 5007, "session pin failed")
+        session["pinned"] = pinned
+        _emit_session_info_for_session(params.get("session_id", ""), session)
+        return _ok(rid, {"pinned": pinned, "session_key": key})
     except Exception as e:
         return _err(rid, 5007, str(e))
 

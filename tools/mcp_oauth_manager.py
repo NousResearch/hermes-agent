@@ -38,10 +38,25 @@ import asyncio
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# How long before access-token expiry to fire a silent proactive refresh.
+# Keeps on-disk tokens fresh across gateway/desktop restarts so headless
+# discovery never has to open a browser.
+_PROACTIVE_REFRESH_LEAD_SECONDS = 300
+# Cap the wait even for long-lived tokens -- re-check within ~55 min.
+_PROACTIVE_REFRESH_MAX_DELAY_SECONDS = 3300
+# Delay before retrying an explicitly *transient* proactive-refresh failure.
+_PROACTIVE_REFRESH_RETRY_SECONDS = 60
+# HTTP status codes treated as transient (retry). Everything else is permanent
+# for this timer -- do NOT schedule another attempt, because a non-200 path
+# that reaches the SDK's ``_handle_refresh_response`` clears ``current_tokens``
+# and a bare retry would just spin on ``can_refresh_token() == False``.
+_PROACTIVE_REFRESH_TRANSIENT_HTTP = frozenset({408, 425, 429})
 
 
 def _same_endpoint(a: str, b: str) -> bool:
@@ -143,6 +158,165 @@ def _make_hermes_provider_class() -> Optional[type]:
             # registration can't help. Only auto-heal dynamically-registered
             # clients. See _maybe_flag_poisoned_client.
             self._hermes_preregistered = preregistered
+            # asyncio.TimerHandle for the proactive refresh, or None.
+            # Lifecycle-owned: cancelled on re-init, re-schedule, and manager
+            # eviction so orphaned callbacks cannot race refresh_token rotation.
+            self._hermes_refresh_timer: Optional[asyncio.TimerHandle] = None
+
+        def _cancel_proactive_refresh(self) -> None:
+            """Cancel any pending proactive-refresh timer (idempotent)."""
+            timer = self._hermes_refresh_timer
+            self._hermes_refresh_timer = None
+            if timer is not None:
+                try:
+                    timer.cancel()
+                except Exception:  # pragma: no cover -- defensive
+                    pass
+
+        def _schedule_proactive_refresh(
+            self,
+            *,
+            delay: Optional[float] = None,
+        ) -> None:
+            """Schedule a silent refresh. Cancels any prior handle first.
+
+            When ``delay`` is None, fire ``_PROACTIVE_REFRESH_LEAD_SECONDS``
+            before ``token_expiry_time`` (capped at
+            ``_PROACTIVE_REFRESH_MAX_DELAY_SECONDS``). When given explicitly
+            (e.g. a transient-failure retry), use that delay as-is.
+            """
+            self._cancel_proactive_refresh()
+            if delay is None:
+                expiry = self.context.token_expiry_time
+                if expiry is None:
+                    return
+                delay = max(
+                    0.0,
+                    float(expiry) - time.time() - _PROACTIVE_REFRESH_LEAD_SECONDS,
+                )
+                if delay > _PROACTIVE_REFRESH_MAX_DELAY_SECONDS:
+                    delay = float(_PROACTIVE_REFRESH_MAX_DELAY_SECONDS)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop (e.g. sync test helpers) -- skip silently.
+                return
+            self._hermes_refresh_timer = loop.call_later(
+                float(delay),
+                lambda: asyncio.ensure_future(self._do_proactive_refresh()),
+            )
+            logger.debug(
+                "MCP OAuth '%s': proactive refresh in %.0fs (expires in %.0fs)",
+                self._hermes_server_name,
+                float(delay),
+                (
+                    self.context.token_expiry_time - time.time()
+                    if self.context.token_expiry_time
+                    else -1
+                ),
+            )
+
+        async def _do_proactive_refresh(self) -> None:
+            """Silently refresh the access token before it expires.
+
+            Retry policy (responds to #62309 review):
+            - Success -> chain the next proactive schedule.
+            - Permanent failures (4xx, missing refreshability, invalid payload)
+              -> stop. Do **not** spin: a retry after permanent fail is either
+              useless (tokens cleared / can_refresh_token False) or harmful
+              (re-rotation races).
+            - Transient failures (timeouts, connection errors, 408/425/429/5xx)
+              -> single-shot retry after ``_PROACTIVE_REFRESH_RETRY_SECONDS``.
+              We only retry when ``can_refresh_token()`` still holds, so we
+              never re-enter after the SDK has wiped tokens.
+            """
+            import httpx
+
+            # Clear the fire-and-forget handle token; a successful chain or
+            # transient retry will install a fresh one.
+            self._hermes_refresh_timer = None
+
+            def _retry_if_refreshable(reason: str) -> None:
+                if not self.context.can_refresh_token():
+                    logger.debug(
+                        "MCP OAuth '%s': proactive refresh not retrying "
+                        "(%s; can_refresh_token=False)",
+                        self._hermes_server_name, reason,
+                    )
+                    return
+                logger.warning(
+                    "MCP OAuth '%s': proactive refresh %s; retry in %ss",
+                    self._hermes_server_name, reason,
+                    _PROACTIVE_REFRESH_RETRY_SECONDS,
+                )
+                self._schedule_proactive_refresh(
+                    delay=float(_PROACTIVE_REFRESH_RETRY_SECONDS),
+                )
+
+            try:
+                if not self.context.can_refresh_token():
+                    logger.debug(
+                        "MCP OAuth '%s': proactive refresh skipped "
+                        "(cannot refresh)",
+                        self._hermes_server_name,
+                    )
+                    return
+
+                refresh_req = await self._refresh_token()
+                try:
+                    async with httpx.AsyncClient(timeout=15.0) as client:
+                        resp = await client.send(refresh_req)
+                except (
+                    httpx.TimeoutException,
+                    httpx.NetworkError,
+                    httpx.TransportError,
+                ) as exc:
+                    _retry_if_refreshable(f"transport error: {exc}")
+                    return
+
+                if resp.status_code == 200:
+                    # On non-200 the SDK's ``_handle_refresh_response`` would
+                    # clear tokens -- we only call it on 200 so permanent/HTTP
+                    # 5xx cases keep a clean split between success and retry.
+                    ok = await self._handle_refresh_response(resp)
+                    if ok:
+                        self._initialized = True
+                        logger.info(
+                            "MCP OAuth '%s': proactive refresh OK",
+                            self._hermes_server_name,
+                        )
+                        self._schedule_proactive_refresh()
+                        return
+                    # Invalid payload -> SDK clears tokens. Stop.
+                    logger.warning(
+                        "MCP OAuth '%s': proactive refresh invalid payload; "
+                        "not retrying",
+                        self._hermes_server_name,
+                    )
+                    return
+
+                if (
+                    resp.status_code in _PROACTIVE_REFRESH_TRANSIENT_HTTP
+                    or 500 <= resp.status_code < 600
+                ):
+                    _retry_if_refreshable(f"HTTP {resp.status_code}")
+                    return
+
+                # Permanent HTTP failure (4xx etc.). Do not call
+                # ``_handle_refresh_response`` (would clear tokens via SDK);
+                # also do not retry -- reauth is the recovery path.
+                logger.warning(
+                    "MCP OAuth '%s': proactive refresh failed permanently "
+                    "(HTTP %d); not retrying",
+                    self._hermes_server_name, resp.status_code,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "MCP OAuth '%s': proactive refresh error: %s",
+                    self._hermes_server_name, exc,
+                )
+                # Unknown errors: only retry while refreshability remains.
+                _retry_if_refreshable(f"error: {exc}")
 
         async def _initialize(self) -> None:
             """Load stored tokens + client info AND seed token_expiry_time.
@@ -221,6 +395,18 @@ def _make_hermes_provider_class() -> Optional[type]:
                         "failed (non-fatal): %s",
                         self._hermes_server_name, exc,
                     )
+
+            # Proactive refresh: silently renew ~5 min before expiry so the
+            # token on disk stays fresh while this process is alive. Cancel
+            # FIRST so a re-_initialize (after disk invalidation or
+            # re-auth) never leaves an orphaned timer racing the new one.
+            self._cancel_proactive_refresh()
+            if (
+                tokens is not None
+                and tokens.refresh_token is not None
+                and self.context.token_expiry_time is not None
+            ):
+                self._schedule_proactive_refresh()
 
         async def _prefetch_oauth_metadata(self) -> None:
             """Fetch PRM + ASM from the well-known endpoints, cache on context.
@@ -561,9 +747,20 @@ class MCPOAuthManager:
 
         Called by ``hermes mcp remove <name>`` and (indirectly) by
         ``hermes mcp login <name>`` during forced re-auth.
+
+        Also cancels any pending proactive-refresh timer so an orphaned
+        callback cannot fire against a deleted/rotated credential.
         """
         with self._entries_lock:
-            self._entries.pop(server_name, None)
+            entry = self._entries.pop(server_name, None)
+
+        if entry is not None and entry.provider is not None:
+            cancel = getattr(entry.provider, "_cancel_proactive_refresh", None)
+            if callable(cancel):
+                try:
+                    cancel()
+                except Exception:  # pragma: no cover -- defensive
+                    pass
 
         from tools.mcp_oauth import remove_oauth_tokens
         remove_oauth_tokens(server_name)

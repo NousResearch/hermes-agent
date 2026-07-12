@@ -324,14 +324,22 @@ class HermesTokenStorage:
         # Legacy token files (pre-Fix-A) have ``expires_in`` but no
         # ``expires_at``. We fall back to the file's mtime as a best-effort
         # wall-clock proxy for when the token was written: if (mtime +
-        # expires_in) is in the past, clamp ``expires_in`` to zero so the
-        # SDK refreshes before the first request. This self-heals one-time
-        # on the next successful ``set_tokens``, which writes the new
-        # ``expires_at`` field. The stored ``expires_at`` is stripped before
-        # model_validate because it's not part of the SDK's OAuthToken schema.
+        # expires_in) is in the past, clamp ``expires_in`` to **-1** so the
+        # SDK refreshes before the first request.
+        #
+        # Why -1, not 0: the MCP SDK's ``calculate_token_expiry`` returns
+        # ``time.time() + int(expires_in)``, and ``is_token_valid`` treats a
+        # falsy ``token_expiry_time`` as "no expiry". ``expires_in=0`` yields
+        # ``token_expiry_time ~= now``; ``time.time() <= now`` is True under
+        # float granularity, so a just-expired token is misclassified as
+        # valid and the SDK ships the stale Bearer (401 -> browser OAuth)
+        # instead of the silent refresh branch. ``expires_in=-1`` yields
+        # ``now - 1``, which is correctly invalid.
+        # The stored ``expires_at`` is stripped before model_validate
+        # because it's not part of the SDK's OAuthToken schema.
         absolute_expiry = data.pop("expires_at", None)
         if absolute_expiry is not None:
-            data["expires_in"] = int(max(absolute_expiry - time.time(), 0))
+            data["expires_in"] = max(int(absolute_expiry - time.time()), -1)
         elif data.get("expires_in") is not None:
             try:
                 file_mtime = self._tokens_path().stat().st_mtime
@@ -340,7 +348,7 @@ class HermesTokenStorage:
             if file_mtime is not None:
                 try:
                     implied_expiry = file_mtime + int(data["expires_in"])
-                    data["expires_in"] = int(max(implied_expiry - time.time(), 0))
+                    data["expires_in"] = max(int(implied_expiry - time.time()), -1)
                 except (TypeError, ValueError):
                     pass
         try:

@@ -16,9 +16,8 @@ A meta-skill that enforces **minimum sufficient effort** to reduce cost, latency
 
 ## Activation
 
-Triggered by:
-- `Mode: cheap`
-- or `Use cost-aware-execution mode: cheap`
+Triggered by the native agent slash command:
+- `/cost-aware-execution`
 
 ---
 
@@ -31,18 +30,18 @@ Triggered by:
 
 ## Tool Suppression
 
-Do NOT use tools for:
+Do NOT invoke native tools like `web_search`, `python_interpreter`, or `code_executor` for:
 - simple arithmetic
 - general knowledge
 - common estimates (prices, ranges, trends)
 - explanations or summaries
 
-Tools are ONLY allowed if:
-- real-time or location-specific accuracy is required
+Native tools are ONLY allowed if:
+- real-time or location-specific accuracy strictly requires `web_search` or system execution
 - OR the user explicitly requests exact/verified data
 
-If a tool is required in cheap mode:
-- ask for confirmation before executing
+If a tool execution is required after activation:
+- ask for confirmation before executing the tool
 - do not auto-execute
 
 ---
@@ -67,24 +66,9 @@ If multiple questions are provided in a single message:
 
 ---
 
-## Modes
-
-### cheap (default)
-- no tool usage unless strictly required
-- prefer approximate answers
-- minimal reasoning
-
-### balanced
-- allow limited verification if needed
-
-### thorough
-- allow deeper reasoning and tool usage
-
----
-
 ## Anti-Patterns (forbidden)
 
-- using tools for general knowledge
+- using tools like `web_search` or `python_interpreter` for general knowledge
 - retrying tool calls unnecessarily
 - continuing after a sufficient answer
 - over-analyzing simple tasks
@@ -100,7 +84,7 @@ If multiple questions are provided in a single message:
 "Price of milk?" → ~$3.50–$4.50 (no tools)
 
 **Real-time query**  
-"Current ETH price" → tools allowed
+"Current ETH price" → tools (`web_search`) allowed
 
 ---
 

@@ -10,6 +10,8 @@ Coverage levels:
   Persistent cache       — save/load, corruption, update, provider isolation
 """
 
+import os
+import stat
 import time
 
 import pytest
@@ -1213,6 +1215,8 @@ class TestFetchModelMetadata:
             fetch_model_metadata(force_refresh=True)
 
         assert cache_path.exists()
+        if os.name != "nt":
+            assert stat.S_IMODE(cache_path.stat().st_mode) == 0o600
         assert "live/model" in cache_path.read_text(encoding="utf-8")
 
     def test_network_failure_falls_back_to_stale_disk_cache(self, tmp_path, monkeypatch):

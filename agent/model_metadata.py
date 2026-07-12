@@ -168,6 +168,7 @@ def _save_model_metadata_disk_cache(data: Dict[str, Dict[str, Any]]) -> None:
             data,
             indent=0,
             separators=(",", ":"),
+            mode=0o600,
         )
     except Exception as e:
         logger.debug("Failed to save OpenRouter model metadata disk cache: %s", e)

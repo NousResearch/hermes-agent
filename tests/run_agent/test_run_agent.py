@@ -2282,6 +2282,131 @@ class TestExecuteToolCalls:
         assert metadata["tool_call_id"] == "mem-1"
         assert messages[-1]["tool_call_id"] == "mem-1"
 
+    def test_memory_paths_use_shared_dispatch(self, agent, monkeypatch):
+        """Direct and sequential execution must route through one memory operation."""
+        from agent import memory_tool_dispatch
+
+        calls = []
+
+        def fake_dispatch(current_agent, args, *, task_id=None, tool_call_id=None):
+            calls.append((current_agent, args, task_id, tool_call_id))
+            return json.dumps({"success": True, "path": len(calls)})
+
+        monkeypatch.setattr(memory_tool_dispatch, "dispatch_memory_tool", fake_dispatch)
+        args = {"action": "add", "target": "memory", "content": "shared fact"}
+
+        direct = agent._invoke_tool(
+            "memory", args, "task-direct", tool_call_id="mem-direct"
+        )
+
+        tc = _mock_tool_call(
+            name="memory", arguments=json.dumps(args), call_id="mem-sequential"
+        )
+        messages = []
+        agent._execute_tool_calls_sequential(
+            _mock_assistant_msg(content="", tool_calls=[tc]),
+            messages,
+            "task-sequential",
+        )
+
+        assert json.loads(direct)["path"] == 1
+        assert json.loads(messages[-1]["content"])["path"] == 2
+        assert [(task_id, tool_call_id) for _, _, task_id, tool_call_id in calls] == [
+            ("task-direct", "mem-direct"),
+            ("task-sequential", "mem-sequential"),
+        ]
+
+    @pytest.mark.parametrize("path", ["direct", "sequential"])
+    def test_memory_paths_forward_batch_and_mirror_committed_writes(
+        self, agent, path
+    ):
+        operations = [
+            {"action": "replace", "old_text": "old", "content": "updated"},
+            {"action": "remove", "old_text": "obsolete"},
+            {"action": "add", "content": "new fact"},
+        ]
+        args = {"target": "user", "operations": operations}
+        mirrored = []
+
+        class FakeMemoryManager(MemoryManager):
+            def has_tool(self, tool_name):
+                return False
+
+            def on_memory_write(self, action, target, content, metadata=None):
+                mirrored.append((action, target, content, dict(metadata or {})))
+
+        agent._memory_manager = FakeMemoryManager()
+        agent._memory_store = object()
+
+        with patch(
+            "tools.memory_tool.memory_tool",
+            return_value=json.dumps({"success": True}),
+        ) as memory_tool:
+            if path == "direct":
+                result = agent._invoke_tool(
+                    "memory", args, "task-1", tool_call_id="mem-1"
+                )
+                assert json.loads(result)["success"] is True
+            else:
+                tc = _mock_tool_call(
+                    name="memory", arguments=json.dumps(args), call_id="mem-1"
+                )
+                messages = []
+                agent._execute_tool_calls_sequential(
+                    _mock_assistant_msg(content="", tool_calls=[tc]),
+                    messages,
+                    "task-1",
+                )
+                assert json.loads(messages[-1]["content"])["success"] is True
+
+        assert memory_tool.call_args.kwargs["operations"] == operations
+        assert [(a, t, c) for a, t, c, _ in mirrored] == [
+            ("replace", "user", "updated"),
+            ("remove", "user", ""),
+            ("add", "user", "new fact"),
+        ]
+        assert all(metadata["tool_call_id"] == "mem-1" for *_, metadata in mirrored)
+
+    @pytest.mark.parametrize("path", ["direct", "sequential"])
+    @pytest.mark.parametrize(
+        "tool_result",
+        [
+            json.dumps({"success": False, "error": "write failed"}),
+            json.dumps({"success": True, "staged": True, "pending_id": "p1"}),
+        ],
+        ids=["failed", "staged"],
+    )
+    def test_memory_paths_do_not_mirror_uncommitted_writes(
+        self, agent, path, tool_result
+    ):
+        mirrored = []
+
+        class FakeMemoryManager(MemoryManager):
+            def has_tool(self, tool_name):
+                return False
+
+            def on_memory_write(self, action, target, content, metadata=None):
+                mirrored.append((action, target, content, metadata))
+
+        agent._memory_manager = FakeMemoryManager()
+        agent._memory_store = object()
+        args = {"action": "add", "target": "memory", "content": "candidate"}
+
+        with patch("tools.memory_tool.memory_tool", return_value=tool_result):
+            if path == "direct":
+                agent._invoke_tool("memory", args, "task-1", tool_call_id="mem-1")
+            else:
+                tc = _mock_tool_call(
+                    name="memory", arguments=json.dumps(args), call_id="mem-1"
+                )
+                agent._execute_tool_calls_sequential(
+                    _mock_assistant_msg(content="", tool_calls=[tc]),
+                    [],
+                    "task-1",
+                )
+
+        assert mirrored == []
+
     def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])

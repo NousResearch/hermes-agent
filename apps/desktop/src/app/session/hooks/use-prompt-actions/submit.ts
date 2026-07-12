@@ -15,6 +15,7 @@ import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
+import { sessionRoute } from '../../../routes'
 import type { ClientSessionState } from '../../../types'
 
 import {
@@ -120,11 +121,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // redirect the user's text into a different chat (#54527).
       const startingActiveSessionId = activeSessionIdRef.current
       const startingStoredSessionId = selectedStoredSessionIdRef.current
-      const startingRouteToken = getRouteToken()
+      let expectedStoredSessionId = startingStoredSessionId
+      let expectedRouteToken = getRouteToken()
 
       const sessionContextDrifted = (): boolean =>
-        selectedStoredSessionIdRef.current !== startingStoredSessionId ||
-        getRouteToken() !== startingRouteToken
+        selectedStoredSessionIdRef.current !== expectedStoredSessionId || getRouteToken() !== expectedRouteToken
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
@@ -281,10 +282,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
-        if (sessionContextDrifted()) {
-          return abortForSessionSwitch(sessionId)
-        }
-
         if (!sessionId) {
           dropOptimistic(null)
           releaseBusy()
@@ -293,6 +290,26 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
+        // session.create deliberately promotes the fresh draft onto its new
+        // stored-session route. Accept only that exact promotion: post-create
+        // work (for example applying an armed YOLO mode) can await before this
+        // function regains control, so the user may genuinely switch chats in
+        // that window. Never rebase the guard onto an unrelated destination.
+        const promotedStoredSessionId = selectedStoredSessionIdRef.current
+        const promotedRouteToken = getRouteToken()
+
+        const promotionIsCurrent =
+          activeSessionIdRef.current === sessionId &&
+          (promotedStoredSessionId
+            ? promotedRouteToken === sessionRoute(promotedStoredSessionId)
+            : promotedRouteToken === expectedRouteToken)
+
+        if (!promotionIsCurrent) {
+          return abortForSessionSwitch(sessionId)
+        }
+
+        expectedStoredSessionId = promotedStoredSessionId
+        expectedRouteToken = promotedRouteToken
         seedOptimistic(sessionId)
       }
 

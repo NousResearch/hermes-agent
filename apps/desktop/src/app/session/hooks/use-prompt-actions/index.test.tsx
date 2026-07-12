@@ -1294,7 +1294,14 @@ describe('usePromptActions sleep/wake session recovery', () => {
   })
 
   it('still creates a new session for a genuine new-chat draft (no stored session selected)', async () => {
-    const createBackendSessionForSend = vi.fn(async () => RUNTIME_SESSION_ID)
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = RUNTIME_SESSION_ID
+
+      return RUNTIME_SESSION_ID
+    })
+
     const calls: string[] = []
 
     const requestGateway = vi.fn(async (method: string) => {
@@ -1307,6 +1314,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     render(
       <Harness
         activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
         createBackendSessionForSend={createBackendSessionForSend}
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
@@ -1320,6 +1328,99 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
     expect(calls).not.toContain('session.resume')
+  })
+
+  it('submits the first message after session creation routes to the newly titled chat', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/'
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = RUNTIME_SESSION_ID
+      selectedStoredSessionIdRef.current = STORED_SESSION_ID
+      routeToken = `/${STORED_SESSION_ID}`
+
+      return RUNTIME_SESSION_ID
+    })
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    const ok = await handle!.submitText('first message becomes the title and must also send')
+
+    expect(ok).toBe(true)
+    expect(calls).toContainEqual({
+      method: 'prompt.submit',
+      params: {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'first message becomes the title and must also send'
+      }
+    })
+  })
+
+  it('aborts when the user switches chats during post-create async work', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/'
+    const calls: string[] = []
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      // session.create performs its intentional promotion first.
+      activeSessionIdRef.current = RUNTIME_SESSION_ID
+      selectedStoredSessionIdRef.current = STORED_SESSION_ID
+      routeToken = `/${STORED_SESSION_ID}`
+      await Promise.resolve()
+
+      // Then the user selects another chat while post-create work is pending.
+      activeSessionIdRef.current = 'runtime-session-b'
+      selectedStoredSessionIdRef.current = 'stored-session-b'
+      routeToken = '/stored-session-b'
+
+      return RUNTIME_SESSION_ID
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    expect(await handle!.submitText('must not follow the user into chat B')).toBe(false)
+    expect(calls).not.toContain('prompt.submit')
   })
 })
 

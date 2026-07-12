@@ -270,13 +270,31 @@ def _extract_attachments(msg: dict) -> List[dict]:
                 # Unknown non-text content type
                 attachments.append({"type": ptype, "data": part})
 
-    # MEDIA: tags in text content
+    # MEDIA: tags and markdown image URLs in text content. Reuse the gateway's
+    # canonical extractors so spaced paths, quoted paths, and cleanup rules do
+    # not diverge between native delivery and the MCP attachment view.
     text = _extract_message_content(msg)
     if text:
-        media_pattern = re.compile(r'MEDIA:\s*(\S+)')
-        for match in media_pattern.finditer(text):
-            path = match.group(1)
-            attachments.append({"type": "media", "path": path})
+        from gateway.platforms.base import BasePlatformAdapter
+
+        seen_media = {
+            item.get("path") for item in attachments if item.get("type") == "media"
+        }
+        media, _ = BasePlatformAdapter.extract_media(text)
+        for path, _is_voice in media:
+            if path not in seen_media:
+                attachments.append({"type": "media", "path": path})
+                seen_media.add(path)
+
+        image_scan = BasePlatformAdapter._mask_protected_spans(text)
+        images, _ = BasePlatformAdapter.extract_images(image_scan)
+        seen_images = {
+            item.get("url") for item in attachments if item.get("type") == "image"
+        }
+        for url, _alt_text in images:
+            if url not in seen_images:
+                attachments.append({"type": "image", "url": url})
+                seen_images.add(url)
 
     return attachments
 

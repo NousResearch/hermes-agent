@@ -347,6 +347,65 @@ class TestAttachmentExtraction:
         msg = {"content": "MEDIA: /a.png and MEDIA: /b.mp3"}
         assert len(_extract_attachments(msg)) == 2
 
+    def test_multiple_no_space_media_tags(self):
+        from mcp_serve import _extract_attachments
+
+        msg = {"content": "MEDIA:/a.png MEDIA:/b.mp3"}
+        assert _extract_attachments(msg) == [
+            {"type": "media", "path": "/a.png"},
+            {"type": "media", "path": "/b.mp3"},
+        ]
+
+    def test_media_tag_with_spaces_uses_canonical_path_extractor(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": "MEDIA: /tmp/my chart.png"}
+        assert _extract_attachments(msg) == [
+            {"type": "media", "path": "/tmp/my chart.png"}
+        ]
+
+    def test_extensionless_media_uses_canonical_path_extractor(self, tmp_path):
+        from mcp_serve import _extract_attachments
+
+        artifact = tmp_path / "Dockerfile"
+        artifact.write_text("FROM scratch")
+        msg = {"content": f"MEDIA: {artifact}"}
+        assert _extract_attachments(msg) == [
+            {"type": "media", "path": str(artifact.resolve())}
+        ]
+
+    def test_media_example_in_code_block_is_not_reported(self):
+        from mcp_serve import _extract_attachments
+
+        msg = {"content": "```text\nMEDIA: /tmp/example.png\n```"}
+        assert _extract_attachments(msg) == []
+
+    def test_markdown_image_url_in_text_is_reported(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": "![chart](https://example.com/chart.png)"}
+        assert _extract_attachments(msg) == [
+            {"type": "image", "url": "https://example.com/chart.png"}
+        ]
+
+    def test_markdown_image_examples_in_protected_spans_are_not_reported(self):
+        from mcp_serve import _extract_attachments
+
+        for content in (
+            "```md\n![chart](https://example.com/chart.png)\n```",
+            "`![chart](https://example.com/chart.png)`",
+            "> ![chart](https://example.com/chart.png)",
+        ):
+            assert _extract_attachments({"content": content}) == []
+
+    def test_result_markers_remain_text_only(self):
+        from mcp_serve import _extract_attachments
+        msg = {
+            "content": (
+                "RESULT=PASS\nEXIT_CODE=0\nARTIFACT=/tmp/chart.png\n"
+                "SUMMARY=fixture passed"
+            )
+        }
+        assert _extract_attachments(msg) == []
+
     def test_no_attachments(self):
         from mcp_serve import _extract_attachments
         assert _extract_attachments({"content": "plain text"}) == []

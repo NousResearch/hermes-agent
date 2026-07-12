@@ -338,6 +338,21 @@ class TestExtractMedia:
         media, _ = BasePlatformAdapter.extract_media(content)
         assert len(media) == 2
 
+    def test_multiple_media_tags_on_one_line(self):
+        content = "MEDIA: /a.png and MEDIA: /b.mp3"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/a.png", False), ("/b.mp3", False)]
+        assert cleaned == "and"
+
+    def test_multiple_no_space_media_tags_on_one_line(self):
+        for content in (
+            "MEDIA: /a.png and MEDIA:/b.mp3",
+            "MEDIA:/a.png and MEDIA:/b.mp3",
+            "MEDIA:/a.png MEDIA:/b.mp3",
+        ):
+            media, _cleaned = BasePlatformAdapter.extract_media(content)
+            assert media == [("/a.png", False), ("/b.mp3", False)]
+
     def test_voice_directive_removed_from_content(self):
         content = "[[audio_as_voice]]\nSome text\nMEDIA:/voice.ogg"
         _, cleaned = BasePlatformAdapter.extract_media(content)

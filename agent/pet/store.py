@@ -75,13 +75,9 @@ def _read_pet_json(directory: Path) -> dict:
 def _sprite_version_number(meta: dict) -> int:
     """Return a positive manifest sprite version, defaulting malformed values to v1."""
     raw = meta.get("spriteVersionNumber", 1)
-    if isinstance(raw, bool):
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
         return 1
-    try:
-        version = int(raw)
-    except (TypeError, ValueError):
-        return 1
-    return version if version >= 1 else 1
+    return raw
 
 
 def _resolve_spritesheet(directory: Path, meta: dict) -> Path:

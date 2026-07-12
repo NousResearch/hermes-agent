@@ -19,12 +19,22 @@ export function supportsPetLookDirections(info: PetLookCapability): boolean {
   return info.spriteVersionNumber === 2 && info.lookDirectionCount === PET_V2_LOOK_DIRECTION_COUNT
 }
 
+/** Gaze is an idle-only presentation; roam motion and travel retain priority. */
+export function shouldEnablePetGaze(
+  info: PetLookCapability,
+  atRest: boolean,
+  motion: null | string,
+  roamDirection: number
+): boolean {
+  return atRest && motion === null && roamDirection === 0 && supportsPetLookDirections(info)
+}
+
 /**
  * Map a pointer vector to one of the 16 v2 look cells.
  *
  * The atlas starts at north (000°), advances clockwise in 22.5° steps, and
- * packs eight cells per row across rows 9 and 10. Inside the deadzone the
- * caller should keep rendering the normal idle animation.
+ * packs eight cells per row across rows 9 and 10. Inside the deadzone this
+ * returns null so the caller can render the fixed neutral v2 frame.
  */
 export function lookCellForVector(dx: number, dy: number, deadzone: number): PetLookCell | null {
   if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.hypot(dx, dy) <= Math.max(0, deadzone)) {

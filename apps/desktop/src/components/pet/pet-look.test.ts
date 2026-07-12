@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { lookCellForVector, supportsPetLookDirections } from './pet-look'
+import { lookCellForVector, shouldEnablePetGaze, supportsPetLookDirections } from './pet-look'
 
 describe('supportsPetLookDirections', () => {
   it('requires the validated v2 capability from the gateway', () => {
@@ -8,6 +8,17 @@ describe('supportsPetLookDirections', () => {
     expect(supportsPetLookDirections({ lookDirectionCount: 0, spriteVersionNumber: 2 })).toBe(false)
     expect(supportsPetLookDirections({ lookDirectionCount: 16, spriteVersionNumber: 1 })).toBe(false)
     expect(supportsPetLookDirections({})).toBe(false)
+  })
+})
+
+describe('shouldEnablePetGaze', () => {
+  const v2 = { lookDirectionCount: 16, spriteVersionNumber: 2 }
+
+  it('only enables gaze while the agent and roam loop are both idle', () => {
+    expect(shouldEnablePetGaze(v2, true, null, 0)).toBe(true)
+    expect(shouldEnablePetGaze(v2, false, null, 0)).toBe(false)
+    expect(shouldEnablePetGaze(v2, true, 'jump', 0)).toBe(false)
+    expect(shouldEnablePetGaze(v2, true, 'run', 1)).toBe(false)
   })
 })
 
@@ -25,7 +36,7 @@ describe('lookCellForVector', () => {
     expect(lookCellForVector(dx as number, dy as number, 10)).toEqual({ column, row })
   })
 
-  it('uses the neutral animation inside the pointer deadzone', () => {
+  it('signals the fixed neutral frame inside the pointer deadzone', () => {
     expect(lookCellForVector(3, 4, 5)).toBeNull()
   })
 

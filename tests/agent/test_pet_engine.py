@@ -166,10 +166,15 @@ def test_store_reads_v2_sprite_version(boba_like):
     assert store.load_pet("boba").sprite_version_number == 2
 
     # Malformed metadata must fail closed to the legacy contract.
-    pet_json.write_text(
-        '{"id":"boba","displayName":"Boba","spriteVersionNumber":"future","spritesheetPath":"spritesheet.webp"}'
-    )
-    assert store.load_pet("boba").sprite_version_number == 1
+    for malformed in ('"future"', "2.9", "1e1000", "true"):
+        pet_json.write_text(
+            '{"id":"boba","displayName":"Boba","spriteVersionNumber":'
+            + malformed
+            + ',"spritesheetPath":"spritesheet.webp"}'
+        )
+        pet = store.load_pet("boba")
+        assert pet is not None
+        assert pet.sprite_version_number == 1
 
 
 def test_store_remove(boba_like):

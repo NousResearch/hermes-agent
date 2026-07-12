@@ -174,10 +174,11 @@ nine rows:
   deadzone and while the pointer is outside the host window.
 - `pet.json` must declare `"spriteVersionNumber": 2`.
 
-Hermes enables directional gaze only when both the manifest version and exact
-8×11 geometry validate. A malformed or mislabeled package safely falls back to
-the standard animation rows. The terminal renderer intentionally continues to
-use those state rows because a terminal surface has no pointer to follow.
+Hermes enables directional gaze only when the manifest version, exact 8×11
+geometry, neutral cell, and all 16 directional cells validate. A malformed,
+incomplete, or mislabeled package safely falls back to the standard animation
+rows. The terminal renderer intentionally continues to use those state rows
+because a terminal surface has no pointer to follow.
 
 ## Configuration
 

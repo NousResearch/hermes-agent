@@ -9,6 +9,7 @@ import { persistString, storedString } from '@/lib/storage'
 import {
   $petAtRest,
   $petInfo,
+  $petMotion,
   $petRoam,
   $petRoamDir,
   clearPetUnread,
@@ -22,7 +23,7 @@ import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { supportsPetLookDirections } from './pet-look'
+import { shouldEnablePetGaze } from './pet-look'
 import { PetSprite, roamWalkRow } from './pet-sprite'
 import { usePetRoam } from './use-pet-roam'
 import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
@@ -123,6 +124,7 @@ export function FloatingPet() {
   const overlayActive = useStore($petOverlayActive)
   const roamEnabled = useStore($petRoam)
   const atRest = useStore($petAtRest)
+  const motion = useStore($petMotion)
   const roamDir = useStore($petRoamDir)
   const routeOverlayOpen = useRouteOverlayActive()
 
@@ -133,6 +135,7 @@ export function FloatingPet() {
   const spriteWrapRef = useRef<HTMLDivElement | null>(null)
   const petW = (info.frameW ?? 192) * (info.scale ?? 0.33)
   const petH = (info.frameH ?? 208) * (info.scale ?? 0.33)
+  const gazeEnabled = shouldEnablePetGaze(info, atRest, motion, roamDir)
   // Soft contact shadow, sized off the pet so every scale/species grounds the
   // same way (cf. lairp's per-actor feet ellipse). Lighter on light backgrounds.
   const shadowW = Math.round(petW * 0.55)
@@ -329,10 +332,10 @@ export function FloatingPet() {
       el.style.top = `${next.y}px`
 
       if (spriteWrapRef.current) {
-        spriteWrapRef.current.style.transform = facing(next.x, petW)
+        spriteWrapRef.current.style.transform = gazeEnabled ? 'none' : facing(next.x, petW)
       }
     },
-    [clamp, petW]
+    [clamp, gazeEnabled, petW]
   )
 
   const onPointerUp = useCallback((e: React.PointerEvent) => {
@@ -406,7 +409,6 @@ export function FloatingPet() {
   // While roaming, drive the directional run row + mirror from the travel
   // direction; validated v2 pets use their fixed look cells while resting.
   const walk = roamWalkRow(roamDir, info.stateRows)
-  const gazeEnabled = atRest && roamDir === 0 && supportsPetLookDirections(info)
 
   // While popped out, the desktop overlay window owns the mascot — hide the
   // in-window one so there aren't two.

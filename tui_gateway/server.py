@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -6595,19 +6596,45 @@ def _clone_pet_payload(payload: dict) -> dict:
     return out
 
 
+@lru_cache(maxsize=32)
+def _pet_v2_cells_valid(spritesheet: str, mtime_ns: int, size: int) -> bool:
+    """Validate and cache the geometry/content required by the v2 gaze contract."""
+    del mtime_ns, size  # cache-key revision inputs; the path is the value input
+    from PIL import Image
+
+    from agent.pet import constants
+
+    with Image.open(spritesheet) as image:
+        if image.width != constants.FRAME_W * 8 or image.height != constants.FRAME_H * 11:
+            return False
+
+        rgba = image.convert("RGBA")
+        required_cells = [(0, 6), *[(9 + index // 8, index % 8) for index in range(16)]]
+        for row, column in required_cells:
+            left = column * constants.FRAME_W
+            top = row * constants.FRAME_H
+            alpha_extrema = rgba.crop(
+                (left, top, left + constants.FRAME_W, top + constants.FRAME_H)
+            ).getchannel("A").getextrema()
+            alpha_max = alpha_extrema[1]
+            if not isinstance(alpha_max, (int, float)) or alpha_max <= 8:
+                return False
+    return True
+
+
 def _pet_look_direction_count(pet) -> int:
-    """Return the supported v2 gaze-frame count, gated by manifest and geometry."""
+    """Return the supported v2 gaze-frame count, gated by manifest and sheet."""
     if getattr(pet, "sprite_version_number", 1) != 2:
         return 0
     try:
-        from PIL import Image
-
-        from agent.pet import constants
-
-        with Image.open(pet.spritesheet) as image:
-            if image.width != constants.FRAME_W * 8 or image.height != constants.FRAME_H * 11:
-                return 0
-        return 16
+        stat = pet.spritesheet.stat()
+        return (
+            16
+            if _pet_v2_cells_valid(
+                str(pet.spritesheet), stat.st_mtime_ns, stat.st_size
+            )
+            else 0
+        )
     except Exception:  # noqa: BLE001 - cosmetic, never break the surface
         return 0
 

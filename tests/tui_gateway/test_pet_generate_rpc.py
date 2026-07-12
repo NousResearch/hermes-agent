@@ -274,3 +274,30 @@ def test_v2_look_capability_requires_manifest_and_11_row_geometry():
     legacy = install("legacy-tall", rows=11, version=1)
     assert legacy is not None
     assert server._pet_sprite_payload(legacy, scale=0.7)["lookDirectionCount"] == 0
+
+
+@pytest.mark.parametrize("blank_cell", [(0, 6), (9, 0), (10, 7)])
+def test_v2_look_capability_rejects_blank_required_cells(blank_cell):
+    import json
+
+    from agent.pet import constants, store
+
+    sheet = Image.new(
+        "RGBA",
+        (constants.FRAME_W * 8, constants.FRAME_H * 11),
+        (80, 120, 220, 255),
+    )
+    row, column = blank_cell
+    sheet.paste(
+        Image.new("RGBA", (constants.FRAME_W, constants.FRAME_H), (0, 0, 0, 0)),
+        (column * constants.FRAME_W, row * constants.FRAME_H),
+    )
+    pet = store.register_local_pet(sheet, slug=f"blank-{row}-{column}")
+    manifest = pet.directory / "pet.json"
+    meta = json.loads(manifest.read_text(encoding="utf-8"))
+    meta["spriteVersionNumber"] = 2
+    manifest.write_text(json.dumps(meta), encoding="utf-8")
+    pet = store.load_pet(pet.slug)
+
+    assert pet is not None
+    assert server._pet_sprite_payload(pet, scale=0.7)["lookDirectionCount"] == 0

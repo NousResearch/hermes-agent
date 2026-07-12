@@ -1,5 +1,7 @@
 # Hermes Notebook platform
 
+![Hermes Notebook on handwriting-first tablets](../../../apps/notebook-android/docs/hermes-notebook-hero.png)
+
 The Notebook platform connects handwriting-oriented clients to the normal
 Hermes Gateway message pipeline:
 
@@ -107,6 +109,12 @@ context:
   `artifact_type: "html"` when the Kindle user is annotating rendered HTML.
 - `ocr_raw` and `ocr_cleaned`: raw and cleaned handwriting transcriptions when
   ambiguity matters.
+
+OCR is untrusted input. Bridges should crop and render ink at high resolution,
+retain word spacing, compare more than one reading when practical, and propagate
+uncertainty instead of silently selecting a literal acronym. When readings
+disagree on a name, date, amount, command, or search term, ask the user to choose
+before invoking broad or consequential tools.
 
 These hints support notebook QoL without making the adapter own UI behavior:
 the bridge can show one-tap intents, progress heartbeats, and short-first

@@ -1,6 +1,13 @@
 # Hermes Notebook for Android and BOOX
 
+![Hermes Notebook on handwriting-first tablets](docs/hermes-notebook-hero.png)
+
 Native, offline-safe stylus client for the Hermes Notebook platform.
+
+Hermes Notebook turns stylus notes into normal Hermes conversations: capture
+ink locally, recognize handwriting on-device, and send the transcription
+through the authenticated Notebook gateway to the same sessions, memory, tools,
+and agent personality used by other Hermes channels.
 
 > [!IMPORTANT]
 > This APK is a client, not a standalone Hermes installation. Sending pages to
@@ -43,6 +50,27 @@ Open this directory in Android Studio or run `gradlew.bat assembleDebug` after i
 Install the debug APK from `app/build/outputs/apk/debug/app-debug.apk` with ADB or BOOX's APK installer.
 
 Physical-device testers should follow [BOOX-TESTING.md](BOOX-TESTING.md).
+
+## Handwriting recognition and ambiguity
+
+The Android client sends both the recognized text and device metadata to the
+Notebook gateway. Recognition quality depends on the device, pen sampling, the
+downloaded ML Kit language model, and the writing itself. For the most reliable
+results:
+
+- write dark ink on a plain background with visible gaps between words;
+- avoid joining short acronyms into one continuous glyph;
+- keep the tablet online for the first recognition so ML Kit can download its
+  English model;
+- verify names, dates, amounts, and commands before allowing consequential tool
+  work; and
+- preserve the offline page when recognition or delivery fails so it can be
+  retried without rewriting the note.
+
+Companion bridges should retain raw and cleaned OCR readings, attach uncertainty
+context, and ask for clarification before broad searches when a meaningful term
+is ambiguous. The adapter accepts `ocr_raw` and `ocr_cleaned` metadata for this
+purpose; it must not treat uncertain OCR as authoritative user intent.
 
 ## Current milestone
 

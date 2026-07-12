@@ -1,5 +1,7 @@
 # BOOX tester guide (Mac Swan)
 
+![Hermes Notebook on handwriting-first tablets](docs/hermes-notebook-hero.png)
+
 Thank you for testing Hermes Notebook. This is an early debug build: use a
 non-critical notebook page and do not enter secrets into screenshots or bug reports.
 
@@ -47,6 +49,10 @@ Tailscale on BOOX, join the operator-approved tailnet, and use the private
 6. Confirm a Hermes reply appears and contains the recognized handwriting.
 7. Close the app, reopen it, and confirm the page returns.
 
+If the recognized text is ambiguous, Hermes should ask what you meant before it
+starts a broad file, session, database, or web search. Include the intended text,
+the displayed transcription, and a screenshot of the ink in the bug report.
+
 ## 4. Pen test matrix
 
 Please report the exact BOOX model, firmware/Android version, and pen model, then test:
@@ -71,6 +77,7 @@ For every defect, include:
 - Exact action that triggered it.
 - Whether the saved page survived restart.
 - Whether the visible ink, recognized text, or Hermes reply was wrong.
+- The exact text you intended to write and every alternative the app displayed.
 - A screenshot or short screen recording when safe.
 - Approximate pen delay: instant, noticeable, or unusable.
 - Any screen ghosting or flashing.

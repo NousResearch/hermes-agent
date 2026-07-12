@@ -889,6 +889,11 @@ POSIX-newline files to CRLF.
 every Hermes tool and most Windows APIs. Prefer forward slashes in code
 and logs — avoids shell-escaping backslashes in bash.
 
+**MSYS path conversion.** In git-bash / MSYS, `/c/Users/foo` means
+`C:\Users\foo`, not `C:\c\Users\foo`. The leading `/c` is the drive mount
+point and must be stripped when converting to a native Windows path. Do not
+naively prepend `C:\` to an MSYS path.
+
 ---
 
 ## Troubleshooting

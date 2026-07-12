@@ -921,7 +921,9 @@ _WINDOWS_BASH_SHELL_HINT = (
     "bash (git-bash / MSYS), NOT PowerShell or cmd.exe. Use POSIX shell "
     "syntax (`ls`, `$HOME`, `&&`, `|`, single-quoted strings) inside terminal "
     "calls. MSYS-style paths like `/c/Users/<user>/...` work alongside "
-    "native `C:\\Users\\<user>\\...` paths. PowerShell builtins "
+    "native `C:\\Users\\<user>\\...` paths; `/c/Users/<user>/...` maps to "
+    "`C:\\Users\\<user>\\...`, NOT `C:\\c\\Users\\<user>\\...`. Never prepend "
+    "`C:\\` to an MSYS path without stripping the leading `/c/`. PowerShell builtins "
     "(`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their "
     "POSIX equivalents (`ls`, `$FOO`, `grep`)."
 )

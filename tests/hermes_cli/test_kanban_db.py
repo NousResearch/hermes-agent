@@ -788,6 +788,147 @@ def test_detect_crashed_workers_isolated_failure_normal_retry(
             )
 
 
+def _arm_running_dead_pid(conn, tid, pid, host):
+    """Put ``tid`` into ``running`` with a (dead) worker pid + host-local
+    claim so the next ``detect_crashed_workers`` sweep sees it as crashed.
+    Leaves ``started_at`` NULL so the launch-window grace never suppresses
+    the reclaim (mirrors the sibling systemic/isolated tests)."""
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, "
+        "claim_lock=?, started_at=NULL WHERE id=?",
+        (pid, f"{host}:w{pid}", tid),
+    )
+    conn.commit()
+
+
+def test_detect_crashed_workers_isolated_honours_configured_failure_limit(
+    kanban_home, monkeypatch,
+):
+    """Regression: an ordinary (non-systemic, non-protocol) PID-death crash
+    must honour the configured ``kanban.failure_limit`` on the crash path.
+
+    Before the fix, ``detect_crashed_workers`` hardcoded
+    ``failure_limit=... else None`` which fell to ``DEFAULT_FAILURE_LIMIT``
+    (2), so a card with an owner-set limit of 4 auto-blocked at the 2nd
+    crash regardless of config. It must now stay retryable through the
+    3rd crash and only block on the 4th.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    host = _kb._claimer_id().split(":", 1)[0]
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="isolated-crasher", assignee="a")
+
+        # Crashes 1..3 with configured limit=4 must NOT block the card.
+        for attempt in range(1, 4):
+            _arm_running_dead_pid(conn, tid, 70000 + attempt, host)
+            crashed = kb.detect_crashed_workers(conn, failure_limit=4)
+            assert crashed == [tid]
+            task = kb.get_task(conn, tid)
+            assert task.consecutive_failures == attempt
+            assert task.status == "ready", (
+                f"crash #{attempt} with failure_limit=4 must stay retryable, "
+                f"got status={task.status} (config being ignored → capped at "
+                f"DEFAULT_FAILURE_LIMIT)"
+            )
+
+        # 4th crash reaches the configured threshold → auto-block.
+        _arm_running_dead_pid(conn, tid, 70004, host)
+        kb.detect_crashed_workers(conn, failure_limit=4)
+        task = kb.get_task(conn, tid)
+        assert task.consecutive_failures == 4
+        assert task.status == "blocked", (
+            f"crash #4 should trip the breaker at configured limit=4, "
+            f"got {task.status}"
+        )
+
+
+def test_detect_crashed_workers_systemic_trips_early_despite_high_limit(
+    kanban_home, monkeypatch,
+):
+    """The anti-loop override must survive the fix: a genuine systemic
+    failure (>=3 same-fingerprint crashes in one sweep) still trips at the
+    first sweep even when the configured ``failure_limit`` is high (4)."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    host = _kb._claimer_id().split(":", 1)[0]
+
+    with kb.connect() as conn:
+        task_ids = []
+        for i in range(3):
+            tid = kb.create_task(conn, title=f"sys-{i}", assignee="a")
+            _arm_running_dead_pid(conn, tid, 60000 + i, host)
+            task_ids.append(tid)
+
+        crashed = kb.detect_crashed_workers(conn, failure_limit=4)
+        assert len(crashed) == 3
+
+        for tid in task_ids:
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked", (
+                f"systemic crash must force an early trip despite "
+                f"failure_limit=4; task {tid} got {task.status}"
+            )
+            assert task.consecutive_failures == 1
+
+
+def test_enforce_max_runtime_honours_configured_failure_limit(
+    kanban_home, monkeypatch,
+):
+    """The runtime-timeout path must also thread the configured
+    ``failure_limit``: two timeouts under limit=4 stay retryable where the
+    old hardcoded ``DEFAULT_FAILURE_LIMIT`` (2) would have auto-blocked."""
+    import hermes_cli.kanban_db as _kb
+
+    state = {"sent_term": False}
+    monkeypatch.setattr(
+        _kb, "_pid_alive", lambda _pid: not state["sent_term"],
+    )
+
+    def _signal(pid, sig):
+        import signal as _sig
+        if sig == _sig.SIGTERM:
+            state["sent_term"] = True
+
+    host = _kb._claimer_id().split(":", 1)[0]
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="slow", assignee="a", max_runtime_seconds=1,
+        )
+        for attempt in range(1, 3):
+            long_ago = int(time.time()) - 30
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status='running', claim_lock=?, "
+                    "claim_expires=?, worker_pid=?, started_at=? WHERE id=?",
+                    (f"{host}:lock", int(time.time()) + 3600,
+                     os.getpid(), long_ago, tid),
+                )
+                conn.execute(
+                    "INSERT INTO task_runs (task_id, status, claim_lock, "
+                    "claim_expires, worker_pid, started_at) "
+                    "VALUES (?, 'running', ?, ?, ?, ?)",
+                    (tid, f"{host}:lock", int(time.time()) + 3600,
+                     os.getpid(), long_ago),
+                )
+                rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                conn.execute(
+                    "UPDATE tasks SET current_run_id=? WHERE id=?", (rid, tid),
+                )
+            state["sent_term"] = False
+            kb.enforce_max_runtime(conn, signal_fn=_signal, failure_limit=4)
+            task = kb.get_task(conn, tid)
+            assert task.consecutive_failures == attempt
+            assert task.status == "ready", (
+                f"timeout #{attempt} with failure_limit=4 must stay retryable, "
+                f"got {task.status}"
+            )
+
+
 def test_detect_crashed_workers_skips_freshly_claimed_tasks(
     kanban_home, monkeypatch,
 ):

@@ -6086,6 +6086,7 @@ def enforce_max_runtime(
     conn: sqlite3.Connection,
     *,
     signal_fn=None,
+    failure_limit: int = None,
 ) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
@@ -6098,6 +6099,12 @@ def enforce_max_runtime(
     Runs host-local: only tasks claimed by this host are candidates
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
     test hook; defaults to ``os.kill`` on POSIX.
+
+    ``failure_limit`` is the configured ``kanban.failure_limit`` threshold
+    threaded through ``dispatch_once`` (same value ``recompute_ready``
+    receives). It governs how many timeouts a task may accrue before the
+    breaker trips. ``None`` (direct callers / tests) falls through to
+    ``DEFAULT_FAILURE_LIMIT`` inside ``_record_task_failure``.
     """
     import signal
     timed_out: list[str] = []
@@ -6189,6 +6196,10 @@ def enforce_max_runtime(
                 conn, tid,
                 error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
                 outcome="timed_out",
+                # Honour the configured ``kanban.failure_limit`` on the
+                # runtime-timeout path too; None falls through to
+                # ``DEFAULT_FAILURE_LIMIT`` for direct callers / tests.
+                failure_limit=failure_limit,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "sigkill": killed},
@@ -6343,8 +6354,20 @@ def _error_fingerprint(error_text: str) -> str:
     return fp.lower().strip()
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection, *, failure_limit: int = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
+
+    ``failure_limit`` is the configured ``kanban.failure_limit`` threshold
+    (the gateway threads it through ``dispatch_once`` exactly like it does
+    for ``recompute_ready``). It governs how many times an *ordinary* single
+    crash may retry before the breaker trips. ``None`` (the default for
+    direct callers / tests) falls through to ``DEFAULT_FAILURE_LIMIT`` inside
+    ``_record_task_failure``. Note: a protocol-violation or systemic crash
+    still forces an immediate trip (limit 1) regardless of this value — that
+    anti-loop override is intentional; the configured floor only applies to
+    ordinary isolated crashes.
 
     Appends a ``crashed`` event and drops the task back to ``ready``.
     Different from ``release_stale_claims``: this checks liveness
@@ -6522,7 +6545,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
-                failure_limit=1 if (protocol_violation or is_systemic) else None,
+                # Protocol-violation / systemic crashes force an immediate
+                # trip (anti-loop). An ordinary isolated crash honours the
+                # configured ``kanban.failure_limit`` (``failure_limit``);
+                # None falls through to ``DEFAULT_FAILURE_LIMIT``.
+                failure_limit=(
+                    1 if (protocol_violation or is_systemic)
+                    else failure_limit
+                ),
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},
@@ -7064,7 +7094,7 @@ def _dispatch_once_locked(
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, failure_limit=failure_limit)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.
@@ -7081,7 +7111,7 @@ def _dispatch_once_locked(
     )
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
-    result.timed_out = enforce_max_runtime(conn)
+    result.timed_out = enforce_max_runtime(conn, failure_limit=failure_limit)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather

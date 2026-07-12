@@ -1177,9 +1177,17 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     elif base.endswith("/health"):
         base = base[: -len("/health")]
 
+    # /health/detailed requires the same Bearer auth as other API routes.
+    # Include the API_SERVER_KEY so the detailed probe doesn't log a 401
+    # warning on every poll cycle.  /health is unauthenticated and is the
+    # fallback when the detailed endpoint is unavailable.
+    _api_key = os.getenv("API_SERVER_KEY", "")
+
     for path in (f"{base}/health/detailed", f"{base}/health"):
         try:
             req = urllib.request.Request(path, method="GET")
+            if _api_key and "health/detailed" in path:
+                req.add_header("Authorization", f"Bearer {_api_key}")
             with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
                     body = json.loads(resp.read())

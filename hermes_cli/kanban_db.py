@@ -2411,6 +2411,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    execution_route_override: Optional[dict[str, str]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2436,6 +2437,17 @@ def create_task(
     translation skill regardless of the profile's default config).
     """
     assignee = _canonical_assignee(assignee)
+    route_override: dict[str, str] = {}
+    if execution_route_override is not None:
+        if not isinstance(execution_route_override, dict):
+            raise ValueError("execution_route_override must be a mapping")
+        unknown = set(execution_route_override) - {"profile", "provider", "model", "credential_ref"}
+        if unknown:
+            raise ValueError(f"unknown execution route override field(s): {', '.join(sorted(unknown))}")
+        route_override = {
+            key: str(value).strip()[:120]
+            for key, value in execution_route_override.items() if str(value).strip()
+        }
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -2684,6 +2696,11 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if route_override:
+                    _append_event(
+                        conn, task_id, "execution_route_override",
+                        {"route": route_override},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -6012,17 +6029,18 @@ def _trim_worker_exit_context(*, now: Optional[float] = None) -> None:
     """Bound retained exit evidence and release exited ``Popen`` references."""
     now = time.time() if now is None else now
     cutoff = now - _RECENT_WORKER_EXIT_TTL_SECONDS
-    for pid in list(_worker_exit_context):
-        entry = _recent_worker_exits.get(pid)
-        if entry is None or entry[1] < cutoff:
-            _worker_exit_context.pop(pid, None)
-    if len(_worker_exit_context) > _RECENT_WORKER_EXITS_MAX:
-        ordered = sorted(
-            _worker_exit_context,
-            key=lambda pid: _recent_worker_exits.get(pid, (0, 0.0))[1],
-        )
-        for pid in ordered[:len(_worker_exit_context) - _RECENT_WORKER_EXITS_MAX]:
-            _worker_exit_context.pop(pid, None)
+    with _worker_registry_lock:
+        for pid in list(_worker_exit_context):
+            entry = _recent_worker_exits.get(pid)
+            if entry is None or entry[1] < cutoff:
+                _worker_exit_context.pop(pid, None)
+        if len(_worker_exit_context) > _RECENT_WORKER_EXITS_MAX:
+            ordered = sorted(
+                _worker_exit_context,
+                key=lambda pid: _recent_worker_exits.get(pid, (0, 0.0))[1],
+            )
+            for pid in ordered[:len(_worker_exit_context) - _RECENT_WORKER_EXITS_MAX]:
+                _worker_exit_context.pop(pid, None)
 
 
 def _register_worker_process(
@@ -6087,18 +6105,16 @@ def _record_worker_exit(pid: int, raw_status: int) -> None:
     if not pid or pid <= 0:
         return
     now = time.time()
-    _recent_worker_exits[int(pid)] = (int(raw_status), now)
-    # Age-based trim: drop entries older than the TTL.
-    if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX // 2:
-        cutoff = now - _RECENT_WORKER_EXIT_TTL_SECONDS
-        for _pid in [p for p, (_s, t) in _recent_worker_exits.items() if t < cutoff]:
-            _recent_worker_exits.pop(_pid, None)
-    # Size cap as a final guard.
-    if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX:
-        # Drop oldest half.
-        ordered = sorted(_recent_worker_exits.items(), key=lambda kv: kv[1][1])
-        for _pid, _ in ordered[: len(ordered) // 2]:
-            _recent_worker_exits.pop(_pid, None)
+    with _worker_registry_lock:
+        _recent_worker_exits[int(pid)] = (int(raw_status), now)
+        if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX // 2:
+            cutoff = now - _RECENT_WORKER_EXIT_TTL_SECONDS
+            for _pid in [p for p, (_s, t) in _recent_worker_exits.items() if t < cutoff]:
+                _recent_worker_exits.pop(_pid, None)
+        if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX:
+            ordered = sorted(_recent_worker_exits.items(), key=lambda kv: kv[1][1])
+            for _pid, _ in ordered[: len(ordered) // 2]:
+                _recent_worker_exits.pop(_pid, None)
 
 
 def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
@@ -6125,7 +6141,8 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     ``nonzero_exit``) or the signal number (for ``signaled``), or ``None``
     for ``unknown``.
     """
-    entry = _recent_worker_exits.get(int(pid))
+    with _worker_registry_lock:
+        entry = _recent_worker_exits.get(int(pid))
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
@@ -6142,6 +6159,33 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     except Exception:
         pass
     return ("unknown", None)
+
+
+def _consume_worker_exit(
+    pid: int, task_id: str, run_id: Optional[int],
+) -> tuple[str, Optional[int], Optional[_WorkerProcess]]:
+    """Atomically consume status and matching process evidence exactly once."""
+    with _worker_registry_lock:
+        entry = _recent_worker_exits.pop(int(pid), None)
+        record = _worker_exit_context.pop(int(pid), None)
+        if record is not None and (record.task_id != task_id or record.run_id != run_id):
+            record = None
+        if entry is None:
+            return ("unknown", None, None)
+        raw, _ = entry
+        try:
+            if os.WIFEXITED(raw):
+                code = os.WEXITSTATUS(raw)
+                if code == 0:
+                    return ("clean_exit", 0, record)
+                if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+                    return ("rate_limited", code, record)
+                return ("nonzero_exit", code, record)
+            if os.WIFSIGNALED(raw):
+                return ("signaled", os.WTERMSIG(raw), record)
+        except Exception:
+            pass
+        return ("unknown", None, record)
 
 
 def reap_worker_zombies() -> "list[int]":
@@ -6493,7 +6537,9 @@ def enforce_max_runtime(
         # ``signal_fn`` is an explicit in-process test seam. Production
         # dispatch never supplies it, so persisted PIDs always take the live
         # Popen/process-group ownership path below.
-        if signal_fn is not None and pid not in _worker_registry:
+        with _worker_registry_lock:
+            has_registry_record = pid in _worker_registry
+        if signal_fn is not None and not has_registry_record:
             signal_fn(pid, signal.SIGTERM)
             termination = {"ownership_verified": True, "termination_attempted": True,
                            "terminated": not _pid_alive(pid), "sigkill": False,
@@ -6769,15 +6815,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 continue
 
             pid = int(row["worker_pid"])
-            kind, code = _classify_worker_exit(pid)
-            record = _worker_exit_context.get(pid)
-            # Retained evidence is valid only for the exact task/run we own.
-            # A stale record after gateway restart or PID reuse must not be
-            # attributed to the newly claimed task.
-            if record is not None and (
-                record.task_id != row["id"] or record.run_id != row["current_run_id"]
-            ):
-                kind, code, record = "unknown", None, None
+            kind, code, record = _consume_worker_exit(
+                pid, row["id"], row["current_run_id"],
+            )
             envelope = {
                 "exit": {"kind": kind, "code": code, "pid": pid},
                 "worker": {
@@ -6795,10 +6835,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     "preserved": row["workspace_kind"] != "scratch",
                 },
             }
-            # Exit evidence is single-consumer classification data. The envelope
-            # above is durable; dropping this reference releases the exited
-            # Popen promptly and prevents a later PID reuse from reusing it.
-            _worker_exit_context.pop(pid, None)
+
             rate_limited_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
@@ -7683,6 +7720,7 @@ def _dispatch_once_locked(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        claimed.execution_route = _latest_execution_route(conn, claimed.id)
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -8167,7 +8205,8 @@ def _preflight_worker_spawn(task: Task, workspace: str, *, board: Optional[str])
         return fail("board_invalid", "board state could not be verified")
     try:
         from hermes_cli.profiles import normalize_profile_name, profile_exists, resolve_profile_env
-        profile = normalize_profile_name(task.assignee)
+        inherited = task.execution_route or {}
+        profile = normalize_profile_name(str(inherited.get("profile") or task.assignee))
         if not profile_exists(profile):
             return fail("profile_invalid", f"profile {profile!r} does not exist")
         profile_home = resolve_profile_env(profile)
@@ -8180,7 +8219,6 @@ def _preflight_worker_spawn(task: Task, workspace: str, *, board: Optional[str])
         try:
             cfg = load_config()
             model_cfg = cfg.get("model") or {}
-            inherited = task.execution_route or {}
             provider = str(inherited.get("provider") or model_cfg.get("provider") or "").strip()
             model = str(task.model_override or inherited.get("model") or model_cfg.get("default") or "").strip()
             if not provider or not model:
@@ -8191,6 +8229,10 @@ def _preflight_worker_spawn(task: Task, workspace: str, *, board: Optional[str])
             resolved = _resolve_worker_route(task, profile, provider, model)
             if not resolved["ok"]:
                 return fail(str(resolved["code"]), str(resolved["detail"]))
+            expected_credential = str(inherited.get("credential_ref") or "").strip()
+            actual_credential = str(resolved["route"].get("credential_ref") or "").strip()
+            if expected_credential and expected_credential != actual_credential:
+                return fail("route_invalid", "requested credential reference is unavailable")
             worker_toolsets = _resolve_worker_cli_toolsets(profile_home)
             if not worker_toolsets:
                 return fail("toolsets_invalid", "profile has no available CLI toolsets")
@@ -8243,19 +8285,44 @@ def _persist_execution_route(conn: sqlite3.Connection, task: Task) -> None:
             _append_event(conn, task.id, "execution_route", {"route": safe}, run_id=task.current_run_id)
 
 
-def _latest_execution_route(conn: sqlite3.Connection, task_id: str) -> Optional[dict[str, str]]:
-    row = conn.execute(
-        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'execution_route' "
-        "ORDER BY id DESC LIMIT 1", (task_id,),
-    ).fetchone()
-    try:
-        raw = json.loads(row["payload"]).get("route") if row and row["payload"] else None
-    except Exception:
-        raw = None
-    if not isinstance(raw, dict):
+def _latest_execution_route(
+    conn: sqlite3.Connection, task_id: str, *, _seen: Optional[set[str]] = None,
+) -> Optional[dict[str, str]]:
+    """Resolve a task's explicit route, or deterministically inherit a parent route."""
+    seen = set() if _seen is None else _seen
+    if task_id in seen:
         return None
-    route = {k: str(raw[k]) for k in ("profile", "provider", "model", "credential_ref") if raw.get(k)}
-    return route or None
+    seen.add(task_id)
+
+    def event_route(kind: str) -> dict[str, str]:
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? "
+            "ORDER BY id DESC LIMIT 1", (task_id, kind),
+        ).fetchone()
+        try:
+            raw = json.loads(row["payload"]).get("route") if row and row["payload"] else None
+        except Exception:
+            raw = None
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            key: str(raw[key]) for key in ("profile", "provider", "model", "credential_ref")
+            if raw.get(key)
+        }
+
+    override = event_route("execution_route_override")
+    effective = event_route("execution_route")
+    if not effective:
+        parents = conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+            (task_id,),
+        ).fetchall()
+        for parent in parents:
+            effective = _latest_execution_route(conn, parent["parent_id"], _seen=seen) or {}
+            if effective:
+                break
+    effective.update(override)
+    return effective or None
 
 
 def _default_spawn(
@@ -8282,7 +8349,8 @@ def _default_spawn(
 
     from hermes_cli.profiles import normalize_profile_name
 
-    profile_arg = normalize_profile_name(task.assignee)
+    route_profile = (task.execution_route or {}).get("profile")
+    profile_arg = normalize_profile_name(str(route_profile or task.assignee))
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)

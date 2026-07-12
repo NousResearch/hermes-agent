@@ -26,6 +26,7 @@ PRs #9850, #9934, #7536):
 """
 
 import asyncio
+import inspect
 import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -33,8 +34,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, HomeChannel, Platform
-from gateway.platforms.base import MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.run import (
+    GatewayRunner,
     _AGENT_PENDING_SENTINEL,
     _auto_continue_freshness_window,
     _coerce_gateway_timestamp,
@@ -1518,6 +1520,7 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
 
     resume_done.set()
     await finish_task
+    await asyncio.sleep(0)
 
     assert seen == ["resume-start", "inbound:hello"]
     assert runner._startup_restore_queue == []
@@ -1600,8 +1603,9 @@ async def test_startup_restore_gate_releases_when_a_resume_turn_runs_long(monkey
     # the drain timeout.  A generous asyncio timeout here fails loudly (rather
     # than hanging the suite) if the bound regresses back to "wait forever".
     await asyncio.wait_for(runner._finish_startup_restore(), timeout=5.0)
+    await asyncio.sleep(0)
 
-    # Gate open, queued inbound replayed, flag cleared.
+    # Gate opens before the background replay owner drains queued inbound.
     assert runner._startup_restore_in_progress is False
     assert runner._startup_restore_queue == []
     assert seen == ["resume-start", "inbound:hello"]
@@ -1618,13 +1622,438 @@ async def test_startup_restore_gate_releases_when_a_resume_turn_runs_long(monkey
 
 
 @pytest.mark.asyncio
+async def test_startup_restore_gate_releases_before_queued_replay_finishes():
+    """A blocked queued-message replay must not keep the global gate closed."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_tasks = []
+    runner._startup_restore_queue = [
+        MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=make_restart_source(chat_id="blocked-replay-chat"),
+        )
+    ]
+
+    replay_started = asyncio.Event()
+    release_replay = asyncio.Event()
+
+    async def blocked_handle_message(event: MessageEvent) -> None:
+        del event
+        replay_started.set()
+        await release_replay.wait()
+
+    adapter.handle_message = blocked_handle_message
+    finish_task = asyncio.create_task(runner._finish_startup_restore())
+    try:
+        await asyncio.wait_for(replay_started.wait(), timeout=1.0)
+        await asyncio.wait_for(asyncio.shield(finish_task), timeout=1.0)
+        replay_task = runner._startup_restore_replay_task
+        assert replay_task is not None
+        assert runner._startup_restore_in_progress is False
+        assert not replay_task.done()
+    finally:
+        release_replay.set()
+        await finish_task
+        replay_task = getattr(runner, "_startup_restore_replay_task", None)
+        if replay_task is not None and not replay_task.done():
+            await replay_task
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_watchdog_releases_gate_if_finish_is_never_reached(
+    monkeypatch,
+):
+    """A detached resume turn cannot bypass the gate's absolute deadline."""
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0.01")
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = [
+        MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=make_restart_source(chat_id="watchdog-replay-chat"),
+        )
+    ]
+
+    # Live recurrence: the tracked dispatch wrapper finished before the real
+    # boot-resume turn entered the runner, so asyncio.wait saw done=1/pending=0
+    # while the actual turn remained active outside _startup_restore_tasks.
+    wrapper = asyncio.create_task(asyncio.sleep(0))
+    await wrapper
+    actual_turn = asyncio.create_task(asyncio.Event().wait())
+    runner._startup_restore_tasks = [wrapper]
+
+    replay_started = asyncio.Event()
+    release_replay = asyncio.Event()
+
+    async def blocked_handle_message(event: MessageEvent) -> None:
+        del event
+        replay_started.set()
+        await release_replay.wait()
+
+    adapter.handle_message = blocked_handle_message
+    watchdog_task = asyncio.create_task(runner._startup_restore_gate_watchdog())
+    await asyncio.wait_for(replay_started.wait(), timeout=1.0)
+    await watchdog_task
+    replay_task = runner._startup_restore_replay_task
+    assert replay_task is not None
+
+    try:
+        assert runner._startup_restore_in_progress is False
+        assert not actual_turn.done()
+        assert not replay_task.done()
+    finally:
+        release_replay.set()
+        await replay_task
+        actual_turn.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await actual_turn
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_zero_timeout_intentionally_disables_watchdog(monkeypatch):
+    """The documented zero-value opt-out preserves the pre-fix unbounded mode."""
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0")
+    runner, _adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+
+    await runner._startup_restore_gate_watchdog()
+
+    assert runner._startup_restore_in_progress is True
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_wait_error_fails_open(caplog):
+    """Unexpected restore bookkeeping errors release the global inbound gate."""
+    runner, _adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    blocker = asyncio.create_task(asyncio.Event().wait())
+    runner._startup_restore_tasks = [blocker]
+
+    try:
+        with patch(
+            "gateway.run.asyncio.wait",
+            new=AsyncMock(side_effect=RuntimeError("broken restore wait")),
+        ):
+            await runner._finish_startup_restore()
+    finally:
+        blocker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await blocker
+
+    assert runner._startup_restore_in_progress is False
+    assert "Startup-restore wait failed; releasing inbound gate" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_replay_error_fails_open(caplog):
+    """A replay exception retains its event and cannot orphan the queue tail."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_tasks = []
+    runner._startup_restore_queue = [
+        MessageEvent(
+            text="first",
+            message_type=MessageType.TEXT,
+            source=make_restart_source(chat_id="same-session-chat"),
+        ),
+        MessageEvent(
+            text="second",
+            message_type=MessageType.TEXT,
+            source=make_restart_source(chat_id="same-session-chat"),
+        ),
+        MessageEvent(
+            text="other",
+            message_type=MessageType.TEXT,
+            source=make_restart_source(chat_id="other-session-chat"),
+        ),
+    ]
+    adapter.handle_message = AsyncMock(
+        side_effect=[RuntimeError("replay failed"), None, None, None]
+    )
+
+    await runner._finish_startup_restore()
+    replay_task = runner._startup_restore_replay_task
+    assert replay_task is not None
+    await asyncio.wait_for(replay_task, timeout=1.0)
+
+    assert runner._startup_restore_in_progress is False
+    assert runner._startup_restore_queue == []
+    assert [
+        (call.args[0].source.chat_id, call.args[0].text)
+        for call in adapter.handle_message.await_args_list
+    ] == [
+        ("same-session-chat", "first"),
+        ("other-session-chat", "other"),
+        ("same-session-chat", "first"),
+        ("same-session-chat", "second"),
+    ]
+    assert "reason=dispatch raised before acceptance" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_replay_waits_for_connecting_adapter():
+    """Watchdog replay retains inbound until its adapter is registered."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_tasks = []
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="connecting-adapter-chat"),
+    )
+    runner._startup_restore_queue = [event]
+    runner.adapters = {}
+    adapter.handle_message = AsyncMock()
+
+    await runner._finish_startup_restore()
+    replay_task = runner._startup_restore_replay_task
+    assert replay_task is not None
+    await asyncio.sleep(0.02)
+
+    assert runner._startup_restore_queue == [event]
+    assert not replay_task.done()
+
+    runner.adapters[event.source.platform] = adapter
+    await asyncio.wait_for(replay_task, timeout=1.0)
+
+    adapter.handle_message.assert_awaited_once_with(event)
+    assert runner._startup_restore_queue == []
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_permanent_retry_warning_is_rate_limited(caplog):
+    """A missing adapter reports depth/age once instead of warning every retry."""
+    runner, _adapter = make_restart_runner()
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="missing-adapter-chat"),
+    )
+    runner._startup_restore_queue = [event]
+    runner.adapters = {}
+
+    with patch(
+        "gateway.run.asyncio.sleep",
+        new=AsyncMock(side_effect=[None, None, asyncio.CancelledError]),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await runner._drain_startup_restore_queue()
+
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno >= 30 and "Startup-restore replay deferred" in record.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert "queue_depth=1" in warnings[0]
+    assert "age=" in warnings[0]
+    assert runner._startup_restore_queue == [event]
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_dispatch_retry_phase_warning_is_rate_limited(caplog):
+    """Repeated dispatch failures do not emit a WARNING per attempt."""
+    runner, adapter = make_restart_runner()
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="failing-adapter-chat"),
+    )
+    runner._startup_restore_queue = [event]
+    adapter.handle_message = AsyncMock(side_effect=RuntimeError("not accepted"))
+
+    with patch(
+        "gateway.run.asyncio.sleep",
+        new=AsyncMock(side_effect=[None, None, asyncio.CancelledError]),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await runner._drain_startup_restore_queue()
+
+    warnings = [
+        record.getMessage() for record in caplog.records if record.levelno >= 30
+    ]
+    assert sum("PHASE=startup_restore_replay_enter" in msg for msg in warnings) == 1
+    assert sum("Startup-restore replay deferred" in msg for msg in warnings) == 1
+    assert adapter.handle_message.await_count == 3
+    assert runner._startup_restore_queue == [event]
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_cross_session_failures_yield_and_back_off():
+    """Two permanently blocked sessions cannot form a non-yielding rotation."""
+    runner, _adapter = make_restart_runner()
+    runner._startup_restore_queue = [
+        MessageEvent(
+            text="first",
+            message_type=MessageType.TEXT,
+            source=make_restart_source(chat_id="blocked-a"),
+        ),
+        MessageEvent(
+            text="second",
+            message_type=MessageType.TEXT,
+            source=make_restart_source(chat_id="blocked-b"),
+        ),
+    ]
+    runner.adapters = {}
+    adapter_lookup = MagicMock(return_value=None)
+    runner._adapter_for_source = adapter_lookup
+    unrelated_ran = asyncio.Event()
+
+    async def unrelated_work() -> None:
+        await asyncio.sleep(0)
+        unrelated_ran.set()
+
+    replay_task = asyncio.create_task(runner._drain_startup_restore_queue())
+    unrelated_task = asyncio.create_task(unrelated_work())
+    try:
+        await asyncio.wait_for(unrelated_ran.wait(), timeout=0.1)
+        await asyncio.sleep(0.25)
+        assert 1 <= adapter_lookup.call_count <= 3
+        assert len(runner._startup_restore_queue) == 2
+    finally:
+        replay_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await replay_task
+        await unrelated_task
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_watchdog_and_finisher_share_one_replay_owner(monkeypatch):
+    """A watchdog/finisher boundary dispatches each queued event exactly once."""
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0.01")
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_tasks = []
+    runner._startup_restore_queue = [
+        MessageEvent(
+            text="first",
+            message_type=MessageType.TEXT,
+            source=make_restart_source(chat_id="race-first-chat"),
+        ),
+        MessageEvent(
+            text="second",
+            message_type=MessageType.TEXT,
+            source=make_restart_source(chat_id="race-second-chat"),
+        ),
+    ]
+    replay_started = asyncio.Event()
+    release_replay = asyncio.Event()
+    handled = []
+
+    async def blocked_first_replay(event: MessageEvent) -> None:
+        handled.append(event.source.chat_id)
+        if event.source.chat_id == "race-first-chat":
+            replay_started.set()
+            await release_replay.wait()
+
+    adapter.handle_message = blocked_first_replay
+    watchdog_task = asyncio.create_task(runner._startup_restore_gate_watchdog())
+    await asyncio.wait_for(replay_started.wait(), timeout=1.0)
+    await watchdog_task
+    replay_task = runner._startup_restore_replay_task
+    assert replay_task is not None
+
+    await runner._finish_startup_restore()
+
+    assert runner._startup_restore_replay_task is replay_task
+    assert runner._startup_restore_in_progress is False
+    release_replay.set()
+    await asyncio.wait_for(replay_task, timeout=1.0)
+
+    assert handled == ["race-first-chat", "race-second-chat"]
+    assert runner._startup_restore_queue == []
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_replay_cancellation_retains_current_and_tail():
+    """Cancelling replay preserves ownership of every not-yet-accepted event."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_tasks = []
+    events = [
+        MessageEvent(
+            text="first",
+            message_type=MessageType.TEXT,
+            source=make_restart_source(chat_id="cancel-first-chat"),
+        ),
+        MessageEvent(
+            text="second",
+            message_type=MessageType.TEXT,
+            source=make_restart_source(chat_id="cancel-second-chat"),
+        ),
+    ]
+    runner._startup_restore_queue = list(events)
+    replay_started = asyncio.Event()
+    release_first_owner = asyncio.Event()
+    attempts = []
+
+    async def blocked_replay(event: MessageEvent) -> None:
+        attempts.append(event.text)
+        if len(attempts) == 1:
+            replay_started.set()
+            await release_first_owner.wait()
+
+    adapter.handle_message = blocked_replay
+    finish_task = asyncio.create_task(runner._finish_startup_restore())
+    try:
+        await asyncio.wait_for(replay_started.wait(), timeout=1.0)
+        await asyncio.wait_for(asyncio.shield(finish_task), timeout=1.0)
+        replay_task = runner._startup_restore_replay_task
+        assert replay_task is not None
+
+        replay_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await replay_task
+
+        for _ in range(10):
+            successor = runner._startup_restore_replay_task
+            if successor is not None and successor is not replay_task:
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("cancelled live replay owner was not replaced")
+
+        await asyncio.wait_for(successor, timeout=1.0)
+        assert attempts == ["first", "first", "second"]
+        assert runner._startup_restore_queue == []
+    finally:
+        release_first_owner.set()
+        await finish_task
+
+
+def test_gateway_start_arms_restore_watchdog_before_platform_connects():
+    """The absolute deadline is wired at the same point as the global gate."""
+    source = inspect.getsource(GatewayRunner.start)
+    gate_arm = source.index("self._startup_restore_in_progress = True")
+    arm_log = source.index(
+        "PHASE=startup_restore_gate_flip state=armed caller=start", gate_arm
+    )
+    watchdog_arm = source.index("self._startup_restore_gate_watchdog()", gate_arm)
+    connect_loop = source.index(
+        "for platform, platform_config in self.config.platforms.items()", gate_arm
+    )
+
+    assert gate_arm < arm_log < watchdog_arm < connect_loop
+    assert '"timeout=%.3fs"' in source[arm_log:watchdog_arm]
+
+
+def test_adapter_replay_contract_defines_exception_as_not_accepted():
+    """Startup replay retries only before adapter ownership transfer."""
+    assert BasePlatformAdapter.handle_message.__doc__ is not None
+    contract = " ".join(BasePlatformAdapter.handle_message.__doc__.lower().split())
+    assert "exception means ownership was not transferred" in contract
+
+
+@pytest.mark.asyncio
 async def test_background_resume_result_logs_late_failure_not_success_or_cancel():
     """A boot-resume turn that outlives the startup-restore gate and later FAILS
     must still be logged, not silently swallowed once it's discarded from
     ``_background_tasks`` (Greptile P2). Success and cancellation are quiet.
     """
-    from gateway.run import GatewayRunner
-
     async def _boom():
         raise RuntimeError("late resume failure")
 

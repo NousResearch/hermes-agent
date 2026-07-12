@@ -942,28 +942,26 @@ def _restart_initiated_ttl_secs() -> float:
 
 
 def _startup_restore_drain_timeout_secs() -> float:
-    """Max seconds ``_finish_startup_restore`` waits on boot auto-resume turns
-    before releasing the inbound gate and draining the queue.
+    """Maximum lifetime of the global startup-restore inbound gate.
 
     While startup restore is in progress the gateway QUEUES every inbound
     message (``_queue_startup_restore_event``) instead of processing it, so no
-    channel gets a reply until the gate opens. The gate is opened by
-    ``_finish_startup_restore``, which waits for the synthetic boot auto-resume
-    turns to finish. A single long resumed turn (observed live: a 760s / 46
-    API-call turn) therefore held the gate shut for the whole fleet — every
-    channel's inbound piled up unanswered for ~13 min.
+    channel gets a reply until the gate opens. The watchdog starts when the gate
+    is armed, covering platform connection, resume scheduling, and the bounded
+    wait in ``_finish_startup_restore``. Queue replay runs under a separate
+    background owner only after the gate opens.
 
-    This bounds that wait. Duplicate-agent safety does NOT depend on the wait:
+    Duplicate-agent safety does NOT depend on the gate:
     ``_schedule_resume_pending_sessions`` claims each session's
-    ``_running_agents`` slot SYNCHRONOUSLY (before the gate ever runs), so a
+    ``_running_agents`` slot SYNCHRONOUSLY before replay, so a
     message drained while a resume turn is still running queues behind that slot
-    rather than spawning a second agent. So on timeout we release the gate and
-    let the slow turn finish in the background.
+    rather than spawning a second agent.
 
     Reads ``HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT`` (bridged from ``config.yaml``
     ``agent.gateway_startup_restore_drain_timeout`` at gateway startup, same
-    pattern as the other agent.* knobs). Non-positive disables the bound
-    (restores the pre-fix "wait forever" behaviour for anyone who wants it).
+    pattern as the other agent.* knobs). Non-positive disables both the absolute
+    watchdog and the finish wait bound, intentionally restoring the pre-fix
+    "wait forever" behavior.
     """
     raw = os.environ.get("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT")
     if raw is None or raw == "":
@@ -3448,13 +3446,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
-        # Startup restore gate: while restart-interrupted sessions are being
+        # Startup restore gate: while interrupted messaging sessions are being
         # auto-resumed, real inbound messages are queued instead of competing
-        # with the synthetic resume turns for the same session.  The queued
-        # events drain only after all startup resume tasks have finished.
+        # with the synthetic resume turns for the same session. The absolute
+        # watchdog fails open before any queued-event replay can block intake.
         self._startup_restore_in_progress = False
         self._startup_restore_queue: List[MessageEvent] = []
         self._startup_restore_tasks: List[asyncio.Task] = []
+        self._startup_restore_watchdog_task: Optional[asyncio.Task] = None
+        self._startup_restore_replay_task: Optional[asyncio.Task] = None
+        # Bounded successor respawns for a crashing replay owner (Greptile P1).
+        self._startup_restore_replay_failures: int = 0
         # Schedule-time disposition for synthetic startup resume turns. The
         # persisted transcript classification is prepared off-loop immediately
         # before scheduling; the selected mode remains attached only for that
@@ -8412,6 +8414,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if queue is None:
             queue = []
             self._startup_restore_queue = queue
+        try:
+            setattr(event, "_hermes_startup_restore_queued_at", time.monotonic())
+        except Exception:
+            pass
         queue.append(event)
         try:
             source = event.source
@@ -8424,89 +8430,332 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
 
     async def _drain_startup_restore_queue(self) -> int:
-        """Replay inbound messages queued while startup auto-resume ran."""
+        """Replay queued inbound without surrendering ownership on failure.
+
+        This worker runs only after the global gate opens. The queue head is
+        removed only after ``handle_message`` accepts it. Unavailable adapters
+        and transient dispatch failures retain ownership and retry with
+        backoff. Unrelated sessions may pass a blocked session, but FIFO within
+        one session is preserved.
+        """
         drained = 0
         queue = getattr(self, "_startup_restore_queue", None)
         if queue is None:
             return 0
+        retry_delay = 0.1
+        last_warning_at: Dict[int, float] = {}
+        last_phase_warning_at: Dict[int, float] = {}
+
+        def _promote_other_session(blocked_event: MessageEvent) -> bool:
+            blocked_source = getattr(blocked_event, "source", None)
+            if blocked_source is None:
+                return False
+            try:
+                blocked_key = self._session_key_for_source(blocked_source)
+            except Exception:
+                return False
+            for index in range(1, len(queue)):
+                candidate_source = getattr(queue[index], "source", None)
+                if candidate_source is None:
+                    continue
+                try:
+                    candidate_key = self._session_key_for_source(candidate_source)
+                except Exception:
+                    continue
+                if candidate_key != blocked_key:
+                    queue.insert(0, queue.pop(index))
+                    return True
+            return False
+
+        def _log_retry(reason: str, retry_event: MessageEvent, *, failed: bool) -> None:
+            now = time.monotonic()
+            event_id = id(retry_event)
+            last_warning = last_warning_at.get(event_id)
+            emit_warning = last_warning is None or now - last_warning >= 60.0
+            log = logger.warning if emit_warning else logger.debug
+            if emit_warning:
+                last_warning_at[event_id] = now
+            queued_at = getattr(retry_event, "_hermes_startup_restore_queued_at", now)
+            retry_source = getattr(retry_event, "source", None)
+            log(
+                "Startup-restore replay deferred: reason=%s platform=%s chat=%s "
+                "queue_depth=%d age=%.1fs retry_in=%.1fs",
+                reason,
+                getattr(getattr(retry_source, "platform", None), "value", "unknown"),
+                getattr(retry_source, "chat_id", "unknown"),
+                len(queue),
+                max(0.0, now - queued_at),
+                retry_delay,
+                exc_info=failed and emit_warning,
+            )
+
         while queue:
-            event = queue.pop(0)
+            event = queue[0]
             source = getattr(event, "source", None)
             adapter = self._adapter_for_source(source)
             if adapter is None:
-                logger.debug(
-                    "Dropping startup-restore queued message: adapter unavailable for %s",
-                    getattr(getattr(source, "platform", None), "value", None),
-                )
+                _log_retry("adapter unavailable", event, failed=False)
+                _promote_other_session(event)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 5.0)
                 continue
-            # Mark this replay so _handle_message does not queue it again while
-            # the restore gate remains closed for any fresh inbound arrivals.
+            # Mark this as startup replay for downstream accounting. The global
+            # gate is already open before this worker is scheduled.
             try:
                 setattr(event, "_hermes_startup_restore_replay", True)
             except Exception:
                 pass
-            await adapter.handle_message(event)
+            replay_started = time.monotonic()
+            event_id = id(event)
+            last_phase_warning = last_phase_warning_at.get(event_id)
+            emit_phase_warning = (
+                last_phase_warning is None
+                or replay_started - last_phase_warning >= 60.0
+            )
+            phase_log = logger.warning if emit_phase_warning else logger.debug
+            if emit_phase_warning:
+                last_phase_warning_at[event_id] = replay_started
+            phase_log(
+                "PHASE=startup_restore_replay_enter platform=%s chat=%s "
+                "queue_remaining=%d",
+                getattr(getattr(source, "platform", None), "value", "unknown"),
+                getattr(source, "chat_id", "unknown"),
+                len(queue),
+            )
+            try:
+                await adapter.handle_message(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log_retry("dispatch raised before acceptance", event, failed=True)
+                _promote_other_session(event)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 5.0)
+                continue
+            queue.pop(0)
+            last_warning_at.pop(id(event), None)
+            last_phase_warning_at.pop(id(event), None)
+            logger.warning(
+                "PHASE=startup_restore_replay_exit platform=%s chat=%s elapsed=%.3fs",
+                getattr(getattr(source, "platform", None), "value", "unknown"),
+                getattr(source, "chat_id", "unknown"),
+                time.monotonic() - replay_started,
+            )
             drained += 1
+            retry_delay = 0.1
         return drained
 
-    async def _finish_startup_restore(self) -> None:
-        """Wait (BOUNDED) for startup auto-resume, then release + drain inbound.
+    def _schedule_startup_restore_queue_drain(self) -> Optional[asyncio.Task]:
+        """Start the single replay owner after the global gate is open."""
+        if not getattr(self, "_startup_restore_queue", None):
+            return None
+        current = getattr(self, "_startup_restore_replay_task", None)
+        if current is not None and not current.done():
+            return current
 
-        The wait is bounded by ``_startup_restore_drain_timeout_secs`` so that a
-        single pathologically long boot-resume turn cannot hold the inbound gate
-        shut for every channel (observed live: one 760s / 46-API-call resumed
-        turn queued 13 messages across channels for ~13 min). On timeout we
-        release the gate and let the still-running resume turn(s) finish in the
-        background — they remain in ``self._background_tasks`` and are NOT
-        cancelled. This is safe because duplicate-agent protection does not
-        depend on the wait: ``_schedule_resume_pending_sessions`` claims each
-        session's ``_running_agents`` slot SYNCHRONOUSLY before this gate runs,
-        so any inbound message drained while a resume turn is still in flight
-        queues behind that slot instead of spawning a second agent.
-        """
-        tasks = list(getattr(self, "_startup_restore_tasks", []) or [])
-        if tasks:
-            timeout = _startup_restore_drain_timeout_secs()
-            if timeout and timeout > 0:
-                # asyncio.wait (unlike wait_for/gather+timeout) does NOT cancel
-                # the pending tasks on timeout — the slow resume turn keeps
-                # running in the background instead of being killed.
-                done, pending = await asyncio.wait(tasks, timeout=timeout)
-                if pending:
+        task = asyncio.create_task(self._drain_startup_restore_queue())
+        self._startup_restore_replay_task = task
+        self._background_tasks.add(task)
+
+        def _done(done_task: asyncio.Task) -> None:
+            self._background_tasks.discard(done_task)
+            if self._startup_restore_replay_task is done_task:
+                self._startup_restore_replay_task = None
+            if done_task.cancelled():
+                shutdown_event = getattr(self, "_shutdown_event", None)
+                aborting = (
+                    bool(getattr(self, "_restart_requested", False))
+                    or bool(getattr(self, "_draining", False))
+                    or bool(shutdown_event is not None and shutdown_event.is_set())
+                )
+                if getattr(self, "_startup_restore_queue", None) and not aborting:
                     logger.warning(
-                        "Startup-restore gate released after %.0fs with %d "
-                        "boot auto-resume turn(s) still running; draining "
-                        "inbound queue now (resume slots already claimed, so "
-                        "no duplicate agents). Slow turn(s) continue in the "
-                        "background.",
-                        timeout,
-                        len(pending),
+                        "Startup-restore replay owner was cancelled while gateway "
+                        "remained live; transferring %d queued message(s) to a successor",
+                        len(self._startup_restore_queue),
                     )
-                    # These tasks keep running after we release the gate. Their
-                    # normal done-callback only discards them from
-                    # _background_tasks, so a LATER failure would be silently
-                    # swallowed. Attach a logging callback so a background
-                    # resume turn that fails after the timeout is still recorded.
-                    for task in pending:
-                        task.add_done_callback(self._log_background_resume_result)
-            else:
-                # Non-positive timeout => opt out of the bound (pre-fix
-                # "wait forever" behaviour). gather awaits every task, so they
-                # are all done afterwards.
-                await asyncio.gather(*tasks, return_exceptions=True)
-                done = set(tasks)
-            for task in done:
-                exc = task.exception() if task.cancelled() is False else None
-                if exc is not None:
-                    logger.debug(
-                        "startup auto-resume task failed",
+                    self._schedule_startup_restore_queue_drain()
+                elif getattr(self, "_startup_restore_queue", None):
+                    logger.warning(
+                        "Startup-restore replay cancelled during gateway shutdown with "
+                        "%d queued message(s) still in memory; shutdown prevents a "
+                        "successor replay owner",
+                        len(self._startup_restore_queue),
+                    )
+                return
+            exc = done_task.exception()
+            if exc is not None:
+                # Greptile P1 (2026-07-11): mirror the cancellation path — an
+                # exception with the gate already open leaves no drain trigger,
+                # so a successor MUST be scheduled or retained messages are
+                # permanently unprocessed. Bounded (3) so a deterministically
+                # crashing drain cannot respawn forever; the final failure logs
+                # the retained count honestly.
+                failures = getattr(self, "_startup_restore_replay_failures", 0) + 1
+                self._startup_restore_replay_failures = failures
+                shutdown_event = getattr(self, "_shutdown_event", None)
+                aborting = (
+                    bool(getattr(self, "_restart_requested", False))
+                    or bool(getattr(self, "_draining", False))
+                    or bool(shutdown_event is not None and shutdown_event.is_set())
+                )
+                if (
+                    getattr(self, "_startup_restore_queue", None)
+                    and not aborting
+                    and failures <= 3
+                ):
+                    logger.warning(
+                        "Startup-restore replay worker failed (attempt %d/3); "
+                        "scheduling successor for %d queued message(s)",
+                        failures,
+                        len(self._startup_restore_queue),
                         exc_info=(type(exc), exc, exc.__traceback__),
                     )
-        self._startup_restore_tasks = []
-        drained = await self._drain_startup_restore_queue()
+                    self._schedule_startup_restore_queue_drain()
+                else:
+                    logger.warning(
+                        "Startup-restore replay worker failed with %d queued "
+                        "message(s) retained (no successor: %s)",
+                        len(getattr(self, "_startup_restore_queue", None) or []),
+                        "aborting" if aborting else (
+                            "failure cap reached" if failures > 3 else "queue empty"
+                        ),
+                        exc_info=(type(exc), exc, exc.__traceback__),
+                    )
+                return
+            drained = done_task.result()
+            if drained:
+                logger.info(
+                    "Drained %d inbound message(s) queued during startup restore",
+                    drained,
+                )
+
+        task.add_done_callback(_done)
+        return task
+
+    async def _startup_restore_gate_watchdog(self) -> None:
+        """Fail open if any startup phase outlives the restore-gate bound.
+
+        A nonpositive configured timeout intentionally preserves the documented
+        pre-fix unbounded opt-out mode.
+        """
+        timeout = _startup_restore_drain_timeout_secs()
+        if not timeout or timeout <= 0:
+            return
+        await asyncio.sleep(timeout)
+        if not getattr(self, "_startup_restore_in_progress", False):
+            return
+
+        queued = len(getattr(self, "_startup_restore_queue", []) or [])
+        tasks = list(getattr(self, "_startup_restore_tasks", []) or [])
+        for task in tasks:
+            if not task.done():
+                task.add_done_callback(self._log_background_resume_result)
         self._startup_restore_in_progress = False
-        if drained:
-            logger.info("Drained %d inbound message(s) queued during startup restore", drained)
+        logger.warning(
+            "PHASE=startup_restore_gate_flip state=released caller=watchdog "
+            "timeout=%.3fs queued=%d tasks=%d",
+            timeout,
+            queued,
+            len(tasks),
+        )
+        self._schedule_startup_restore_queue_drain()
+
+    async def _finish_startup_restore(self) -> None:
+        """Wait for tracked resume wrappers, then fail open before replay.
+
+        The wait remains bounded, but the absolute watchdog starts when the gate
+        is armed because adapter dispatch can rotate the tracked wrapper before
+        the actual resume turn starts. Gate release happens in ``finally`` and
+        before queued replay, whose adapter hooks may themselves block. Slow
+        resume work is never cancelled. Duplicate-agent safety comes from the
+        synchronous ``_running_agents`` slot claim in
+        ``_schedule_resume_pending_sessions``, not from this global gate.
+        """
+        if not getattr(self, "_startup_restore_in_progress", False):
+            self._startup_restore_tasks = []
+            return
+
+        timeout = _startup_restore_drain_timeout_secs()
+        tasks = list(getattr(self, "_startup_restore_tasks", []) or [])
+        logger.warning(
+            "PHASE=startup_restore_finish_enter tasks=%d queued=%d timeout=%.3fs",
+            len(tasks),
+            len(getattr(self, "_startup_restore_queue", []) or []),
+            timeout,
+        )
+        try:
+            if tasks:
+                if timeout and timeout > 0:
+                    # asyncio.wait (unlike wait_for/gather+timeout) does NOT cancel
+                    # the pending tasks on timeout — the slow resume turn keeps
+                    # running in the background instead of being killed.
+                    wait_started = time.monotonic()
+                    done, pending = await asyncio.wait(tasks, timeout=timeout)
+                    logger.warning(
+                        "PHASE=startup_restore_wait_exit done=%d pending=%d elapsed=%.3fs",
+                        len(done),
+                        len(pending),
+                        time.monotonic() - wait_started,
+                    )
+                    if pending:
+                        logger.warning(
+                            "Startup-restore gate released after %.0fs with %d "
+                            "boot auto-resume turn(s) still running; draining "
+                            "inbound queue now (resume slots already claimed, so "
+                            "no duplicate agents). Slow turn(s) continue in the "
+                            "background.",
+                            timeout,
+                            len(pending),
+                        )
+                        # These tasks keep running after we release the gate. Their
+                        # normal done-callback only discards them from
+                        # _background_tasks, so a LATER failure would be silently
+                        # swallowed. Attach a logging callback so a background
+                        # resume turn that fails after the timeout is still recorded.
+                        for task in pending:
+                            task.add_done_callback(self._log_background_resume_result)
+                else:
+                    # Non-positive timeout => opt out of the bound (pre-fix
+                    # "wait forever" behaviour). gather awaits every task, so they
+                    # are all done afterwards.
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    done = set(tasks)
+                for task in done:
+                    exc = task.exception() if task.cancelled() is False else None
+                    if exc is not None:
+                        logger.debug(
+                            "startup auto-resume task failed",
+                            exc_info=(type(exc), exc, exc.__traceback__),
+                        )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "Startup-restore wait failed; releasing inbound gate",
+                exc_info=True,
+            )
+        finally:
+            # Release the global gate before replaying queued messages. Adapter
+            # dispatch is expected to return quickly, but platform/session hooks
+            # can block; queued replay must never extend the fleet-wide outage.
+            owns_gate = bool(getattr(self, "_startup_restore_in_progress", False))
+            self._startup_restore_tasks = []
+            if owns_gate:
+                self._startup_restore_in_progress = False
+                logger.warning(
+                    "PHASE=startup_restore_gate_flip state=released caller=finish "
+                    "queued=%d",
+                    len(getattr(self, "_startup_restore_queue", []) or []),
+                )
+                watchdog = getattr(self, "_startup_restore_watchdog_task", None)
+                if watchdog is not None and watchdog is not asyncio.current_task():
+                    watchdog.cancel()
+
+        # If the watchdog already released the gate, it owns queued replay. Do
+        # not race it or cancel the message it may currently be dispatching.
+        if owns_gate:
+            self._schedule_startup_restore_queue_drain()
 
     async def _restore_resume_pending_sessions_at_startup(self) -> int:
         """Run the binding prepare→snapshot→schedule startup sequence."""
@@ -8808,6 +9057,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         getattr(entry, "resume_reason", None),
                         getattr(getattr(source, "platform", None), "value", None),
                         _resume_kind,
+                    )
+                elif requested_mode == "auto":
+                    logger.warning(
+                        "PHASE=boot_resume_scheduled key=%s reason=%s platform=%s "
+                        "kind=%s mode=prompt fallback_reason=%s",
+                        entry.session_key,
+                        getattr(entry, "resume_reason", None),
+                        getattr(getattr(source, "platform", None), "value", None),
+                        _resume_kind,
+                        fallback_reason or "unspecified",
                     )
                 else:
                     logger.warning(
@@ -9197,11 +9456,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Serialize startup restore against inbound dispatch.  Platform
         # adapters can begin receiving messages as soon as they connect, but
         # restart-interrupted sessions are not auto-resumed until all startup
-        # wiring below completes.  Queue inbound messages until the resume
-        # pass runs and every synthetic resume turn has finished.
+        # wiring below completes. Queue inbound until resume slots are claimed;
+        # an absolute watchdog bounds the entire gate lifetime from this point.
         self._startup_restore_in_progress = True
+        try:
+            logger.warning(
+                "PHASE=startup_restore_gate_flip state=armed caller=start "
+                "timeout=%.3fs",
+                _startup_restore_drain_timeout_secs(),
+            )
+        except Exception:
+            pass
         self._startup_restore_queue = []
         self._startup_restore_tasks = []
+        self._startup_restore_watchdog_task = asyncio.create_task(
+            self._startup_restore_gate_watchdog()
+        )
+        # getattr self-heal: harness-constructed runners (and object.__new__
+        # test paths) may not carry _background_tasks — the known CI-only
+        # attr-miss class (cf. safe-gateway-restart skill, fork #72 lesson).
+        background_tasks = getattr(self, "_background_tasks", None)
+        if background_tasks is None:
+            background_tasks = set()
+            self._background_tasks = background_tasks
+        background_tasks.add(self._startup_restore_watchdog_task)
+        self._startup_restore_watchdog_task.add_done_callback(
+            background_tasks.discard
+        )
 
         connected_count = 0
         enabled_platform_count = 0

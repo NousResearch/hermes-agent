@@ -357,7 +357,9 @@ def test_t7_malformed_tool_call_fails_closed():
 
 
 @pytest.mark.asyncio
-async def test_t7_mutation_fallback_does_not_consume_attempt(tmp_path, monkeypatch):
+async def test_t7_mutation_fallback_does_not_consume_attempt(
+    tmp_path, monkeypatch, caplog
+):
     monkeypatch.setenv("HERMES_RESUME_INTERRUPTED_TURNS", "auto")
     runner, _adapter, db = _runner(tmp_path, monkeypatch)
     entry = _entry(runner)
@@ -386,10 +388,19 @@ async def test_t7_mutation_fallback_does_not_consume_attempt(tmp_path, monkeypat
     _mark_pending(runner, entry)
 
     assert await runner._prepare_auto_resume_decisions() == 1
-    assert runner._schedule_resume_pending_sessions() == 1
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        assert runner._schedule_resume_pending_sessions() == 1
     decision = runner._startup_resume_modes[entry.session_key]
     assert decision["mode"] == "prompt"
     assert "terminal" in decision["reason"]
+    schedule_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if "PHASE=boot_resume_scheduled" in record.getMessage()
+    ]
+    assert len(schedule_logs) == 1
+    assert "mode=prompt" in schedule_logs[0]
+    assert f"fallback_reason={decision['reason']}" in schedule_logs[0]
     fallback_note, surface_and_ask = _build_resume_pending_message(
         agent_history=[
             {"role": "user", "content": "restart the gateway"},

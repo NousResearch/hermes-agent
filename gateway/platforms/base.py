@@ -4742,6 +4742,13 @@ class BasePlatformAdapter(ABC):
         This method returns quickly by spawning background tasks.
         This allows new messages to be processed even while an agent is running,
         enabling interruption support.
+
+        Once a message handler is configured, the acceptance contract is: a
+        normal return means ownership was transferred (dispatched, queued behind
+        a session, or handled as a command). An exception means ownership was
+        not transferred and the caller may retry. Overrides must preserve this
+        boundary: after accepting an event, report later failures through the
+        spawned task/log rather than raising here.
         """
         if not self._message_handler:
             return

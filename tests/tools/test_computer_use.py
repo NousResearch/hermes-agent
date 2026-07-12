@@ -332,9 +332,35 @@ class TestSafetyGuards:
         assert "error" in parsed
         assert "blocked key combo" in parsed["error"]
 
+    @pytest.mark.parametrize("keys", [
+        "ctrl-alt-delete",          # hyphen notation (alt -> option)
+        "alt-f4",                   # force-quit window
+        "cmd-shift-q",              # log out, hyphenated
+        "cmd+shift-backspace",      # mixed + and - separators
+    ])
+    def test_blocked_key_combos_hyphen_notation(self, keys, noop_backend):
+        # The cua-driver backend splits key strings on both '+' and '-'
+        # (cua_backend._parse_key_combo), so "ctrl-alt-delete" executes as the
+        # real destructive combo. The block must canonicalize the same way or
+        # it is trivially bypassed with hyphen notation.
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "key", "keys": keys})
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "blocked key combo" in parsed["error"]
+
     def test_safe_key_combos_pass(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use
         out = handle_computer_use({"action": "key", "keys": "cmd+s"})
+        parsed = json.loads(out)
+        assert "error" not in parsed
+
+    @pytest.mark.parametrize("keys", ["cmd-c", "ctrl-c", "cmd+-"])
+    def test_safe_hyphen_key_combos_pass(self, keys, noop_backend):
+        # Non-destructive combos written with hyphens (and the literal '-'
+        # zoom key) must not be caught by the widened separator.
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "key", "keys": keys})
         parsed = json.loads(out)
         assert "error" not in parsed
 

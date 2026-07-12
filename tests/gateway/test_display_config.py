@@ -257,7 +257,8 @@ class TestPlatformDefaults:
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "matrix", "interim_assistant_messages") is False
-        assert resolve_display_setting({}, "matrix", "streaming") is False
+        # streaming=None → follow top-level StreamingConfig (default off)
+        assert resolve_display_setting({}, "matrix", "streaming") is None
 
     def test_slack_defaults_tool_progress_off(self):
         """Slack defaults to quiet tool progress (permanent chat noise otherwise)."""

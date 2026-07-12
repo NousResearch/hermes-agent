@@ -1820,8 +1820,13 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["m.mentions"] = new_content["m.mentions"]
         if "formatted_body" in new_content:
             msg_content["format"] = "org.matrix.custom.html"
-            # DO NOT prefix HTML with "* ". Keep plain-text body as the Matrix edit convention; HTML stays unprefixed. Plain-text body keeps the Matrix edit convention.
-            msg_content["formatted_body"] = new_content["formatted_body"]
+            # Tool-activity HTML (matrix_formatted_body) must stay unprefixed so
+            # the always-visible <ol> list is not starred. Normal markdown /
+            # mention edits keep the Matrix m.replace outer-body convention.
+            if metadata and metadata.get("matrix_formatted_body"):
+                msg_content["formatted_body"] = new_content["formatted_body"]
+            else:
+                msg_content["formatted_body"] = f'* {new_content["formatted_body"]}'
         msg_content["m.relates_to"] = {
             "rel_type": "m.replace",
             "event_id": message_id,

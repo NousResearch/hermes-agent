@@ -6,11 +6,13 @@ default 60s to HERMES_API_TIMEOUT (1800s) to avoid premature connection
 kills during long prefill phases.
 """
 
-import os
-import pytest
 from unittest.mock import patch
 
+import os
+import pytest
+
 from agent.model_metadata import is_local_endpoint
+from hermes_cli.timeouts import resolve_local_default_stale_timeout
 
 
 class TestLocalStreamReadTimeout:
@@ -138,3 +140,17 @@ class TestIsLocalEndpoint:
     def test_near_but_not_cgnat_is_remote(self, url):
         """Hosts adjacent to but outside 100.64.0.0/10 must not match."""
         assert is_local_endpoint(url) is False
+
+
+class TestLocalStreamStaleTimeout:
+    def test_default_local_stream_stale_timeout_stays_disabled_outside_kanban(self, monkeypatch):
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_LOCAL_STALE_TIMEOUT", raising=False)
+
+        assert resolve_local_default_stale_timeout(180.0) == float("inf")
+
+    def test_kanban_local_stream_stale_timeout_uses_finite_default(self, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "task-61048")
+        monkeypatch.delenv("HERMES_KANBAN_LOCAL_STALE_TIMEOUT", raising=False)
+
+        assert resolve_local_default_stale_timeout(180.0) == 900.0

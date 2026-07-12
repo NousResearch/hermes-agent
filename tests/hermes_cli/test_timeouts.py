@@ -5,6 +5,7 @@ import textwrap
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
     get_provider_stale_timeout,
+    resolve_local_default_stale_timeout,
 )
 
 
@@ -286,6 +287,38 @@ def test_default_non_stream_stale_timeout_auto_disables_for_local_endpoints(monk
     )
 
     assert agent._compute_non_stream_stale_timeout([]) == float("inf")
+
+
+def test_kanban_local_non_stream_stale_timeout_uses_finite_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-61048")
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_LOCAL_STALE_TIMEOUT", raising=False)
+
+    from run_agent import AIAgent
+    agent = AIAgent(
+        model="qwen3:32b",
+        provider="ollama-local",
+        api_key="sk-dummy",
+        base_url="http://127.0.0.1:11434/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="cli",
+    )
+
+    assert agent._compute_non_stream_stale_timeout([]) == 900.0
+
+
+def test_kanban_local_stale_timeout_override_is_respected(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-61048")
+    monkeypatch.setenv("HERMES_KANBAN_LOCAL_STALE_TIMEOUT", "1200")
+
+    assert resolve_local_default_stale_timeout(180.0) == 1200.0
+
+    monkeypatch.setenv("HERMES_KANBAN_LOCAL_STALE_TIMEOUT", "60")
+    assert resolve_local_default_stale_timeout(180.0) == 180.0
 
 
 def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkeypatch, tmp_path):

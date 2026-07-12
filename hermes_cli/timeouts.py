@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 
 def _coerce_timeout(raw: object) -> float | None:
     try:
@@ -67,6 +69,17 @@ def get_provider_stale_timeout(
             return timeout
 
     return _coerce_timeout(provider_config.get("stale_timeout_seconds"))
+
+
+def resolve_local_default_stale_timeout(default_timeout: float) -> float:
+    """Resolve the implicit stale-timeout policy for local providers."""
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return float("inf")
+
+    kanban_timeout = _coerce_timeout(os.getenv("HERMES_KANBAN_LOCAL_STALE_TIMEOUT"))
+    if kanban_timeout is None:
+        kanban_timeout = 900.0
+    return max(default_timeout, kanban_timeout)
 
 
 def _get_model_config(

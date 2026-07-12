@@ -25,7 +25,11 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from hermes_cli.timeouts import (
+    get_provider_request_timeout,
+    get_provider_stale_timeout,
+    resolve_local_default_stale_timeout,
+)
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.gemini_native_adapter import is_native_gemini_base_url
@@ -2994,14 +2998,35 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
     if _cfg_stale is not None:
         _stream_stale_timeout_base = _cfg_stale
+        _uses_implicit_stream_stale_timeout = False
     else:
-        _stream_stale_timeout_base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
+        _stream_stale_env = os.getenv("HERMES_STREAM_STALE_TIMEOUT")
+        _stream_stale_timeout_base = (
+            float(_stream_stale_env) if _stream_stale_env is not None else 180.0
+        )
+        _uses_implicit_stream_stale_timeout = _stream_stale_env is None
     # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
     # for prefill on large contexts.  Disable the stale detector unless
     # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-    if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
-        _stream_stale_timeout = float("inf")
-        logger.debug("Local provider detected (%s) — stale stream timeout disabled", agent.base_url)
+    if (
+        _uses_implicit_stream_stale_timeout
+        and agent.base_url
+        and is_local_endpoint(agent.base_url)
+    ):
+        _stream_stale_timeout = resolve_local_default_stale_timeout(
+            _stream_stale_timeout_base
+        )
+        if _stream_stale_timeout == float("inf"):
+            logger.debug(
+                "Local provider detected (%s) — stale stream timeout disabled",
+                agent.base_url,
+            )
+        else:
+            logger.info(
+                "Kanban local provider detected (%s) — stale stream timeout capped at %.0fs",
+                agent.base_url,
+                _stream_stale_timeout,
+            )
     else:
         # Scale the stale timeout for large contexts: slow models (like Opus)
         # can legitimately think for minutes before producing the first token

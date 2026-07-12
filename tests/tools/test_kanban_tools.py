@@ -2221,3 +2221,77 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
     d = json.loads(out)
     assert d["ok"] is True, d
     assert d["subscribed"] is False, d
+
+
+# ---------------------------------------------------------------------------
+# Worker self-exit signal (prompt exit after terminal transition)
+# ---------------------------------------------------------------------------
+#
+# A dispatcher-spawned worker must EXIT promptly once its own assigned task
+# reaches a terminal state, instead of free-running and pinning the
+# dispatcher cgroup at MemoryHigh (→ systemd-oomd kills the whole unit). The
+# kanban tool sets a process-global signal on genuine success; the agent
+# conversation loop consumes it after each tool batch and breaks. These tests
+# pin the signal contract the loop depends on.
+
+def test_complete_sets_worker_terminal_signal(worker_env):
+    from tools import kanban_tools as kt
+    kt.reset_worker_terminal_signal()
+    out = kt._handle_complete({"summary": "done"})
+    assert json.loads(out)["ok"] is True
+    # The loop's exit condition: env var set + signal returns our task id.
+    assert os.environ.get("HERMES_KANBAN_TASK") == worker_env
+    assert kt.consume_worker_terminal_signal() == worker_env
+    # Consume is one-shot — a second read is clear so a later turn can't
+    # spuriously break.
+    assert kt.consume_worker_terminal_signal() is None
+
+
+def test_block_sets_worker_terminal_signal_when_landed_blocked(worker_env):
+    from tools import kanban_tools as kt
+    kt.reset_worker_terminal_signal()
+    out = kt._handle_block({"reason": "need clarification"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["status"] == "blocked"
+    assert kt.consume_worker_terminal_signal() == worker_env
+
+
+def test_orchestrator_complete_does_not_set_signal(monkeypatch, worker_env):
+    """A non-worker context (no HERMES_KANBAN_TASK) closing a task must NOT
+    arm the worker self-exit signal — only the dispatcher-spawned worker for
+    that exact task may."""
+    from tools import kanban_tools as kt
+    kt.reset_worker_terminal_signal()
+    # Drop the worker scoping → orchestrator/CLI context.
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    out = kt._handle_complete({"summary": "closed by orchestrator",
+                               "task_id": worker_env})
+    assert json.loads(out)["ok"] is True
+    assert kt.consume_worker_terminal_signal() is None
+
+
+def test_mark_worker_task_terminal_ignores_foreign_task(monkeypatch):
+    """The signal only arms for the process's own HERMES_KANBAN_TASK."""
+    from tools import kanban_tools as kt
+    kt.reset_worker_terminal_signal()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_self")
+    kt._mark_worker_task_terminal("t_other")   # foreign id → no-op
+    assert kt.consume_worker_terminal_signal() is None
+    kt._mark_worker_task_terminal("t_self")     # own id → arms
+    assert kt.consume_worker_terminal_signal() == "t_self"
+
+
+def test_reset_clears_stale_worker_terminal_signal(monkeypatch):
+    """reset_worker_terminal_signal (called per agent turn from
+    agent.turn_context.build_turn_context) must clear a stale signal so it
+    only ever reflects a terminal transition made during the current turn."""
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_stale")
+    kt._mark_worker_task_terminal("t_stale")
+    assert kt._WORKER_TERMINAL_TASK_ID == "t_stale"
+    kt.reset_worker_terminal_signal()
+    assert kt.consume_worker_terminal_signal() is None
+    # The per-turn reset path imports the symbol from tools.kanban_tools;
+    # verify that import target exists so the loop wiring can't silently rot.
+    from tools.kanban_tools import reset_worker_terminal_signal  # noqa: F401

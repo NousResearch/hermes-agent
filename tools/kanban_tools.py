@@ -42,6 +42,58 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Worker self-exit signal
+# ---------------------------------------------------------------------------
+#
+# A dispatcher-spawned worker runs as ``hermes -p <profile> chat -q "work
+# kanban task <id>"`` (see hermes_cli.kanban_db._default_spawn). Once the
+# worker drives its OWN assigned task to a terminal state — kanban_complete
+# (done) or kanban_block (blocked) — there is nothing left to do in that
+# session, but the agent loop would otherwise keep thinking/acting until the
+# model volunteers a no-tool turn or the iteration budget runs out. Measured
+# in the field: finished workers free-ran 40-86 min past kanban_complete,
+# pinning the dispatcher cgroup at MemoryHigh until systemd-oomd killed the
+# whole dispatcher unit (taking every in-flight worker with it).
+#
+# The completion/block handlers set this process-global signal on genuine
+# success; the agent conversation loop (agent/conversation_loop.py) reads it
+# after each tool batch and breaks the loop so the worker process exits
+# promptly. Each worker is its own subprocess, so a per-process global is the
+# right scope. It is set ONLY when this process is the dispatcher-spawned
+# worker for that exact task (``HERMES_KANBAN_TASK == task_id``); interactive
+# and non-kanban ``chat -q`` sessions never set the env var, so they can never
+# trip it and are unaffected.
+
+_WORKER_TERMINAL_TASK_ID: Optional[str] = None
+
+
+def _mark_worker_task_terminal(task_id: str) -> None:
+    """Record that THIS worker just drove its own assigned task terminal.
+
+    No-op unless the process is the dispatcher-spawned worker for
+    ``task_id`` (``HERMES_KANBAN_TASK == task_id``). Orchestrator/CLI
+    callers completing *other* tasks never set the signal.
+    """
+    global _WORKER_TERMINAL_TASK_ID
+    if task_id and os.environ.get("HERMES_KANBAN_TASK") == task_id:
+        _WORKER_TERMINAL_TASK_ID = task_id
+
+
+def consume_worker_terminal_signal() -> Optional[str]:
+    """Return and clear the pending worker-self-terminated task id (or None)."""
+    global _WORKER_TERMINAL_TASK_ID
+    tid = _WORKER_TERMINAL_TASK_ID
+    _WORKER_TERMINAL_TASK_ID = None
+    return tid
+
+
+def reset_worker_terminal_signal() -> None:
+    """Clear the signal at the start of an agent turn (defensive)."""
+    global _WORKER_TERMINAL_TASK_ID
+    _WORKER_TERMINAL_TASK_ID = None
+
+
+# ---------------------------------------------------------------------------
 # Gating
 # ---------------------------------------------------------------------------
 
@@ -655,6 +707,11 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
+            # The worker's own task is now done — signal the agent loop to
+            # exit promptly so the process frees its memory instead of
+            # free-running (see _mark_worker_task_terminal). No-op unless
+            # this process is the dispatcher-spawned worker for `tid`.
+            _mark_worker_task_terminal(tid)
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
             conn.close()
@@ -728,6 +785,11 @@ def _handle_block(args: dict, **kw) -> str:
             # Tell the worker where the task actually landed so it doesn't
             # assume it's sitting in 'blocked' when routing sent it elsewhere.
             landed = kb.get_task(conn, tid)
+            # Only self-exit when the task genuinely landed terminal for this
+            # worker (blocked). If routing bounced it back to ready/running,
+            # leave the loop alone rather than force an early exit.
+            if landed is not None and landed.status == "blocked":
+                _mark_worker_task_terminal(tid)
             return _ok(
                 task_id=tid,
                 run_id=run.id if run else None,

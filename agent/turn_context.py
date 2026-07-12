@@ -233,6 +233,14 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    # Clear any stale kanban worker self-exit signal so it only ever
+    # reflects a terminal transition made during THIS turn (defensive:
+    # consume_worker_terminal_signal already clears on read).
+    try:
+        from tools.kanban_tools import reset_worker_terminal_signal
+        reset_worker_terminal_signal()
+    except Exception:
+        pass
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):
         _reset_consol()

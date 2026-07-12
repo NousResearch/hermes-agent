@@ -4737,6 +4737,41 @@ def run_conversation(
                                 pass
                     break
 
+                # ── Kanban worker self-exit ──────────────────────────
+                # A dispatcher-spawned worker that just drove its OWN
+                # assigned task to a terminal state (kanban_complete →
+                # done, or kanban_block → blocked) has no more work in
+                # this session. Break immediately so the process exits
+                # and releases its memory, instead of letting the model
+                # keep thinking/acting until the iteration budget runs
+                # out. In the field, finished workers free-ran 40-86 min
+                # past kanban_complete, pinning the dispatcher cgroup at
+                # MemoryHigh → systemd-oomd killed the whole dispatcher
+                # unit. The signal is set inside the kanban tool ONLY for
+                # a worker completing its exact HERMES_KANBAN_TASK, so
+                # non-kanban `chat -q` and interactive sessions never
+                # trip it. Env re-check here is belt-and-braces.
+                if os.environ.get("HERMES_KANBAN_TASK"):
+                    try:
+                        from tools.kanban_tools import (
+                            consume_worker_terminal_signal as _kb_consume_terminal,
+                        )
+                        _kb_terminal_tid = _kb_consume_terminal()
+                    except Exception:
+                        _kb_terminal_tid = None
+                    if _kb_terminal_tid:
+                        _turn_exit_reason = "kanban_worker_task_terminal"
+                        if not (final_response or "").strip():
+                            final_response = (
+                                getattr(agent, "_last_content_with_tools", None)
+                                or f"Task {_kb_terminal_tid} reached a terminal "
+                                "state; worker session complete."
+                            )
+                        messages.append(
+                            {"role": "assistant", "content": final_response}
+                        )
+                        break
+
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
                 # entire conversation.

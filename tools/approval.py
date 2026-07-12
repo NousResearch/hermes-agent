@@ -2880,9 +2880,12 @@ def check_all_command_guards(command: str, env_type: str,
                 }
 
             # User approved — persist based on scope (same logic as CLI)
+            tirith_downgraded = False
             for key, _, is_tirith in warnings:
                 if choice == "session" or (choice == "always" and is_tirith):
                     approve_session(session_key, key)
+                    if choice == "always" and is_tirith:
+                        tirith_downgraded = True
                 elif choice == "always":
                     approve_session(session_key, key)
                     approve_permanent(key)
@@ -2891,7 +2894,8 @@ def check_all_command_guards(command: str, env_type: str,
                 # single time only, matching the CLI's behavior.
 
             return {"approved": True, "message": None,
-                    "user_approved": True, "description": combined_desc}
+                    "user_approved": True, "description": combined_desc,
+                    "tirith_downgraded": tirith_downgraded}
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
         # Return approval_required for backward compat. Redact secrets in the
@@ -2961,10 +2965,13 @@ def check_all_command_guards(command: str, env_type: str,
         }
 
     # Persist approval for each warning individually
+    tirith_downgraded = False
     for key, _, is_tirith in warnings:
         if choice == "session" or (choice == "always" and is_tirith):
             # tirith: session only (no permanent broad allowlisting)
             approve_session(session_key, key)
+            if choice == "always" and is_tirith:
+                tirith_downgraded = True
         elif choice == "always":
             # dangerous patterns: permanent allowed
             approve_session(session_key, key)
@@ -2972,7 +2979,8 @@ def check_all_command_guards(command: str, env_type: str,
             save_permanent_allowlist(_permanent_approved)
 
     return {"approved": True, "message": None,
-            "user_approved": True, "description": combined_desc}
+            "user_approved": True, "description": combined_desc,
+            "tirith_downgraded": tirith_downgraded}
 
 
 def check_execute_code_guard(code: str, env_type: str,

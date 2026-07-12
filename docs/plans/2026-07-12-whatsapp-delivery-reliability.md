@@ -1,5 +1,7 @@
 # WhatsApp Delivery Reliability Plan
 
+**Status:** Complete — all four tasks implemented and verified (focused suite + legacy auth/media tests green).
+
 **Goal:** add safe retry classification, idempotency metadata and dead-letter observability to Hermes→WhatsApp bridge delivery without duplicating ambiguous sends or violating Sawi outreach policy.
 
 ## Constraints

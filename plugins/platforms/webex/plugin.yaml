@@ -1,0 +1,17 @@
+name: webex-platform
+label: Webex
+kind: platform
+version: 1.0.0
+description: Cisco Webex Messaging adapter with WebSocket and webhook transports.
+author: Hermes Agent contributors
+requires_env:
+  - name: WEBEX_BOT_TOKEN
+    description: "Webex bot access token"
+    prompt: "Webex bot token"
+    url: "https://developer.webex.com/my-apps"
+    password: true
+optional_env:
+  - name: WEBEX_WEBHOOK_SECRET
+    description: "Webhook signature secret (required only in webhook mode)"
+    prompt: "Webhook secret"
+    password: true

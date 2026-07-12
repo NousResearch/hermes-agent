@@ -192,6 +192,10 @@ def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool
     # SimpleX: user_id is the numeric contactId but the UI only shows display names.
     if platform_value == "simplex" and source.user_name:
         check_ids.add(source.user_name)
+    # Webex supplies both the sender's email and immutable person ID. Either
+    # operator-facing form identifies the same principal.
+    if platform_value == "webex" and source.user_id_alt:
+        check_ids.add(source.user_id_alt)
     # Buzz: allowlist may hold npub or hex; inbound pubkeys are hex.
     if platform_value == "buzz":
         # Buzz (Nostr-based): BUZZ_ALLOWED_USERS accepts npub or hex, but inbound event pubkeys are always

@@ -60,9 +60,9 @@ _ALL_ADAPTERS = [
     ("plugins.platforms.slack.adapter", "SlackAdapter"),
     ("plugins.platforms.telegram.adapter", "TelegramAdapter"),
     ("plugins.platforms.wecom.adapter", "WeComAdapter"),
+    ("plugins.platforms.webex.adapter", "WebexAdapter"),
     ("gateway.platforms.weixin", "WeixinAdapter"),
     ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
     ("gateway.platforms.yuanbao", "YuanbaoAdapter"),
 ]
-
 

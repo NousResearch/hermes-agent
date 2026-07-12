@@ -31,6 +31,7 @@ MIGRATED_ADAPTER_MODULES = [
     ("plugins.platforms.irc.adapter", "IRC_SERVER_PASSWORD"),
     ("plugins.platforms.line.adapter", "LINE_CHANNEL_ACCESS_TOKEN"),
     ("plugins.platforms.teams.adapter", "TEAMS_CLIENT_SECRET"),
+    ("plugins.platforms.webex.adapter", "WEBEX_BOT_TOKEN"),
     ("plugins.platforms.mattermost.adapter", "MATTERMOST_TOKEN"),
     ("plugins.platforms.ntfy.adapter", "NTFY_TOKEN"),
     ("plugins.platforms.homeassistant.adapter", "HASS_TOKEN"),

@@ -456,6 +456,27 @@ def test_dispatch_spawn_failure_unbinds_and_rotates_grant(kanban_home):
         assert kb.get_task(conn, task.id).consecutive_failures == 1
 
 
+def test_approved_resume_bypasses_generic_respawn_heuristics(kanban_home):
+    with kb.connect() as conn:
+        task = _claimed_task(conn)
+        request = _request(conn, task)
+        approved = kb.decide_task_approval(conn, request["id"], "approve")
+        assert approved["status"] == "approved"
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = '403 authentication denied' "
+            "WHERE id = ?",
+            (task.id,),
+        )
+        kb.add_comment(
+            conn,
+            task.id,
+            "worker",
+            "Review https://github.com/example/project/pull/123",
+        )
+
+        assert kb.check_respawn_guard(conn, task.id) is None
+
+
 def test_default_spawn_scrubs_parent_authority_and_resumes_session(
     kanban_home,
     monkeypatch,

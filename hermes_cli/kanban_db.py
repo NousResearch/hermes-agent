@@ -8249,6 +8249,20 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     now = int(time.time())
 
+    # A route-authenticated human has explicitly approved resuming this exact
+    # paused action. Generic respawn heuristics (old auth text, recent success,
+    # an active PR comment) must not strand that short-lived grant until it
+    # expires. This bypass is deliberately limited to an unbound grant; claim
+    # still enforces profile, parent, status, and one-run binding invariants.
+    approved_resume = conn.execute(
+        "SELECT 1 FROM kanban_approval_requests "
+        "WHERE task_id = ? AND state = 'approved' AND resume_run_id IS NULL "
+        "  AND expires_at > ? LIMIT 1",
+        (task_id, now),
+    ).fetchone()
+    if approved_resume:
+        return None
+
     # 1. Rate-limit cooldown. The most recent run ended ``rate_limited``
     #    (quota wall) — defer while inside the cooldown window, then allow a
     #    cheap probe. Must run BEFORE the blocker_auth regex check, because a

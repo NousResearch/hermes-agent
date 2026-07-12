@@ -22,9 +22,95 @@ import contextlib
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# Tool names / Bash command substrings that indicate a coding session (as
+# opposed to research, scheduling, browser automation, etc.). Cheap,
+# regex-free signal computed from the conversation snapshot the review fork
+# already has in hand -- no need to re-derive it from raw transcript text or
+# reach into the separate trajectory-capture pipeline (agent/trajectory.py),
+# which serializes to a different (ShareGPT/RL) shape for a different
+# consumer (fine-tuning data export) and isn't available mid-turn anyway.
+_CODE_EDIT_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
+_TEST_RUNNER_PATTERN = re.compile(
+    r"\b(pytest|py\.test|python -m pytest|npm test|npm run test|yarn test|"
+    r"go test|cargo test|jest|mocha|rspec|dotnet test|gradle test|mvn test)\b",
+    re.IGNORECASE,
+)
+_MAX_CODING_SIGNAL_ENTRIES = 6
+
+
+def _detect_coding_signal(messages_snapshot: List[Dict]) -> str:
+    """Scan the conversation snapshot for edit/test tool-call activity.
+
+    Returns a short hint block to append to the review prompt when the
+    session looks like a coding task, or "" when it doesn't. This gives the
+    review model a pre-computed signal instead of making it infer "was this
+    a coding session" cold from raw transcript text, and lets the prompt
+    carry a couple of concrete (command, outcome) pairs so a debugging
+    lesson can be captured with the actual error/fix rather than a vague
+    paraphrase.
+    """
+    entries: List[str] = []
+    saw_code_edit = False
+    saw_test_run = False
+
+    for i, msg in enumerate(messages_snapshot or []):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls", []) or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {}) or {}
+            fn_name = fn.get("name", "")
+            if fn_name in _CODE_EDIT_TOOLS:
+                saw_code_edit = True
+                continue
+            if fn_name != "Bash":
+                continue
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            command = args.get("command", "") or ""
+            if not _TEST_RUNNER_PATTERN.search(command):
+                continue
+            saw_test_run = True
+            if len(entries) >= _MAX_CODING_SIGNAL_ENTRIES:
+                continue
+            # Pull the matching tool result (next tool message with this
+            # call's id) for a one-line pass/fail outcome.
+            outcome = ""
+            tcid = tc.get("id")
+            for later in messages_snapshot[i + 1:i + 3]:
+                if isinstance(later, dict) and later.get("role") == "tool" and later.get("tool_call_id") == tcid:
+                    result_text = str(later.get("content", ""))
+                    outcome = result_text[:200].replace("\n", " ")
+                    break
+            entries.append(f"  • `{command[:150]}`" + (f" → {outcome}" if outcome else ""))
+
+    if not (saw_code_edit or saw_test_run):
+        return ""
+
+    lines = [
+        "\n\nCoding-session signal: this conversation included "
+        + ("file edits and " if saw_code_edit else "")
+        + ("test-runner commands" if saw_test_run else "")
+        + ". Before deciding where a lesson belongs, check the bundled "
+        "`systematic-debugging` and `test-driven-development` skills "
+        "(skill_view) -- if the fix/technique fits their territory, add it "
+        "as a `references/<topic>.md` file under them (SKILL.md itself is "
+        "protected, but reference files are not -- see the protected-skills "
+        "note below) instead of spinning up a new narrow skill.",
+    ]
+    if entries:
+        lines.append("Test/debug commands observed this session:")
+        lines.extend(entries[:_MAX_CODING_SIGNAL_ENTRIES])
+    return "\n".join(lines)
 
 
 # Review-prompt strings — used by ``spawn_background_review_thread`` to build
@@ -112,14 +198,23 @@ _SKILL_REVIEW_PROMPT = (
     "skill that governs that task needs to carry the lesson.\n\n"
     "If you notice two existing skills that overlap, note it in your "
     "reply — the background curator handles consolidation at scale.\n\n"
-    "Protected skills (DO NOT edit these):\n"
+    "Protected skills (DO NOT edit or replace SKILL.md itself):\n"
     "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
     "  • Hub-installed skills (installed via 'hermes skills install').\n"
+    "Exception: you MAY add a `references/<topic>.md` file under a "
+    "protected skill via skill_manage action=write_file. This is how "
+    "session-specific technique detail (a debugging path, a "
+    "language-specific gotcha, a test-writing pattern) accumulates under "
+    "an authoritative umbrella like 'systematic-debugging' or "
+    "'test-driven-development' without ever touching their protected "
+    "SKILL.md body. Add the one-line pointer in your reply so it's "
+    "visible for review, not by editing the protected SKILL.md.\n"
     "Pinned skills (marked via 'hermes curator pin') CAN be improved — "
     "pin only blocks deletion/archive/consolidation by the curator, not "
     "content updates. Patch them when a pitfall or missing step turns up, "
     "same as any other agent-created skill.\n"
-    "If the only skills that need updating are protected, say\n"
+    "If the only skills that need updating are protected and the lesson "
+    "doesn't fit a references/ addition, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture (these become persistent self-imposed constraints "
     "that bite you later when the environment changes):\n"
@@ -198,14 +293,21 @@ _COMBINED_REVIEW_PROMPT = (
     "should carry user-preference lessons when relevant.\n\n"
     "If you notice overlapping existing skills, mention it — the "
     "background curator handles consolidation.\n\n"
-    "Protected skills (DO NOT edit these):\n"
+    "Protected skills (DO NOT edit or replace SKILL.md itself):\n"
     "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
     "  • Hub-installed skills (installed via 'hermes skills install').\n"
+    "Exception: you MAY add a `references/<topic>.md` file under a "
+    "protected skill via skill_manage action=write_file -- this is how "
+    "session-specific technique detail (a debugging path, a "
+    "language-specific gotcha, a test-writing pattern) accumulates under "
+    "an authoritative umbrella like 'systematic-debugging' or "
+    "'test-driven-development' without touching their protected SKILL.md.\n"
     "Pinned skills (marked via 'hermes curator pin') CAN be improved — "
     "pin only blocks deletion/archive/consolidation by the curator, not "
     "content updates. Patch them when a pitfall or missing step turns up, "
     "same as any other agent-created skill.\n"
-    "If the only skills that need updating are protected, say\n"
+    "If the only skills that need updating are protected and the lesson "
+    "doesn't fit a references/ addition, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture as skills (these become persistent self-imposed "
     "constraints that bite you later when the environment changes):\n"
@@ -711,6 +813,11 @@ def spawn_background_review_thread(
         prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
     else:
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
+
+    # Skill review (standalone or combined) benefits from a pre-computed
+    # coding-session hint; a memory-only pass doesn't touch skills at all.
+    if review_skills:
+        prompt = prompt + _detect_coding_signal(messages_snapshot)
 
     def _target() -> None:
         _run_review_in_thread(agent, messages_snapshot, prompt)

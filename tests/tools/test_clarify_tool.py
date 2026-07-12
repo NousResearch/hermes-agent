@@ -10,6 +10,7 @@ from tools.clarify_tool import (
     MAX_CHOICES,
     CLARIFY_SCHEMA,
     _flatten_choice,
+    _normalize_choices,
 )
 
 
@@ -103,10 +104,10 @@ class TestClarifyToolChoicesValidation:
         assert choices_received == ["valid", "also valid"]
 
     def test_invalid_choices_type_returns_error(self):
-        """Non-list choices should return error."""
+        """Scalar non-collection choices should still return error."""
         result = json.loads(clarify_tool(
             "Question?",
-            choices="not a list",  # type: ignore
+            choices=7,  # type: ignore
             callback=lambda q, c: "ignored"
         ))
         assert "error" in result
@@ -122,6 +123,49 @@ class TestClarifyToolChoicesValidation:
 
         clarify_tool("Pick", choices=[1, 2, 3], callback=mock_callback)  # type: ignore
         assert choices_received == ["1", "2", "3"]
+
+    def test_numbered_multiline_string_choices_are_coerced(self):
+        """Weak structured-output models often emit numbered text, not arrays."""
+        choices_received = []
+
+        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
+            choices_received.extend(choices or [])
+            return "answer"
+
+        clarify_tool(
+            "Pick",
+            choices="1. PowerShell\n2. Python\n3. Bash",  # type: ignore
+            callback=mock_callback,
+        )
+        assert choices_received == ["PowerShell", "Python", "Bash"]
+
+    def test_json_string_choices_are_coerced(self):
+        choices_received = []
+
+        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
+            choices_received.extend(choices or [])
+            return "answer"
+
+        clarify_tool(
+            "Pick",
+            choices='["PowerShell", "Python"]',  # type: ignore
+            callback=mock_callback,
+        )
+        assert choices_received == ["PowerShell", "Python"]
+
+    def test_object_wrapped_choices_are_coerced(self):
+        choices_received = []
+
+        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
+            choices_received.extend(choices or [])
+            return "answer"
+
+        clarify_tool(
+            "Pick",
+            choices={"options": ["PowerShell", "Python"]},  # type: ignore
+            callback=mock_callback,
+        )
+        assert choices_received == ["PowerShell", "Python"]
 
 
 class TestClarifyToolCallbackHandling:
@@ -227,6 +271,16 @@ class TestClarifyDictChoices:
         assert result["user_response"] == "Tight, covers all 3 points"
         assert "{" not in result["user_response"]
         assert all("{" not in c for c in result["choices_offered"])
+
+
+class TestClarifyChoicesNormalizationHelpers:
+    def test_normalize_rejects_scalar(self):
+        assert _normalize_choices(7) == (False, None)
+
+    def test_normalize_unwraps_nested_json_object_string(self):
+        ok, choices = _normalize_choices('{"options": [{"label": "Python"}, {"text": "PowerShell"}]}')
+        assert ok is True
+        assert choices == ["Python", "PowerShell"]
 
 
 class TestClarifySchema:

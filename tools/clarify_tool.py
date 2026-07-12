@@ -12,12 +12,14 @@ a thin dispatcher that delegates to a platform-provided callback.
 """
 
 import json
-from typing import List, Optional, Callable
+import re
+from typing import Any, Callable, List, Optional
 
 
 # Maximum number of predefined choices the agent can offer.
 # A 5th "Other (type your answer)" option is always appended by the UI.
 MAX_CHOICES = 4
+_CHOICE_CONTAINER_KEYS = ("choices", "options", "items", "values")
 
 
 def _flatten_choice(c) -> str:
@@ -53,6 +55,73 @@ def _flatten_choice(c) -> str:
     return str(c).strip()
 
 
+def _strip_choice_prefix(value: str) -> str:
+    """Drop lightweight numbering/bullets from loose text choices."""
+    return re.sub(r"^\s*(?:[-*]|\d+[\).\:-])\s*", "", value).strip()
+
+
+def _coerce_choices_string(raw: str) -> List[str]:
+    """Accept numbered lines / CSV-ish strings from weak tool-call emitters."""
+    stripped = raw.strip()
+    if not stripped:
+        return []
+
+    numbered_lines = [
+        _strip_choice_prefix(line)
+        for line in stripped.splitlines()
+        if line.strip()
+    ]
+    numbered_lines = [line for line in numbered_lines if line]
+    if len(numbered_lines) > 1:
+        return numbered_lines
+
+    if any(sep in stripped for sep in (",", ";", "|")):
+        parts = re.split(r"\s*[,;|]\s*", stripped)
+        return [_strip_choice_prefix(part) for part in parts if _strip_choice_prefix(part)]
+
+    cleaned = _strip_choice_prefix(stripped)
+    return [cleaned] if cleaned else []
+
+
+def _normalize_choices(choices: Any) -> tuple[bool, Optional[List[str]]]:
+    """Coerce common loose tool-call payloads into list[str]."""
+    candidate: Any = choices
+
+    if isinstance(candidate, str):
+        stripped = candidate.strip()
+        if not stripped:
+            return True, None
+        if stripped[:1] in "[{":
+            try:
+                candidate = json.loads(stripped)
+            except Exception:
+                candidate = stripped
+        if isinstance(candidate, str):
+            candidate = _coerce_choices_string(candidate)
+
+    if isinstance(candidate, dict):
+        for key in _CHOICE_CONTAINER_KEYS:
+            value = candidate.get(key)
+            if value is not None:
+                candidate = value
+                break
+        else:
+            candidate = list(candidate.values())
+
+    if isinstance(candidate, (tuple, set)):
+        candidate = list(candidate)
+
+    if candidate is None:
+        return True, None
+    if not isinstance(candidate, list):
+        return False, None
+
+    normalized = [s for s in (_flatten_choice(c) for c in candidate) if s]
+    if len(normalized) > MAX_CHOICES:
+        normalized = normalized[:MAX_CHOICES]
+    return True, normalized or None
+
+
 def clarify_tool(
     question: str,
     choices: Optional[List[str]] = None,
@@ -79,18 +148,14 @@ def clarify_tool(
 
     # Validate and trim choices
     if choices is not None:
-        if not isinstance(choices, list):
+        valid_choices, normalized_choices = _normalize_choices(choices)
+        if not valid_choices:
             return tool_error("choices must be a list of strings.")
-        # LLMs sometimes emit dict-shaped choices (e.g. [{"description": "..."}])
-        # instead of bare strings. _flatten_choice unwraps them to their
-        # user-facing text here — the single platform-agnostic entry point —
-        # so the CLI panel, Discord buttons, and Telegram list all render clean
-        # text and the resolved answer is never a raw Python dict repr.
-        choices = [s for s in (_flatten_choice(c) for c in choices) if s]
-        if len(choices) > MAX_CHOICES:
-            choices = choices[:MAX_CHOICES]
-        if not choices:
-            choices = None  # empty list → open-ended
+        # Weak structured-output providers sometimes serialize choices as
+        # a JSON string, numbered text block, or {"options": [...]} object.
+        # Normalize once here so the existing platform adapters still get the
+        # clean list[str] shape they already know how to render.
+        choices = normalized_choices
 
     if callback is None:
         return json.dumps(

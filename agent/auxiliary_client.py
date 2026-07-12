@@ -5058,15 +5058,15 @@ def resolve_provider_client(
                 else (client, final_model))
 
     elif pconfig.auth_type == "aws_sdk":
-        # AWS SDK providers (Bedrock) — Claude models use the Anthropic Bedrock
-        # SDK (prompt caching, thinking); non-Claude models use Converse API.
+        # Auxiliary Bedrock requests deliberately mirror the main agent's
+        # Converse path, including Anthropic Claude/Fable models. This avoids
+        # AnthropicBedrock-SDK-only request fields on side tasks such as
+        # vision analysis and context compaction.
         try:
             from agent.bedrock_adapter import (
                 has_aws_credentials,
-                is_anthropic_bedrock_model,
                 resolve_bedrock_region,
             )
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
         except ImportError:
             logger.warning("resolve_provider_client: bedrock requested but "
                            "boto3 or anthropic SDK not installed")
@@ -5080,25 +5080,9 @@ def resolve_provider_client(
         region = resolve_bedrock_region()
         default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
         final_model = _normalize_resolved_model(model or default_model, provider)
-        base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
-
-        if is_anthropic_bedrock_model(final_model):
-            try:
-                real_client = build_anthropic_bedrock_client(region)
-            except ImportError as exc:
-                logger.warning("resolve_provider_client: cannot create Bedrock "
-                               "client: %s", exc)
-                return None, None
-            client = AnthropicAuxiliaryClient(
-                real_client, final_model, api_key="aws-sdk",
-                base_url=base_url,
-            )
-            logger.debug("resolve_provider_client: bedrock anthropic (%s, %s)",
-                         final_model, region)
-        else:
-            client = BedrockAuxiliaryClient(region, final_model)
-            logger.debug("resolve_provider_client: bedrock converse (%s, %s)",
-                         final_model, region)
+        client = BedrockAuxiliaryClient(region, final_model)
+        logger.debug("resolve_provider_client: bedrock converse (%s, %s)",
+                     final_model, region)
 
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))

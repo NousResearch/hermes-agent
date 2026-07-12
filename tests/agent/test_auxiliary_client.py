@@ -5653,3 +5653,69 @@ class TestCustomEndpointApiKeyInheritance:
             )
 
         assert captured.get("api_key") == "no-key-required"
+
+
+class TestAuxiliaryBedrockRouting:
+    def test_anthropic_bedrock_aux_uses_converse_shim(self):
+        import agent.auxiliary_client as ac
+        registry = {"bedrock": SimpleNamespace(auth_type="aws_sdk")}
+
+        with patch(
+            "hermes_cli.auth.PROVIDER_REGISTRY",
+            registry,
+        ), patch(
+            "agent.bedrock_adapter.has_aws_credentials",
+            return_value=True,
+        ), patch(
+            "agent.bedrock_adapter.resolve_bedrock_region",
+            return_value="us-west-2",
+        ), patch(
+            "agent.auxiliary_client.BedrockAuxiliaryClient",
+        ) as mock_bedrock_client, patch(
+            "agent.anthropic_adapter.build_anthropic_bedrock_client",
+            side_effect=AssertionError(
+                "auxiliary Claude-on-Bedrock should not use AnthropicBedrock SDK"
+            ),
+        ):
+            sentinel = MagicMock()
+            mock_bedrock_client.return_value = sentinel
+
+            client, model = ac.resolve_provider_client(
+                "bedrock",
+                "global.anthropic.claude-fable-5-20251010-v1:0",
+            )
+
+        assert client is sentinel
+        assert model == "global.anthropic.claude-fable-5-20251010-v1:0"
+        mock_bedrock_client.assert_called_once_with(
+            "us-west-2", "global.anthropic.claude-fable-5-20251010-v1:0"
+        )
+
+    def test_async_anthropic_bedrock_aux_wraps_converse_shim(self):
+        import agent.auxiliary_client as ac
+
+        registry = {"bedrock": SimpleNamespace(auth_type="aws_sdk")}
+
+        with patch(
+            "hermes_cli.auth.PROVIDER_REGISTRY",
+            registry,
+        ), patch(
+            "agent.bedrock_adapter.has_aws_credentials",
+            return_value=True,
+        ), patch(
+            "agent.bedrock_adapter.resolve_bedrock_region",
+            return_value="us-east-1",
+        ), patch(
+            "agent.anthropic_adapter.build_anthropic_bedrock_client",
+            side_effect=AssertionError(
+                "auxiliary Claude-on-Bedrock should not use AnthropicBedrock SDK"
+            ),
+        ):
+            client, model = ac.resolve_provider_client(
+                "bedrock",
+                "global.anthropic.claude-fable-5",
+                async_mode=True,
+            )
+
+        assert isinstance(client, ac.AsyncBedrockAuxiliaryClient)
+        assert model == "global.anthropic.claude-fable-5"

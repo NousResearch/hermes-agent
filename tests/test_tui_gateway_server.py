@@ -3347,6 +3347,18 @@ def test_complete_slash_returns_plain_string_fields():
         assert isinstance(item["meta"], str), item
 
 
+def test_complete_slash_reasoning_includes_every_supported_effort():
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/reasoning "}}
+    )
+
+    choices = {item["text"] for item in resp["result"]["items"]}
+    assert set(VALID_REASONING_EFFORTS).issubset(choices)
+    assert "max" in choices
+
+
 def test_complete_slash_includes_tui_details_command():
     resp = server.handle_request(
         {"id": "1", "method": "complete.slash", "params": {"text": "/det"}}

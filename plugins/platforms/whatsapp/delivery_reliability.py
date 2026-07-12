@@ -15,9 +15,12 @@ content, chat ids or tokens — so they are safe for logs and dead-letter
 records.
 """
 
+import asyncio
 import errno
+import random
+import uuid
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 RETRYABLE = "retryable"
 NON_RETRYABLE = "non_retryable"
@@ -77,3 +80,126 @@ def classify_delivery_failure(
 
     decision = RETRYABLE if status in _RETRYABLE_STATUSES else NON_RETRYABLE
     return DeliveryFailure(decision, f"http_{status}", status)
+
+
+# ---------------------------------------------------------------------------
+# Bounded delivery attempts
+# ---------------------------------------------------------------------------
+
+MAX_DELIVERY_ATTEMPTS = 3
+
+# Delay (seconds) before attempt N, indexed by retry ordinal: attempt 2 waits
+# 1s after the first failure, attempt 3 waits 5s.
+_BACKOFF_SCHEDULE = (1.0, 5.0)
+
+# Profile-owned delivery policy hook (e.g. Sawi DDD19/30-day outreach rules).
+# Upstream Hermes never registers one; profile code opts in via
+# set_delivery_policy_hook(). The hook receives a sanitized context dict and
+# returns False to veto the delivery before the first attempt is made.
+_policy_hook: Optional[Callable[[dict], bool]] = None
+
+
+def set_delivery_policy_hook(hook: Optional[Callable[[dict], bool]]) -> None:
+    """Register (or clear, with ``None``) the profile delivery policy hook."""
+    global _policy_hook
+    _policy_hook = hook
+
+
+def retry_backoff_delay(attempt: int, *, jitter: bool = True) -> float:
+    """Seconds to wait before ``attempt`` (2-based; attempt 1 never waits).
+
+    With ``jitter`` the delay is stretched by up to 50% so concurrent
+    retries don't synchronize against the bridge.
+    """
+    index = min(max(attempt - 2, 0), len(_BACKOFF_SCHEDULE) - 1)
+    delay = _BACKOFF_SCHEDULE[index]
+    if jitter:
+        delay += random.uniform(0, delay * 0.5)
+    return delay
+
+
+@dataclass
+class DeliveryOutcome:
+    """Result of one logical delivery (all attempts included)."""
+
+    ok: bool
+    attempts: int
+    idempotency_key: Optional[str]
+    status: Optional[int] = None
+    data: Any = None
+    error: Optional[str] = None
+    failure: Optional[DeliveryFailure] = None
+    dead_letter_ref: Optional[str] = None
+
+
+async def send_with_retries(
+    attempt_fn: Callable[[Dict[str, str]], Awaitable[Tuple[int, Any]]],
+    *,
+    base_headers: Optional[Dict[str, str]] = None,
+    max_attempts: int = MAX_DELIVERY_ATTEMPTS,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    jitter: bool = True,
+    policy_context: Optional[dict] = None,
+) -> DeliveryOutcome:
+    """Run one logical bridge delivery with bounded, classified retries.
+
+    ``attempt_fn(headers)`` performs a single POST and returns
+    ``(status, payload)`` — parsed JSON for 2xx, error text otherwise —
+    or raises. One ``Idempotency-Key`` is generated per logical delivery
+    and reused verbatim on every attempt so the bridge can deduplicate.
+
+    A 2xx ends the loop; a permanent or ambiguous failure stops immediately
+    (an ambiguous timeout is NEVER retried — the send may have gone out).
+    Only retryable failures re-attempt, up to ``max_attempts``.
+    """
+    idempotency_key = uuid.uuid4().hex
+    headers = dict(base_headers or {})
+    headers["Idempotency-Key"] = idempotency_key
+
+    if _policy_hook is not None:
+        try:
+            allowed = _policy_hook(dict(policy_context or {}))
+        except Exception:
+            # A broken profile hook must not silently bypass the policy it
+            # exists to enforce — fail closed.
+            allowed = False
+        if not allowed:
+            return DeliveryOutcome(
+                ok=False,
+                attempts=0,
+                idempotency_key=idempotency_key,
+                error="delivery vetoed by policy hook",
+                failure=DeliveryFailure(NON_RETRYABLE, "policy_blocked"),
+            )
+
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            status, payload = await attempt_fn(headers)
+        except Exception as exc:
+            failure = classify_delivery_failure(exception=exc)
+            error = str(exc)
+            status = None
+        else:
+            if 200 <= status < 300:
+                return DeliveryOutcome(
+                    ok=True,
+                    attempts=attempts,
+                    idempotency_key=idempotency_key,
+                    status=status,
+                    data=payload,
+                )
+            failure = classify_delivery_failure(status=status)
+            error = payload if isinstance(payload, str) else str(payload)
+
+        if failure.decision != RETRYABLE or attempts >= max_attempts:
+            return DeliveryOutcome(
+                ok=False,
+                attempts=attempts,
+                idempotency_key=idempotency_key,
+                status=status,
+                error=error,
+                failure=failure,
+            )
+        await sleep(retry_backoff_delay(attempts + 1, jitter=jitter))

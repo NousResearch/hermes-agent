@@ -161,7 +161,7 @@ class TestLiveAdapterAuth:
         result = await adapter.send("chat1", "hello")
         assert result.success
         for headers in _post_headers(adapter):
-            assert headers == {"Authorization": f"Bearer {TOKEN}"}
+            assert headers["Authorization"] == f"Bearer {TOKEN}"
 
     @pytest.mark.asyncio
     async def test_send_without_token_omits_authorization(self):
@@ -172,7 +172,7 @@ class TestLiveAdapterAuth:
         result = await adapter.send("chat1", "hello")
         assert result.success
         for headers in _post_headers(adapter):
-            assert not headers
+            assert "Authorization" not in headers
 
     @pytest.mark.asyncio
     async def test_edit_message_includes_bearer(self):
@@ -182,7 +182,7 @@ class TestLiveAdapterAuth:
         result = await adapter.edit_message("chat1", "msg1", "edited")
         assert result.success
         for headers in _post_headers(adapter):
-            assert headers == {"Authorization": f"Bearer {TOKEN}"}
+            assert headers["Authorization"] == f"Bearer {TOKEN}"
 
     @pytest.mark.asyncio
     async def test_send_media_includes_bearer(self, tmp_path):
@@ -194,7 +194,7 @@ class TestLiveAdapterAuth:
         result = await adapter._send_media_to_bridge("chat1", str(media), "image")
         assert result.success
         for headers in _post_headers(adapter):
-            assert headers == {"Authorization": f"Bearer {TOKEN}"}
+            assert headers["Authorization"] == f"Bearer {TOKEN}"
 
     @pytest.mark.asyncio
     async def test_send_poll_includes_bearer(self):
@@ -204,7 +204,7 @@ class TestLiveAdapterAuth:
         result = await adapter.send_poll("chat1", "q?", ["a", "b"])
         assert result.success
         for headers in _post_headers(adapter):
-            assert headers == {"Authorization": f"Bearer {TOKEN}"}
+            assert headers["Authorization"] == f"Bearer {TOKEN}"
 
     @pytest.mark.asyncio
     async def test_send_location_includes_bearer(self):
@@ -214,7 +214,7 @@ class TestLiveAdapterAuth:
         result = await adapter.send_location("chat1", 1.0, 2.0)
         assert result.success
         for headers in _post_headers(adapter):
-            assert headers == {"Authorization": f"Bearer {TOKEN}"}
+            assert headers["Authorization"] == f"Bearer {TOKEN}"
 
     @pytest.mark.asyncio
     async def test_send_typing_includes_bearer(self):

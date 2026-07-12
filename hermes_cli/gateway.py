@@ -32,19 +32,17 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
 from gateway.restart import (
-    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     is_gateway_supervisor_process,
-    parse_restart_drain_timeout,
+    resolve_restart_drain_timeout,
 )
 from hermes_cli.config import (
     get_env_value,
     get_hermes_home,
     is_managed,
     managed_error,
-    read_raw_config,
     save_env_value,
     write_platform_config_field,
 )
@@ -3182,16 +3180,7 @@ def _print_system_scope_remediation(action: str) -> None:
 
 def _get_restart_drain_timeout() -> float:
     """Return the configured gateway restart drain timeout in seconds."""
-    raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
-    if not raw:
-        cfg = read_raw_config()
-        agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
-        raw = str(
-            agent_cfg.get(
-                "restart_drain_timeout", DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
-            )
-        )
-    return parse_restart_drain_timeout(raw)
+    return resolve_restart_drain_timeout()
 
 
 def systemd_install(

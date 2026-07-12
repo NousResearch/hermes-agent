@@ -34,6 +34,7 @@ import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
+import { waitForHermesReadiness } from './backend-health'
 import { canImportHermesCli, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure } from './backend-start-failure'
@@ -3826,6 +3827,14 @@ function fetchJson(url, token, options: any = {}) {
     const parsed = new URL(url)
     const client = parsed.protocol === 'https:' ? https : http
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+    let timeoutHandle: NodeJS.Timeout | null = null
+
+    const clearRequestTimeout = () => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle)
+        timeoutHandle = null
+      }
+    }
 
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
@@ -3845,9 +3854,13 @@ function fetchJson(url, token, options: any = {}) {
       },
       res => {
         const chunks = []
-        res.on('error', reject)
+        res.on('error', error => {
+          clearRequestTimeout()
+          reject(error)
+        })
         res.on('data', chunk => chunks.push(chunk))
         res.on('end', () => {
+          clearRequestTimeout()
           const text = Buffer.concat(chunks).toString('utf8')
 
           if ((res.statusCode || 500) >= 400) {
@@ -3889,10 +3902,13 @@ function fetchJson(url, token, options: any = {}) {
       }
     )
 
-    req.on('error', reject)
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    req.on('error', error => {
+      clearRequestTimeout()
+      reject(error)
     })
+    timeoutHandle = setTimeout(() => {
+      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    }, timeoutMs)
 
     if (body) {
       req.write(body)
@@ -4616,39 +4632,37 @@ function closePreviewWatchers() {
 }
 
 async function waitForHermes(baseUrl, token, signal?) {
-  const deadline = Date.now() + 45_000
-  let lastError = null
+  const readiness = waitForHermesReadiness(baseUrl, (url, options) => fetchJson(url, token, options))
 
-  while (Date.now() < deadline) {
-    if (signal?.aborted) {
-      const error: any = new Error('SSH bootstrap was superseded by newer connection settings.')
-      error.kind = 'superseded'
-      throw error
-    }
-
-    try {
-      await fetchJson(`${baseUrl}/api/status`, token)
-
-      return
-    } catch (error) {
-      lastError = error
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(resolve, 500)
-        signal?.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(timer)
-            const aborted: any = new Error('SSH bootstrap was superseded by newer connection settings.')
-            aborted.kind = 'superseded'
-            reject(aborted)
-          },
-          { once: true }
-        )
-      })
-    }
+  if (!signal) {
+    return readiness
   }
 
-  throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
+  if (signal.aborted) {
+    const error: any = new Error('SSH bootstrap was superseded by newer connection settings.')
+    error.kind = 'superseded'
+    throw error
+  }
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      const error: any = new Error('SSH bootstrap was superseded by newer connection settings.')
+      error.kind = 'superseded'
+      reject(error)
+    }
+
+    signal.addEventListener('abort', onAbort, { once: true })
+    readiness.then(
+      value => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      error => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      }
+    )
+  })
 }
 
 function getWindowButtonPosition() {

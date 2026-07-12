@@ -16985,6 +16985,17 @@ def start_server(
     except Exception as exc:
         _log.debug("Nous auth keepalive did not start: %s", exc)
 
+    # Bridge terminal.* config into process env so 'hermes serve' (headless
+    # backend for the Desktop app) respects terminal.backend, docker_volumes,
+    # etc. The TUI/dashboard child-process spawn paths already do this, but the
+    # serve process itself never called it — tools always ran in local mode.
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+
+        apply_terminal_config_to_env()
+    except Exception:
+        _log.debug("Failed to apply terminal config bridge for serve", exc_info=True)
+
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5
     # uses this to decide whether to refuse the bind, log the gate-on

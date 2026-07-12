@@ -42,5 +42,9 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "allowScripts": {
+    "electron@40.10.2": true,
+    "node-pty@1.1.0": true
   }
 }

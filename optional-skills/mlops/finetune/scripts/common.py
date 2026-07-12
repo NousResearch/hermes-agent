@@ -9,7 +9,24 @@ logger = logging.getLogger("hermes.finetune")
 
 # ── Paths ──
 
-HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+
+def _default_hermes_home() -> Path:
+    """Platform-native default, mirroring hermes_constants.get_hermes_home().
+
+    These scripts run standalone (dispatched via subprocess from /finetune),
+    so they can't import hermes_constants. The dispatcher always exports
+    HERMES_HOME for profile isolation; this fallback only covers direct
+    invocation from a shell.
+    """
+    import sys as _sys
+    if _sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        return base / "hermes"
+    return Path.home() / ".hermes"
+
+
+HERMES_HOME = Path(os.environ.get("HERMES_HOME") or _default_hermes_home())
 FINETUNE_DIR = HERMES_HOME / "finetune"
 DATA_DIR = FINETUNE_DIR / "data"
 EXTRACTED_DIR = DATA_DIR / "extracted"

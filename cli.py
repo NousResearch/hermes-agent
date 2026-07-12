@@ -8382,7 +8382,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         repo_root = Path(__file__).resolve().parent
         candidates = [
             repo_root / "optional-skills" / "mlops" / "finetune" / "scripts",
-            Path.home() / ".hermes" / "skills" / "mlops" / "finetune" / "scripts",
+            get_hermes_home() / "skills" / "mlops" / "finetune" / "scripts",
         ]
         scripts_dir = next((p for p in candidates if p.exists()), None)
         if scripts_dir is None:
@@ -8461,6 +8461,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         streaming_commands = {"bench", "run", "train"}
         stream_output = subcommand in streaming_commands
 
+        # Skill scripts resolve all state paths from HERMES_HOME (see
+        # scripts/common.py). Propagate it explicitly so profile isolation
+        # survives into the subprocess even when the active profile came
+        # from the context-local override rather than the environment.
+        child_env = os.environ.copy()
+        child_env["HERMES_HOME"] = str(get_hermes_home())
+
         try:
             with self._busy_command(f"finetune {subcommand}..."):
                 if stream_output:
@@ -8469,7 +8476,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # the bench env's per-case progress prints surface in real
                     # time. PYTHONUNBUFFERED=1 in the child env disables Python
                     # stdout buffering for libraries that respect it.
-                    child_env = os.environ.copy()
                     child_env.setdefault("PYTHONUNBUFFERED", "1")
                     proc = subprocess.Popen(
                         cmd_args,
@@ -8508,6 +8514,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         capture_output=True,
                         text=True,
                         timeout=timeout_seconds,
+                        env=child_env,
                     )
                     if result.stdout:
                         for line in result.stdout.rstrip("\n").split("\n"):
@@ -8521,7 +8528,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"Command timed out after {timeout_label}")
             _cprint(
                 "  For bench / run / train, partial state may be in "
-                "~/.hermes/finetune/ and /tmp/finetune-bench/"
+                f"{display_hermes_home()}/finetune/ and /tmp/finetune-bench/"
             )
         except Exception as e:
             _cprint(f"Error running finetune command: {e}")
@@ -13261,10 +13268,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _record_finetune_feedback(self, score: float, signal: str) -> None:
         """Write a feedback record for the current session."""
         import json
-        from pathlib import Path
         from datetime import datetime
 
-        feedback_path = Path.home() / ".hermes" / "finetune" / "feedback.jsonl"
+        feedback_path = get_hermes_home() / "finetune" / "feedback.jsonl"
         feedback_path.parent.mkdir(parents=True, exist_ok=True)
 
         record = {

@@ -250,3 +250,27 @@ export async function uploadChatImage(
   }
   return uploaded;
 }
+
+export interface OrderedUploadHandlers {
+  /** Attach images: writes `/image … \r` into the PTY draft (submits). */
+  attachImages: (files: File[]) => Promise<void>;
+  /** Insert non-image paths: types them into the PTY draft (no Return). */
+  insertFiles: (files: File[]) => Promise<void>;
+}
+
+/**
+ * Serialize a mixed drop/paste. The image flow and the non-image flow both
+ * write to the same PTY WebSocket, so running them concurrently lets a faster
+ * non-image upload type its path into the draft mid-way through the image
+ * command — corrupting or prematurely submitting it. Completing the image
+ * attach before inserting non-image paths keeps the two writers ordered
+ * regardless of which upload resolves first. See PR #62869 review.
+ */
+export async function runOrderedUploads(
+  images: File[],
+  others: File[],
+  handlers: OrderedUploadHandlers,
+): Promise<void> {
+  await handlers.attachImages(images);
+  await handlers.insertFiles(others);
+}

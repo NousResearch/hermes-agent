@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   firstImageFromClipboard,
   imageFilesFromTransfer,
+  runOrderedUploads,
   transferMayContainImage,
 } from "./chatImagePaste";
 
@@ -95,5 +96,47 @@ describe("transferMayContainImage", () => {
       items: [makeItem("string", "text/plain", null)],
     });
     expect(transferMayContainImage(data)).toBe(false);
+  });
+});
+
+describe("runOrderedUploads", () => {
+  it("holds non-image insertion until the image attach resolves, even when the non-image upload would finish first", async () => {
+    const order: string[] = [];
+    let resolveAttach!: () => void;
+    let attachArg: File[] | null = null;
+    let insertArg: File[] | null = null;
+
+    // attachImages stays pending until we resolve it by hand; insertFiles would
+    // complete synchronously — the reversed-completion order the review asked
+    // to cover. Serialization must still run attach fully first.
+    const attachImages = (files: File[]): Promise<void> => {
+      attachArg = files;
+      return new Promise<void>((resolve) => {
+        resolveAttach = () => {
+          order.push("attach-done");
+          resolve();
+        };
+      });
+    };
+    const insertFiles = async (files: File[]): Promise<void> => {
+      insertArg = files;
+      order.push("insert-start");
+    };
+
+    const img = new File(["x"], "a.png", { type: "image/png" });
+    const pdf = new File(["y"], "b.pdf", { type: "application/pdf" });
+    const done = runOrderedUploads([img], [pdf], { attachImages, insertFiles });
+
+    // Flush microtasks: insert must not have started while attach is pending.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(insertArg).toBeNull();
+
+    resolveAttach();
+    await done;
+
+    expect(order).toEqual(["attach-done", "insert-start"]);
+    expect(attachArg).toEqual([img]);
+    expect(insertArg).toEqual([pdf]);
   });
 });

@@ -209,7 +209,13 @@ def _job_running_in_this_process(job_id: str) -> bool:
         from cron.scheduler import get_running_job_ids
         return job_id in get_running_job_ids()
     except Exception:
-        return False
+        logger.warning(
+            "Cron running-set liveness check failed for job %r; keeping the "
+            "entry to avoid deleting a possibly live one-shot run",
+            job_id,
+            exc_info=True,
+        )
+        return True
 
 
 def _jobs_lock_file() -> Path:

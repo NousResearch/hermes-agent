@@ -408,3 +408,41 @@ def test_decompose_no_aux_client_configured(kanban_home):
 
     assert outcome.ok is False
     assert "no auxiliary client" in outcome.reason
+
+
+def test_list_spawnable_triage_ids_excludes_parked_assignees(kanban_home):
+    """#62994 followup: the auto-decompose tick must not burn its
+    per-tick attempt budget on parked cards. If enough of them sit ahead
+    of an eligible card in priority/creation order, list_triage_ids()
+    alone would let them starve the eligible card indefinitely (parked
+    cards never leave triage — decompose_task() rejects them every tick).
+    list_spawnable_triage_ids() must exclude them entirely so the eligible
+    card is always reachable within the budget."""
+    with kb.connect() as conn:
+        parked_ids = [
+            kb.create_task(
+                conn, title=f"parked {i}", assignee="not-a-profile", triage=True,
+            )
+            for i in range(3)
+        ]
+        eligible_id = kb.create_task(
+            conn, title="do this", assignee="engineer", triage=True,
+        )
+        unassigned_id = kb.create_task(conn, title="pick me up", triage=True)
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        spawnable_ids = decomp.list_spawnable_triage_ids()
+        all_ids = decomp.list_triage_ids()
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert eligible_id in spawnable_ids
+    assert unassigned_id in spawnable_ids
+    assert not any(pid in spawnable_ids for pid in parked_ids)
+    # Unfiltered listing (CLI/dashboard) still surfaces every card,
+    # including the parked ones, so a user can see what's contained.
+    assert set(parked_ids) | {eligible_id, unassigned_id} <= set(all_ids)

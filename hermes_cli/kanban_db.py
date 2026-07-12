@@ -7677,6 +7677,84 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _resume_directive(conn: sqlite3.Connection, task: Task, workspace: str) -> str:
+    """Return a resume hint for a *respawn*, or ``""`` on a task's first run.
+
+    The dispatcher re-dispatches a task whenever its prior worker run was
+    reclaimed by a restart wave, killed, crashed, or timed out. Left to the
+    bare ``work kanban task <id>`` kickoff prompt, the new worker starts a
+    FRESH session and re-discovers everything from scratch — re-cloning the
+    worktree, re-running ``npm ci``, re-reading the repo — burning runs and
+    hours redoing setup that a prior run already committed.
+
+    This returns a one-shot directive, appended to the kickoff prompt ONLY
+    when the task has >=1 prior run that did NOT complete (``ended_at`` set
+    and ``outcome`` != ``completed`` — reclaimed / crashed / timed_out /
+    spawn_failed / gave_up). It points the worker at the card comments and
+    prior-run evidence (already rendered by :func:`build_worker_context`) and
+    at the concrete worktree/branch to reuse, so it resumes from committed
+    progress instead of rebuilding the environment.
+
+    Fresh tasks (no prior closed runs) get ``""`` so first-run behaviour is
+    byte-for-byte unchanged. Best-effort: any error returns ``""`` — a
+    resume hint must never block a worker from spawning.
+    """
+    try:
+        prior = [
+            r
+            for r in list_runs(conn, task.id, include_active=False)
+            if (r.outcome or "") != "completed"
+        ]
+    except Exception:
+        return ""
+    if not prior:
+        return ""
+
+    n = len(prior)
+    # Prefer the freshly-persisted workspace/branch (dispatch_once writes them
+    # just before spawn); fall back to the spawn arg / claimed object.
+    fresh = None
+    try:
+        fresh = get_task(conn, task.id)
+    except Exception:
+        fresh = None
+    ws = (getattr(fresh, "workspace_path", None) or task.workspace_path or workspace or "").strip()
+    branch = (getattr(fresh, "branch_name", None) or task.branch_name or "").strip()
+    kind = getattr(fresh, "workspace_kind", None) or task.workspace_kind
+
+    where = ""
+    if ws:
+        where = f" Work in the existing workspace at `{ws}`"
+        if branch and kind == "worktree":
+            where += f" on branch `{branch}`"
+        where += " — do NOT create a new worktree/clone."
+
+    return (
+        f"NOTE — RESUMING A PRIOR RUN: this task already has {n} prior run(s) "
+        f"that did not complete (reclaimed by a restart wave, killed, or timed "
+        f"out). Do NOT start over from scratch. FIRST read this card's comments "
+        f"and the prior-run evidence in your task context (see the 'Prior "
+        f"attempts on this task' section, or run `hermes kanban context "
+        f"{task.id}`)." + where + " Resume from the last committed progress and "
+        f"re-run only steps that are genuinely unverified — skip environment "
+        f"setup and already-verified work."
+    )
+
+
+def _worker_kickoff_prompt(conn: sqlite3.Connection, task: Task, workspace: str) -> str:
+    """Build the ``hermes chat -q`` kickoff prompt for a dispatched worker.
+
+    First run: the bare ``work kanban task <id>`` prompt (unchanged). On a
+    respawn, a resume directive is appended so the new worker reuses the
+    prior run's committed worktree instead of rebuilding from scratch.
+    """
+    prompt = f"work kanban task {task.id}"
+    directive = _resume_directive(conn, task, workspace)
+    if directive:
+        prompt = f"{prompt}\n\n{directive}"
+    return prompt
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -7703,7 +7781,21 @@ def _default_spawn(
 
     profile_arg = normalize_profile_name(task.assignee)
 
+    # Kickoff prompt. On a respawn (prior run reclaimed/killed/timed-out) this
+    # appends a resume directive pointing the new worker at the existing
+    # worktree + prior-run evidence so it doesn't rebuild the environment from
+    # scratch. Best-effort read on a short-lived connection: a plain kickoff
+    # prompt (first-run behaviour) is the fallback if anything goes wrong.
     prompt = f"work kanban task {task.id}"
+    try:
+        with contextlib.closing(connect(board=board)) as _resume_conn:
+            prompt = _worker_kickoff_prompt(_resume_conn, task, workspace)
+    except Exception as _resume_exc:
+        _log.debug(
+            "kanban worker: could not build resume directive for task %s (%s)",
+            task.id,
+            _resume_exc,
+        )
     env = dict(os.environ)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml

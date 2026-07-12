@@ -742,7 +742,8 @@ class HonchoSessionManager:
             logger.debug("Failed to fetch session summary from Honcho: %s", e)
 
         try:
-            user_ctx = self._fetch_peer_context(session.user_peer_id, search_query=user_message or None, target=session.user_peer_id)
+            observer_peer_id, target_peer_id = self._resolve_observer_target(session, "user")
+            user_ctx = self._fetch_peer_context(observer_peer_id, search_query=user_message or None, target=target_peer_id or session.user_peer_id)
             result["representation"] = user_ctx["representation"]
             result["card"] = "\n".join(user_ctx["card"])
         except Exception as e:

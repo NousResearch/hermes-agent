@@ -4141,6 +4141,86 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
         assert message_item["id"] == "msg_short_but_connection_scoped"
 
 
+class TestCodexAdapterAzureFoundryReasoningReplay:
+    """Auxiliary Codex adapter must preserve Azure Foundry reasoning ids.
+
+    Auxiliary calls bypass ``ResponsesApiTransport.build_kwargs()``, so the
+    Azure-specific reasoning replay shape has to be applied here too. Azure AI
+    Foundry rejects replayed encrypted reasoning when Hermes strips the
+    reasoning item ``id`` from prior turns.
+    """
+
+    @staticmethod
+    def _build_adapter(base_url):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        message_item = SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(type="output_text", text="ok")],
+        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed", id="resp_test", usage=None,
+                ),
+            ),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
+
+        captured_kwargs = {}
+
+        def _create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeCreateStream()
+
+        real_client = MagicMock()
+        real_client.base_url = base_url
+        real_client.responses.create = _create
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+        return adapter, captured_kwargs
+
+    def test_keeps_reasoning_id_for_azure_foundry_host(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://paperclip.services.ai.azure.com/models"
+        )
+        adapter.create(
+            messages=[
+                {"role": "system", "content": "You are helpful."},
+                {
+                    "role": "assistant",
+                    "content": "thinking",
+                    "codex_reasoning_items": [
+                        {
+                            "type": "reasoning",
+                            "id": "rs_123",
+                            "encrypted_content": "enc_blob",
+                            "summary": [{"type": "summary_text", "text": "brief"}],
+                            "status": "completed",
+                            "response_id": "resp_123",
+                        }
+                    ],
+                },
+                {"role": "user", "content": "continue"},
+            ]
+        )
+
+        reasoning_item = next(
+            item for item in captured["input"] if item.get("type") == "reasoning"
+        )
+        assert reasoning_item == {
+            "type": "reasoning",
+            "id": "rs_123",
+            "encrypted_content": "enc_blob",
+            "summary": [{"type": "summary_text", "text": "brief"}],
+        }
+
+
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto vision branch skips providers that have no vision on
     their main endpoint (e.g. Kimi Coding Plan /coding) and falls through

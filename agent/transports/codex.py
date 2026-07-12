@@ -13,6 +13,11 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
 
+def _is_azure_foundry_base_url(base_url: Optional[str]) -> bool:
+    url = str(base_url or "").lower()
+    return ".services.ai.azure.com" in url or ".openai.azure.com" in url
+
+
 def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]]) -> Optional[str]:
     """Content-address the prompt cache key from the static request prefix.
 
@@ -82,6 +87,7 @@ class ResponsesApiTransport(ProviderTransport):
             messages,
             is_xai_responses=kwargs.get("is_xai_responses") is True,
             is_github_responses=kwargs.get("is_github_responses") is True,
+            is_azure_foundry=_is_azure_foundry_base_url(kwargs.get("base_url")),
             replay_encrypted_reasoning=bool(
                 kwargs.get("replay_encrypted_reasoning", True)
             ),
@@ -141,6 +147,7 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
+        is_azure_foundry = _is_azure_foundry_base_url(params.get("base_url"))
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
@@ -247,6 +254,7 @@ class ResponsesApiTransport(ProviderTransport):
                 payload_messages,
                 is_xai_responses=is_xai_responses,
                 is_github_responses=is_github_responses,
+                is_azure_foundry=is_azure_foundry,
                 replay_encrypted_reasoning=replay_encrypted_reasoning,
                 current_issuer_kind=issuer_kind,
             ),
@@ -452,6 +460,7 @@ class ResponsesApiTransport(ProviderTransport):
         *,
         allow_stream: bool = False,
         is_github_responses: bool = False,
+        is_azure_foundry: bool = False,
     ) -> dict:
         """Validate and sanitize Codex API kwargs before the call.
 
@@ -462,6 +471,7 @@ class ResponsesApiTransport(ProviderTransport):
             api_kwargs,
             allow_stream=allow_stream,
             is_github_responses=is_github_responses,
+            is_azure_foundry=is_azure_foundry,
         )
 
     def map_finish_reason(self, raw_reason: str) -> str:

@@ -243,6 +243,65 @@ class TestCodexBuildKwargs:
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
 
+    def test_azure_foundry_build_kwargs_keeps_reasoning_id(self, transport):
+        messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {
+                "role": "assistant",
+                "content": "thinking",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_123",
+                        "encrypted_content": "enc_blob",
+                        "summary": [{"type": "summary_text", "text": "brief"}],
+                        "status": "completed",
+                        "response_id": "resp_123",
+                    }
+                ],
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            base_url="https://paperclip.services.ai.azure.com/models",
+        )
+
+        reasoning_item = next(item for item in kw["input"] if item.get("type") == "reasoning")
+        assert reasoning_item == {
+            "type": "reasoning",
+            "id": "rs_123",
+            "encrypted_content": "enc_blob",
+            "summary": [{"type": "summary_text", "text": "brief"}],
+        }
+
+    def test_azure_foundry_preflight_keeps_reasoning_id(self, transport):
+        kw = {
+            "model": "gpt-5.5",
+            "instructions": "You are Hermes.",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_123",
+                    "encrypted_content": "enc_blob",
+                    "summary": [{"type": "summary_text", "text": "brief"}],
+                    "status": "completed",
+                    "response_id": "resp_123",
+                }
+            ],
+            "store": False,
+        }
+
+        preflight = transport.preflight_kwargs(kw, is_azure_foundry=True)
+        assert preflight["input"][0] == {
+            "type": "reasoning",
+            "id": "rs_123",
+            "encrypted_content": "enc_blob",
+            "summary": [{"type": "summary_text", "text": "brief"}],
+        }
+
     def test_xai_responses_sends_cache_key_via_extra_body(self, transport):
         """xAI's Responses API documents ``prompt_cache_key`` as the
         body-level cache-routing key (the ``x-grok-conv-id`` header is

@@ -204,6 +204,36 @@ def test_chat_messages_to_responses_input_keeps_short_message_id():
     assert message_item["id"] == _VALID_ITEM_ID
 
 
+def test_chat_messages_to_responses_input_keeps_reasoning_id_for_azure_foundry():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "thinking",
+            "codex_reasoning_items": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_123",
+                    "encrypted_content": "enc_blob",
+                    "summary": [{"type": "summary_text", "text": "brief"}],
+                    "status": "completed",
+                    "response_id": "resp_123",
+                    "_issuer_kind": "other",
+                }
+            ],
+        }
+    ]
+
+    items = _chat_messages_to_responses_input(messages, is_azure_foundry=True)
+
+    reasoning_item = next(item for item in items if item.get("type") == "reasoning")
+    assert reasoning_item == {
+        "type": "reasoning",
+        "id": "rs_123",
+        "encrypted_content": "enc_blob",
+        "summary": [{"type": "summary_text", "text": "brief"}],
+    }
+
+
 def test_preflight_codex_input_items_drops_oversized_message_id():
     items = _preflight_codex_input_items(
         [
@@ -236,6 +266,29 @@ def test_preflight_codex_input_items_keeps_short_message_id():
     )
 
     assert items[0]["id"] == _VALID_ITEM_ID
+
+
+def test_preflight_codex_input_items_keeps_reasoning_id_for_azure_foundry():
+    items = _preflight_codex_input_items(
+        [
+            {
+                "type": "reasoning",
+                "id": "rs_123",
+                "encrypted_content": "enc_blob",
+                "summary": [{"type": "summary_text", "text": "brief"}],
+                "status": "completed",
+                "response_id": "resp_123",
+            }
+        ],
+        is_azure_foundry=True,
+    )
+
+    assert items[0] == {
+        "type": "reasoning",
+        "id": "rs_123",
+        "encrypted_content": "enc_blob",
+        "summary": [{"type": "summary_text", "text": "brief"}],
+    }
 
 
 def test_preflight_codex_input_items_drops_short_id_for_github_responses():

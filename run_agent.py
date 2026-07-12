@@ -1200,6 +1200,14 @@ class AIAgent:
             url = getattr(self, "_base_url_lower", "") or ""
         return "openai.azure.com" in url
 
+    def _is_azure_foundry_url(self, base_url: str = None) -> bool:
+        """Return True when a base URL targets Azure AI Foundry/OpenAI."""
+        if base_url is not None:
+            url = str(base_url).lower()
+        else:
+            url = getattr(self, "_base_url_lower", "") or ""
+        return ".services.ai.azure.com" in url or ".openai.azure.com" in url
+
     def _is_github_copilot_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
         if base_url is not None:

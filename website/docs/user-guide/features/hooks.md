@@ -1203,9 +1203,11 @@ Fires inside the `terminal` tool's foreground-output pipeline, **before** the de
 def my_callback(
     command: str,
     output: str,
-    exit_code: int,
-    cwd: str,
-    task_id: str | None,
+    returncode: int,
+    task_id: str,
+    env_type: str,
+    session_id: str,
+    tool_call_id: str,
     **kwargs,
 ) -> str | None:
 ```
@@ -1213,9 +1215,12 @@ def my_callback(
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `command` | `str` | The shell command that produced the output. |
-| `output` | `str` | Raw combined stdout/stderr (may be very large — truncation happens after the hook). |
-| `exit_code` | `int` | Process exit code. |
-| `cwd` | `str` | Working directory the command ran in. |
+| `output` | `str` | Raw combined stdout/stderr (may be very large; truncation happens after the hook). |
+| `returncode` | `int` | Process exit code. |
+| `task_id` | `str` | Environment/isolation identifier. Collapses to `"default"` for most sessions, so it does not uniquely identify a conversation. |
+| `env_type` | `str` | Terminal backend the command ran in (`local`, `docker`, `modal`, etc.). |
+| `session_id` | `str` | Conversation the command belongs to. Empty string when unset. |
+| `tool_call_id` | `str` | Identifier of the tool call that produced this output. Empty string when unset. |
 
 **Return value:** `str` to replace the output, `None` to leave it unchanged.
 

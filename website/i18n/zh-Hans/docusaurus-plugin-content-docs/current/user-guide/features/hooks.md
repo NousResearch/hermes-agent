@@ -1060,9 +1060,11 @@ def register(ctx):
 def my_callback(
     command: str,
     output: str,
-    exit_code: int,
-    cwd: str,
-    task_id: str | None,
+    returncode: int,
+    task_id: str,
+    env_type: str,
+    session_id: str,
+    tool_call_id: str,
     **kwargs,
 ) -> str | None:
 ```
@@ -1070,9 +1072,12 @@ def my_callback(
 | 参数 | 类型 | 描述 |
 |-----|------|------|
 | `command` | `str` | 产生输出的 shell 命令。 |
-| `output` | `str` | 原始合并的 stdout/stderr（可能非常大——截断在 hook 之后发生）。 |
-| `exit_code` | `int` | 进程退出码。 |
-| `cwd` | `str` | 命令运行的工作目录。 |
+| `output` | `str` | 原始合并的 stdout/stderr（可能非常大；截断在 hook 之后发生）。 |
+| `returncode` | `int` | 进程退出码。 |
+| `task_id` | `str` | 环境/隔离标识符。大多数会话会归并为 `"default"`，因此无法唯一标识某个会话。 |
+| `env_type` | `str` | 命令运行所在的终端后端（`local`、`docker`、`modal` 等）。 |
+| `session_id` | `str` | 该命令所属的会话。未设置时为空字符串。 |
+| `tool_call_id` | `str` | 产生此输出的工具调用标识。未设置时为空字符串。 |
 
 **返回值：** `str` 替换输出，`None` 保持不变。
 

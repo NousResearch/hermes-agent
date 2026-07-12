@@ -31,7 +31,7 @@ try:
     import msvcrt
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Set, Tuple, Union
@@ -705,12 +705,23 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         if last_run_at:
             try:
                 last = _ensure_aware(datetime.fromisoformat(last_run_at))
-                next_run = last + timedelta(minutes=minutes)
+                # Interval schedules mean N minutes of *real* (absolute) time, so
+                # compute in UTC and convert back. Adding a timedelta directly to
+                # a ZoneInfo-aware datetime is wall-clock arithmetic, which shifts
+                # the true instant by the DST offset when the interval spans a
+                # spring-forward/fall-back boundary (job fires ~1h early/late).
+                next_run = (
+                    last.astimezone(timezone.utc) + timedelta(minutes=minutes)
+                ).astimezone(last.tzinfo)
             except Exception:
-                next_run = now + timedelta(minutes=minutes)
+                next_run = (
+                    now.astimezone(timezone.utc) + timedelta(minutes=minutes)
+                ).astimezone(now.tzinfo)
         else:
-            # First run is now + interval
-            next_run = now + timedelta(minutes=minutes)
+            # First run is now + interval (computed in absolute time; see above).
+            next_run = (
+                now.astimezone(timezone.utc) + timedelta(minutes=minutes)
+            ).astimezone(now.tzinfo)
         return next_run.isoformat()
 
     elif kind == "cron":

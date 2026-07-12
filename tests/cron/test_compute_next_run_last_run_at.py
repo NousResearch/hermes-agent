@@ -4,7 +4,7 @@ Regression test for: cron jobs computing next_run_at from _hermes_now()
 instead of from last_run_at, making them inconsistent with interval jobs.
 """
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 pytest.importorskip("croniter")
@@ -85,3 +85,61 @@ class TestCronComputeNextRunUsesLastRunAt:
         interval_dt = datetime.fromisoformat(interval_result)
         assert cron_dt > last_run, f"Cron next {cron_dt} should be after last_run {last_run}"
         assert interval_dt > last_run, f"Interval next {interval_dt} should be after last_run {last_run}"
+
+
+class TestIntervalNextRunIsAbsoluteAcrossDST:
+    """Interval schedules mean N minutes of *real* time. When last_run_at is
+    anchored on the far side of a DST transition, the next run must land at the
+    correct absolute instant (last_run + interval in UTC), not at a wall-clock
+    offset that the DST jump shifts by ~1h."""
+
+    def test_spring_forward_does_not_fire_early(self, monkeypatch):
+        """last_run 2026-03-08 01:30 EST, every 120 min. Spring-forward is at
+        02:00. Wall-clock addition yields 03:30 EDT = 07:30 UTC (only 60 real
+        minutes -> fires ~1h early). Absolute math yields 08:30 UTC."""
+        ny = ZoneInfo("America/New_York")
+        now = datetime(2026, 3, 8, 12, 0, 0, tzinfo=ny)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        schedule = {"kind": "interval", "minutes": 120}
+        result = compute_next_run(
+            schedule, last_run_at="2026-03-08T01:30:00-05:00"
+        )
+        assert result is not None
+        got_utc = datetime.fromisoformat(result).astimezone(timezone.utc)
+        assert got_utc == datetime(2026, 3, 8, 8, 30, tzinfo=timezone.utc), (
+            f"Expected 08:30 UTC (last_run + 120 real minutes), got {got_utc}"
+        )
+
+    def test_fall_back_does_not_fire_late(self, monkeypatch):
+        """last_run 2026-11-01 01:30 EDT, every 120 min. Fall-back is at 02:00.
+        Wall-clock addition yields 03:30 EST = 08:30 UTC (150 real minutes ->
+        fires ~1h late). Absolute math yields 07:30 UTC."""
+        ny = ZoneInfo("America/New_York")
+        now = datetime(2026, 11, 1, 12, 0, 0, tzinfo=ny)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        schedule = {"kind": "interval", "minutes": 120}
+        result = compute_next_run(
+            schedule, last_run_at="2026-11-01T01:30:00-04:00"
+        )
+        assert result is not None
+        got_utc = datetime.fromisoformat(result).astimezone(timezone.utc)
+        assert got_utc == datetime(2026, 11, 1, 7, 30, tzinfo=timezone.utc), (
+            f"Expected 07:30 UTC (last_run + 120 real minutes), got {got_utc}"
+        )
+
+    def test_non_dst_interval_is_exact(self, monkeypatch):
+        """An interval that does not cross a DST boundary is unchanged: the
+        absolute-time round-trip is a no-op when the offset is stable."""
+        ny = ZoneInfo("America/New_York")
+        now = datetime(2026, 6, 1, 18, 0, 0, tzinfo=ny)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        schedule = {"kind": "interval", "minutes": 120}
+        result = compute_next_run(
+            schedule, last_run_at="2026-06-01T12:00:00-04:00"
+        )
+        assert result is not None
+        got_utc = datetime.fromisoformat(result).astimezone(timezone.utc)
+        assert got_utc == datetime(2026, 6, 1, 18, 0, tzinfo=timezone.utc)

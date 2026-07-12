@@ -117,6 +117,7 @@ import {
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
+import { listExternalVenvHolderPids } from './windows-update-lock'
 import {
   computeWindowOptions,
   debounce,
@@ -2371,6 +2372,56 @@ function forceKillProcessTree(pid) {
   }
 }
 
+function collectDesktopOwnedBackendPids() {
+  const pids = []
+
+  if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
+    pids.push(hermesProcess.pid)
+  }
+
+  for (const entry of backendPool.values()) {
+    if (entry.process && Number.isInteger(entry.process.pid)) {
+      pids.push(entry.process.pid)
+    }
+  }
+
+  return [...new Set(pids)]
+}
+
+function killProcessTrees(pids) {
+  for (const pid of pids) {
+    forceKillProcessTree(pid)
+  }
+}
+
+function killExternalVenvHolderProcesses(updateRoot, tag, ownedPids) {
+  if (!IS_WINDOWS) {
+    return []
+  }
+
+  try {
+    const powerShellPath = findOnPath('pwsh.exe') || findOnPath('pwsh') || windowsPowerShellPath() || 'powershell.exe'
+    const pids = listExternalVenvHolderPids({
+      childOptions: hiddenWindowsChildOptions,
+      currentPid: process.pid,
+      isWindows: IS_WINDOWS,
+      ownedPids,
+      powerShellPath,
+      updateRoot
+    })
+
+    if (pids.length > 0) {
+      rememberLog(`[${tag}] killing external venv-holder PIDs: ${pids.join(', ')}`)
+      killProcessTrees(pids)
+    }
+
+    return pids
+  } catch (error) {
+    rememberLog(`[${tag}] external venv-holder scan failed: ${error?.message || String(error)}`)
+    return []
+  }
+}
+
 // Before handing off the update on Windows, the desktop MUST stop every backend
 // it spawned and WAIT for the venv shim to actually unlock. The old code did
 // `hermesProcess.kill('SIGTERM')` + `app.quit()` fire-and-forget: SIGTERM on
@@ -2407,17 +2458,7 @@ async function releaseBackendLock(updateRoot, tag) {
   }
 
   // Collect every backend PID the desktop owns: primary window backend + pool.
-  const pids = []
-
-  if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
-    pids.push(hermesProcess.pid)
-  }
-
-  for (const entry of backendPool.values()) {
-    if (entry.process && Number.isInteger(entry.process.pid)) {
-      pids.push(entry.process.pid)
-    }
-  }
+  const pids = collectDesktopOwnedBackendPids()
 
   // Graceful first (lets Python flush), then tree-kill to catch grandchildren.
   if (hermesProcess && !hermesProcess.killed) {
@@ -2429,10 +2470,8 @@ async function releaseBackendLock(updateRoot, tag) {
   }
 
   stopAllPoolBackends()
-
-  for (const pid of pids) {
-    forceKillProcessTree(pid)
-  }
+  killProcessTrees(pids)
+  killExternalVenvHolderProcesses(updateRoot, tag, pids)
 
   const shim = venvHermesShimPath(updateRoot)
   const deadlineMs = Date.now() + 15000
@@ -2447,21 +2486,9 @@ async function releaseBackendLock(updateRoot, tag) {
     // A supervised backend can respawn between kill and check (grandchildren,
     // pool entries registered mid-teardown). Re-collect and re-kill each pass
     // instead of trusting the initial sweep.
-    const stragglers = []
-
-    if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
-      stragglers.push(hermesProcess.pid)
-    }
-
-    for (const entry of backendPool.values()) {
-      if (entry.process && Number.isInteger(entry.process.pid)) {
-        stragglers.push(entry.process.pid)
-      }
-    }
-
-    for (const pid of stragglers) {
-      forceKillProcessTree(pid)
-    }
+    const stragglers = collectDesktopOwnedBackendPids()
+    killProcessTrees(stragglers)
+    killExternalVenvHolderProcesses(updateRoot, tag, stragglers)
     await new Promise(r => setTimeout(r, 300))
   }
 

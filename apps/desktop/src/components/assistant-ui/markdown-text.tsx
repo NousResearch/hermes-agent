@@ -20,6 +20,7 @@ import {
 } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
+import { MarkdownArtifactLink } from '@/components/chat/markdown-artifact-link'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
@@ -37,7 +38,12 @@ import {
   mediaPathFromMarkdownHref,
   mediaStreamUrl
 } from '@/lib/media'
-import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
+import {
+  markdownArtifactTargetFromHref,
+  markdownArtifactTargetFromMarker,
+  previewTargetFromMarkdownHref,
+  remarkMarkdownArtifactLinks
+} from '@/lib/preview-targets'
 import { tailBoundedRemend } from '@/lib/remend-tail'
 import { cn } from '@/lib/utils'
 
@@ -56,6 +62,7 @@ import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } fro
 // `singleDollarTextMath: true` enables `$x^2$` for inline math (de-facto
 // LLM convention). The default false-setting only accepts `$$...$$`.
 const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
+const artifactRemarkPlugins = [remarkMarkdownArtifactLinks]
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
 // flush) with a tail-bounded repair — see lib/remend-tail.ts. Must stay
@@ -79,9 +86,17 @@ function preprocessWithTailRepair(text: string): string {
 // single lex is the irreducible cost.
 const BLOCK_CACHE_MAX = 64
 const BLOCK_CACHE_MIN_LENGTH = 1024
+const MARKDOWN_REFERENCE_DEFINITION_RE = /^ {0,3}\[[^\]\n]+\]:[ \t]*\S/m
 const blockCache = new Map<string, string[]>()
 
 function parseMarkdownIntoBlocksCached(markdown: string): string[] {
+  // Reference definitions are document-scoped. Keeping these uncommon messages
+  // as one block lets the Markdown parser resolve linkReference nodes before
+  // the artifact remark plugin rewrites their definition URLs.
+  if (MARKDOWN_REFERENCE_DEFINITION_RE.test(markdown)) {
+    return [markdown]
+  }
+
   if (markdown.length < BLOCK_CACHE_MIN_LENGTH) {
     return parseMarkdownIntoBlocks(markdown)
   }
@@ -281,7 +296,33 @@ function childrenToText(children: unknown): string {
   return ''
 }
 
+function MarkdownInlineCode({ children, className, ...props }: ComponentProps<'code'>) {
+  const artifactTarget = markdownArtifactTargetFromHref(childrenToText(children))
+
+  const code = (
+    <code className={className} dir="ltr" {...props}>
+      {children}
+    </code>
+  )
+
+  return artifactTarget && window.hermesDesktop ? (
+    <MarkdownArtifactLink href={artifactTarget}>{code}</MarkdownArtifactLink>
+  ) : (
+    code
+  )
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+  const markedArtifactTarget = markdownArtifactTargetFromMarker(href)
+
+  if (markedArtifactTarget) {
+    return (
+      <MarkdownArtifactLink className={className} href={markedArtifactTarget} {...props}>
+        {children}
+      </MarkdownArtifactLink>
+    )
+  }
+
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
@@ -292,6 +333,16 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 
   if (previewTarget) {
     return <PreviewAttachment source="explicit-link" target={previewTarget} />
+  }
+
+  const artifactTarget = markdownArtifactTargetFromHref(href)
+
+  if (artifactTarget) {
+    return (
+      <MarkdownArtifactLink className={className} href={artifactTarget} {...props}>
+        {children}
+      </MarkdownArtifactLink>
+    )
   }
 
   const target = href ? normalizeExternalUrl(href) : href
@@ -576,9 +627,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
         // mirroring the CSS isolate that already keeps it out of the
         // plaintext scan. Fenced code never reaches this override; it goes
         // through the code plugin's CodeCard path.
-        inlineCode: ({ className, ...props }: ComponentProps<'code'>) => (
-          <code className={className} dir="ltr" {...props} />
-        ),
+        inlineCode: MarkdownInlineCode,
         // `---` as quiet spacing, not a heavy full-width rule.
         hr: (_props: ComponentProps<'hr'>) => <div aria-hidden className="my-3" />,
         // Lists and blockquotes have chrome that sits *beside* the text
@@ -684,6 +733,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
       parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
       plugins={plugins}
       preprocess={preprocessWithTailRepair}
+      remarkPlugins={artifactRemarkPlugins}
     />
   )
 }

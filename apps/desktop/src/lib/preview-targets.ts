@@ -40,6 +40,119 @@ export function previewTargetFromMarkdownHref(href?: string): string | null {
   }
 }
 
+function isNetworkPath(value: string) {
+  return value.replaceAll('\\', '/').startsWith('//')
+}
+
+export function markdownArtifactTargetFromHref(href?: string): string | null {
+  const target = href?.trim()
+
+  if (!target) {
+    return null
+  }
+
+  const windowsPath = /^[a-z]:[\\/]/i.test(target)
+  const scheme = /^[a-z][a-z0-9+.-]*:/i.exec(target)?.[0].toLowerCase()
+  let unsafeFileUrl = false
+
+  if (scheme === 'file:') {
+    try {
+      const url = new URL(target)
+      const hostname = url.hostname.toLowerCase()
+      const pathname = decodeURIComponent(url.pathname)
+
+      unsafeFileUrl = Boolean((hostname && hostname !== 'localhost') || isNetworkPath(pathname))
+    } catch {
+      return null
+    }
+  }
+
+  if (
+    target.startsWith('#') ||
+    isNetworkPath(target) ||
+    unsafeFileUrl ||
+    (!windowsPath && scheme && scheme !== 'file:')
+  ) {
+    return null
+  }
+
+  const path = target.split(/[?#]/, 1)[0] || ''
+
+  return /\.(?:md|markdown)$/i.test(path) ? target : null
+}
+
+export function markdownArtifactFileTarget(href?: string): string | null {
+  const target = markdownArtifactTargetFromHref(href)
+
+  if (!target) {
+    return null
+  }
+
+  if (/^file:/i.test(target)) {
+    try {
+      const url = new URL(target)
+      url.hash = ''
+      url.search = ''
+
+      return url.toString()
+    } catch {
+      return null
+    }
+  }
+
+  return target.split(/[?#]/, 1)[0] || null
+}
+
+export function markdownArtifactHref(target: string): string {
+  return `#artifact:${encodeURIComponent(target)}`
+}
+
+export function markdownArtifactTargetFromMarker(href?: string): string | null {
+  if (!href?.startsWith('#artifact:')) {
+    return null
+  }
+
+  try {
+    return decodeURIComponent(href.slice('#artifact:'.length))
+  } catch {
+    return null
+  }
+}
+
+export interface MarkdownArtifactAstNode {
+  children?: unknown
+  type?: unknown
+  url?: unknown
+}
+
+export function remarkMarkdownArtifactLinks() {
+  return (tree: unknown): void => {
+    const visit = (node: unknown): void => {
+      if (!node || typeof node !== 'object') {
+        return
+      }
+
+      const candidate = node as MarkdownArtifactAstNode
+
+      if ((candidate.type === 'link' || candidate.type === 'definition') && typeof candidate.url === 'string') {
+        const target = markdownArtifactTargetFromHref(candidate.url)
+
+        if (target) {
+          candidate.url = markdownArtifactHref(target)
+        }
+      }
+
+      if (Array.isArray(candidate.children)) {
+        for (const child of candidate.children) {
+          visit(child)
+        }
+      }
+    }
+
+    visit(tree)
+  }
+}
+
 export function previewName(target: string): string {
   try {
     const url = new URL(target)

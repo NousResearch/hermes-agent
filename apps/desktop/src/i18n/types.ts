@@ -1839,6 +1839,19 @@ export interface Translations {
     diskChangedBody: string
     overwrite: string
     discardReload: string
+    artifact: {
+      toolbar: string
+      open: string
+      reveal: string
+      copyPath: string
+      copyContents: string
+      localOnly: string
+      contentsUnavailable: string
+      filesystemChanged: string
+      pathCopied: string
+      contentsCopied: string
+      actionFailed: string
+    }
     console: {
       deselect: string
       select: string

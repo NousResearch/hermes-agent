@@ -95,6 +95,7 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { readCompleteTextFileBytes, readTextFileBytes } from './read-file-text'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -7998,7 +7999,7 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   return `data:${mimeTypeForPath(resolvedPath)};base64,${data.toString('base64')}`
 })
 
-ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
+ipcMain.handle('hermes:readFileText', async (_event, filePath, options: { complete?: boolean } = {}) => {
   const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
     maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
     purpose: 'Text preview'
@@ -8006,20 +8007,27 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
 
   const ext = path.extname(resolvedPath).toLowerCase()
   const handle = await fs.promises.open(resolvedPath, 'r')
-  const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
 
   try {
-    const buffer = Buffer.alloc(bytesToRead)
-    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0)
+    const complete = Boolean(options?.complete)
+
+    const result = complete
+      ? await readCompleteTextFileBytes(handle, TEXT_PREVIEW_SOURCE_MAX_BYTES)
+      : {
+          buffer: await readTextFileBytes(handle, stat.size, TEXT_PREVIEW_MAX_BYTES, false),
+          byteSize: stat.size
+        }
+
+    const { buffer, byteSize } = result
 
     return {
-      binary: looksBinary(buffer.subarray(0, Math.min(bytesRead, 4096))),
-      byteSize: stat.size,
+      binary: looksBinary(buffer.subarray(0, Math.min(buffer.length, 4096))),
+      byteSize,
       language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
       mimeType: mimeTypeForPath(resolvedPath),
       path: resolvedPath,
-      text: buffer.subarray(0, bytesRead).toString('utf8'),
-      truncated: stat.size > TEXT_PREVIEW_MAX_BYTES
+      text: buffer.toString('utf8'),
+      truncated: !complete && byteSize > TEXT_PREVIEW_MAX_BYTES
     }
   } finally {
     await handle.close()

@@ -143,6 +143,26 @@ function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
     throw ipcPathError('device-path', `${purpose} blocked: Windows device paths are not allowed.`)
   }
 
+  if (normalized.startsWith('//')) {
+    throw ipcPathError('network-path', `${purpose} blocked: network paths are not allowed.`)
+  }
+
+  if (/^file:/i.test(raw)) {
+    try {
+      const parsed = new URL(raw)
+      const hostname = parsed.hostname.toLowerCase()
+      const pathname = decodeURIComponent(parsed.pathname).replace(/\\/g, '/')
+
+      if ((hostname && hostname !== 'localhost') || pathname.startsWith('//')) {
+        throw ipcPathError('network-path', `${purpose} blocked: network paths are not allowed.`)
+      }
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'network-path') {
+        throw error
+      }
+    }
+  }
+
   return raw
 }
 

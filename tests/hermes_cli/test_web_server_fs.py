@@ -85,6 +85,47 @@ def test_fs_read_text_matches_preview_shape_and_truncates(client, tmp_path, monk
     }
 
 
+def test_fs_read_text_can_return_complete_contents_within_source_cap(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(web_server, "_FS_TEXT_PREVIEW_MAX_BYTES", 8)
+    target = tmp_path / "report.md"
+    target.write_text("# Complete report\nAll of it.", encoding="utf-8")
+
+    response = client.get(
+        "/api/fs/read-text",
+        params={"path": str(target), "complete": "true"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "# Complete report\nAll of it."
+    assert response.json()["truncated"] is False
+
+
+def test_fs_text_read_change_detector_rejects_size_and_short_read_changes(tmp_path):
+    target = tmp_path / "changing.md"
+    target.write_text("abc", encoding="utf-8")
+    before = target.stat()
+    target.write_text("abcdef", encoding="utf-8")
+    after = target.stat()
+
+    assert web_server._fs_text_read_changed(before, after, 3) is True
+    assert web_server._fs_text_read_changed(after, after, 3) is True
+    assert web_server._fs_text_read_changed(after, after, 6) is False
+
+
+def test_fs_read_text_rejects_unstable_complete_snapshot(client, tmp_path, monkeypatch):
+    target = tmp_path / "changing.md"
+    target.write_text("abcdef", encoding="utf-8")
+    monkeypatch.setattr(web_server, "_fs_text_read_changed", lambda *_args: True)
+
+    response = client.get(
+        "/api/fs/read-text",
+        params={"path": str(target), "complete": "true"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "File changed while reading"
+
+
 def test_fs_read_text_rejects_source_over_cap(client, tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "_FS_TEXT_SOURCE_MAX_BYTES", 4)
     target = tmp_path / "large.txt"

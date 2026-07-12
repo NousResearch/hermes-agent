@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import type {
   ComponentProps,
@@ -20,8 +21,10 @@ import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { PageLoader } from '@/components/page-loader'
 import { translateNow, useI18n } from '@/i18n'
+import { type ArtifactAction, artifactActionAvailable, performArtifactAction } from '@/lib/artifact-actions'
 import {
   desktopFileDiff,
+  desktopFilesystemKey,
   desktopGitRoot,
   readDesktopFileDataUrl,
   readDesktopFileText,
@@ -30,9 +33,10 @@ import {
 import { Check, Pencil, X } from '@/lib/icons'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
+import { notify, notifyError } from '@/store/notifications'
 import type { PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
-import { $currentCwd } from '@/store/session'
+import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
@@ -275,7 +279,12 @@ function tagged<T extends keyof typeof MD_TAG_CLASSES>(Tag: T) {
   return Component
 }
 
-function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>) {
+function MarkdownCodeRenderer({
+  allowRich,
+  className,
+  children,
+  ...props
+}: ComponentProps<'code'> & { allowRich: boolean }) {
   const language = /language-([^\s]+)/.exec(className || '')?.[1]
 
   if (!language) {
@@ -308,9 +317,13 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
     </ShikiHighlighter>
   )
 
-  // ```mermaid / ```svg fences route to the shared lazy renderers (same
-  // registry the chat transcript uses); everything else stays on Shiki.
-  return <RichCodeBlock code={code} fallback={highlighted} language={language} />
+  // Artifact Markdown is data-only, so rich diagram/SVG renderers are an
+  // explicit opt-in for the general editable file preview.
+  return allowRich ? <RichCodeBlock code={code} fallback={highlighted} language={language} /> : highlighted
+}
+
+function MarkdownCode(props: ComponentProps<'code'>) {
+  return <MarkdownCodeRenderer {...props} allowRich />
 }
 
 const MARKDOWN_COMPONENTS = {
@@ -327,12 +340,105 @@ const MARKDOWN_COMPONENTS = {
   code: MarkdownCode
 }
 
-function MarkdownPreview({ text }: { text: string }) {
+function MarkdownArtifactCode(props: ComponentProps<'code'>) {
+  return <MarkdownCodeRenderer {...props} allowRich={false} />
+}
+
+const MARKDOWN_ARTIFACT_COMPONENTS = {
+  ...MARKDOWN_COMPONENTS,
+  a: ({ children }: ComponentProps<'a'>) => (
+    <span className="font-semibold underline decoration-current/20">{children}</span>
+  ),
+  code: MarkdownArtifactCode,
+  img: ({ alt }: ComponentProps<'img'>) => (
+    <span className="text-muted-foreground">{alt ? `[Image: ${alt}]` : '[Image omitted]'}</span>
+  )
+}
+
+function MarkdownPreview({ artifact = false, text }: { artifact?: boolean; text: string }) {
   return (
     <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
-      <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
+      <Streamdown
+        components={artifact ? MARKDOWN_ARTIFACT_COMPONENTS : MARKDOWN_COMPONENTS}
+        controls={false}
+        mode="static"
+        parseIncompleteMarkdown={false}
+        skipHtml={artifact}
+      >
         {text}
       </Streamdown>
+    </div>
+  )
+}
+
+function ArtifactToolbar({
+  contentsAvailable = true,
+  filesystemActive = true,
+  target
+}: {
+  contentsAvailable?: boolean
+  filesystemActive?: boolean
+  target: PreviewTarget
+}) {
+  const { t } = useI18n()
+  const [pending, setPending] = useState<ArtifactAction | null>(null)
+  const copy = t.preview.artifact
+
+  const actions: { action: ArtifactAction; label: string }[] = [
+    { action: 'open', label: copy.open },
+    { action: 'reveal', label: copy.reveal },
+    { action: 'copy-path', label: copy.copyPath },
+    { action: 'copy-contents', label: copy.copyContents }
+  ]
+
+  const run = async (action: ArtifactAction) => {
+    setPending(action)
+
+    try {
+      await performArtifactAction(action, target)
+
+      if (action === 'copy-path' || action === 'copy-contents') {
+        notify({
+          durationMs: 1500,
+          kind: 'success',
+          message: action === 'copy-path' ? copy.pathCopied : copy.contentsCopied
+        })
+      }
+    } catch (error) {
+      notifyError(error, copy.actionFailed)
+    } finally {
+      setPending(null)
+    }
+  }
+
+  return (
+    <div
+      aria-label={copy.toolbar}
+      className="flex h-8 shrink-0 items-center justify-end gap-1 overflow-x-auto border-b border-border/40 px-2"
+      role="toolbar"
+    >
+      {actions.map(({ action, label }) => {
+        const available = artifactActionAvailable(action, target) && (action !== 'copy-contents' || contentsAvailable)
+
+        const unavailableTitle = !filesystemActive
+          ? copy.filesystemChanged
+          : action === 'copy-contents' && !contentsAvailable
+            ? copy.contentsUnavailable
+            : copy.localOnly
+
+        return (
+          <button
+            className="shrink-0 rounded px-1.5 py-1 text-[0.625rem] font-semibold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
+            disabled={!available || pending !== null}
+            key={action}
+            onClick={() => void run(action)}
+            title={available ? label : unavailableTitle}
+            type="button"
+          >
+            {label}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -562,6 +668,7 @@ type PreviewViewMode = 'diff' | 'rendered' | 'source'
 
 export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
   const { t } = useI18n()
+  const connection = useStore($connection)
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
   // User-picked view; null = auto (diff when changed, else rendered markdown,
@@ -588,6 +695,9 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
 
+  const artifactFilesystemActive =
+    !target.artifact || (!!target.filesystemKey && target.filesystemKey === desktopFilesystemKey(connection))
+
   useEffect(() => {
     setUserMode(null)
     setEditing(false)
@@ -597,7 +707,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     setConflict(false)
     draftRef.current = ''
     baselineRef.current = ''
-  }, [filePath, reloadKey])
+  }, [filePath, reloadKey, target.artifact, target.filesystemKey])
 
   // HTML files are rendered as source code, not in a webview - so they take
   // the same path as plain text files. `previewKind === 'binary'` arrives
@@ -610,6 +720,12 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     let active = true
 
     async function load() {
+      if (!artifactFilesystemActive) {
+        setState({ error: t.preview.artifact.filesystemChanged, loading: false })
+
+        return
+      }
+
       if (blockedByTarget) {
         setState({ loading: false })
 
@@ -682,12 +798,42 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return () => {
       active = false
     }
-  }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, selfReload, target.dataUrl, target.language])
+  }, [
+    artifactFilesystemActive,
+    blockedByTarget,
+    filePath,
+    forcePreview,
+    isImage,
+    isText,
+    reloadKey,
+    selfReload,
+    t.preview.artifact.filesystemChanged,
+    target.artifact,
+    target.dataUrl,
+    target.filesystemKey,
+    target.language
+  ])
 
   // Editing is only offered for whole, readable text — never images, binaries,
   // or files we only loaded the first 512 KB of (saving would drop the tail).
   const canEdit =
-    isText && !isImage && !blockedByTarget && state.text !== undefined && !state.truncated && !state.binary
+    !target.artifact &&
+    isText &&
+    !isImage &&
+    !blockedByTarget &&
+    state.text !== undefined &&
+    !state.truncated &&
+    !state.binary
+
+  const artifactState = (body: ReactNode) =>
+    target.artifact ? (
+      <div className="flex h-full flex-col overflow-hidden bg-transparent">
+        <ArtifactToolbar contentsAvailable={false} filesystemActive={artifactFilesystemActive} target={target} />
+        <div className="relative min-h-0 flex-1 overflow-hidden">{body}</div>
+      </div>
+    ) : (
+      body
+    )
 
   // Per-keystroke: update the draft ref (no render) and only set `dirty` when it
   // actually changes — React bails on an identical value, so a long typing run
@@ -866,11 +1012,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   }
 
   if (state.loading) {
-    return <PageLoader label={t.preview.loading} />
+    return artifactState(<PageLoader label={t.preview.loading} />)
   }
 
   if (state.error) {
-    return <PreviewEmptyState body={state.error} title={t.preview.unavailable} />
+    return artifactState(<PreviewEmptyState body={state.error} title={t.preview.unavailable} />)
   }
 
   if (
@@ -881,7 +1027,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     const binary = target.binary || state.binary
     const size = target.byteSize || state.byteSize
 
-    return (
+    return artifactState(
       <PreviewEmptyState
         body={binary ? t.preview.binaryBody(target.label) : t.preview.largeBody(target.label, formatBytes(size))}
         primaryAction={{ label: t.preview.previewAnyway, onClick: () => setForcePreview(true) }}
@@ -892,7 +1038,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   }
 
   if (isImage && state.dataUrl) {
-    return (
+    return artifactState(
       <div className="flex h-full w-full items-center justify-center overflow-auto bg-transparent p-4">
         <img
           alt={target.label}
@@ -920,7 +1066,9 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       modes.push('diff')
     }
 
-    const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
+    const autoMode: PreviewViewMode =
+      target.artifact && isMarkdown ? 'rendered' : hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
+
     const mode = userMode && modes.includes(userMode) ? userMode : autoMode
 
     return (
@@ -957,9 +1105,16 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
             ) : null
           }
         />
+        {target.artifact && (
+          <ArtifactToolbar
+            contentsAvailable={!target.binary && !state.binary}
+            filesystemActive={artifactFilesystemActive}
+            target={target}
+          />
+        )}
         <div className="min-h-0 flex-1 overflow-auto">
           {mode === 'rendered' ? (
-            <MarkdownPreview text={state.text} />
+            <MarkdownPreview artifact={target.artifact} text={state.text} />
           ) : mode === 'diff' ? (
             <FileDiffPanel
               className="mx-0 mb-0 h-full max-h-none"
@@ -980,5 +1135,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     )
   }
 
-  return <PreviewEmptyState body={t.preview.noInlineBody(target.mimeType || '')} title={t.preview.noInlineTitle} />
+  return artifactState(
+    <PreviewEmptyState body={t.preview.noInlineBody(target.mimeType || '')} title={t.preview.noInlineTitle} />
+  )
 }

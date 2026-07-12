@@ -333,6 +333,25 @@ def _run_agent(
     # the caller just asked for.
     effective_provider = (provider or "").strip() or None
     explicit_base_url_from_alias: Optional[str] = None
+
+    # MoA virtual provider (#56828): normalize BEFORE alias/catalog
+    # detection so `-m moa:<preset>` and `--provider moa` resolve onto the
+    # virtual provider instead of leaking the literal string to a real API.
+    from hermes_cli.moa_config import resolve_moa_request
+
+    try:
+        _moa = resolve_moa_request(
+            effective_provider,
+            effective_model,
+            cfg,
+            model_explicit=bool((model or "").strip() or env_model),
+        )
+    except ValueError as exc:
+        sys.stderr.write(f"hermes: {exc}\n")
+        raise SystemExit(2) from exc
+    if _moa is not None:
+        effective_provider, effective_model = _moa
+
     if effective_provider is None and (model or env_model):
         # Only auto-detect when the model was explicitly requested via arg or
         # env var (not when it came from config — that's the "use my defaults"

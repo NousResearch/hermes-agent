@@ -1479,7 +1479,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # isn't nested under ours.
         try:
             _partial = (offset > 1) or bool(result_dict.get("truncated"))
-            file_state.record_read(task_id, resolved_str, partial=_partial)
+            file_state.record_read(
+                task_id, resolved_str, partial=_partial, mtime=_mtime_at_read
+            )
         except Exception:
             logger.debug("file_state.record_read failed", exc_info=True)
 

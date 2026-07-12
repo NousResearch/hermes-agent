@@ -23,6 +23,7 @@ from tools.file_tools import (
     patch_tool,
     _check_file_staleness,
     _read_tracker,
+    _resolve_path_for_task,
 )
 
 
@@ -292,6 +293,10 @@ class TestCheckFileStalenessHelper(unittest.TestCase):
         self.assertIsNone(_check_file_staleness("/nonexistent/path", "t1"))
 
 
+# ---------------------------------------------------------------------------
+# Read-time mtime capture
+# ---------------------------------------------------------------------------
+
 class TestReadTimeMtimeCapture(unittest.TestCase):
     """The mtime tracked for a read must reflect the bytes handed to the model.
 
@@ -374,5 +379,16 @@ class TestReadTimeMtimeCapture(unittest.TestCase):
         read_file_tool(self._tmpfile, task_id="torn2")
         second = json.loads(read_file_tool(self._tmpfile, task_id="torn2"))
         self.assertNotEqual(second.get("status"), "unchanged")
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_registry_check_stale_detects_edit_during_read(self, mock_ops):
+        """The cross-agent registry must also see the edit that landed mid-read."""
+        mock_ops.return_value = self._ops_editing_during_read()
+        read_file_tool(self._tmpfile, task_id="torn3")
+
+        resolved = str(_resolve_path_for_task(self._tmpfile, "torn3"))
+        stale = file_state.get_registry().check_stale("torn3", resolved)
+        self.assertIsNotNone(stale)
+        self.assertIn("modified since you last read", stale)
 if __name__ == "__main__":
     unittest.main()

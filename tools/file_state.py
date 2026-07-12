@@ -292,8 +292,16 @@ def _cap_dict(d: dict, limit: int) -> None:
 
 
 # ── Convenience wrappers (short names used at call sites) ────────────
-def record_read(task_id: str, resolved_or_path: str | Path, *, partial: bool = False) -> None:
-    _registry.record_read(task_id, str(resolved_or_path), partial=partial)
+def record_read(
+    task_id: str,
+    resolved_or_path: str | Path,
+    *,
+    partial: bool = False,
+    mtime: Optional[float] = None,
+) -> None:
+    _registry.record_read(
+        task_id, str(resolved_or_path), partial=partial, mtime=mtime
+    )
 
 
 def note_write(task_id: str, resolved_or_path: str | Path) -> None:

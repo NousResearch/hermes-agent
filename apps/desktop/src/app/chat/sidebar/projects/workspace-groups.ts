@@ -397,7 +397,7 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
 }
 
 const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>
-  [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => b.started_at - a.started_at)
+  [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => sessionRecency(b) - sessionRecency(a))
 
 /**
  * The lane a live session belongs to WITHIN a known repo root, by path — the

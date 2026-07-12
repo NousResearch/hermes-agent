@@ -20072,27 +20072,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 response["already_sent"] = True
             elif not _is_empty_sentinel and _transformed and _sc is not None:
-                # Plugin hooks transformed the response after streaming — edit the
-                # existing streamed message instead of sending a duplicate.
-                _sc_msg_id = _sc.message_id
-                if _sc_msg_id:
-                    try:
-                        await _sc.adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=_sc_msg_id,
-                            content=response["final_response"],
-                            finalize=True,
+                # The plugin-transformed final no longer matches the streamed
+                # preview. Commit it through the consumer's fresh-final path so
+                # topic metadata is preserved, stale previews are removed only
+                # after confirmed delivery, and a failed SendResult leaves the
+                # caller's normal final-send fallback enabled.
+                try:
+                    _deliver_transformed = getattr(
+                        _sc, "deliver_transformed_final", None
+                    )
+                    if callable(_deliver_transformed):
+                        _delivery_result = _deliver_transformed(
+                            response["final_response"]
                         )
-                        response["already_sent"] = True
-                        logger.info(
-                            "Edited streamed message %s for session %s to include plugin-transformed content.",
-                            _sc_msg_id, session_key or "?",
-                        )
-                    except Exception as _edit_err:
-                        logger.warning(
-                            "Failed to edit streamed message for session %s: %s",
-                            session_key or "?", _edit_err,
-                        )
+                        if inspect.isawaitable(_delivery_result):
+                            _delivery_result = await _delivery_result
+                        _transformed_delivered = bool(_delivery_result)
+                    else:
+                        _transformed_delivered = False
+                except Exception as _send_err:
+                    _transformed_delivered = False
+                    logger.warning(
+                        "Failed to send transformed final for session %s: %s",
+                        session_key or "?", _send_err,
+                    )
+                if _transformed_delivered:
+                    response["already_sent"] = True
+                    logger.info(
+                        "Delivered transformed final for session %s through fresh send.",
+                        session_key or "?",
+                    )
+                else:
+                    logger.warning(
+                        "Transformed final delivery was not confirmed for session %s; "
+                        "leaving normal final-send fallback enabled.",
+                        session_key or "?",
+                    )
 
         # Schedule deletion of tracked temporary progress bubbles after the
         # final response lands. Failed runs skip this so bubbles remain as

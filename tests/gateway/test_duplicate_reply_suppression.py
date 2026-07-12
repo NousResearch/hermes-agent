@@ -13,11 +13,13 @@ Covers four fix paths:
 """
 
 import asyncio
+import inspect
 from types import SimpleNamespace
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.run import GatewayRunner
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -65,6 +67,17 @@ def _make_event(text="hello", chat_id="c1", user_id="u1"):
         ),
         message_id="m1",
     )
+
+
+def test_transformed_final_callsite_requires_confirmed_fresh_delivery():
+    """Production must not treat a failed transformed edit as final delivery."""
+    src = inspect.getsource(GatewayRunner._run_agent_inner)
+    transformed_block = src[src.index("elif not _is_empty_sentinel and _transformed"):]
+    transformed_block = transformed_block[:transformed_block.index("# Schedule deletion")]
+
+    assert "deliver_transformed_final" in transformed_block
+    assert "if _transformed_delivered:" in transformed_block
+    assert "_sc.adapter.edit_message" not in transformed_block
 
 
 # ===================================================================

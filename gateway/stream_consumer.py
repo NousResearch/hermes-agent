@@ -173,6 +173,7 @@ class GatewayStreamConsumer:
         self._last_edit_overflowed = False
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        self._fallback_resend_full = False
         # True when fallback is sending only the missing tail after a partial
         # Telegram overflow delivery.  In that case the already-visible prefix
         # is intentional content, not a stale preview to delete.
@@ -348,6 +349,7 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        self._fallback_resend_full = False
         self._fallback_preserve_partial_messages = False
         self._segment_preview_message_ids = set()
         # #29346: a tool/segment boundary means what we delivered was an interim
@@ -956,6 +958,8 @@ class GatewayStreamConsumer:
 
     def _continuation_text(self, final_text: str) -> str:
         """Return only the part of final_text the user has not already seen."""
+        if self._fallback_resend_full:
+            return final_text
         prefix = self._fallback_prefix or self._visible_prefix()
         if prefix and final_text.startswith(prefix):
             return final_text[len(prefix):].lstrip()
@@ -1064,8 +1068,18 @@ class GatewayStreamConsumer:
             if isinstance(self.adapter, _BasePlatformAdapter)
             else len
         )
-        safe_limit = max(500, raw_limit - 100)
+        safe_limit = (
+            max(1, raw_limit - 100)
+            if self._fallback_resend_full
+            else max(500, raw_limit - 100)
+        )
         chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
+        if self._fallback_resend_full and len(chunks) > 1:
+            total = len(chunks)
+            chunks = [
+                f"{chunk} ({index}/{total})"
+                for index, chunk in enumerate(chunks, 1)
+            ]
 
         stale_message_id = self._message_id  # partial message to clean up
         last_message_id: Optional[str] = None
@@ -1151,6 +1165,7 @@ class GatewayStreamConsumer:
         self._final_content_delivered = True
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
+        self._fallback_resend_full = False
         self._fallback_preserve_partial_messages = False
 
     async def _send_empty_fallback_final(self, final_text: str) -> str:
@@ -1584,7 +1599,28 @@ class GatewayStreamConsumer:
         self._last_sent_text = text
         if is_turn_final:
             self._final_response_sent = True
+            self._final_content_delivered = True
         return True
+
+    async def deliver_transformed_final(self, text: str) -> bool:
+        """Commit a plugin-transformed final reply as numbered fresh chunks.
+
+        A transformed response no longer matches the streamed preview. Force the
+        consumer-owned fallback path so every adapter ``send`` stays below the
+        platform limit, preserves routing metadata, and is confirmed separately.
+        The stale preview is removed only after every numbered chunk succeeds.
+        False leaves the gateway's normal full-response fallback enabled.
+        """
+        text = self._clean_for_display(text)
+        if not text.strip():
+            return False
+        self._fallback_resend_full = True
+        self._fallback_prefix = ""
+        self._fallback_preserve_partial_messages = False
+        self._final_response_sent = False
+        self._final_content_delivered = False
+        await self._send_fallback_final(text)
+        return bool(self._final_response_sent and self._final_content_delivered)
 
     async def _suppress_silence_marker(self) -> None:
         """Retract any streamed preview when the final reply is a silence marker.
@@ -1836,7 +1872,14 @@ class GatewayStreamConsumer:
                                 or self._message_id
                             )
                             delivered_prefix = raw_response.get("delivered_prefix")
-                            if isinstance(delivered_prefix, str) and delivered_prefix:
+                            if raw_response.get("resend_full_final"):
+                                # The visible preview could not be finalized and
+                                # therefore is not a reliable numbered chunk 1.
+                                # Replace it with the complete final response.
+                                self._fallback_prefix = ""
+                                self._fallback_resend_full = True
+                                self._fallback_preserve_partial_messages = False
+                            elif isinstance(delivered_prefix, str) and delivered_prefix:
                                 self._last_sent_text = delivered_prefix
                                 self._fallback_prefix = delivered_prefix
                                 self._fallback_preserve_partial_messages = text.startswith(

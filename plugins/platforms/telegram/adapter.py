@@ -4218,6 +4218,35 @@ class TelegramAdapter(BasePlatformAdapter):
                 # First chunk identical to current text — fall through to
                 # send continuations.
                 pass
+            elif getattr(e, "retry_after", None) is not None or "retry after" in err_str:
+                # The saturated preview is visible, but the rejected finalize
+                # edit means it has no trustworthy (1/N) marker. Report a
+                # partial overflow that requires a complete fresh resend rather
+                # than treating the preview as a valid delivered prefix.
+                logger.warning(
+                    "[%s] Overflow split: first-chunk edit rate-limited; "
+                    "falling back to full numbered resend: %s",
+                    self.name, e,
+                )
+                delivered_prefix = re.sub(r" \(\d+/\d+\)$", "", first_chunk)
+                retry_after = getattr(e, "retry_after", None)
+                return SendResult(
+                    success=False,
+                    message_id=message_id,
+                    error="overflow_first_chunk_edit_rate_limited",
+                    retryable=True,
+                    retry_after=float(retry_after) if retry_after is not None else None,
+                    raw_response={
+                        "partial_overflow": True,
+                        "delivered_chunks": 1,
+                        "total_chunks": len(chunks),
+                        "last_message_id": message_id,
+                        "delivered_prefix": delivered_prefix,
+                        "resend_full_final": True,
+                        "continuation_message_ids": (),
+                    },
+                    continuation_message_ids=(),
+                )
             else:
                 logger.error(
                     "[%s] Overflow split: first-chunk edit failed: %s",

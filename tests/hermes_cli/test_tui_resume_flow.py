@@ -269,6 +269,28 @@ def test_termux_fast_tui_launch_uses_light_parser(monkeypatch, main_mod):
     assert captured == {"toolsets": "web,terminal", "tui": True}
 
 
+def test_termux_fast_tui_default_corrects_single_dash_typo(monkeypatch, main_mod, tmp_path):
+    """A TUI default must not bypass the ``-tui`` typo correction."""
+    captured = {}
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("display:\n  interface: tui\n")
+    monkeypatch.setattr(main_mod, "_EARLY_INTERFACE_CACHE", None)
+    monkeypatch.setattr(sys, "argv", ["hermes", "-tui"])
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _="": "n")
+    monkeypatch.setattr(
+        main_mod,
+        "cmd_chat",
+        lambda args: captured.update({"toolsets": args.toolsets, "tui": args.tui}),
+    )
+
+    assert main_mod._try_termux_fast_tui_launch() is True
+    assert captured == {"toolsets": None, "tui": True}
+
+
 def test_termux_fast_tui_launch_skips_help(monkeypatch, main_mod):
     monkeypatch.setenv("TERMUX_VERSION", "1")
     monkeypatch.setattr(sys, "argv", ["hermes", "--tui", "--help"])

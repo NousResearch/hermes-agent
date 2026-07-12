@@ -2246,23 +2246,21 @@ def _resolve_use_tui(args) -> bool:
         return False
 
 
-def _warn_probable_tui_misparsing(args: argparse.Namespace) -> bool:
+def _warn_probable_tui_misparsing(argv: list[str]) -> bool:
     """Detect ``hermes -tui`` (single dash) and offer to relaunch as ``--tui``.
 
     ``-t`` is the short flag for ``--toolsets``, so ``-tui`` silently sets
-    ``toolsets="ui"`` instead of enabling the TUI.  When interactive, prompt
-    the user to correct it.
+    ``toolsets="ui"`` instead of enabling the TUI. Detect the literal argv
+    token rather than the parsed value: ``--toolsets ui`` is valid and must
+    not be treated as a typo. When interactive, prompt the user to correct it.
 
     Returns ``True`` if the user chose to relaunch with ``--tui`` (caller
     should inject the flag and re-parse or set ``args.tui = True``), or
     ``False`` to continue normally.  Calls ``sys.exit(0)`` if the user
     declines and wants to abort.
     """
-    toolsets = getattr(args, "toolsets", None)
-    if toolsets != "ui":
+    if "-tui" not in argv or "--tui" in argv:
         return False
-    if getattr(args, "tui", False):
-        return False  # explicit --tui was also passed, nothing to warn about
     # Non-interactive: just warn and continue (no TTY to prompt)
     try:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -12601,7 +12599,7 @@ def _try_termux_fast_cli_launch() -> bool:
 
     # Detect ``hermes -tui`` (single dash) which argparse silently parses as
     # ``--toolsets=ui`` instead of ``--tui``.
-    if _warn_probable_tui_misparsing(args):
+    if _warn_probable_tui_misparsing(argv):
         args.tui = True
         args.toolsets = None
 
@@ -12669,6 +12667,12 @@ def _try_termux_fast_tui_launch() -> bool:
     parser, _subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=cmd_chat)
     args = parser.parse_args(_coalesce_session_name_args(sys.argv[1:]))
+
+    # `-tui` can reach this path when the configured default interface is the
+    # TUI, so correct the literal typo before handing off to cmd_chat().
+    if _warn_probable_tui_misparsing(sys.argv[1:]):
+        args.tui = True
+        args.toolsets = None
 
     # Preserve top-level behaviours whose semantics are not "launch chat/TUI".
     if getattr(args, "version", False) or getattr(args, "oneshot", None):
@@ -14696,7 +14700,7 @@ def main():
 
     # Detect ``hermes -tui`` (single dash) which argparse silently parses as
     # ``--toolsets=ui`` instead of ``--tui``.  Prompt the user to correct it.
-    if _warn_probable_tui_misparsing(args):
+    if _warn_probable_tui_misparsing(_processed_argv):
         args.tui = True
         args.toolsets = None
 

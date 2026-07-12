@@ -98,3 +98,34 @@ def test_vertex_extra_body_empty_without_reasoning():
 
     p = get_provider_profile("vertex")
     assert p.build_extra_body(model="google/gemini-3-flash-preview") == {}
+
+
+def test_vertex_provider_registry_admission():
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    assert "vertex" in PROVIDER_REGISTRY
+    pconfig = PROVIDER_REGISTRY["vertex"]
+    assert pconfig.id == "vertex"
+    assert pconfig.auth_type == "vertex"
+
+
+def test_resolve_provider_client_vertex_reaches_handler(monkeypatch):
+    import agent.vertex_adapter as va
+    from agent.auxiliary_client import resolve_provider_client
+
+    monkeypatch.setattr(va, "has_vertex_credentials", lambda: True)
+    monkeypatch.setattr(
+        va, "get_vertex_config",
+        lambda: ("fake-oauth-token", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"),
+    )
+
+    client, resolved_model = resolve_provider_client(
+        provider="vertex",
+        model="google/gemini-3.1-pro-preview",
+    )
+
+    assert client is not None
+    assert resolved_model == "google/gemini-3.1-pro-preview"
+    assert client.api_key == "fake-oauth-token"
+    assert str(client.base_url).rstrip("/") == "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+

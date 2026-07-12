@@ -269,6 +269,27 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
+    # Repair pass 5: concatenated JSON objects (Gemini OpenAI-compat).
+    # When the payload is ≥2 complete objects glued together, return the
+    # first one rather than giving up entirely.
+    try:
+        decoder = json.JSONDecoder()
+        first_obj, end = decoder.raw_decode(raw_stripped)
+        tail = raw_stripped[end:].strip()
+        if tail:
+            # At least one more complete object follows — try to decode
+            # it to confirm; if it works we have ≥2 objects.
+            decoder.raw_decode(tail)
+            result = json.dumps(first_obj, separators=(",", ":"))
+            logger.warning(
+                "Repaired concatenated tool_call arguments for %s — "
+                "split ≥2 objects, returning first (was: %s)",
+                tool_name, raw_stripped[:80],
+            )
+            return result
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
     # Last resort: replace with empty object so the API request doesn't
     # crash the entire session.
     logger.warning(

@@ -2474,33 +2474,72 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 tc = tool_calls_acc[idx]
                 arguments = tc["function"]["arguments"]
                 tool_name = tc["function"]["name"] or "?"
+                _split_handled = False
                 if arguments and arguments.strip():
                     try:
                         json.loads(arguments)
-                    except json.JSONDecodeError:
-                        # Attempt repair before flagging as truncated.
-                        # Models like GLM-5.1 via Ollama produce trailing
-                        # commas, unclosed brackets, Python None, etc.
-                        # Without repair, these hit the truncation handler
-                        # and kill the session.  _repair_tool_call_arguments
-                        # returns "{}" for unrepairable args, which is far
-                        # better than a crashed session.
-                        repaired = _repair_tool_call_arguments(arguments, tool_name)
-                        if repaired != "{}":
-                            # Successfully repaired — use the fixed args
-                            arguments = repaired
-                        else:
-                            # Unrepairable — flag for truncation handling
-                            has_truncated_tool_args = True
-                mock_tool_calls.append(SimpleNamespace(
-                    id=tc["id"],
-                    type=tc["type"],
-                    extra_content=tc.get("extra_content"),
-                    function=SimpleNamespace(
-                        name=tc["function"]["name"],
-                        arguments=arguments,
-                    ),
-                ))
+                    except json.JSONDecodeError as e:
+                        # Gemini OpenAI-compat endpoint concatenates multiple
+                        # parallel tool call arguments into one entry (no
+                        # incremental index).  Detect "Extra data" and split
+                        # them apart with raw_decode, emitting one
+                        # mock_tool_call per object with distinct ids.
+                        if "Extra data" in str(e):
+                            decoder = json.JSONDecoder()
+                            remaining = arguments.strip()
+                            split_objects: list[str] = []
+                            while remaining:
+                                try:
+                                    obj, end = decoder.raw_decode(remaining)
+                                    split_objects.append(
+                                        json.dumps(obj, separators=(",", ":"))
+                                    )
+                                    remaining = remaining[end:].strip()
+                                except json.JSONDecodeError:
+                                    break
+                            if len(split_objects) >= 2:
+                                for i, split_args in enumerate(split_objects):
+                                    split_id = (
+                                        f"{tc['id']}_split_{i}"
+                                        if tc.get("id")
+                                        else f"call_split_{idx}_{i}"
+                                    )
+                                    mock_tool_calls.append(SimpleNamespace(
+                                        id=split_id,
+                                        type=tc["type"],
+                                        extra_content=tc.get("extra_content"),
+                                        function=SimpleNamespace(
+                                            name=tc["function"]["name"],
+                                            arguments=split_args,
+                                        ),
+                                    ))
+                                _split_handled = True
+
+                        if not _split_handled:
+                            # Attempt repair before flagging as truncated.
+                            # Models like GLM-5.1 via Ollama produce trailing
+                            # commas, unclosed brackets, Python None, etc.
+                            # Without repair, these hit the truncation handler
+                            # and kill the session.  _repair_tool_call_arguments
+                            # returns "{}" for unrepairable args, which is far
+                            # better than a crashed session.
+                            repaired = _repair_tool_call_arguments(arguments, tool_name)
+                            if repaired != "{}":
+                                # Successfully repaired — use the fixed args
+                                arguments = repaired
+                            else:
+                                # Unrepairable — flag for truncation handling
+                                has_truncated_tool_args = True
+                if not _split_handled:
+                    mock_tool_calls.append(SimpleNamespace(
+                        id=tc["id"],
+                        type=tc["type"],
+                        extra_content=tc.get("extra_content"),
+                        function=SimpleNamespace(
+                            name=tc["function"]["name"],
+                            arguments=arguments,
+                        ),
+                    ))
 
         # Zero-chunk guard: stream yielded nothing usable — a provider/upstream
         # error or malformed SSE, not a legitimate empty completion. Raise so the

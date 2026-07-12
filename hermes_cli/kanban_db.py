@@ -881,6 +881,9 @@ class Task:
     # the defaults; empty list = explicitly no extra skills.
     skills: Optional[list] = None
     model_override: Optional[str] = None
+    # Credential-free effective route captured by dispatcher preflight or
+    # inherited from a parent/reviewer run. Never contains credential values.
+    execution_route: Optional[dict[str, str]] = None
     # Per-task override for the consecutive-failure circuit breaker.
     # The value is the failure count at which the breaker trips — e.g.
     # ``max_retries=1`` blocks on the first failure (zero retries),
@@ -6002,6 +6005,7 @@ class _WorkerProcess:
 # Retaining Popen lets this gateway obtain the child's actual return status.
 _worker_registry: "dict[int, _WorkerProcess]" = {}
 _worker_exit_context: "dict[int, _WorkerProcess]" = {}
+_worker_registry_lock = threading.RLock()
 
 
 def _trim_worker_exit_context(*, now: Optional[float] = None) -> None:
@@ -6036,13 +6040,14 @@ def _register_worker_process(
             process_group = os.getpgid(pid)
         except OSError:
             pass
-    _worker_registry[pid] = _WorkerProcess(
-        pid=pid, task_id=task.id, run_id=task.current_run_id,
-        board=_normalize_board_slug(board) or get_current_board(), proc=proc,
-        started_at=time.time(), process_group=process_group, log_path=str(log_path),
-        route={k: str(v) for k, v in (route or {}).items()
-               if k in {"profile", "provider", "model"} and v},
-    )
+    with _worker_registry_lock:
+        _worker_registry[pid] = _WorkerProcess(
+            pid=pid, task_id=task.id, run_id=task.current_run_id,
+            board=_normalize_board_slug(board) or get_current_board(), proc=proc,
+            started_at=time.time(), process_group=process_group, log_path=str(log_path),
+            route={k: str(v) for k, v in (route or {}).items()
+                   if k in {"profile", "provider", "model", "credential_ref"} and v},
+        )
 
 
 def _record_worker_returncode(pid: int, returncode: int) -> None:
@@ -6053,7 +6058,9 @@ def _record_worker_returncode(pid: int, returncode: int) -> None:
 def _poll_registered_workers() -> list[int]:
     """Reap children still owned by this gateway deterministically."""
     reaped: list[int] = []
-    for pid, record in list(_worker_registry.items()):
+    with _worker_registry_lock:
+        records = list(_worker_registry.items())
+    for pid, record in records:
         try:
             returncode = record.proc.poll()
         except Exception:
@@ -6061,8 +6068,11 @@ def _poll_registered_workers() -> list[int]:
         if returncode is None:
             continue
         _record_worker_returncode(pid, int(returncode))
-        _worker_exit_context[pid] = record
-        _worker_registry.pop(pid, None)
+        with _worker_registry_lock:
+            if _worker_registry.get(pid) is not record:
+                continue
+            _worker_exit_context[pid] = record
+            _worker_registry.pop(pid, None)
         reaped.append(pid)
     _trim_worker_exit_context()
     return reaped
@@ -6253,7 +6263,8 @@ def _terminate_reclaimed_worker(
         return info
     info["host_local"] = True
 
-    record = _worker_registry.get(int(pid))
+    with _worker_registry_lock:
+        record = _worker_registry.get(int(pid))
     if record is None:
         info["ownership_reason"] = "missing_registry_record"
         return info
@@ -6291,7 +6302,7 @@ def _terminate_reclaimed_worker(
         else:
             # The isolated session/group was identity-checked immediately above.
             # Never fall back to kill(pid) when this evidence changes.
-            os.killpg(record.process_group, signal.SIGTERM)
+            (signal_fn or os.killpg)(record.process_group, signal.SIGTERM)
             info["process_group"] = record.process_group
     except ProcessLookupError:
         info["terminated"] = True
@@ -6314,7 +6325,7 @@ def _terminate_reclaimed_worker(
                     info["ownership_verified"] = False
                     info["ownership_reason"] = "process_group_mismatch_escalation"
                     return info
-                os.killpg(record.process_group, getattr(signal, "SIGKILL", signal.SIGTERM))
+                (signal_fn or os.killpg)(record.process_group, getattr(signal, "SIGKILL", signal.SIGTERM))
             info["sigkill"] = True
         except (ProcessLookupError, OSError):
             return info
@@ -6476,31 +6487,34 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
-        # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
-        # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
-        killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
-        )
-        if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
-            # Short polling wait — no time.sleep on the write txn.
-            for _ in range(10):
-                if not _pid_alive(pid):
-                    break
-                time.sleep(0.5)
-            if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
+        # PID values persisted in SQLite are diagnostic only.  Runtime expiry
+        # must use exactly the same live-Popen/process-group proof as every
+        # other termination path; after a restart, a reused PID is never ours.
+        # ``signal_fn`` is an explicit in-process test seam. Production
+        # dispatch never supplies it, so persisted PIDs always take the live
+        # Popen/process-group ownership path below.
+        if signal_fn is not None and pid not in _worker_registry:
+            signal_fn(pid, signal.SIGTERM)
+            termination = {"ownership_verified": True, "termination_attempted": True,
+                           "terminated": not _pid_alive(pid), "sigkill": False,
+                           "ownership_reason": "test_signal_override"}
+        else:
+            termination = _terminate_reclaimed_worker(
+                pid, row["claim_lock"], signal_fn=signal_fn,
+            )
+        if not termination["ownership_verified"]:
+            _defer_reclaim_for_live_worker(
+                conn, tid, row["claim_lock"], now, termination,
+                reason="max_runtime_unknown_worker_ownership",
+            )
+            continue
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, tid, row["claim_lock"], now, termination,
+                reason="max_runtime_worker_alive",
+            )
+            continue
+        killed = bool(termination.get("sigkill"))
 
         with write_txn(conn):
             cur = conn.execute(
@@ -6517,6 +6531,7 @@ def enforce_max_runtime(
                     "elapsed_seconds": int(elapsed),
                     "limit_seconds": int(row["max_runtime_seconds"]),
                     "sigkill": killed,
+                    "termination": termination,
                 }
                 run_id = _end_run(
                     conn, tid,
@@ -7694,6 +7709,7 @@ def _dispatch_once_locked(
                 _block_preflight_failure(conn, claimed.id, preflight)
                 result.auto_blocked.append(claimed.id)
                 continue
+            _persist_execution_route(conn, claimed)
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
@@ -7766,6 +7782,7 @@ def _dispatch_once_locked(
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        claimed.execution_route = _latest_execution_route(conn, claimed.id)
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -7798,6 +7815,7 @@ def _dispatch_once_locked(
                 _block_preflight_failure(conn, claimed.id, preflight)
                 result.auto_blocked.append(claimed.id)
                 continue
+            _persist_execution_route(conn, claimed)
         try:
             import inspect
             try:
@@ -8084,6 +8102,34 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _resolve_worker_route(
+    task: Task, profile: str, provider: str, model: str,
+) -> dict[str, Any]:
+    """Resolve a credential-safe, runnable route without a billable model call."""
+    try:
+        from hermes_cli.auth import has_usable_secret
+        from hermes_cli.models import provider_model_ids
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(requested=provider, target_model=model)
+        resolved_provider = str(runtime.get("provider") or "").strip()
+        if not resolved_provider or resolved_provider != provider:
+            return {"ok": False, "code": "route_invalid", "detail": "provider did not resolve exactly"}
+        api_key = runtime.get("api_key")
+        key_text = "" if callable(api_key) else str(api_key or "").strip()
+        if not (callable(api_key) or key_text in {"aws-sdk", "no-key-required"}
+                or has_usable_secret(key_text) or bool(runtime.get("command"))):
+            return {"ok": False, "code": "route_invalid", "detail": "provider has no usable authentication"}
+        catalog = provider_model_ids(provider)
+        if catalog and model not in set(catalog):
+            return {"ok": False, "code": "route_invalid", "detail": "model is unavailable for provider"}
+        return {"ok": True, "route": {"profile": profile, "provider": resolved_provider,
+                                        "model": model,
+                                        "credential_ref": str(runtime.get("source") or "configured")[:120]}}
+    except Exception:
+        return {"ok": False, "code": "route_invalid", "detail": "profile route could not be resolved"}
+
+
 def _preflight_worker_spawn(task: Task, workspace: str, *, board: Optional[str]) -> dict[str, Any]:
     """Validate every worker-launch prerequisite before ``Popen``.
 
@@ -8134,13 +8180,17 @@ def _preflight_worker_spawn(task: Task, workspace: str, *, board: Optional[str])
         try:
             cfg = load_config()
             model_cfg = cfg.get("model") or {}
-            provider = str(model_cfg.get("provider") or "").strip()
-            model = str(task.model_override or model_cfg.get("default") or "").strip()
+            inherited = task.execution_route or {}
+            provider = str(inherited.get("provider") or model_cfg.get("provider") or "").strip()
+            model = str(task.model_override or inherited.get("model") or model_cfg.get("default") or "").strip()
             if not provider or not model:
                 return fail("route_invalid", "profile must resolve a provider and model")
             from providers import get_provider_profile
             if get_provider_profile(provider) is None:
                 return fail("route_invalid", "configured provider is unavailable")
+            resolved = _resolve_worker_route(task, profile, provider, model)
+            if not resolved["ok"]:
+                return fail(str(resolved["code"]), str(resolved["detail"]))
             worker_toolsets = _resolve_worker_cli_toolsets(profile_home)
             if not worker_toolsets:
                 return fail("toolsets_invalid", "profile has no available CLI toolsets")
@@ -8154,10 +8204,12 @@ def _preflight_worker_spawn(task: Task, workspace: str, *, board: Optional[str])
             reset_hermes_home_override(token)
     except Exception:
         return fail("route_invalid", "profile route could not be resolved")
+    route = resolved["route"]
+    task.execution_route = route
     return {
         "ok": True,
         "board": _normalize_board_slug(board) or get_current_board(),
-        "route": {"profile": profile, "provider": provider, "model": model},
+        "route": route,
     }
 
 
@@ -8179,6 +8231,31 @@ def _block_preflight_failure(
         run_id = _end_run(conn, task_id, outcome="preflight_failed", status="preflight_failed",
                           error=f"preflight {code}: {detail}", metadata=metadata)
         _append_event(conn, task_id, "preflight_failed", metadata, run_id=run_id)
+
+
+def _persist_execution_route(conn: sqlite3.Connection, task: Task) -> None:
+    """Persist only non-secret route identity for downstream worker dispatch."""
+    route = task.execution_route or {}
+    safe = {k: str(route[k])[:120] for k in ("profile", "provider", "model", "credential_ref")
+            if route.get(k)}
+    if safe and task.current_run_id is not None:
+        with write_txn(conn):
+            _append_event(conn, task.id, "execution_route", {"route": safe}, run_id=task.current_run_id)
+
+
+def _latest_execution_route(conn: sqlite3.Connection, task_id: str) -> Optional[dict[str, str]]:
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'execution_route' "
+        "ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    try:
+        raw = json.loads(row["payload"]).get("route") if row and row["payload"] else None
+    except Exception:
+        raw = None
+    if not isinstance(raw, dict):
+        return None
+    route = {k: str(raw[k]) for k in ("profile", "provider", "model", "credential_ref") if raw.get(k)}
+    return route or None
 
 
 def _default_spawn(

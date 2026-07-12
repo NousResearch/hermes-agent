@@ -6960,6 +6960,8 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_global: Optional[int] = None,
+    global_in_progress: int = 0,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -6994,6 +6996,8 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_global=max_in_progress_global,
+            global_in_progress=global_in_progress,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -7010,6 +7014,8 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_global=max_in_progress_global,
+            global_in_progress=global_in_progress,
         )
 
 
@@ -7026,6 +7032,8 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_global: Optional[int] = None,
+    global_in_progress: int = 0,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -7118,6 +7126,27 @@ def _dispatch_once_locked(
         remaining = max_in_progress - in_progress
         if max_spawn is None or max_spawn > remaining:
             max_spawn = remaining
+    # Fleet-wide (cross-board) concurrency cap (kanban.max_in_progress_global).
+    # max_in_progress / max_spawn are per-board, but the dispatcher ticks every
+    # board each cycle, so N boards each running up to their per-board cap can
+    # still melt the host. ``global_in_progress`` is the count of workers
+    # already running on *other* boards (plus spawns made earlier this tick),
+    # supplied by the multi-board caller; we add this board's own live count and
+    # refuse to push the total past the global cap. Like max_in_progress, this
+    # only ever shrinks max_spawn — it never authorizes more work — so it
+    # composes safely with the per-board caps above.
+    if max_in_progress_global is not None and ready_rows:
+        board_running = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+            ).fetchone()[0]
+        )
+        total_in_flight = int(global_in_progress) + board_running
+        if total_in_flight >= max_in_progress_global:
+            return result
+        remaining_global = max_in_progress_global - total_in_flight
+        if max_spawn is None or max_spawn > remaining_global:
+            max_spawn = remaining_global
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn
@@ -7677,6 +7706,144 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+# ---------------------------------------------------------------------------
+# Optional per-worker systemd scope isolation (opt-in)
+# ---------------------------------------------------------------------------
+#
+# By default a dispatcher launches each kanban worker with a plain
+# ``subprocess.Popen``. The child then inherits the dispatcher's systemd
+# cgroup — and therefore the dispatcher unit's ``CPUQuota`` / ``MemoryHigh``
+# limits. When many workers fan out on one board they all share that single
+# cgroup's budget: the pool gets throttled and, once it trips ``MemoryMax``,
+# ``systemd-oomd`` can kill the *entire* gateway unit (all workers + the
+# dispatcher) at once.
+#
+# When ``kanban.worker_slice`` is enabled AND the host is Linux AND
+# ``systemd-run`` is on PATH, each worker is instead launched via
+# ``systemd-run --scope`` under a configurable parent slice. Crucially,
+# ``systemd-run --scope`` *execs* into the worker command (it does not stay
+# resident as a wrapper), so:
+#   * the PID captured by ``Popen`` is the worker's real PID — crash
+#     detection (``_pid_alive``) and termination (``os.kill``) behave
+#     exactly as they do without the wrapper; and
+#   * the worker runs in its own transient ``run-*.scope`` cgroup nested
+#     under the shared parent slice, decoupled from the dispatcher's cgroup.
+# Operators cap the whole worker pool by setting resource limits on the
+# parent slice (or per-worker via ``worker_slice_properties``) instead of
+# starving the gateway unit.
+#
+# The feature is OFF by default and falls back to a plain ``Popen`` argv
+# whenever the config flag is unset, the platform is not Linux, or
+# ``systemd-run`` is unavailable — so non-systemd environments never regress.
+
+
+def _valid_slice_name(name: str) -> bool:
+    """True if ``name`` is a plausible systemd slice unit name.
+
+    systemd slice names must end in ``.slice`` and contain only a
+    conservative set of characters. We validate rather than sanitize so a
+    typo in config fails closed (plain Popen) instead of silently placing
+    workers in an unexpected slice.
+    """
+    if not name.endswith(".slice"):
+        return False
+    stem = name[: -len(".slice")]
+    if not stem:
+        return False
+    return all(c.isalnum() or c in "-_." for c in stem)
+
+
+def _worker_slice_config(kanban_cfg=None):
+    """Resolve the opt-in per-worker systemd-scope settings.
+
+    Returns ``(enabled, slice_name, use_user, properties)``. ``enabled`` is
+    ``True`` only when the operator turned the feature on with a valid slice
+    name; callers still gate on platform + ``systemd-run`` availability.
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_cfg = (load_config().get("kanban") or {})
+        except Exception:
+            kanban_cfg = {}
+    kanban_cfg = kanban_cfg or {}
+    enabled = bool(kanban_cfg.get("worker_slice", False))
+    slice_name = str(kanban_cfg.get("worker_slice_name") or "hermes-workers.slice")
+    if not _valid_slice_name(slice_name):
+        # Fail closed: a malformed slice name disables the wrapper rather
+        # than launching workers into an unintended / invalid slice.
+        if enabled:
+            _log.warning(
+                "kanban worker: ignoring invalid kanban.worker_slice_name=%r "
+                "(must end in .slice); launching workers without a scope",
+                slice_name,
+            )
+        enabled = False
+    # Default to the per-user manager (--user). Operators running the
+    # dispatcher as a system service without a user manager can flip
+    # worker_slice_user: false to use a system scope (needs privilege).
+    use_user = bool(kanban_cfg.get("worker_slice_user", True))
+    props_raw = kanban_cfg.get("worker_slice_properties") or {}
+    properties: list[str] = []
+    if isinstance(props_raw, dict):
+        for k, v in props_raw.items():
+            if k is None or v is None:
+                continue
+            properties.append(f"{k}={v}")
+    elif isinstance(props_raw, (list, tuple)):
+        for item in props_raw:
+            if item:
+                properties.append(str(item))
+    return enabled, slice_name, use_user, properties
+
+
+def _maybe_wrap_worker_scope(cmd: "list[str]", kanban_cfg=None) -> "list[str]":
+    """Return ``cmd`` wrapped in ``systemd-run --scope`` when opted in.
+
+    No-op (returns ``cmd`` unchanged) unless every condition holds:
+      * ``kanban.worker_slice`` is enabled with a valid slice name;
+      * the host is Linux; and
+      * ``systemd-run`` is discoverable on PATH.
+
+    ``systemd-run --scope`` execs the target, so the returned argv can be
+    handed to ``Popen`` exactly like the bare command: the captured PID is
+    the worker's, and no wrapper process survives to confuse crash/kill
+    tracking.
+    """
+    enabled, slice_name, use_user, properties = _worker_slice_config(kanban_cfg)
+    if not enabled:
+        return cmd
+    if sys.platform != "linux":
+        return cmd
+    systemd_run = shutil.which("systemd-run")
+    if not systemd_run:
+        _log.warning(
+            "kanban worker: kanban.worker_slice is enabled but systemd-run "
+            "is not on PATH; launching workers without a scope",
+        )
+        return cmd
+    wrapper = [
+        systemd_run,
+        "--scope",
+        # Suppress "Running as unit ..." chatter so it doesn't pollute the
+        # per-task worker log.
+        "--quiet",
+        # Garbage-collect the transient scope once the worker exits, so
+        # finished/failed scopes don't accumulate under the slice.
+        "--collect",
+        f"--slice={slice_name}",
+    ]
+    if use_user:
+        wrapper.append("--user")
+    for prop in properties:
+        wrapper.append(f"--property={prop}")
+    # `--` terminates systemd-run's own option parsing; everything after is
+    # the worker argv (which begins with the hermes binary path).
+    wrapper.append("--")
+    return wrapper + list(cmd)
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -7832,11 +7999,19 @@ def _default_spawn(
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
 
+    # Opt-in: launch the worker in its own transient systemd scope under a
+    # shared parent slice so its cgroup (and resource limits) are decoupled
+    # from the dispatcher's unit. `systemd-run --scope` execs into the
+    # worker, so `launch_cmd`'s captured PID is still the worker's PID and
+    # kill/crash tracking below is unchanged. No-op unless enabled + Linux +
+    # systemd-run present.
+    launch_cmd = _maybe_wrap_worker_scope(cmd)
+
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
+            launch_cmd,
             cwd=workspace if os.path.isdir(workspace) else None,
             stdin=subprocess.DEVNULL,
             stdout=log_f,

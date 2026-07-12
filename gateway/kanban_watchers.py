@@ -929,6 +929,37 @@ class GatewayKanbanWatchersMixin:
                         max_in_progress_per_profile,
                     )
 
+        # Read kanban.max_in_progress_global — a FLEET-WIDE concurrency cap
+        # across every board. max_in_progress / max_spawn are per-board, but
+        # the dispatcher ticks all boards each cycle, so N boards each at their
+        # per-board cap can still overwhelm the host (the worker-pool OOM /
+        # throttle failure mode). When set, the total number of workers running
+        # across all boards combined is held at or below this value, in
+        # addition to the per-board caps. Default None = unchanged behavior.
+        raw_max_in_progress_global = kanban_cfg.get("max_in_progress_global", None)
+        max_in_progress_global = None
+        if raw_max_in_progress_global is not None:
+            try:
+                max_in_progress_global = int(raw_max_in_progress_global)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.max_in_progress_global=%r; ignoring",
+                    raw_max_in_progress_global,
+                )
+                max_in_progress_global = None
+            else:
+                if max_in_progress_global < 1:
+                    logger.warning(
+                        "kanban dispatcher: kanban.max_in_progress_global=%r is below 1; ignoring",
+                        raw_max_in_progress_global,
+                    )
+                    max_in_progress_global = None
+                else:
+                    logger.info(
+                        "kanban dispatcher: max_in_progress_global=%d",
+                        max_in_progress_global,
+                    )
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -972,7 +1003,35 @@ class GatewayKanbanWatchersMixin:
                 or "database disk image is malformed" in msg
             )
 
-        def _tick_once_for_board(slug: str) -> "Optional[object]":
+        def _board_running_count(slug: str) -> int:
+            """Count tasks in ``status='running'`` on a single board.
+
+            Used to seed the fleet-wide (cross-board) concurrency cap: the
+            dispatcher needs the total in-flight worker count across every
+            board before it decides how many more it may spawn this tick.
+            Best-effort — any error (corrupt/locked DB) counts as 0 so a
+            single bad board never blocks dispatch on the others.
+            """
+            conn = None
+            try:
+                conn = _kb.connect(board=slug)
+                return int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+                    ).fetchone()[0]
+                )
+            except Exception:
+                return 0
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        def _tick_once_for_board(
+            slug: str, *, global_in_progress: int = 0
+        ) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
             Runs in a worker thread via `asyncio.to_thread`. `board=slug`
@@ -980,6 +1039,11 @@ class GatewayKanbanWatchersMixin:
             `_default_spawn` see the right paths. The per-board DB is
             opened explicitly so concurrent boards never share a
             connection handle or accidentally claim across each other.
+
+            ``global_in_progress`` is the number of workers already running
+            on *other* boards (plus spawns made earlier this tick); it is
+            threaded into ``dispatch_once`` so the fleet-wide cap
+            ``max_in_progress_global`` is honored across boards.
             """
             conn = None
             fingerprint = _board_db_fingerprint(slug)
@@ -1022,6 +1086,8 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    max_in_progress_global=max_in_progress_global,
+                    global_in_progress=global_in_progress,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
@@ -1071,10 +1137,39 @@ class GatewayKanbanWatchersMixin:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            slugs = [b.get("slug") or _kb.DEFAULT_BOARD for b in boards]
+
+            # Fleet-wide cap bookkeeping. When kanban.max_in_progress_global is
+            # set, pre-scan every board's live worker count so each board's
+            # dispatch knows how many workers are already running elsewhere;
+            # accumulate this tick's spawns so later boards see the earlier
+            # boards' fresh workers too. Skipped entirely (zero extra queries)
+            # when the global cap is unset.
+            running_by_board: dict[str, int] = {}
+            total_running = 0
+            if max_in_progress_global is not None:
+                for slug in slugs:
+                    c = _board_running_count(slug)
+                    running_by_board[slug] = c
+                    total_running += c
+            spawned_global = 0
+
             out: list[tuple[str, "Optional[object]"]] = []
-            for b in boards:
-                slug = b.get("slug") or _kb.DEFAULT_BOARD
-                out.append((slug, _tick_once_for_board(slug)))
+            for slug in slugs:
+                if max_in_progress_global is not None:
+                    # Workers on all *other* boards (initial snapshot) plus
+                    # spawns already made this tick on earlier boards.
+                    global_other = (
+                        total_running
+                        - running_by_board.get(slug, 0)
+                        + spawned_global
+                    )
+                else:
+                    global_other = 0
+                res = _tick_once_for_board(slug, global_in_progress=global_other)
+                if max_in_progress_global is not None and res is not None:
+                    spawned_global += len(getattr(res, "spawned", []) or [])
+                out.append((slug, res))
             return out
 
         def _ready_nonempty() -> bool:

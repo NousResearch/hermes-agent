@@ -4279,6 +4279,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
+        # When a session_id was explicitly provided (or resolved via
+        # previous_response_id) but conversation_history is omitted, auto-load
+        # the existing history from SessionDB — consistent with
+        # POST /api/sessions/{session_id}/chat/stream behavior.
+        if not conversation_history and session_id != run_id:
+            conversation_history = self._conversation_history_for_session(session_id)
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
         # conversation/memory scopes, not authorization namespaces: multiple

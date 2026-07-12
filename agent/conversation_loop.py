@@ -2978,6 +2978,21 @@ def run_conversation(
                 
                 error_type = type(api_error).__name__
                 error_msg = str(api_error).lower()
+                # str(error) on OpenAI SDK 2.x returns only the message string
+                # (typically "Error code: 400"), not the API response body.
+                # Enrich with the body message so output-cap and context-overflow
+                # pattern matching (parse_available_output_tokens_from_error,
+                # is_output_cap_error) can find the real error detail.
+                _err_body = getattr(api_error, "body", None)
+                if isinstance(_err_body, dict):
+                    _err_obj = _err_body.get("error", {})
+                    _body_msg = (
+                        str(_err_obj.get("message") or "")
+                        if isinstance(_err_obj, dict)
+                        else str(_err_body.get("message") or "")
+                    ).lower()
+                    if _body_msg and _body_msg not in error_msg:
+                        error_msg = f"{error_msg} {_body_msg}"
                 _error_summary = agent._summarize_api_error(api_error)
                 logger.warning(
                     "API call failed (attempt %s/%s) error_type=%s %s summary=%s",

@@ -98,7 +98,7 @@ import { useBackgroundSync } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
-import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
+import { $restartPreviewServer, FilesPane, useTitlebarToolContributions } from './panes'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
 
@@ -112,7 +112,7 @@ const ProfilesView = lazy(async () => ({ default: (await import('../profiles')).
 const SettingsView = lazy(async () => ({ default: (await import('../settings')).SettingsView }))
 const StarmapView = lazy(async () => ({ default: (await import('../starmap')).StarmapView }))
 
-// Surfaces (the four wired panes), the render context + WiredPane, and the
+// Surfaces, the render context + WiredPane, and the
 // WiringActions/WiringApi contracts all live in sibling modules — this file is
 // the controller that assembles them.
 export { WiredPane } from './context'
@@ -225,7 +225,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [activeSessionIdRef, updateSessionState]
   )
 
-  const { refreshProjectBranch } = useCwdActions({
+  const { chooseProjectFolder, refreshProjectBranch } = useCwdActions({
     activeSessionId,
     activeSessionIdRef,
     onSessionRuntimeInfo: updateActiveSessionRuntimeInfo,
@@ -769,6 +769,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     getGateway: () => gatewayRef.current,
     openAgents,
     openCommandCenterSection,
+    onStartProjectFromFolder: () => void chooseProjectFolder(),
     requestGateway,
     selectModel,
     toggleCommandCenter
@@ -794,6 +795,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const terminalNode = useMemo(() => <TerminalSurface />, [])
 
+  const filesNode = useMemo(
+    () => <FilesPane onStartProjectFromFolder={actions.onStartProjectFromFolder} />,
+    [actions]
+  )
+
   const statusbarNode = useMemo(
     () => (
       <StatusbarSurface
@@ -816,11 +822,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const api = useMemo<WiringApi>(
     () => ({
       chatRoutes: chatRoutesNode,
+      files: filesNode,
       sidebar: sidebarNode,
       statusbar: statusbarNode,
       terminal: terminalNode
     }),
-    [chatRoutesNode, sidebarNode, statusbarNode, terminalNode]
+    [chatRoutesNode, filesNode, sidebarNode, statusbarNode, terminalNode]
   )
 
   // The REAL titlebar tool clusters (sidebar/flip toggles, haptics, keybinds,

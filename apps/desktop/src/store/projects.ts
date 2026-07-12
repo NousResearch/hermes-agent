@@ -151,8 +151,21 @@ export function resolveNewSessionCwd(): string {
   return workspaceCwdForNewSession()
 }
 
-const underPath = (parent: string, child: string): boolean =>
-  child === parent || child.startsWith(parent.endsWith('/') ? parent : `${parent}/`)
+const comparablePath = (path: string): string => {
+  const normalized = path.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+
+  return normalized || '/'
+}
+
+const underPath = (parent: string, child: string): boolean => {
+  const normalizedParent = comparablePath(parent)
+  const normalizedChild = comparablePath(child)
+
+  return (
+    normalizedChild === normalizedParent ||
+    normalizedChild.startsWith(normalizedParent === '/' ? '/' : `${normalizedParent}/`)
+  )
+}
 
 // The project (explicit or auto) that owns `cwd`, by longest path match across
 // the live tree. Null when no project covers it (it'll surface as a fresh
@@ -178,6 +191,63 @@ export function projectIdForCwd(cwd: string): null | string {
   }
 
   return best
+}
+
+// A detached chat becomes project-backed before it receives a workspace target.
+// Reuse the deepest project that already owns the selected folder; otherwise make
+// one explicit project named for the folder. Callers must await this before
+// staging cwd so a failed write never falls back to a raw, unowned folder.
+export async function ensureProjectForFolder(
+  cwd: string,
+  shouldCancel?: () => boolean
+): Promise<null | string> {
+  const selected = cwd.trim()
+
+  if (!selected) {
+    throw new Error('Choose a folder before starting a project')
+  }
+
+  await loadProjectTree()
+
+  const projectId = projectIdForCwd(selected)
+
+  if (projectId) {
+    if (shouldCancel?.()) {
+      return null
+    }
+
+    setSidebarAgentsGrouped(true)
+    enterProject(projectId)
+
+    return selected
+  }
+
+  if (shouldCancel?.()) {
+    return null
+  }
+
+  const folderName = selected.replace(/[/\\]+$/, '').split(/[/\\]+/).filter(Boolean).pop() || selected
+
+  const created = await createProject({
+    folders: [selected],
+    name: folderName,
+    primaryPath: selected,
+    reveal: false,
+    use: false
+  })
+
+  if (!created) {
+    throw new Error('Could not create a Project for the selected folder')
+  }
+
+  if (shouldCancel?.()) {
+    return null
+  }
+
+  setSidebarAgentsGrouped(true)
+  enterProject(created.id)
+
+  return (created.primary_path || selected).trim()
 }
 
 // The active session's agent relocated itself (created/entered another repo or
@@ -250,10 +320,7 @@ interface ProjectTreePayload {
   scoped_session_ids: string[]
 }
 
-// Pull the authoritative project tree (overview structure + counts + preview
-// sessions + the scoped-session-id set). Best-effort: a failure leaves the
-// cached tree intact so the sidebar doesn't flicker.
-export async function refreshProjectTree(): Promise<void> {
+async function loadProjectTree(): Promise<void> {
   $projectTreeLoading.set(true)
 
   try {
@@ -281,9 +348,20 @@ export async function refreshProjectTree(): Promise<void> {
     markProjectsRpcSuccess()
   } catch (err) {
     markProjectsRpcFailure(err)
-    // Backend may not be ready; keep the last known tree.
+    throw err
   } finally {
     $projectTreeLoading.set(false)
+  }
+}
+
+// Pull the authoritative project tree (overview structure + counts + preview
+// sessions + the scoped-session-id set). Best-effort: a failure leaves the
+// cached tree intact so the sidebar doesn't flicker.
+export async function refreshProjectTree(): Promise<void> {
+  try {
+    await loadProjectTree()
+  } catch {
+    // Backend may not be ready; keep the last known tree.
   }
 }
 
@@ -339,6 +417,7 @@ export interface CreateProjectInput {
   color?: string
   boardSlug?: string
   use?: boolean
+  reveal?: boolean
   // Free-text project idea; written to IDEA.md at the primary folder on create.
   idea?: string
 }
@@ -488,7 +567,9 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
       $activeProjectId.set(created.id)
     }
 
-    setSidebarAgentsGrouped(true)
+    if (input.reveal ?? true) {
+      setSidebarAgentsGrouped(true)
+    }
   }
 
   reconcileProjects()

@@ -1,7 +1,8 @@
-import { type MutableRefObject, useCallback } from 'react'
+import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { useI18n } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
+import { ensureProjectForFolder, pickProjectFolder } from '@/store/projects'
 import {
   $currentCwd,
   $newChatWorkspaceTargetGeneration,
@@ -25,6 +26,7 @@ export function useCwdActions({
   requestGateway
 }: CwdActionsOptions) {
   const { t } = useI18n()
+  const choosingProjectFolderRef = useRef(false)
   const copy = t.desktop
 
   const refreshProjectBranch = useCallback(
@@ -51,6 +53,87 @@ export function useCwdActions({
     [activeSessionIdRef, requestGateway]
   )
 
+  const stageNewChatWorkspace = useCallback(
+    async (cwd: string) => {
+      if (activeSessionIdRef.current) {
+        return
+      }
+
+      const workspaceGeneration = setNewChatWorkspaceTarget(cwd)
+      setCurrentCwd(cwd)
+
+      try {
+        const info = await requestGateway<{ branch?: string; cwd?: string }>('config.get', {
+          key: 'project',
+          cwd
+        })
+
+        if ($newChatWorkspaceTargetGeneration.get() !== workspaceGeneration || activeSessionIdRef.current) {
+          return
+        }
+
+        // Adopt the backend's normalized cwd so the persisted workspace and
+        // branch stay consistent with what the agent will use.
+        if (info.cwd) {
+          setCurrentCwd(info.cwd)
+          setNewChatWorkspaceTarget(info.cwd)
+        }
+
+        setCurrentBranch(info.branch || '')
+      } catch {
+        if ($newChatWorkspaceTargetGeneration.get() === workspaceGeneration && !activeSessionIdRef.current) {
+          setCurrentBranch('')
+        }
+      }
+    },
+    [activeSessionIdRef, requestGateway]
+  )
+
+  const startProjectFromFolder = useCallback(
+    async (cwd: string) => {
+      if (activeSessionIdRef.current) {
+        return
+      }
+
+      try {
+        // Project ownership is authoritative: do not expose a raw cwd when the
+        // existing owner lookup or explicit project creation fails.
+        const projectCwd = await ensureProjectForFolder(cwd, () => Boolean(activeSessionIdRef.current))
+
+        // A session could start while the folder picker/create RPC was open.
+        // Do not let this detached-chat action mutate its workspace.
+        if (projectCwd === null || activeSessionIdRef.current) {
+          return
+        }
+
+        await stageNewChatWorkspace(projectCwd)
+      } catch (error) {
+        notifyError(error, copy.cwdChangeFailed)
+      }
+    },
+    [activeSessionIdRef, copy, stageNewChatWorkspace]
+  )
+
+  const chooseProjectFolder = useCallback(async () => {
+    if (activeSessionIdRef.current || choosingProjectFolderRef.current) {
+      return
+    }
+
+    choosingProjectFolderRef.current = true
+
+    try {
+      const folder = await pickProjectFolder()
+
+      if (folder) {
+        await startProjectFromFolder(folder)
+      }
+    } catch (error) {
+      notifyError(error, copy.cwdChangeFailed)
+    } finally {
+      choosingProjectFolderRef.current = false
+    }
+  }, [activeSessionIdRef, copy, startProjectFromFolder])
+
   const changeSessionCwd = useCallback(
     async (cwd: string) => {
       const trimmed = cwd.trim()
@@ -60,32 +143,7 @@ export function useCwdActions({
       }
 
       if (!activeSessionId) {
-        setCurrentCwd(trimmed)
-        const workspaceGeneration = setNewChatWorkspaceTarget(trimmed)
-
-        try {
-          const info = await requestGateway<{ branch?: string; cwd?: string }>('config.get', {
-            key: 'project',
-            cwd: trimmed
-          })
-
-          if ($newChatWorkspaceTargetGeneration.get() !== workspaceGeneration || activeSessionIdRef.current) {
-            return
-          }
-
-          // Adopt the backend's normalized cwd so the persisted workspace and
-          // branch stay consistent with what the agent will use.
-          if (info.cwd) {
-            setCurrentCwd(info.cwd)
-            setNewChatWorkspaceTarget(info.cwd)
-          }
-
-          setCurrentBranch(info.branch || '')
-        } catch {
-          if ($newChatWorkspaceTargetGeneration.get() === workspaceGeneration && !activeSessionIdRef.current) {
-            setCurrentBranch('')
-          }
-        }
+        await stageNewChatWorkspace(trimmed)
 
         return
       }
@@ -117,8 +175,8 @@ export function useCwdActions({
         })
       }
     },
-    [activeSessionId, activeSessionIdRef, copy, onSessionRuntimeInfo, requestGateway]
+    [activeSessionId, copy, onSessionRuntimeInfo, requestGateway, stageNewChatWorkspace]
   )
 
-  return { changeSessionCwd, refreshProjectBranch }
+  return { changeSessionCwd, chooseProjectFolder, refreshProjectBranch, startProjectFromFolder }
 }

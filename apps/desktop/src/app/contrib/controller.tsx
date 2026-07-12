@@ -64,7 +64,7 @@ import {
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { $workspaceIsPage } from '../routes'
 
-import { FilesPane, LogsPane, PreviewRailPane, ReviewPaneContent } from './panes'
+import { LogsPane, PreviewRailPane, ReviewPaneContent } from './panes'
 import { ContribWiring, WiredPane } from './wiring'
 
 /**
@@ -181,7 +181,7 @@ registry.registerMany([
       minWidth: FILE_BROWSER_MIN_WIDTH,
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
-    render: () => <FilesPane />
+    render: () => <WiredPane part="files" />
   },
   {
     id: 'preview',

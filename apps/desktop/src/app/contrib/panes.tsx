@@ -28,7 +28,7 @@ import { getLogs } from '@/hermes'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $filePreviewTarget, $previewTarget, setCurrentSessionPreviewTarget } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $activeSessionId, $currentCwd } from '@/store/session'
 
 // ---------------------------------------------------------------------------
 // Logs — live agent-log tail. OPTIONAL chrome: not in any default layout,
@@ -120,10 +120,16 @@ function previewFile(path: string) {
 // and titlebar clearance are per-wrapper concerns.
 const ZONE_CONTENT = 'h-full [&>aside]:h-full [&>aside]:w-full [&>aside]:pt-0'
 
-export function FilesPane() {
+export function FilesPane({ onStartProjectFromFolder }: { onStartProjectFromFolder?: () => void }) {
+  const activeSessionId = useStore($activeSessionId)
+
   return (
     <div className={ZONE_CONTENT}>
-      <RightSidebarPane onActivateFile={previewFile} onActivateFolder={previewFile} />
+      <RightSidebarPane
+        onActivateFile={previewFile}
+        onActivateFolder={previewFile}
+        onStartProjectFromFolder={activeSessionId ? undefined : onStartProjectFromFolder}
+      />
     </div>
   )
 }

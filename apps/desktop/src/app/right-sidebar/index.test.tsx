@@ -46,12 +46,29 @@ describe('RightSidebarPane', () => {
     expect(screen.queryByRole('button', { name: 'Open folder' })).toBeNull()
   })
 
-  it('shows no tree for a detached chat (no working dir)', async () => {
+  it('offers a project-backed folder start only for a detached chat', async () => {
+    setCurrentCwd('')
+    const onStartProjectFromFolder = vi.fn()
+
+    render(
+      <RightSidebarPane
+        onActivateFile={vi.fn()}
+        onActivateFolder={vi.fn()}
+        onStartProjectFromFolder={onStartProjectFromFolder}
+      />
+    )
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: 'Open folder' }))
+    expect(onStartProjectFromFolder).toHaveBeenCalledOnce()
+    expect(readDir).not.toHaveBeenCalled()
+  })
+
+  it('does not offer a folder start without the no-session action', async () => {
     setCurrentCwd('')
 
     render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
 
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull())
-    expect(readDir).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Open folder' })).toBeNull()
   })
 })

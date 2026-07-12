@@ -23,9 +23,12 @@ import { useProjectTree } from './files/use-project-tree'
 interface RightSidebarPaneProps {
   onActivateFile: (path: string) => void
   onActivateFolder: (path: string) => void
+  // Defined only for a detached chat. Active sessions keep their cwd immutable
+  // from this rail; the action enters or creates a Project before staging cwd.
+  onStartProjectFromFolder?: () => void
 }
 
-export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSidebarPaneProps) {
+export function RightSidebarPane({ onActivateFile, onActivateFolder, onStartProjectFromFolder }: RightSidebarPaneProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
@@ -98,6 +101,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
         onNodeOpenChange={setNodeOpen}
         onPreviewFile={previewFile}
         onRefresh={() => void refreshRoot()}
+        onStartProjectFromFolder={onStartProjectFromFolder}
         openState={openState}
       />
     </aside>
@@ -110,6 +114,7 @@ interface FilesystemTabProps extends FileTreeBodyProps {
   hasWorkspace: boolean
   onCollapseAll: () => void
   onRefresh: () => void
+  onStartProjectFromFolder?: () => void
 }
 
 // Sidebar palette + hover-reveal: header actions stay reachable while moving
@@ -135,15 +140,27 @@ function FilesystemTab({
   onNodeOpenChange,
   onPreviewFile,
   onRefresh,
+  onStartProjectFromFolder,
   openState
 }: FilesystemTabProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
 
-  // No working directory (a bare/detached chat) → no tree, just a terse hint.
-  // Switching workspace is a project/worktree action, never a raw folder picker.
+  // No working directory (a bare/detached chat) → no tree. The folder entry
+  // point is only supplied by the controller before a session exists, so the
+  // right rail cannot retarget an active session to a raw cwd.
   if (!hasWorkspace) {
-    return <PaneEmptyState label={r.noProjectOpen} />
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4">
+        <PaneEmptyState label={r.noProjectOpen} />
+        {onStartProjectFromFolder && (
+          <Button onClick={onStartProjectFromFolder} size="sm" variant="secondary">
+            <Codicon name="folder-opened" size="0.875rem" />
+            {r.openFolder}
+          </Button>
+        )}
+      </div>
+    )
   }
 
   return (

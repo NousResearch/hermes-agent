@@ -64,16 +64,18 @@ export interface WiringActions extends SidebarActions, ChatActions {
   getGateway: () => ComponentProps<typeof ChatView>['gateway']
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void
+  onStartProjectFromFolder: () => void
   requestGateway: GatewayRequester
   selectModel: ComponentProps<typeof ModelMenuPanel>['onSelectModel']
   toggleCommandCenter: () => void
 }
 
-/** The four wired surfaces the controller publishes; `WiredPane` renders one by
+/** The wired surfaces the controller publishes; `WiredPane` renders one by
  *  key inside a registered pane / chrome slot. */
 export interface WiringApi {
   sidebar: ReactNode
   chatRoutes: ReactNode
+  files: ReactNode
   terminal: ReactNode
   statusbar: ReactNode
 }

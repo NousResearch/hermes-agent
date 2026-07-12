@@ -2363,9 +2363,9 @@ export const de = defineLocale({
         runningTool: action => `Führe ${action.toLowerCase()} aus`
       },
       titles: {
-        browser_click: { done: 'Seitenelement angeklickt', pending: 'Clicking page element', pendingAction: 'Clicking' },
-        browser_fill: { done: 'Formularfeld ausgefüllt', pending: 'Filling form field', pendingAction: 'Filling' },
-        browser_navigate: { done: 'Seite geöffnet', pending: 'Opening page', pendingAction: 'Opening' },
+        browser_click: { done: 'Seitenelement angeklickt', pending: 'Seitenelement wird angeklickt', pendingAction: 'Klicke' },
+        browser_fill: { done: 'Formularfeld ausgefüllt', pending: 'Formularfeld wird ausgefüllt', pendingAction: 'Fülle aus' },
+        browser_navigate: { done: 'Seite geöffnet', pending: 'Seite wird geöffnet', pendingAction: 'Öffne' },
         browser_snapshot: {
           done: 'Seiten-Snapshot erfasst',
           pending: 'Seiten-Snapshot wird erfasst',
@@ -2376,27 +2376,27 @@ export const de = defineLocale({
           pending: 'Screenshot wird erfasst',
           pendingAction: 'Erfasse'
         },
-        browser_type: { done: 'Auf Seite getippt', pending: 'Typing on page', pendingAction: 'Typing' },
-        clarify: { done: 'Eine Frage gestellt', pending: 'Asking a question', pendingAction: 'Asking' },
-        cronjob: { done: 'Cron-Aufgabe', pending: 'Scheduling cron job', pendingAction: 'Scheduling' },
-        edit_file: { done: 'Datei bearbeitet', pending: 'Editing file', pendingAction: 'Editing' },
-        execute_code: { done: 'Code ausgeführt', pending: 'Scripting', pendingAction: 'Scripting' },
-        image_generate: { done: 'Bild generiert', pending: 'Generating image', pendingAction: 'Generating' },
-        list_files: { done: 'Dateien aufgelistet', pending: 'Listing files', pendingAction: 'Listing' },
-        patch: { done: 'Datei gepatcht', pending: 'Patching file', pendingAction: 'Patching' },
-        read_file: { done: 'Datei gelesen', pending: 'Reading file', pendingAction: 'Reading' },
-        search_files: { done: 'Dateien durchsucht', pending: 'Searching files', pendingAction: 'Searching' },
+        browser_type: { done: 'Auf Seite getippt', pending: 'Auf Seite wird getippt', pendingAction: 'Tippe' },
+        clarify: { done: 'Eine Frage gestellt', pending: 'Frage wird gestellt', pendingAction: 'Frage' },
+        cronjob: { done: 'Cron-Aufgabe', pending: 'Cron-Aufgabe wird geplant', pendingAction: 'Plane' },
+        edit_file: { done: 'Datei bearbeitet', pending: 'Datei wird bearbeitet', pendingAction: 'Bearbeite' },
+        execute_code: { done: 'Code ausgeführt', pending: 'Skript wird ausgeführt', pendingAction: 'Führe aus' },
+        image_generate: { done: 'Bild generiert', pending: 'Bild wird generiert', pendingAction: 'Generiere' },
+        list_files: { done: 'Dateien aufgelistet', pending: 'Dateien werden aufgelistet', pendingAction: 'Liste auf' },
+        patch: { done: 'Datei gepatcht', pending: 'Datei wird gepatcht', pendingAction: 'Patche' },
+        read_file: { done: 'Datei gelesen', pending: 'Datei wird gelesen', pendingAction: 'Lese' },
+        search_files: { done: 'Dateien durchsucht', pending: 'Dateien werden durchsucht', pendingAction: 'Durchsuche' },
         session_search_recall: {
           done: 'Sitzungsverlauf durchsucht',
           pending: 'Sitzungsverlauf wird durchsucht',
           pendingAction: 'Durchsuche'
         },
-        terminal: { done: 'Befehl ausgeführt', pending: 'Running command', pendingAction: 'Running' },
-        todo: { done: 'Aufgaben aktualisiert', pending: 'Updating todos', pendingAction: 'Updating' },
-        vision_analyze: { done: 'Bild analysiert', pending: 'Analyzing image', pendingAction: 'Analyzing' },
-        web_extract: { done: 'Webseite gelesen', pending: 'Reading webpage', pendingAction: 'Reading' },
-        web_search: { done: 'Web durchsucht', pending: 'Searching web', pendingAction: 'Searching' },
-        write_file: { done: 'Datei bearbeitet', pending: 'Editing file', pendingAction: 'Editing' }
+        terminal: { done: 'Befehl ausgeführt', pending: 'Befehl wird ausgeführt', pendingAction: 'Wird ausgeführt' },
+        todo: { done: 'Aufgaben aktualisiert', pending: 'Aufgaben werden aktualisiert', pendingAction: 'Wird aktualisiert' },
+        vision_analyze: { done: 'Bild analysiert', pending: 'Bild wird analysiert', pendingAction: 'Wird analysiert' },
+        web_extract: { done: 'Webseite gelesen', pending: 'Webseite wird gelesen', pendingAction: 'Wird gelesen' },
+        web_search: { done: 'Web durchsucht', pending: 'Web wird durchsucht', pendingAction: 'Durchsuche' },
+        write_file: { done: 'Datei bearbeitet', pending: 'Datei wird bearbeitet', pendingAction: 'Bearbeite' }
       }
     }
   },

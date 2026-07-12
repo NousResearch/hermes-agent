@@ -24,4 +24,35 @@ describe('de locale content', () => {
     expect(de.settings.importConfig).not.toBe(de.settings.exportConfig)
     expect(de.settings.importConfig).not.toBe(en.settings.importConfig)
   })
+
+  it('contains no corrupted placeholders or untranslated English leaves', () => {
+    // Walks every string leaf in the German catalog and rejects corruption
+    // markers that would surface verbatim to the user (e.g. "***", TODO,
+    // leftover English sentences). A locale that degrades should fall back to
+    // English via defineLocale(), never render a placeholder.
+    const corruption = /\*\*\*|FIXME|XXX|PLACEHOLDER|lorem ipsum/i
+    const englishSentence = /\b(the|is|are|was|were|your|you|this|that|with|from|click|settings|open|close|save)\b/i
+
+    const visit = (node: unknown, path: string): void => {
+      if (typeof node === 'string') {
+        expect(corruption.test(node), `corruption in ${path}`).toBe(false)
+        // flag stray English only for leaf strings that look like full sentences
+        if (node.trim().length > 0 && /\s/.test(node) && englishSentence.test(node)) {
+          // allow legitimate English proper nouns / codes by checking word ratio
+          const words = node.split(/\s+/).filter(Boolean)
+          const englishWords = words.filter(w => englishSentence.test(w)).length
+          if (words.length >= 4 && englishWords / words.length > 0.5) {
+            throw new Error(`possible untranslated English leaf at ${path}: "${node}"`)
+          }
+        }
+        return
+      }
+      if (node && typeof node === 'object') {
+        for (const [k, v] of Object.entries(node)) {
+          visit(v, path ? `${path}.${k}` : k)
+        }
+      }
+    }
+    visit(de as unknown as Record<string, unknown>, 'de')
+  })
 })

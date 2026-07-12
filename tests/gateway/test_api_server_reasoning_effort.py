@@ -51,6 +51,7 @@ async def _wait_for_calls(mock: MagicMock, expected: int) -> None:
         (" HIGH ", {"enabled": True, "effort": "high"}),
         ("xhigh", {"enabled": True, "effort": "xhigh"}),
         ("max", {"enabled": True, "effort": "max"}),
+        ("ultra", {"enabled": True, "effort": "ultra"}),
     ],
 )
 def test_parse_request_reasoning_config(effort, expected):
@@ -319,7 +320,7 @@ async def test_concurrent_runs_keep_reasoning_overrides_isolated():
 
     with patch.object(adapter, "_create_agent", create_agent):
         async with TestClient(TestServer(_create_app(adapter))) as client:
-            low_response, xhigh_response = await asyncio.gather(
+            low_response, xhigh_response, ultra_response = await asyncio.gather(
                 client.post(
                     "/v1/runs",
                     json={"input": "low task", "reasoning_effort": "low"},
@@ -328,10 +329,15 @@ async def test_concurrent_runs_keep_reasoning_overrides_isolated():
                     "/v1/runs",
                     json={"input": "deep task", "reasoning_effort": "xhigh"},
                 ),
+                client.post(
+                    "/v1/runs",
+                    json={"input": "deepest task", "reasoning_effort": "ultra"},
+                ),
             )
             assert low_response.status == 202
             assert xhigh_response.status == 202
-            await _wait_for_calls(create_agent, 2)
+            assert ultra_response.status == 202
+            await _wait_for_calls(create_agent, 3)
 
     observed = {
         tuple(sorted(call.kwargs["reasoning_config_override"].items()))
@@ -340,4 +346,5 @@ async def test_concurrent_runs_keep_reasoning_overrides_isolated():
     assert observed == {
         (("effort", "low"), ("enabled", True)),
         (("effort", "xhigh"), ("enabled", True)),
+        (("effort", "ultra"), ("enabled", True)),
     }

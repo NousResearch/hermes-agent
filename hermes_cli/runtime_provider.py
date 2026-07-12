@@ -133,6 +133,40 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _append_v1_if_needed(base_url: str, api_mode: str) -> str:
+    """Append /v1 to a custom OpenAI-compatible base URL when needed.
+
+    The OpenAI SDK constructs request URLs by appending the operation path
+    (e.g. /chat/completions) directly to base_url. When a user configures
+    a provider like https://api.x.ai (without /v1), the SDK produces
+    https://api.x.ai/chat/completions instead of the correct
+    https://api.x.ai/v1/chat/completions, resulting in a 404.
+
+    Only append /v1 when:
+    - api_mode is chat_completions (the only mode that uses /v1)
+    - the URL does not already end with a path version segment
+      (/v1, /v2, /v3, /v4) or a provider-specific path (/anthropic,
+      /api/v1, /backend-api/codex) that must be left intact.
+
+    This is intentionally conservative: Codex (chatgpt.com/backend-api/codex),
+    Anthropic native (anthropic_messages mode), and already-versioned URLs
+    are all excluded so we never corrupt a working endpoint.
+    """
+    if api_mode != "chat_completions":
+        return base_url
+
+    from urllib.parse import urlparse
+    path = urlparse(base_url).path.rstrip("/").lower()
+
+    # Already versioned or provider-specific -- leave intact.
+    _NO_V1_SUFFIXES = ("/v1", "/v2", "/v3", "/v4", "/anthropic", "/api/v1",
+                       "/backend-api/codex", "/v1beta")
+    if any(path.endswith(s) for s in _NO_V1_SUFFIXES):
+        return base_url
+
+    return base_url.rstrip("/") + "/v1"
+
+
 def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:
     """Resolve api_mode for legacy/plain ``provider: custom`` endpoints.
 
@@ -1169,13 +1203,24 @@ def _resolve_openrouter_runtime(
     if effective_provider == "custom" and not api_key and not _is_openrouter_url:
         api_key = "no-key-required"
 
-    return {
-        "provider": effective_provider,
-        "api_mode": _resolve_plain_custom_api_mode(model_cfg, base_url)
+    resolved_api_mode = (
+        _resolve_plain_custom_api_mode(model_cfg, base_url)
         if effective_provider == "custom"
         else _parse_api_mode(model_cfg.get("api_mode"))
         or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        or "chat_completions"
+    )
+    # Append /v1 to bare custom chat_completions URLs.  The OpenAI SDK
+    # constructs /chat/completions from base_url directly; without /v1 the
+    # request lands at /chat/completions instead of /v1/chat/completions,
+    # returning a 404 (issue #4600).  Only applies to custom providers in
+    # chat_completions mode with unversioned paths; Codex, Anthropic, and
+    # already-versioned URLs are excluded.
+    if effective_provider == "custom":
+        base_url = _append_v1_if_needed(base_url, resolved_api_mode)
+    return {
+        "provider": effective_provider,
+        "api_mode": resolved_api_mode,
         "base_url": base_url,
         "api_key": api_key,
         "source": source,

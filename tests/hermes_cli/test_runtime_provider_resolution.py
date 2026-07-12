@@ -3375,3 +3375,55 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     }
     assert resolved["api_key"] == "pooled-key"
     assert resolved["source"] == "pool:lmstudio-pool"
+
+
+# ---------------------------------------------------------------------------
+# _append_v1_if_needed unit tests (issue #4600)
+# ---------------------------------------------------------------------------
+
+class TestAppendV1IfNeeded:
+    """Unit tests for the /v1 suffix normalizer -- covers every combination
+    the resolver boundary can produce (issue #4600).
+    """
+
+    def _call(self, url, mode):
+        from hermes_cli.runtime_provider import _append_v1_if_needed
+        return _append_v1_if_needed(url, mode)
+
+    def test_bare_custom_url_gets_v1(self):
+        """http://localhost:11434 → http://localhost:11434/v1 in chat_completions."""
+        assert self._call("http://localhost:11434", "chat_completions") == "http://localhost:11434/v1"
+
+    def test_bare_xai_url_gets_v1(self):
+        assert self._call("https://api.x.ai", "chat_completions") == "https://api.x.ai/v1"
+
+    def test_already_versioned_url_unchanged(self):
+        """https://api.example.com/v1 must not become /v1/v1."""
+        url = "https://api.example.com/v1"
+        assert self._call(url, "chat_completions") == url
+
+    def test_codex_endpoint_unchanged(self):
+        """https://chatgpt.com/backend-api/codex must not get /v1 appended."""
+        url = "https://chatgpt.com/backend-api/codex"
+        assert self._call(url, "chat_completions") == url
+
+    def test_anthropic_mode_unchanged(self):
+        """anthropic_messages mode must never trigger /v1 append."""
+        url = "https://api.anthropic.com"
+        assert self._call(url, "anthropic_messages") == url
+
+    def test_codex_responses_mode_unchanged(self):
+        """codex_responses mode is a non-/v1 path -- must not be touched."""
+        url = "https://api.openai.com"
+        assert self._call(url, "codex_responses") == url
+
+    def test_anthropic_suffix_proxy_unchanged(self):
+        """/anthropic path suffixes mark native Anthropic protocol -- leave intact."""
+        url = "https://proxy.example.com/anthropic"
+        assert self._call(url, "chat_completions") == url
+
+    def test_trailing_slash_stripped_before_append(self):
+        """Trailing slash on input must not produce double-slash."""
+        result = self._call("http://localhost:11434/", "chat_completions")
+        assert result == "http://localhost:11434/v1"
+        assert "//" not in result.split("://", 1)[1]

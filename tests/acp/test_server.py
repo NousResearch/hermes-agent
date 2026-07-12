@@ -997,6 +997,78 @@ class TestSessionConfiguration:
         assert state.agent.base_url == "https://anthropic.example/v1"
         assert runtime_calls[-1] == "anthropic"
 
+    @pytest.mark.asyncio
+    async def test_set_session_model_resets_stale_route_when_current_provider_is_blank(
+        self, tmp_path, monkeypatch
+    ):
+        """A legacy/unknown provider must not preserve another provider's base URL."""
+        runtime_calls = []
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            runtime_calls.append(requested)
+            if requested == "openai-codex":
+                return {
+                    "provider": "openai-codex",
+                    "api_mode": "codex_responses",
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                    "api_key": "codex-token",
+                    "command": None,
+                    "args": [],
+                }
+            return {
+                "provider": requested or "",
+                "api_mode": "codex_responses",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                "api_key": "gemini-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "gemini", "default": "gemini-3.5-flash"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: ("openai-codex", "gpt-5.6-sol"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            # Reproduce the affected persisted ACP session: its provider field
+            # predates provider attribution, while its Gemini base URL remains.
+            state.agent.provider = ""
+            state.agent.base_url = "https://generativelanguage.googleapis.com/v1beta"
+            state.agent.api_mode = "codex_responses"
+
+            result = await acp_agent.set_session_model(
+                model_id="openai-codex:gpt-5.6-sol",
+                session_id=state.session_id,
+            )
+
+        assert isinstance(result, SetSessionModelResponse)
+        assert state.agent.provider == "openai-codex"
+        assert state.agent.base_url == "https://chatgpt.com/backend-api/codex"
+        assert runtime_calls[-1] == "openai-codex"
+
 
 # ---------------------------------------------------------------------------
 # prompt

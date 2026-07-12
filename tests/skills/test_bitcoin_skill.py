@@ -79,7 +79,7 @@ class TestCmdStatsDifficultyAdjustmentOrdering:
     @mock.patch("bitcoin_client.fetch_json")
     @mock.patch("bitcoin_client.get_btc_price")
     def test_selects_max_timestamp_not_last_element(
-        self, mock_price, mock_fetch_json, mock_fetch_text
+        self, mock_price, mock_fetch_json, mock_fetch_text, capsys
     ):
         mock_fetch_text.side_effect = ["850000", "0000000000000000000000000000000000000000000000000000000000000001"]
         mock_price.return_value = {"usd": 50000.0}
@@ -103,13 +103,18 @@ class TestCmdStatsDifficultyAdjustmentOrdering:
             no_fiat = False
 
         btc.cmd_stats(Args())
-        output = sys.stdout.getvalue() if hasattr(sys.stdout, "getvalue") else None
+        captured = capsys.readouterr()
+        result = json.loads(captured.out)
+
+        # If the code used diff_adj[-1], it would pick -1.2% instead of 2.5%.
+        assert result["next_retarget"]["estimated_change_percent"] == 2.5
+        assert result["next_retarget"]["last_adjustment_height"] == 850000
 
     @mock.patch("bitcoin_client.fetch_text")
     @mock.patch("bitcoin_client.fetch_json")
     @mock.patch("bitcoin_client.get_btc_price")
     def test_selects_max_timestamp_when_oldest_first(
-        self, mock_price, mock_fetch_json, mock_fetch_text
+        self, mock_price, mock_fetch_json, mock_fetch_text, capsys
     ):
         mock_fetch_text.side_effect = ["850000", "0000000000000000000000000000000000000000000000000000000000000001"]
         mock_price.return_value = {"usd": 50000.0}
@@ -132,6 +137,11 @@ class TestCmdStatsDifficultyAdjustmentOrdering:
             no_fiat = False
 
         btc.cmd_stats(Args())
+        captured = capsys.readouterr()
+        result = json.loads(captured.out)
+
+        assert result["next_retarget"]["estimated_change_percent"] == 2.5
+        assert result["next_retarget"]["last_adjustment_height"] == 850000
 
 
 class TestCmdStatsOutput:

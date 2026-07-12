@@ -2,7 +2,7 @@
 name: bitcoin
 description: "Read-only Bitcoin research client for on-chain data."
 version: 1.0.0
-author: Kain
+author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:

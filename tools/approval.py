@@ -1527,10 +1527,34 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def list_pending_gateway_approvals() -> dict[str, dict]:
+    """Return the oldest blocking gateway approval for each active session."""
+    with _lock:
+        snapshot: dict[str, dict] = {}
+        for session_key, queue in _gateway_queues.items():
+            if not queue:
+                continue
+            approval = dict(queue[0].data or {})
+            for key, value in (_pending.get(session_key) or {}).items():
+                approval.setdefault(key, value)
+            approval.setdefault("session_key", session_key)
+            snapshot[session_key] = approval
+        return snapshot
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
+    record = dict(approval)
+    record.setdefault("session_key", session_key)
+    record.setdefault("created_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    turn_id = _approval_turn_id.get()
+    tool_call_id = _approval_tool_call_id.get()
+    if turn_id:
+        record.setdefault("turn_id", turn_id)
+    if tool_call_id:
+        record.setdefault("tool_call_id", tool_call_id)
     with _lock:
-        _pending[session_key] = approval
+        _pending[session_key] = record
 
 
 def approve_session(session_key: str, pattern_key: str):

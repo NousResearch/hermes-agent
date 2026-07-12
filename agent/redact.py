@@ -96,7 +96,9 @@ _PREFIX_PATTERNS = [
     r"dop_v1_[A-Za-z0-9]{10,}",         # DigitalOcean PAT
     r"doo_v1_[A-Za-z0-9]{10,}",         # DigitalOcean OAuth
     r"am_[A-Za-z0-9_-]{10,}",           # AgentMail API key
-    r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
+    r"sk_[A-Za-z0-9]{20,}",             # ElevenLabs TTS key (opaque alnum only;
+                                        # underscores after sk_ are filenames like
+                                        # sk_hynix_chart.png — issue #61876)
     r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
     r"gsk_[A-Za-z0-9]{10,}",            # Groq Cloud API key

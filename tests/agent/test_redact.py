@@ -410,6 +410,32 @@ class TestElevenLabsTavilyExaKeys:
         result = redact_sensitive_text(text)
         assert "abc123def456ghi" not in result
 
+    def test_sk_prefixed_filenames_not_redacted(self):
+        """SK-group / snake_case filenames must survive code_file redaction.
+
+        The old ``sk_[A-Za-z0-9_]{10,}`` ElevenLabs pattern treated
+        ``sk_hynix_chart.png`` as a key, so tool stdout showed a masked
+        nonexistent path and MEDIA delivery dropped the attachment (#61876).
+        """
+        paths = [
+            "Chart saved to /home/roots/sk_hynix_chart.png",
+            "MEDIA:/home/roots/workspace/mcp/sk_telecom_report.png",
+            "wrote /tmp/sk_innovation_q3.svg",
+            "Chart saved to /home/roots/sk_hynix_.png",
+        ]
+        for text in paths:
+            result = redact_sensitive_text(text, code_file=True, force=True)
+            assert result == text, f"filename mangled:\n  in={text!r}\n out={result!r}"
+
+    def test_elevenlabs_key_still_redacted_beside_filename(self):
+        text = (
+            "key=sk_abc123def456ghi789jklmnopqrstu "
+            "path=/home/roots/sk_hynix_chart.png"
+        )
+        result = redact_sensitive_text(text, code_file=True, force=True)
+        assert "abc123def456ghi" not in result
+        assert "/home/roots/sk_hynix_chart.png" in result
+
     def test_tavily_key_redacted(self):
         text = "TAVILY_API_KEY=tvly-ABCdef123456789GHIJKL0000"
         result = redact_sensitive_text(text)

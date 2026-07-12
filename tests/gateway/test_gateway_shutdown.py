@@ -398,6 +398,31 @@ def _stopped_state_persisted(runner) -> bool:
 
 
 @pytest.mark.asyncio
+async def test_external_signal_persists_home_marker_before_releasing_shutdown(tmp_path, monkeypatch):
+    """Supervisor restarts must retain the startup notice before process exit."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    runner._signal_initiated_shutdown = True
+    writes = []
+
+    def record_marker(path, payload, **kwargs):
+        writes.append((path.name, payload, runner._shutdown_event.is_set()))
+
+    monkeypatch.setattr(gateway_run, "atomic_json_write", record_marker)
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert len(writes) == 1
+    marker_name, payload, shutdown_released = writes[0]
+    assert marker_name == ".restart_pending.json"
+    assert isinstance(payload["requested_at"], float)
+    assert shutdown_released is False
+    assert runner._shutdown_event.is_set() is True
+
+
+@pytest.mark.asyncio
 async def test_signal_initiated_shutdown_persists_running_not_stopped(tmp_path, monkeypatch):
     """Unexpected SIGTERM (container restart / OOM / kill) must persist
     gateway_state=running — NOT stopped, and NOT leave the mid-shutdown

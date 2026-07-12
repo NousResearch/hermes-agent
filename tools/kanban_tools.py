@@ -650,6 +650,14 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
+            except kb.CompletionEvidenceError as evidence_err:
+                return tool_error(
+                    f"kanban_complete blocked: {evidence_err.reason}. "
+                    f"Your task is still in-flight (no state change). Retry "
+                    f"with metadata/summary containing a GitHub PR URL plus "
+                    f"passing CI/checks, or metadata.human_waiver with "
+                    f"approved_by and reason."
+                )
             if not ok:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"

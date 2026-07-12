@@ -3975,6 +3975,220 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class CompletionEvidenceError(ValueError):
+    """Raised when a coding task tries to close without verifiable evidence."""
+
+    def __init__(self, task_id: str, reason: str):
+        self.task_id = task_id
+        self.reason = reason
+        super().__init__(f"completion blocked for {task_id}: {reason}")
+
+
+_GITHUB_PR_URL_RE = re.compile(
+    r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+\b"
+)
+_CI_PASSING_RE = re.compile(
+    r"\b(?:ci|checks?|github actions?)\b[^\n.;]{0,80}"
+    r"\b(?:pass(?:ed|ing)?|success(?:ful)?|green|clean)\b"
+    r"|\b(?:pass(?:ed|ing)?|success(?:ful)?|green|clean)\b"
+    r"[^\n.;]{0,80}\b(?:ci|checks?|github actions?)\b",
+    re.IGNORECASE,
+)
+_PASSING_STATUS_VALUES = {
+    "clean",
+    "green",
+    "pass",
+    "passed",
+    "passing",
+    "success",
+    "successful",
+}
+_CODING_ASSIGNEES = {
+    "coder",
+    "developer",
+    "engineer",
+    "programmer",
+    "software-developer",
+}
+_CODING_METADATA_KEYS = {
+    "branch",
+    "changed_files",
+    "checks_status",
+    "ci_status",
+    "diff_path",
+    "pr_number",
+    "pr_url",
+    "tests_passed",
+    "tests_run",
+    "worktree_path",
+}
+_CODING_TASK_RE = re.compile(
+    r"\b(?:api|backend|branch|bug|build|ci|code|commit|diff|fix|flutter|"
+    r"frontend|github|implement|migration|patch|pr|pull request|refactor|"
+    r"regression|repo|schema|test|tests|worktree)\b",
+    re.IGNORECASE,
+)
+
+
+def _metadata_strings(value: Any) -> list[str]:
+    """Flatten JSON-like metadata into strings for lightweight evidence scans."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (bool, int, float)):
+        return [str(value)]
+    if isinstance(value, dict):
+        out: list[str] = []
+        for key, item in value.items():
+            out.append(str(key))
+            out.extend(_metadata_strings(item))
+        return out
+    if isinstance(value, (list, tuple, set)):
+        out: list[str] = []
+        for item in value:
+            out.extend(_metadata_strings(item))
+        return out
+    return [str(value)]
+
+
+def _metadata_status_is_passing(metadata: Optional[dict]) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    for key in ("ci_status", "checks_status", "github_checks", "checks", "ci"):
+        value = metadata.get(key)
+        if value is True:
+            return True
+        if isinstance(value, str):
+            normalized = value.strip().lower().replace("_", "-")
+            if normalized in _PASSING_STATUS_VALUES:
+                return True
+    for key in ("ci_passing", "checks_passing", "github_checks_passing"):
+        if metadata.get(key) is True:
+            return True
+    return False
+
+
+def _completion_has_pr_and_passing_checks(
+    text_blob: str,
+    metadata: Optional[dict],
+) -> bool:
+    has_pr_url = bool(_GITHUB_PR_URL_RE.search(text_blob))
+    if isinstance(metadata, dict):
+        pr_url = metadata.get("pr_url") or metadata.get("pull_request_url")
+        if isinstance(pr_url, str) and _GITHUB_PR_URL_RE.search(pr_url):
+            has_pr_url = True
+    if not has_pr_url:
+        return False
+    return _metadata_status_is_passing(metadata) or bool(_CI_PASSING_RE.search(text_blob))
+
+
+def _completion_has_auditable_human_waiver(metadata: Optional[dict]) -> bool:
+    """Return True only for an explicit waiver record in completion metadata."""
+    if not isinstance(metadata, dict):
+        return False
+    waiver = metadata.get("human_waiver")
+    if isinstance(waiver, dict):
+        approved_by = str(
+            waiver.get("approved_by") or waiver.get("approver") or ""
+        ).strip()
+        reason = str(waiver.get("reason") or waiver.get("rationale") or "").strip()
+        return bool(approved_by and reason)
+    if waiver is True:
+        approved_by = str(
+            metadata.get("human_waiver_approved_by")
+            or metadata.get("waiver_approved_by")
+            or ""
+        ).strip()
+        reason = str(
+            metadata.get("human_waiver_reason") or metadata.get("waiver_reason") or ""
+        ).strip()
+        return bool(approved_by and reason)
+    return False
+
+
+def _task_requires_completion_evidence(
+    row: sqlite3.Row,
+    metadata: Optional[dict],
+) -> bool:
+    if row["workspace_kind"] == "worktree":
+        return True
+    keys = set(row.keys())
+    if "project_id" in keys and row["project_id"]:
+        return True
+    metadata_has_coding_shape = (
+        isinstance(metadata, dict)
+        and any(key in metadata for key in _CODING_METADATA_KEYS)
+    )
+    assignee = (row["assignee"] or "").strip().lower()
+    text = f"{row['title'] or ''}\n{row['body'] or ''}"
+    return assignee in _CODING_ASSIGNEES and (
+        metadata_has_coding_shape or bool(_CODING_TASK_RE.search(text))
+    )
+
+
+def _completion_evidence_error(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    summary: Optional[str],
+    result: Optional[str],
+    metadata: Optional[dict],
+    reason: str,
+) -> CompletionEvidenceError:
+    with write_txn(conn):
+        _append_event(
+            conn,
+            task_id,
+            "completion_blocked_evidence",
+            {
+                "reason": reason,
+                "summary_preview": (
+                    (summary or result or "").strip().splitlines()[0][:200]
+                    if (summary or result)
+                    else None
+                ),
+                "metadata_keys": sorted(metadata.keys()) if isinstance(metadata, dict) else [],
+            },
+        )
+    return CompletionEvidenceError(task_id, reason)
+
+
+def _enforce_completion_evidence(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    summary: Optional[str],
+    result: Optional[str],
+    metadata: Optional[dict],
+) -> None:
+    row = conn.execute(
+        "SELECT id, title, body, assignee, workspace_kind, project_id "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None or not _task_requires_completion_evidence(row, metadata):
+        return
+    if _completion_has_auditable_human_waiver(metadata):
+        return
+    text_blob = "\n".join(
+        str(x) for x in [summary, result, *_metadata_strings(metadata)] if x
+    )
+    if _completion_has_pr_and_passing_checks(text_blob, metadata):
+        return
+    raise _completion_evidence_error(
+        conn,
+        task_id,
+        summary=summary,
+        result=result,
+        metadata=metadata,
+        reason=(
+            "coding tasks require a GitHub PR URL plus passing CI/checks, "
+            "or an explicit auditable human waiver in metadata"
+        ),
+    )
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4041,6 +4255,14 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    _enforce_completion_evidence(
+        conn,
+        task_id,
+        summary=summary,
+        result=result,
+        metadata=metadata,
+    )
 
     with write_txn(conn):
         if expected_run_id is None:

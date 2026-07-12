@@ -87,6 +87,14 @@ try:
     del install_shift_enter_alias, install_ctrl_enter_alias, install_ignored_terminal_sequences
 except Exception:
     pass
+
+# Kitty keyboard protocol: intentionally NOT activated globally.
+# Flag 1 (disambiguate) re-encodes ALL keys as CSI-u, which breaks Ctrl+C
+# (SIGINT) in prompt_toolkit — Ctrl+C arrives as ESC[3;5u instead of 0x03.
+# The Shift+Enter / Ctrl+Enter ANSI_SEQUENCES mappings in pt_input_extras
+# still work for terminals that natively use the Kitty protocol (Ghostty,
+# some iTerm2 configs). For kitty specifically, use Option+Enter (with
+# macos_option_as_alt yes in kitty.conf) which prompt_toolkit handles natively.
 import threading
 import queue
 

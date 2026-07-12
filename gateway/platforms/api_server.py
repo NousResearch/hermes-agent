@@ -1786,6 +1786,26 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         return profile, agent_id
 
+    def _profile_for_agent_id(self, agent_id: Optional[str]) -> Optional[Any]:
+        """Look up an AgentProfile by *agent_id* from the gateway registry.
+
+        Why: Stateful session turns need to resolve the persisted agent_id to
+        its AgentProfile so _run_agent can apply the correct home dir and
+        credential scope — without re-running header-based route resolution
+        (which would silently fall back to 'main' on requests with no headers).
+        What: Returns the AgentProfile registered under *agent_id*, or None if
+        the id is absent/None, not in the registry, or the registry is
+        unavailable (legacy single-agent install).  None is the no-op sentinel
+        that _run_agent/_use_profile_and_secret_scope treats as "use defaults".
+        Test: Pass a known agent_id with a wired registry and assert the
+        correct AgentProfile is returned; pass None or an unknown id and
+        assert None is returned.
+        """
+        if not agent_id:
+            return None
+        registry = getattr(self._gateway_ref, "_agent_registry", None) if self._gateway_ref else None
+        return registry.get(agent_id) if registry else None
+
     # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
@@ -2689,7 +2709,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = await self._get_existing_session_or_404(session_id)
+        session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
         body, err = await self._read_json_body(request)
@@ -2701,6 +2721,11 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        # Use the agent this session was originally routed to (first-writer-wins
+        # model set at creation time).  Re-resolving from request headers would
+        # silently fall back to 'main' when no routing headers are present.
+        session_agent_id = (session or {}).get("agent_id") if isinstance(session, dict) else None
+        agent_profile = self._profile_for_agent_id(session_agent_id)
         history = await self._conversation_history_for_session(session_id)
         result, usage = await self._run_agent(
             user_message=user_message,
@@ -2708,6 +2733,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            agent_profile=agent_profile,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -2731,7 +2757,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = await self._get_existing_session_or_404(session_id)
+        session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
         body, err = await self._read_json_body(request)
@@ -2743,6 +2769,10 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        # Resolve the session's persisted agent so streaming turns honour the
+        # same routing decision made at session creation (first-writer-wins).
+        session_agent_id = (session or {}).get("agent_id") if isinstance(session, dict) else None
+        agent_profile = self._profile_for_agent_id(session_agent_id)
 
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
@@ -2797,6 +2827,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    agent_profile=agent_profile,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id

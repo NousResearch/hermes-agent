@@ -107,7 +107,8 @@ def test_live_child_session_gets_native_stream(server, emits):
     assert child[2][1] == {"text": "hmm"}
     # The rotated-out tool closes with the same id it opened with.
     assert child[3][1]["tool_id"] == first_tool["tool_id"]
-    assert child[6][1] == {"text": "done deal"}
+    assert child[6][1]["text"] == "done deal"
+    assert child[6][1]["turn_id"] == child[0][1]["turn_id"]
 
     # Parent relay is untouched alongside the mirror.
     assert [e for e, s, _ in emits if s == "parent-sid"] == [
@@ -212,9 +213,17 @@ def test_start_mirrors_as_immediate_header_line(server, emits):
     _relay(server, "subagent.progress", preview="step 1/3", child_session_id="child-1")
 
     child = [(e, p) for e, s, p in emits if s == "live-1"]
+    turn_id = child[0][1]["turn_id"]
     assert child == [
-        ("message.start", None),
-        ("message.delta", {"text": "starting child branch\n"}),
+        ("message.start", {"turn_id": turn_id}),
+        (
+            "message.delta",
+            {
+                "text": "starting child branch\n",
+                "turn_id": turn_id,
+                "offset": 0,
+            },
+        ),
     ]
 
 
@@ -228,10 +237,17 @@ def test_text_mirrors_as_message_delta(server, emits):
     _relay(server, "subagent.text", preview="the answer.", child_session_id="child-1")
 
     child = [(e, p) for e, s, p in emits if s == "live-1"]
+    turn_id = child[0][1]["turn_id"]
     assert child == [
-        ("message.start", None),
-        ("message.delta", {"text": "Here is "}),
-        ("message.delta", {"text": "the answer."}),
+        ("message.start", {"turn_id": turn_id}),
+        (
+            "message.delta",
+            {"text": "Here is ", "turn_id": turn_id, "offset": 0},
+        ),
+        (
+            "message.delta",
+            {"text": "the answer.", "turn_id": turn_id, "offset": 8},
+        ),
     ]
 
 
@@ -267,5 +283,9 @@ def test_text_routes_to_watch_transport_without_contextvar(server, monkeypatch):
         for f in frames
         if f.get("method") == "event" and f["params"]["session_id"] == "live-1"
     ]
-    assert ("message.start", "live-1", None) in routed
-    assert ("message.delta", "live-1", {"text": "streamed reply"}) in routed
+    start = next(payload for event, sid, payload in routed if event == "message.start")
+    assert (
+        "message.delta",
+        "live-1",
+        {"text": "streamed reply", "turn_id": start["turn_id"], "offset": 0},
+    ) in routed

@@ -444,3 +444,210 @@ def test_snapshot_recovers_and_then_clears_a_pending_interaction(monkeypatch):
 
     settled = resume_session(transport, stored_id)
     assert settled["synchronization"]["snapshot"]["pending_interactions"] == []
+
+
+def test_legacy_session_keeps_original_response_and_event_shape():
+    class LegacyTransport(RecordingTransport):
+        def __init__(self):
+            super().__init__()
+            self.authorization = {
+                "subject": "dashboard-user",
+                "provider": "password",
+                "audience": "dashboard",
+                "scopes": ("*",),
+            }
+
+    transport = LegacyTransport()
+    created = create_session(transport)
+    sid = created["session_id"]
+
+    assert "synchronization" not in created
+    assert "mobile_sync" not in server._sessions[sid]
+
+    server._emit("status.update", sid, {"kind": "idle", "text": "Ready"})
+
+    event = transport.frames[-1]
+    assert event == {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+            "type": "status.update",
+            "session_id": sid,
+            "payload": {"kind": "idle", "text": "Ready"},
+        },
+    }
+    assert "mobile_sync" not in server._sessions[sid]
+
+
+def test_completion_history_and_event_share_one_snapshot_barrier(monkeypatch):
+    transport = RecordingTransport()
+    sid = "barrier-live"
+    stream = SessionEventStream(mobile_contract.SERVER_INSTANCE_ID)
+    session = {
+        "agent": None,
+        "conversation_id": "barrier-conversation",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "inflight_turn": None,
+        "mobile_sync": stream,
+        "mobile_sync_enabled": True,
+        "running": True,
+        "session_key": "barrier-stored",
+        "transport": transport,
+    }
+    server._sessions[sid] = session
+    with session["history_lock"]:
+        server._start_inflight_turn(session, "question")
+    cursor = stream.cursor()
+
+    entered_completion = threading.Event()
+    release_completion = threading.Event()
+    original_clear = server._clear_inflight_turn
+
+    def blocking_clear(target):
+        entered_completion.set()
+        assert release_completion.wait(timeout=2)
+        original_clear(target)
+
+    monkeypatch.setattr(server, "_clear_inflight_turn", blocking_clear)
+    completion = threading.Thread(
+        target=server._commit_prompt_completion,
+        kwargs={
+            "sid": sid,
+            "session": session,
+            "expected_history_version": 0,
+            "result_messages": [
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "answer"},
+            ],
+            "payload": {"text": "answer", "status": "complete", "usage": {}},
+        },
+    )
+    completion.start()
+    assert entered_completion.wait(timeout=1)
+
+    captured = {}
+    snapshot_started = threading.Event()
+    snapshot_done = threading.Event()
+
+    def capture_snapshot():
+        snapshot_started.set()
+        captured["value"] = server._session_synchronization(sid, session, cursor)
+        snapshot_done.set()
+
+    snapshot_thread = threading.Thread(target=capture_snapshot)
+    snapshot_thread.start()
+    assert snapshot_started.wait(timeout=1)
+    assert not snapshot_done.wait(timeout=0.05)
+
+    release_completion.set()
+    completion.join(timeout=1)
+    snapshot_thread.join(timeout=1)
+    assert not completion.is_alive()
+    assert not snapshot_thread.is_alive()
+
+    synchronization = captured["value"]
+    assert synchronization["snapshot"]["messages"] == [
+        {"role": "user", "text": "question"},
+        {"role": "assistant", "text": "answer"},
+    ]
+    assert synchronization["snapshot"]["inflight_turn"] is None
+    assert synchronization["snapshot"]["watermark"] == 1
+    assert [
+        event["params"]["type"]
+        for event in synchronization["recovery"]["events"]
+    ] == ["message.complete"]
+
+
+def test_undo_advances_snapshot_revision_without_a_wire_event(monkeypatch):
+    transport = RecordingTransport()
+    created = create_session(transport)
+    sid = created["session_id"]
+    stored_id = created["stored_session_id"]
+    session = server._sessions[sid]
+    session["agent"] = object()
+    session["history"] = [
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": "answer"},
+    ]
+    initial_revision = created["synchronization"]["snapshot"]["revision"]
+    initial_watermark = created["synchronization"]["snapshot"]["watermark"]
+    monkeypatch.setattr(server, "_get_db", lambda: SessionDBStub(stored_id))
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+    monkeypatch.setattr(server, "_wait_agent", lambda *_args: None)
+
+    result = server._methods["session.undo"]("undo", {"session_id": sid})
+    resumed = resume_session(transport, stored_id)
+
+    assert result["result"] == {"removed": 2}
+    snapshot = resumed["synchronization"]["snapshot"]
+    assert snapshot["messages"] == []
+    assert snapshot["revision"] == initial_revision + 1
+    assert snapshot["watermark"] == initial_watermark
+
+
+def test_child_mirror_sync_recovers_inflight_text_and_active_tool(monkeypatch):
+    transport = RecordingTransport()
+    created = create_session(transport)
+    sid = created["session_id"]
+    stored_id = created["stored_session_id"]
+    monkeypatch.setattr(server, "_get_db", lambda: SessionDBStub(stored_id))
+    monkeypatch.setattr(server, "_tool_progress_enabled", lambda _sid: True)
+
+    server._mirror_subagent_to_child(
+        "subagent.start",
+        {"child_session_id": stored_id, "text": "goal"},
+    )
+    server._mirror_subagent_to_child(
+        "subagent.text",
+        {"child_session_id": stored_id, "text": "answer"},
+    )
+    server._mirror_subagent_to_child(
+        "subagent.tool",
+        {
+            "child_session_id": stored_id,
+            "tool_name": "terminal",
+            "tool_preview": "workspace command",
+        },
+    )
+
+    running = resume_session(transport, stored_id)
+    snapshot = running["synchronization"]["snapshot"]
+    assert snapshot["status"] == "working"
+    assert snapshot["inflight_turn"]["assistant"] == "goal\nanswer"
+    assert snapshot["inflight_turn"]["streaming"] is True
+    assert snapshot["active_tools"] == [
+        {
+            "tool_id": snapshot["active_tools"][0]["tool_id"],
+            "name": "terminal",
+            "started_at": snapshot["active_tools"][0]["started_at"],
+        }
+    ]
+    assert isinstance(snapshot["active_tools"][0]["started_at"], float)
+    assert "preview" not in snapshot["active_tools"][0]
+
+    deltas = [
+        frame["params"]["payload"]
+        for frame in transport.frames
+        if frame.get("params", {}).get("type") == "message.delta"
+    ]
+    assert [delta["offset"] for delta in deltas] == [0, 5]
+    assert len({delta["turn_id"] for delta in deltas}) == 1
+
+    server._mirror_subagent_to_child(
+        "subagent.complete",
+        {
+            "child_session_id": stored_id,
+            "summary": "done",
+        },
+    )
+    completed = resume_session(transport, stored_id)
+    settled = completed["synchronization"]["snapshot"]
+    assert settled["status"] == "idle"
+    assert settled["inflight_turn"] is None
+    assert settled["active_tools"] == []
+    assert settled["messages"][-1] == {
+        "role": "assistant",
+        "text": "goal\nanswer",
+    }

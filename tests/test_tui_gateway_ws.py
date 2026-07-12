@@ -7,6 +7,7 @@ from hermes_cli import mcp_startup
 from tui_gateway import mobile_contract
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
+from tui_gateway.mobile_sync import SessionEventStream
 
 
 def test_gateway_ready_advertises_versioned_mobile_contract_and_authorization(
@@ -281,6 +282,305 @@ def test_mobile_socket_create_delta_and_live_resume_share_one_sync_stream(
     )
     assert resumed["synchronization"]["recovery"]["outcome"] == "complete"
     assert len(resumed["synchronization"]["recovery"]["events"]) == 2
+
+
+def _isolate_mobile_ws_gateway(monkeypatch, db):
+    server._sessions.clear()
+    monkeypatch.setattr(
+        mcp_startup, "start_background_mcp_discovery", lambda **_kw: None
+    )
+    monkeypatch.setattr(
+        server, "_claim_active_session_slot", lambda *_a, **_k: (None, None)
+    )
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_profile_home", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        server, "_completion_cwd", lambda *_a, **_k: server.os.getcwd()
+    )
+    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda *_a, **_k: "")
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(
+        server, "_close_sessions_for_transport", lambda *_a, **_k: (0, 0)
+    )
+
+
+class _MobileSessionDB:
+    def __init__(self, session_id, messages=None):
+        self.session_id = session_id
+        self.messages = list(messages or [])
+
+    def get_session(self, session_id):
+        if session_id == self.session_id:
+            return {"id": session_id, "cwd": server.os.getcwd()}
+        return None
+
+    def get_session_by_title(self, _title):
+        return None
+
+    def resolve_resume_session_id(self, session_id):
+        return session_id
+
+    def reopen_session(self, _session_id):
+        return None
+
+    def get_messages_as_conversation(self, _session_id, include_ancestors=False):
+        return list(self.messages)
+
+
+_MOBILE_AUTHORIZATION = {
+    "subject": "mobile-user",
+    "provider": "stub",
+    "audience": "hermes.mobile",
+    "scopes": (
+        "conversation.read",
+        "conversation.write",
+        "conversation.control",
+    ),
+}
+
+
+async def _wait_for_ws_response(sent, request_id):
+    deadline = asyncio.get_running_loop().time() + 2
+    while asyncio.get_running_loop().time() < deadline:
+        match = next((frame for frame in sent if frame.get("id") == request_id), None)
+        if match is not None:
+            return match
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"missing WebSocket response {request_id}")
+
+
+def test_mobile_socket_cold_resume_reports_stream_reset(monkeypatch):
+    sent = []
+    received = False
+    stored_id = "stored-cold"
+    _isolate_mobile_ws_gateway(
+        monkeypatch,
+        _MobileSessionDB(
+            stored_id,
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+            ],
+        ),
+    )
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+        async def receive_text(self):
+            nonlocal received
+            if not received:
+                received = True
+                return json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "cold-resume",
+                        "method": "session.resume",
+                        "params": {
+                            "session_id": stored_id,
+                            "cols": 100,
+                            "cursor": {
+                                "server_instance_id": (
+                                    mobile_contract.SERVER_INSTANCE_ID
+                                ),
+                                "stream_id": "retired-stream",
+                                "sequence": 12,
+                            },
+                        },
+                    }
+                )
+            await _wait_for_ws_response(sent, "cold-resume")
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    try:
+        asyncio.run(
+            ws_mod.handle_ws(FakeWS(), authorization=_MOBILE_AUTHORIZATION)
+        )
+    finally:
+        server._sessions.clear()
+
+    result = next(frame for frame in sent if frame.get("id") == "cold-resume")[
+        "result"
+    ]
+    synchronization = result["synchronization"]
+    assert synchronization["snapshot"]["messages"] == [
+        {"role": "user", "text": "hello"},
+        {"role": "assistant", "text": "hi"},
+    ]
+    assert synchronization["recovery"]["outcome"] == "reset"
+    assert synchronization["recovery"]["reason"] == "stream_changed"
+    assert synchronization["recovery"]["snapshot_required"] is True
+    assert synchronization["recovery"]["events"] == []
+
+
+def test_mobile_socket_resume_reports_gap_after_replay_eviction(monkeypatch):
+    sent = []
+    receive_index = 0
+    db = _MobileSessionDB("unused-until-create")
+    _isolate_mobile_ws_gateway(monkeypatch, db)
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+        async def receive_text(self):
+            nonlocal receive_index
+            receive_index += 1
+            if receive_index == 1:
+                return json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "gap-create",
+                        "method": "session.create",
+                        "params": {"cols": 100},
+                    }
+                )
+            if receive_index == 2:
+                created = (await _wait_for_ws_response(sent, "gap-create"))["result"]
+                sid = created["session_id"]
+                db.session_id = created["stored_session_id"]
+                stream = SessionEventStream(
+                    mobile_contract.SERVER_INSTANCE_ID,
+                    max_events=2,
+                    max_bytes=1024 * 1024,
+                )
+                server._sessions[sid]["mobile_sync"] = stream
+                cursor = stream.cursor()
+
+                def fill_replay():
+                    for index in range(3):
+                        server._emit(
+                            "status.update",
+                            sid,
+                            {"kind": "step", "text": str(index)},
+                        )
+
+                await asyncio.to_thread(fill_replay)
+                return json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "gap-resume",
+                        "method": "session.resume",
+                        "params": {
+                            "session_id": created["stored_session_id"],
+                            "cols": 100,
+                            "cursor": cursor,
+                        },
+                    }
+                )
+            await _wait_for_ws_response(sent, "gap-resume")
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    try:
+        asyncio.run(
+            ws_mod.handle_ws(FakeWS(), authorization=_MOBILE_AUTHORIZATION)
+        )
+    finally:
+        server._sessions.clear()
+
+    result = next(frame for frame in sent if frame.get("id") == "gap-resume")[
+        "result"
+    ]
+    recovery = result["synchronization"]["recovery"]
+    assert recovery["outcome"] == "gap"
+    assert recovery["reason"] == "replay_evicted"
+    assert recovery["available_after"] == 1
+    assert recovery["snapshot_required"] is True
+    assert recovery["events"] == []
+
+
+def test_mobile_socket_concurrent_events_have_monotonic_wire_sequences(
+    monkeypatch,
+):
+    sent = []
+    receive_index = 0
+    db = _MobileSessionDB("unused-until-create")
+    _isolate_mobile_ws_gateway(monkeypatch, db)
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+        async def receive_text(self):
+            nonlocal receive_index
+            receive_index += 1
+            if receive_index == 1:
+                return json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "concurrent-create",
+                        "method": "session.create",
+                        "params": {"cols": 100},
+                    }
+                )
+
+            created = (await _wait_for_ws_response(sent, "concurrent-create"))[
+                "result"
+            ]
+            sid = created["session_id"]
+            start = threading.Barrier(9)
+
+            def publish(index):
+                start.wait()
+                server._emit(
+                    "status.update",
+                    sid,
+                    {"kind": "worker", "text": str(index)},
+                )
+
+            def publish_concurrently():
+                threads = [
+                    threading.Thread(target=publish, args=(index,))
+                    for index in range(8)
+                ]
+                for thread in threads:
+                    thread.start()
+                start.wait()
+                for thread in threads:
+                    thread.join(timeout=1)
+                    assert not thread.is_alive()
+
+            await asyncio.to_thread(publish_concurrently)
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    try:
+        asyncio.run(
+            ws_mod.handle_ws(FakeWS(), authorization=_MOBILE_AUTHORIZATION)
+        )
+    finally:
+        server._sessions.clear()
+
+    events = [
+        frame
+        for frame in sent
+        if frame.get("params", {}).get("type") == "status.update"
+    ]
+    assert [event["params"]["sequence"] for event in events] == list(range(1, 9))
+    assert all(event["params"]["schema_major"] == 1 for event in events)
+    assert len({event["params"]["stream_id"] for event in events}) == 1
 
 
 def test_ws_startup_starts_background_mcp_discovery(monkeypatch):

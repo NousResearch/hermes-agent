@@ -26,6 +26,11 @@ limits. `gap` means an event needed after the supplied cursor was evicted.
 from another reconstructed live stream. Clients must never treat either
 outcome as complete replay.
 
+Synchronization state and replay retention begin when an authorized mobile
+transport attaches to a live session. Legacy stdio and Desktop transports keep
+their original response and event shapes and do not pay the per-delta replay
+copying cost.
+
 ## Snapshot and event barrier
 
 Hermes serializes snapshot-visible live state, event sequence allocation,

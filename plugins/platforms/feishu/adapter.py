@@ -136,6 +136,7 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    _TEXT_INJECT_EXTENSIONS,
     cache_document_from_bytes,
     cache_image_from_url,
     cache_audio_from_bytes,
@@ -3825,13 +3826,16 @@ class FeishuAdapter(BasePlatformAdapter):
         return MessageType.TEXT
 
     async def _maybe_extract_text_document(self, cached_path: str, media_type: str) -> str:
-        if not cached_path or not media_type.startswith("text/"):
+        if not cached_path:
             return ""
         try:
             if os.path.getsize(cached_path) > _MAX_TEXT_INJECT_BYTES:
                 return ""
             ext = Path(cached_path).suffix.lower()
-            if ext not in {".txt", ".md"} and media_type not in {"text/plain", "text/markdown"}:
+            if (
+                ext not in _TEXT_INJECT_EXTENSIONS
+                and media_type not in {"text/plain", "text/markdown", "application/json"}
+            ):
                 return ""
             content = Path(cached_path).read_text(encoding="utf-8")
             display_name = self._display_name_from_cached_path(cached_path)

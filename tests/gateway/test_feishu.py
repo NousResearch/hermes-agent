@@ -1635,6 +1635,81 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertIn("[Content of", text)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_extract_csv_file_injects_content(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as tmp:
+            tmp.write("name,value\nalpha,1\n")
+            path = tmp.name
+        try:
+            text = asyncio.run(adapter._maybe_extract_text_document(path, "text/csv"))
+        finally:
+            os.unlink(path)
+        self.assertIn("name,value", text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extract_json_file_injects_content(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tmp:
+            tmp.write('{"enabled": true}')
+            path = tmp.name
+        try:
+            text = asyncio.run(adapter._maybe_extract_text_document(path, "application/json"))
+        finally:
+            os.unlink(path)
+        self.assertIn('"enabled": true', text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extract_mime_only_json_injects_content(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        with tempfile.NamedTemporaryFile("w", suffix=".bin", delete=False) as tmp:
+            tmp.write('{"source": "mime"}')
+            path = tmp.name
+        try:
+            text = asyncio.run(adapter._maybe_extract_text_document(path, "application/json"))
+        finally:
+            os.unlink(path)
+        self.assertIn('"source": "mime"', text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extract_oversized_text_file_does_not_inject(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu import adapter as feishu_adapter
+
+        adapter = feishu_adapter.FeishuAdapter(PlatformConfig())
+        with tempfile.NamedTemporaryFile("wb", suffix=".csv", delete=False) as tmp:
+            tmp.write(b"x" * (feishu_adapter._MAX_TEXT_INJECT_BYTES + 1))
+            path = tmp.name
+        try:
+            text = asyncio.run(adapter._maybe_extract_text_document(path, "text/csv"))
+        finally:
+            os.unlink(path)
+        self.assertEqual(text, "")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extract_invalid_utf8_file_does_not_inject(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        with tempfile.NamedTemporaryFile("wb", suffix=".json", delete=False) as tmp:
+            tmp.write(b"\xff\xfe")
+            path = tmp.name
+        try:
+            text = asyncio.run(adapter._maybe_extract_text_document(path, "application/json"))
+        finally:
+            os.unlink(path)
+        self.assertEqual(text, "")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_message_event_submits_to_adapter_loop(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

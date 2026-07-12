@@ -15,6 +15,7 @@ from tools.file_operations import (
     SearchResult,
     SearchMatch,
     LintResult,
+    ExecuteResult,
     ShellFileOperations,
     MAX_LINE_LENGTH,
     normalize_read_pagination,
@@ -477,6 +478,14 @@ class TestShellFileOpsHelpers:
         # Non-drive paths are untouched.
         assert file_ops._escape_shell_arg("/tmp/foo") == "'/tmp/foo'"
 
+    def test_escape_native_shell_arg_keeps_windows_drive_paths(self, monkeypatch, file_ops):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        assert file_ops._escape_shell_arg("C:/Users/alice/repo") == "'/c/Users/alice/repo'"
+        assert file_ops._escape_native_shell_arg("C:/Users/alice/repo") == "'C:/Users/alice/repo'"
+
     def test_read_file_uses_bash_safe_windows_paths(self, mock_env, monkeypatch):
         import tools.environments.local as local_mod
 
@@ -504,6 +513,59 @@ class TestShellFileOpsHelpers:
         assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null"
         assert commands[2] == "sed -n '1,500p' '/c/Users/alice/notes.txt'"
         assert commands[3] == "wc -l < '/c/Users/alice/notes.txt'"
+
+    def test_rg_file_search_keeps_native_windows_path(self, monkeypatch, file_ops):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        commands = []
+
+        def fake_exec(command, **kwargs):
+            commands.append(command)
+            if len(commands) == 1:
+                return ExecuteResult(stdout="", exit_code=0)
+            return ExecuteResult(stdout="C:/Users/alice/repo/src/app.py\n", exit_code=0)
+
+        file_ops._exec = fake_exec
+        result = file_ops._search_files_rg("app.py", "C:/Users/alice/repo", limit=10, offset=0)
+
+        assert result.files == ["C:/Users/alice/repo/src/app.py"]
+        assert commands[0] == (
+            "rg --files --sortr=modified -g '*app.py' "
+            "'C:/Users/alice/repo' 2>/dev/null | head -n 10"
+        )
+        assert commands[1] == (
+            "rg --files -g '*app.py' "
+            "'C:/Users/alice/repo' 2>/dev/null | head -n 10"
+        )
+
+    def test_rg_content_search_keeps_native_windows_path(self, monkeypatch, file_ops):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        commands = []
+
+        def fake_exec(command, **kwargs):
+            commands.append(command)
+            return ExecuteResult(stdout="C:/Users/alice/repo/src/app.py:7:needle\n", exit_code=0)
+
+        file_ops._exec = fake_exec
+        result = file_ops._search_with_rg(
+            "needle",
+            "C:/Users/alice/repo",
+            file_glob=None,
+            limit=10,
+            offset=0,
+            output_mode="content",
+            context=0,
+        )
+
+        assert result.total_count == 1
+        assert result.matches[0].path == "C:/Users/alice/repo/src/app.py"
+        assert commands == [
+            "set -o pipefail; rg --line-number --no-heading --with-filename "
+            "'needle' 'C:/Users/alice/repo' | head -n 10"
+        ]
 
     def test_is_likely_binary_by_extension(self, file_ops):
         assert file_ops._is_likely_binary("photo.png") is True

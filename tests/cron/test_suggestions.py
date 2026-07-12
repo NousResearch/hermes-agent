@@ -104,6 +104,32 @@ class TestStore:
         # And accepting again is a no-op (not pending anymore).
         assert store.accept_suggestion("acc") is None
 
+    def test_accept_preserves_generic_reasoning_effort_in_job_spec(self, store):
+        store.add_suggestion(
+            title="Reasoning Job",
+            description="desc",
+            source="catalog",
+            job_spec={
+                "prompt": "do it",
+                "schedule": "0 9 * * *",
+                "name": "Reasoning Job",
+                "deliver": "origin",
+                "reasoning_effort": "ultra",
+            },
+            dedup_key="reasoning",
+        )
+        created = {}
+
+        def fake_create_job(**kwargs):
+            created.update(kwargs)
+            return {"id": "job123", "name": kwargs.get("name"), **kwargs}
+
+        with patch("cron.jobs.create_job", fake_create_job):
+            job = store.accept_suggestion("1")
+
+        assert job is not None
+        assert created["reasoning_effort"] == "ultra"
+
     def test_get_by_id_and_index_and_title(self, store):
         rec = _add(store, key="byref", title="Findable")
         assert store.get_suggestion(rec["id"])["id"] == rec["id"]

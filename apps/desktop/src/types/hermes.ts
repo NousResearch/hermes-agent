@@ -558,6 +558,8 @@ export interface CronJob {
   next_run_at?: null | string
   no_agent?: boolean
   prompt?: null | string
+  reasoning_effort?: null | string
+  reasoning_effort_status?: null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string
   script?: null | string
@@ -568,6 +570,7 @@ export interface CronJobCreatePayload {
   deliver?: string
   name?: string
   prompt: string
+  reasoning_effort?: null | string
   schedule: string
 }
 
@@ -582,6 +585,7 @@ export interface CronJobUpdates {
   enabled?: boolean
   name?: string
   prompt?: string
+  reasoning_effort?: null | string
   schedule?: string
 }
 

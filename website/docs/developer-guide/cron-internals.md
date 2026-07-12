@@ -59,6 +59,7 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
   "created_at": "2025-01-01T00:00:00Z",
   "model": null,
   "provider": null,
+  "reasoning_effort": null,
   "script": null
 }
 ```
@@ -75,6 +76,13 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 ### Backward Compatibility
 
 Older jobs may have a single `skill` field instead of the `skills` array. The scheduler normalizes this at load time — single `skill` is promoted to `skills: [skill]`.
+
+`reasoning_effort` is optional. `null`, empty, or absent means the job inherits
+the profile/global `agent.reasoning_effort`; `none` is an explicit override
+that disables reasoning. `cron/jobs.py` validates and canonicalizes new
+create/update writes at the storage boundary. If a hand-edited legacy record
+contains a malformed value, the scheduler logs a warning and falls back to the
+global setting instead of treating the malformed value as "no reasoning".
 
 ## Scheduler Runtime
 
@@ -223,6 +231,21 @@ This timeout bounds the **pre-run script only**, not the agent. Skill-based / LL
 - **Credential pool** — loads via `load_pool(provider)` from `agent.credential_pool` using the resolved runtime provider name. Only passed when the pool has credentials (`pool.has_credentials()`). Enables same-provider key rotation on 429/rate-limit errors.
 
 This mirrors the gateway's behavior — without it, cron agents would fail on rate limits without attempting recovery.
+
+### Reasoning Effort
+
+`run_job()` resolves reasoning effort with this precedence:
+
+1. Valid explicit job `reasoning_effort`
+2. Profile/global `agent.reasoning_effort` from `config.yaml`
+3. Provider/model default
+
+Valid job values are derived from `hermes_constants.VALID_REASONING_EFFORTS`
+plus `none`; cron must not hard-code a separate subset. No provider/model
+snapshot is stored for reasoning effort, so existing provider/model drift
+semantics stay unchanged. For `no_agent=True`, the value is preserved in the
+job record but runtime exits before constructing `AIAgent`, so the field is
+inactive until the job is switched back to agent mode.
 
 ## Delivery Model
 

@@ -1,5 +1,16 @@
 import { normalize } from '@/lib/text'
 
+export const REASONING_EFFORT_VALUES = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra'
+] as const
+
 const REASONING_LABELS: Record<string, string> = {
   none: 'Off',
   minimal: 'Min',

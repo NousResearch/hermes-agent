@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import VALID_REASONING_EFFORTS, get_hermes_home
 from typing import Optional, Dict, List, Any, Set, Tuple, Union
 
 logger = logging.getLogger(__name__)
@@ -319,6 +319,39 @@ def _jobs_lock():
 # updated lets an unsafe value (``../escape``, absolute path, nested) leak
 # into output writes/deletes.
 _IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+
+CRON_REASONING_EFFORTS = ("none", *VALID_REASONING_EFFORTS)
+
+
+def normalize_cron_reasoning_effort(value: Any) -> Optional[str]:
+    """Normalize a per-job reasoning_effort override for cron storage.
+
+    ``None`` or an empty string means "inherit the profile/global
+    ``agent.reasoning_effort``".  ``none`` disables reasoning explicitly.  The
+    effort names themselves are derived from ``hermes_constants`` so cron cannot
+    silently drift behind provider support.
+    """
+    if value is None:
+        return None
+    if value is False:
+        return "none"
+    if value is True:
+        raise ValueError(
+            "Invalid cron reasoning_effort True. Use one of: "
+            f"{', '.join(CRON_REASONING_EFFORTS)}, or empty/null to inherit."
+        )
+
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {"none", "false", "disabled"}:
+        return "none"
+    if text in VALID_REASONING_EFFORTS:
+        return text
+    raise ValueError(
+        f"Invalid cron reasoning_effort {value!r}. Use one of: "
+        f"{', '.join(CRON_REASONING_EFFORTS)}, or empty/null to inherit."
+    )
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -1042,6 +1075,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    reasoning_effort: Optional[Any] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
@@ -1065,6 +1099,12 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        reasoning_effort: Optional per-job reasoning effort override. Empty or
+                None inherits the profile/global ``agent.reasoning_effort``;
+                ``none`` (or YAML/JSON false) disables reasoning for this job.
+                Stored values are canonicalized to ``none`` or a member of
+                ``hermes_constants.VALID_REASONING_EFFORTS``. Preserved but
+                inactive for ``no_agent`` jobs.
         script: Optional path to a script whose stdout feeds the job. With
                 ``no_agent=True`` the script IS the job — its stdout is
                 delivered verbatim. Without ``no_agent``, its stdout is
@@ -1117,6 +1157,7 @@ def create_job(
     normalized_model = _normalize_job_optional_text(model)
     normalized_provider = _normalize_job_optional_text(provider)
     normalized_base_url = _normalize_job_optional_text(base_url, strip_trailing_slash=True)
+    normalized_reasoning_effort = normalize_cron_reasoning_effort(reasoning_effort)
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
@@ -1189,6 +1230,7 @@ def create_job(
         "provider_snapshot": provider_snapshot,
         "model_snapshot": model_snapshot,
         "base_url": normalized_base_url,
+        "reasoning_effort": normalized_reasoning_effort,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
         "context_from": context_from,
@@ -1308,6 +1350,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+            if "reasoning_effort" in updates:
+                updates["reasoning_effort"] = normalize_cron_reasoning_effort(
+                    updates["reasoning_effort"]
+                )
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

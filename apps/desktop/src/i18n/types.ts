@@ -1210,6 +1210,13 @@ export interface Translations {
     customScheduleLabel: string
     customPlaceholder: string
     customHint: string
+    reasoningLabel: string
+    reasoningInherit: string
+    reasoningInactive: string
+    reasoningInactiveHint: string
+    reasoningInactiveWithValue: (value: string) => string
+    reasoningInvalid: (value: string) => string
+    reasoningOptions: Record<string, string>
     optional: string
     promptRequired: string
     promptScheduleRequired: string

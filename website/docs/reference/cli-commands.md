@@ -533,8 +533,8 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | Subcommand | Description |
 |------------|-------------|
 | `list` | Show scheduled jobs. |
-| `create` / `add` | Create a scheduled job from a prompt, optionally attaching one or more skills via repeated `--skill`. |
-| `edit` | Update a job's schedule, prompt, name, delivery, repeat count, or attached skills. Supports `--clear-skills`, `--add-skill`, and `--remove-skill`. |
+| `create` / `add` | Create a scheduled job from a prompt, optionally attaching one or more skills via repeated `--skill`, and optionally setting `--reasoning-effort <none|minimal|low|medium|high|xhigh|max|ultra>`. |
+| `edit` | Update a job's schedule, prompt, name, delivery, repeat count, attached skills, or reasoning override. Supports `--clear-skills`, `--add-skill`, `--remove-skill`, `--reasoning-effort`, and `--clear-reasoning-effort`. |
 | `pause` | Pause a job without deleting it. |
 | `resume` | Resume a paused job and compute its next future run. |
 | `run` | Trigger a job on the next scheduler tick. |
@@ -550,6 +550,12 @@ NAS-managed provider for scale-to-zero hosted gateways) — configured via the
 `$HERMES_HOME/plugins/<name>/`. An unknown or unavailable provider falls back to
 the built-in, so cron is never left without a trigger. See the
 [cron internals](../developer-guide/cron-internals.md#gateway-integration) doc.
+
+Reasoning effort precedence for agent-backed jobs is: explicit valid job
+override → profile/global `agent.reasoning_effort` → provider/model default.
+Use `--reasoning-effort none` to disable reasoning for one job, or
+`--clear-reasoning-effort` to inherit the profile setting again. For
+`--no-agent` jobs, the value is stored but inactive because no model is called.
 
 ## `hermes kanban`
 

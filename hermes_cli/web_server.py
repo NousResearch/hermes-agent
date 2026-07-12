@@ -10038,6 +10038,7 @@ class CronJobCreate(BaseModel):
     model: Optional[str] = None
     provider: Optional[str] = None
     base_url: Optional[str] = None
+    reasoning_effort: Optional[Any] = None
     script: Optional[str] = None
     context_from: Optional[Any] = None
     enabled_toolsets: Optional[List[str]] = None
@@ -10192,6 +10193,25 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
 
 def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
     annotated = dict(job)
+    from cron.jobs import normalize_cron_reasoning_effort
+
+    raw_reasoning_effort = annotated.get("reasoning_effort")
+    annotated["reasoning_effort_status"] = "inherit"
+    if raw_reasoning_effort is not None and (
+        raw_reasoning_effort is False or str(raw_reasoning_effort).strip()
+    ):
+        try:
+            annotated["reasoning_effort"] = normalize_cron_reasoning_effort(
+                raw_reasoning_effort
+            )
+            annotated["reasoning_effort_status"] = (
+                "not_applicable" if annotated.get("no_agent") else "override"
+            )
+        except ValueError:
+            # Match scheduler semantics for hand-edited or legacy records: keep
+            # the raw value visible, but mark it as invalid and inheriting so UI
+            # forms can avoid resubmitting it on an unrelated edit.
+            annotated["reasoning_effort_status"] = "invalid_inherits_global"
     annotated["profile"] = profile
     annotated["profile_name"] = profile
     annotated["hermes_home"] = str(home)
@@ -10360,6 +10380,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: str = "default"):
             model=_cron_optional_text(body.model),
             provider=_cron_optional_text(body.provider),
             base_url=_cron_optional_text(body.base_url, strip_trailing_slash=True),
+            reasoning_effort=body.reasoning_effort,
             script=script,
             context_from=context_from,
             enabled_toolsets=_cron_string_list(body.enabled_toolsets),

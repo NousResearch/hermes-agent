@@ -39,3 +39,16 @@ def test_cronjob_schema_required_array_unchanged():
     from tools.cronjob_tools import CRONJOB_SCHEMA
 
     assert CRONJOB_SCHEMA["parameters"]["required"] == ["action"]
+
+
+def test_cronjob_schema_advertises_top_level_reasoning_effort():
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    props = CRONJOB_SCHEMA["parameters"]["properties"]
+    assert "reasoning_effort" in props
+    desc = props["reasoning_effort"]["description"]
+    assert "top-level" in desc
+    assert "inherit" in desc
+    assert "none" in desc
+    assert "max" in desc
+    assert "ultra" in desc

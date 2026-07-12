@@ -19,6 +19,7 @@ function form(overrides: Partial<CronJobFormState> = {}): CronJobFormState {
     provider: "",
     model: "",
     base_url: "",
+    reasoning_effort: "",
     script: "",
     no_agent: false,
     context_from: "",
@@ -63,11 +64,24 @@ describe("buildCronJobPayload", () => {
       provider: null,
       model: null,
       base_url: null,
+      reasoning_effort: null,
       script: null,
       no_agent: false,
       context_from: null,
       enabled_toolsets: null,
       workdir: null,
+    });
+  });
+
+  it("round-trips explicit reasoning overrides and clear semantics", () => {
+    expect(buildCronJobPayload(form({ reasoning_effort: "ultra" }))).toMatchObject({
+      reasoning_effort: "ultra",
+    });
+    expect(buildCronJobPayload(form({ reasoning_effort: "none" }))).toMatchObject({
+      reasoning_effort: "none",
+    });
+    expect(buildCronJobPayload(form({ reasoning_effort: "" }))).toMatchObject({
+      reasoning_effort: null,
     });
   });
 });
@@ -96,12 +110,14 @@ describe("cronJobFormFromJob", () => {
       schedule_display: "every 1h",
       context_from: ["upstream-a", "upstream-b"],
       enabled_toolsets: ["web"],
+      reasoning_effort: "max",
     };
 
     expect(cronJobFormFromJob(job)).toMatchObject({
       schedule: "every 1h",
       context_from: "upstream-a\nupstream-b",
       enabled_toolsets: ["web"],
+      reasoning_effort: "max",
     });
   });
 
@@ -119,5 +135,16 @@ describe("cronJobFormFromJob", () => {
     expect(cronJobFormFromJob(job)).toMatchObject({
       schedule: "2026-02-03T14:00:00+08:00",
     });
+  });
+
+  it("does not resubmit a malformed stored override on unrelated edits", () => {
+    const job: CronJob = {
+      id: "legacy-job",
+      enabled: true,
+      reasoning_effort: "turbo",
+      reasoning_effort_status: "invalid_inherits_global",
+    };
+
+    expect(cronJobFormFromJob(job).reasoning_effort).toBe("");
   });
 });

@@ -20,8 +20,10 @@ from cron.jobs import (
     mark_job_run,
     advance_next_run,
     claim_dispatch,
+    CRON_REASONING_EFFORTS,
     heartbeat_run_claim,
     get_due_jobs,
+    normalize_cron_reasoning_effort,
     save_job_output,
 )
 
@@ -341,6 +343,44 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_create_job_normalizes_reasoning_effort(self, tmp_cron_dir):
+        assert {"none", "max", "ultra"}.issubset(CRON_REASONING_EFFORTS)
+        assert normalize_cron_reasoning_effort(False) == "none"
+
+        max_job = create_job(
+            prompt="Deep analysis",
+            schedule="every 1h",
+            reasoning_effort="MAX",
+        )
+        ultra_job = create_job(
+            prompt="Deeper analysis",
+            schedule="every 2h",
+            reasoning_effort="ultra",
+        )
+        none_job = create_job(
+            prompt="No reasoning",
+            schedule="every 3h",
+            reasoning_effort="none",
+        )
+        inherit_job = create_job(
+            prompt="Inherit",
+            schedule="every 4h",
+            reasoning_effort="",
+        )
+
+        assert max_job["reasoning_effort"] == "max"
+        assert ultra_job["reasoning_effort"] == "ultra"
+        assert none_job["reasoning_effort"] == "none"
+        assert inherit_job["reasoning_effort"] is None
+
+    def test_create_job_rejects_invalid_reasoning_effort(self, tmp_cron_dir):
+        with pytest.raises(ValueError, match="Invalid cron reasoning_effort"):
+            create_job(
+                prompt="Bad reasoning",
+                schedule="every 1h",
+                reasoning_effort="turbo",
+            )
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -424,6 +464,27 @@ class TestUpdateJob:
         # Original job still resolvable, no rename happened.
         assert get_job(job["id"]) is not None
         assert get_job("../escape") is None
+
+    def test_update_job_sets_and_clears_reasoning_effort(self, tmp_cron_dir):
+        job = create_job(prompt="Original", schedule="every 1h")
+
+        updated = update_job(job["id"], {"reasoning_effort": "ultra"})
+        assert updated["reasoning_effort"] == "ultra"
+
+        disabled = update_job(job["id"], {"reasoning_effort": False})
+        assert disabled["reasoning_effort"] == "none"
+
+        cleared = update_job(job["id"], {"reasoning_effort": None})
+        assert cleared["reasoning_effort"] is None
+        assert get_job(job["id"])["reasoning_effort"] is None
+
+    def test_update_job_rejects_invalid_reasoning_effort(self, tmp_cron_dir):
+        job = create_job(prompt="Original", schedule="every 1h")
+
+        with pytest.raises(ValueError, match="Invalid cron reasoning_effort"):
+            update_job(job["id"], {"reasoning_effort": "turbo"})
+
+        assert get_job(job["id"])["reasoning_effort"] is None
 
 
 class TestPauseResumeJob:

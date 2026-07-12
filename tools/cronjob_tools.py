@@ -21,11 +21,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
+    CRON_REASONING_EFFORTS,
     claim_job_for_fire,
     create_job,
     get_job,
     list_jobs,
     mark_job_run,
+    normalize_cron_reasoning_effort,
     parse_schedule,
     pause_job,
     remove_job,
@@ -569,6 +571,20 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
     name = str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
+    raw_reasoning_effort = job.get("reasoning_effort")
+    reasoning_effort = None
+    reasoning_effort_status = "inherit"
+    if raw_reasoning_effort is not None and (
+        raw_reasoning_effort is False or str(raw_reasoning_effort).strip()
+    ):
+        try:
+            reasoning_effort = normalize_cron_reasoning_effort(raw_reasoning_effort)
+            reasoning_effort_status = (
+                "not_applicable" if job.get("no_agent") else "override"
+            )
+        except ValueError:
+            reasoning_effort = str(raw_reasoning_effort)
+            reasoning_effort_status = "invalid_inherits_global"
     result = {
         "job_id": job_id,
         "name": name,
@@ -578,6 +594,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "model": job.get("model"),
         "provider": job.get("provider"),
         "base_url": job.get("base_url"),
+        "reasoning_effort": reasoning_effort,
+        "reasoning_effort_status": reasoning_effort_status,
         "schedule": job.get("schedule_display") or "?",
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
@@ -670,6 +688,7 @@ def cronjob(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    reasoning_effort: Optional[Any] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
@@ -677,6 +696,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    _reasoning_effort_provided: bool = False,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -744,6 +764,7 @@ def cronjob(
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                reasoning_effort=reasoning_effort,
                 script=_normalize_optional_job_value(script),
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
@@ -875,6 +896,12 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if _reasoning_effort_provided or reasoning_effort is not None:
+                # Empty string / null clears the job override so the scheduler
+                # inherits profile/global agent.reasoning_effort. Explicit
+                # "none" (or JSON/YAML false) is preserved as a disabling
+                # override by cron.jobs.update_job().
+                updates["reasoning_effort"] = reasoning_effort
             # Re-validate the EFFECTIVE provider/base_url on EVERY update, not
             # only when this update supplies provider/base_url. A job persisted
             # before this guard (or written directly to the jobs store) may
@@ -1037,6 +1064,18 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 },
                 "required": ["model"]
             },
+            "reasoning_effort": {
+                "type": ["string", "null", "boolean"],
+                "description": (
+                    "Optional top-level per-job reasoning override. Omit, pass "
+                    "null, or pass an empty string to inherit the profile/global "
+                    "agent.reasoning_effort. Pass 'none' (or JSON/YAML false) "
+                    "to disable reasoning explicitly. Supported explicit values: "
+                    f"{', '.join(CRON_REASONING_EFFORTS)}. For no_agent=True "
+                    "jobs this setting is preserved but inactive until the job "
+                    "is switched back to agent mode."
+                ),
+            },
             "script": {
                 "type": "string",
                 "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
@@ -1134,12 +1173,14 @@ registry.register(
         model=_mo[1],
         provider=_mo[0] or args.get("provider"),
         base_url=args.get("base_url"),
+        reasoning_effort=args.get("reasoning_effort"),
         reason=args.get("reason"),
         script=args.get("script"),
         context_from=args.get("context_from"),
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        _reasoning_effort_provided="reasoning_effort" in args,
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

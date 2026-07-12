@@ -289,6 +289,20 @@ def decompose_task(
         return DecomposeOutcome(
             task_id, False, f"task is not in triage (status={task.status!r})"
         )
+    if task.assignee:
+        try:
+            assignee_is_spawnable = profiles_mod.profile_exists(task.assignee)
+        except Exception:
+            assignee_is_spawnable = False
+        if not assignee_is_spawnable:
+            # Mirrors the dispatcher's has_spawnable_ready/profile_exists gate
+            # (#62985): a task deliberately parked under a non-profile
+            # assignee must stay parked, not get silently fanned out and
+            # reassigned to the orchestrator/default_assignee.
+            return DecomposeOutcome(
+                task_id, False,
+                f"assignee {task.assignee!r} is not a spawnable profile — parked",
+            )
 
     cfg = _load_config()
     orchestrator = _resolve_orchestrator_profile(cfg)

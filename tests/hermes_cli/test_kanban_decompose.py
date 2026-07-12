@@ -326,6 +326,69 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+def test_decompose_parks_task_with_nonspawnable_assignee(kanban_home):
+    """#62985: a task deliberately parked under a non-profile assignee must
+    stay parked, not get silently fanned out and reassigned. Mirrors the
+    dispatcher's has_spawnable_ready/profile_exists containment gate — this
+    must reject before ever reaching the aux client (no LLM call, no DB
+    mutation of assignee/status)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="parked task - do not run",
+            assignee="not-a-profile", triage=True,
+        )
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "not-a-profile" in outcome.reason
+    assert "spawnable" in outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "triage"
+    assert task.assignee == "not-a-profile"
+
+
+def test_decompose_proceeds_when_assignee_is_real_profile(kanban_home):
+    """Sanity check for the new guard: a task whose assignee IS a real
+    profile must not be blocked by the nonspawnable-assignee check."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="already routed", assignee="engineer", triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Tightened title",
+        "body": "Keep existing lane.",
+        "assignee": "engineer",
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"default_assignee": "engineer"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+
+
 def test_decompose_no_aux_client_configured(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="x", triage=True)

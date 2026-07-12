@@ -127,8 +127,8 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
 // Remote-mode replacement for opening gateway-local file paths with file://.
 // The file lives on the gateway, so fetch it over the authenticated fs bridge
 // and hand the bytes to the local browser shell as a download.
-export async function downloadGatewayMediaFile(path: string): Promise<void> {
-  const dataUrl = await readDesktopFileDataUrl(filePathFromMediaPath(path))
+export async function downloadGatewayMediaFile(path: string, profile?: string): Promise<void> {
+  const dataUrl = await readDesktopFileDataUrl(filePathFromMediaPath(path), profile)
 
   if (!dataUrl) {
     throw new Error('Gateway returned no file data')

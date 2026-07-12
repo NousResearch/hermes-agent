@@ -145,6 +145,18 @@ describe('downloadGatewayMediaFile', () => {
     expect(clickSpy).toHaveBeenCalledOnce()
   })
 
+  it('routes an explicit owner profile through the authenticated bridge even while active mode is local', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    await downloadGatewayMediaFile('/Users/me/project/report.md', 'work')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2Fproject%2Freport.md',
+      profile: 'work'
+    })
+    expect(clickSpy).toHaveBeenCalledOnce()
+  })
+
   it('rejects when the gateway refuses the file read', async () => {
     api.mockRejectedValueOnce(new Error('403 File is not readable'))
 

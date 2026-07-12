@@ -1225,6 +1225,7 @@ export interface Translations {
     failedLoadDesc: string
     partialLoadTitle: string
     partialLoadDesc: (failed: number, total: number) => string
+    profileLoadErrors: (count: number) => string
     scopeSummary: (loaded: number, total: number) => string
     loadMoreChats: (count: number) => string
     tryAgain: string
@@ -1251,6 +1252,8 @@ export interface Translations {
     openArtifact: (label: string) => string
     previewArtifact: (label: string) => string
     previewUnavailable: string
+    loadPreview: string
+    loadPreviewFor: (label: string) => string
     embeddedImage: string
     chat: string
     openSourceChat: (label: string) => string

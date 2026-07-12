@@ -105,7 +105,7 @@ describe('collectArtifactsForSession', () => {
     ])
 
     vi.stubGlobal('window', { hermesDesktop: { api } })
-    $connection.set({ baseUrl: 'https://gw', mode: 'remote', token: 'secret' } as never)
+    $connection.set({ mode: 'local' } as never)
 
     expect(artifacts).toHaveLength(1)
     expect(artifacts[0]?.previewable).toBe(true)
@@ -131,6 +131,23 @@ describe('collectArtifactsForSession', () => {
     expect(artifact?.previewable).toBe(false)
   })
 
+  it.each([
+    ['missing success', { image: '/tmp/private.png' }],
+    ['explicit failure', { image: '/tmp/private.png', success: false }],
+    ['error-bearing success', { error: 'denied', image: '/tmp/private.png', success: true }]
+  ])('does not trust image generation output with %s', (_label, result) => {
+    const [artifact] = collectArtifactsForSession(makeSession(), [
+      {
+        content: JSON.stringify(result),
+        role: 'tool',
+        timestamp: 2000,
+        tool_name: 'image_generate'
+      }
+    ])
+
+    expect(artifact?.previewable).toBe(false)
+  })
+
   it('keeps ambiguous historical /images routes on the typed fallback', async () => {
     const artifacts = collectArtifactsForSession(makeSession(), [
       { content: 'Generated /images/generated/chart.png', role: 'assistant', timestamp: 2000 }
@@ -143,7 +160,11 @@ describe('collectArtifactsForSession', () => {
   it.each([
     ['https://example.com/output/report.pdf?download=1', 'file'],
     ['./src/widget.tsx', 'file'],
-    ['/tmp/photo.avif', 'image']
+    ['/tmp/photo.avif', 'image'],
+    ['/models/weights.gguf', 'file'],
+    ['/models/adapter.safetensors', 'file'],
+    ['/analysis/results.ipynb', 'file'],
+    ['/archives/model.tar.zst', 'file']
   ] as const)('keeps collector and preview extension classification aligned for %s', (value, kind) => {
     const artifacts = collectArtifactsForSession(makeSession(), [
       { content: `Generated ${value}`, role: 'assistant', timestamp: 2000 }

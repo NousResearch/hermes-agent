@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -89,6 +89,7 @@ describe('ArtifactsView open affordances', () => {
 
     fireEvent.click(open)
 
+    await waitFor(() => expect(ensureGatewayProfileMock).toHaveBeenCalledWith('default'))
     await waitFor(() => expect(openExternal).toHaveBeenCalledOnce())
     expect(openExternal.mock.calls[0]?.[0]).toContain('deployment-report.md')
   })
@@ -107,6 +108,9 @@ describe('ArtifactsView open affordances', () => {
     renderArtifacts()
 
     const open = await screen.findByRole('button', { name: 'Open portrait.png' })
+    expect(screen.queryByRole('img', { name: 'portrait.png' })).toBeNull()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Load preview for portrait.png' }))
     expect(await screen.findByRole('img', { name: 'portrait.png' })).toBeTruthy()
 
     fireEvent.click(open)
@@ -116,6 +120,7 @@ describe('ArtifactsView open affordances', () => {
 
   it('downloads a remote gateway file through the authenticated bridge without externalizing a token URL', async () => {
     isRemoteGatewayMock.mockReturnValue(true)
+    listSessionsMock.mockResolvedValue({ sessions: [{ ...session, profile: 'work' }] } as never)
     getMessagesMock.mockResolvedValue({
       messages: [{ content: 'Generated /tmp/private-report.pdf', role: 'assistant', timestamp: 2000 }]
     } as never)
@@ -124,7 +129,8 @@ describe('ArtifactsView open affordances', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Open private-report.pdf' }))
 
-    await waitFor(() => expect(downloadGatewayMediaFileMock).toHaveBeenCalledWith('/tmp/private-report.pdf'))
+    await waitFor(() => expect(ensureGatewayProfileMock).toHaveBeenCalledWith('work'))
+    await waitFor(() => expect(downloadGatewayMediaFileMock).toHaveBeenCalledWith('/tmp/private-report.pdf', 'work'))
     expect(openExternal).not.toHaveBeenCalled()
   })
 
@@ -175,7 +181,75 @@ describe('ArtifactsView open affordances', () => {
 
     expect(await screen.findByText('Some artifacts may be missing')).toBeTruthy()
     expect(screen.getByText("1 of 2 recent chats couldn't be read.")).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Load 1 more chats' })).toBeNull()
     expect(screen.getByText('available.pdf')).toBeTruthy()
+  })
+
+  it('discloses unavailable profiles separately from failed chat transcripts', async () => {
+    listSessionsMock.mockResolvedValue({
+      errors: [{ error: 'locked database', profile: 'work' }],
+      sessions: [session],
+      total: 1
+    } as never)
+    getMessagesMock.mockResolvedValue({ messages: [] } as never)
+
+    renderArtifacts()
+
+    expect(await screen.findByText('Some artifacts may be missing')).toBeTruthy()
+    expect(screen.getByText("1 profile couldn't be read.")).toBeTruthy()
+  })
+
+  it('renders a terminal failure when every returned transcript fails', async () => {
+    listSessionsMock.mockResolvedValue({ sessions: [session], total: 1 } as never)
+    getMessagesMock.mockRejectedValue(new Error('unreadable transcript'))
+
+    renderArtifacts()
+
+    expect(await screen.findByText("Couldn't load artifacts")).toBeTruthy()
+    expect(screen.queryByText('No artifacts found')).toBeNull()
+  })
+
+  it('keeps only the newest overlapping refresh result', async () => {
+    getMessagesMock.mockResolvedValueOnce({
+      messages: [{ content: 'Generated /tmp/initial.pdf', role: 'assistant', timestamp: 1000 }]
+    } as never)
+    renderArtifacts()
+    expect(await screen.findByText('initial.pdf')).toBeTruthy()
+
+    let resolveOlder!: (value: unknown) => void
+    let resolveNewer!: (value: unknown) => void
+
+    const older = new Promise(resolve => {
+      resolveOlder = resolve
+    })
+
+    const newer = new Promise(resolve => {
+      resolveNewer = resolve
+    })
+
+    getMessagesMock.mockReturnValueOnce(older as never).mockReturnValueOnce(newer as never)
+
+    fireEvent.keyDown(window, { key: 'r' })
+    await waitFor(() => expect(getMessagesMock).toHaveBeenCalledTimes(2))
+    fireEvent.keyDown(window, { key: 'r' })
+    await waitFor(() => expect(getMessagesMock).toHaveBeenCalledTimes(3))
+
+    await act(async () => {
+      resolveNewer({
+        messages: [{ content: 'Generated /tmp/newest.pdf', role: 'assistant', timestamp: 3000 }]
+      })
+      await newer
+    })
+    expect(await screen.findByText('newest.pdf')).toBeTruthy()
+
+    await act(async () => {
+      resolveOlder({
+        messages: [{ content: 'Generated /tmp/stale.pdf', role: 'assistant', timestamp: 2000 }]
+      })
+      await older
+    })
+    expect(screen.queryByText('stale.pdf')).toBeNull()
+    expect(screen.getByText('newest.pdf')).toBeTruthy()
   })
 
   it('does not search inside an embedded image base64 payload', async () => {
@@ -237,8 +311,36 @@ describe('ArtifactsView open affordances', () => {
 
     expect(await screen.findByTestId('artifact-mobile-list')).toBeTruthy()
     expect(screen.queryByRole('table')).toBeNull()
-    expect(screen.getByRole('button', { name: 'Open mobile-report.pdf' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Open source chat for mobile-report.pdf' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Copy path' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Open mobile-report.pdf' }).className).toContain('min-h-11')
+    expect(screen.getByRole('button', { name: 'Open source chat for mobile-report.pdf' }).className).toContain(
+      'min-h-11'
+    )
+    expect(screen.getByRole('button', { name: 'Copy path' }).className).toContain('min-h-11')
+  })
+
+  it('uses mobile-sized pagination controls for populated multi-page results', async () => {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({
+        addEventListener: vi.fn(),
+        matches: true,
+        removeEventListener: vi.fn()
+      }))
+    })
+    getMessagesMock.mockResolvedValue({
+      messages: [
+        {
+          content: Array.from({ length: 101 }, (_, index) => `/tmp/mobile-${index}.pdf`).join('\n'),
+          role: 'assistant',
+          timestamp: 2000
+        }
+      ]
+    } as never)
+
+    renderArtifacts()
+
+    const next = await screen.findByRole('button', { name: 'Go to next page' })
+    expect(next.className).toContain('max-md:min-h-11')
+    expect(screen.getByRole('button', { name: 'Go to items page 2' }).className).toContain('max-md:size-11')
   })
 })

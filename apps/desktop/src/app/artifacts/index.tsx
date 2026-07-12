@@ -125,10 +125,17 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
   const [fatalLoadError, setFatalLoadError] = useState(false)
-  const [partialLoad, setPartialLoad] = useState<{ failed: number; total: number } | null>(null)
+
+  const [partialLoad, setPartialLoad] = useState<{
+    failedChats: number
+    failedProfiles: number
+    totalChats: number
+  } | null>(null)
+
   const [sessionLimit, setSessionLimit] = useState(SESSION_BATCH_SIZE)
-  const [sessionScope, setSessionScope] = useState<{ loaded: number; total: number } | null>(null)
+  const [sessionScope, setSessionScope] = useState<{ loaded: number; scanned: number; total: number } | null>(null)
   const hasLoadedOnceRef = useRef(false)
+  const refreshGenerationRef = useRef(0)
 
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
 
@@ -139,6 +146,8 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [refreshing, setRefreshing] = useState(false)
 
   const refreshArtifacts = useCallback(async () => {
+    const generation = ++refreshGenerationRef.current
+
     setRefreshing(true)
     setFatalLoadError(false)
     setPartialLoad(null)
@@ -148,7 +157,17 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       const sessions = sessionPage.sessions
       const results = await Promise.allSettled(sessions.map(session => getSessionMessages(session.id, session.profile)))
       const nextArtifacts: ArtifactRecord[] = []
-      const failed = results.filter(result => result.status === 'rejected').length
+      const failedChats = results.filter(result => result.status === 'rejected').length
+      const fulfilledChats = results.length - failedChats
+      const failedProfiles = sessionPage.errors?.length ?? 0
+
+      if (generation !== refreshGenerationRef.current) {
+        return
+      }
+
+      if ((sessions.length > 0 || failedProfiles > 0) && fulfilledChats === 0) {
+        throw new Error('No artifact sources could be read')
+      }
 
       results.forEach((result, index) => {
         if (result.status !== 'fulfilled') {
@@ -160,13 +179,20 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       })
 
       setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
-      setPartialLoad(failed > 0 ? { failed, total: sessions.length } : null)
+      setPartialLoad(
+        failedChats > 0 || failedProfiles > 0 ? { failedChats, failedProfiles, totalChats: sessions.length } : null
+      )
       setSessionScope({
-        loaded: sessions.length,
+        loaded: fulfilledChats,
+        scanned: sessions.length,
         total: Math.max(sessionPage.total ?? sessions.length, sessions.length)
       })
       hasLoadedOnceRef.current = true
     } catch (err) {
+      if (generation !== refreshGenerationRef.current) {
+        return
+      }
+
       notifyError(err, a.failedLoad)
 
       if (!hasLoadedOnceRef.current) {
@@ -174,7 +200,9 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         setArtifacts([])
       }
     } finally {
-      setRefreshing(false)
+      if (generation === refreshGenerationRef.current) {
+        setRefreshing(false)
+      }
     }
   }, [a, sessionLimit])
 
@@ -280,10 +308,14 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         // Gateway-local files must stay on the authenticated filesystem bridge.
         // Never externalize mediaExternalUrl() download URLs because token-auth
         // connections encode their bearer credential in the query string.
-        if (isRemoteGateway() && artifact.kind !== 'link' && !/^https?:/i.test(artifact.value)) {
-          await downloadGatewayMediaFile(artifact.value)
+        if (artifact.kind !== 'link' && !/^https?:/i.test(artifact.value)) {
+          await ensureGatewayProfile(artifact.profile)
 
-          return
+          if (isRemoteGateway()) {
+            await downloadGatewayMediaFile(artifact.value, artifact.profile)
+
+            return
+          }
         }
 
         if (window.hermesDesktop?.openExternal) {
@@ -329,6 +361,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     <PageSearchShell
       {...props}
       activeTab={kindFilter}
+      className={cn(props.className, 'max-md:[&_[data-slot=dropdown-menu-trigger]]:min-h-11 max-md:[&_input]:min-h-11')}
       onSearchChange={setQuery}
       onTabChange={id => setKindFilter(id as typeof kindFilter)}
       searchHidden={counts.all === 0}
@@ -338,7 +371,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         <Tip label={refreshing ? a.refreshing : a.refresh}>
           <Button
             aria-label={refreshing ? a.refreshing : a.refresh}
-            className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+            className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground max-md:min-h-11 max-md:min-w-11"
             disabled={refreshing}
             onClick={() => void refreshArtifacts()}
             size="icon-titlebar"
@@ -364,7 +397,13 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
             <AlertTriangle aria-hidden="true" className="mx-auto mb-2 size-5 text-amber-500" />
             <div className="text-sm font-medium">{a.failedLoadTitle}</div>
             <div className="mt-1 text-xs text-muted-foreground">{a.failedLoadDesc}</div>
-            <Button className="mt-3" onClick={() => void refreshArtifacts()} size="sm" type="button" variant="outline">
+            <Button
+              className="mt-3 max-md:min-h-11"
+              onClick={() => void refreshArtifacts()}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
               {a.tryAgain}
             </Button>
           </div>
@@ -380,10 +419,18 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-medium">{a.partialLoadTitle}</div>
                 <div className="mt-0.5 text-[0.6875rem] text-muted-foreground">
-                  {a.partialLoadDesc(partialLoad.failed, partialLoad.total)}
+                  {partialLoad.failedChats > 0 && a.partialLoadDesc(partialLoad.failedChats, partialLoad.totalChats)}
+                  {partialLoad.failedChats > 0 && partialLoad.failedProfiles > 0 && ' '}
+                  {partialLoad.failedProfiles > 0 && a.profileLoadErrors(partialLoad.failedProfiles)}
                 </div>
               </div>
-              <Button onClick={() => void refreshArtifacts()} size="xs" type="button" variant="textStrong">
+              <Button
+                className="max-md:min-h-11"
+                onClick={() => void refreshArtifacts()}
+                size="xs"
+                type="button"
+                variant="textStrong"
+              >
                 {a.tryAgain}
               </Button>
             </div>
@@ -391,23 +438,28 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           {sessionScope && sessionScope.loaded < sessionScope.total && (
             <div className="mx-3 mb-2 flex shrink-0 items-center justify-between gap-3 px-1 text-[0.6875rem] text-muted-foreground">
               <span>{a.scopeSummary(sessionScope.loaded, sessionScope.total)}</span>
-              <Button
-                aria-label={a.loadMoreChats(Math.min(SESSION_BATCH_SIZE, sessionScope.total - sessionScope.loaded))}
-                disabled={refreshing}
-                onClick={() =>
-                  setSessionLimit(current =>
-                    Math.min(
-                      sessionScope.total,
-                      current + Math.min(SESSION_BATCH_SIZE, sessionScope.total - sessionScope.loaded)
+              {sessionScope.scanned < sessionScope.total && (
+                <Button
+                  aria-label={a.loadMoreChats(
+                    Math.min(SESSION_BATCH_SIZE, sessionScope.total - sessionScope.scanned)
+                  )}
+                  className="max-md:min-h-11"
+                  disabled={refreshing}
+                  onClick={() =>
+                    setSessionLimit(current =>
+                      Math.min(
+                        sessionScope.total,
+                        current + Math.min(SESSION_BATCH_SIZE, sessionScope.total - sessionScope.scanned)
+                      )
                     )
-                  )
-                }
-                size="xs"
-                type="button"
-                variant="textStrong"
-              >
-                {a.loadMoreChats(Math.min(SESSION_BATCH_SIZE, sessionScope.total - sessionScope.loaded))}
-              </Button>
+                  }
+                  size="xs"
+                  type="button"
+                  variant="textStrong"
+                >
+                  {a.loadMoreChats(Math.min(SESSION_BATCH_SIZE, sessionScope.total - sessionScope.scanned))}
+                </Button>
+              )}
             </div>
           )}
           {visibleArtifacts.length === 0 ? (
@@ -492,15 +544,19 @@ function ArtifactsPagination({ className, itemLabel, onPageChange, page, pageSiz
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
 
   return (
-    <div className={cn('flex h-6 items-center justify-between gap-2 px-1', className)}>
+    <div className={cn('flex h-6 items-center justify-between gap-2 px-1 max-md:h-11', className)}>
       <div className="shrink-0 text-[0.62rem] text-muted-foreground">
         {pageRangeLabel(total, page, pageSize, a)} {itemLabel}
       </div>
       {pageCount > 1 && (
         <Pagination className="mx-0 w-auto min-w-0 justify-end">
-          <PaginationContent className="gap-0.5">
+          <PaginationContent className="gap-0.5 max-md:h-11">
             <PaginationItem>
-              <PaginationPrevious disabled={page <= 1} onClick={() => onPageChange(Math.max(1, page - 1))} />
+              <PaginationPrevious
+                className="max-md:min-h-11 max-md:min-w-11"
+                disabled={page <= 1}
+                onClick={() => onPageChange(Math.max(1, page - 1))}
+              />
             </PaginationItem>
             {paginationItems(page, pageCount).map((item, index) => (
               <PaginationItem key={`${item}-${index}`}>
@@ -509,6 +565,7 @@ function ArtifactsPagination({ className, itemLabel, onPageChange, page, pageSiz
                 ) : (
                   <PaginationButton
                     aria-label={a.goToPage(itemLabel, item)}
+                    className="max-md:size-11"
                     isActive={page === item}
                     onClick={() => onPageChange(item)}
                   >
@@ -519,6 +576,7 @@ function ArtifactsPagination({ className, itemLabel, onPageChange, page, pageSiz
             ))}
             <PaginationItem>
               <PaginationNext
+                className="max-md:min-h-11 max-md:min-w-11"
                 disabled={page >= pageCount}
                 onClick={() => onPageChange(Math.min(pageCount, page + 1))}
               />
@@ -549,13 +607,17 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpen, onOpen
   const displayValue = artifactDisplayValue(artifact.value)
   const [src, setSrc] = useState('')
   const [previewResolved, setPreviewResolved] = useState(false)
+  const [previewRequested, setPreviewRequested] = useState(false)
+  const isUntrustedWebImage = /^https?:/i.test(artifact.value) && !artifact.previewable
+
+  useEffect(() => setPreviewRequested(false), [artifact.id])
 
   useEffect(() => {
     let active = true
 
     setSrc('')
     setPreviewResolved(false)
-    void artifactImageSrc(artifact.value, artifact.href, artifact.previewable, artifact.profile)
+    void artifactImageSrc(artifact.value, artifact.href, artifact.previewable, artifact.profile, previewRequested)
       .then(nextSrc => {
         if (active) {
           setSrc(nextSrc)
@@ -572,7 +634,17 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpen, onOpen
     return () => {
       active = false
     }
-  }, [artifact.href, artifact.id, artifact.previewable, artifact.profile, artifact.value, onImageError])
+  }, [
+    artifact.href,
+    artifact.id,
+    artifact.previewable,
+    artifact.profile,
+    artifact.value,
+    onImageError,
+    previewRequested
+  ])
+
+  const canLoadPreview = isUntrustedWebImage && previewResolved && !src && !failedImage
 
   return (
     <article className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
@@ -589,13 +661,27 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpen, onOpen
               artifact={artifact}
               className="h-full w-full rounded-none border-0"
             />
-            {(failedImage || (previewResolved && !src)) && (
-              <span className="absolute bottom-2 text-[0.625rem] text-muted-foreground">{a.previewUnavailable}</span>
+            {canLoadPreview ? (
+              <Button
+                aria-label={a.loadPreviewFor(displayLabel)}
+                className="absolute bottom-2 min-h-9 max-md:min-h-11"
+                onClick={() => setPreviewRequested(true)}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                {a.loadPreview}
+              </Button>
+            ) : (
+              (failedImage || (previewResolved && !src)) && (
+                <span className="absolute bottom-2 text-[0.625rem] text-muted-foreground">{a.previewUnavailable}</span>
+              )
             )}
           </div>
         )}
         {!failedImage && src && (
           <ZoomableImage
+            actionButtonClassName="max-md:size-11"
             alt={displayLabel}
             className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain"
             containerClassName="max-h-full"
@@ -627,6 +713,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpen, onOpen
           {artifact.href && (
             <Button
               aria-label={a.openArtifact(displayLabel)}
+              className="max-md:min-h-11 max-md:min-w-11"
               onClick={() => void onOpen(artifact)}
               size="xs"
               type="button"
@@ -638,6 +725,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpen, onOpen
           )}
           <Button
             aria-label={a.openSourceChat(displayLabel)}
+            className="max-md:min-h-11 max-md:min-w-11"
             onClick={() => void onOpenChat(artifact)}
             size="xs"
             type="button"
@@ -697,7 +785,7 @@ function ArtifactMobileCard({ artifact, ctx }: { artifact: ArtifactRecord; ctx: 
             <CopyButton
               appearance="icon"
               buttonSize="icon-xs"
-              className="shrink-0 text-muted-foreground hover:text-foreground"
+              className="min-h-11 min-w-11 shrink-0 text-muted-foreground hover:text-foreground"
               iconClassName="size-3.5"
               label={copyLabel}
               text={artifact.value}
@@ -714,7 +802,7 @@ function ArtifactMobileCard({ artifact, ctx }: { artifact: ArtifactRecord; ctx: 
         {artifact.href && (
           <Button
             aria-label={a.openArtifact(label)}
-            className="min-h-8"
+            className="min-h-11 min-w-11"
             onClick={() => void ctx.onOpen(artifact)}
             size="sm"
             type="button"
@@ -726,7 +814,7 @@ function ArtifactMobileCard({ artifact, ctx }: { artifact: ArtifactRecord; ctx: 
         )}
         <Button
           aria-label={a.openSourceChat(label)}
-          className="min-h-8"
+          className="min-h-11 min-w-11"
           onClick={() => void ctx.onOpenChat(artifact)}
           size="sm"
           type="button"

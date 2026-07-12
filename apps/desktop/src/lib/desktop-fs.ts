@@ -52,14 +52,8 @@ function bridge() {
   return desktop
 }
 
-function remoteFsApi<T>(
-  path: string,
-  body?: Record<string, unknown>,
-  profile = desktopFsProfile()
-): Promise<T> {
-  return bridge().api<T>(
-    body ? { body, method: 'POST', path, profile } : { path, profile }
-  )
+function remoteFsApi<T>(path: string, body?: Record<string, unknown>, profile = desktopFsProfile()): Promise<T> {
+  return bridge().api<T>(body ? { body, method: 'POST', path, profile } : { path, profile })
 }
 
 export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {
@@ -98,12 +92,18 @@ export async function writeDesktopFileText(path: string, content: string): Promi
   return { path: result.path || path }
 }
 
-export async function readDesktopFileDataUrl(path: string, profile = desktopFsProfile()): Promise<string> {
+export async function readDesktopFileDataUrl(path: string, profile?: string): Promise<string> {
+  if (profile !== undefined) {
+    const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path), undefined, profile)
+
+    return typeof result === 'string' ? result : result.dataUrl || ''
+  }
+
   if (!isDesktopFsRemoteMode()) {
     return bridge().readFileDataUrl(path)
   }
 
-  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path), undefined, profile)
+  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
 
   return typeof result === 'string' ? result : result.dataUrl || ''
 }

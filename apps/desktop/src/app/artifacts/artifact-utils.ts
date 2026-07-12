@@ -31,6 +31,7 @@ const FILE_EXT_RE =
 
 const AMBIGUOUS_WEB_ROOT_RE = /^\/(?:assets|images|media|static|uploads)\//i
 const KEY_HINT_RE = /(path|file|url|image|artifact|output|download|result|target)/i
+const ROUTE_TEMPLATE_RE = /(?:\$\{|\{[^}]*\}|\/:\w)/
 const TRUSTED_IMAGE_RESULT_TOOLS = new Set(['image_generate'])
 const TRUSTED_IMAGE_RESULT_KEY_RE = /(?:^|\.)(?:agent_visible_image|host_image|image)$/i
 
@@ -76,6 +77,13 @@ function looksLikeArtifact(value: string): boolean {
 
   if (looksLikePathOrUrl(value) && (IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value))) {
     return true
+  }
+
+  if ((value.startsWith('/') || value.startsWith('file://')) && !ROUTE_TEMPLATE_RE.test(value)) {
+    const path = value.startsWith('file://') ? filePathFromMediaPath(value) : value
+    const basename = path.split(/[?#]/, 1)[0]?.split('/').filter(Boolean).pop() || ''
+
+    return basename.includes('.') && basename !== '.' && basename !== '..'
   }
 
   return false
@@ -133,7 +141,8 @@ export async function artifactImageSrc(
   value: string,
   href = artifactHref(value),
   previewable = false,
-  profile?: string
+  profile?: string,
+  allowNetwork = false
 ): Promise<string> {
   // Historical prose has no output provenance. Web/data sources are already
   // renderable; filesystem paths load only when a trusted tool result opts in.
@@ -146,14 +155,14 @@ export async function artifactImageSrc(
   }
 
   if (/^https?:/i.test(value)) {
-    return href
+    return previewable || allowNetwork ? href : ''
   }
 
   if (!previewable) {
     return ''
   }
 
-  if (typeof window !== 'undefined' && window.hermesDesktop && isRemoteGateway()) {
+  if (typeof window !== 'undefined' && window.hermesDesktop && (profile !== undefined || isRemoteGateway())) {
     return readDesktopFileDataUrl(filePathFromMediaPath(value), profile)
   }
 
@@ -299,7 +308,8 @@ function collectArtifactsFromMessage(
     const trustedToolResult =
       message.role === 'tool' &&
       TRUSTED_IMAGE_RESULT_TOOLS.has(toolName) &&
-      (parsedRecord as Record<string, unknown> | null)?.success !== false
+      (parsedRecord as Record<string, unknown> | null)?.success === true &&
+      !Object.prototype.hasOwnProperty.call(parsedRecord, 'error')
 
     collectStringValues(parsed, 'tool_result', (value, keyPath) => {
       const normalized = normalizeValue(value)

@@ -9,6 +9,7 @@ import { Download } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 export interface ZoomableImageProps extends ComponentProps<'img'> {
+  actionButtonClassName?: string
   containerClassName?: string
   slot?: string
 }
@@ -18,7 +19,15 @@ export interface ImageActionCopy {
   savingImage: string
 }
 
-export function ZoomableImage({ className, containerClassName, src, alt, slot, ...props }: ZoomableImageProps) {
+export function ZoomableImage({
+  actionButtonClassName,
+  className,
+  containerClassName,
+  src,
+  alt,
+  slot,
+  ...props
+}: ZoomableImageProps) {
   const { t } = useI18n()
   const copy = t.desktop
   const { download, saving } = useImageDownload(src)
@@ -41,11 +50,17 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
           <img alt={alt ?? ''} className={className} src={src} {...props} />
         </button>
         {src && (
-          <ImageActionButton className="group-hover/image:opacity-100" copy={copy} onClick={download} saving={saving} />
+          <ImageActionButton
+            className={cn('group-hover/image:opacity-100', actionButtonClassName)}
+            copy={copy}
+            onClick={download}
+            saving={saving}
+          />
         )}
       </span>
       {src && (
         <ImageLightbox
+          actionButtonClassName={actionButtonClassName}
           alt={alt}
           copy={copy}
           onClick={download}
@@ -60,6 +75,7 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
 }
 
 export function ImageLightbox({
+  actionButtonClassName,
   alt,
   copy,
   onClick,
@@ -68,6 +84,7 @@ export function ImageLightbox({
   saving,
   src
 }: {
+  actionButtonClassName?: string
   alt?: string
   copy: ImageActionCopy
   onClick: () => void
@@ -90,7 +107,7 @@ export function ImageLightbox({
             src={src}
           />
           <ImageActionButton
-            className="group-hover/lightbox:opacity-100"
+            className={cn('group-hover/lightbox:opacity-100', actionButtonClassName)}
             copy={copy}
             onClick={onClick}
             saving={saving}

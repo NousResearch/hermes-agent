@@ -102,6 +102,43 @@ class TestBuildJobPromptContextFrom:
         assert "Today's top story: AI is everywhere." in prompt
         assert f"Output from job '{job_a['id']}'" in prompt
 
+    def test_reads_output_from_active_profile_override(self, tmp_path, monkeypatch):
+        """Chained jobs must not inject output from the launch profile."""
+        from cron import jobs as cron_jobs
+        from cron.scheduler import _build_job_prompt
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        launch_home = tmp_path / "launch"
+        profile_home = tmp_path / "profiles" / "gnosiv"
+        monkeypatch.setattr(cron_jobs, "HERMES_DIR", launch_home)
+        monkeypatch.setattr(cron_jobs, "CRON_DIR", launch_home / "cron")
+        monkeypatch.setattr(cron_jobs, "JOBS_FILE", launch_home / "cron" / "jobs.json")
+        monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", launch_home / "cron" / "output")
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            with cron_jobs.use_cron_store(profile_home):
+                job_a = cron_jobs.create_job(prompt="Collect facts", schedule="every 1h")
+                job_b = cron_jobs.create_job(
+                    prompt="Summarize facts",
+                    schedule="every 1h",
+                    context_from=job_a["id"],
+                )
+                source_id = job_a["id"]
+                active_output = profile_home / "cron" / "output" / source_id
+                launch_output = launch_home / "cron" / "output" / source_id
+                active_output.mkdir(parents=True)
+                launch_output.mkdir(parents=True)
+                (active_output / "active.md").write_text("Active-profile output", encoding="utf-8")
+                (launch_output / "launch.md").write_text("Launch-profile output", encoding="utf-8")
+
+                prompt = _build_job_prompt(job_b)
+        finally:
+            reset_hermes_home_override(token)
+
+        assert "Active-profile output" in prompt
+        assert "Launch-profile output" not in prompt
+
     def test_uses_most_recent_output(self, cron_env):
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler import _build_job_prompt

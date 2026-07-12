@@ -13,6 +13,9 @@ Starlette's WebSocket TestClient does not inherit the HTTP ``base_url`` host.
 
 from __future__ import annotations
 
+import contextlib
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -106,6 +109,88 @@ def _logged_in(client: TestClient) -> None:
         f"/auth/callback?code=stub_code&state={state}", follow_redirects=False
     )
     assert r2.status_code == 302
+
+
+_MOBILE_SCOPES = [
+    "conversation.read",
+    "conversation.write",
+    "conversation.control",
+]
+_PUBLIC_WS_HEADERS = {
+    "Host": "fly-app.fly.dev",
+    "Origin": "https://fly-app.fly.dev",
+}
+
+
+def _mint_mobile_ticket(client: TestClient) -> str:
+    response = client.post(
+        "/api/auth/ws-ticket",
+        json={
+            "audience": "hermes.mobile",
+            "scopes": _MOBILE_SCOPES,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["granted_scopes"] == _MOBILE_SCOPES
+    return response.json()["ticket"]
+
+
+def _receive_rpc(socket, request_id: str) -> dict:
+    """Read interleaved events until one public JSON-RPC response arrives."""
+    for _ in range(30):
+        frame = socket.receive_json()
+        if frame.get("id") == request_id:
+            return frame
+    raise AssertionError(f"JSON-RPC response {request_id!r} was not delivered")
+
+
+def _receive_rpc_and_event(socket, request_id: str, event_type: str) -> tuple[dict, dict]:
+    """Collect a response and event without assuming their wire order."""
+    response = None
+    event = None
+    for _ in range(30):
+        frame = socket.receive_json()
+        if frame.get("id") == request_id:
+            response = frame
+        if frame.get("params", {}).get("type") == event_type:
+            event = frame
+        if response is not None and event is not None:
+            return response, event
+    raise AssertionError(
+        f"response {request_id!r} and event {event_type!r} were not delivered"
+    )
+
+
+def _assert_mobile_ready(socket) -> dict:
+    ready = socket.receive_json()
+    assert ready["method"] == "event"
+    assert ready["params"]["type"] == "gateway.ready"
+    payload = ready["params"]["payload"]
+    assert payload["protocol"] == {"name": "hermes.tui.jsonrpc", "major": 1}
+    assert payload["contract"] == {"name": "hermes.mobile", "major": 1}
+    assert payload["schemas"]["session.synchronization"] == 1
+    assert payload["schemas"]["mutation.receipt"] == 1
+    assert payload["schemas"]["approval.lifecycle"] == 1
+    mutation = payload["capabilities"]["mutation.idempotency"]
+    assert mutation["version"] == 1
+    assert {
+        "prompt.submit",
+        "session.interrupt",
+        "approval.respond",
+        "session.delete",
+    } <= set(mutation["methods"])
+    assert mutation["status_method"] == "mutation.status"
+    lifecycle = payload["capabilities"]["interaction.lifecycle"]
+    assert lifecycle["version"] == 1
+    assert "approval" in lifecycle["kinds"]
+    assert "approval.respond" in lifecycle["response_methods"]
+    assert payload["authorization"] == {
+        "subject": "stub-user-1",
+        "provider": "stub",
+        "audience": "hermes.mobile",
+        "scopes": _MOBILE_SCOPES,
+    }
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +365,552 @@ def test_scoped_ticket_grant_reaches_gateway_ready_and_dispatch(gated_app, monke
         )
         denied = socket.receive_json()
         assert denied["error"]["data"]["required_scope"] == "conversation.write"
+
+
+def test_mobile_contract_public_conformance_round_trip(
+    gated_app,
+    monkeypatch,
+    tmp_path,
+):
+    """Prove mobile recovery through auth, FastAPI, and real WebSockets."""
+    from unittest.mock import MagicMock
+
+    import run_agent
+    from agent import title_generator
+    from hermes_state import SessionDB
+    from tools import approval
+    from tui_gateway import mobile_contract
+    from tui_gateway.mobile_mutations import MobileMutationStore
+    from tui_gateway.mobile_sync import SessionEventStream
+
+    monkeypatch.setattr(web_server, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    monkeypatch.setattr(
+        mcp_startup,
+        "start_background_mcp_discovery",
+        lambda **_kw: None,
+    )
+    monkeypatch.setattr(tui_server, "resolve_skin", lambda: "test-skin")
+    monkeypatch.setattr(
+        tui_server,
+        "_claim_active_session_slot",
+        lambda *_a, **_k: (None, None),
+    )
+    monkeypatch.setattr(tui_server, "_schedule_agent_build", lambda *_a: None)
+    monkeypatch.setattr(
+        tui_server,
+        "_schedule_session_cap_enforcement",
+        lambda: None,
+    )
+    monkeypatch.setattr(tui_server, "_register_session_cwd", lambda *_a: None)
+    monkeypatch.setattr(tui_server, "_profile_home", lambda *_a: None)
+    monkeypatch.setattr(
+        tui_server,
+        "_completion_cwd",
+        lambda *_a, **_k: str(tmp_path),
+    )
+    monkeypatch.setattr(tui_server, "_git_branch_for_cwd", lambda *_a: "")
+    monkeypatch.setattr(tui_server, "_resolve_model", lambda: "test/model")
+    monkeypatch.setattr(tui_server, "_current_profile_name", lambda: "default")
+    monkeypatch.setattr(tui_server, "_schedule_ws_orphan_reap", lambda *_a: None)
+    monkeypatch.setattr(tui_server, "make_stream_renderer", lambda *_a: None)
+    monkeypatch.setattr(tui_server, "render_message", lambda *_a: None)
+    monkeypatch.setattr(
+        tui_server,
+        "_sync_agent_model_with_config",
+        lambda *_a: None,
+    )
+    monkeypatch.setattr(title_generator, "maybe_auto_title", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        run_agent,
+        "check_toolset_requirements",
+        lambda *_a, **_k: {},
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", MagicMock)
+
+    database = SessionDB(db_path=tmp_path / "state.db")
+    mutation_store = MobileMutationStore(tmp_path / "mobile-mutations.sqlite3")
+    monkeypatch.setattr(tui_server, "_get_db", lambda: database)
+    monkeypatch.setattr(
+        tui_server,
+        "_session_db",
+        lambda _session: contextlib.nullcontext(database),
+    )
+    monkeypatch.setattr(
+        tui_server,
+        "_mobile_mutation_store",
+        lambda: mutation_store,
+    )
+    monkeypatch.setattr(
+        approval,
+        "_get_approval_config",
+        lambda: {"gateway_timeout": 10},
+    )
+
+    turn_entered = threading.Event()
+    release_turn = threading.Event()
+    turn_count = 0
+    tui_server._sessions.clear()
+    _logged_in(gated_app)
+
+    stored_session_id = ""
+    agent = None
+    approval_thread = None
+    approval_decision = {}
+    try:
+        first_ticket = _mint_mobile_ticket(gated_app)
+        with gated_app.websocket_connect(
+            f"/api/ws?ticket={first_ticket}",
+            headers=_PUBLIC_WS_HEADERS,
+        ) as socket:
+            _assert_mobile_ready(socket)
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "create",
+                    "method": "session.create",
+                    "params": {"cols": 100},
+                }
+            )
+            created = _receive_rpc(socket, "create")["result"]
+            live_session_id = created["session_id"]
+            stored_session_id = created["stored_session_id"]
+            initial_cursor = created["synchronization"]["recovery"]["cursor"]
+            assert created["synchronization"]["recovery"]["outcome"] == "reset"
+            assert created["synchronization"]["recovery"]["reason"] == (
+                "cursor_missing"
+            )
+
+            agent = run_agent.AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                platform="tui",
+                quiet_mode=True,
+                session_db=database,
+                session_id=stored_session_id,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.api_mode = "chat_completions"
+            agent.client = MagicMock()
+            agent._cached_system_prompt = "SYSTEM"
+            agent.compression_enabled = False
+            agent._skip_mcp_refresh = True
+
+            def deterministic_provider(_api_kwargs, *, on_first_delta=None):
+                nonlocal turn_count
+                turn_count += 1
+                turn_entered.set()
+                assert release_turn.wait(timeout=5)
+                if on_first_delta is not None:
+                    on_first_delta()
+                stream_callback = getattr(agent, "_stream_callback", None)
+                assert callable(stream_callback)
+                stream_callback("fixture complete")
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            finish_reason="stop",
+                            message=SimpleNamespace(
+                                content="fixture complete",
+                                reasoning=None,
+                                reasoning_content=None,
+                                tool_calls=None,
+                            ),
+                        )
+                    ],
+                    model="test/model",
+                    usage=SimpleNamespace(
+                        completion_tokens=2,
+                        prompt_tokens=4,
+                        total_tokens=6,
+                    ),
+                )
+
+            agent._interruptible_streaming_api_call = deterministic_provider
+            agent._interruptible_api_call = lambda api_kwargs: (
+                deterministic_provider(api_kwargs)
+            )
+            session = tui_server._sessions[live_session_id]
+            session["agent"] = agent
+            session["agent_ready"] = None
+            tui_server._register_gateway_approval_callbacks(
+                stored_session_id,
+                live_session_id,
+            )
+
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "prompt-uncertain",
+                    "method": "prompt.submit",
+                    "params": {
+                        "client_request_id": "prompt-public-1",
+                        "expected_stored_session_id": stored_session_id,
+                        "session_id": live_session_id,
+                        "text": "one durable public turn",
+                    },
+                }
+            )
+            assert turn_entered.wait(timeout=2)
+            # Intentionally leave without consuming the prompt ACK.
+
+        release_turn.set()
+        deadline = time.monotonic() + 3
+        receipt = None
+        while time.monotonic() < deadline:
+            receipt = mutation_store.status(
+                provider="stub",
+                subject="stub-user-1",
+                client_request_id="prompt-public-1",
+            )
+            if (
+                receipt
+                and receipt["state"] == "completed"
+                and not session.get("running")
+            ):
+                break
+            time.sleep(0.01)
+        assert receipt is not None and receipt["state"] == "completed"
+        assert session["running"] is False
+        run_thread = session["_run_thread"]
+        run_thread.join(timeout=2)
+        assert not run_thread.is_alive()
+        persisted_messages = database.get_messages(stored_session_id)
+        assert [
+            row["content"] for row in persisted_messages if row["role"] == "user"
+        ] == ["one durable public turn"]
+
+        second_ticket = _mint_mobile_ticket(gated_app)
+        with gated_app.websocket_connect(
+            f"/api/ws?ticket={second_ticket}",
+            headers=_PUBLIC_WS_HEADERS,
+        ) as socket:
+            _assert_mobile_ready(socket)
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "resume-after-prompt",
+                    "method": "session.resume",
+                    "params": {
+                        "cols": 100,
+                        "cursor": initial_cursor,
+                        "session_id": stored_session_id,
+                    },
+                }
+            )
+            resumed = _receive_rpc(socket, "resume-after-prompt")["result"]
+            synchronization = resumed["synchronization"]
+            assert synchronization["recovery"]["outcome"] == "complete"
+            assert synchronization["recovery"]["snapshot_required"] is False
+            replayed_types = [
+                frame["params"]["type"]
+                for frame in synchronization["recovery"]["events"]
+            ]
+            assert replayed_types.count("message.start") == 1
+            assert replayed_types.count("message.delta") == 1
+            assert replayed_types.count("message.complete") == 1
+            assert replayed_types.index("message.start") < replayed_types.index(
+                "message.delta"
+            ) < replayed_types.index("message.complete")
+            snapshot_messages = synchronization["snapshot"]["messages"]
+            assert [
+                message
+                for message in snapshot_messages
+                if message["role"] == "user"
+            ] == [{"role": "user", "text": "one durable public turn"}]
+            assert [
+                message
+                for message in snapshot_messages
+                if message["role"] == "assistant"
+            ] == [{"role": "assistant", "text": "fixture complete"}]
+            active_session_id = resumed["session_id"]
+
+            prompt_params = {
+                "client_request_id": "prompt-public-1",
+                "expected_stored_session_id": stored_session_id,
+                "session_id": active_session_id,
+                "text": "one durable public turn",
+            }
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "prompt-retry",
+                    "method": "prompt.submit",
+                    "params": prompt_params,
+                }
+            )
+            prompt_retry = _receive_rpc(socket, "prompt-retry")["result"]
+            assert prompt_retry["mutation"] == {
+                "client_request_id": "prompt-public-1",
+                "deduplicated": True,
+                "state": "completed",
+            }
+            assert turn_count == 1
+
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "history-after-retry",
+                    "method": "session.history",
+                    "params": {"session_id": active_session_id},
+                }
+            )
+            history = _receive_rpc(socket, "history-after-retry")["result"]
+            assert [
+                message
+                for message in history["messages"]
+                if message["role"] == "user"
+            ] == [{"role": "user", "text": "one durable public turn"}]
+            assert [
+                message
+                for message in history["messages"]
+                if message["role"] == "assistant"
+            ] == [{"role": "assistant", "text": "fixture complete"}]
+
+            pre_approval_cursor = synchronization["recovery"]["cursor"]
+            registered_notify = approval._gateway_notify_cbs[stored_session_id]
+            approval_emitted = threading.Event()
+
+            def wait_for_approval():
+                def notify(data):
+                    registered_notify(data)
+                    approval_emitted.set()
+
+                approval_decision["value"] = approval._await_gateway_decision(
+                    stored_session_id,
+                    notify,
+                    {
+                        "command": "printf mobile-contract-conformance",
+                        "description": "harmless conformance approval",
+                        "pattern_key": "printf",
+                        "pattern_keys": ["printf"],
+                    },
+                )
+
+            approval_thread = threading.Thread(target=wait_for_approval)
+            approval_thread.start()
+            assert approval_emitted.wait(timeout=2)
+            # Intentionally disconnect before consuming approval.request.
+
+        third_ticket = _mint_mobile_ticket(gated_app)
+        with gated_app.websocket_connect(
+            f"/api/ws?ticket={third_ticket}",
+            headers=_PUBLIC_WS_HEADERS,
+        ) as socket:
+            _assert_mobile_ready(socket)
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "resume-approval",
+                    "method": "session.resume",
+                    "params": {
+                        "cols": 100,
+                        "cursor": pre_approval_cursor,
+                        "session_id": stored_session_id,
+                    },
+                }
+            )
+            approval_resume = _receive_rpc(socket, "resume-approval")["result"]
+            approval_sync = approval_resume["synchronization"]
+            assert approval_sync["recovery"]["outcome"] == "complete"
+            replayed_approval = [
+                frame
+                for frame in approval_sync["recovery"]["events"]
+                if frame["params"]["type"] == "approval.request"
+            ]
+            assert len(replayed_approval) == 1
+            pending_approvals = approval_sync["snapshot"]["pending_interactions"]
+            assert len(pending_approvals) == 1
+            approval_id = replayed_approval[0]["params"]["payload"]["approval_id"]
+            assert pending_approvals[0]["approval_id"] == approval_id
+            assert pending_approvals[0]["kind"] == "approval"
+            terminal_cursor = approval_sync["recovery"]["cursor"]
+            approval_params = {
+                "approval_id": approval_id,
+                "choice": "once",
+                "client_request_id": "approval-public-1",
+                "expected_stored_session_id": stored_session_id,
+                "session_id": approval_resume["session_id"],
+            }
+
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "resolve-approval",
+                    "method": "approval.respond",
+                    "params": approval_params,
+                }
+            )
+            resolved, terminal = _receive_rpc_and_event(
+                socket,
+                "resolve-approval",
+                "approval.resolved",
+            )
+            assert resolved["result"]["outcome"] == "resolved"
+            assert resolved["result"]["approval"]["approval_id"] == approval_id
+            assert resolved["result"]["mutation"]["deduplicated"] is False
+            assert terminal["params"]["payload"]["approval_id"] == approval_id
+
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "resolve-approval-retry",
+                    "method": "approval.respond",
+                    "params": approval_params,
+                }
+            )
+            replayed_resolution = _receive_rpc(
+                socket,
+                "resolve-approval-retry",
+            )["result"]
+            assert replayed_resolution["outcome"] == "resolved"
+            assert replayed_resolution["approval"] == resolved["result"]["approval"]
+            assert replayed_resolution["mutation"] == {
+                "client_request_id": "approval-public-1",
+                "deduplicated": True,
+                "state": "completed",
+            }
+            approval_thread.join(timeout=2)
+            assert not approval_thread.is_alive()
+            assert approval_decision == {
+                "value": {"resolved": True, "choice": "once", "reason": None}
+            }
+
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "resume-terminal",
+                    "method": "session.resume",
+                    "params": {
+                        "cols": 100,
+                        "cursor": terminal_cursor,
+                        "session_id": stored_session_id,
+                    },
+                }
+            )
+            terminal_resume = _receive_rpc(socket, "resume-terminal")["result"]
+            terminal_sync = terminal_resume["synchronization"]
+            terminal_events = [
+                frame
+                for frame in terminal_sync["recovery"]["events"]
+                if frame["params"]["type"] == "approval.resolved"
+            ]
+            assert len(terminal_events) == 1
+            assert terminal_events[0]["params"]["payload"]["approval_id"] == (
+                approval_id
+            )
+            assert terminal_sync["snapshot"]["pending_interactions"] == []
+
+            session = tui_server._sessions[terminal_resume["session_id"]]
+            with session["history_lock"]:
+                session["mobile_sync"] = SessionEventStream(
+                    mobile_contract.SERVER_INSTANCE_ID,
+                    max_events=1,
+                    max_bytes=1024 * 1024,
+                )
+                gap_cursor = session["mobile_sync"].cursor()
+            tui_server._emit(
+                "status.update",
+                terminal_resume["session_id"],
+                {"kind": "step", "text": "one"},
+            )
+            tui_server._emit(
+                "status.update",
+                terminal_resume["session_id"],
+                {"kind": "step", "text": "two"},
+            )
+
+        fourth_ticket = _mint_mobile_ticket(gated_app)
+        with gated_app.websocket_connect(
+            f"/api/ws?ticket={fourth_ticket}",
+            headers=_PUBLIC_WS_HEADERS,
+        ) as socket:
+            _assert_mobile_ready(socket)
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "resume-gap",
+                    "method": "session.resume",
+                    "params": {
+                        "cols": 100,
+                        "cursor": gap_cursor,
+                        "session_id": stored_session_id,
+                    },
+                }
+            )
+            gap = _receive_rpc(socket, "resume-gap")["result"]["synchronization"]
+            assert gap["recovery"]["outcome"] == "gap"
+            assert gap["recovery"]["reason"] == "replay_evicted"
+            assert gap["recovery"]["snapshot_required"] is True
+
+            stream_id = gap["snapshot"]["stream_id"]
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "resume-stream-reset",
+                    "method": "session.resume",
+                    "params": {
+                        "cols": 100,
+                        "cursor": {
+                            "server_instance_id": mobile_contract.SERVER_INSTANCE_ID,
+                            "stream_id": "retired-stream",
+                            "sequence": 0,
+                        },
+                        "session_id": stored_session_id,
+                    },
+                }
+            )
+            stream_reset = _receive_rpc(
+                socket,
+                "resume-stream-reset",
+            )["result"]["synchronization"]["recovery"]
+            assert stream_reset["outcome"] == "reset"
+            assert stream_reset["reason"] == "stream_changed"
+
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "resume-server-reset",
+                    "method": "session.resume",
+                    "params": {
+                        "cols": 100,
+                        "cursor": {
+                            "server_instance_id": "retired-server",
+                            "stream_id": stream_id,
+                            "sequence": 0,
+                        },
+                        "session_id": stored_session_id,
+                    },
+                }
+            )
+            server_reset = _receive_rpc(
+                socket,
+                "resume-server-reset",
+            )["result"]["synchronization"]["recovery"]
+            assert server_reset["outcome"] == "reset"
+            assert server_reset["reason"] == "server_instance_changed"
+    finally:
+        release_turn.set()
+        for session in list(tui_server._sessions.values()):
+            run_thread = session.get("_run_thread")
+            join = getattr(run_thread, "join", None)
+            if callable(join):
+                join(timeout=5)
+        if stored_session_id:
+            approval.unregister_gateway_notify(stored_session_id)
+            with approval._lock:
+                approval._gateway_queues.pop(stored_session_id, None)
+                approval._gateway_tombstones.pop(stored_session_id, None)
+                approval._schedule_gateway_tombstone_cleanup_locked()
+        if approval_thread is not None:
+            approval_thread.join(timeout=1)
+        if agent is not None:
+            agent.close()
+        tui_server._sessions.clear()
+        mutation_store.close()
+        database.close()
 
 
 # ---------------------------------------------------------------------------

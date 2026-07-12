@@ -1,104 +1,104 @@
-# Mobile Client Contract
+# Mobile Client Contract implementation notes
 
-Hermes exposes its additive Mobile Client Contract on the existing
-authenticated `/api/ws` JSON-RPC transport. Clients must negotiate features
-from `gateway.ready`; a contract major or server version alone does not imply a
-capability.
+The normative client-facing Mobile Client Contract is documented in
+[Programmatic Integration](../website/docs/developer-guide/programmatic-integration.md#nativemobile-websocket-contract).
+That guide owns the authentication flow, wire schemas, compatibility rules,
+scope allowlist, reconciliation algorithm, mutation failure semantics, approval
+lifecycle, and end-to-end reconnect sequence. Keep wire-level changes there
+rather than duplicating the contract in this implementation note.
 
-## Revisioned conversation synchronization
+Hermes advertises the additive contract, schema, and capability fields in the
+`gateway.ready` event for every accepted WebSocket. Mobile dispatch authority,
+synchronized event shapes, and durable mutation requirements apply only when
+the effective `gateway.ready.authorization.audience` is `hermes.mobile`.
 
-When `conversation.sync` version 1 is advertised, `session.create` and
-`session.resume` include the same `synchronization` envelope:
+## Capability boundary
 
-- `snapshot` is authoritative conversation state. It identifies the server
-  process, live event stream, stable conversation lineage, current stored
-  session tip, and process-local live session. It also includes a revision,
-  event watermark, messages, inflight turn, active tool descriptors, pending
-  interactions, and runtime status.
-- `recovery` reports `complete`, `gap`, or `reset`, the cursor at the snapshot
-  watermark, and any replayable events after the supplied cursor.
-- Every session event carries `schema_major`, `stream_id`, and a monotonically
-  increasing `sequence` within that stream.
+The contract is implemented on the existing authenticated `/api/ws` JSON-RPC
+transport. It does not introduce another runtime or source of conversation
+state. `tui_gateway/mobile_contract.py` owns:
 
-The replay store is bounded in memory by both the advertised event and byte
-limits. `gap` means an event needed after the supplied cursor was evicted.
-`reset` means the cursor is absent, invalid, from another server process, or
-from another reconstructed live stream. Clients must never treat either
-outcome as complete replay.
+- protocol, contract, and client-facing schema majors;
+- independently advertised capability descriptors;
+- the supported mobile scopes;
+- the fail-closed method, parameter, and scope policy; and
+- the stable effective authorization shape copied from the consumed ticket.
 
-Synchronization state and replay retention begin when an authorized mobile
-transport first attaches to a live session. A session that has never negotiated
-sync does not pay the per-delta replay copying cost. If a legacy transport later
-attaches to a previously negotiated session, retention continues for the next
-mobile reconnect, but the legacy response and event shapes remain unchanged.
+An advertised contract major or Hermes release version never implies an
+individual capability. Legacy dashboard and stdio grants keep their prior
+authority and wire behavior; only the `hermes.mobile` audience enters the
+mobile allowlist.
 
-## Snapshot and event barrier
+## Synchronization boundary
 
-Hermes serializes snapshot-visible live state, event sequence allocation,
-replay retention, and event transport enqueueing at one per-stream boundary.
-Snapshot capture takes the conversation history lock before that stream
-boundary. The returned watermark therefore covers every state transition
-published before the snapshot.
+`tui_gateway/mobile_sync.py` owns one `SessionEventStream` for each reconstructed
+live session. The server process identity is stable for one process, while each
+stream gets a new stream identity. A restart or reconstructed stream therefore
+produces an explicit reset instead of pretending replay is complete.
 
-A client should:
+Snapshot capture and event publication use this lock order:
 
-1. Buffer events for the returned `stream_id` while create or resume is in
-   flight.
-2. Install the complete snapshot at its `watermark`.
-3. Discard buffered or replayed events at or below the watermark.
-4. Apply only events for the same server and stream whose sequence is greater
-   than the watermark, in sequence order.
-5. Replace local state from the snapshot whenever recovery is `gap` or
-   `reset`.
+1. acquire the conversation history lock;
+2. acquire the per-stream reentrant lock;
+3. mutate snapshot-visible state, allocate a sequence, retain the replay frame,
+   and enqueue transport delivery under that stream boundary.
 
-Assistant `message.delta` events additionally carry one `turn_id` and an
-absolute `offset`. The `conversation.sync.delta_offsets.unit` capability names
-the unit as `utf8_bytes`. Clients can therefore ignore an overlapping prefix
-instead of duplicating text after replay or transport coalescing.
+The snapshot watermark consequently covers every state transition published
+before capture. Clients can either replay a complete interval from their exact
+cursor or install the returned snapshot. Replay eviction reports a gap; a
+missing, invalid, foreign-process, or foreign-stream cursor reports a reset.
+Neither outcome may masquerade as complete recovery.
 
-## Durable consequential mutations
+Replay is process-local and bounded by both event count and encoded byte size.
+Retention begins when a mobile-audience transport first attaches. If a legacy
+transport later owns the session, Hermes continues retaining sequenced copies
+for a future mobile reconnect while sending the legacy transport its unchanged
+event shape.
 
-When `mutation.idempotency` version 1 is advertised, its `methods` list is the
-complete set of mobile methods covered by durable receipts. Each covered
-request requires a non-empty `client_request_id`. Prompt submission,
-interruption, and approval response additionally require the stable
-`expected_stored_session_id`; approval response also requires the
-Hermes-issued `approval_id`.
+## Durable mutation receipts
 
-Receipts are scoped to the authenticated provider and subject. Repeating the
-same request identity with equivalent normalized semantics returns the stored
-result with `mutation.deduplicated` set to `true`. Reusing it with different
-semantics returns `mutation_conflict`. A request abandoned after execution may
-have begun is reported as `mutation_outcome_unknown` and is never executed
-again automatically. Clients can inspect a known receipt with the advertised
-`mutation.status` method.
+`tui_gateway/mobile_mutations.py` owns SQLite-backed at-most-once receipts that
+are independent of a live TUI session. Receipt identity is scoped to the
+effective authenticated provider and subject. Its fingerprint binds the method,
+Hermes resource identity, and method-specific semantic parameters.
 
-This guarantee applies only to the methods named by the capability on a
-mobile-scoped connection. Existing legacy transports retain their prior
-request shapes and behavior.
+Only methods listed by `mutation.idempotency.methods` enter this path. A
+same-principal retry with the same fingerprint replays the stored outcome;
+changed semantics conflict. A reservation that might have executed but cannot
+be completed safely becomes `outcome_unknown` and is never released for
+automatic duplicate execution. On process startup, another process's unfinished
+reservation is terminalized the same way.
 
-## Recoverable approval lifecycle
+Prompt receipts have a stronger completion boundary than handler return. The
+gateway binds an opaque proof tag to the exact user turn and marks the receipt
+complete only after that turn is proven in durable history. Queued, streaming,
+and reconnect paths share one condition-driven receipt coordinator per live
+session; a lost proof becomes `outcome_unknown`, not a successful receipt.
 
-When `interaction.lifecycle` version 1 names `approval` in `kinds` and
-`approval.respond` in `response_methods`, approval requests use the
-`approval.lifecycle` version 1 schema. Each request carries a stable
-Hermes-owned `approval_id`, server-redacted presentation fields, creation and
-expiry times, current state, and resolution metadata. Pending descriptors are
-part of the authoritative synchronization snapshot and remain addressable
-after reconnect.
+## Approval lifecycle
 
-Hermes emits `approval.request` for creation and one of `approval.resolved`,
-`approval.expired`, or `approval.stale` for a terminal transition. Every event
-and snapshot descriptor carries the same `approval_id`. A mobile response must
-name that identity, the stable conversation lineage, a choice, and a durable
-client request identity. Identical retries replay the stored mutation result;
-changed semantics conflict. Short-lived terminal tombstones distinguish
-`already_resolved`, `expired`, `stale`, and `not_found` outcomes without
-consuming another pending approval.
+`tools/approval.py` owns approval identities and lifecycle state. Callers cannot
+choose reserved lifecycle fields. Public descriptors are recursively and
+forcibly redacted at the approval-core boundary before any gateway event or
+snapshot sees them.
 
-Approval payload and resolution metadata redaction is server-owned. Mobile
-clients must not infer authorization from presentation fields: the response is
-available only when the lifecycle capability, mutation coverage,
-`conversation.control` grant, live reconciled state, and valid Hermes resource
-identities all agree. ID-less legacy desktop and stdin responses retain their
-existing FIFO behavior.
+Each pending approval has one Hermes-issued identity. Mobile resolution targets
+that exact identity, while ID-less FIFO and resolve-all behavior remain legacy
+only. The terminal callback runs after the core state transition and before the
+blocked waiter is released, so the sequenced terminal event cannot be overtaken
+by downstream tool or turn events.
+
+Pending approvals and terminal tombstones are process-local. A transport
+reconnect can recover them while the same process and live stream retain the
+session, but a server/stream reset invalidates that live approval state.
+Completed `approval.respond` mutation receipts remain durable independently of
+the in-memory tombstone.
+
+## Conformance ownership
+
+The public conformance path lives with the authenticated FastAPI/WebSocket tests
+in `tests/hermes_cli/test_dashboard_auth_ws_auth.py`. It must exercise the real
+ticket, WebSocket, dispatcher, synchronization, receipt, and approval seams in
+one generic flow. Unit tests under `tests/tui_gateway/` continue to cover race,
+overflow, redaction, persistence, and compatibility edge cases at their owning
+modules.

@@ -431,6 +431,21 @@ def build_gemini_request(
     thinking_config: Any = None,
 ) -> Dict[str, Any]:
     contents, system_instruction = _build_gemini_contents(messages)
+    if not contents:
+        # generateContent rejects an empty `contents` array with HTTP 400
+        # (INVALID_ARGUMENT: "contents is not specified") — a non-retryable
+        # error that surfaces to the user as an opaque "model provider
+        # failed after retries". `contents` can legitimately end up empty
+        # when every message is system-only or loses all of its parts
+        # (e.g. a platform adapter forwarded an event whose media download
+        # failed, or a background/system-only turn). Inject a minimal user
+        # turn so the request is always valid.
+        logger.warning(
+            "Gemini request had empty contents (messages were system-only "
+            "or produced no parts); injecting a minimal user turn to avoid "
+            "a 400 contents is not specified."
+        )
+        contents = [{"role": "user", "parts": [{"text": "."}]}]
     request: Dict[str, Any] = {"contents": contents}
     if system_instruction:
         request["systemInstruction"] = system_instruction

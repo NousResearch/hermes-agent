@@ -90,7 +90,20 @@ class PtySession:
         self.last_detached_at = None
         snap = self.buffer.snapshot()
         if snap:
-            await ws.send_bytes(snap)
+            # Replaying the ring buffer can fail if the client socket died
+            # between the WS upgrade and this send (browser closed, half-open
+            # socket). Mirror the defensive send in ``_drain``: roll the
+            # session back to detached so a dead socket never looks live
+            # (which would block the reaper), then re-raise so the caller can
+            # tear the socket down. Without this, the WebSocketDisconnect
+            # propagates out of the ASGI handler and spews a traceback.
+            try:
+                await ws.send_bytes(snap)
+            except Exception:
+                self._ws = None
+                self.attached = False
+                self.last_detached_at = time.monotonic()
+                raise
 
     def detach(self, ws) -> None:
         # Only the currently-attached socket may mark the session detached.

@@ -15556,7 +15556,14 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=1011)
         return
 
-    await session.attach(ws)
+    try:
+        await session.attach(ws)
+    except WebSocketDisconnect:
+        # Client disconnected before/during buffer replay — the PTY is
+        # still alive; mark the session detached so the reaper can
+        # clean it up when the process exits or TTL expires.
+        PTY_REGISTRY.detach(attach_token, ws)
+        return
 
     # --- writer loop: WebSocket → PTY master ----------------------------
     # No reader task here: the session's drain task (spawned once per PTY,

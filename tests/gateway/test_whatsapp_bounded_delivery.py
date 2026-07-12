@@ -9,11 +9,13 @@ Task 2 of the delivery-reliability plan:
 """
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import Platform
+from plugins.platforms.whatsapp import delivery_ledger
 from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 from plugins.platforms.whatsapp.delivery_reliability import (
     AMBIGUOUS,
@@ -184,6 +186,82 @@ class TestPolicyHook:
         assert not outcome.ok
         assert outcome.failure.category == "policy_blocked"
         assert attempt.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Dead-letter ledger integration (Task 3)
+# ---------------------------------------------------------------------------
+
+class TestSendWithRetriesDeadLetter:
+    def test_exhausted_retries_record_dead_letter_when_ledger_enabled(self, tmp_path, monkeypatch):
+        path = tmp_path / "ledger.jsonl"
+        monkeypatch.setenv(delivery_ledger._LEDGER_ENABLED_ENV, "1")
+        monkeypatch.setenv(delivery_ledger._LEDGER_PATH_ENV, str(path))
+
+        attempt = _attempt_fn([(503, "unavailable")])
+        outcome = _run(send_with_retries(
+            attempt, base_headers=AUTH, sleep=AsyncMock(), jitter=False,
+            platform="whatsapp", route="/send",
+        ))
+
+        assert outcome.dead_letter_ref
+        entries = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert len(entries) == 1
+        assert entries[0]["platform"] == "whatsapp"
+        assert entries[0]["route"] == "/send"
+        assert entries[0]["attempts"] == 3
+        assert entries[0]["category"] == "http_503"
+
+    def test_ambiguous_timeout_records_dead_letter(self, tmp_path, monkeypatch):
+        path = tmp_path / "ledger.jsonl"
+        monkeypatch.setenv(delivery_ledger._LEDGER_ENABLED_ENV, "1")
+        monkeypatch.setenv(delivery_ledger._LEDGER_PATH_ENV, str(path))
+
+        attempt = _attempt_fn([asyncio.TimeoutError()])
+        outcome = _run(send_with_retries(
+            attempt, sleep=AsyncMock(), jitter=False, platform="whatsapp", route="/send",
+        ))
+
+        assert outcome.dead_letter_ref
+        entries = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert entries[0]["category"] == "timeout"
+        assert entries[0]["attempts"] == 1
+
+    def test_success_never_records_dead_letter(self, tmp_path, monkeypatch):
+        path = tmp_path / "ledger.jsonl"
+        monkeypatch.setenv(delivery_ledger._LEDGER_ENABLED_ENV, "1")
+        monkeypatch.setenv(delivery_ledger._LEDGER_PATH_ENV, str(path))
+
+        attempt = _attempt_fn([(429, "slow down"), (200, {"messageId": "m2"})])
+        outcome = _run(send_with_retries(
+            attempt, sleep=AsyncMock(), jitter=False, platform="whatsapp", route="/send",
+        ))
+
+        assert outcome.ok
+        assert outcome.dead_letter_ref is None
+        assert not path.exists()
+
+    def test_no_dead_letter_ref_when_ledger_disabled(self):
+        attempt = _attempt_fn([(503, "unavailable")])
+        outcome = _run(send_with_retries(
+            attempt, sleep=AsyncMock(), jitter=False, platform="whatsapp", route="/send",
+        ))
+        assert not outcome.ok
+        assert outcome.dead_letter_ref is None
+
+    def test_policy_veto_never_records_dead_letter(self, tmp_path, monkeypatch):
+        path = tmp_path / "ledger.jsonl"
+        monkeypatch.setenv(delivery_ledger._LEDGER_ENABLED_ENV, "1")
+        monkeypatch.setenv(delivery_ledger._LEDGER_PATH_ENV, str(path))
+        set_delivery_policy_hook(lambda context: False)
+
+        attempt = _attempt_fn([(200, {})])
+        outcome = _run(send_with_retries(
+            attempt, platform="whatsapp", route="/send",
+        ))
+
+        assert outcome.dead_letter_ref is None
+        assert not path.exists()
 
 
 # ---------------------------------------------------------------------------

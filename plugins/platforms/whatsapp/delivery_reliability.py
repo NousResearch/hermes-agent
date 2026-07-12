@@ -22,6 +22,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
+from plugins.platforms.whatsapp import delivery_ledger as _delivery_ledger
+
 RETRYABLE = "retryable"
 NON_RETRYABLE = "non_retryable"
 AMBIGUOUS = "ambiguous"
@@ -140,6 +142,8 @@ async def send_with_retries(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     jitter: bool = True,
     policy_context: Optional[dict] = None,
+    platform: str = "whatsapp",
+    route: str = "",
 ) -> DeliveryOutcome:
     """Run one logical bridge delivery with bounded, classified retries.
 
@@ -151,6 +155,12 @@ async def send_with_retries(
     A 2xx ends the loop; a permanent or ambiguous failure stops immediately
     (an ambiguous timeout is NEVER retried — the send may have gone out).
     Only retryable failures re-attempt, up to ``max_attempts``.
+
+    A terminal failure (retries exhausted, ambiguous timeout, or permanent
+    rejection) is recorded to the sanitized dead-letter ledger — a no-op
+    unless a profile has opted in — and its reference is attached to the
+    returned outcome. A policy veto is never dead-lettered: no attempt was
+    made, so there is nothing to reconcile.
     """
     idempotency_key = uuid.uuid4().hex
     headers = dict(base_headers or {})
@@ -194,6 +204,14 @@ async def send_with_retries(
             error = payload if isinstance(payload, str) else str(payload)
 
         if failure.decision != RETRYABLE or attempts >= max_attempts:
+            dead_letter_ref = _delivery_ledger.record_dead_letter(
+                platform=platform,
+                route=route,
+                idempotency_key=idempotency_key,
+                attempts=attempts,
+                category=failure.category,
+                status=failure.status,
+            )
             return DeliveryOutcome(
                 ok=False,
                 attempts=attempts,
@@ -201,5 +219,6 @@ async def send_with_retries(
                 status=status,
                 error=error,
                 failure=failure,
+                dead_letter_ref=dead_letter_ref,
             )
         await sleep(retry_backoff_delay(attempts + 1, jitter=jitter))

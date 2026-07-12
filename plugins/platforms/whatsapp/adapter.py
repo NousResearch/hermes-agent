@@ -541,6 +541,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             sleep=getattr(self, "_retry_sleep", asyncio.sleep),
             jitter=getattr(self, "_retry_jitter", True),
             policy_context={"platform": "whatsapp", "route": path},
+            platform="whatsapp",
+            route=path,
         )
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:

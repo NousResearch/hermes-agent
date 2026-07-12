@@ -2247,6 +2247,39 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        # Re-derive any per-model/route threshold auto-raise for the new
+        # model (gpt-5.4/5.5/5.6 family on codex_responses, Arcee
+        # Trinity, etc.) and update the compressor's configured threshold
+        # percent so a subsequent switch correctly drops back to the
+        # user's global threshold (if no auto-raise applies) rather than
+        # keeping a stale auto-raised value from the previous model.
+        try:
+            from agent.auxiliary_client import _compression_threshold_for_model
+            _sm_new_threshold = _compression_threshold_for_model(
+                agent.model, provider=agent.provider,
+                api_mode=agent.api_mode,
+            )
+            if _sm_new_threshold is not None:
+                agent.context_compressor._configured_threshold_percent = _sm_new_threshold
+                agent.context_compressor.threshold_percent = (
+                    agent.context_compressor._effective_threshold_percent(
+                        new_context_length, _sm_new_threshold,
+                    )
+                )
+                agent.context_compressor.threshold_tokens = (
+                    agent.context_compressor._compute_threshold_tokens(
+                        new_context_length,
+                        agent.context_compressor.threshold_percent,
+                        agent.context_compressor.max_tokens,
+                    )
+                )
+                _sm_target_tokens = int(
+                    agent.context_compressor.threshold_tokens
+                    * agent.context_compressor.summary_target_ratio
+                )
+                agent.context_compressor.tail_token_budget = _sm_target_tokens
+        except Exception:
+            pass
 
     # ── Re-resolve reasoning_config from per-model override ──
     # The new model may have a different reasoning_effort override. Re-read

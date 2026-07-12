@@ -141,7 +141,7 @@ def test_compression_threshold_for_codex_gpt55() -> None:
 
 
 def test_compression_threshold_codex_gpt55_other_routes_unaffected() -> None:
-    # Same slug, different route → no override (keep the user's config value).
+    # Same slug, different route / api_mode → no override (keep the user's config value).
     assert _compression_threshold_for_model("gpt-5.4", "openrouter") is None
     assert _compression_threshold_for_model("gpt-5.4", "openai") is None
     assert _compression_threshold_for_model("gpt-5.4", "copilot") is None
@@ -150,6 +150,18 @@ def test_compression_threshold_codex_gpt55_other_routes_unaffected() -> None:
     assert _compression_threshold_for_model("gpt-5.5", "copilot") is None
     assert _compression_threshold_for_model("openai/gpt-5.4") is None  # no provider
     assert _compression_threshold_for_model("openai/gpt-5.5") is None  # no provider
+    # custom:sudo with chat_completions api_mode → no override (not codex_responses)
+    assert _compression_threshold_for_model("gpt-5.6-sol", "custom", api_mode="chat_completions") is None
+
+
+def test_compression_threshold_codex_gpt55_custom_codex_responses() -> None:
+    # Any custom provider speaking codex_responses with a matching gpt-5.6
+    # model family should get the same 0.85 auto-raise as openai-codex.
+    assert _compression_threshold_for_model("gpt-5.6-sol", "custom", api_mode="codex_responses") == 0.85
+    assert _compression_threshold_for_model("gpt-5.6-sol-pro", "custom", api_mode="codex_responses") == 0.85
+    assert _compression_threshold_for_model("gpt-5.6-luna", "sudo", api_mode="codex_responses") == 0.85
+    # openai-codex still matches without explicit api_mode
+    assert _compression_threshold_for_model("gpt-5.6-sol", "openai-codex") == 0.85
 
 
 def test_compression_threshold_codex_gpt55_opt_out() -> None:

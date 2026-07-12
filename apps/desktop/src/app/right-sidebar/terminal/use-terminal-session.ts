@@ -168,13 +168,17 @@ function stripInitialPromptGap(data: string) {
   return prefix
 }
 
+// A row's content with ANSI escapes and all whitespace stripped — '' for a
+// spacer / prompt-gap / zsh `%` marker row.
+const visibleText = (line: string) => stripEscapeSequences(line).replace(/[\s%]/g, '')
+
 // Trim the shell's trailing idle prompt from a serialized snapshot before it's
 // persisted. Without it, the saved buffer ends in the old prompt, so the next
 // launch replays it directly above the fresh shell's prompt ("double bar"). The
 // prompt is the short block after the last blank line (starship's add_newline
 // gap); only a short tail is dropped, so real command output is never trimmed and
 // configs without that blank line simply keep the historical prompt (no loss).
-function cleanReviveSnapshot(serialized: string): string {
+export function cleanReviveSnapshot(serialized: string): string {
   const visible = (line: string) => stripEscapeSequences(line).replace(/[\s%]/g, '')
   const lines = serialized.split(/\r?\n/)
 
@@ -198,6 +202,17 @@ function cleanReviveSnapshot(serialized: string): string {
   }
 
   return lines.join('\r\n')
+}
+
+// True when a revive buffer holds no real scrollback: empty, or only repeats of
+// one line (the idle prompt). This is the idle-accumulation signature (#61572) —
+// each relaunch replayed the saved prompt(s) and the fresh shell printed one more
+// below, growing the tab by a line per cycle. Real sessions vary (prompt +
+// command + output), so genuine short histories are never mistaken for idle.
+export function isIdlePromptOnly(serialized: string): boolean {
+  const lines = serialized.split(/\r?\n/).map(visibleText).filter(Boolean)
+
+  return lines.length === 0 || lines.every(line => line === lines[0])
 }
 
 interface UseTerminalSessionOptions {
@@ -336,6 +351,10 @@ export function useTerminalSession({
   // Snapshot the revive buffer once: live snapshots feed updateTerminalReviveBuffer
   // and would otherwise re-arm replay on every store-driven re-render.
   const initialReviveBufferRef = useRef(reviveBuffer)
+  // Whether the user ever fed input into this session (keystrokes, paste,
+  // drag-and-drop paths, or an injected command). Gates idle-buffer handling in
+  // persistSnapshot so an untouched tab never re-saves an accumulating snapshot.
+  const hasSessionActivityRef = useRef(false)
   const shellNameRef = useRef('shell')
   const selectionLabelRef = useRef('')
   const selectionRef = useRef('')
@@ -486,6 +505,22 @@ export function useTerminalSession({
 
       lastSnapshotAt = Date.now()
 
+      // No user input this session: never re-serialize. The live buffer now holds
+      // the replayed history plus a fresh boot prompt, and re-saving that is
+      // exactly what grew idle tabs by one prompt line per relaunch (#61572).
+      // If the buffer we loaded carried no real scrollback (empty, or only a
+      // repeated prompt), clear it so the next launch shows a single fresh prompt
+      // and any pre-existing accumulation heals. Otherwise leave the prior
+      // snapshot untouched so real history from an earlier active session
+      // survives an idle reopen instead of being overwritten.
+      if (!hasSessionActivityRef.current) {
+        if (isIdlePromptOnly(initialReviveBufferRef.current ?? '')) {
+          updateTerminalReviveBuffer(id, '')
+        }
+
+        return
+      }
+
       try {
         const snapshot = serialize.serialize({ scrollback: PERSISTENT_SESSION_SCROLLBACK })
         updateTerminalReviveBuffer(id, cleanReviveSnapshot(snapshot))
@@ -544,6 +579,7 @@ export function useTerminalSession({
         return
       }
 
+      hasSessionActivityRef.current = true
       void terminalApi.write(id, `${paths.map(p => quotePathForShell(p, shellNameRef.current)).join(' ')} `)
       term.focus()
       triggerHaptic('selection')
@@ -640,6 +676,7 @@ export function useTerminalSession({
     })
 
     const dataDisposable = term.onData(data => {
+      hasSessionActivityRef.current = true
       const id = sessionIdRef.current
 
       if (id) {
@@ -846,6 +883,7 @@ export function useTerminalSession({
         return
       }
 
+      hasSessionActivityRef.current = true
       void window.hermesDesktop?.terminal?.write(sessionId, `${command}\r`)
       $terminalInjection.set(null)
       termRef.current?.focus()

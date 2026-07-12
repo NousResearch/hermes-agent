@@ -149,6 +149,44 @@ def test_memory_backup_recovery_report_requires_journal_note_and_index(tmp_path)
     assert "Acme prefers" not in str(report.diagnostics)
 
 
+def test_memory_backup_recovery_report_requires_sync_checkpoint_without_content(tmp_path):
+    vault = tmp_path / "vault"
+    note = vault / "memories" / "sync-checkpoint.md"
+    note.parent.mkdir(parents=True)
+    note.write_text(
+        "# Sync checkpoint\n\nPinned memory: Orion account private renewal token quartz is synced.\n",
+        encoding="utf-8",
+    )
+
+    report = build_memory_backup_recovery_report(
+        [
+            MemoryRecoveryWrite(
+                id="mem-orion-sync",
+                content="Orion account private renewal token quartz is synced.",
+                important=True,
+                pinned=True,
+                journaled=True,
+                synced=True,
+                local_indexed=True,
+                durable_note_terms=("Orion", "renewal token", "synced"),
+            )
+        ],
+        note_index=LocalNoteIndex.from_path(vault),
+    )
+
+    assert not report.ok
+    assert report.missing_sync_checkpoint_ids == ("mem-orion-sync",)
+    assert report.diagnostics["recovery_status"] == "needs_attention"
+    checks = report.diagnostics["checks"]
+    assert isinstance(checks, dict)
+    assert checks["missing_sync_checkpoint"] == 1
+    rendered = report.to_markdown()
+    assert "missing sync checkpoint" in rendered
+    assert "mem-orion-sync" in rendered
+    assert "Orion account" not in rendered
+    assert "quartz" not in rendered
+
+
 def test_memory_backup_recovery_report_surfaces_retryable_missing_index(tmp_path):
     vault = tmp_path / "vault"
     note = vault / "memories" / "lead.md"

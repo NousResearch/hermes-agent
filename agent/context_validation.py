@@ -374,6 +374,7 @@ class MemoryBackupRecoveryReport:
     missing_journal_ids: tuple[str, ...] = ()
     missing_durable_note_ids: tuple[str, ...] = ()
     missing_local_index_ids: tuple[str, ...] = ()
+    missing_sync_checkpoint_ids: tuple[str, ...] = ()
     retryable_write_ids: tuple[str, ...] = ()
     sync_without_journal_ids: tuple[str, ...] = ()
     sync_retry_plan_by_id: dict[str, dict[str, object]] = field(default_factory=dict)
@@ -400,6 +401,7 @@ class MemoryBackupRecoveryReport:
             not self.missing_journal_ids
             and not self.missing_durable_note_ids
             and not self.missing_local_index_ids
+            and not self.missing_sync_checkpoint_ids
             and not self.retryable_write_ids
             and not self.sync_without_journal_ids
             and not self.blocked_gc_delete_ids
@@ -437,6 +439,7 @@ class MemoryBackupRecoveryReport:
         _extend_id_lines(lines, "missing journal", self.missing_journal_ids)
         _extend_id_lines(lines, "missing durable note", self.missing_durable_note_ids)
         _extend_id_lines(lines, "missing local index", self.missing_local_index_ids)
+        _extend_id_lines(lines, "missing sync checkpoint", self.missing_sync_checkpoint_ids)
         _extend_id_lines(lines, "retryable writes", self.retryable_write_ids)
         _extend_id_lines(lines, "sync without journal", self.sync_without_journal_ids)
         _extend_id_lines(lines, "recoverable local index", self.recoverable_index_ids)
@@ -668,6 +671,7 @@ def build_memory_backup_recovery_report(
     missing_journal: list[str] = []
     missing_notes: list[str] = []
     missing_index: list[str] = []
+    missing_sync_checkpoint: list[str] = []
     retryable: list[str] = []
     sync_without_journal: list[str] = []
     sync_retry_plans: dict[str, dict[str, object]] = {}
@@ -693,6 +697,8 @@ def build_memory_backup_recovery_report(
             recovery_warnings[write.id] = write.recovery_warnings
         if write.needs_durable_protection:
             protected.append(write.id)
+            if write.synced and not last_successful_sync_at:
+                missing_sync_checkpoint.append(write.id)
             if write.id in proposed_gc_deletes:
                 rule = str(gc_rules.get(write.id, "")).strip()
                 audit_log_id = gc_audit_log_ids_by_write.get(write.id)
@@ -769,6 +775,7 @@ def build_memory_backup_recovery_report(
             missing_journal
             or missing_notes
             or missing_index
+            or missing_sync_checkpoint
             or retryable
             or sync_without_journal
             or blocked_gc_deletes
@@ -781,6 +788,7 @@ def build_memory_backup_recovery_report(
             "missing_journal": len(missing_journal),
             "missing_durable_note": len(missing_notes),
             "missing_local_index": len(missing_index),
+            "missing_sync_checkpoint": len(missing_sync_checkpoint),
             "sync_without_journal": len(sync_without_journal),
             "sync_retry_plan": len(sync_retry_plans),
             "recoverable_index": len(recoverable),
@@ -797,6 +805,7 @@ def build_memory_backup_recovery_report(
         missing_journal_ids=tuple(missing_journal),
         missing_durable_note_ids=tuple(missing_notes),
         missing_local_index_ids=tuple(missing_index),
+        missing_sync_checkpoint_ids=tuple(missing_sync_checkpoint),
         retryable_write_ids=tuple(retryable),
         sync_without_journal_ids=tuple(sync_without_journal),
         sync_retry_plan_by_id=sync_retry_plans,

@@ -750,6 +750,55 @@ def test_old_socket_disconnect_cannot_detach_a_concurrent_reconnect(monkeypatch)
     server._sessions.clear()
 
 
+def test_close_on_disconnect_claim_blocks_a_concurrent_reconnect(monkeypatch):
+    old_transport = object()
+    new_transport = object()
+    teardown_entered = threading.Event()
+    release_teardown = threading.Event()
+    session = {
+        "agent": None,
+        "close_on_disconnect": True,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": False,
+        "session_key": "stored",
+        "transport": old_transport,
+    }
+    server._sessions.clear()
+    server._sessions["flagged"] = session
+
+    def blocked_teardown(claimed, *, end_reason):
+        assert claimed is session
+        assert end_reason == "ws_disconnect"
+        teardown_entered.set()
+        assert release_teardown.wait(timeout=2)
+
+    monkeypatch.setattr(server, "_teardown_session", blocked_teardown)
+    result = {}
+
+    def disconnect_old_socket():
+        result["counts"] = server._close_sessions_for_transport(old_transport)
+
+    cleanup = threading.Thread(target=disconnect_old_socket)
+    cleanup.start()
+    assert teardown_entered.wait(timeout=1)
+    assert "flagged" not in server._sessions
+
+    payload = server._live_session_payload(
+        "flagged",
+        session,
+        transport=new_transport,
+    )
+    assert payload is None
+    assert session["transport"] is old_transport
+
+    release_teardown.set()
+    cleanup.join(timeout=1)
+    assert not cleanup.is_alive()
+    assert result["counts"] == (1, 0)
+    server._sessions.clear()
+
+
 def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
     """A write that times out because the event loop is stalled (GIL-heavy
     agent turn) must NOT latch the transport closed — the frame is already

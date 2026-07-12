@@ -815,6 +815,7 @@ def _close_sessions_for_transport(
     detached = 0
     for sid, session in owned:
         claimed = False
+        close_claim = False
         with session.setdefault("history_lock", threading.RLock()):
             stream = _session_event_stream(session)
             with stream.transition(lambda _stream: None):
@@ -822,13 +823,23 @@ def _close_sessions_for_transport(
                 # socket may detach only if it still owns the session at this
                 # exact handoff boundary.
                 if session.get("transport") is transport:
-                    claimed = True
-                    if not session.get("close_on_disconnect"):
+                    if session.get("close_on_disconnect"):
+                        # Pop while the transport handoff boundary is still
+                        # held. A resume/activate that already captured this
+                        # record will recheck membership before rebinding.
+                        with _sessions_lock:
+                            if _sessions.get(sid) is session:
+                                _sessions.pop(sid, None)
+                                session["_sid"] = sid
+                                claimed = True
+                                close_claim = True
+                    else:
                         session["transport"] = _detached_ws_transport
+                        claimed = True
         if not claimed:
             continue
-        if session.get("close_on_disconnect"):
-            _close_session_by_id(sid, end_reason=end_reason)
+        if close_claim:
+            _teardown_session(session, end_reason=end_reason)
             reaped += 1
         else:
             # Point detached sessions at the drop sentinel (NOT real stdio) so
@@ -6001,7 +6012,7 @@ def _(rid, params: dict) -> dict:
     )
     conversation_id = _conversation_root(db, target)
 
-    def _reuse_live_payload(sid: str, session: dict) -> dict:
+    def _reuse_live_payload(sid: str, session: dict) -> dict | None:
         payload = _live_session_payload(
             sid,
             session,
@@ -6010,6 +6021,8 @@ def _(rid, params: dict) -> dict:
             transport=current_transport() or _stdio_transport,
             cursor=params.get("cursor"),
         )
+        if payload is None:
+            return None
         payload["resumed"] = target
         # A lazy watch session never owns a run loop, so its payload's running
         # flag is always False — overlay the child-run registry so a reconnecting
@@ -6023,7 +6036,9 @@ def _(rid, params: dict) -> dict:
     with _session_resume_lock:
         live = _find_live_session_by_key(target)
         if live is not None:
-            return _ok(rid, _reuse_live_payload(*live))
+            payload = _reuse_live_payload(*live)
+            if payload is not None:
+                return _ok(rid, payload)
 
     # Lazy/watch resume: register the live session WITHOUT building an agent.
     # Used by the desktop's subagent windows — the child runs inside the
@@ -6245,13 +6260,6 @@ def _(rid, params: dict) -> dict:
     with _session_resume_lock:
         live = _find_live_session_by_key(target)
         if live is not None:
-            try:
-                if hasattr(agent, "close"):
-                    agent.close()
-            except Exception:
-                pass
-            if lease is not None:
-                lease.release()
             other_sid, other_session = live
             payload = _live_session_payload(
                 other_sid,
@@ -6261,8 +6269,16 @@ def _(rid, params: dict) -> dict:
                 transport=current_transport() or _stdio_transport,
                 cursor=params.get("cursor"),
             )
-            payload["resumed"] = target
-            return _ok(rid, payload)
+            if payload is not None:
+                try:
+                    if hasattr(agent, "close"):
+                        agent.close()
+                except Exception:
+                    pass
+                if lease is not None:
+                    lease.release()
+                payload["resumed"] = target
+                return _ok(rid, payload)
         try:
             init_home_token = (
                 set_hermes_home_override(str(profile_home))
@@ -6473,11 +6489,14 @@ def _live_session_payload(
     touch: bool = False,
     transport: Transport | None = None,
     cursor: object = None,
-) -> dict:
+) -> dict | None:
     info = _fallback_session_info(session)
     with session["history_lock"]:
         stream = _session_event_stream(session)
         with stream.transition(lambda _stream: None):
+            with _sessions_lock:
+                if _sessions.get(sid) is not session:
+                    return None
             if cols is not None:
                 session["cols"] = cols
             if transport is not None:
@@ -6563,15 +6582,15 @@ def _(rid, params: dict) -> dict:
         return err
     assert session is not None
 
-    return _ok(
-        rid,
-        _live_session_payload(
-            sid,
-            session,
-            touch=True,
-            transport=current_transport() or _stdio_transport,
-        ),
+    payload = _live_session_payload(
+        sid,
+        session,
+        touch=True,
+        transport=current_transport() or _stdio_transport,
     )
+    if payload is None:
+        return _err(rid, 4001, "session closed during transport handoff")
+    return _ok(rid, payload)
 
 
 @method("session.delete")

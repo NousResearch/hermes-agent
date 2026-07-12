@@ -91,6 +91,7 @@ import ChannelsPage from "@/pages/ChannelsPage";
 import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
 import ChatPage from "@/pages/ChatPage";
+import NativeWebChatPage from "@/pages/NativeWebChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -150,6 +151,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
+  "/webchat": NativeWebChatPage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -161,6 +163,11 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  {
+    path: "/webchat",
+    label: "Web Chat",
+    icon: Globe,
+  },
   {
     path: "/sessions",
     labelKey: "sessions",

@@ -104,6 +104,33 @@ def test_too_wide_table_falls_back_to_markdown_code_block():
     ]
 
 
+def test_mismatched_direct_table_rows_degrade_losslessly_to_markdown():
+    table = TableBlock(
+        headers=["A", "B"],
+        rows=[
+            ["kept", "also-kept", "EXTRA_SENTINEL"],
+            ["short-row"],
+        ],
+    )
+
+    card = render_document_to_feishu_card_v2(MessageDocument([table]))
+
+    assert card["body"]["elements"] == [
+        {
+            "tag": "markdown",
+            "content": (
+                "```markdown\n"
+                "| A | B |\n"
+                "| --- | --- |\n"
+                "| kept | also-kept | EXTRA_SENTINEL |\n"
+                "| short-row |\n"
+                "```"
+            ),
+            "text_size": "normal",
+        }
+    ]
+
+
 def test_card_payload_is_json_serializable():
     card = render_document_to_feishu_card_v2(MessageDocument([ParagraphBlock("Hello")]))
 

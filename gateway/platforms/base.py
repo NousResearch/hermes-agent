@@ -1908,6 +1908,13 @@ class SendResult:
     def __post_init__(self) -> None:
         if self.delivery_state is None:
             return
+        if not isinstance(self.delivery_state, FinalDeliveryState):
+            try:
+                self.delivery_state = FinalDeliveryState(self.delivery_state)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"invalid delivery_state: {self.delivery_state!r}"
+                ) from exc
         if self.delivery_state is FinalDeliveryState.FULLY_DELIVERED and not self.success:
             raise ValueError(
                 "SendResult with FULLY_DELIVERED delivery_state must have success=True."

@@ -66,3 +66,18 @@ def test_delivery_state_is_optional_and_defaults_none():
 def test_send_result_rejects_inconsistent_explicit_delivery_states(success, state):
     with pytest.raises(ValueError, match=state.name):
         SendResult(success=success, delivery_state=state)
+
+
+def test_string_delivery_state_is_normalized_to_enum():
+    result = SendResult(
+        success=False,
+        delivery_state="partially_delivered",  # type: ignore[arg-type]
+    )
+
+    assert result.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED
+    assert effective_delivery_state(result) is FinalDeliveryState.PARTIALLY_DELIVERED
+
+
+def test_invalid_string_delivery_state_is_rejected():
+    with pytest.raises(ValueError, match="invalid delivery_state"):
+        SendResult(success=False, delivery_state="maybe")  # type: ignore[arg-type]

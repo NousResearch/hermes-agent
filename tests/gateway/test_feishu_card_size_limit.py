@@ -525,6 +525,25 @@ class TestFullPipelineByteLimit:
                 **kwargs,
             )
 
+    @pytest.mark.parametrize("name", ["max_elements_per_card", "max_card_chars"])
+    def test_invalid_partition_limits_are_rejected(self, name):
+        with pytest.raises(FeishuCardRenderingError, match=name):
+            render_document_to_feishu_card_v2_parts(
+                MessageDocument([ParagraphBlock(text="x")]),
+                **{name: 0},
+            )
+
+    def test_element_limit_override_is_clamped_to_feishu_hard_limit(self):
+        doc = MessageDocument([ParagraphBlock(text="x") for _ in range(201)])
+
+        cards = render_document_to_feishu_card_v2_parts(
+            doc,
+            max_elements_per_card=1000,
+            max_card_chars=100000,
+        )
+
+        assert [len(card["body"]["elements"]) for card in cards] == [200, 1]
+
     def test_singular_public_builders_reject_content_that_requires_multiple_cards(self):
         text = "x" * 50000
         doc = MessageDocument([ParagraphBlock(text=text)])

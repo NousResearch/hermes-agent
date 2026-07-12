@@ -250,6 +250,31 @@ async def test_base_send_with_retry_stops_after_partial_delivery(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_base_send_with_retry_normalizes_string_partial_state(monkeypatch):
+    partial = SendResult(
+        success=False,
+        error="partial",
+        retryable=True,
+        delivery_state="partially_delivered",  # type: ignore[arg-type]
+    )
+    adapter = _BasePartialDeliveryAdapter(send_result=partial)
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", sleep)
+
+    result = await adapter._send_with_retry(
+        "oc_base_partial",
+        "multi-card response",
+        max_retries=2,
+        base_delay=0,
+    )
+
+    assert result is partial
+    assert result.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED
+    assert len(adapter.send_calls) == 1
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_base_rich_partial_delivery_skips_legacy_send():
     """The real Base orchestrator must not duplicate a partially visible card."""
     adapter = _BasePartialDeliveryAdapter(rich_result=_partial_result())

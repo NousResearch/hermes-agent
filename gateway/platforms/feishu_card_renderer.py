@@ -28,6 +28,7 @@ _FIXED_CARD_TITLE = "Hermes"
 _UNDESIRED_SUMMARY_CHARS_RE = re.compile(r"[`*_~\[\]!#>"">]")
 _DEFAULT_MAX_MARKDOWN_CHARS = 3000
 _DEFAULT_MAX_ELEMENTS_PER_CARD = 120
+_MAX_ELEMENTS_PER_CARD = 200
 _DEFAULT_MAX_CARD_CHARS = 6000
 _DEFAULT_MAX_CARD_BYTES = 28 * 1024
 _DEFAULT_MAX_ROWS_PER_TABLE = 10
@@ -114,12 +115,15 @@ def render_document_to_feishu_card_v2_parts(
         ("max_tables", max_tables),
         ("max_columns", max_columns),
         ("max_rows", max_rows),
+        ("max_elements_per_card", max_elements_per_card),
+        ("max_card_chars", max_card_chars),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise FeishuCardRenderingError(f"{name} must be a positive integer")
     effective_max_tables = min(max_tables, _DEFAULT_MAX_TABLES_PER_CARD)
     effective_max_columns = min(max_columns, _MAX_TABLE_COLUMNS)
     effective_max_rows = min(max_rows, _DEFAULT_MAX_ROWS_PER_TABLE)
+    effective_max_elements = min(max_elements_per_card, _MAX_ELEMENTS_PER_CARD)
     effective_title = title
     title_elements: list[dict[str, Any]] = []
     if len((title + _NUMBERING_TITLE_RESERVE).encode("utf-8")) > (
@@ -156,7 +160,7 @@ def render_document_to_feishu_card_v2_parts(
 
     groups = _partition_elements(
         paginated,
-        max_elements_per_card=max_elements_per_card,
+        max_elements_per_card=effective_max_elements,
         max_card_chars=max_card_chars,
         max_tables_per_card=effective_max_tables,
     ) or [[]]
@@ -366,6 +370,7 @@ def _document_to_elements(
                 and len(block.headers) <= max_columns
                 and bool(block.headers)
                 and bool(block.rows)
+                and all(len(row) == len(block.headers) for row in block.rows)
             )
             if use_table:
                 elements.append(
@@ -985,10 +990,8 @@ def _build_table_element(data: TableBlock, cell_type: str, row_count: int) -> di
             for i, header in enumerate(data.headers)
         ],
         "rows": [
-            {f"col_{i}": cell for i, cell in enumerate(padded_row)}
-            for padded_row in (
-                _fit_row(row, len(data.headers)) for row in data.rows
-            )
+            {f"col_{i}": cell for i, cell in enumerate(row)}
+            for row in data.rows
         ],
     }
 
@@ -999,10 +1002,3 @@ def _table_to_markdown(data: TableBlock) -> str:
     for row in data.rows:
         lines.append("| " + " | ".join(row) + " |")
     return "\n".join(lines)
-
-
-def _fit_row(row: list[str], width: int) -> list[str]:
-    fitted = list(row)[:width]
-    if len(fitted) < width:
-        fitted.extend("" for _ in range(width - len(fitted)))
-    return fitted

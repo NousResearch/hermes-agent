@@ -860,6 +860,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Adapter-level allow_from: when set, it is the sole authority.
         adapter_allow_from = self.config.extra.get("allow_from")
+        # A comma-string is the canonical wire format (a list allow_from is
+        # ",".join(...)-ed into TELEGRAM_ALLOWED_USERS, and the env branch below
+        # splits it). Iterating a raw string here would yield characters, so
+        # "123,456" would build an allow-set of single chars and lock the owner
+        # out. Split it the same way the env branch does.
+        if isinstance(adapter_allow_from, str):
+            adapter_allow_from = adapter_allow_from.split(",")
         if adapter_allow_from is not None:
             allowed = {str(u).strip() for u in adapter_allow_from if str(u).strip()}
             return user_id in allowed or "*" in allowed

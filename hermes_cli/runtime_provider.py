@@ -1397,6 +1397,20 @@ def _resolve_explicit_runtime(
             "requested_provider": requested_provider,
         }
 
+    if provider == "openai-api":
+        # Direct API-key OpenAI requests use Chat Completions. The Responses
+        # transport replays reasoning.encrypted_content, which GPT-4o rejects.
+        base_url = explicit_base_url or "https://api.openai.com/v1"
+        api_key = explicit_api_key or _getenv("OPENAI_API_KEY", "").strip()
+        return {
+            "provider": "openai-api",
+            "api_mode": "chat_completions",
+            "base_url": base_url,
+            "api_key": api_key,
+            "source": "explicit",
+            "requested_provider": requested_provider,
+        }
+
     if provider == "openai-codex":
         base_url = explicit_base_url or DEFAULT_CODEX_BASE_URL
         api_key = explicit_api_key
@@ -1530,6 +1544,21 @@ def resolve_runtime_provider(
     behavior (api_mode derived from config).
     """
     requested_provider = resolve_requested_provider(requested)
+
+    if requested_provider == "openai-api":
+        # Direct OpenAI API-key provider: always use Chat Completions.
+        # Do not infer Responses from api.openai.com; GPT-4o rejects the
+        # Responses-only reasoning.encrypted_content include parameter.
+        base_url = (explicit_base_url or "https://api.openai.com/v1").rstrip("/")
+        api_key = explicit_api_key or _getenv("OPENAI_API_KEY", "").strip()
+        return {
+            "provider": "openai-api",
+            "api_mode": "chat_completions",
+            "base_url": base_url,
+            "api_key": api_key,
+            "source": "direct-openai-api",
+            "requested_provider": requested_provider,
+        }
 
     if requested_provider == "moa":
         return {
@@ -2054,12 +2083,16 @@ def resolve_runtime_provider(
             elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
                 api_mode = configured_mode
             else:
-                # Auto-detect Anthropic-compatible endpoints by URL convention
-                # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
-                # plus api.openai.com → codex_responses and api.x.ai → codex_responses.
-                detected = _detect_api_mode_for_url(base_url)
-                if detected:
-                    api_mode = detected
+                # Direct OpenAI API-key traffic uses Chat Completions by default.
+                # `api.openai.com` is also used by the Codex Responses transport,
+                # but that path is selected explicitly by the openai-codex
+                # provider. Do not let URL auto-detection convert GPT-4o
+                # openai-api requests into Responses requests: GPT-4o rejects
+                # the Responses-only reasoning.encrypted_content include field.
+                if provider != "openai-api":
+                    detected = _detect_api_mode_for_url(base_url)
+                    if detected:
+                        api_mode = detected
         # Normalize the /v1 suffix for OpenCode by API mode (see comment above).
         if provider in {"opencode-zen", "opencode-go"}:
             from hermes_cli.models import normalize_opencode_base_url

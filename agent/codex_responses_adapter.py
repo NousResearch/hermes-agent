@@ -937,7 +937,7 @@ def _preflight_codex_api_kwargs(
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key",
         "prompt_cache_retention", "service_tier",
-        "extra_headers", "extra_body", "timeout",
+        "extra_headers", "extra_body", "timeout", "previous_response_id",
     }
     normalized: Dict[str, Any] = {
         "model": model,
@@ -984,6 +984,13 @@ def _preflight_codex_api_kwargs(
         val = api_kwargs.get(passthrough_key)
         if val is not None:
             normalized[passthrough_key] = val
+
+    # Pass through upstream provider continuation ID only when explicitly present.
+    # This is distinct from gateway/platforms/api_server.py's response-chain
+    # previous_response_id, which is handled at Hermes' public API boundary.
+    previous_response_id = api_kwargs.get("previous_response_id")
+    if isinstance(previous_response_id, str) and previous_response_id.strip():
+        normalized["previous_response_id"] = previous_response_id.strip()
 
     extra_headers = api_kwargs.get("extra_headers")
     if extra_headers is not None:

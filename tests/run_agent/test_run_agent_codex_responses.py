@@ -264,6 +264,70 @@ def test_api_mode_uses_explicit_provider_when_codex(monkeypatch):
 
 
 
+def test_responses_transport_defaults_to_sse(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    assert agent.responses_transport == "sse"
+
+
+def test_responses_transport_auto_falls_back_to_sse_before_start(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.responses_transport = "auto"
+    final = _codex_message_response("ok")
+    calls = {"websocket": 0, "sse": 0}
+
+    def fake_ws(**kwargs):
+        calls["websocket"] += 1
+        from agent.codex_websocket_transport import WebSocketNotStartedError
+        raise WebSocketNotStartedError("unsupported before start")
+
+    class Responses:
+        def stream(self, **kwargs):
+            calls["sse"] += 1
+            return _FakeResponsesStream(final_response=final)
+
+    monkeypatch.setattr("agent.codex_websocket_transport.run_codex_websocket_stream", fake_ws)
+    result = agent._run_codex_stream(_codex_request_kwargs(), client=SimpleNamespace(responses=Responses()))
+    assert result is final
+    assert calls == {"websocket": 1, "sse": 1}
+
+
+def test_responses_transport_websocket_forced_does_not_fallback(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.responses_transport = "websocket"
+
+    def fake_ws(**kwargs):
+        from agent.codex_websocket_transport import WebSocketNotStartedError
+        raise WebSocketNotStartedError("unsupported before start")
+
+    class Responses:
+        def stream(self, **kwargs):
+            raise AssertionError("SSE must not run for forced websocket")
+
+    monkeypatch.setattr("agent.codex_websocket_transport.run_codex_websocket_stream", fake_ws)
+    with pytest.raises(Exception, match="unsupported before start"):
+        agent._run_codex_stream(_codex_request_kwargs(), client=SimpleNamespace(responses=Responses()))
+
+
+def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypatch):
+    """GPT-5.x models need codex_responses even on OpenRouter.
+
+    OpenRouter rejects GPT-5 models on /v1/chat/completions with
+    ``unsupported_api_for_model``.  The model-level check overrides
+    the provider default.
+    """
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        provider="openrouter",
+        api_key="test-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.api_mode == "codex_responses"
+    assert agent.provider == "openrouter"
 
 
 
@@ -1729,7 +1793,6 @@ def test_duplicate_detection_uses_commentary_when_hidden_reasoning_changes(monke
     reasoning_items = interim_msgs[0].get("codex_reasoning_items")
     if reasoning_items:
         assert reasoning_items[0].get("id") == "rs_second"
-
 
 
 

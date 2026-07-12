@@ -290,4 +290,32 @@ async function runMiddleware(middleware, req, res, execute) {
   console.log('  ✓ no PII in store stats');
 }
 
+// ------------------------------------------------------------------
+// 9. Express middleware sends the captured response and replays it
+// ------------------------------------------------------------------
+{
+  const store = createIdempotencyStore();
+  const middleware = createIdempotencyMiddleware(store);
+  let sends = 0;
+  const make = () => mockReq('POST', '/send', { chatId: 'x', message: 'express' }, {
+    'idempotency-key': 'key-express',
+  });
+  const invoke = async (req, res) => middleware.express(req, res, () => {
+    sends += 1;
+    res.status(200).json({ success: true, messageId: 'express-1' });
+  });
+
+  const res1 = mockRes();
+  await invoke(make(), res1);
+  assert.strictEqual(res1._status, 200);
+  assert.strictEqual(res1._body.messageId, 'express-1');
+
+  const res2 = mockRes();
+  await invoke(make(), res2);
+  assert.strictEqual(res2._status, 200);
+  assert.strictEqual(res2._body.messageId, 'express-1');
+  assert.strictEqual(sends, 1, 'Express replay does not execute the route twice');
+  console.log('  ✓ Express middleware sends and replays captured response');
+}
+
 console.log('\n✅ All idempotency-middleware integration tests passed.');

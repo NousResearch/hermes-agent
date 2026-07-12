@@ -136,7 +136,8 @@ export function createIdempotencyMiddleware(store) {
           }
         })
       );
-      return originalStatus(result.status).json(result.body);
+      originalStatus(result.status);
+      return originalJson(result.body);
     } catch (err) {
       res.status = originalStatus;
       res.json = originalJson;

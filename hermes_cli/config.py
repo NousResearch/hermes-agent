@@ -5231,6 +5231,69 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_custom_provider_thinking_field(
+    model: str,
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, str]]:
+    """Look up per-model thinking field overrides from ``custom_providers``.
+
+    Some models behind custom endpoints use a different field name to disable
+    thinking (e.g. ``chat_template_kwargs.enable_thinking`` instead of the
+    Ollama-style ``think``).  Users configure this via::
+
+        providers:
+          omlx:
+            api: "http://127.0.0.1:8000/v1"
+            models:
+              Qwen3.6-35B-A3B-bf16:
+                thinking_field: chat_template_kwargs
+                thinking_subkey: enable_thinking
+
+    Returns ``{"field": ..., "subkey": ...}`` when a valid override exists,
+    or ``None`` to fall back to the default ``think`` field.
+    """
+    if not model or not base_url:
+        return None
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            if config is None:
+                return None
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_url = (base_url or "").rstrip("/")
+    if not target_url:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/")
+        if not entry_url or entry_url != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict):
+            continue
+        thinking_field = model_cfg.get("thinking_field")
+        if not isinstance(thinking_field, str) or not thinking_field.strip():
+            continue
+        result: Dict[str, str] = {"field": thinking_field.strip()}
+        thinking_subkey = model_cfg.get("thinking_subkey")
+        if isinstance(thinking_subkey, str) and thinking_subkey.strip():
+            result["subkey"] = thinking_subkey.strip()
+        return result
+    return None
+
+
 def _coerce_config_version(value: Any) -> int:
     """Return a safe integer config version, treating invalid values as legacy."""
     if isinstance(value, bool):

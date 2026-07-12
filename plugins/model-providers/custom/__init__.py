@@ -2,12 +2,13 @@
 
 Covers any endpoint registered as provider="custom", including local
 Ollama instances and OpenAI-compatible reasoning endpoints (GLM-5.2 on
-Volcengine ARK, vLLM, llama.cpp). Key quirks:
-  - ollama_num_ctx → extra_body.options.num_ctx (local context window)
-  - reasoning_config disabled → top-level reasoning_effort="none"
-    (Ollama /v1/chat/completions ignores think=False — ollama#14820)
-    + extra_body.think = False for /api/chat and proxies
-  - reasoning_config enabled + effort → top-level reasoning_effort
+Volcengine ARK, vLLM, llama.cpp, oMLX). Key quirks:
+  - ollama_num_ctx -> extra_body.options.num_ctx (local context window)
+  - reasoning_config disabled -> top-level reasoning_effort="none"
+    (Ollama /v1/chat/completions ignores think=False -- ollama#14820)
+    + model-specific thinking-off field in extra_body (default: think=False;
+    configurable per-model via thinking_field / thinking_subkey)
+  - reasoning_config enabled + effort -> top-level reasoning_effort
     (the native OpenAI-compatible format GLM/ARK expect; unset omits it
     so the endpoint's server default applies)
 """
@@ -19,13 +20,15 @@ from providers.base import ProviderProfile
 
 
 class CustomProfile(ProviderProfile):
-    """Custom/Ollama local provider — think=false and num_ctx support."""
+    """Custom/Ollama local provider -- think=false and num_ctx support."""
 
     def build_api_kwargs_extras(
         self,
         *,
         reasoning_config: dict | None = None,
         ollama_num_ctx: int | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
         **ctx: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
@@ -38,13 +41,17 @@ class CustomProfile(ProviderProfile):
             extra_body["options"] = options
 
         # Reasoning / thinking control for custom OpenAI-compatible endpoints
-        # (GLM-5.2 on Volcengine ARK, vLLM, Ollama, llama.cpp, …).
+        # (GLM-5.2 on Volcengine ARK, vLLM, Ollama, llama.cpp, oMLX, ...).
         #
-        #   - disabled  → extra_body.think = False (Ollama's thinking-off flag)
-        #   - enabled + effort set → TOP-LEVEL reasoning_effort string, the
+        #   - disabled  -> top-level reasoning_effort="none" (Ollama's
+        #     /v1/chat/completions ignores think=False -- ollama#14820 --
+        #     but respects the top-level field) + model-specific body field
+        #     (default: extra_body.think = False; configurable per-model via
+        #     thinking_field / thinking_subkey in custom_providers config).
+        #   - enabled + effort set -> TOP-LEVEL reasoning_effort string, the
         #     format GLM-5.2/ARK and other OpenAI-compatible reasoning APIs
         #     expect (GLM documents "high" and "max"; "max" is its default).
-        #   - enabled + no effort  → omit both, so the endpoint applies its own
+        #   - enabled + no effort  -> omit both, so the endpoint applies its own
         #     server-side default (do NOT force a level the user didn't pick).
         #
         # We deliberately do NOT emit ``think=True`` on enable: it is an
@@ -55,18 +62,46 @@ class CustomProfile(ProviderProfile):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
-                # Ollama's /v1/chat/completions silently ignores
-                # extra_body.think (only /api/chat honours it — ollama#14820)
-                # but respects the top-level reasoning_effort field, so both
-                # are needed to actually stop a thinking-capable model from
-                # reasoning (#25758). Endpoints that recognize neither simply
-                # ignore them.
                 top_level["reasoning_effort"] = "none"
-                extra_body["think"] = False
+                self._emit_thinking_disabled(extra_body, model, base_url)
             elif _effort:
                 top_level["reasoning_effort"] = _effort
 
         return extra_body, top_level
+
+    @staticmethod
+    def _emit_thinking_disabled(
+        extra_body: dict[str, Any],
+        model: str | None,
+        base_url: str | None,
+    ) -> None:
+        """Set the correct thinking-off field in *extra_body*.
+
+        Checks per-model config for a ``thinking_field`` / ``thinking_subkey``
+        override (e.g. ``chat_template_kwargs.enable_thinking`` for Qwen on
+        oMLX).  Falls back to the Ollama-style ``think = False``.
+        """
+        thinking_cfg = None
+        if model and base_url:
+            try:
+                from hermes_cli.config import get_custom_provider_thinking_field
+                thinking_cfg = get_custom_provider_thinking_field(model, base_url)
+            except Exception:
+                pass
+
+        if thinking_cfg:
+            field = thinking_cfg["field"]
+            subkey = thinking_cfg.get("subkey")
+            if subkey:
+                nested = extra_body.get(field, {})
+                if not isinstance(nested, dict):
+                    nested = {}
+                nested[subkey] = False
+                extra_body[field] = nested
+            else:
+                extra_body[field] = False
+        else:
+            extra_body["think"] = False
 
     def fetch_models(
         self,
@@ -91,12 +126,12 @@ custom = CustomProfile(
         "llama.cpp",
         "llama-cpp",
     ),
-    env_vars=(),  # No fixed key — custom endpoint
+    env_vars=(),  # No fixed key -- custom endpoint
     base_url="",  # User-configured
     # Without this, no max_tokens is sent and Ollama falls back to its internal
     # num_predict=128, truncating responses after a few tokens (#39281). This is
-    # only a floor used when the user hasn't set model.max_tokens — they can
-    # override per-model — so we set it generously rather than lowballing it.
+    # only a floor used when the user hasn't set model.max_tokens -- they can
+    # override per-model -- so we set it generously rather than lowballing it.
     default_max_tokens=65536,
 )
 

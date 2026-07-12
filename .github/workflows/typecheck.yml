@@ -46,7 +46,9 @@ jobs:
         with:
           command: npm ci --ignore-scripts
       - name: Verify native compiler
-        run: test "$(npm exec --yes --package=typescript@7.0.2 -- tsc --version)" = "Version 7.0.2"
+        uses: ./.github/actions/retry
+        with:
+          command: test "$(npm exec --yes --package=typescript@7.0.2 -- tsc --version)" = "Version 7.0.2"
       - name: Check web
         run: npm exec --yes --package=typescript@7.0.2 -- tsc -p web --noEmit
       - name: Check TUI

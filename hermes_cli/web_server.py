@@ -12448,19 +12448,21 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
         if not bundle:
             return None
 
-        if bundle.source == "official":
-            scan_source = "official"
-        else:
-            scan_source = (
-                getattr(bundle, "identifier", "")
-                or getattr(meta, "identifier", "")
-                or ident
-            )
+        from hermes_cli.skills_hub import _scan_provenance_for_source
+        scan_source, allow_origin_markers = _scan_provenance_for_source(
+            bundle.source,
+            getattr(bundle, "identifier", "") or getattr(meta, "identifier", ""),
+            ident,
+        )
 
         q_path = None
         try:
             q_path = quarantine_bundle(bundle)
-            result = scan_skill(q_path, source=scan_source)
+            result = scan_skill(
+                q_path,
+                source=scan_source,
+                allow_origin_markers=allow_origin_markers,
+            )
         finally:
             if q_path is not None:
                 _shutil.rmtree(q_path, ignore_errors=True)

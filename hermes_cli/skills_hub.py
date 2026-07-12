@@ -42,6 +42,20 @@ def _display_source(r) -> str:
     return r.source
 
 
+def _scan_provenance_for_source(
+    source: str,
+    identifier: str = "",
+    fallback: str = "",
+) -> tuple[str, bool]:
+    """Return scanner source identity plus whether reserved origin markers apply."""
+    if source in {"official", "agent-created"}:
+        return source, True
+    return (
+        identifier or fallback,
+        False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Shared do_* functions
 # ---------------------------------------------------------------------------
@@ -640,18 +654,16 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Scan
     c.print("[bold]Running security scan...[/]")
-    if bundle.source == "official":
-        scan_source = "official"
-    else:
-        scan_source = (
-            getattr(bundle, "identifier", "")
-            or getattr(meta, "identifier", "")
-            or identifier
-        )
+    scan_source, allow_origin_markers = _scan_provenance_for_source(
+        bundle.source,
+        getattr(bundle, "identifier", "") or getattr(meta, "identifier", ""),
+        identifier,
+    )
     from tools.skills_hub import HUB_DIR, source_url_for_bundle
     result, scan_provenance = scan_skill_cached(
         q_path,
         source=scan_source,
+        allow_origin_markers=allow_origin_markers,
         source_url=source_url_for_bundle(bundle),
         cache_dir=HUB_DIR / "scan-cache",
     )
@@ -1100,7 +1112,16 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
 
-        result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
+        scan_source, allow_origin_markers = _scan_provenance_for_source(
+            entry["source"],
+            entry.get("identifier", ""),
+            entry["name"],
+        )
+        result = scan_skill(
+            skill_path,
+            source=scan_source,
+            allow_origin_markers=allow_origin_markers,
+        )
         c.print(format_scan_report(result))
 
         if deep:

@@ -14,6 +14,8 @@ from tools.approval import (
     load_permanent_allowlist,
     _permanent_approved,
     _session_approved,
+    set_current_session_key,
+    reset_current_session_key,
 )
 
 
@@ -53,7 +55,11 @@ class TestGatewayAlwaysPersistenceBug63250:
             {session_key: mock_notify},
         )
 
-        result = check_all_command_guards(command, env_type="local")
+        token = set_current_session_key(session_key)
+        try:
+            result = check_all_command_guards(command, env_type="local")
+        finally:
+            reset_current_session_key(token)
 
         # Command should be approved
         assert result["approved"] is True
@@ -111,7 +117,11 @@ class TestGatewayAlwaysPersistenceBug63250:
             {session_key: mock_notify},
         )
 
-        result = check_all_command_guards(command, env_type="local")
+        token = set_current_session_key(session_key)
+        try:
+            result = check_all_command_guards(command, env_type="local")
+        finally:
+            reset_current_session_key(token)
 
         assert result["approved"] is True
 
@@ -155,7 +165,11 @@ class TestGatewayAlwaysPersistenceBug63250:
             {session_key: mock_notify},
         )
 
-        result = check_all_command_guards(command, env_type="local")
+        token = set_current_session_key(session_key)
+        try:
+            result = check_all_command_guards(command, env_type="local")
+        finally:
+            reset_current_session_key(token)
 
         assert result["approved"] is True
 
@@ -197,7 +211,11 @@ class TestGatewayAlwaysPersistenceBug63250:
             {session_key: mock_notify},
         )
 
-        result = check_all_command_guards(command, env_type="local")
+        token = set_current_session_key(session_key)
+        try:
+            result = check_all_command_guards(command, env_type="local")
+        finally:
+            reset_current_session_key(token)
 
         assert result["approved"] is True
 

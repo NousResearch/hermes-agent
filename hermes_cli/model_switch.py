@@ -326,6 +326,19 @@ def _ensure_direct_aliases() -> None:
         DIRECT_ALIASES.update(_load_direct_aliases())
 
 
+def _provider_alias_names(provider_slug: str) -> list[str]:
+    """Return direct alias names that target ``provider_slug``."""
+    normalized = str(provider_slug or "").strip().lower()
+    if not normalized:
+        return []
+
+    return [
+        alias_name
+        for alias_name, alias in DIRECT_ALIASES.items()
+        if str(alias.provider or "").strip().lower() == normalized
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Result dataclasses
 # ---------------------------------------------------------------------------
@@ -2278,6 +2291,9 @@ def list_authenticated_providers(
                 if model_id not in groups[group_key]["models"]:
                     groups[group_key]["models"].append(model_id)
 
+        # Load once before walking the groups. When no aliases are configured,
+        # calling the lazy loader per group would repeatedly re-read config.
+        _ensure_direct_aliases()
         _section4_emitted_slugs: set = set()
         _current_base_url_group_count = sum(
             1
@@ -2378,6 +2394,21 @@ def list_authenticated_providers(
                         grp["total_models"] = len(live_models)
                 except Exception:
                     pass
+
+            # Direct aliases are valid typed switch targets, so expose aliases
+            # assigned to this named custom provider in the shared picker too.
+            seen_model_ids = {
+                str(model_id).strip().lower()
+                for model_id in grp["models"]
+                if str(model_id).strip()
+            }
+            for alias_name in _provider_alias_names(slug):
+                normalized_alias = str(alias_name).strip().lower()
+                if not normalized_alias or normalized_alias in seen_model_ids:
+                    continue
+                grp["models"].append(alias_name)
+                seen_model_ids.add(normalized_alias)
+
             results.append({
                 "slug": slug,
                 "name": grp["name"],

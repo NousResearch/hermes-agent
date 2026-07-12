@@ -293,3 +293,68 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     assert row["slug"] == "custom:ollama"
     assert row["is_current"] is True
     assert row["models"] == ["glm-5.1", "qwen3"]
+
+
+def test_named_custom_provider_aliases_are_listed_in_shared_picker(monkeypatch):
+    """Aliases targeting custom:<slug> should be selectable in every /model picker."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models", lambda *a, **kw: [])
+
+    probe_calls = []
+
+    def _fetch_models(api_key, base_url, **kwargs):
+        probe_calls.append((api_key, base_url, kwargs))
+        return ["model-alpha", "model-beta"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fetch_models)
+    monkeypatch.setattr(
+        model_switch,
+        "DIRECT_ALIASES",
+        {
+            "model-beta": model_switch.DirectAlias(
+                "model-beta",
+                "custom:my-router",
+                "https://router.example.com/v1",
+            ),
+            "my-router-codex": model_switch.DirectAlias(
+                "model-beta",
+                "CUSTOM:MY-ROUTER",
+                "https://router.example.com/v1",
+            ),
+            "unrelated": model_switch.DirectAlias(
+                "other-model",
+                "custom:other-router",
+                "https://other.example.com/v1",
+            ),
+        },
+    )
+
+    result = model_switch.list_picker_providers(
+        current_provider="openai-codex",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "My Router",
+                "base_url": "https://router.example.com/v1",
+                "api_key": "sk-router",
+                "extra_headers": {"X-Tenant": "team-a"},
+                "models": {
+                    "configured-only": {},
+                },
+            }
+        ],
+        max_models=50,
+    )
+
+    row = next(p for p in result if p["slug"] == "custom:my-router")
+    assert probe_calls == [
+        (
+            "sk-router",
+            "https://router.example.com/v1",
+            {"headers": {"X-Tenant": "team-a"}},
+        )
+    ]
+    assert row["models"] == ["model-alpha", "model-beta", "my-router-codex"]
+    assert row["total_models"] == 3

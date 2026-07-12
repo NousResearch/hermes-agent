@@ -556,6 +556,7 @@ export interface CronJob {
   last_run_at?: null | string
   name?: null | string
   next_run_at?: null | string
+  no_agent?: boolean
   prompt?: null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string

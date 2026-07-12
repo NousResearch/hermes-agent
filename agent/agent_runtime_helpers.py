@@ -545,6 +545,32 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                     if prev_content and new_content
                     else (prev_content or new_content)
                 )
+                # The gateway binds a mobile receipt to the exact new user
+                # dict that SessionDB successfully persisted. Repair discards
+                # that dict after merging its text into ``prev``. Preserve an
+                # explicit proof-only tag without marking the merged content as
+                # wholly DB-persisted (``prev`` itself may still need a flush).
+                persisted_receipt_tags = list(
+                    msg.get("_mobile_mutation_persisted_receipt_tags") or ()
+                )
+                if msg.get("_db_persisted"):
+                    for tag in msg.get(
+                        "_mobile_mutation_receipt_tags",
+                        (),
+                    ) or ():
+                        if tag not in persisted_receipt_tags:
+                            persisted_receipt_tags.append(tag)
+                if persisted_receipt_tags:
+                    existing_receipt_tags = list(
+                        prev.get("_mobile_mutation_persisted_receipt_tags")
+                        or ()
+                    )
+                    for tag in persisted_receipt_tags:
+                        if tag not in existing_receipt_tags:
+                            existing_receipt_tags.append(tag)
+                    prev["_mobile_mutation_persisted_receipt_tags"] = (
+                        existing_receipt_tags
+                    )
                 repairs += 1
                 continue
         merged.append(msg)

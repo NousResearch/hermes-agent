@@ -193,7 +193,6 @@ def test_memory_backup_recovery_report_names_sync_retry_plan_without_content(tmp
         "# Sync retry\n\nImportant memory: Quartz buyer phone token amethyst awaits provider sync.\n",
         encoding="utf-8",
     )
-
     report = build_memory_backup_recovery_report(
         [
             MemoryRecoveryWrite(
@@ -226,6 +225,42 @@ def test_memory_backup_recovery_report_names_sync_retry_plan_without_content(tmp
     assert "mem-quartz-sync: attempts=2 next_retry_at=2026-07-12T16:05:00Z last_error_code=provider_503" in rendered
     assert "Quartz buyer" not in rendered
     assert "amethyst" not in rendered
+
+
+def test_memory_backup_recovery_report_flags_synced_writes_without_journal(tmp_path):
+    vault = tmp_path / "vault"
+    note = vault / "memories" / "journal-first.md"
+    note.parent.mkdir(parents=True)
+    note.write_text(
+        "# Journal first\n\nPinned memory: Lyra approval token violet was uploaded without WAL evidence.\n",
+        encoding="utf-8",
+    )
+
+    report = build_memory_backup_recovery_report(
+        [
+            MemoryRecoveryWrite(
+                id="mem-lyra-journal-first",
+                content="Lyra approval token violet was uploaded without WAL evidence.",
+                important=True,
+                pinned=True,
+                journaled=False,
+                synced=True,
+                local_indexed=True,
+                durable_note_terms=("Lyra", "WAL evidence"),
+            )
+        ],
+        note_index=LocalNoteIndex.from_path(vault),
+    )
+
+    assert not report.ok
+    assert report.missing_journal_ids == ("mem-lyra-journal-first",)
+    assert report.sync_without_journal_ids == ("mem-lyra-journal-first",)
+    assert report.diagnostics["checks"]["sync_without_journal"] == 1
+    rendered = report.to_markdown()
+    assert "sync without journal" in rendered
+    assert "mem-lyra-journal-first" in rendered
+    assert "Lyra approval" not in rendered
+    assert "violet" not in rendered
 
 
 def test_memory_backup_recovery_report_preserves_conflicting_facts():

@@ -1265,6 +1265,15 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             tool_calls.append(tc_dict)
         msg["tool_calls"] = tool_calls
 
+    # Normalize empty-string content to None when tool_calls are present.
+    # The OpenAI API spec requires assistant messages with tool_calls to use
+    # content: null (or omit content), not an empty string. Most providers
+    # are lenient, but strict validators like DeepSeek reject content:"" with
+    # HTTP 400 ("An assistant message with 'tool_calls' must be followed by
+    # tool messages..."). (#63200)
+    if msg.get("tool_calls") and msg.get("content") == "":
+        msg["content"] = None
+
     return msg
 
 

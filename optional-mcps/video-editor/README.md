@@ -21,25 +21,17 @@
 ## Requirements
 
 - **FFmpeg** >= 6.0 (`ffmpeg` and `ffprobe` on PATH)
-- **faster-whisper** for transcription: `pip install faster-whisper`
+- **faster-whisper** for transcription (optional): `pip install faster-whisper`
 
 ## Installation
 
-Add to your Hermes config:
-
-```yaml
-mcp_servers:
-  video-editor:
-    command: python
-    args:
-      - optional-mcps/video-editor/server.py
-```
-
-Or use the catalog manifest:
+Install via the catalog:
 
 ```bash
-hermes mcp add optional-mcps/video-editor/manifest.yaml
+hermes mcp install official/video-editor
 ```
+
+Start a new Hermes session to load the video editor tools.
 
 ## Origin
 

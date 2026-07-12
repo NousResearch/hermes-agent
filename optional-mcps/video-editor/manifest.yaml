@@ -1,12 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
 name: video-editor
-description: |
-  11 tools for conversational video editing via FFmpeg + faster-whisper.
-  Includes: video probe/metadata, speech-to-text transcription, cutting,
-  image overlay, animated captions (karaoke), zoom/pan (Ken Burns),
-  split-screen layouts, final render, transitions (fade/crossfade/wipe),
-  audio mixing (normalize/mute/extract/ducking), and watermarks.
-  Requires ffmpeg >= 6.0 on PATH. faster-whisper needed for transcription.
-command: python
-args:
-  - server.py
-env_vars: []
+description: 11 tools for conversational video editing via FFmpeg + faster-whisper.
+source: https://github.com/NousResearch/hermes-agent
+
+# How to launch the server once installed. The keys here map 1:1 to the
+# `mcp_servers.<name>` block written into ~/.hermes/config.yaml by the
+# existing `_save_mcp_server()` helper in hermes_cli/mcp_config.py.
+transport:
+  type: stdio
+  # For git-installed servers, ${INSTALL_DIR} is substituted at install time
+  # with the path the catalog cloned the repo into. The catalog never
+  # auto-updates: the user re-runs `hermes mcp install official/video-editor` to
+  # refresh.
+  command: python3
+  args:
+    - "${INSTALL_DIR}/optional-mcps/video-editor/server.py"
+
+# Install step — clones this repo so server.py is available.
+install:
+  type: git
+  url: https://github.com/NousResearch/hermes-agent.git
+  # Pin to the commit that contains this catalog entry.
+  ref: main
+  # No bootstrap needed: server.py is pure stdlib + FFmpeg (must be on PATH).
+  # faster-whisper is optional (only for video_transcribe) — users install it
+  # separately when needed.
+
+# No credentials needed.
+auth:
+  type: none
+
+post_install: |
+  The video editor requires FFmpeg >= 6.0 (ffmpeg and ffprobe on PATH).
+  Install it with your system package manager if not already present.
+
+  For speech-to-text transcription, optionally install faster-whisper:
+    pip install faster-whisper
+
+  Start a new Hermes session to load the video editor tools.

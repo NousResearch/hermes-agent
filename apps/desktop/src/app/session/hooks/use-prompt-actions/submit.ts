@@ -119,8 +119,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // this, a fast session switch during session.resume / file.attach can
       // redirect the user's text into a different chat (#54527).
       const startingActiveSessionId = activeSessionIdRef.current
-      const startingStoredSessionId = selectedStoredSessionIdRef.current
-      const startingRouteToken = getRouteToken()
+      // Session creation is part of this submit flow. These baselines are
+      // refreshed after creating a new session so the expected transition to
+      // its stored id/route is not mistaken for an external session switch.
+      let startingStoredSessionId = selectedStoredSessionIdRef.current
+      let startingRouteToken = getRouteToken()
 
       const sessionContextDrifted = (): boolean =>
         selectedStoredSessionIdRef.current !== startingStoredSessionId ||
@@ -292,6 +295,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
           return false
         }
+
+        // createBackendSessionForSend atomically claims the new runtime/stored
+        // session and may navigate to its route. Treat that as continuation
+        // of this submit, not drift that aborts the first prompt.
+        startingStoredSessionId = selectedStoredSessionIdRef.current
+        startingRouteToken = getRouteToken()
 
         seedOptimistic(sessionId)
       }

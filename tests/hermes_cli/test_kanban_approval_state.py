@@ -124,6 +124,21 @@ def test_request_parks_exact_run_without_counting_failure_and_redacts_event(
         assert request["action_digest"] not in serialized
 
 
+def test_late_pid_registration_cannot_reanimate_parked_worker(kanban_home):
+    with kb.connect() as conn:
+        task = _claimed_task(conn)
+        request = _request(conn, task)
+        assert request is not None
+
+        assert kb._set_worker_pid(conn, task.id, 424242) is False
+
+        parked = kb.get_task(conn, task.id)
+        assert parked.status == "blocked"
+        assert parked.current_run_id is None
+        assert parked.worker_pid is None
+        assert "spawned" not in [event.kind for event in kb.list_events(conn, task.id)]
+
+
 def test_request_is_owner_cas_and_idempotent(kanban_home):
     with kb.connect() as conn:
         task = _claimed_task(conn)

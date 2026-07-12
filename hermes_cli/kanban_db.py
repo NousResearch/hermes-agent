@@ -8111,25 +8111,44 @@ def _record_spawn_failure(
     )
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + emit a ``spawned`` event.
+def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> bool:
+    """CAS-record the spawned child's pid + emit a ``spawned`` event.
 
     The event's payload carries the pid so a human reading ``hermes kanban
     tail`` can correlate log lines with OS-level traces without opening
-    the drawer.
+    the drawer. Returns ``False`` when the child already completed or parked
+    its run before ``Popen`` returned to the dispatcher; in that race we must
+    not write a stale PID back onto the now-terminal/blocked task.
     """
     with write_txn(conn):
-        conn.execute(
-            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
-            (int(pid), task_id),
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["status"] != "running"
+            or row["current_run_id"] is None
+        ):
+            return False
+        run_id = int(row["current_run_id"])
+        task_update = conn.execute(
+            "UPDATE tasks SET worker_pid = ? "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+            (int(pid), task_id, run_id),
         )
-        run_id = _current_run_id(conn, task_id)
-        if run_id is not None:
-            conn.execute(
-                "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
-                (int(pid), run_id),
-            )
+        if task_update.rowcount != 1:
+            return False
+        run_update = conn.execute(
+            "UPDATE task_runs SET worker_pid = ? "
+            "WHERE id = ? AND task_id = ? AND status = 'running' "
+            "  AND ended_at IS NULL",
+            (int(pid), run_id, task_id),
+        )
+        if run_update.rowcount != 1:
+            raise RuntimeError("worker PID registration lost active-run CAS")
         _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        return True
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:

@@ -1340,7 +1340,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    with kb.connect_closing() as conn:
+    current_board = kb.get_current_board()
+    with kb.connect_closing(board=current_board) as conn:
         task_id = kb.create_task(
             conn,
             title=args.title,
@@ -1362,7 +1363,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
-            board=kb.get_current_board(),
+            board=current_board,
             workspace_pinned=ws_pinned,
         )
         task = kb.get_task(conn, task_id)

@@ -265,6 +265,55 @@ def test_show_uses_live_worktree_snapshot(monkeypatch, tmp_path):
     assert d["task"]["branch_name"] == "wt/live"
 
 
+def test_tool_board_override_create_and_comment_beat_ambient_pins(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    kb.create_board("ambient")
+    kb.create_board("override")
+    monkeypatch.setenv(
+        "HERMES_KANBAN_DB",
+        str(home / "kanban" / "boards" / "ambient" / "kanban.db"),
+    )
+    monkeypatch.setenv(
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        str(home / "kanban" / "boards" / "ambient" / "workspaces"),
+    )
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "ambient")
+
+    from tools import kanban_tools as kt
+    created = json.loads(kt._handle_create({
+        "title": "override child",
+        "assignee": "peer",
+        "board": "override",
+    }))
+    assert created["ok"] is True
+    task_id = created["task_id"]
+
+    commented = json.loads(kt._handle_comment({
+        "task_id": task_id,
+        "body": "hello",
+        "board": "override",
+    }))
+    assert commented["ok"] is True
+
+    with kb.connect_closing(board="ambient") as conn:
+        assert kb.get_task(conn, task_id) is None
+    with kb.connect_closing(board="override") as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        comments = kb.list_comments(conn, task_id)
+        assert len(comments) == 1
+        assert comments[0].body == "hello"
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

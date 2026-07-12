@@ -373,6 +373,7 @@ class CLIAgentSetupMixin:
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),
+                reasoning_update_callback=self._on_reasoning_update,
 
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,

@@ -4866,6 +4866,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             self._session_reasoning_overrides[session_key] = dict(reasoning_config)
 
+    def _persist_reasoning_effort_config(self, level: str) -> bool:
+        """Persist agent.reasoning_effort to config.yaml. Returns True on success."""
+        try:
+            from hermes_cli.config import atomic_config_write
+            import yaml
+
+            config_path = _hermes_home / "config.yaml"
+            user_config = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            agent_cfg = user_config.get("agent")
+            if not isinstance(agent_cfg, dict):
+                agent_cfg = {}
+                user_config["agent"] = agent_cfg
+            agent_cfg["reasoning_effort"] = level
+            atomic_config_write(config_path, user_config)
+            return True
+        except Exception as e:
+            logger.error("Failed to persist reasoning_effort from tool: %s", e)
+            return False
+
+    def _make_reasoning_update_callback(self, session_key: str):
+        """Build the reasoning_update_callback for an agent bound to *session_key*.
+
+        The tool's in-process mutation of ``agent.reasoning_config`` does not
+        survive the cached-agent path — every message re-applies the resolved
+        config (``agent.reasoning_config = reasoning_config``). Storing the new
+        level as a session override keeps ``_resolve_session_reasoning_config``
+        returning it on subsequent messages, mirroring ``/reasoning <level>``.
+        ``persist=True`` mirrors ``/reasoning <level> --global``: write
+        config.yaml and drop the (now redundant) session override.
+        """
+
+        def _callback(level: str, parsed_config: dict, persist: bool = False) -> bool:
+            if persist and self._persist_reasoning_effort_config(level):
+                self._set_session_reasoning_override(session_key, None)
+                self._reasoning_config = dict(parsed_config)
+                return True
+            self._set_session_reasoning_override(session_key, parsed_config)
+            self._reasoning_config = dict(parsed_config)
+            return False
+
+        return _callback
+
     @staticmethod
     def _load_service_tier() -> str | None:
         """Load Priority Processing setting from config.yaml.
@@ -13384,6 +13429,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             max_iterations = _current_max_iterations()
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
+            try:
+                _reasoning_session_key = self._session_key_for_source(source)
+            except Exception:
+                _reasoning_session_key = ""
+            reasoning_update_callback = self._make_reasoning_update_callback(_reasoning_session_key)
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
@@ -13414,6 +13464,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
+                    reasoning_update_callback=reasoning_update_callback,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
@@ -18390,6 +18441,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.notice_clear_callback = None
             agent.event_callback = _event_callback_sync
             agent.reasoning_config = reasoning_config
+            # Session-scoped hook for the reasoning_effort tool. Without it,
+            # the tool's mutation of agent.reasoning_config would be undone by
+            # the reset one line above on the very next message; the callback
+            # records the change as a session override so
+            # _resolve_session_reasoning_config keeps returning it.
+            agent.reasoning_update_callback = self._make_reasoning_update_callback(session_key)
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
 

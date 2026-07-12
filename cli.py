@@ -5407,6 +5407,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         symmetrically with the show callback (and so future REPL UIs can hook it)."""
         return
 
+    def _on_reasoning_update(self, level: str, parsed_config: dict, persist: bool = False) -> bool:
+        """Platform hook for the reasoning_effort tool.
+
+        Keeps the CLI's own ``reasoning_config`` in sync so later agent
+        re-inits (e.g. /model switches) retain the tool-set level, and
+        persists to config.yaml only when the model passed ``persist=true``.
+        Returns True when the value was durably saved.
+        """
+        self.reasoning_config = parsed_config
+        if not persist:
+            return False
+        return save_config_value("agent.reasoning_effort", level)
+
     # ── Streaming display ────────────────────────────────────────────────
 
     def _current_reasoning_callback(self):

@@ -1650,6 +1650,7 @@ class CLICommandsMixin:
                     platform="cli",
                     session_db=self._session_db,
                     reasoning_config=self.reasoning_config,
+                    reasoning_update_callback=self._on_reasoning_update,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=self._providers_only,

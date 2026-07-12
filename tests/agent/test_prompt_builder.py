@@ -1169,6 +1169,21 @@ class TestEnvironmentHints:
         assert "hostname" not in result
         assert "WSL" not in result
 
+    def test_build_environment_hints_prefers_subprocess_home(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys, platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
+        monkeypatch.setattr(_pb, "get_subprocess_home", lambda: "/opt/data/home")
+        monkeypatch.setattr(_pb.os.path, "expanduser", lambda _path: "/opt/data")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "User home directory: /opt/data/home" in result
+        assert "User home directory: /opt/data\n" not in result
+
     def test_build_environment_hints_on_windows_local(self, monkeypatch):
         import agent.prompt_builder as _pb
         import sys
@@ -1644,5 +1659,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

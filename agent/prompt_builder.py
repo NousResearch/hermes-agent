@@ -13,7 +13,7 @@ import contextvars
 from collections import OrderedDict
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
+from hermes_constants import get_hermes_home, get_skills_dir, get_subprocess_home, is_wsl
 from typing import Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
@@ -1096,7 +1096,8 @@ def build_environment_hints() -> str:
         else:
             host_lines.append(f"Host: {platform.system()} ({platform.release()})")
 
-        host_lines.append(f"User home directory: {os.path.expanduser('~')}")
+        home_dir = get_subprocess_home() or os.path.expanduser("~")
+        host_lines.append(f"User home directory: {home_dir}")
         try:
             host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
         except OSError:

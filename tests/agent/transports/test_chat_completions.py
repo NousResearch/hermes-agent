@@ -21,6 +21,23 @@ class TestChatCompletionsBasic:
     def test_registered(self, transport):
         assert transport is not None
 
+    @pytest.mark.parametrize("provider", ["nous", "openrouter"])
+    def test_gpt56_ultra_uses_max_wire_effort(self, transport, provider):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+        kw = transport.build_kwargs(
+            model="openai/gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            reasoning_config={"enabled": True, "effort": "ultra"},
+            supports_reasoning=True,
+            provider_profile=profile,
+            provider_name=provider,
+            base_url=profile.base_url,
+        )
+        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
+
     def test_convert_tools_identity(self, transport):
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
         assert transport.convert_tools(tools) is tools

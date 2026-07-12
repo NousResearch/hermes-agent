@@ -75,6 +75,16 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("reasoning", {}).get("effort") == "high"
 
+    @pytest.mark.parametrize("effort, wire_effort", [("max", "max"), ("ultra", "max")])
+    def test_extended_reasoning_efforts_use_api_wire_value(self, transport, effort, wire_effort):
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+        assert kw.get("reasoning", {}).get("effort") == wire_effort
+
     def test_reasoning_disabled(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -400,6 +410,17 @@ class TestCodexBuildKwargs:
         # tests/run_agent/test_codex_xai_oauth_recovery.py for the
         # full history.
         assert "reasoning.encrypted_content" in kw.get("include", [])
+
+    @pytest.mark.parametrize("effort", ["xhigh", "max", "ultra"])
+    def test_xai_stronger_generic_efforts_clamp_to_high(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+        assert kw.get("reasoning") == {"effort": "high"}
 
     def test_xai_injects_native_web_search_when_client_web_search_present(self, transport):
         """xAI path swaps a client-side ``web_search`` function for xAI's

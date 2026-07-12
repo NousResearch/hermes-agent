@@ -24,7 +24,9 @@ const EFFORT_OPTIONS = [
   { value: 'low', labelKey: 'low' },
   { value: 'medium', labelKey: 'medium' },
   { value: 'high', labelKey: 'high' },
-  { value: 'xhigh', labelKey: 'max' }
+  { value: 'xhigh', labelKey: 'xhigh' },
+  { value: 'max', labelKey: 'max' },
+  { value: 'ultra', labelKey: 'ultra' }
 ] as const
 
 /** How "fast" is achieved for a given model — two different mechanisms:

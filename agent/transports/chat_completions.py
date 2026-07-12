@@ -18,6 +18,20 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
+    """Return the model's wire-compatible reasoning config."""
+    if not isinstance(reasoning_config, dict):
+        return reasoning_config
+    if (
+        "gpt-5.6" in (model or "").lower()
+        and str(reasoning_config.get("effort") or "").strip().lower() == "ultra"
+    ):
+        normalized = dict(reasoning_config)
+        normalized["effort"] = "max"
+        return normalized
+    return reasoning_config
+
+
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if reasoning_config is None or not isinstance(reasoning_config, dict):
@@ -52,7 +66,7 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if normalized_model.startswith("gemini-2.5-"):
         return thinking_config
 
-    if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
+    if effort not in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
         effort = "medium"
 
     # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
@@ -62,13 +76,13 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         if "flash" in normalized_model:
             if effort in {"minimal", "low"}:
                 thinking_config["thinkingLevel"] = "low"
-            elif effort in {"high", "xhigh"}:
+            elif effort in {"high", "xhigh", "max", "ultra"}:
                 thinking_config["thinkingLevel"] = "high"
             else:
                 thinking_config["thinkingLevel"] = "medium"
         elif "pro" in normalized_model:
             thinking_config["thinkingLevel"] = (
-                "high" if effort in {"high", "xhigh"} else "low"
+                "high" if effort in {"high", "xhigh", "max", "ultra"} else "low"
             )
 
     return thinking_config
@@ -364,7 +378,7 @@ class ChatCompletionsTransport(ProviderTransport):
         is_nvidia_nim = params.get("is_nvidia_nim", False)
         is_kimi = params.get("is_kimi", False)
         is_tokenhub = params.get("is_tokenhub", False)
-        reasoning_config = params.get("reasoning_config")
+        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
 
         if ephemeral is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(ephemeral))
@@ -563,7 +577,7 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs["max_tokens"] = anthropic_max
 
         # Provider-specific api_kwargs extras (reasoning_effort, metadata, etc.)
-        reasoning_config = params.get("reasoning_config")
+        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
         extra_body_from_profile, top_level_from_profile = (
             profile.build_api_kwargs_extras(
                 reasoning_config=reasoning_config,

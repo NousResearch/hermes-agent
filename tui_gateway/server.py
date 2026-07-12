@@ -1277,7 +1277,53 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
         from gateway.run import _redact_approval_command
 
         payload["command"] = _redact_approval_command(payload.get("command"))
-    _emit("approval.request", sid, payload)
+    descriptor = dict(payload)
+    descriptor["kind"] = "approval"
+    _emit_with_sync_update(
+        "approval.request",
+        sid,
+        payload,
+        lambda stream: stream.track_pending_interaction(descriptor),
+    )
+
+
+def _emit_approval_terminal(sid: str, data: dict | None) -> None:
+    """Publish one approval terminal transition and clear snapshot state."""
+    session = _sessions.get(sid)
+    payload = dict(data or {})
+    approval_id = str(payload.get("approval_id") or "")
+    if session is None or not approval_id:
+        return
+    state = str(payload.get("state") or "stale")
+    event = {
+        "resolved": "approval.resolved",
+        "expired": "approval.expired",
+        "stale": "approval.stale",
+    }.get(state, "approval.stale")
+    _emit_with_sync_update(
+        event,
+        sid,
+        payload,
+        lambda stream: stream.finish_pending_interaction(approval_id),
+    )
+
+
+def _register_gateway_approval_callbacks(session_key: str, sid: str) -> None:
+    """Wire request and optional terminal approval callbacks for one session."""
+    from tools.approval import register_gateway_notify
+
+    register_gateway_notify(
+        session_key,
+        lambda data: _emit_approval_request(sid, data),
+    )
+    try:
+        from tools.approval import register_gateway_resolution_notify
+    except ImportError:
+        return
+    register_gateway_resolution_notify(
+        session_key,
+        lambda data: _emit_approval_terminal(sid, data),
+    )
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -1539,14 +1585,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 pass
 
             try:
-                from tools.approval import (
-                    register_gateway_notify,
-                    load_permanent_allowlist,
-                )
+                from tools.approval import load_permanent_allowlist
 
-                register_gateway_notify(
-                    key, lambda data: _emit_approval_request(sid, data)
-                )
+                _register_gateway_approval_callbacks(key, sid)
                 notify_registered = True
                 load_permanent_allowlist()
             except Exception:
@@ -3311,7 +3352,6 @@ def _sync_session_key_after_compress(
             disable_session_yolo,
             enable_session_yolo,
             is_session_yolo_enabled,
-            register_gateway_notify,
             unregister_gateway_notify,
         )
 
@@ -3331,10 +3371,7 @@ def _sync_session_key_after_compress(
             except Exception:
                 pass
         try:
-            register_gateway_notify(
-                new_session_id,
-                lambda data: _emit_approval_request(sid, data),
-            )
+            _register_gateway_approval_callbacks(new_session_id, sid)
         except Exception:
             pass
     except Exception:
@@ -4955,9 +4992,9 @@ def _init_session(
         # Defer hard-failure to slash.exec; chat still works without slash worker.
         _sessions[sid]["slash_worker"] = None
     try:
-        from tools.approval import register_gateway_notify, load_permanent_allowlist
+        from tools.approval import load_permanent_allowlist
 
-        register_gateway_notify(key, lambda data: _emit_approval_request(sid, data))
+        _register_gateway_approval_callbacks(key, sid)
         load_permanent_allowlist()
     except Exception:
         pass
@@ -10720,7 +10757,26 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from tools.approval import resolve_gateway_approval
+        from tools.approval import (
+            resolve_gateway_approval,
+            resolve_gateway_approval_by_id,
+        )
+
+        approval_id = str(params.get("approval_id") or "").strip()
+        if approval_id:
+            return _ok(
+                rid,
+                resolve_gateway_approval_by_id(
+                    session["session_key"],
+                    approval_id,
+                    params.get("choice", "deny"),
+                    reason=params.get("reason"),
+                    resolution_metadata={
+                        "source": "tui_gateway",
+                        "live_session_id": str(params.get("session_id") or ""),
+                    },
+                ),
+            )
 
         return _ok(
             rid,

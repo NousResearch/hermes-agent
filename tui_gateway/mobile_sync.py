@@ -63,9 +63,11 @@ class SessionEventStream:
         self._active_tools.pop(str(tool_id), None)
 
     def track_pending_interaction(self, descriptor: dict[str, Any]) -> None:
-        request_id = str(descriptor.get("request_id") or "")
-        if request_id:
-            self._pending_interactions[request_id] = copy.deepcopy(descriptor)
+        interaction_id = str(
+            descriptor.get("request_id") or descriptor.get("approval_id") or ""
+        )
+        if interaction_id:
+            self._pending_interactions[interaction_id] = copy.deepcopy(descriptor)
 
     def finish_pending_interaction(self, request_id: str) -> None:
         """Remove state that has no legacy completion event.

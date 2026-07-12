@@ -1,5 +1,6 @@
 """Public JSON-RPC conformance tests for revisioned conversation sync."""
 
+import json
 import threading
 import time
 
@@ -444,6 +445,223 @@ def test_snapshot_recovers_and_then_clears_a_pending_interaction(monkeypatch):
 
     settled = resume_session(transport, stored_id)
     assert settled["synchronization"]["snapshot"]["pending_interactions"] == []
+
+
+def test_snapshot_recovers_exact_redacted_approval_until_terminal_event(monkeypatch):
+    transport = RecordingTransport()
+    created = create_session(transport)
+    sid = created["session_id"]
+    stored_id = created["stored_session_id"]
+    monkeypatch.setattr(server, "_get_db", lambda: SessionDBStub(stored_id))
+    approval_id = "a" * 32
+    raw_secret = "sk-proj-super-secret-mobile-contract"
+
+    server._emit_approval_request(
+        sid,
+        {
+            "approval_id": approval_id,
+            "command": f"curl -H 'Authorization: Bearer {raw_secret}' example.test",
+            "description": "network request",
+            "created_at": 10.0,
+            "expires_at": 310.0,
+            "state": "pending",
+            "resolution": None,
+        },
+    )
+
+    waiting = resume_session(transport, stored_id)
+    snapshot = waiting["synchronization"]["snapshot"]
+    assert snapshot["status"] == "waiting"
+    assert len(snapshot["pending_interactions"]) == 1
+    descriptor = snapshot["pending_interactions"][0]
+    assert set(descriptor) == {
+        "approval_id",
+        "command",
+        "description",
+        "created_at",
+        "expires_at",
+        "state",
+        "resolution",
+        "kind",
+    }
+    assert descriptor["approval_id"] == approval_id
+    assert descriptor["description"] == "network request"
+    assert descriptor["created_at"] == 10.0
+    assert descriptor["expires_at"] == 310.0
+    assert descriptor["state"] == "pending"
+    assert descriptor["resolution"] is None
+    assert descriptor["kind"] == "approval"
+    serialized = json.dumps(snapshot["pending_interactions"])
+    assert raw_secret not in serialized
+    assert "sk-proj-" not in serialized
+
+    server._emit_approval_terminal(
+        sid,
+        {
+            "approval_id": approval_id,
+            "state": "resolved",
+            "resolution": {"choice": "once", "resolved_at": 11.0},
+        },
+    )
+
+    terminal = next(
+        frame
+        for frame in reversed(transport.frames)
+        if frame.get("params", {}).get("type") == "approval.resolved"
+    )
+    assert terminal["params"]["payload"]["approval_id"] == approval_id
+    assert terminal["params"]["payload"]["state"] == "resolved"
+    settled = resume_session(transport, stored_id)
+    assert settled["synchronization"]["snapshot"]["pending_interactions"] == []
+
+
+def test_approval_response_targets_exact_identity_without_changing_legacy_fifo(
+    monkeypatch,
+):
+    from tools import approval
+
+    transport = RecordingTransport()
+    created = create_session(transport)
+    sid = created["session_id"]
+    session = server._sessions[sid]
+    session["agent_ready"] = None
+    calls = []
+
+    def resolve_exact(session_key, approval_id, choice, **kwargs):
+        calls.append((session_key, approval_id, choice, kwargs))
+        return {
+            "outcome": "resolved",
+            "approval": {
+                "approval_id": approval_id,
+                "state": "resolved",
+                "resolution": {"choice": choice},
+            },
+        }
+
+    monkeypatch.setattr(approval, "resolve_gateway_approval_by_id", resolve_exact)
+    monkeypatch.setattr(approval, "resolve_gateway_approval", lambda *_a, **_k: 2)
+
+    exact = server._methods["approval.respond"](
+        "exact",
+        {
+            "session_id": sid,
+            "approval_id": "b" * 32,
+            "choice": "once",
+            "reason": "approved from phone",
+        },
+    )
+    assert exact["result"]["outcome"] == "resolved"
+    assert calls == [
+        (
+            session["session_key"],
+            "b" * 32,
+            "once",
+            {
+                "reason": "approved from phone",
+                "resolution_metadata": {
+                    "source": "tui_gateway",
+                    "live_session_id": sid,
+                },
+            },
+        )
+    ]
+
+    legacy = server._methods["approval.respond"](
+        "legacy",
+        {"session_id": sid, "choice": "deny", "all": True},
+    )
+    assert legacy["result"] == {"resolved": 2}
+
+
+def test_disconnect_resume_recovers_and_resolves_same_approval_once(monkeypatch):
+    from tools import approval
+
+    transport = RecordingTransport()
+    created = create_session(transport)
+    sid = created["session_id"]
+    stored_id = created["stored_session_id"]
+    session = server._sessions[sid]
+    session["agent_ready"] = None
+    monkeypatch.setattr(server, "_get_db", lambda: SessionDBStub(stored_id))
+    monkeypatch.setattr(
+        approval,
+        "_get_approval_config",
+        lambda: {"gateway_timeout": 2},
+    )
+    server._register_gateway_approval_callbacks(session["session_key"], sid)
+    decision = {}
+
+    def wait_for_decision():
+        decision["value"] = approval._await_gateway_decision(
+            session["session_key"],
+            approval._gateway_notify_cbs[session["session_key"]],
+            {
+                "command": "rm -rf /tmp/example",
+                "description": "recursive delete",
+                "pattern_key": "rm_recursive",
+                "pattern_keys": ["rm_recursive"],
+            },
+        )
+
+    thread = threading.Thread(target=wait_for_decision)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 1
+        approval_id = ""
+        while time.monotonic() < deadline:
+            requests = [
+                frame
+                for frame in transport.frames
+                if frame.get("params", {}).get("type") == "approval.request"
+            ]
+            if requests:
+                approval_id = requests[-1]["params"]["payload"]["approval_id"]
+                break
+            time.sleep(0.01)
+        assert approval_id
+
+        reconnected = RecordingTransport()
+        recovered = resume_session(reconnected, stored_id)
+        pending = recovered["synchronization"]["snapshot"]["pending_interactions"]
+        assert [item["approval_id"] for item in pending] == [approval_id]
+
+        first = server._methods["approval.respond"](
+            "resolve-first",
+            {
+                "session_id": sid,
+                "approval_id": approval_id,
+                "choice": "once",
+            },
+        )
+        duplicate = server._methods["approval.respond"](
+            "resolve-duplicate",
+            {
+                "session_id": sid,
+                "approval_id": approval_id,
+                "choice": "once",
+            },
+        )
+        assert first["result"]["outcome"] == "resolved"
+        assert duplicate["result"]["outcome"] == "already_resolved"
+
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+        assert decision == {
+            "value": {"resolved": True, "choice": "once", "reason": None}
+        }
+        terminal_events = [
+            frame
+            for frame in reconnected.frames
+            if frame.get("params", {}).get("type") == "approval.resolved"
+        ]
+        assert len(terminal_events) == 1
+        assert terminal_events[0]["params"]["payload"]["approval_id"] == approval_id
+        settled = resume_session(reconnected, stored_id)
+        assert settled["synchronization"]["snapshot"]["pending_interactions"] == []
+    finally:
+        approval.unregister_gateway_notify(session["session_key"])
+        approval._gateway_tombstones.pop(session["session_key"], None)
+        thread.join(timeout=1)
 
 
 def test_legacy_session_keeps_original_response_and_event_shape():

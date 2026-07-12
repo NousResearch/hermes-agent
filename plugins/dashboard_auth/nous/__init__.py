@@ -131,6 +131,14 @@ _EXPECTED_CONTRACT_VERSION = 1
 # Contract C7: JWKS Cache-Control max-age=300.
 _JWKS_CACHE_SECONDS = 300
 
+# Some WAF/CDN setups reject urllib's default fingerprint for the public JWKS
+# fetch even though the endpoint is otherwise healthy. Send explicit JSON-client
+# headers without changing TLS or JWT verification semantics.
+_JWKS_REQUEST_HEADERS = {
+    "User-Agent": "Hermes-Agent Dashboard OIDC JWKS",
+    "Accept": "application/json, application/jwk-set+json",
+}
+
 # httpx timeout for the token endpoint POST.
 _TOKEN_ENDPOINT_TIMEOUT_SEC = 10.0
 
@@ -420,6 +428,7 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
                 self._jwks_url,
                 cache_keys=True,
                 lifespan=_JWKS_CACHE_SECONDS,
+                headers=dict(_JWKS_REQUEST_HEADERS),
             )
         return self._jwks_client
 

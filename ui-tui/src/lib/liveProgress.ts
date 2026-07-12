@@ -38,42 +38,20 @@ const isBarrierMessage = (msg: Msg | undefined) => {
   return false
 }
 
-const isToolCarryingTrail = (msg: Msg | undefined) => Boolean(msg?.kind === 'trail' && !msg.text && msg.tools?.length)
-
 export const appendToolShelfMessage = (prev: readonly Msg[], msg: Msg): Msg[] => {
   if (!isToolShelfMessage(msg)) {
     return [...prev, msg]
   }
 
-  let fallbackHolder: number | null = null
+  const tail = prev.at(-1)
 
-  for (let index = prev.length - 1; index >= 0; index--) {
-    const candidate = prev[index]
-
-    if (isToolCarryingTrail(candidate)) {
-      const next = [...prev]
-
-      next[index] = mergeToolShelfInto(candidate!, msg)
-
-      return next
-    }
-
-    if (fallbackHolder === null && canHoldToolShelf(candidate)) {
-      fallbackHolder = index
-    }
-
-    if (isBarrierMessage(candidate)) {
-      break
-    }
+  // A tool result belongs only to the chronological segment immediately
+  // before it. Scanning farther back folds thinking/tool/thinking/tool into
+  // grouped-by-type shelves and loses which reasoning led to which call.
+  // Keep the explicit empty-input fallback: an initial tool shelf must append.
+  if (!tail || isBarrierMessage(tail) || !canHoldToolShelf(tail)) {
+    return [...prev, msg]
   }
 
-  if (fallbackHolder !== null) {
-    const next = [...prev]
-
-    next[fallbackHolder] = mergeToolShelfInto(prev[fallbackHolder]!, msg)
-
-    return next
-  }
-
-  return [...prev, msg]
+  return [...prev.slice(0, -1), mergeToolShelfInto(tail, msg)]
 }

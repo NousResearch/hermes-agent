@@ -182,6 +182,32 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_ignores_completed_history_missing_end_time(worker_env):
+    """Legacy malformed runs must not break a worker's task context."""
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        historical = kb.create_task(
+            conn, title="legacy completed task", assignee="test-worker"
+        )
+        assert kb.claim_task(conn, historical)
+        assert kb.complete_task(conn, historical, summary="legacy completion")
+        conn.execute(
+            "UPDATE task_runs SET ended_at = NULL WHERE task_id = ?",
+            (historical,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+
+    shown = json.loads(kt._handle_show({}))
+    assert shown["task"]["id"] == worker_env
+    assert historical not in shown["worker_context"]
+
+
 def test_show_explicit_task_id(worker_env):
     """Peek at a different task than the one in env."""
     from hermes_cli import kanban_db as kb

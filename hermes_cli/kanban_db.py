@@ -8349,7 +8349,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             "SELECT t.id, t.title, r.summary, r.ended_at "
             "FROM task_runs r JOIN tasks t ON r.task_id = t.id "
             "WHERE r.profile = ? AND r.task_id != ? "
-            "  AND r.outcome = 'completed' "
+            "  AND r.outcome = 'completed' AND r.ended_at IS NOT NULL "
             "ORDER BY r.ended_at DESC LIMIT 5",
             (task.assignee, task_id),
         ).fetchall()

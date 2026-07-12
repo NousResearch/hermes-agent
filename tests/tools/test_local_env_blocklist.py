@@ -428,6 +428,7 @@ class TestBlocklistCoverage:
             "DISCORD_HOME_CHANNEL_NAME",
             "DISCORD_REQUIRE_MENTION",
             "DISCORD_FREE_RESPONSE_CHANNELS",
+            "DISCORD_THREAD_FREE_RESPONSE_CHANNELS",
             "DISCORD_AUTO_THREAD",
             "SLACK_HOME_CHANNEL",
             "SLACK_HOME_CHANNEL_NAME",

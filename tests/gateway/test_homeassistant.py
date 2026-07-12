@@ -27,14 +27,28 @@ from plugins.platforms.homeassistant.adapter import (
 
 
 class TestCheckRequirements:
-    def test_returns_true_when_aiohttp_present(self, monkeypatch):
+    def test_returns_true_without_token_when_aiohttp_available(self, monkeypatch):
         monkeypatch.delenv("HASS_TOKEN", raising=False)
+        assert check_ha_requirements() is True
+
+    def test_returns_true_with_token(self, monkeypatch):
+        monkeypatch.setenv("HASS_TOKEN", "test-token")
         assert check_ha_requirements() is True
 
     @patch("plugins.platforms.homeassistant.adapter.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "test-token")
         assert check_ha_requirements() is False
+
+    def test_validate_config_accepts_platform_token(self, monkeypatch):
+        monkeypatch.delenv("HASS_TOKEN", raising=False)
+        config = PlatformConfig(enabled=True, token="config-token")
+        assert validate_ha_config(config) is True
+
+    def test_validate_config_rejects_missing_token(self, monkeypatch):
+        monkeypatch.delenv("HASS_TOKEN", raising=False)
+        config = PlatformConfig(enabled=True, token="")
+        assert validate_ha_config(config) is False
 
 
 class TestValidateConfig:

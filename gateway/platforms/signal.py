@@ -236,8 +236,16 @@ def _looks_like_e164_number(value: str) -> bool:
 
 
 def check_signal_requirements() -> bool:
-    """Check if Signal is configured (has URL and account)."""
-    return bool(os.getenv("SIGNAL_HTTP_URL") and os.getenv("SIGNAL_ACCOUNT"))
+    """Check if Signal runtime dependencies are available."""
+    return True
+
+
+def validate_signal_config(config: PlatformConfig) -> bool:
+    """Check if Signal has enough config to connect."""
+    extra = getattr(config, "extra", {}) or {}
+    http_url = (extra.get("http_url", "") or os.getenv("SIGNAL_HTTP_URL", "")).strip()
+    account = (extra.get("account", "") or os.getenv("SIGNAL_ACCOUNT", "")).strip()
+    return bool(http_url and account)
 
 
 # ---------------------------------------------------------------------------

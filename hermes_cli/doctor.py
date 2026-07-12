@@ -751,7 +751,9 @@ def run_doctor(args):
                     PROVIDER_REGISTRY,
                     resolve_provider as _resolve_auth_provider,
                 )
-                known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto"}
+                known_providers = set(PROVIDER_REGISTRY.keys()) | {
+                    "openrouter", "custom", "auto", "moa"
+                }
             except Exception:
                 _resolve_auth_provider = None
                 pass
@@ -815,7 +817,7 @@ def run_doctor(args):
                 if catalog_provider is not None:
                     provider_ids_to_accept.add(catalog_provider)
 
-            if provider and provider != "auto":
+            if provider and provider not in {"auto", "moa"}:
                 if catalog_provider is None or (
                     known_providers
                     and not (provider_ids_to_accept & valid_provider_ids)

@@ -471,6 +471,40 @@ Additional webhook protections:
 - **Body read timeout:** 30 seconds
 - **Content-Type enforcement:** Only `application/json` is accepted
 
+## Final Response Cards
+
+Hermes can render assistant final responses as Feishu/Lark Card JSON v2. This
+path is opt-in: the default remains the existing legacy message format, so an
+upgrade does not change current bots automatically.
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      final_response_format: auto  # legacy | auto | card (default: legacy)
+      markdown_tables: table       # table | markdown (default: table)
+```
+
+| Setting | Behavior |
+|---------|----------|
+| `legacy` | Always use the existing text/post and native attachment delivery path. |
+| `auto` | Use Card v2 for safe assistant final responses, but keep responses with native `MEDIA:` files, audio, or unsupported attachments on the legacy path. |
+| `card` | Prefer Card v2 for assistant final responses and combine supported images when possible; unsupported attachments still fall back to native delivery. |
+
+`markdown_tables: table` renders supported Markdown tables as native Card v2
+table elements. Set it to `markdown` to keep tables as Markdown/code-style
+content inside the card. Invalid values fall back to the safe defaults
+(`legacy` and `table`).
+
+The setting applies only to semantically marked **assistant final responses**.
+Approval cards, tool messages, system notices, and non-final streaming updates
+keep their existing behavior. A thread-scoped final response without a usable
+reply anchor stays on the legacy thread path instead of creating an interactive
+card in the parent chat. Large responses are split into bounded cards to respect
+Feishu request and element limits. If a later card fails after an earlier card
+was already delivered, Hermes reports partial delivery and does not resend the
+complete response, avoiding duplicate visible content.
+
 ## WebSocket Tuning
 
 When using `websocket` mode, you can customize reconnect and ping behavior:

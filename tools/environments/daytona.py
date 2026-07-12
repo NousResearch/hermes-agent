@@ -158,28 +158,47 @@ class DaytonaEnvironment(BaseEnvironment):
     def _resume_if_image_matches(self, sandbox, *, image: str,
                                  task_id: str, source: str):
         """Resume a sandbox only when its Hermes image label matches."""
+        sandbox_name = f"hermes-{task_id}"
         labels = getattr(sandbox, "labels", None)
         recorded_image = labels.get(_IMAGE_LABEL) if isinstance(labels, dict) else None
         if recorded_image != image:
             if recorded_image is None:
                 logger.warning(
-                    "Daytona: deleting unlabeled %s sandbox %s for task %s; "
-                    "cannot verify requested image %s",
-                    source, sandbox.id, task_id, image,
+                    "Daytona: deleting unlabeled %s sandbox %s (name %s) for "
+                    "task %s; cannot verify requested image %s",
+                    source, sandbox.id, sandbox_name, task_id, image,
                 )
             else:
                 logger.warning(
-                    "Daytona: deleting %s sandbox %s for task %s after image "
-                    "changed from %s to %s",
-                    source, sandbox.id, task_id, recorded_image, image,
+                    "Daytona: deleting %s sandbox %s (name %s) for task %s "
+                    "after image changed from %s to %s",
+                    source, sandbox.id, sandbox_name, task_id, recorded_image, image,
                 )
-            self._daytona.delete(sandbox)
+            try:
+                self._daytona.delete(sandbox)
+            except Exception as exc:
+                # Fail closed: creating a replacement while the stale sandbox
+                # still owns this task identity could resume the wrong image.
+                logger.error(
+                    "Daytona: failed to delete %s sandbox %s (name %s) for "
+                    "task %s; refusing to create replacement: %s",
+                    source, sandbox.id, sandbox_name, task_id, exc,
+                )
+                raise
             return None
 
-        sandbox.start()
+        try:
+            sandbox.start()
+        except Exception as exc:
+            logger.warning(
+                "Daytona: failed to resume %s sandbox %s (name %s) for task "
+                "%s; creating replacement: %s",
+                source, sandbox.id, sandbox_name, task_id, exc,
+            )
+            return None
         logger.info(
-            "Daytona: resumed %s sandbox %s for task %s with image %s",
-            source, sandbox.id, task_id, recorded_image,
+            "Daytona: resumed %s sandbox %s (name %s) for task %s with image %s",
+            source, sandbox.id, sandbox_name, task_id, recorded_image,
         )
         return sandbox
 

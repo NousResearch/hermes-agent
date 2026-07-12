@@ -19,6 +19,21 @@ SESSIONDB_READ_METHODS = {
     "search_sessions_by_id",
     "session_count",
     "session_counts_by_source",
+    # Additional read/write methods hardened against loop-blocking after the
+    # dashboard-stall investigation (2026-07): these ran synchronously inside
+    # async handlers on the event-loop thread and, on a large state.db, blocked
+    # the loop long enough to break the desktop WS (its 15s connect budget) →
+    # "remote gateway session has expired". All now run via _blocking_io.
+    "count_empty_sessions",
+    "delete_empty_sessions",
+    "delete_session",
+    "delete_sessions",
+    "export_session",
+    "get_messages",
+    "list_prune_candidates",
+    "prune_sessions",
+    "resolve_resume_session_id",
+    "resolve_session_id",
 }
 
 OFFLOAD_CALL_NAMES = {

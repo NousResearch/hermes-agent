@@ -226,6 +226,27 @@ def test_rollback_is_itself_undoable(backup_env):
     )
 
 
+def test_rollback_aborts_when_safety_snapshot_fails(backup_env, monkeypatch):
+    """Rollback must not replace live skills without an undo snapshot."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    skill_file = _write_skill(skills, "alpha", body="snapshot state") / "SKILL.md"
+    target = cb.snapshot_skills(reason="rollback-target")
+    assert target is not None
+
+    skill_file.write_text("current state\n", encoding="utf-8")
+    current_bytes = skill_file.read_bytes()
+    monkeypatch.setattr(cb, "snapshot_skills", lambda *args, **kwargs: None)
+
+    ok, msg, restored = cb.rollback(target.name)
+
+    assert not ok
+    assert "safety snapshot failed" in msg
+    assert restored is None
+    assert skill_file.read_bytes() == current_bytes
+    assert not list((skills / ".curator_backups").glob(".rollback-staging-*"))
+
+
 def test_rollback_no_snapshots_returns_error(backup_env):
     cb = backup_env["cb"]
     ok, msg, _ = cb.rollback()

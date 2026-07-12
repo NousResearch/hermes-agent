@@ -27,6 +27,7 @@ def format_cost_summary(
     *,
     duration_seconds: Optional[float] = None,
     tool_call_count: int = 0,
+    exchange_rate: Optional[float] = None,
 ) -> str:
     """Return a one-line cost summary string for the agent's session.
 
@@ -34,6 +35,9 @@ def format_cost_summary(
     on the agent object.  Returns an empty string when there is no usage
     data (e.g. a no_agent script job or a fresh agent that never called a
     model).
+
+    When ``exchange_rate`` is set (e.g. 4.6 for RON/USD), appends a
+    second line with the cost converted to the target currency.
 
     The summary is designed to be appended to a cron job's delivered message.
     """
@@ -93,6 +97,11 @@ def format_cost_summary(
     if duration_seconds is not None and duration_seconds > 0:
         parts.append(f"⏱ {_format_duration(duration_seconds)}")
 
+    # Local currency conversion (e.g. RON)
+    if exchange_rate is not None and exchange_rate > 0 and cost_usd is not None:
+        local_cost = float(cost_usd) * exchange_rate
+        parts.append(f"🇷🇴 ~{_format_number_currency(local_cost)} lei")
+
     return "  ·  ".join(parts)
 
 
@@ -140,6 +149,17 @@ def _format_cost(amount_usd: float) -> str:
     if amount_usd < 1.0:
         return f"${amount_usd:.3f}"
     return f"${amount_usd:.2f}"
+
+
+def _format_number_currency(amount: float) -> str:
+    """Format a number as currency (no symbol prefix)."""
+    if amount < 0.001:
+        return f"{amount:.6f}"
+    if amount < 0.01:
+        return f"{amount:.4f}"
+    if amount < 1.0:
+        return f"{amount:.3f}"
+    return f"{amount:.2f}"
 
 
 def _format_number(n: int) -> str:

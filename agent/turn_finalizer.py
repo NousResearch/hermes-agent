@@ -451,6 +451,21 @@ def finalize_turn(
         "cost_source": agent.session_cost_source,
         "session_id": agent.session_id,
     }
+    # Append cost/usage summary to the final response when tokens were
+    # consumed (not a no-op / error turn) and the response is meaningful.
+    if (
+        agent.session_total_tokens
+        and final_response
+        and not interrupted
+        and not failed
+    ):
+        try:
+            from agent.goal_cost_report import format_cost_summary
+            _cost_line = format_cost_summary(agent, exchange_rate=4.6)
+            if _cost_line:
+                result["final_response"] = final_response + "\n\n" + _cost_line
+        except Exception:
+            pass
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Surface any post-loop cleanup failures so the caller can distinguish a

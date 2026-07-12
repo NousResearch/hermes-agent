@@ -3462,6 +3462,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 _cost_summary = format_cost_summary(
                     _agent,
                     duration_seconds=_goal_timer.elapsed,
+                    exchange_rate=4.6,
                 )
         except BaseException:
             # run_job's finally still hands back the agent when it raises; tear

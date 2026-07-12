@@ -10,6 +10,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 """
 
 import json
+import io
 import os
 import threading
 import time
@@ -28,6 +29,7 @@ from tools.delegate_tool import (
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
+    _run_single_child,
     _extract_output_tail,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
@@ -2825,6 +2827,424 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+
+# =========================================================================
+# Codex exec delegation tests
+# =========================================================================
+
+class TestCodexExecDelegation(unittest.TestCase):
+    """Tests for the codex exec --json delegation path in _run_single_child."""
+
+    def _make_codex_child(self, cwd="/tmp/test"):
+        """Build a mock child that looks like a codex ACP child."""
+        child = MagicMock()
+        child.acp_command = "codex"
+        child.acp_args = ["--acp", "--stdio"]
+        child._subagent_id = "sa-0-test1234"
+        child._delegate_depth = 1
+        child._parent_subagent_id = None
+        child._delegate_role = "leaf"
+        child.session_prompt_tokens = 0
+        child.session_completion_tokens = 0
+        child.model = "codex"
+        # Provide a cwd for the subprocess
+        child._acp_cwd = cwd
+        return child
+
+    def _make_codex_jsonl(self, *events):
+        """Build a JSONL string from event dicts."""
+        return "\n".join(json.dumps(e) for e in events) + "\n"
+
+    # ------------------------------------------------------------------
+    # Test 1: command-start event arrives before process completion
+    # ------------------------------------------------------------------
+    @patch("subprocess.Popen")
+    def test_command_start_relays_progress(self, mock_popen):
+        """item.started command_execution → child_progress_cb receives message."""
+        child = self._make_codex_child()
+        progress_calls = []
+        child.tool_progress_callback = lambda et, tn=None, pv=None, **kw: progress_calls.append((et, pv))
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+
+        jsonl = self._make_codex_jsonl(
+            {"type": "thread.started", "thread_id": "t1"},
+            {"type": "turn.started"},
+            {"type": "item.started", "item": {
+                "id": "item_1", "type": "command_execution",
+                "command": "pytest -q", "status": "in_progress",
+            }},
+            {"type": "item.completed", "item": {
+                "id": "item_1", "type": "command_execution",
+                "command": "pytest -q", "exit_code": 0, "status": "completed",
+            }},
+            {"type": "item.completed", "item": {
+                "id": "item_2", "type": "agent_message",
+                "text": "All tests passed.",
+            }},
+            {"type": "turn.completed"},
+        )
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO(jsonl)
+        mock_proc.stderr = io.StringIO("")
+        mock_proc.poll.return_value = None
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        from tools.delegate_tool import _run_codex_exec
+        _run_codex_exec("test goal", child.tool_progress_callback, child, 0, time.monotonic())
+
+        # Check command-start was relayed
+        command_starts = [pv for et, pv in progress_calls if et == "subagent.text" and "Codex is running" in (pv or "")]
+        self.assertTrue(len(command_starts) > 0, "command_start should relay progress")
+        self.assertIn("pytest", command_starts[0])
+
+    # ------------------------------------------------------------------
+    # Test 2: command completion reports success/failure
+    # ------------------------------------------------------------------
+    @patch("subprocess.Popen")
+    def test_command_completed_success(self, mock_popen):
+        """item.completed command_execution status=completed → success message."""
+        child = self._make_codex_child()
+        progress_calls = []
+        child.tool_progress_callback = lambda et, tn=None, pv=None, **kw: progress_calls.append((et, pv))
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+
+        jsonl = self._make_codex_jsonl(
+            {"type": "thread.started", "thread_id": "t1"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {
+                "id": "item_1", "type": "command_execution",
+                "command": "ls", "exit_code": 0, "status": "completed",
+            }},
+            {"type": "item.completed", "item": {
+                "id": "item_2", "type": "agent_message", "text": "ok",
+            }},
+            {"type": "turn.completed"},
+        )
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO(jsonl)
+        mock_proc.stderr = io.StringIO("")
+        mock_proc.poll.return_value = None
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        from tools.delegate_tool import _run_codex_exec
+        _run_codex_exec("test", child.tool_progress_callback, child, 0, time.monotonic())
+
+        completes = [pv for et, pv in progress_calls if et == "subagent.text" and "completed" in (pv or "").lower()]
+        self.assertTrue(len(completes) > 0, "command success should relay completed message")
+
+    @patch("subprocess.Popen")
+    def test_command_completed_failure(self, mock_popen):
+        """item.completed command_execution status=failed → failure message with exit code."""
+        child = self._make_codex_child()
+        progress_calls = []
+        child.tool_progress_callback = lambda et, tn=None, pv=None, **kw: progress_calls.append((et, pv))
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+
+        jsonl = self._make_codex_jsonl(
+            {"type": "thread.started", "thread_id": "t1"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {
+                "id": "item_1", "type": "command_execution",
+                "command": "false", "exit_code": 1, "status": "failed",
+            }},
+            {"type": "item.completed", "item": {
+                "id": "item_2", "type": "agent_message", "text": "command failed",
+            }},
+            {"type": "turn.completed"},
+        )
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO(jsonl)
+        mock_proc.stderr = io.StringIO("")
+        mock_proc.poll.return_value = None
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        from tools.delegate_tool import _run_codex_exec
+        result = _run_codex_exec("test", child.tool_progress_callback, child, 0, time.monotonic())
+
+        failures = [pv for et, pv in progress_calls if et == "subagent.text" and "failed" in (pv or "").lower()]
+        self.assertTrue(len(failures) > 0, "command failure should relay failed message")
+        self.assertIn("exit 1", failures[0].lower())
+
+    # ------------------------------------------------------------------
+    # Test 3: file_change produces concise interim message
+    # ------------------------------------------------------------------
+    @patch("subprocess.Popen")
+    def test_file_change_relays_message(self, mock_popen):
+        """item.completed file_change → concise list of changed files."""
+        child = self._make_codex_child()
+        progress_calls = []
+        child.tool_progress_callback = lambda et, tn=None, pv=None, **kw: progress_calls.append((et, pv))
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+
+        jsonl = self._make_codex_jsonl(
+            {"type": "thread.started", "thread_id": "t1"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {
+                "id": "item_1", "type": "file_change",
+                "changes": [
+                    {"path": "/abs/path/src/auth.py", "kind": "update"},
+                    {"path": "/abs/path/tests/test_auth.py", "kind": "update"},
+                ],
+                "status": "completed",
+            }},
+            {"type": "item.completed", "item": {
+                "id": "item_2", "type": "agent_message", "text": "done",
+            }},
+            {"type": "turn.completed"},
+        )
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO(jsonl)
+        mock_proc.stderr = io.StringIO("")
+        mock_proc.poll.return_value = None
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        from tools.delegate_tool import _run_codex_exec
+        _run_codex_exec("test", child.tool_progress_callback, child, 0, time.monotonic())
+
+        file_msgs = [pv for et, pv in progress_calls if et == "subagent.text" and "Codex changed" in (pv or "")]
+        self.assertTrue(len(file_msgs) > 0, "file_change should relay progress")
+        self.assertIn("auth.py", file_msgs[0])
+        self.assertIn("test_auth.py", file_msgs[0])
+
+    # ------------------------------------------------------------------
+    # Test 4: agent_message relayed and returned as final summary
+    # ------------------------------------------------------------------
+    @patch("subprocess.Popen")
+    def test_agent_message_is_summary(self, mock_popen):
+        """agent_message → relayed + returned as final summary, not duplicated."""
+        child = self._make_codex_child()
+        progress_calls = []
+        child.tool_progress_callback = lambda et, tn=None, pv=None, **kw: progress_calls.append((et, pv))
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+
+        jsonl = self._make_codex_jsonl(
+            {"type": "thread.started", "thread_id": "t1"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {
+                "id": "item_1", "type": "agent_message", "text": "First message",
+            }},
+            {"type": "item.completed", "item": {
+                "id": "item_2", "type": "agent_message",
+                "text": "Final answer: task completed.",
+            }},
+            {"type": "turn.completed"},
+        )
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO(jsonl)
+        mock_proc.stderr = io.StringIO("")
+        mock_proc.poll.return_value = None
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        from tools.delegate_tool import _run_codex_exec
+        result = _run_codex_exec("test", child.tool_progress_callback, child, 0, time.monotonic())
+
+        # Both messages should be relayed
+        text_msgs = [pv for et, pv in progress_calls if et == "subagent.text" and pv]
+        self.assertGreaterEqual(len(text_msgs), 2)
+
+        # Final summary should be the LAST agent_message
+        self.assertEqual(result["summary"], "Final answer: task completed.")
+        self.assertEqual(result["status"], "completed")
+
+    # ------------------------------------------------------------------
+    # Test 5a: turn.failed → failed result
+    # ------------------------------------------------------------------
+    @patch("subprocess.Popen")
+    def test_turn_failed_produces_failed_result(self, mock_popen):
+        """turn.failed event → failed delegation result with error message."""
+        child = self._make_codex_child()
+        progress_calls = []
+        child.tool_progress_callback = lambda et, tn=None, pv=None, **kw: progress_calls.append((et, pv))
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+
+        jsonl = self._make_codex_jsonl(
+            {"type": "thread.started", "thread_id": "t1"},
+            {"type": "turn.started"},
+            {"type": "turn.failed", "error": {"message": "Auth token expired"}},
+        )
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO(jsonl)
+        mock_proc.stderr = io.StringIO("")
+        mock_proc.poll.return_value = None
+        mock_proc.returncode = 1
+        mock_popen.return_value = mock_proc
+
+        from tools.delegate_tool import _run_codex_exec
+        result = _run_codex_exec("test", child.tool_progress_callback, child, 0, time.monotonic())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("Auth token expired", result["error"])
+
+    # ------------------------------------------------------------------
+    # Test 5b: top-level error → failed result
+    # ------------------------------------------------------------------
+    @patch("subprocess.Popen")
+    def test_top_level_error_produces_failed_result(self, mock_popen):
+        """Top-level error event → failed delegation result."""
+        child = self._make_codex_child()
+        progress_calls = []
+        child.tool_progress_callback = lambda et, tn=None, pv=None, **kw: progress_calls.append((et, pv))
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+
+        jsonl = self._make_codex_jsonl(
+            {"type": "error", "message": "codex not found"},
+        )
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO(jsonl)
+        mock_proc.stderr = io.StringIO("")
+        mock_proc.poll.return_value = None
+        mock_proc.returncode = 1
+        mock_popen.return_value = mock_proc
+
+        from tools.delegate_tool import _run_codex_exec
+        result = _run_codex_exec("test", child.tool_progress_callback, child, 0, time.monotonic())
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("codex not found", result["error"])
+
+    # ------------------------------------------------------------------
+    # Test 6: malformed/unknown JSONL does not crash
+    # ------------------------------------------------------------------
+    @patch("subprocess.Popen")
+    def test_malformed_jsonl_does_not_crash(self, mock_popen):
+        """Malformed lines and unknown events are skipped without crashing."""
+        child = self._make_codex_child()
+        progress_calls = []
+        child.tool_progress_callback = lambda et, tn=None, pv=None, **kw: progress_calls.append((et, pv))
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+
+        # Mix of malformed, unknown, and valid events
+        lines = [
+            "not json at all",
+            "",
+            json.dumps({"type": "unknown_event", "data": "ignored"}),
+            json.dumps({"type": "thread.started", "thread_id": "t1"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps({"type": "item.completed", "item": {
+                "id": "i1", "type": "agent_message", "text": "still works",
+            }}),
+            json.dumps({"type": "turn.completed"}),
+            "{broken json",
+            "",
+        ]
+        jsonl = "\n".join(lines) + "\n"
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO(jsonl)
+        mock_proc.stderr = io.StringIO("")
+        mock_proc.poll.return_value = None
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        from tools.delegate_tool import _run_codex_exec
+        result = _run_codex_exec("test", child.tool_progress_callback, child, 0, time.monotonic())
+
+        # Should complete without error
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["summary"], "still works")
+
+    # ------------------------------------------------------------------
+    # Test 7: non-codex delegation unchanged
+    # ------------------------------------------------------------------
+    def test_non_codex_child_uses_normal_path(self):
+        """Child without codex acp_command does NOT trigger codex exec path."""
+        child = self._make_codex_child()
+        child.acp_command = "claude"  # not codex
+        child.run_conversation = MagicMock(return_value={
+            "final_response": "done", "completed": True,
+            "api_calls": 1, "messages": [],
+        })
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+        child.get_activity_summary = MagicMock(return_value={
+            "current_tool": None, "api_call_count": 0,
+            "max_iterations": 50, "last_activity_desc": "",
+        })
+
+        from tools.delegate_tool import _run_single_child
+        result = _run_single_child(0, "test", child=child, parent_agent=None)
+
+        # Should have called run_conversation, not codex exec
+        child.run_conversation.assert_called_once()
+        self.assertEqual(result["summary"], "done")
+
+    # ------------------------------------------------------------------
+    # Test 8: subprocess args use argv list, correct cwd, --json, --sandbox
+    # ------------------------------------------------------------------
+    @patch("subprocess.Popen")
+    def test_codex_exec_uses_correct_subprocess_args(self, mock_popen):
+        """Subprocess is spawned with argv list, --json, --sandbox workspace-write."""
+        child = self._make_codex_child(cwd="/my/project")
+        child.tool_progress_callback = None
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+
+        jsonl = self._make_codex_jsonl(
+            {"type": "thread.started", "thread_id": "t1"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {
+                "id": "i1", "type": "agent_message", "text": "done",
+            }},
+            {"type": "turn.completed"},
+        )
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO(jsonl)
+        mock_proc.stderr = io.StringIO("")
+        mock_proc.poll.return_value = None
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        from tools.delegate_tool import _run_codex_exec
+        _run_codex_exec("add a function", child.tool_progress_callback, child, 0, time.monotonic())
+
+        # Verify Popen was called with argv list (not shell=True)
+        call_args, call_kwargs = mock_popen.call_args
+        cmd = call_args[0]
+        self.assertIsInstance(cmd, list, "command must be list (not shell string)")
+        self.assertIn("--json", cmd)
+        self.assertIn("--sandbox", cmd)
+        self.assertIn("workspace-write", cmd)
+        self.assertIn("add a function", cmd)
+        self.assertEqual(call_kwargs.get("cwd"), "/my/project")
+        self.assertNotEqual(call_kwargs.get("shell"), True)
+
+    # ------------------------------------------------------------------
+    # Test 9: rollback — reverting the codex branch restores normal delegation
+    # ------------------------------------------------------------------
+    def test_no_codex_child_goes_normal_path(self):
+        """Child without acp_command set uses normal delegation (not codex exec)."""
+        child = self._make_codex_child()
+        child.acp_command = None  # no ACP command at all
+        child.run_conversation = MagicMock(return_value={
+            "final_response": "normal", "completed": True,
+            "api_calls": 1, "messages": [],
+        })
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+        child.get_activity_summary = MagicMock(return_value={
+            "current_tool": None, "api_call_count": 0,
+            "max_iterations": 50, "last_activity_desc": "",
+        })
+
+        from tools.delegate_tool import _run_single_child
+        result = _run_single_child(0, "test", child=child, parent_agent=None)
+
+        child.run_conversation.assert_called_once()
+        self.assertEqual(result["summary"], "normal")
 
 
 if __name__ == "__main__":

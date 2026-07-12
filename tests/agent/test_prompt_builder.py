@@ -430,6 +430,10 @@ class TestBuildSkillsSystemPrompt:
         assert "smallest directly triggered set" in result
         assert "router first" in result
         assert "topical overlap" in result
+        assert "inspect the catalog" in result
+        assert "overlapping alias" in result
+        assert "Keep each main SKILL.md compact" in result
+        assert "live project state in project docs" in result
         assert "even partially relevant" not in result
         assert "Err on the side of loading" not in result
 

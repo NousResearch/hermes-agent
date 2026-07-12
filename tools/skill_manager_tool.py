@@ -468,7 +468,8 @@ def _curator_consolidation_delete_guard(
     }
 
 
-MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
+MAX_SKILL_MAIN_CHARS = 20_000       # main procedure/router; details belong in references
+MAX_SKILL_CONTENT_CHARS = 100_000   # supporting references may be substantially larger
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
 # Characters allowed in skill names (filesystem-safe, URL-friendly)
@@ -573,6 +574,24 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
             f"in references/ or templates/."
         )
     return None
+
+
+def _validate_main_skill_size(
+    content: str, previous_chars: Optional[int] = None
+) -> Optional[str]:
+    """Keep SKILL.md compact while allowing legacy oversized files to shrink."""
+    size = len(content)
+    if size <= MAX_SKILL_MAIN_CHARS:
+        return None
+    if previous_chars is not None and size <= previous_chars:
+        return None
+    return (
+        f"SKILL.md content is {size:,} characters "
+        f"(compact-main limit: {MAX_SKILL_MAIN_CHARS:,}). "
+        "Keep the main file as a stable procedure/router and move bulky evidence, "
+        "chronology, branch-specific material, and live project state into linked "
+        "references or project documentation."
+    )
 
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
@@ -806,7 +825,8 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
-    err = _validate_content_size(content)
+    # Main files use progressive disclosure; supporting files retain the larger limit.
+    err = _validate_main_skill_size(content)
     if err:
         return {"success": False, "error": err}
 
@@ -864,18 +884,20 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if err:
         return {"success": False, "error": err}
 
-    err = _validate_content_size(content)
-    if err:
-        return {"success": False, "error": err}
-
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+
+    skill_md = existing["path"] / "SKILL.md"
+    previous_chars = len(skill_md.read_text(encoding="utf-8")) if skill_md.exists() else None
+    err = _validate_main_skill_size(content, previous_chars=previous_chars)
+    if err:
+        return {"success": False, "error": err}
+
     guard = _background_review_write_guard(name, existing["path"], "edit")
     if guard:
         return guard
 
-    skill_md = existing["path"] / "SKILL.md"
     read_guard = _background_review_read_before_write_guard(
         name, skill_md, "edit", "SKILL.md"
     )
@@ -988,9 +1010,12 @@ def _patch_skill(
             "file_preview": preview,
         }
 
-    # Check size limit on the result
+    # Check size limit on the result. Legacy oversized mains may shrink but not grow.
     target_label = "SKILL.md" if not file_path else file_path
-    err = _validate_content_size(new_content, label=target_label)
+    if target.name == "SKILL.md":
+        err = _validate_main_skill_size(new_content, previous_chars=len(content))
+    else:
+        err = _validate_content_size(new_content, label=target_label)
     if err:
         return {"success": False, "error": err}
 
@@ -1149,7 +1174,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
                 f"Consider splitting into smaller files."
             ),
         }
-    err = _validate_content_size(file_content, label=file_path)
+    if Path(file_path).name == "SKILL.md":
+        err = _validate_main_skill_size(file_content)
+    else:
+        err = _validate_content_size(file_content, label=file_path)
     if err:
         return {"success": False, "error": err}
 

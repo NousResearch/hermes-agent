@@ -2,7 +2,7 @@
   "name": "hermes",
   "productName": "APEX",
   "private": true,
-  "version": "0.16.7",
+  "version": "0.16.8",
   "description": "Native desktop shell for Hermes Agent.",
   "author": "ApexNodes",
   "type": "module",

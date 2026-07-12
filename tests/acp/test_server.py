@@ -997,6 +997,76 @@ class TestSessionConfiguration:
         assert state.agent.base_url == "https://anthropic.example/v1"
         assert runtime_calls[-1] == "anthropic"
 
+    @pytest.mark.asyncio
+    async def test_provider_switch_replaces_legacy_unattributed_runtime_and_persists(self, tmp_path, monkeypatch):
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            provider = requested or "gemini"
+            return {
+                "provider": provider,
+                "api_mode": "codex_responses" if provider == "openai-codex" else "chat_completions",
+                "base_url": (
+                    "https://chatgpt.com/backend-api/codex"
+                    if provider == "openai-codex"
+                    else "https://generativelanguage.googleapis.com/v1beta"
+                ),
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+                session_id=kwargs.get("session_id"),
+                _session_db=kwargs.get("session_db"),
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "gemini", "default": "gemini-2.5-pro"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: ("openai-codex", "gpt-5.6-sol"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
+        )
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(db=db)
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            state.agent.provider = ""
+            state.agent.base_url = "https://generativelanguage.googleapis.com/v1beta"
+            state.agent.api_mode = "chat_completions"
+
+            result = await acp_agent.set_session_model(
+                model_id="openai-codex:gpt-5.6-sol",
+                session_id=state.session_id,
+            )
+
+            assert isinstance(result, SetSessionModelResponse)
+            assert state.agent.provider == "openai-codex"
+            assert state.agent.base_url == "https://chatgpt.com/backend-api/codex"
+            assert state.agent.api_mode == "codex_responses"
+
+            restored = SessionManager(db=db).get_session(state.session_id)
+
+        assert restored is not None
+        assert restored.agent.provider == "openai-codex"
+        assert restored.agent.base_url == "https://chatgpt.com/backend-api/codex"
+        assert restored.agent.api_mode == "codex_responses"
+
 
 # ---------------------------------------------------------------------------
 # prompt

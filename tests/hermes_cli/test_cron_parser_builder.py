@@ -49,6 +49,7 @@ def test_cron_create_options():
     ns = parser.parse_args([
         "cron", "create", "0 9 * * *", "daily task prompt",
         "--name", "daily", "--deliver", "origin", "--repeat", "3",
+        "--provider", "openrouter", "--model", "cheap/model",
         "--skill", "a", "--skill", "b", "--no-agent",
         "--workdir", "/tmp/x",
     ])
@@ -57,6 +58,8 @@ def test_cron_create_options():
     assert ns.name == "daily"
     assert ns.deliver == "origin"
     assert ns.repeat == 3
+    assert ns.provider == "openrouter"
+    assert ns.model == "cheap/model"
     assert ns.skills == ["a", "b"]
     assert ns.no_agent is True
     assert ns.workdir == "/tmp/x"
@@ -68,6 +71,25 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j", "--no-agent"]).no_agent is True
     assert parser.parse_args(["cron", "edit", "j", "--agent"]).no_agent is False
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
+
+
+def test_cron_edit_model_provider_set_preserve_and_clear_shapes():
+    parser = _build()
+    pinned = parser.parse_args([
+        "cron", "edit", "j", "--provider", "local", "--model", "cheap/model",
+    ])
+    assert pinned.provider == "local"
+    assert pinned.model == "cheap/model"
+
+    preserved = parser.parse_args(["cron", "edit", "j"])
+    assert preserved.provider is None
+    assert preserved.model is None
+
+    cleared = parser.parse_args([
+        "cron", "edit", "j", "--provider", "", "--model", "",
+    ])
+    assert cleared.provider == ""
+    assert cleared.model == ""
 
 
 def test_cron_dispatch_func_is_injected_handler():

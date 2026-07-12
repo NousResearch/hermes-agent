@@ -22,7 +22,7 @@ Cron jobs can:
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
 :::tip
-At creation, an unpinned job (one you don't give an explicit `provider`/`model`) follows the global default selected by `hermes model` — and Hermes **snapshots** that provider and model on the job. If the global default later changes, the job **fails closed**: it skips the run, makes no inference call, and sends an alert telling you to pin the provider/model explicitly (`cronjob action=update job_id=… provider=… model=…`) to proceed. This prevents an unattended job from silently inheriting a switch to a paid provider/model and spending money you didn't intend (#44585). To make a job deliberately track your global default, pin it to the new values after changing them. `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
+At creation, an unpinned job (one you don't give an explicit `provider`/`model`) follows the global default selected by `hermes model` — and Hermes **snapshots** that provider and model on the job. If the global default later changes, the job **fails closed**: it skips the run, makes no inference call, and sends an alert telling you to pin the provider/model explicitly (`hermes cron edit <job_id> --provider … --model …` or `cronjob action=update job_id=… provider=… model=…`) to proceed. This prevents an unattended job from silently inheriting a switch to a paid provider/model and spending money you didn't intend (#44585). To make a job deliberately track your global default, pin it to the new values after changing them. `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
 :::
 
 :::warning
@@ -49,6 +49,9 @@ hermes cron create "every 1h" "Use both skills and combine the result" \
   --skill blogwatcher \
   --skill maps \
   --name "Skill combo"
+hermes cron create "every 1h" "Run background maintenance" \
+  --provider "<provider>" \
+  --model "<model>"
 ```
 
 ### Through natural conversation
@@ -152,6 +155,8 @@ hermes cron edit <job_id> --skill blogwatcher --skill maps
 hermes cron edit <job_id> --add-skill maps
 hermes cron edit <job_id> --remove-skill blogwatcher
 hermes cron edit <job_id> --clear-skills
+hermes cron edit <job_id> --provider "<provider>" --model "<model>"
+hermes cron edit <job_id> --provider "" --model ""
 ```
 
 Notes:
@@ -160,6 +165,14 @@ Notes:
 - `--add-skill` appends to the existing list without replacing it
 - `--remove-skill` removes specific attached skills
 - `--clear-skills` removes all attached skills
+- omitted `--provider` / `--model` flags preserve the existing per-job pins
+- on create, or when the job has no provider pin, a non-empty `--model`
+  without `--provider` pins the current `model.provider` from `config.yaml`,
+  matching the agent's `cronjob` tool; a model-only edit preserves an existing
+  provider pin, and both flags make the pair fully explicit
+- `--provider ""` / `--model ""` clear those pins and return that axis to the
+  inherited global configuration; `hermes cron list` labels unpinned axes as
+  `inherited`
 
 ## Lifecycle actions
 
@@ -732,7 +745,10 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 
 Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
 
-Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
+Jobs may store `model` and `provider` as `null`, and older records may omit the
+keys entirely. Both shapes mean that axis is inherited from global
+configuration at execution time; `hermes cron list` labels it `inherited`.
+Non-null values are per-job pins.
 
 The storage uses atomic file writes so interrupted writes do not leave a partially written job file behind.
 

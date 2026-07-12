@@ -40,6 +40,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     )
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
     cron_create.add_argument(
+        "--provider",
+        help="Per-job provider override. Use with --model to isolate this job from the interactive/global lane.",
+    )
+    cron_create.add_argument(
+        "--model",
+        help="Per-job model override. Use with --provider to isolate this job from the interactive/global lane.",
+    )
+    cron_create.add_argument(
         "--skill",
         dest="skills",
         action="append",
@@ -81,6 +89,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--name", help="New job name")
     cron_edit.add_argument("--deliver", help="New delivery target")
     cron_edit.add_argument("--repeat", type=int, help="New repeat count")
+    cron_edit.add_argument(
+        "--provider",
+        help="New per-job provider override. Pass empty string to clear and inherit the global provider.",
+    )
+    cron_edit.add_argument(
+        "--model",
+        help="New per-job model override. Pass empty string to clear and inherit the global model.",
+    )
     cron_edit.add_argument(
         "--skill",
         dest="skills",

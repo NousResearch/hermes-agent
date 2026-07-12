@@ -577,12 +577,19 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
         # Protect the target from this snapshot's prune step: at the steady
         # keep limit, pruning the oldest snapshot would otherwise delete the
         # very snapshot we are about to extract from.
-        snapshot_skills(
+        safety_snapshot = snapshot_skills(
             reason=f"pre-rollback to {target.name}",
             protect_ids={target.name},
         )
     except Exception as e:
         return (False, f"pre-rollback safety snapshot failed: {e}", None)
+    if safety_snapshot is None:
+        return (
+            False,
+            "pre-rollback safety snapshot failed; backups may be disabled "
+            "or unavailable, and current skills were not changed",
+            None,
+        )
 
     # Additionally move current entries into an internal staging dir so
     # the extract happens into an empty skills tree (predictable result).

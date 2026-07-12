@@ -706,3 +706,109 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+
+# ---------------------------------------------------------------------------
+# Bridge auth lifecycle regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestBridgeAuth:
+    """Verify the bridge API key is wired end-to-end: subprocess env,
+    persistent HTTP session headers, and 401 error propagation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_api_key_injected_into_bridge_subprocess_env(self):
+        """connect() must pass BRIDGE_API_KEY into the bridge subprocess env."""
+        adapter = _make_adapter()
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+
+        # The initial pre-Popen health check must fail so connect() falls
+        # through to launching a new bridge subprocess (Popen).  After that,
+        # the Phase 1 health-check loop returns 200+connected immediately.
+        call_count = [0]
+
+        def client_session_factory(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call: pre-launch reuse check — simulate no running bridge
+                raise ConnectionRefusedError("no bridge yet")
+            return _mock_aiohttp(
+                status=200, json_data={"status": "connected", "scriptHash": "x"},
+            )()
+
+        mock_fh = MagicMock()
+
+        # _connect_patches without a mock_client_cls returns 9 entries (0-8).
+        # patches[4] is the subprocess.Popen patch — capture it to inspect call args.
+        patches = _connect_patches(mock_proc, mock_fh)
+        with patches[0], patches[1], patches[2], patches[3], patches[4] as mock_popen, \
+             patches[5], patches[6], patches[7], patches[8], \
+             patch("aiohttp.ClientSession", side_effect=client_session_factory), \
+             patch("gateway.platforms.whatsapp._file_content_hash", return_value="x"), \
+             patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
+            await adapter.connect()
+
+        assert mock_popen.called, "Popen should have been called"
+        _, popen_kwargs = mock_popen.call_args
+        env = popen_kwargs.get("env", {})
+        assert env.get("BRIDGE_API_KEY") == "test-bridge-key", (
+            f"BRIDGE_API_KEY not found or wrong in bridge env: {env.get('BRIDGE_API_KEY')!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_http_session_carries_bearer_token(self):
+        """_make_http_session() must set Authorization: Bearer <key> header."""
+        adapter = _make_adapter()
+        adapter._bridge_api_key = "my-secret-key"
+
+        session = adapter._make_http_session()
+        try:
+            auth_header = session.headers.get("Authorization")
+            assert auth_header == "Bearer my-secret-key", (
+                f"Expected 'Bearer my-secret-key', got {auth_header!r}"
+            )
+        finally:
+            await session.close()
+
+    @pytest.mark.asyncio
+    async def test_http_session_omits_auth_header_when_key_empty(self):
+        """_make_http_session() must not emit a bare 'Bearer ' header when key is empty."""
+        adapter = _make_adapter()
+        adapter._bridge_api_key = ""
+
+        session = adapter._make_http_session()
+        try:
+            auth_header = session.headers.get("Authorization")
+            assert auth_header is None, (
+                f"Expected no Authorization header, got {auth_header!r}"
+            )
+        finally:
+            await session.close()
+
+    @pytest.mark.asyncio
+    async def test_send_surfaces_401_as_error_result(self):
+        """A 401 from /send must return SendResult(success=False) not raise."""
+        from unittest.mock import AsyncMock as _AsyncMock
+
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._bridge_process = None  # unmanaged — _check_managed_bridge_exit returns None
+
+        mock_resp = MagicMock()
+        mock_resp.status = 401
+        mock_resp.text = _AsyncMock(return_value="Unauthorized")
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=_AsyncCM(mock_resp))
+        adapter._http_session = mock_session
+
+        result = await adapter.send("chat-123", "hello")
+
+        assert result.success is False
+        assert "Unauthorized" in (result.error or ""), (
+            f"Expected 401 body in error, got {result.error!r}"
+        )

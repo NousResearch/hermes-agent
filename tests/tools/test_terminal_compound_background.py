@@ -34,6 +34,15 @@ class TestRewrites:
     def test_mixed_and_or(self):
         assert rewrite("A && B || C &") == "A && B || { C & }"
 
+    def test_trailing_command_after_background(self):
+        # `A && B & C` is valid bash (`(A && B) &` then `C`), but the naive
+        # `A && { B & } C` is a syntax error — the `}` needs a separator
+        # before the trailing command.
+        assert rewrite("A && B & C") == "A && { B & }; C"
+
+    def test_trailing_chain_after_background(self):
+        assert rewrite("A && B & C && D") == "A && { B & }; C && D"
+
     def test_realistic_server_start(self):
         # The exact shape observed in the vela incident.
         cmd = (

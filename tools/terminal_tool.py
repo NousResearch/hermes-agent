@@ -863,7 +863,13 @@ def _rewrite_compound_background(command: str) -> str:
         suffix = result[amp_pos + 1 :]
         # `{` needs a trailing space in bash; the closing `}` needs to be
         # preceded by `;` or `&` — we're providing `&` from the backgrounding.
-        result = prefix + "{ " + middle + "& }" + suffix
+        # If a command follows the backgrounded segment (`A && B & C`), the
+        # `}` also needs a separator *after* it, else bash rejects `... } C`.
+        # Insert `;` unless the suffix already starts with a separator/operator
+        # or a newline (only spaces/tabs are skipped — a newline is a separator).
+        lead = suffix.lstrip(" \t")
+        sep = ";" if lead and lead[0] not in ";&|)\n" else ""
+        result = prefix + "{ " + middle + "& }" + sep + suffix
 
     return result
 

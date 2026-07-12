@@ -22495,6 +22495,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _long_running_mode == "generic"
                     else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
                 )
+                # Optional feature-discovery tip appended to the heartbeat.
+                # Re-rolled every tick so a long task surfaces several tips.
+                # Cheap lazy import — zero cost when the setting is off.
+                if _long_running_mode != "generic" and resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "heartbeat_tip",
+                    False,
+                ):
+                    try:
+                        from hermes_cli.tips import get_random_tip
+                        _tip = get_random_tip()
+                        if _tip:
+                            _heartbeat_text = f"{_heartbeat_text}\n\n✦ Tip: {_tip}"
+                    except Exception:
+                        pass
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:

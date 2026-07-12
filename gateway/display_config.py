@@ -68,6 +68,12 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # (Slack's default), and costs no extra API calls — the existing typing
     # refresh cadence just renders different text.
     "live_status": "full",
+    # Append a random feature-discovery tip (from hermes_cli.tips) to each
+    # long-running "⏳ Working — N min" heartbeat. Re-rolled every tick so
+    # a long task surfaces several tips. Off by default; opt in globally
+    # (display.heartbeat_tip: true) or per-platform
+    # (display.platforms.telegram.heartbeat_tip: true).
+    "heartbeat_tip": False,
 }
 
 # ---------------------------------------------------------------------------
@@ -274,6 +280,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "busy_ack_detail",
         "busy_steer_ack_enabled",
         "thinking_progress",
+        "heartbeat_tip",
     }:
         if isinstance(value, str):
             val = value.strip().lower()

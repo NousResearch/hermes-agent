@@ -1291,6 +1291,19 @@ display:
   # terse: "Interrupting current task" and "⏳ Working — 12 min, terminal".
   busy_ack_detail: true
 
+  # Append a random feature-discovery tip to each long-running heartbeat
+  # (the "⏳ Working — N min" bubble that edits in place while a task runs).
+  # Tips are drawn from the same corpus used at CLI startup, so enabling this
+  # on a messaging platform mirrors the CLI's "✦ Tip:" behaviour. Re-rolled
+  # every tick — a multi-minute task surfaces several tips. Off by default;
+  # opt in globally or per-platform:
+  #   display:
+  #     heartbeat_tip: true
+  #     platforms:
+  #       telegram:
+  #         heartbeat_tip: true
+  heartbeat_tip: false
+
   # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)
   #   queue:     Queue your message for the next turn

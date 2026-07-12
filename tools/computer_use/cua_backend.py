@@ -1149,17 +1149,24 @@ def _windows_from_tool_result(out: Dict[str, Any]) -> List[Dict[str, Any]]:
     structured = out.get("structuredContent")
     if isinstance(structured, dict):
         windows = structured.get("windows")
-        if isinstance(windows, list):
+        if isinstance(windows, list) and windows:
             return windows
 
     data = out.get("data")
     if isinstance(data, dict):
         windows = data.get("windows")
-        if isinstance(windows, list):
+        if isinstance(windows, list) and windows:
             return windows
         legacy_windows = data.get("_legacy_windows")
-        if isinstance(legacy_windows, list):
+        if isinstance(legacy_windows, list) and legacy_windows:
             return legacy_windows
+
+    windows = out.get("windows")
+    if isinstance(windows, list) and windows:
+        return windows
+    legacy_windows = out.get("_legacy_windows")
+    if isinstance(legacy_windows, list) and legacy_windows:
+        return legacy_windows
     return []
 
 

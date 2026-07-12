@@ -1461,6 +1461,30 @@ class TestCuaDriverWindowResultShapes:
             "data": {"_legacy_windows": windows},
         }) == windows
 
+    def test_empty_structured_windows_falls_through_to_data_windows(self):
+        from tools.computer_use.cua_backend import _windows_from_tool_result
+
+        windows = [{"app_name": "Terminal", "pid": 1, "window_id": 2}]
+
+        assert _windows_from_tool_result({
+            "structuredContent": {"windows": []},
+            "data": {"windows": windows},
+        }) == windows
+
+    def test_extracts_windows_from_top_level_windows(self):
+        from tools.computer_use.cua_backend import _windows_from_tool_result
+
+        windows = [{"app_name": "Terminal", "pid": 1, "window_id": 2}]
+
+        assert _windows_from_tool_result({"windows": windows}) == windows
+
+    def test_extracts_windows_from_top_level_legacy_windows(self):
+        from tools.computer_use.cua_backend import _windows_from_tool_result
+
+        windows = [{"app_name": "Terminal", "pid": 1, "window_id": 2}]
+
+        assert _windows_from_tool_result({"_legacy_windows": windows}) == windows
+
     def test_extract_windows_missing_fields_returns_empty(self):
         from tools.computer_use.cua_backend import _windows_from_tool_result
 

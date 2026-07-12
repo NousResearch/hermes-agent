@@ -194,7 +194,7 @@ When `auto_redeploy: true` is set, after `/finetune run` finishes promoting a ne
 1. Looks up the active adapter from the registry
 2. Auto-detects the HuggingFace snapshot directory for the base model (from `~/.cache/huggingface/hub/`)
 3. Calls llama.cpp's `convert_lora_to_gguf.py` to produce a GGUF copy of the adapter
-4. Stops the running llama-server (via PID file or `pkill` fallback)
+4. Stops the managed llama-server (strictly via its PID file — servers started outside the skill are never touched)
 5. Restarts llama-server with `--lora <path-to-gguf>` appended to the configured launch command
 6. Polls `/v1/models` until the new server is responsive (default 30s timeout)
 7. If the rest of the pipeline runs `/finetune run --with-bench`, the bench then measures the adapter that's *actually being served*

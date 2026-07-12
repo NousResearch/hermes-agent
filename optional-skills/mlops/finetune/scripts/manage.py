@@ -115,45 +115,38 @@ def convert_adapter_to_gguf(
 
 def stop_llama_server(pid_file: Optional[Path] = None) -> bool:
     """
-    Stop a running llama-server. Tries the PID file first, then falls back
-    to pkill by process name. Returns True if a server was stopped (or if
-    no server was running, which is also a success — the desired end state).
+    Stop the llama-server we manage, identified strictly by its PID file.
+
+    Servers started outside our control are deliberately left alone — a
+    broad pkill-by-name would take down unrelated llama-server instances
+    the user runs for other purposes. If the managed server is not running
+    (no PID file, stale PID), that is already the desired end state.
+
+    Returns True if a process was signalled, False otherwise.
     """
+    if not pid_file or not pid_file.exists():
+        return False
+
     stopped = False
-
-    if pid_file and pid_file.exists():
-        try:
-            pid = int(pid_file.read_text().strip())
-            os.kill(pid, signal.SIGTERM)
-            time.sleep(2)
-            try:
-                os.kill(pid, 0)  # is it still alive?
-                logger.warning("PID %d did not exit on SIGTERM, sending SIGKILL", pid)
-                os.kill(pid, signal.SIGKILL)
-                time.sleep(1)
-            except ProcessLookupError:
-                pass  # already exited cleanly
-            stopped = True
-        except (ValueError, ProcessLookupError, PermissionError) as e:
-            logger.debug("PID-file stop failed: %s", e)
-        finally:
-            try:
-                pid_file.unlink()
-            except FileNotFoundError:
-                pass
-
-    # Fallback / belt-and-suspenders: pkill by process name. This catches
-    # the case where the user started llama-server outside our control,
-    # or where the PID file is stale.
     try:
-        subprocess.run(
-            ["pkill", "-f", "llama-server"],
-            check=False, timeout=5, capture_output=True,
-        )
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, signal.SIGTERM)
         time.sleep(2)
+        try:
+            os.kill(pid, 0)  # is it still alive?
+            logger.warning("PID %d did not exit on SIGTERM, sending SIGKILL", pid)
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(1)
+        except ProcessLookupError:
+            pass  # already exited cleanly
         stopped = True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    except (ValueError, ProcessLookupError, PermissionError) as e:
+        logger.debug("PID-file stop failed: %s", e)
+    finally:
+        try:
+            pid_file.unlink()
+        except FileNotFoundError:
+            pass
 
     return stopped
 

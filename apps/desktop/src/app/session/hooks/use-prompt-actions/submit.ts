@@ -124,10 +124,24 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // its stored id/route is not mistaken for an external session switch.
       let startingStoredSessionId = selectedStoredSessionIdRef.current
       let startingRouteToken = getRouteToken()
+      let expectedRuntimeSessionId = startingActiveSessionId
 
-      const sessionContextDrifted = (): boolean =>
-        selectedStoredSessionIdRef.current !== startingStoredSessionId ||
-        getRouteToken() !== startingRouteToken
+      const sessionContextDrifted = (): boolean => {
+        // Once this submit created its runtime session, title/navigation and
+        // stored-id refs may briefly synchronize in a different order. The
+        // authoritative signal for an external switch is a different live
+        // runtime session; a transient null is still part of the handoff.
+        if (expectedRuntimeSessionId) {
+          const currentRuntimeSessionId = activeSessionIdRef.current
+
+          return Boolean(currentRuntimeSessionId && currentRuntimeSessionId !== expectedRuntimeSessionId)
+        }
+
+        return (
+          selectedStoredSessionIdRef.current !== startingStoredSessionId ||
+          getRouteToken() !== startingRouteToken
+        )
+      }
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
@@ -299,6 +313,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // createBackendSessionForSend atomically claims the new runtime/stored
         // session and may navigate to its route. Treat that as continuation
         // of this submit, not drift that aborts the first prompt.
+        expectedRuntimeSessionId = sessionId
         startingStoredSessionId = selectedStoredSessionIdRef.current
         startingRouteToken = getRouteToken()
 

@@ -19,6 +19,7 @@ from gateway.config import Platform
 from plugins.platforms.whatsapp.adapter import (
     WhatsAppAdapter,
     _bridge_auth_headers,
+    _ensure_bridge_token,
     _load_bridge_token,
     _standalone_send,
 )
@@ -142,6 +143,18 @@ class TestLoadBridgeToken:
         token_file.write_text("   \n", encoding="utf-8")
         assert _load_bridge_token() is None
 
+    def test_ensure_provisions_profile_scoped_token(self):
+        token = _ensure_bridge_token()
+        token_file = _token_file()
+        assert token
+        assert token_file.read_text(encoding="utf-8").strip() == token
+        assert _ensure_bridge_token() == token
+
+    def test_ensure_respects_environment_without_writing_file(self, monkeypatch):
+        monkeypatch.setenv("HERMES_WA_BRIDGE_TOKEN", TOKEN)
+        assert _ensure_bridge_token() == TOKEN
+        assert not _token_file().exists()
+
 
 class TestBridgeAuthHeaders:
     def test_none_token_gives_empty_headers(self):
@@ -234,6 +247,27 @@ class TestLiveAdapterAuth:
         await adapter.send_typing("chat1")
         for headers in _post_headers(adapter):
             assert headers == {"Authorization": f"Bearer {TOKEN}"}
+
+    @pytest.mark.asyncio
+    async def test_get_chat_includes_bearer(self):
+        adapter = _make_adapter()
+        adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
+        adapter._http_session.get = MagicMock(
+            return_value=_AsyncCM(_ok_response({"name": "Test", "isGroup": False}))
+        )
+
+        result = await adapter.get_chat_info("chat1")
+        assert result["name"] == "Test"
+        headers = adapter._http_session.get.call_args.kwargs.get("headers")
+        assert headers == {"Authorization": f"Bearer {TOKEN}"}
+
+    def test_connect_and_poll_source_authenticate_bridge_gets(self):
+        import inspect
+
+        connect_source = inspect.getsource(WhatsAppAdapter.connect)
+        poll_source = inspect.getsource(WhatsAppAdapter._poll_messages)
+        assert connect_source.count("headers=bridge_headers") == 3
+        assert "headers=self._auth_headers()" in poll_source
 
 
 # ---------------------------------------------------------------------------

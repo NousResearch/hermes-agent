@@ -1,0 +1,76 @@
+# 対象プラットフォーム設定
+
+## リサーチ対象（仕入れ先）
+platforms_buy:
+  mercari:
+    url: https://jp.mercari.com/search?q={keyword}
+    selectors:
+      items: "article[data-testid='item-cell']"
+      title: "[data-testid='item-title']"
+      price: "[data-testid='item-price']"
+      image: "img[data-testid='item-image']"
+    notes: "browser-use推奨。非公式APIは規約違反。"
+
+  yahoo_auction:
+    url: https://auctions.yahoo.co.jp/search/search?q={keyword}
+    selectors:
+      items: ".ProductList__item"
+      title: ".ProductList__titleLink"
+      price: ".ProductList__price"
+    notes: "API申請済みの場合はYahoo!オークションAPI使用"
+
+  bookoff_online:
+    url: https://www.bookoffonline.co.jp/search?q={keyword}
+    selectors:
+      items: ".item-box"
+      title: ".item-title"
+      price: ".price"
+    notes: "買取専門。出品不可。仕入れ先として使用。"
+
+  hardoff:
+    url: https://www.hardoff.co.jp/shop/search?q={keyword}
+    selectors:
+      items: ".item"
+      title: ".item-name"
+      price: ".item-price"
+    notes: "店舗検索+オンライン買取。"
+
+## 出品先（販売先）
+platforms_sell:
+  mercari:
+    fee_pct: 10
+    shipping: "ゆうゆう/らくらくメルカリ便"
+    max_images: 10
+    notes: "browser-useでログイン→出品フォーム自動入力"
+
+  yahoo_auction:
+    fee_pct: 8.8
+    shipping: "簡単配送"
+    notes: "出品APIまたはbrowser-use"
+
+  rakuma:
+    fee_pct: 6
+    shipping: "らくらくラクマ便"
+    notes: "browser-use"
+
+  paypay:
+    fee_pct: 5
+    shipping: "ゆうゆく/PayPay便"
+    notes: "browser-use"
+
+## 別途API必要なもの
+  amazon_jp:
+    fee_pct: 8
+    notes: "SP-API（プロフェッショナル出品登録必要）。スクレイピング厳禁。"
+
+  ebay:
+    fee_pct: 12.35
+    notes: "eBay Trading API / Browse API。海外販売。"
+
+## 除外カテゴリ（危険・法的NG）
+exclude:
+  - アダルト
+  - 模倣品/コピー商品
+  - 医薬品・医療機器（許可必要）
+  - 銃刀类（法律違反）
+  - スマホ端末のアクティベーションロック付き

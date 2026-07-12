@@ -1,0 +1,40 @@
+# わらしべ長者式 せどり 閾値設定
+
+## 利益基準
+min_profit_rate: 0.30    # 利益率30%以上
+min_profit_yen: 500     # 利益額500円以上
+max_turnaround_days: 14 # 回転日数14日以内
+
+## 仕入れ基準
+min_seller_rating: 0.80  # 出品者評価80%以上
+max_shipping_days: 3     # 発送まで最大3日
+condition_acceptable:     # 許容する商品状態
+  - "新品未使用"
+  - "新品未使用品"
+  - "未使用に近い"
+  - "目立った傷や汚れなし"
+
+## リスクスコア
+risk_weights:
+  low_rating_seller: 30    # 評価低い出品者
+  no_description: 15       # 説明文なし
+  stock_photo: 10          # 実写写真なし
+  high_price_volatility: 20 # 価格変動激しい
+  banned_category: 100    # 禁止カテゴリ
+
+max_risk_score: 40         # 合計リスク40以下のみGO
+
+## 予算管理
+budget:
+  initial: 10000           # 初期予算
+  reinvest_rate: 0.80      # 利益の80%を再投資
+  min_reserve: 2000         # 最低予備費
+
+## 自動化レベル
+automation:
+  research: auto           # リサーチは自動
+  buy_decision: semi       # 仕入れ判断は半自動（人間承認）
+  purchase: manual         # 購入は手動（安全弁）
+  listing: auto            # 出品は自動
+  shipping_label: semi     # ラベル発行は半自動
+  ledger: auto             # 古物台帳は自動

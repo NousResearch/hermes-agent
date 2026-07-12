@@ -40,7 +40,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ── Activate venv ───────────────────────────────────────────────────────────
 VENV=""
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
+  if [ -f "$candidate/bin/activate" ] || [ -f "$candidate/Scripts/activate" ]; then
     VENV="$candidate"
     break
   fi
@@ -51,7 +51,14 @@ if [ -z "$VENV" ]; then
   exit 1
 fi
 
-PYTHON="$VENV/bin/python"
+# Windows git-bash uses Scripts/, Linux uses bin/
+if [ -f "$VENV/bin/python" ]; then
+  PYTHON="$VENV/bin/python"
+elif [ -f "$VENV/Scripts/python.exe" ]; then
+  PYTHON="$VENV/Scripts/python.exe"
+else
+  PYTHON="$VENV/bin/python"
+fi
 
 
 # ── Live-gateway plugin (computed before we drop env) ───────────────────────

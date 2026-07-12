@@ -1,0 +1,45 @@
+# API設定（キーは .env から読込）
+
+## Keepa API（Amazon価格履歴）
+keepa:
+  base_url: https://api.keepa.com
+  env_key: KEEPA_API_KEY
+  rate_limit: "100 tokens/5min (token消費=APIコール+推移量)"
+  cost: "Free tier: 月100リクエスト / Pro: $20/月"
+  notes: "Product Finder でFBA価格→メルカリ相場の逆算に使用"
+
+## オークファン API
+aucfan:
+  base_url: https://api.auction-search.yahooapis.jp
+  env_key: AUCFAN_API_KEY
+  rate_limit: "要確認"
+  cost: "無料枠あり"
+  notes: "ヤフオク落札履歴相場確認"
+
+## ヤマトB2クラウドAPI
+yamato_b2:
+  base_url: https://cb-api.yamato-hcl.co.jp/api/v1/
+  env_client_id: YAMATO_B2_CLIENT_ID
+  env_client_secret: YAMATO_B2_CLIENT_SECRET
+  notes: "要B2クラウド契約。宅急便/ネコポス送り状発行。"
+
+## 日本郵便 ゆうプリ API
+yuupri:
+  base_url: https://api.prt.post.japanpost.jp/api/v1/
+  env_client_id: YUUPRI_CLIENT_ID
+  env_client_secret: YUUPRI_CLIENT_SECRET
+  notes: "要ゆうプリR契約+API利用申請。ゆうパケット/ゆうパック発行。"
+
+## eBay API
+ebay:
+  base_url: https://api.ebay.com
+  env_key: EBAY_API_KEY
+  env_secret: EBAY_API_SECRET
+  notes: "Trading API / Browse API / Feed API。海外販売用。"
+
+## Amazon SP-API
+amazon_sp:
+  env_key: AMAZON_SP_API_KEY
+  env_secret: AMAZON_SP_API_SECRET
+  env_refresh_token: AMAZON_SP_REFRESH_TOKEN
+  notes: "プロフェッショナル出品者登録必要。スクレイピング厳禁。"

@@ -1,0 +1,9 @@
+name: warashibe-reselling
+version: 1.1.0
+description: "わらしべ長者式せどりプラグイン：利益計算・台帳・SOPに加え、CloakBrowserで公開マーケットの価格調査を行う。購入・ログイン・出品は行わない。"
+author: "zapabobouj, Hakua"
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows

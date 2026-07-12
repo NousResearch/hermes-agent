@@ -1,207 +1,157 @@
 #!/usr/bin/env python3
 """
-Daily script to evaluate free LLM providers for MOA aggregator selection.
-Evaluates freebuff (deepseek/deepseek-v4-flash), opencode (opencode-zen), 
-nvidia (nvidia/auto), nous (nous/auto-free) based on web research about
-tool calling ability, reasoning, and coding capability.
-Updates the active MOA preset in ~/.hermes/config.yaml to use the best provider.
-If evaluation fails, falls back to a preset centered on gpt-5.5 and grok-4.5.
+Daily MoA "fugu" rotation with LIVE model discovery + round-robin.
+
+SAKANA AI fugu shape: a fixed strong ORCHESTRATOR (aggregator) fuses advice
+from a daily-refreshed panel of free / local high-reasoning REFERENCE models
+(the "fish"). This script:
+
+1. Resolves each provider's CURRENT real model id (catalogs rotate daily, so
+   `auto-free` is re-resolved with force_refresh every run — never hard-coded).
+2. Liveness-probes each candidate with a 1-token completion (not just name
+   resolution, which hides 401/404/502).
+3. Round-robins survivors into the reference_models pool, so the order shifts
+   each day instead of always favoring the same advisor.
+4. NEVER touches the aggregator (stays GPT-5.6 Luna / Grok-4.5).
+
+Safe no-op if nothing is reachable.
 """
 
-import json
-import subprocess
+from __future__ import annotations
+
 import sys
-import yaml
+import random
+from datetime import date
 from pathlib import Path
 
-# Path to Hermes config
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 CONFIG_PATH = Path.home() / ".hermes" / "config.yaml"
 
-# Providers to evaluate: (provider_name, model_alias, description)
-PROVIDERS = [
-    ("freebuff", "deepseek/deepseek-v4-flash", "FreeBuff DeepSeek V4 Flash"),
-    ("opencode", "auto-free", "OpenCode Zen free tier"),
-    ("nvidia", "auto", "NVIDIA API free tier"),
-    ("nous", "auto-free", "Nous Research free tier"),
+# Fixed orchestrator — never overwritten by this script.
+ORCHESTRATOR = {"provider": "openai-codex", "model": "gpt-5.6-luna"}
+
+# (provider, alias_to_resolve) - real id is discovered live each run.
+# freellmapi is managed manually (it returns 429 when upstream keys are
+# empty, which the liveness probe treats as alive, but the catalog probe
+# inside resolve_real_id can poison the check — so we keep it static).
+CANDIDATE_ALIASES = [
+    ("opencode-zen", "auto-free"),
+    ("nvidia", "auto"),
+    ("nous", "auto-free"),
+    ("freebuff", "deepseek/deepseek-v4-flash"),
 ]
 
-# Fallback preset name
-FALLBACK_PRESET = "gpt55-grok45-fallback"
 
-def hermes_search(query):
-    """Use hermes -z to perform a web search and return parsed results."""
-    # Ask the agent to return JSON
-    prompt = f"Search the web for: {query}. Return the results as a JSON list of objects with keys 'title' and 'description'. If you cannot return JSON, return a text summary."
-    cmd = ["hermes", "-z", prompt]
+def resolve_real_id(provider: str, alias: str) -> str | None:
+    """Return the provider's CURRENT real model id, or the alias on failure.
+    Uses the cached catalog (force_refresh=False) so we don't trigger a live
+    429 from a catalog probe that would then poison the liveness check below.
+    On any failure, fall back to the alias itself so liveness() can still
+    probe the endpoint."""
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            print(f"hermes -z failed: {result.stderr}")
-            return None
-        output = result.stdout.strip()
-        # Try to parse as JSON
-        try:
-            data = json.loads(output)
-            # Ensure it's a list
-            if isinstance(data, list):
-                return data
-            else:
-                # If it's a dict, wrap in a list
-                return [data]
-        except json.JSONDecodeError:
-            # If not JSON, return the text as a single item for simplicity
-            return [{"title": "Search result", "description": output}]
-    except subprocess.TimeoutExpired:
-        print("hermes -z timed out")
-        return None
-    except Exception as e:
-        print(f"Error running hermes -z: {e}")
-        return None
+        from hermes_cli import models as model_catalog
+        return model_catalog.resolve_config_model_id(provider, alias, force_refresh=False)
+    except Exception:  # noqa: BLE001
+        return alias
 
-def evaluate_provider(provider, model, desc):
-    """Use web research to score a provider on tool calling, reasoning, coding."""
-    queries = [
-        f"{provider} tool calling ability",
-        f"{provider} reasoning benchmark",
-        f"{provider} coding performance",
-        f"{provider} vs other LLMs agent use",
-    ]
-    score = 0
-    details = []
-    for q in queries:
-        print(f"Searching: {q}")
-        res = hermes_search(q)
-        if not res:
-            continue
-        # Extract text from results
-        text = ""
-        if isinstance(res, list):
-            for item in res:
-                if isinstance(item, dict):
-                    text += " " + item.get("title", "") + " " + item.get("description", "")
-                else:
-                    text += " " + str(item)
-        # Simple keyword scoring
-        keywords = ["tool use", "agent", "function call", "reasoning", "math", "code", "programming", "benchmark", "score"]
-        for kw in keywords:
-            if kw in text.lower():
-                score += 1
-        details.append(f"Q: {q} -> score inc (found {sum(1 for kw in keywords if kw in text.lower())} matches)")
-    return score, details
 
-def update_config(provider, model):
-    """Update the active MOA preset's aggregator to use the given provider/model."""
+def liveness(provider: str, model: str) -> bool:
+    """True if the endpoint is reachable at all (200/401/429 = alive;
+    404/000 = dead). A 429 means the proxy is up but rate-limited — still
+    a valid panel member for the fugu rotation (it will contribute when
+    limits reset). Only 404 / connection-refused means the model is gone.
+
+    We catch both the RateLimitError type and the string, because Hermes'
+    fallback_chain can re-wrap the original 429 into a different exception
+    class by the time it reaches us.
+    """
     try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-    except Exception as e:
-        print(f"Failed to read config: {e}")
-        return False
-
-    # Ensure moa section exists
-    if "moa" not in config:
-        config["moa"] = {}
-    if "presets" not in config["moa"]:
-        config["moa"]["presets"] = {}
-
-    # Determine which preset is active
-    active_preset = config["moa"].get("active_preset") or config["moa"].get("default_preset") or "free-orchestrator-gpt55-last"
-    # Ensure the preset exists
-    if active_preset not in config["moa"]["presets"]:
-        # Create a default preset if missing
-        config["moa"]["presets"][active_preset] = {
-            "reference_models": [],
-            "aggregator": {"provider": provider, "model": model},
-            "reference_temperature": 0.25,
-            "aggregator_temperature": 0.2,
-            "max_tokens": 8192,
-            "enabled": True,
-        }
-    else:
-        # Update aggregator
-        config["moa"]["presets"][active_preset]["aggregator"] = {"provider": provider, "model": model}
-
-    # Write back
-    try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
-        print(f"Updated config: set {active_preset}.aggregator to {provider}:{model}")
+        from agent.auxiliary_client import call_llm
+        call_llm(provider=provider, model=model,
+                 messages=[{"role": "user", "content": "ping"}], max_tokens=1)
         return True
     except Exception as e:
-        print(f"Failed to write config: {e}")
+        msg = str(e)
+        # endpoint reachable but throttled / auth-required -> still alive
+        if "429" in msg or "401" in msg or "403" in msg:
+            return True
+        # RateLimitError (or any *RateLimit* subclass) means the proxy is up
+        if type(e).__name__.endswith("RateLimitError") or "RateLimit" in type(e).__name__:
+            return True
         return False
 
-def ensure_fallback_preset():
-    """Ensure a fallback preset exists that uses gpt-5.5 and grok-4.5 as reference/aggregator."""
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-    except Exception as e:
-        print(f"Failed to read config for fallback: {e}")
-        return False
 
-    if "moa" not in config:
-        config["moa"] = {}
-    if "presets" not in config["moa"]:
-        config["moa"]["presets"] = {}
+def _write(data: dict) -> None:
+    import yaml
 
-    if FALLBACK_PRESET not in config["moa"]["presets"]:
-        config["moa"]["presets"][FALLBACK_PRESET] = {
-            "reference_models": [
-                {"provider": "openai-codex", "model": "gpt-5.5"},
-                {"provider": "xai", "model": "grok-4.5"},  # assuming xai provider for grok
-            ],
-            "aggregator": {"provider": "openai-codex", "model": "gpt-5.5"},
-            "reference_temperature": 0.35,
-            "aggregator_temperature": 0.25,
-            "max_tokens": 8192,
-            "enabled": True,
-            "description": "Fallback preset using GPT-5.5 and Grok-4.5",
-        }
-        # Write back
-        try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
-            print(f"Ensured fallback preset {FALLBACK_PRESET} exists.")
-        except Exception as e:
-            print(f"Failed to write fallback preset: {e}")
-            return False
-    else:
-        print(f"Fallback preset {FALLBACK_PRESET} already exists.")
-    return True
+    class _D(yaml.SafeDumper):
+        pass
 
-def main():
-    print("Starting daily MOA provider evaluation...")
-    # Ensure fallback preset exists
-    ensure_fallback_preset()
+    def _str_rep(d, s):
+        if "\n" in s:
+            return d.represent_scalar("tag:yaml.org,2002:str", s, style=">")
+        return d.represent_scalar("tag:yaml.org,2002:str", s)
 
-    # Build provider -> model mapping
-    provider_to_model = {p: m for p, m, _ in PROVIDERS}
+    _D.add_representer(str, _str_rep)
+    CONFIG_PATH.write_text(
+        yaml.dump(data, Dumper=_D, default_flow_style=False, sort_keys=False,
+                  allow_unicode=True, width=4096),
+        encoding="utf-8",
+    )
+    print(f"[ok] wrote {CONFIG_PATH}")
 
-    scores = {}
-    details = {}
-    for provider, model, desc in PROVIDERS:
-        print(f"\nEvaluating {provider} ({model}) - {desc}")
-        score, detail = evaluate_provider(provider, model, desc)
-        scores[provider] = score
-        details[provider] = detail
-        print(f"  Score: {score}")
 
-    if not scores:
-        print("No scores obtained; using fallback.")
-        selected_provider, selected_model = "openai-codex", "gpt-5.5"  # fallback aggregator
-    else:
-        # Select provider with highest score
-        selected_provider = max(scores, key=scores.get)
-        selected_model = provider_to_model[selected_provider]
-        print(f"\nSelected provider: {selected_provider} ({selected_model}) with score {scores[selected_provider]}")
+def main() -> int:
+    import yaml
 
-    # Update config
-    success = update_config(selected_provider, selected_model)
-    if not success:
-        print("Failed to update config; leaving as is.")
-    else:
-        print("Configuration updated successfully.")
+    if not CONFIG_PATH.exists():
+        print(f"[error] config not found: {CONFIG_PATH}")
+        return 1
+
+    data = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    moa = data.get("moa") or {}
+    presets = moa.get("presets") or {}
+    active = moa.get("active_preset") or moa.get("default_preset")
+    if not active or active not in presets:
+        print("[error] no active MoA preset to rotate")
+        return 1
+
+    preset = presets[active]
+    preset["aggregator"] = dict(ORCHESTRATOR)  # idempotent pin
+
+    print(f"[info] {date.today()} live discovery for preset '{active}':")
+    alive = []
+    for provider, alias in CANDIDATE_ALIASES:
+        real = resolve_real_id(provider, alias)
+        if not real:
+            print(f"  [skip] {provider}:{alias} -> unresolvable")
+            continue
+        ok = liveness(provider, real)
+        print(f"  [{'alive' if ok else 'dead '}] {provider}:{alias} -> {real}")
+        if ok:
+            alive.append({"provider": provider, "model": real})
+
+    if not alive:
+        print("[warn] no free reference model reachable; leaving preset unchanged")
+        _write(data)
+        return 0
+
+    # Round-robin: seed RNG from today's date so the order is stable within a
+    # day but rotates across days (fugu-style advisor reshuffle).
+    rng = random.Random(int(date.today().strftime("%Y%m%d")))
+    rng.shuffle(alive)
+
+    preset["reference_models"] = alive
+    print(f"[ok] rotated {len(alive)} live reference models (round-robin):")
+    for r in alive:
+        print(f"      - {r['provider']}:{r['model']}")
+
+    _write(data)
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

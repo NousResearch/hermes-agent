@@ -2097,6 +2097,38 @@ def get_model_context_length(
         except Exception:
             pass  # fall through to probing
 
+    # 0c. Provider-level explicit context_length from providers.<name>.context_length.
+    # Custom endpoints (e.g. llama-server) rarely expose context_length via
+    # /models probing, leading to artificially low fallback values (e.g. 32K).
+    # This reads the per-provider override from config.yaml independently of
+    # the custom_providers list (which requires base_url matching — unavailable
+    # for cron jobs whose base_url is resolved later).
+    # Also handles the 'custom' provider alias — when the full provider name
+    # (e.g. 'custom:qwj-local') gets normalized to bare 'custom' during
+    # AIAgent init, we match by prefix against providers.custom:* keys.
+    if provider and not config_context_length:
+        try:
+            _cfg_path = Path.home() / ".hermes" / "config.yaml"
+            if _cfg_path.exists():
+                with open(_cfg_path) as _f:
+                    _cfg = yaml.safe_load(_f)
+                _providers = _cfg.get("providers", {}) if isinstance(_cfg, dict) else {}
+                if isinstance(_providers, dict):
+                    _p_cfg = _providers.get(provider)
+                    if not _p_cfg and provider == "custom":
+                        for _key, _val in _providers.items():
+                            if _key.startswith("custom:") and isinstance(_val, dict) and _val.get("context_length"):
+                                _p_cfg = _val
+                                break
+                    if isinstance(_p_cfg, dict):
+                        _raw = _p_cfg.get("context_length")
+                        if _raw is not None:
+                            _ctx_int = int(_raw)
+                            if _ctx_int > 0:
+                                return _ctx_int
+        except Exception:
+            pass  # fall through to probing
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.

@@ -429,6 +429,12 @@ compression:
   # compression of older turns.
   protect_last_n: 20
 
+  # Compression retry rounds before a turn gives up with "max compression
+  # attempts reached" (default: 3, same as the previous hardcoded value).
+  # Raise (e.g. 6) for tool-schema-heavy sessions where 3 rounds cannot bring
+  # the request estimate under the threshold. Validated >= 1, hard cap 10.
+  max_attempts: 3
+
   # Codex app-server (codex CLI runtime) thread-compaction mode. The codex
   # agent owns the real thread context on this runtime, so Hermes' summarizer
   # cannot shrink it — compaction goes through the app server instead.

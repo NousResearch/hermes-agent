@@ -740,6 +740,10 @@ agent:
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
+
+  # OpenAI Codex Responses API output detail. Options: "low", "medium", "high".
+  # Empty preserves the provider default. Ignored by non-Codex backends.
+  output_verbosity: ""
   
   # Predefined personalities (use with /personality command)
   personalities:

@@ -1291,6 +1291,22 @@ on its own adaptive default. The
 native Anthropic provider already controls effort directly and is unaffected.
 :::
 
+### OpenAI Codex output verbosity
+
+Reasoning effort controls how much the model thinks; output verbosity separately
+controls how detailed its final response is. For the `openai-codex` provider,
+set `agent.output_verbosity` to `low`, `medium`, or `high`:
+
+```yaml
+agent:
+  reasoning_effort: high
+  output_verbosity: low
+```
+
+An empty or omitted value preserves the provider default. Hermes sends this to
+the Codex Responses API as `text.verbosity`; it is ignored for other Responses
+API backends such as xAI and GitHub Models.
+
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```

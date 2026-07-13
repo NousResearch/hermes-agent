@@ -121,6 +121,8 @@ class ResponsesApiTransport(ProviderTransport):
             is_codex_backend: bool — chatgpt.com/backend-api/codex
             is_xai_responses: bool — xAI/Grok backend
             github_reasoning_extra: dict | None — Copilot reasoning params
+            output_verbosity: str | None — OpenAI Codex output detail
+                (low, medium, or high)
         """
         from agent.codex_responses_adapter import (
             _chat_messages_to_responses_input,
@@ -299,6 +301,11 @@ class ResponsesApiTransport(ProviderTransport):
                 )
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
+
+        if is_codex_backend:
+            output_verbosity = str(params.get("output_verbosity") or "").strip().lower()
+            if output_verbosity in {"low", "medium", "high"}:
+                kwargs["text"] = {"verbosity": output_verbosity}
 
         request_overrides = params.get("request_overrides")
         if request_overrides:

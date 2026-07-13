@@ -1333,6 +1333,49 @@ class TestBuildSystemPrompt:
         assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
 
 
+class TestOutputVerbosityConfig:
+    """Tests for the agent.output_verbosity Codex request setting."""
+
+    def _make_agent(self, output_verbosity):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"output_verbosity": output_verbosity}},
+            ),
+        ):
+            return AIAgent(
+                model="gpt-5.6-sol",
+                provider="openai-codex",
+                api_key="test-key-1234567890",
+                base_url="https://chatgpt.com/backend-api/codex",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+    @pytest.mark.parametrize(
+        "configured, expected",
+        [("low", "low"), (" Medium ", "medium"), ("HIGH", "high")],
+    )
+    def test_config_is_normalized_and_reaches_codex_request(self, configured, expected):
+        agent = self._make_agent(configured)
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert kwargs["text"] == {"verbosity": expected}
+
+    @pytest.mark.parametrize("configured", ["", None, "extra-short", 42])
+    def test_unset_or_invalid_config_preserves_provider_default(self, configured):
+        agent = self._make_agent(configured)
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert "text" not in kwargs
+
+
 class TestToolUseEnforcementConfig:
     """Tests for the agent.tool_use_enforcement config option."""
 

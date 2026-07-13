@@ -911,7 +911,7 @@ def _preflight_codex_api_kwargs(
 
     allowed_keys = {
         "model", "instructions", "input", "tools", "store",
-        "reasoning", "include", "max_output_tokens", "temperature",
+        "reasoning", "include", "max_output_tokens", "temperature", "text",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
         "extra_headers", "extra_body", "timeout",
     }
@@ -934,6 +934,19 @@ def _preflight_codex_api_kwargs(
     service_tier = api_kwargs.get("service_tier")
     if isinstance(service_tier, str) and service_tier.strip():
         normalized["service_tier"] = service_tier.strip()
+
+    text = api_kwargs.get("text")
+    if text is not None:
+        if not isinstance(text, dict) or set(text) != {"verbosity"}:
+            raise ValueError(
+                "Codex Responses request 'text' must be an object containing only 'verbosity'."
+            )
+        verbosity = text.get("verbosity")
+        if verbosity not in {"low", "medium", "high"}:
+            raise ValueError(
+                "Codex Responses request 'text.verbosity' must be low, medium, or high."
+            )
+        normalized["text"] = {"verbosity": verbosity}
 
     # Pass through max_output_tokens and temperature
     max_output_tokens = api_kwargs.get("max_output_tokens")

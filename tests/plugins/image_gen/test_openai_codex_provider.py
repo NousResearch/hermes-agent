@@ -9,7 +9,6 @@ endpoint.
 from __future__ import annotations
 
 import importlib
-import json
 from pathlib import Path
 
 import pytest
@@ -307,91 +306,6 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "api_error"
         assert "cloudflare 403" in result["error"]
-
-    def test_unsupported_image_tool_returns_capability_error(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-
-        def _unsupported(*args, **kwargs):
-            raise codex_plugin.CodexImageGenerationUnsupportedError(
-                "Tool choice 'image_generation' not found in 'tools' parameter."
-            )
-
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _unsupported)
-
-        result = provider.generate("a cat")
-
-        assert result["success"] is False
-        assert result["error_type"] == "capability_unsupported"
-        assert "current Codex account" in result["error"]
-        assert "OpenAI API key, FAL, or xAI" in result["error"]
-
-
-class TestCapabilityErrorDetection:
-    @pytest.mark.parametrize(
-        "body",
-        [
-            "Tool choice 'image_generation' not found in 'tools' parameter.",
-            '{"error":{"message":"Tool choice \'image_generation\' not found in \'tools\' parameter."}}',
-        ],
-    )
-    def test_detects_exact_codex_image_tool_rejection(self, body):
-        assert codex_plugin._is_image_generation_unsupported_error(400, body) is True
-
-    @pytest.mark.parametrize(
-        ("status_code", "body"),
-        [
-            (401, "Tool choice 'image_generation' not found in 'tools' parameter."),
-            (400, "Tool choice 'web_search' not found in 'tools' parameter."),
-            (400, "The image_generation request was rejected by moderation."),
-            (500, "Tool choice 'image_generation' not found in 'tools' parameter."),
-        ],
-    )
-    def test_does_not_misclassify_other_failures(self, status_code, body):
-        assert codex_plugin._is_image_generation_unsupported_error(status_code, body) is False
-
-    def test_does_not_match_error_message_with_extra_text(self):
-        body = json.dumps({
-            "error": {
-                "message": (
-                    "Tool choice 'image_generation' not found in 'tools' parameter "
-                    "because the request is malformed."
-                )
-            }
-        })
-
-        assert codex_plugin._is_image_generation_unsupported_error(400, body) is False
-
-    def test_collect_classifies_exact_http_error_after_large_metadata(self, monkeypatch):
-        import httpx
-
-        body = json.dumps({
-            "metadata": "x" * 600,
-            "error": {
-                "message": "Tool choice 'image_generation' not found in 'tools' parameter."
-            },
-        })
-
-        def _handler(request):
-            return httpx.Response(400, text=body, request=request)
-
-        real_client = httpx.Client
-        monkeypatch.setattr(
-            httpx,
-            "Client",
-            lambda *args, **kwargs: real_client(
-                transport=httpx.MockTransport(_handler),
-                headers=kwargs.get("headers"),
-                timeout=kwargs.get("timeout"),
-            ),
-        )
-
-        with pytest.raises(codex_plugin.CodexImageGenerationUnsupportedError):
-            codex_plugin._collect_image_b64(
-                "codex-token",
-                prompt="a cat",
-                size="1024x1024",
-                quality="low",
-            )
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

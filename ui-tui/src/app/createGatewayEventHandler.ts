@@ -786,13 +786,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const allowPermanent = ev.payload.allow_permanent !== false
 
         patchOverlayState({
-          approval: {
-            allowPermanent,
-            choices: ev.payload.choices,
-            command: String(ev.payload.command ?? ''),
-            description,
-            smartDenied: ev.payload.smart_denied === true
-          }
+          approval: { allowPermanent, command: String(ev.payload.command ?? ''), description }
         })
         setStatus('approval needed')
 

@@ -5571,8 +5571,6 @@ class DiscordAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
-        allow_permanent: bool = True,
-        smart_denied: bool = False,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
@@ -5608,8 +5606,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 "Do you want Hermes to run this command?\n\n"
                 "**Requested command:**\n```bash\n"
             )
-            if smart_denied:
-                prompt_prefix += "**Smart DENY:** owner override applies to this one operation only.\n\n"
             mention_content = self._approval_mention_content()
             if mention_content:
                 prompt_prefix = f"{mention_content}\n{prompt_prefix}"
@@ -5646,8 +5642,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
                 require_admin=require_admin,
                 admin_user_ids=admin_user_ids,
-                allow_permanent=allow_permanent,
-                smart_denied=smart_denied,
             )
 
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed, "view": view}
@@ -6842,8 +6836,6 @@ def _define_discord_view_classes() -> None:
             allowed_role_ids: Optional[set] = None,
             require_admin: bool = False,
             admin_user_ids: Optional[set] = None,
-            allow_permanent: bool = True,
-            smart_denied: bool = False,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
@@ -6857,11 +6849,6 @@ def _define_discord_view_classes() -> None:
                 str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()
             }
             self.resolved = False
-            if smart_denied:
-                self.remove_item(self.allow_session)
-                self.remove_item(self.allow_always)
-            elif not allow_permanent:
-                self.remove_item(self.allow_always)
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized.

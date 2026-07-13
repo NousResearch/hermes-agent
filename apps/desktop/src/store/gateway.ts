@@ -164,7 +164,7 @@ function createSecondary(profile: string): Secondary {
     wantOpen: true
   }
 
-  entry.offEvent = gateway.onEvent(event => config?.onEvent({ ...event, profile }))
+  entry.offEvent = gateway.onEvent(event => config?.onEvent(event))
   entry.offState = gateway.onState(state => {
     reportGatewayState(profile, state)
 

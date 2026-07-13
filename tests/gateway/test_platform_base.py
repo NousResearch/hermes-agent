@@ -786,28 +786,6 @@ class TestMediaDeliveryPathValidation:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
 
-    def test_allows_stale_kanban_attachment_but_not_neighboring_workspace(
-        self, tmp_path, monkeypatch,
-    ):
-        """Strict mode trusts durable attachments without trusting scratch."""
-        self._patch_roots(monkeypatch)
-        monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "hermes"))
-        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
-        board_root = tmp_path / "hermes" / "kanban" / "boards" / "research"
-        board_root.mkdir(parents=True)
-        (board_root / "kanban.db").touch()
-        attachment = board_root / "attachments" / "t_12345678" / "report.pdf"
-        scratch = board_root / "workspaces" / "t_12345678" / "notes.txt"
-        attachment.parent.mkdir(parents=True)
-        scratch.parent.mkdir(parents=True)
-        attachment.write_bytes(b"%PDF")
-        scratch.write_text("private", encoding="utf-8")
-
-        assert BasePlatformAdapter.validate_media_delivery_path(str(attachment)) == str(
-            attachment.resolve()
-        )
-        assert BasePlatformAdapter.validate_media_delivery_path(str(scratch)) is None
-
     def test_recency_trust_allows_freshly_produced_file(self, tmp_path, monkeypatch):
         """A PDF the agent just wrote to /tmp should be deliverable.
 

@@ -1418,7 +1418,9 @@ class HermesACPAgent(acp.Agent):
                     streamed_message = True
                 message_cb(text)
 
-            approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
+            from tools.approval import _get_approval_timeout
+            approval_timeout = float(_get_approval_timeout())
+            approval_cb = make_approval_callback(conn.request_permission, loop, session_id, timeout=approval_timeout)
             try:
                 from acp_adapter.edit_approval import make_acp_edit_approval_requester
 
@@ -1426,6 +1428,7 @@ class HermesACPAgent(acp.Agent):
                     conn.request_permission,
                     loop,
                     session_id,
+                    timeout=approval_timeout,
                     auto_approve_getter=lambda: self._edit_approval_policy_for_state(state),
                 )
             except Exception:

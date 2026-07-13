@@ -303,7 +303,6 @@ export interface PaginatedSessions {
 
 export interface RpcEvent<T = unknown> {
   payload?: T
-  profile?: string
   session_id?: string
   type: string
 }
@@ -394,7 +393,6 @@ export interface SessionResumeResponse {
 }
 
 export interface SessionRuntimeInfo {
-  approval_mode?: 'manual' | 'off' | 'smart'
   branch?: string
   config_warning?: string
   credential_warning?: string

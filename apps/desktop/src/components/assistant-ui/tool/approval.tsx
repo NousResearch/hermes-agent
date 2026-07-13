@@ -110,10 +110,6 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
   const busy = submitting !== null
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
-  const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
-  const allowSession = choices ? choices.includes('session') : true
-  const allowAlways = choices ? choices.includes('always') : allowPermanent
-  const hasMoreOptions = allowSession || allowAlways
   const hasCommand = request.command.trim().length > 0
 
   const respond = useCallback(
@@ -187,8 +183,8 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
             {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
             {submitting !== 'once' && <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
           </Button>
-          {hasMoreOptions && <span aria-hidden className="w-px self-stretch bg-primary/20" />}
-          {hasMoreOptions && <DropdownMenu>
+          <span aria-hidden className="w-px self-stretch bg-primary/20" />
+          <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 aria-label={copy.moreOptions}
@@ -201,8 +197,8 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="min-w-44">
-              {allowSession && <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>}
-              {allowAlways && (
+              <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
+              {allowPermanent && (
                 <DropdownMenuItem
                   onSelect={() => {
                     // Defer one tick so the menu fully unmounts before the dialog
@@ -218,7 +214,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
                 {copy.reject}
               </DropdownMenuItem>
             </DropdownMenuContent>
-          </DropdownMenu>}
+          </DropdownMenu>
         </div>
 
         <Button

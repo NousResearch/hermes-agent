@@ -1,12 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
-import { $activeGatewayProfile } from '@/store/profile'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
-  applyRuntimeInfo,
   chatMessageArraysEquivalent,
   isSessionGoneError,
   reconcileResumeMessages,
@@ -19,20 +16,6 @@ const msg = (id: string, role: ChatMessage['role'], text: string, extra: Partial
   ({ id, role, parts: [{ type: 'text', text }], ...extra }) as ChatMessage
 
 const session = (over: Partial<SessionInfo>): SessionInfo => over as SessionInfo
-
-describe('applyRuntimeInfo approval mode', () => {
-  beforeEach(() => {
-    $approvalModes.set({})
-    $activeGatewayProfile.set('work')
-  })
-
-  it('reconciles session.info against the gateway profile', () => {
-    applyRuntimeInfo({ approval_mode: 'smart', desktop_contract: 3 })
-
-    expect(approvalModeForProfile('work')).toBe('smart')
-    expect(approvalModeForProfile('default')).toBe('smart')
-  })
-})
 
 describe('isSessionGoneError', () => {
   it('is true for 404 / session-not-found, false otherwise', () => {

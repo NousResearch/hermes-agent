@@ -135,7 +135,6 @@ BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
-KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -3976,10 +3975,6 @@ class HallucinatedCardsError(ValueError):
         )
 
 
-class ArtifactPreservationError(RuntimeError):
-    """Raised when a declared scratch deliverable cannot be preserved."""
-
-
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4047,9 +4042,6 @@ def complete_task(
     else:
         verified_cards = []
 
-    metadata = _merge_completion_prose_artifacts(
-        conn, task_id, metadata, summary=summary, result=result,
-    )
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
@@ -4088,18 +4080,6 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
-        if isinstance(metadata, dict):
-            _persist_scratch_completion_artifacts(conn, task_id, metadata)
-            for stored_path in metadata.pop("_staged_artifacts", []):
-                path = Path(stored_path)
-                _insert_completion_attachment(
-                    conn,
-                    task_id,
-                    filename=path.name,
-                    stored_path=str(path),
-                    size=path.stat().st_size,
-                    created_at=now,
-                )
         run_id = _end_run(
             conn, task_id,
             outcome="completed", status="done",
@@ -4194,256 +4174,6 @@ def complete_task(
 # Workspace / tmux cleanup
 # ---------------------------------------------------------------------------
 
-
-def _merge_completion_prose_artifacts(
-    conn: sqlite3.Connection,
-    task_id: str,
-    metadata: Optional[dict],
-    *,
-    summary: Optional[str],
-    result: Optional[str],
-) -> Optional[dict]:
-    """Promote existing scratch files named in legacy completion prose.
-
-    ``artifacts=[...]`` is preferred. Older workers only wrote an absolute
-    deliverable path in ``summary``/``result``; discover it while scratch still
-    exists so cleanup cannot erase the file the user was promised.
-    """
-    row = conn.execute(
-        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
-        (task_id,),
-    ).fetchone()
-    if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
-        return metadata
-    workspace = Path(row["workspace_path"]).expanduser()
-    if not _is_managed_scratch_path(workspace):
-        return metadata
-    text = "\n".join(part for part in (summary, result) if part)
-    if not text:
-        return metadata
-    prefix = re.escape(str(workspace))
-    discovered: list[str] = []
-    for match in re.finditer(prefix + r"(?:[/\\][^\s`\"'<>]+)", text):
-        raw = match.group(0).rstrip(".,;:!?)]}")
-        candidate = Path(raw)
-        if candidate.is_file():
-            discovered.append(str(candidate))
-    if not discovered:
-        return metadata
-    updated = dict(metadata) if isinstance(metadata, dict) else {}
-    existing = updated.get("artifacts")
-    merged = list(existing) if isinstance(existing, (list, tuple)) else []
-    seen = {str(path) for path in merged}
-    for path in discovered:
-        if path not in seen:
-            merged.append(path)
-            seen.add(path)
-    updated["artifacts"] = merged
-    return updated
-
-
-def _persist_scratch_completion_artifacts(
-    conn: sqlite3.Connection,
-    task_id: str,
-    metadata: dict,
-) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
-    raw_artifacts = metadata.get("artifacts")
-    if not isinstance(raw_artifacts, (list, tuple)):
-        return
-
-    row = conn.execute(
-        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
-        (task_id,),
-    ).fetchone()
-    if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
-        return
-
-    workspace = Path(row["workspace_path"]).expanduser()
-    is_managed, board = _managed_scratch_path_info(workspace)
-    if not is_managed:
-        return
-
-    try:
-        workspace_root = workspace.resolve()
-    except OSError:
-        return
-
-    attachment_dir = task_attachments_dir(task_id, board=board)
-    persisted: list[str] = []
-    used_destinations: set[Path] = set()
-    changed = False
-
-    def _discard_copies() -> None:
-        for copied in used_destinations:
-            try:
-                copied.unlink(missing_ok=True)
-            except OSError:
-                pass
-        try:
-            attachment_dir.rmdir()
-        except OSError:
-            pass
-
-    for item in raw_artifacts:
-        artifact = str(item).strip() if isinstance(item, str) else ""
-        if not artifact:
-            continue
-        src = Path(artifact).expanduser()
-        try:
-            resolved_src = src.resolve()
-        except OSError:
-            persisted.append(artifact)
-            continue
-
-        if not resolved_src.is_relative_to(workspace_root):
-            persisted.append(artifact)
-            continue
-
-        if not src.is_file():
-            _discard_copies()
-            raise ArtifactPreservationError(
-                f"declared scratch artifact is unavailable or not a regular file: {artifact}"
-            )
-
-        size = resolved_src.stat().st_size
-        if size > KANBAN_ATTACHMENT_MAX_BYTES:
-            _discard_copies()
-            raise ArtifactPreservationError(
-                f"declared scratch artifact exceeds the "
-                f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
-            )
-
-        dest: Optional[Path] = None
-        try:
-            attachment_dir.mkdir(parents=True, exist_ok=True)
-            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
-            with resolved_src.open("rb") as source_file, dest.open("xb") as destination_file:
-                copied = 0
-                while chunk := source_file.read(1024 * 1024):
-                    copied += len(chunk)
-                    if copied > KANBAN_ATTACHMENT_MAX_BYTES:
-                        raise ArtifactPreservationError(
-                            f"declared scratch artifact grew beyond the size limit: {artifact}"
-                        )
-                    destination_file.write(chunk)
-        except Exception as exc:
-            if dest is not None:
-                try:
-                    dest.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            _discard_copies()
-            if isinstance(exc, ArtifactPreservationError):
-                raise
-            raise ArtifactPreservationError(
-                f"could not preserve declared scratch artifact {artifact}: {exc}"
-            ) from exc
-
-        used_destinations.add(dest)
-        persisted.append(str(dest.resolve()))
-        changed = True
-
-    if changed:
-        metadata["artifacts"] = persisted
-        metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
-        ]
-
-
-def _insert_completion_attachment(
-    conn: sqlite3.Connection,
-    task_id: str,
-    *,
-    filename: str,
-    stored_path: str,
-    size: int,
-    created_at: int,
-) -> None:
-    """Record a worker-produced artifact in the existing attachment table."""
-    conn.execute(
-        "INSERT INTO task_attachments "
-        "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?)",
-        (task_id, filename, stored_path, size, created_at),
-    )
-    _append_event(
-        conn,
-        task_id,
-        "attached",
-        {"filename": filename, "size": size, "by": "kanban_complete"},
-    )
-
-
-def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> Path:
-    """Return a non-conflicting path under ``directory`` for ``filename``."""
-    safe_name = Path(filename).name or "artifact"
-    candidate = directory / safe_name
-    if candidate not in used and not candidate.exists():
-        return candidate
-
-    stem = Path(safe_name).stem or "artifact"
-    suffix = Path(safe_name).suffix
-    idx = 1
-    while True:
-        candidate = directory / f"{stem}_{idx}{suffix}"
-        if candidate not in used and not candidate.exists():
-            return candidate
-        idx += 1
-
-
-def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
-    """Return whether *p* is managed scratch storage and the matching board."""
-    try:
-        p_abs = p.resolve(strict=False)
-    except OSError:
-        return False, None
-    roots: list[tuple[Path, Optional[str]]] = []
-    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
-    if override:
-        try:
-            roots.append((Path(override).expanduser().resolve(strict=False), None))
-        except OSError:
-            pass
-    try:
-        home = kanban_home()
-    except OSError:
-        home = None
-    if home is not None:
-        try:
-            roots.append(((home / "kanban" / "workspaces").resolve(strict=False), DEFAULT_BOARD))
-        except OSError:
-            pass
-        try:
-            boards_parent = (home / "kanban" / "boards").resolve(strict=False)
-        except OSError:
-            boards_parent = None
-        if boards_parent is not None:
-            try:
-                entries = list(boards_parent.iterdir())
-            except OSError:
-                entries = []
-            for entry in entries:
-                try:
-                    if not entry.is_dir():
-                        continue
-                except OSError:
-                    continue
-                try:
-                    roots.append(((entry / "workspaces").resolve(strict=False), entry.name))
-                except OSError:
-                    continue
-    for root, board in roots:
-        if p_abs == root:
-            continue
-        try:
-            if p_abs.is_relative_to(root):
-                return True, board
-        except ValueError:
-            continue
-    return False, None
-
-
 def _is_managed_scratch_path(p: Path) -> bool:
     """Return True iff *p* is a strict descendant of a kanban-managed scratch root.
 
@@ -4469,8 +4199,54 @@ def _is_managed_scratch_path(p: Path) -> bool:
     real source tree can otherwise pair with ``workspace_kind='scratch'`` and
     cause task completion to delete user data (#28818).
     """
-    is_managed, _board = _managed_scratch_path_info(p)
-    return is_managed
+    try:
+        p_abs = p.resolve(strict=False)
+    except OSError:
+        return False
+    roots: list[Path] = []
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    if override:
+        try:
+            roots.append(Path(override).expanduser().resolve(strict=False))
+        except OSError:
+            pass
+    try:
+        home = kanban_home()
+    except OSError:
+        home = None
+    if home is not None:
+        try:
+            roots.append((home / "kanban" / "workspaces").resolve(strict=False))
+        except OSError:
+            pass
+        try:
+            boards_parent = (home / "kanban" / "boards").resolve(strict=False)
+        except OSError:
+            boards_parent = None
+        if boards_parent is not None:
+            try:
+                entries = list(boards_parent.iterdir())
+            except OSError:
+                entries = []
+            for entry in entries:
+                try:
+                    if not entry.is_dir():
+                        continue
+                except OSError:
+                    continue
+                try:
+                    roots.append((entry / "workspaces").resolve(strict=False))
+                except OSError:
+                    continue
+    for root in roots:
+        if p_abs == root:
+            continue
+        try:
+            if p_abs.is_relative_to(root):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
@@ -8046,13 +7822,6 @@ def _default_spawn(
         "chat",
         "-q", prompt,
     ])
-    if task.goal_mode:
-        # Goal-mode workers must take the fully-quiet single-query path:
-        # the kanban goal-loop hook (_run_kanban_goal_loop_q) only runs in
-        # cli.py's quiet branch. Without -Q the worker gets exactly one
-        # turn, prints text, exits rc=0, and the dispatcher records a
-        # protocol violation (incident 2026-06-09 t_d9cbe312).
-        cmd.append("-Q")
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and

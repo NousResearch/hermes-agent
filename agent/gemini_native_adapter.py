@@ -684,12 +684,19 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False, sort_keys=True)
             except (TypeError, ValueError):
                 args_str = "{}"
-            thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
+            # Dedup slots by (part_index, name) only — NOT by thought_signature.
+            # Gemini may send the signature on only some chunks of a tool call
+            # (e.g., on a later args chunk, or only on the first chunk). Including
+            # it in the key splits a single tool call into multiple slots when
+            # the signature changes between chunks, leaving the slot that did
+            # not receive it without a signature on replay → Gemini 3 thinking
+            # models then 400 with "Function call is missing a thought_signature"
+            # because the model that originally emitted the call expects the
+            # signature back.
             call_key = json.dumps(
                 {
                     "part_index": part_index,
                     "name": name,
-                    "thought_signature": thought_signature,
                 },
                 sort_keys=True,
             )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import Any, Dict
 
 import pytest
 
@@ -461,3 +462,56 @@ def test_explicit_max_tokens_is_respected():
 
     req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+def test_stream_event_translation_does_not_split_slot_when_signature_arrives_late():
+    """Regression: Gemini 3 thinking models may send `thoughtSignature` on a
+    later chunk of the same tool call (or only on one chunk). The dedup key
+    must be (part_index, name) only — never including the signature — so a
+    single tool call stays in a single slot regardless of which chunks carry
+    the signature. Otherwise the slot that lacks the signature gets replayed
+    without one and Gemini rejects the request with HTTP 400.
+    """
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices: Dict[str, Dict[str, Any]] = {}
+
+    # Chunk 1 — no signature yet.
+    event_a = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "terminal", "args": {}}}
+                    ]
+                },
+            }
+        ]
+    }
+    # Chunk 2 — same tool call, more args, signature now present.
+    event_b = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "functionCall": {"name": "terminal", "args": {"cmd": "ls"}},
+                            "thoughtSignature": "sig-late",
+                        }
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    }
+
+    chunks_a = translate_stream_event(event_a, model="gemini-3.1-flash", tool_call_indices=tool_call_indices)
+    chunks_b = translate_stream_event(event_b, model="gemini-3.1-flash", tool_call_indices=tool_call_indices)
+
+    a_tool = [c for c in chunks_a if c.choices[0].delta.tool_calls][0].choices[0].delta.tool_calls[0]
+    b_tool = [c for c in chunks_b if c.choices[0].delta.tool_calls][0].choices[0].delta.tool_calls[0]
+
+    # Both chunks must address the SAME slot (same index, same id) — otherwise
+    # the consumer accumulates two tool calls for what is logically one.
+    assert a_tool.index == b_tool.index == 0
+    assert a_tool.id == b_tool.id
+    # The chunk that carried the signature surfaces it via extra_content.
+    assert b_tool.extra_content == {"google": {"thought_signature": "sig-late"}}

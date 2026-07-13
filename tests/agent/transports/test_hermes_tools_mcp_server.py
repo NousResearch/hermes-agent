@@ -8,6 +8,126 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
+import inspect
+from typing import get_args
+
+from agent.transports.hermes_tools_mcp_server import (
+    _signature_from_schema,
+)
+
+
+class TestSignatureFromSchema:
+    """Test the JSON Schema -> Python signature conversion."""
+
+    def test_simple_required_string_param(self):
+        """A required string param becomes str with no default."""
+        schema = {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }
+        sig, annots = _signature_from_schema(schema)
+
+        assert len(sig.parameters) == 1
+        param = sig.parameters["query"]
+        assert param.name == "query"
+        assert param.kind == inspect.Parameter.KEYWORD_ONLY
+        assert annots["query"] == str
+        assert param.default is inspect.Parameter.empty
+
+    def test_optional_integer_param(self):
+        """An optional param gets Optional[type] with default=None."""
+        schema = {
+            "type": "object",
+            "properties": {"limit": {"type": "integer"}},
+        }
+        sig, annots = _signature_from_schema(schema)
+
+        param = sig.parameters["limit"]
+        # Optional[type] is type | None in Python 3.10+
+        assert param.default is None
+
+    def test_multiple_params_mixed_required_optional(self):
+        """Mixed required and optional params are handled correctly."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer"},
+                "offset": {"type": "integer"},
+            },
+            "required": ["query"],
+        }
+        sig, annots = _signature_from_schema(schema)
+
+        assert len(sig.parameters) == 3
+
+        # query: required str
+        assert annots["query"] == str
+        assert sig.parameters["query"].default is inspect.Parameter.empty
+
+        # limit: optional int
+        assert sig.parameters["limit"].default is None
+
+        # offset: optional int
+        assert sig.parameters["offset"].default is None
+
+    def test_skip_private_params(self):
+        """Params starting with '_' are excluded from the signature."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "_internal": {"type": "string"},
+            },
+            "required": ["query", "_internal"],
+        }
+        sig, annots = _signature_from_schema(schema)
+
+        assert "_internal" not in sig.parameters
+        assert "_internal" not in annots
+        assert "query" in sig.parameters
+
+    def test_all_json_types(self):
+        """All JSON schema types map to correct Python types."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "s": {"type": "string"},
+                "i": {"type": "integer"},
+                "n": {"type": "number"},
+                "b": {"type": "boolean"},
+                "a": {"type": "array"},
+                "o": {"type": "object"},
+            },
+            "required": ["s", "i", "n", "b", "a", "o"],
+        }
+        sig, annots = _signature_from_schema(schema)
+
+        assert annots["s"] == str
+        assert annots["i"] == int
+        assert annots["n"] == float
+        assert annots["b"] == bool
+        assert annots["a"] == list
+        assert annots["o"] == dict
+
+    def test_empty_schema(self):
+        """Empty schema returns empty signature."""
+        sig, annots = _signature_from_schema(None)
+        assert len(sig.parameters) == 0
+        assert len(annots) == 0
+
+    def test_return_annotation_is_str(self):
+        """All generated signatures have str as return type."""
+        schema = {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+        }
+        sig, annots = _signature_from_schema(schema)
+        assert sig.return_annotation == str
+
+
+
 
 
 

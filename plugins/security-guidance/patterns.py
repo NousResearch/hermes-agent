@@ -24,7 +24,7 @@ Forked verbatim from Anthropic's claude-plugins-official repository
 
 Modifications by NousResearch for the Hermes Agent plugin port:
   - none to the pattern data itself; this file is byte-for-byte the upstream
-    patterns.py at commit 0bde168 (2026-05-26). Hermes-side wiring lives in
+    patterns.py at commit 12a5376 (2026-05-29). Hermes-side wiring lives in
     __init__.py.
 """
 from enum import IntEnum
@@ -117,6 +117,9 @@ Only use exec() if you absolutely need shell features and the input is guarantee
     },
     {
         "ruleName": "new_function_injection",
+        # JS-only construct: gate to JS/TS files so docs/.md and other prose
+        # mentioning "new Function" don't trip the warning.
+        "path_filter": lambda p: p.endswith(_JS_EXTS),
         "substrings": ["new Function"],
         "reminder": "\u26a0\ufe0f Security Warning: Using new Function() with string interpolation is a CODE INJECTION vulnerability. If any variable is concatenated or interpolated into the function body string, an attacker controlling that variable can execute arbitrary code. Use safe alternatives: for property access use obj[key] or array.reduce((o, k) => o[k], root); for computation use a safe expression parser. NEVER interpolate untrusted strings into new Function() bodies.",
     },
@@ -130,16 +133,24 @@ Only use exec() if you absolutely need shell features and the input is guarantee
     },
     {
         "ruleName": "react_dangerously_set_html",
+        # JS/TS-only (React); gate so .md docs / .py / .go files don't trip.
+        "path_filter": lambda p: p.endswith(_JS_EXTS),
         "substrings": ["dangerouslySetInnerHTML"],
         "reminder": "⚠️ Security Warning: dangerouslySetInnerHTML can lead to XSS vulnerabilities if used with untrusted content. Ensure all content is properly sanitized using an HTML sanitizer library like DOMPurify, or use safe alternatives.",
     },
     {
         "ruleName": "document_write_xss",
+        # Browser DOM API: only meaningful in JS/TS source.
+        "path_filter": lambda p: p.endswith(_JS_EXTS),
         "substrings": ["document.write"],
         "reminder": "⚠️ Security Warning: document.write() can be exploited for XSS attacks and has performance issues. Use DOM manipulation methods like createElement() and appendChild() instead.",
     },
     {
         "ruleName": "innerHTML_xss",
+        # Browser DOM API: only meaningful in JS/TS source. Closes FPs like
+        # docs/example HTML, playground/self-contained skills that hardcode
+        # innerHTML strings with zero user input (#410).
+        "path_filter": lambda p: p.endswith(_JS_EXTS),
         "substrings": [".innerHTML =", ".innerHTML="],
         "reminder": "⚠️ Security Warning: Setting innerHTML with untrusted content can lead to XSS vulnerabilities. Use textContent for plain text or safe DOM methods for HTML content. If you need HTML support, consider using an HTML sanitizer library such as DOMPurify.",
     },
@@ -240,11 +251,15 @@ Additionally, validate user inputs:
     },
     {
         "ruleName": "outerHTML_xss",
+        # Browser DOM API: only meaningful in JS/TS source.
+        "path_filter": lambda p: p.endswith(_JS_EXTS),
         "substrings": [".outerHTML =", ".outerHTML="],
         "reminder": "⚠️ Security Warning: Use textContent or sanitize with DOMPurify. outerHTML assignment is an XSS sink equivalent to innerHTML.",
     },
     {
         "ruleName": "insertAdjacentHTML_xss",
+        # Browser DOM API: only meaningful in JS/TS source.
+        "path_filter": lambda p: p.endswith(_JS_EXTS),
         "substrings": [".insertAdjacentHTML("],
         "reminder": "⚠️ Security Warning: Use insertAdjacentText() or sanitize with DOMPurify. insertAdjacentHTML is an XSS sink.",
     },

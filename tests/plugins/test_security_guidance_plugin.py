@@ -157,6 +157,20 @@ class TestScanContent:
         )
         assert "react_dangerously_set_html" in [n for n, _ in findings]
 
+    def test_new_function_in_markdown_is_skipped(self):
+        mod = _load_plugin_init()
+        findings = mod._scan_content(
+            "/tmp/foo.md", "Avoid new Function('return x') in browser code."
+        )
+        assert "new_function_injection" not in [n for n, _ in findings]
+
+    def test_inner_html_in_markdown_is_skipped(self):
+        mod = _load_plugin_init()
+        findings = mod._scan_content(
+            "/tmp/foo.md", "Example: el.innerHTML = '<b>demo</b>'"
+        )
+        assert "innerHTML_xss" not in [n for n, _ in findings]
+
     def test_github_workflow_path_check_fires_on_path_alone(self):
         """github_actions_workflow has no regex/substring — fires on path."""
         mod = _load_plugin_init()

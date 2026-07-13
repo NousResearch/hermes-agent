@@ -738,6 +738,7 @@ All compression settings live in `config.yaml` (no environment variables).
 compression:
   enabled: true                                     # Toggle compression on/off
   threshold: 0.50                                   # Compress at this % of context limit
+  threshold_tokens: null                            # Absolute token cap (optional) — takes lower of ratio vs absolute
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
@@ -758,6 +759,8 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. It exists to break a death spiral: when API calls keep disconnecting on an oversized session, the gateway never receives token-usage data, so the token-based threshold can't fire, so the transcript keeps growing and disconnects get worse. This count-based floor fires on message count alone (always known, regardless of API failures) to force compression and recover the session. Default `5000` — far above any normal session, including large-context (1M+) models doing thousands of short turns, which compress on the token threshold long before this. Raise it further for unusual platforms, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
 
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
+
+`threshold_tokens` sets an optional **absolute token cap** for the compression trigger. When set, compression fires at the lower of the ratio-based `threshold` and this absolute count — so compression never fires later than the user's preferred token number regardless of which model is active. This solves the problem where switching between models with different context windows (e.g. 1M → 400K) shifts the absolute trigger point. The cap is clamped to the model's context length, so setting it higher than the model supports is safe — the ratio-based threshold is used instead. Default `null` (disabled — ratio-based threshold only). The cap survives model switches and fallback activations.
 
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.

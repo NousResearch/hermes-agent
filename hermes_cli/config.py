@@ -1416,6 +1416,10 @@ DEFAULT_CONFIG = {
                                       # floored at 0.75 (raise-only) so compaction
                                       # doesn't fire with half the window still free;
                                       # set this above 0.75 to override the floor.
+        "threshold_tokens": None,     # absolute token cap — when set, compression
+                                      # triggers at the lower of the ratio-based
+                                      # threshold and this token count. Clamped to
+                                      # the model's context length at apply-time.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
@@ -7990,6 +7994,14 @@ def show_config():
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        _tt = compression.get('threshold_tokens')
+        if _tt is not None:
+            try:
+                _tt = int(_tt)
+                if _tt > 0:
+                    print(f"  Token cap:    {_tt:,} tokens (takes lower of ratio vs absolute)")
+            except (TypeError, ValueError):
+                pass
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")

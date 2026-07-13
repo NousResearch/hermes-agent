@@ -1592,6 +1592,18 @@ def init_agent(
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
+    # Absolute token cap: when set, compression triggers at the lower of
+    # the ratio-based threshold and this absolute count. Clamped to the
+    # model's context length at apply-time so a cap above the window is
+    # a no-op (ratio-based threshold wins).
+    compression_threshold_tokens = _compression_cfg.get("threshold_tokens")
+    if compression_threshold_tokens is not None:
+        try:
+            compression_threshold_tokens = int(compression_threshold_tokens)
+            if compression_threshold_tokens <= 0:
+                compression_threshold_tokens = None
+        except (TypeError, ValueError):
+            compression_threshold_tokens = None
     # In-place compaction: when True, compress_context() rewrites the message
     # list + rebuilds the system prompt WITHOUT rotating the session id (no
     # parent_session_id chain, no `name #N` renumber). See #38763 and
@@ -1855,6 +1867,7 @@ def init_agent(
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
             max_tokens=agent.max_tokens,
+            threshold_tokens_cap=compression_threshold_tokens,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
@@ -2065,7 +2078,11 @@ def init_agent(
             _active_threshold_pct = getattr(
                 agent.context_compressor, "threshold_percent", compression_threshold
             )
-            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(_active_threshold_pct*100)}% = {agent.context_compressor.threshold_tokens:,})")
+            _cap_note = ""
+            _cap = getattr(agent.context_compressor, "threshold_tokens_cap", None)
+            if _cap and _cap > 0:
+                _cap_note = f" (capped at {_cap:,} tokens)"
+            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(_active_threshold_pct*100)}% = {agent.context_compressor.threshold_tokens:,}{_cap_note})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
         # Notice with the exact opt-back-out command. Printed inline at startup

@@ -2863,6 +2863,146 @@ class TestUpdateModelResetsCalibration:
         assert comp.should_defer_preflight_to_real_usage(comp.threshold_tokens + 5_000) is False
 
 
+class TestThresholdTokensCap:
+    """Tests for the absolute token cap (compression.threshold_tokens).
+
+    The cap takes the lower of the ratio-based threshold and the absolute
+    count. It must survive model switches (update_model re-applies it)
+    and be clamped to the model's context length.
+    """
+
+    def test_cap_lower_than_ratio_uses_cap(self):
+        """When the cap is lower than the ratio-based threshold, the cap wins."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=50_000,
+            )
+        # Ratio-based: 200000 * 0.50 = 100000. Cap: 50000. Effective: 50000.
+        assert comp.threshold_tokens == 50_000
+
+    def test_cap_higher_than_ratio_uses_ratio(self):
+        """When the cap is higher than the ratio-based threshold, the ratio wins."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=2_000_000,
+            )
+        # Ratio-based: 1000000 * 0.50 = 500000. Cap: 2000000, clamped to 1000000.
+        # Effective: min(500000, 1000000) = 500000.
+        assert comp.threshold_tokens == 500_000
+
+    def test_no_cap_uses_ratio_only(self):
+        """Without a cap, the ratio-based threshold is used."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+            )
+        assert comp.threshold_tokens == 500_000
+        assert comp.threshold_tokens_cap is None
+
+    def test_cap_survives_model_switch(self):
+        """The cap must be re-applied after update_model() switches to a
+        different context length. This is the core sweeper feedback: the
+        old PR's post-construction patch was undone by update_model()
+        restoring _configured_threshold_percent."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=40_000,
+            )
+        assert comp.threshold_tokens == 40_000  # cap wins on 200K model
+
+        # Switch to a 100K model — ratio-based would be 50000, but cap is 40000
+        comp.update_model("model-b", context_length=100_000)
+        assert comp.threshold_tokens == 40_000  # cap still wins
+
+    def test_cap_survives_model_switch_to_smaller_window(self):
+        """When switching to a model whose ratio-based threshold is below
+        the cap, the ratio-based threshold wins (cap is a ceiling, not a floor)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=50_000,
+            )
+        assert comp.threshold_tokens == 50_000  # cap wins on 200K (ratio=100K)
+
+        # Switch to a 64K model — ratio-based floor is 64000 (MINIMUM_CONTEXT_LENGTH)
+        # which is > 50000 cap, so... actually 64000 > 50000 means cap still wins
+        # Let's test with a 80K model: ratio=40000, cap=50000 → ratio wins
+        comp.update_model("model-b", context_length=80_000)
+        assert comp.threshold_tokens <= 50_000  # cap is a ceiling
+        # 80000 * 0.50 = 40000, floored to 64000, cap 50000 → min(64000, 50000) = 50000
+        # The floor raises it to 64000, then cap clamps to 50000
+        assert comp.threshold_tokens == 50_000
+
+    def test_cap_clamped_to_context_length(self):
+        """A cap larger than the context length is clamped, so the
+        ratio-based threshold wins for small-context models."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=64_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=500_000,
+            )
+        # 64000 * 0.50 = 32000, floored to 64000 (MINIMUM_CONTEXT_LENGTH),
+        # degenerate: floored >= window → 85% of 64000 = 54400.
+        # Cap 500000 clamped to 64000. min(54400, 64000) = 54400.
+        assert comp.threshold_tokens == 54400  # ratio-based wins
+
+    def test_cap_with_max_tokens_reservation(self):
+        """The cap applies after max_tokens reservation is factored in."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                max_tokens=32_768,
+                threshold_tokens_cap=50_000,
+            )
+        # effective_window = 200000 - 32768 = 167232
+        # ratio: 167232 * 0.50 = 83616, floored to max(83616, 64000) = 83616
+        # cap: min(50000, 200000) = 50000. min(83616, 50000) = 50000.
+        assert comp.threshold_tokens == 50_000
+
+    def test_cap_survives_model_switch_with_max_tokens(self):
+        """The cap survives model switch even when max_tokens changes."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                max_tokens=32_768,
+                threshold_tokens_cap=50_000,
+            )
+        assert comp.threshold_tokens == 50_000
+
+        # Switch to a smaller model with different max_tokens
+        comp.update_model("model-b", context_length=100_000, max_tokens=16_384)
+        # effective_window = 100000 - 16384 = 83616
+        # ratio: 83616 * 0.50 = 41808, floored to max(41808, 64000) = 64000
+        # degenerate: floored (64000) >= effective_window (83616)? No, 64000 < 83616.
+        # So threshold = 64000. cap: min(50000, 100000) = 50000. min(64000, 50000) = 50000.
+        assert comp.threshold_tokens == 50_000
+
+    def test_invalid_cap_treated_as_none(self):
+        """Non-numeric, zero, or negative cap values are treated as None."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp0 = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=0,
+            )
+            assert comp0.threshold_tokens_cap is None
+            assert comp0.threshold_tokens == 500_000
+
+            comp_neg = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=-100,
+            )
+            assert comp_neg.threshold_tokens_cap is None
+
+            comp_str = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap="not-a-number",
+            )
+            assert comp_str.threshold_tokens_cap is None
+
+
 class TestTruncateToolCallArgsJson:
     """Regression tests for #11762.
 

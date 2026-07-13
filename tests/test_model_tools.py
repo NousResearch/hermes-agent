@@ -31,13 +31,16 @@ class TestHandleFunctionCall:
         assert "totally_fake_tool_xyz" in result["error"]
 
     def test_exception_returns_json_error(self):
-        # Even if something goes wrong, should return valid JSON
+        # Even if something goes wrong, should return valid JSON with a
+        # top-level error envelope. Message wording varies (exception wrap
+        # vs structured "No web search provider configured") — only require
+        # a non-empty error string, not specific substrings.
         result = handle_function_call("web_search", None)  # None args may cause issues
         parsed = json.loads(result)
         assert isinstance(parsed, dict)
         assert "error" in parsed
+        assert isinstance(parsed["error"], str)
         assert len(parsed["error"]) > 0
-        assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
 
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (

@@ -1455,6 +1455,14 @@ Notes:
 - See OpenRouter's [Pareto Router docs](https://openrouter.ai/docs/guides/routing/routers/pareto-router) for the full router behavior.
 - To use the Pareto Code router for a specific **auxiliary task** (compression, vision, etc.) instead of the main agent, set `extra_body.plugins` under that task — see [Auxiliary Models → OpenRouter routing & Pareto Code for auxiliary tasks](/user-guide/configuration#openrouter-routing--pareto-code-for-auxiliary-tasks).
 
+## OpenRouter — Session-Pinned Prompt Caching
+
+When using OpenRouter as a provider, Hermes automatically passes the active session ID as `session_id` in the request's `extra_body`. OpenRouter pins subsequent requests in the same session to the same upstream provider endpoint, so prompt caches (e.g., Anthropic's 5-minute TTL cache and similar caches on other upstreams) actually hit across turns instead of routing to a different server and missing the cache.
+
+No configuration is needed — the session ID is added automatically when one is available, and OpenRouter ignores it for providers that don't honor sticky routing. This reduces latency and cost for multi-turn conversations without changing how you write your config.
+
+This is the OpenRouter counterpart to the `x-grok-conv-id` mechanism for xAI Grok above; together they cover prompt cache reuse on the two providers Hermes routes through most frequently.
+
 ## Fallback Providers
 
 Configure a chain of backup providers Hermes tries in order when the primary model fails (rate limits, server errors, auth failures). The canonical format is a top-level `fallback_providers:` list:

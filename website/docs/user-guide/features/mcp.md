@@ -327,10 +327,12 @@ For well-known MCP servers, `hermes mcp add` accepts a `--preset` flag that fill
 | Preset | What it wires up |
 |---|---|
 | `codex` | The Codex CLI's MCP server (`codex mcp-server` over stdio). Requires the `codex` CLI on PATH. |
+| `playwright` | Headless browser automation via [@playwright/mcp](https://github.com/microsoft/playwright-mcp). Runs `npx -y @playwright/mcp@latest --headless`. On Linux as root (VPS/Docker) adds `--no-sandbox`; falls back to Playwright bundled Chromium when no system Chrome is found on PATH. |
 
 ```bash
 # Add Codex CLI as an MCP server in one line
 hermes mcp add codex --preset codex
+hermes mcp add browser --preset playwright
 ```
 
 That writes the equivalent of:

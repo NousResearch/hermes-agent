@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+import threading
 
 import pytest
 
@@ -172,3 +174,63 @@ def test_db_path_under_hermes_home():
     # Resolves under HERMES_HOME (set by the autouse isolation fixture).
     assert pdb.projects_db_path().name == "projects.db"
     assert os.path.basename(str(pdb.projects_db_path().parent))  # non-empty parent
+
+
+def test_concurrent_first_connect_does_not_race_wal_initialization(tmp_path):
+    """Fresh stores must initialize cleanly even when desktop workers open them together."""
+    db_path = tmp_path / "projects.db"
+    barrier = threading.Barrier(12)
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            barrier.wait(timeout=5)
+            with pdb.connect_closing(db_path) as db:
+                db.execute("SELECT 1 FROM projects").fetchone()
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+
+
+def test_connect_reinitializes_replaced_database(tmp_path):
+    """Replacing projects.db in-process must not leave its schema cache stale."""
+    db_path = tmp_path / "projects.db"
+    with pdb.connect_closing(db_path):
+        pass
+
+    replacement = tmp_path / "legacy-projects.db"
+    legacy = sqlite3.connect(str(replacement))
+    try:
+        legacy.execute(
+            "CREATE TABLE projects ("
+            "id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL, "
+            "description TEXT, created_at INTEGER NOT NULL, "
+            "archived INTEGER NOT NULL DEFAULT 0)"
+        )
+        legacy.commit()
+    finally:
+        legacy.close()
+    os.replace(replacement, db_path)
+
+    with pdb.connect_closing(db_path) as db:
+        project_id = pdb.create_project(
+            db,
+            name="Recovered",
+            icon="folder",
+            color="#2f855a",
+            board_slug="work",
+            primary_path="/tmp/recovered",
+        )
+        project = pdb.get_project(db, project_id)
+
+    assert project is not None
+    assert project.icon == "folder"
+    assert project.board_slug == "work"

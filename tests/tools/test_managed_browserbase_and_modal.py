@@ -158,6 +158,7 @@ def _install_fake_tools_package():
     sys.modules["tools.approval"] = types.SimpleNamespace(
         detect_dangerous_command=lambda *args, **kwargs: None,
         check_dangerous_command=lambda *args, **kwargs: {"approved": True},
+        check_critical_command_guard=lambda *args, **kwargs: None,
         check_all_command_guards=lambda *args, **kwargs: {"approved": True},
         load_permanent_allowlist=lambda *args, **kwargs: [],
         DANGEROUS_PATTERNS=[],

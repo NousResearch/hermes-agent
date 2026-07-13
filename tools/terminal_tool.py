@@ -253,6 +253,7 @@ def _reset_cached_sudo_passwords() -> None:
 
 # Dangerous command detection + approval now consolidated in tools/approval.py
 from tools.approval import (
+    check_critical_command_guard as _check_critical_guard_impl,
     check_all_command_guards as _check_all_guards_impl,
 )
 
@@ -2270,18 +2271,29 @@ def terminal_tool(
                     "status": "error",
                 }, ensure_ascii=False)
 
-        # Pre-exec security checks (tirith + dangerous command detection)
-        # Skip check if force=True (user has confirmed they want to run it)
+        # Pre-exec security checks (tirith + dangerous command detection).
+        # Explicit confirmation may bypass ordinary approval prompts, but the
+        # catastrophic hardline floor remains unconditional.
         approval_note = None
         # True when the user explicitly approved this run (or pre-confirmed via
         # force).  Drives the clean-interrupt-slate clear before env.execute so
         # an approved command can't be SIGINT-killed by a bit that landed during
         # the approval-wait (see clear_current_thread_interrupt).
+        # Force only bypasses ordinary approval prompts. If a critical command
+        # reaches this path, route it back through the consolidated guard so it
+        # returns the standard non-bypassable block result.
+        has_host_access = _docker_has_host_access(config)
+        if (
+            force
+            and (env_type != "docker" or has_host_access)
+            and _check_critical_guard_impl(command) is not None
+        ):
+            force = False
         _approved_run = bool(force)
         if not force:
             approval = _check_all_guards(
                 command, env_type,
-                has_host_access=_docker_has_host_access(config),
+                has_host_access=has_host_access,
             )
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
@@ -2308,7 +2320,8 @@ def terminal_tool(
                     "output": "",
                     "exit_code": -1,
                     "error": approval.get("message", fallback_msg),
-                    "status": "blocked"
+                    "status": "blocked",
+                    "risk_category": approval.get("risk_category"),
                 }, ensure_ascii=False)
             # Track whether approval was explicitly granted by the user
             if approval.get("user_approved"):

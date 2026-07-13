@@ -432,14 +432,14 @@ HARDLINE_PATTERNS = [
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
     # Filesystem format
-    (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
-    (r'\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
-    (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
+    (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (r">\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b(?=(?:[^'\"]|'[^']*'|\"[^\"]*\")*$)", "redirect to raw block device"),
     # Fork bomb (classic shell form)
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system
-    (r'\bkill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
     # System shutdown / reboot — anchor to command position (start of line,
     # after a command separator, or after sudo/env wrappers) so we don't
     # false-positive on "echo reboot" or "grep 'shutdown' logs".
@@ -461,6 +461,23 @@ HARDLINE_PATTERNS_COMPILED = [
     (re.compile(pattern, _RE_FLAGS), description)
     for pattern, description in HARDLINE_PATTERNS
 ]
+
+_CRITICAL_FILESYSTEM_REASONS = {
+    "recursive delete of root filesystem",
+    "recursive delete of system directory",
+    "recursive delete of home directory",
+    "format filesystem (mkfs)",
+    "dd to raw block device",
+    "redirect to raw block device",
+}
+_CRITICAL_HOST_REASONS = {
+    "fork bomb",
+    "kill all processes",
+    "system shutdown/reboot",
+    "init 0/6 (shutdown/reboot)",
+    "systemctl poweroff/reboot",
+    "telinit 0/6 (shutdown/reboot)",
+}
 
 
 # =========================================================================
@@ -503,12 +520,10 @@ def detect_hardline_command(command: str) -> tuple:
     Returns:
         (is_hardline, description) or (False, None)
     """
-    for command_variant in _command_detection_variants(command):
-        normalized = command_variant.lower()
-        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-            if pattern_re.search(normalized):
-                return (True, description)
-    return (False, None)
+    classification = classify_command_risk(command)
+    if classification is None:
+        return (False, None)
+    return (True, classification["reason"])
 
 
 def _match_user_deny_rule(command: str) -> str | None:
@@ -558,11 +573,13 @@ def _user_deny_block_result(pattern: str) -> dict:
     }
 
 
-def _hardline_block_result(description: str) -> dict:
+def _hardline_block_result(description: str, category: str) -> dict:
     """Build the standard block result for a hardline match."""
     return {
         "approved": False,
         "hardline": True,
+        "risk_category": category,
+        "description": description,
         "message": (
             f"BLOCKED (hardline): {description}. "
             "This command is on the unconditional blocklist and cannot "
@@ -1361,24 +1378,37 @@ def _iter_shell_command_word_spans(command: str):
     for command_start in _iter_shell_command_starts(command):
         pos = command_start
         prefix_words = 0
-        skip_wrapper_options = False
         skip_next_wrapper_arg = False
+        wrapper: str | None = None
         while prefix_words < 12:
             word_start, word_end, word = _read_shell_word(command, pos)
             if word_start == word_end:
                 break
             deobfuscated = _deobfuscate_shell_word_for_detection(word)
             lower_word = deobfuscated.lower()
+            command_name = lower_word.rsplit("/", 1)[-1]
             if skip_next_wrapper_arg:
                 skip_next_wrapper_arg = False
                 pos = word_end
                 prefix_words += 1
                 continue
-            if skip_wrapper_options and lower_word.startswith("-"):
+            if wrapper and lower_word == "--":
+                pos = word_end
+                prefix_words += 1
+                continue
+            if wrapper and lower_word.startswith("-"):
                 option_name = lower_word.split("=", 1)[0]
+                options_with_arg = {
+                    "sudo": _SUDO_OPTIONS_WITH_ARG,
+                    "env": {"-C", "--chdir", "-S", "--split-string", "-u", "--unset"},
+                    "exec": {"-a"},
+                }.get(wrapper, set())
+                if wrapper == "command" and lower_word not in {"-p"}:
+                    break
+                if wrapper == "nohup":
+                    break
                 skip_next_wrapper_arg = (
-                    "=" not in lower_word
-                    and option_name in _SUDO_OPTIONS_WITH_ARG
+                    "=" not in lower_word and option_name in options_with_arg
                 )
                 pos = word_end
                 prefix_words += 1
@@ -1387,12 +1417,11 @@ def _iter_shell_command_word_spans(command: str):
             yield (word_start, word_end, word)
             prefix_words += 1
 
-            if lower_word in _COMMAND_WRAPPER_WORDS:
-                skip_wrapper_options = lower_word in {"sudo", "env"}
+            if command_name in _COMMAND_WRAPPER_WORDS:
+                wrapper = command_name
                 pos = word_end
                 continue
             if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
-                skip_wrapper_options = False
                 pos = word_end
                 continue
             break
@@ -1429,6 +1458,172 @@ def _command_detection_variants(command: str):
             continue
         seen.add(variant)
         yield variant
+
+
+_SHELL_COMMAND_NAMES = {"bash", "dash", "ksh", "sh", "zsh"}
+
+
+def _mask_quoted_shell_separators(script: str) -> str:
+    """Hide control separators that are literal data inside shell quotes."""
+    chars = list(script)
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(chars):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote is None:
+            if char in {"'", '"'}:
+                quote = char
+            continue
+        if char == quote:
+            quote = None
+        elif char in {";", "|", "&", "\n", "\r"}:
+            chars[index] = " "
+    return "".join(chars)
+
+
+def _unwrap_literal_shell_payload(word: str) -> str | None:
+    """Decode exactly one shell-word layer, preserving nested script quotes."""
+    try:
+        values = shlex.split(word, posix=True)
+    except ValueError:
+        return None
+    return values[0] if len(values) == 1 else None
+
+
+def _iter_literal_shell_payloads(command: str):
+    """Yield literal scripts passed to a shell's ``-c``-style option.
+
+    This deliberately handles only command words and literal shell arguments
+    already understood by Hermes' non-executing tokenizer. Dynamic expansion
+    is left to the existing approval scanners rather than guessed here.
+    """
+    for _word_start, word_end, word in _iter_shell_command_word_spans(command):
+        executable = _deobfuscate_shell_word_for_detection(word)
+        if executable.rsplit("/", 1)[-1].lower() not in _SHELL_COMMAND_NAMES:
+            continue
+
+        pos = word_end
+        expects_payload = False
+        option_takes_argument = False
+        while pos < len(command):
+            arg_start, arg_end, arg = _read_shell_word(command, pos)
+            if arg_start == arg_end:
+                break
+            literal = _deobfuscate_shell_word_for_detection(arg)
+            if expects_payload:
+                payload = _unwrap_literal_shell_payload(arg)
+                if payload:
+                    yield payload
+                break
+            if option_takes_argument:
+                option_takes_argument = False
+            elif literal in {"-o", "-O", "--rcfile", "--init-file"}:
+                option_takes_argument = True
+            elif literal.startswith("-") and not literal.startswith("--") and "c" in literal[1:]:
+                expects_payload = True
+            elif not literal.startswith("-"):
+                break
+            pos = arg_end
+
+
+def _iter_critical_command_variants(
+    command: str, *, _seen_sources: set[str] | None = None
+):
+    """Yield normalized critical-intent candidates without executing a shell."""
+    if _seen_sources is None:
+        _seen_sources = set()
+    literal_source = command.strip()
+    if not literal_source or literal_source in _seen_sources:
+        return
+    _seen_sources.add(literal_source)
+    seen: set[str] = set()
+    # escapes; otherwise `bash -c "echo \\"safe; reboot\\""` is flattened into
+    # syntax that looks like a second executable command.
+    literal_source = command.strip()
+    source = _normalize_command_for_detection(
+        _mask_quoted_shell_separators(literal_source)
+    ).strip()
+    normalized = source
+    for variant in (normalized,):
+        if variant not in seen:
+            seen.add(variant)
+            yield variant
+
+        # Hermes' tokenizer already identifies executable words after basic
+        # wrappers such as sudo/env/command. Normalize explicit executable paths
+        # (for example /bin/rm or ./reboot), then mark wrapped command words as
+        # command starts so command-position-aware hardline rules see them.
+        for word_start, word_end, word in _iter_shell_command_word_spans(variant):
+            command_word = _deobfuscate_shell_word_for_detection(word)
+            command_word = command_word.rsplit("/", 1)[-1] if "/" in command_word else command_word
+            effective = variant[:word_start] + command_word + variant[word_end:]
+            if effective not in seen:
+                seen.add(effective)
+                yield effective
+            if word_start <= 0:
+                continue
+            unwrapped = effective[:word_start] + "\n" + effective[word_start:]
+            if unwrapped not in seen:
+                seen.add(unwrapped)
+                yield unwrapped
+
+        # A literal script passed to `sh -c` / `bash -lc` is itself a command
+        # line. Re-run the same narrow classifier over it, with a small depth
+        # bound for nested wrappers.
+        for payload in _iter_literal_shell_payloads(literal_source):
+            payload = payload.strip()
+            if len(payload) >= len(literal_source):
+                continue
+            yield from _iter_critical_command_variants(
+                payload, _seen_sources=_seen_sources
+            )
+
+
+def classify_command_risk(command: str) -> dict | None:
+    """Classify unrecoverable shell intent using stable Hermes categories.
+
+    The classifier is intentionally small: it labels only the existing
+    unconditional hardline floor, while applying Hermes' existing shell
+    normalization plus literal wrapper handling. Ordinary dangerous commands
+    continue through the normal approval flow.
+    """
+    for command_variant in _iter_critical_command_variants(command):
+        normalized = command_variant.lower()
+        for pattern_re, reason in HARDLINE_PATTERNS_COMPILED:
+            if not pattern_re.search(normalized):
+                continue
+            if reason in _CRITICAL_FILESYSTEM_REASONS:
+                category = "critical_filesystem_destruction"
+            elif reason in _CRITICAL_HOST_REASONS:
+                category = "critical_host_disruption"
+            else:
+                category = "critical_destructive_operation"
+            return {
+                "level": "critical",
+                "category": category,
+                "reason": reason,
+            }
+    return None
+
+
+def check_critical_command_guard(command: str) -> dict | None:
+    """Return the unconditional critical-command block result, if any.
+
+    This narrow entry point is safe to call from execution paths that bypass
+    ordinary approval prompts after explicit user confirmation. Critical
+    destructive intent remains non-bypassable there.
+    """
+    critical_risk = classify_command_risk(command)
+    if critical_risk is None:
+        return None
+    description = critical_risk["reason"]
+    logger.warning("Hardline block: %s (command: %s)", description, command[:200])
+    return _hardline_block_result(description, critical_risk["category"])
 
 
 def _is_verification_artifact_cleanup(command: str) -> bool:
@@ -2355,10 +2550,9 @@ def check_dangerous_command(command: str, env_type: str,
     # unconditionally, BEFORE the yolo bypass.  Opting into yolo is
     # trusting the agent with your files and services, not trusting it
     # to wipe the disk or power the box off.
-    is_hardline, hardline_desc = detect_hardline_command(command)
-    if is_hardline:
-        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc)
+    critical_block = check_critical_command_guard(command)
+    if critical_block is not None:
+        return critical_block
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo bypass — a deny rule is the
@@ -2655,10 +2849,9 @@ def check_all_command_guards(command: str, env_type: str,
     # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
     # kill -1). Applies BEFORE yolo / mode=off / cron approve-mode so
     # no session-level setting can bypass it.
-    is_hardline, hardline_desc = detect_hardline_command(command)
-    if is_hardline:
-        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc)
+    critical_block = check_critical_command_guard(command)
+    if critical_block is not None:
+        return critical_block
 
     # == Sudo stdin guard ==
     # Like the hardline floor above, this is unconditional: there is never a

@@ -353,3 +353,112 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_sequential_blocked_call_skips_persist_and_subdir_hints():
+    """Blocked sequential calls must not persist results or run subdir discovery."""
+    agent = _make_agent("web_search", config=_hard_stop_config())
+    args = {"query": "same"}
+    _seed_exact_failures(agent, "web_search", args)
+    tc = _mock_tool_call("web_search", json.dumps(args), "c-block-persist")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    agent._subdirectory_hints = MagicMock()
+    agent._subdirectory_hints.check_tool_call.return_value = "\n[subdir hint]"
+
+    with (
+        patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc,
+        patch("agent.tool_executor.maybe_persist_tool_result") as mock_persist,
+    ):
+        mock_persist.side_effect = lambda content, **kwargs: content
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    mock_hfc.assert_not_called()
+    mock_persist.assert_not_called()
+    agent._subdirectory_hints.check_tool_call.assert_not_called()
+    assert len(messages) == 1
+    assert messages[0]["tool_call_id"] == "c-block-persist"
+    assert "repeated_exact_failure_block" in messages[0]["content"]
+    assert "[subdir hint]" not in messages[0]["content"]
+
+
+def test_concurrent_blocked_call_skips_persist_and_subdir_hints():
+    """Blocked concurrent calls must not persist results or run subdir discovery."""
+    agent = _make_agent("web_search", config=_hard_stop_config())
+    blocked_args = {"query": "blocked"}
+    allowed_args = {"query": "allowed"}
+    _seed_exact_failures(agent, "web_search", blocked_args)
+    calls = [
+        _mock_tool_call("web_search", json.dumps(blocked_args), "c-block"),
+        _mock_tool_call("web_search", json.dumps(allowed_args), "c-allow"),
+    ]
+    msg = SimpleNamespace(content="", tool_calls=calls)
+    messages = []
+    agent._subdirectory_hints = MagicMock()
+    agent._subdirectory_hints.check_tool_call.return_value = "\n[subdir hint]"
+
+    def fake_handle(name, args, task_id, **kwargs):
+        return json.dumps({"ok": args["query"]})
+
+    with (
+        patch("run_agent.handle_function_call", side_effect=fake_handle),
+        patch("agent.tool_executor.maybe_persist_tool_result") as mock_persist,
+    ):
+        mock_persist.side_effect = lambda content, **kwargs: content
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    # Only the allowed (executed) call may hit persist / subdir discovery.
+    assert mock_persist.call_count == 1
+    assert mock_persist.call_args.kwargs["tool_name"] == "web_search"
+    assert mock_persist.call_args.kwargs["tool_use_id"] == "c-allow"
+
+    assert agent._subdirectory_hints.check_tool_call.call_count == 1
+    assert agent._subdirectory_hints.check_tool_call.call_args[0][0] == "web_search"
+    assert agent._subdirectory_hints.check_tool_call.call_args[0][1] == allowed_args
+
+    assert [m["tool_call_id"] for m in messages] == ["c-block", "c-allow"]
+    assert "repeated_exact_failure_block" in messages[0]["content"]
+    assert "[subdir hint]" not in messages[0]["content"]
+    assert "[subdir hint]" in messages[1]["content"]
+
+
+def test_sequential_blocked_call_is_not_logged_as_tool_error(caplog):
+    """Intentional sequential blocks must not emit tool-error WARNINGs."""
+    import logging
+
+    agent = _make_agent("web_search", config=_hard_stop_config())
+    args = {"query": "same"}
+    _seed_exact_failures(agent, "web_search", args)
+    tc = _mock_tool_call("web_search", json.dumps(args), "c-block-log")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with (
+        patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN"),
+        caplog.at_level(logging.WARNING, logger="agent.tool_executor"),
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not any("returned error" in m for m in warning_msgs), warning_msgs
+
+
+def test_concurrent_blocked_call_is_not_logged_as_tool_error(caplog):
+    """Intentional concurrent blocks must not emit tool-error WARNINGs."""
+    import logging
+
+    agent = _make_agent("web_search", config=_hard_stop_config())
+    args = {"query": "same"}
+    _seed_exact_failures(agent, "web_search", args)
+    tc = _mock_tool_call("web_search", json.dumps(args), "c-block-log-c")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with (
+        patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN"),
+        caplog.at_level(logging.WARNING, logger="agent.tool_executor"),
+    ):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not any("returned error" in m for m in warning_msgs), warning_msgs

@@ -557,7 +557,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     results = [None] * num_tools
     for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         if block_result is not None:
-            results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
+            # Intentional block (guardrail / plugin / scope) — not a tool
+            # failure. Keep is_error=False so post-processing does not log a
+            # spurious WARNING for a synthetic blocked result.
+            results[i] = (name, args, block_result, 0.0, False, True, middleware_trace)
 
     # Touch activity before launching workers so the gateway knows
     # we're executing tools (not stuck).
@@ -943,22 +946,26 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=name,
-            tool_use_id=tc.id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
+        # Blocked calls never executed — skip persistence and subdirectory
+        # discovery so synthetic results are not written to disk and hints
+        # are not appended onto blocked JSON (which can corrupt it).
+        if not blocked:
+            function_result = maybe_persist_tool_result(
+                content=function_result,
+                tool_name=name,
+                tool_use_id=tc.id,
+                env=get_active_env(effective_task_id),
+                config=_tool_budget,
+            ) if not _is_multimodal_tool_result(function_result) else function_result
 
-        subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
-        if subdir_hints:
-            if _is_multimodal_tool_result(function_result):
-                # Append the hint to the text summary part so the model
-                # still sees it; don't touch the image blocks.
-                _append_subdir_hint_to_multimodal(function_result, subdir_hints)
-            else:
-                function_result += subdir_hints
+            subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
+            if subdir_hints:
+                if _is_multimodal_tool_result(function_result):
+                    # Append the hint to the text summary part so the model
+                    # still sees it; don't touch the image blocks.
+                    _append_subdir_hint_to_multimodal(function_result, subdir_hints)
+                else:
+                    function_result += subdir_hints
 
         # Unwrap _multimodal dicts to an OpenAI-style content list so any
         # vision-capable provider receives [{type:text},{type:image_url}]
@@ -1559,7 +1566,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
-        _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        # Intentional blocks are not tool failures — keep is_error=False so
+        # they do not emit a WARNING for a synthetic blocked result.
+        if _execution_blocked:
+            _is_error_result = False
+        else:
+            _is_error_result, _ = _detect_tool_failure(function_name, function_result)
         # The agent-runtime tools above (todo, session_search, memory,
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the
@@ -1634,21 +1646,25 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=function_name,
-            tool_use_id=tool_call.id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
+        # Blocked calls never executed — skip persistence and subdirectory
+        # discovery so synthetic results are not written to disk and hints
+        # are not appended onto blocked JSON (which can corrupt it).
+        if not _execution_blocked:
+            function_result = maybe_persist_tool_result(
+                content=function_result,
+                tool_name=function_name,
+                tool_use_id=tool_call.id,
+                env=get_active_env(effective_task_id),
+                config=_tool_budget,
+            ) if not _is_multimodal_tool_result(function_result) else function_result
 
-        # Discover subdirectory context files from tool arguments
-        subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
-        if subdir_hints:
-            if _is_multimodal_tool_result(function_result):
-                _append_subdir_hint_to_multimodal(function_result, subdir_hints)
-            else:
-                function_result += subdir_hints
+            # Discover subdirectory context files from tool arguments
+            subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
+            if subdir_hints:
+                if _is_multimodal_tool_result(function_result):
+                    _append_subdir_hint_to_multimodal(function_result, subdir_hints)
+                else:
+                    function_result += subdir_hints
 
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.

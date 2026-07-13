@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -48,6 +49,13 @@ def _make_packaged_executable(root: Path, monkeypatch, platform: str = "darwin")
     exe.parent.mkdir(parents=True)
     exe.write_text("", encoding="utf-8")
     return exe
+
+
+def _write_packaged_install_stamp(exe: Path, payload: dict[str, object]) -> None:
+    stamp_path = cli_main._desktop_packaged_install_stamp_path(exe)
+    assert stamp_path is not None
+    stamp_path.parent.mkdir(parents=True, exist_ok=True)
+    stamp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
@@ -400,6 +408,55 @@ def test_desktop_build_stamp_round_trip(tmp_path, monkeypatch):
     assert cli_main._desktop_build_needed(
         root / "apps" / "desktop", root, source_mode=False
     ) is False
+
+
+def test_desktop_build_needed_skips_when_packaged_install_identity_matches(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    (root / "package.json").write_text("{}", encoding="utf-8")
+    (root / "package-lock.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    identity = {
+        "commit": "a" * 40,
+        "branch": "main",
+        "repository": "NousResearch/hermes-agent",
+    }
+    monkeypatch.setattr(cli_main, "_current_desktop_install_identity", lambda _root: identity)
+    exe = _make_packaged_executable(root, monkeypatch)
+    _write_packaged_install_stamp(exe, identity)
+
+    cli_main._write_desktop_build_stamp(root, source_mode=False)
+
+    assert cli_main._desktop_build_needed(
+        root / "apps" / "desktop", root, source_mode=False
+    ) is False
+
+
+def test_desktop_build_needed_detects_stale_packaged_install_identity(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    (root / "package.json").write_text("{}", encoding="utf-8")
+    (root / "package-lock.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    current_identity = {
+        "commit": "b" * 40,
+        "branch": "main",
+        "repository": "NousResearch/hermes-agent",
+    }
+    monkeypatch.setattr(cli_main, "_current_desktop_install_identity", lambda _root: current_identity)
+    exe = _make_packaged_executable(root, monkeypatch)
+    _write_packaged_install_stamp(
+        exe,
+        {
+            "commit": "a" * 40,
+            "branch": "live/local-feature",
+            "repository": "OmarB97/hermes-agent",
+        },
+    )
+
+    cli_main._write_desktop_build_stamp(root, source_mode=False)
+
+    assert cli_main._desktop_build_needed(
+        root / "apps" / "desktop", root, source_mode=False
+    ) is True
 
 
 def test_compute_desktop_content_hash_works_without_gitignore(tmp_path, monkeypatch):

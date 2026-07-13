@@ -438,8 +438,9 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
             "the same tool call with the same "
             "large content. Instead, break the "
             "content into multiple smaller tool "
-            "calls (e.g. use multiple patch calls "
-            "or write smaller files). Each tool "
+            "calls (e.g. use compact bulk tools, "
+            "multiple patch calls, or smaller file "
+            "writes). Each tool "
             "call's arguments must be under ~8K "
             "tokens to avoid stream timeouts.]"
         )
@@ -456,6 +457,30 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
             "length limit. Continue exactly where you left off. Do not "
             "restart or repeat prior text. Finish the answer directly.]"
         )
+
+
+def _get_truncated_tool_call_recovery_prompt(tool_names: Optional[List[str]] = None) -> str:
+    unique_names: List[str] = []
+    for name in tool_names or []:
+        text = str(name or "").strip()
+        if text and text not in unique_names:
+            unique_names.append(text)
+
+    tool_clause = ""
+    if unique_names:
+        tool_clause = f" ({', '.join(unique_names[:3])})"
+
+    return (
+        "[System: Your previous tool call"
+        f"{tool_clause} was cut off before Hermes received valid JSON. "
+        "Do NOT retry the same oversized call. Redo the work in smaller, "
+        "completed tool calls with compact arguments. Prefer bulk/management "
+        "tools when they exist (for cron delivery changes, use "
+        "cronjob(action='bulk_update', deliver='telegram' or deliver='all') "
+        "instead of updating jobs one by one). For file edits, use patch-style "
+        "or small append/update calls rather than sending an entire large file. "
+        "Each tool call's arguments must stay under ~8K tokens.]"
+    )
 
 
 # Shared recovery hint appended to every content-policy refusal message. Both
@@ -610,6 +635,7 @@ def run_conversation(
     codex_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
+    truncated_tool_call_recovery_steers = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
@@ -1966,21 +1992,21 @@ def run_conversation(
                             _is_stub_stall = (
                                 getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
                             )
-                            if truncated_tool_call_retries < 4:
+                            if truncated_tool_call_retries < 3:
                                 truncated_tool_call_retries += 1
                                 if _is_stub_stall:
                                     # The stream broke mid tool-call (network /
                                     # peer-closed connection), not a real output
-                                    # cap — say so instead of "max output tokens".
-                                    agent._buffer_vprint(
-                                        f"⚠️  Stream interrupted mid tool-call — "
-                                        f"retrying ({truncated_tool_call_retries}/4)..."
-                                    )
+                                        # cap — say so instead of "max output tokens".
+                                        agent._buffer_vprint(
+                                            f"⚠️  Stream interrupted mid tool-call — "
+                                            f"retrying ({truncated_tool_call_retries}/3)..."
+                                        )
                                 else:
                                     agent._buffer_vprint(
                                         f"⚠️  Truncated tool call detected — "
                                         f"retrying API call "
-                                        f"({truncated_tool_call_retries}/4)..."
+                                        f"({truncated_tool_call_retries}/3)..."
                                     )
                                 # Boost max_tokens on each retry so the model has
                                 # more room to complete the tool-call JSON. A
@@ -1998,10 +2024,32 @@ def run_conversation(
                                 # just re-run the same API call from the current
                                 # message state, giving the model another chance.
                                 continue
+                            _tool_names = [
+                                getattr(getattr(tc, "function", None), "name", "")
+                                for tc in (getattr(assistant_message, "tool_calls", None) or [])
+                            ]
+                            if truncated_tool_call_recovery_steers < 1:
+                                truncated_tool_call_recovery_steers += 1
+                                truncated_tool_call_retries = 0
+                                agent._flush_status_buffer()
+                                agent._vprint(
+                                    f"{agent.log_prefix}↻ Tool call stayed too large after "
+                                    "retries — asking the model to split the work into "
+                                    "smaller tool calls.",
+                                    force=True,
+                                )
+                                messages.append({
+                                    "role": "user",
+                                    "content": _get_truncated_tool_call_recovery_prompt(_tool_names),
+                                })
+                                agent._session_messages = messages
+                                length_continue_retries = max(length_continue_retries, 1)
+                                _retry.restart_with_length_continuation = True
+                                break
                             agent._flush_status_buffer()
                             if _is_stub_stall:
                                 agent._vprint(
-                                    f"{agent.log_prefix}⚠️  Stream kept dropping mid tool-call after 4 retries — the action was not executed.",
+                                    f"{agent.log_prefix}⚠️  Stream kept dropping mid tool-call after 3 retries — the action was not executed.",
                                     force=True,
                                 )
                             else:
@@ -2023,7 +2071,13 @@ def run_conversation(
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": _final_response,
+                                "error": (
+                                    "Stream repeatedly dropped mid tool-call after a "
+                                    "chunking recovery attempt; the tool was not executed"
+                                    if _is_stub_stall
+                                    else "Tool call arguments remained too large after "
+                                    "retry and chunking recovery; the tool was not executed"
+                                ),
                             }
 
                     # If we have prior messages, roll back to last complete state
@@ -4561,9 +4615,28 @@ def run_conversation(
                         if tc.function.name in {n for n, _ in invalid_json_args}
                     )
                     if _truncated:
+                        invalid_names = [name for name, _ in invalid_json_args]
+                        if truncated_tool_call_recovery_steers < 1:
+                            truncated_tool_call_recovery_steers += 1
+                            truncated_tool_call_retries = 0
+                            agent._invalid_json_retries = 0
+                            agent._vprint(
+                                f"{agent.log_prefix}↻ Truncated tool call arguments detected "
+                                f"(finish_reason={finish_reason!r}) — requesting smaller "
+                                "tool calls instead of executing incomplete JSON.",
+                                force=True,
+                            )
+                            messages.append({
+                                "role": "user",
+                                "content": _get_truncated_tool_call_recovery_prompt(invalid_names),
+                            })
+                            agent._session_messages = messages
+                            continue
+
                         agent._vprint(
                             f"{agent.log_prefix}⚠️  Truncated tool call arguments detected "
-                            f"(finish_reason={finish_reason!r}) — refusing to execute.",
+                            f"again after chunking recovery (finish_reason={finish_reason!r}) — "
+                            "refusing to execute.",
                             force=True,
                         )
                         agent._invalid_json_retries = 0
@@ -4575,7 +4648,10 @@ def run_conversation(
                             "api_calls": api_call_count,
                             "completed": False,
                             "partial": True,
-                            "error": "Response truncated due to output length limit",
+                            "error": (
+                                "Tool call arguments remained truncated after chunking "
+                                "recovery; the tool was not executed"
+                            ),
                         }
 
                     # Track retries for invalid JSON arguments

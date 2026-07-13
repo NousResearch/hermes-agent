@@ -659,6 +659,7 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
 def cronjob(
     action: str,
     job_id: Optional[str] = None,
+    job_ids: Optional[List[str]] = None,
     prompt: Optional[str] = None,
     schedule: Optional[str] = None,
     name: Optional[str] = None,
@@ -776,6 +777,94 @@ def cronjob(
         if normalized == "list":
             jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
+
+        if normalized in {"bulk_update", "update_all"}:
+            updates: Dict[str, Any] = {}
+            if deliver is not None:
+                normalized_deliver = _normalize_deliver_param(deliver)
+                if not normalized_deliver:
+                    return tool_error("deliver cannot be empty for bulk_update", success=False)
+                updates["deliver"] = normalized_deliver
+            if not updates:
+                return tool_error(
+                    "bulk_update requires at least one supported update field "
+                    "(currently: deliver).",
+                    success=False,
+                )
+
+            target_jobs: List[Dict[str, Any]] = []
+            missing_refs: List[str] = []
+            ambiguous_refs: List[Dict[str, Any]] = []
+            if job_ids:
+                for ref in job_ids:
+                    ref_text = str(ref or "").strip()
+                    if not ref_text:
+                        continue
+                    try:
+                        resolved = resolve_job_ref(ref_text)
+                    except AmbiguousJobReference as exc:
+                        ambiguous_refs.append({
+                            "ref": ref_text,
+                            "matches": [
+                                {
+                                    "id": m["id"],
+                                    "name": m.get("name"),
+                                    "schedule": m.get("schedule_display"),
+                                    "next_run_at": m.get("next_run_at"),
+                                }
+                                for m in exc.matches
+                            ],
+                        })
+                        continue
+                    if not resolved:
+                        missing_refs.append(ref_text)
+                        continue
+                    if all(existing.get("id") != resolved.get("id") for existing in target_jobs):
+                        target_jobs.append(resolved)
+            else:
+                # A bulk delivery change should include paused/disabled jobs too:
+                # when they resume later, they should keep the user's routing intent.
+                target_jobs = list_jobs(include_disabled=True)
+
+            if ambiguous_refs:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "One or more job references were ambiguous.",
+                        "ambiguous": ambiguous_refs,
+                    },
+                    indent=2,
+                )
+            if missing_refs:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "One or more job references were not found.",
+                        "missing": missing_refs,
+                    },
+                    indent=2,
+                )
+
+            updated_jobs = [
+                _format_job(update_job(str(job["id"]), updates))
+                for job in target_jobs
+                if job.get("id")
+            ]
+            if updated_jobs:
+                _notify_provider_jobs_changed_safe()
+            return json.dumps(
+                {
+                    "success": True,
+                    "updated_count": len(updated_jobs),
+                    "deliver": updates.get("deliver"),
+                    "jobs": updated_jobs,
+                    "message": (
+                        f"Updated delivery for {len(updated_jobs)} cron job"
+                        f"{'' if len(updated_jobs) == 1 else 's'}."
+                    ),
+                },
+                indent=2,
+            )
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
@@ -974,6 +1063,8 @@ CRONJOB_SCHEMA = {
 Use action='create' to schedule a new job from a prompt or one or more skills.
 Use action='list' to inspect jobs.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
+Use action='bulk_update' with deliver='telegram' or deliver='all' to change delivery
+for every cron job in one call.
 
 To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
 
@@ -991,11 +1082,16 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, bulk_update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED. Use bulk_update with deliver='telegram' or deliver='all' to change delivery for every cron job at once."
             },
             "job_id": {
                 "type": "string",
                 "description": "Required for update/pause/resume/remove/run"
+            },
+            "job_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional for action=bulk_update. If omitted, bulk_update applies to every cron job, including paused/disabled jobs. If provided, only these job IDs or unique names are updated."
             },
             "prompt": {
                 "type": "string",
@@ -1015,7 +1111,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected."
+                "description": "Omit this parameter on create to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. For action=bulk_update, deliver is required and applies to all jobs unless job_ids is supplied. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected."
             },
             "skills": {
                 "type": "array",

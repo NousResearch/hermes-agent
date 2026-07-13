@@ -5123,7 +5123,7 @@ class TestRunConversation:
         assert result["api_calls"] == 4
         assert result["completed"] is False
 
-    def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
+    def test_length_with_tool_calls_steers_then_refuses_without_executing_tools(self, agent):
         self._setup_agent(agent)
         bad_tc = _mock_tool_call(
             name="write_file",
@@ -5143,7 +5143,7 @@ class TestRunConversation:
 
         assert result["completed"] is False
         assert result["partial"] is True
-        assert "truncated due to output length limit" in result["error"]
+        assert "Tool call arguments remained too large" in result["error"]
         mock_handle_function_call.assert_not_called()
 
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
@@ -5185,6 +5185,53 @@ class TestRunConversation:
         # Tool was executed on the retry (good_resp)
         mock_hfc.assert_called_once()
         assert result["final_response"] == "Done!"
+
+    def test_truncated_tool_call_recovers_with_chunking_steer(self, agent):
+        """If the model keeps producing oversized tool-call JSON, Hermes asks it
+        to split the work before giving up. A successful smaller call after that
+        steer should execute normally."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        truncated_resp = _mock_response(
+            content="", finish_reason="length", tool_calls=[bad_tc],
+        )
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"small chunk"}',
+            call_id="c2",
+        )
+        good_resp = _mock_response(
+            content="", finish_reason="stop", tool_calls=[good_tc],
+        )
+        final_resp = _mock_response(content="Done!", finish_reason="stop")
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.client.chat.completions.create.side_effect = [
+                truncated_resp,
+                truncated_resp,
+                truncated_resp,
+                truncated_resp,
+                good_resp,
+                final_resp,
+            ]
+            result = agent.run_conversation("write the report")
+
+        mock_hfc.assert_called_once()
+        assert result["final_response"] == "Done!"
+        second_outer_call = agent.client.chat.completions.create.call_args_list[4]
+        msgs = second_outer_call.kwargs["messages"]
+        assert "bulk_update" in msgs[-1]["content"]
+        assert "smaller" in msgs[-1]["content"]
 
     def test_stub_stall_mid_tool_call_recovers_within_3_retries(self, agent):
         """A network stream stall mid tool-call (PARTIAL_STREAM_STUB_ID) must
@@ -5230,8 +5277,7 @@ class TestRunConversation:
 
     def test_truncated_tool_args_detected_when_finish_reason_not_length(self, agent):
         """When a router rewrites finish_reason from 'length' to 'tool_calls',
-        truncated JSON arguments should still be detected and refused rather
-        than wasting 3 retry attempts."""
+        truncated JSON arguments should still be detected and never executed."""
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
         bad_tc = _mock_tool_call(
@@ -5254,7 +5300,7 @@ class TestRunConversation:
 
         assert result["completed"] is False
         assert result["partial"] is True
-        assert "truncated due to output length limit" in result["error"]
+        assert "remained truncated after chunking recovery" in result["error"]
         mock_handle_function_call.assert_not_called()
 
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):

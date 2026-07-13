@@ -67,6 +67,24 @@ def test_short_interval_is_blocked_before_execution():
     assert decision.code == "over_cadence"
 
 
+def test_daily_cron_schedule_can_satisfy_cadence_policy():
+    job = authorized_job(schedule={"kind": "cron", "expr": "0 13 * * *"})
+
+    decision = evaluate_cron_governance_policy(job)
+
+    assert decision.allow is True
+    assert decision.code == "allowed"
+
+
+def test_cron_expression_that_runs_too_frequently_is_blocked():
+    job = authorized_job(schedule={"kind": "cron", "expr": "*/5 * * * *"})
+
+    decision = evaluate_cron_governance_policy(job)
+
+    assert decision.allow is False
+    assert decision.code == "over_cadence"
+
+
 def test_nonlocal_delivery_requires_explicit_authorization():
     job = authorized_job(deliver="origin")
 

@@ -1011,7 +1011,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     needs_save = False
 
     for job in jobs:
-        if not job.get("enabled", True):
+        # OPS-1308: paused state must not run even if enabled drifted true.
+        if not job.get("enabled", True) or job.get("state") == "paused":
             continue
 
         next_run = job.get("next_run_at")

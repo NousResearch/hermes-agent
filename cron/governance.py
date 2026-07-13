@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from croniter import croniter
+
 
 @dataclass(frozen=True)
 class CronGovernanceDecision:
@@ -16,6 +18,24 @@ class CronGovernanceDecision:
 
 def _blocked(code: str, reason: str) -> CronGovernanceDecision:
     return CronGovernanceDecision(False, code, reason)
+
+
+def _schedule_period_minutes(schedule: dict[str, Any]) -> int | None:
+    """Return the recurring schedule period in whole minutes when determinable."""
+    kind = schedule.get("kind")
+    if kind == "interval":
+        minutes = schedule.get("minutes")
+        return minutes if isinstance(minutes, int) else None
+    if kind == "cron":
+        expr = schedule.get("expr")
+        if not isinstance(expr, str) or not expr.strip():
+            return None
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        iterator = croniter(expr, base)
+        first = iterator.get_next(datetime)
+        second = iterator.get_next(datetime)
+        return max(1, int((second - first).total_seconds() // 60))
+    return None
 
 
 def evaluate_cron_governance_policy(job: dict[str, Any]) -> CronGovernanceDecision:
@@ -36,10 +56,12 @@ def evaluate_cron_governance_policy(job: dict[str, Any]) -> CronGovernanceDecisi
     schedule = job.get("schedule")
     if not isinstance(minimum, int) or minimum < 1:
         return _blocked("missing_cadence_policy", "cadence minimum must be a positive integer")
-    if not isinstance(schedule, dict) or schedule.get("kind") != "interval":
-        return _blocked("unknown_cadence", "only declared interval schedules are governable")
-    minutes = schedule.get("minutes")
-    if not isinstance(minutes, int) or minutes < minimum:
+    if not isinstance(schedule, dict):
+        return _blocked("unknown_cadence", "job schedule is not governable")
+    minutes = _schedule_period_minutes(schedule)
+    if minutes is None:
+        return _blocked("unknown_cadence", "schedule period could not be determined")
+    if minutes < minimum:
         return _blocked("over_cadence", "schedule is more frequent than its policy permits")
 
     if not job.get("no_agent", False):

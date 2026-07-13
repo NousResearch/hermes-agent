@@ -988,6 +988,35 @@ class TestBaseContextSummary:
         assert "AI Self-Representation" not in formatted
         assert "AI Identity Card" in formatted
 
+    def test_formatter_uses_context_injection_from_temp_config(self, tmp_path):
+        """Resolved config flags control the provider's formatted context."""
+        import json
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text(json.dumps({
+            "contextInjection": {
+                "sessionSummary": False,
+                "aiPeerCard": False,
+            },
+        }))
+        provider = HonchoMemoryProvider()
+        provider._config = HonchoClientConfig.from_global_config(config_path=config_path)
+
+        formatted = provider._format_first_turn_context({
+            "summary": "summary",
+            "representation": "user representation",
+            "card": "user card",
+            "ai_representation": "ai representation",
+            "ai_card": "ai card",
+        })
+
+        assert "Session Summary" not in formatted
+        assert "AI Identity Card" not in formatted
+        assert "User Representation" in formatted
+        assert "User Peer Card" in formatted
+        assert "AI Self-Representation" in formatted
+
     def test_formatter_all_disabled_returns_empty_string(self):
         """If every supplied base context section is disabled, nothing is injected."""
         from plugins.memory.honcho.client import HonchoClientConfig

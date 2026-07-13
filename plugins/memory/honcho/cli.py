@@ -45,7 +45,8 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     for key in ("recallMode", "writeFrequency", "sessionStrategy",
                 "sessionPeerPrefix", "contextTokens", "dialecticReasoningLevel",
                 "dialecticDynamic", "dialecticMaxChars", "messageMaxChars",
-                "dialecticMaxInputChars", "saveMessages", "observation"):
+                "dialecticMaxInputChars", "saveMessages", "observation",
+                "contextInjection"):
         val = default_block.get(key)
         if val is not None:
             new_block[key] = val
@@ -111,7 +112,7 @@ def cmd_enable(args) -> None:
         for key in ("recallMode", "writeFrequency", "sessionStrategy",
                     "contextTokens", "dialecticReasoningLevel", "dialecticDynamic",
                     "dialecticMaxChars", "messageMaxChars", "dialecticMaxInputChars",
-                    "saveMessages", "observation"):
+                    "saveMessages", "observation", "contextInjection"):
             val = default_block.get(key)
             if val is not None and key not in block:
                 block[key] = val

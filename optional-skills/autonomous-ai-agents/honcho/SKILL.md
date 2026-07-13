@@ -54,7 +54,10 @@ hermes honcho status    # shows resolved config, connection test, peer info
 
 ### Base Context Injection
 
-When Honcho injects context into the system prompt (in `hybrid` or `context` recall modes), it assembles the base context block in this order:
+In `hybrid` or `context` recall modes, Honcho assembles the base context block
+below and appends it to the current user message only at API-call time. The
+stored conversation and system prompt are not mutated, preserving prompt-cache
+reuse.
 
 1. **Session summary** -- a short digest of the current session so far (placed first so the model has immediate conversational continuity)
 2. **User representation** -- Honcho's accumulated model of the user (preferences, facts, patterns)
@@ -88,7 +91,7 @@ keeping Honcho active:
 
 All five keys default to `true`. Host config overrides root config per key;
 unknown keys are ignored. This only controls which base-context sections are
-formatted into automatic injection. It does not disable Honcho tools, message
+formatted into automatic user-message context. It does not disable Honcho tools, message
 saving, dialectic supplements, or necessarily underlying prefetch calls. Use
 `recallMode: "tools"` when you want no automatic injection.
 
@@ -99,7 +102,7 @@ Honcho automatically selects between two prompt strategies:
 | Condition | Strategy | What happens |
 |-----------|----------|--------------|
 | No prior session or empty representation | **Cold start** | Lightweight intro prompt; skips summary injection; encourages the model to learn about the user |
-| Existing representation and/or session history | **Warm start** | Full base context injection (summary → representation → card); richer system prompt |
+| Existing representation and/or session history | **Warm start** | Full base context (summary → representation → card) appended to the API request |
 
 You do not need to configure this -- it is automatic based on session state.
 
@@ -355,8 +358,8 @@ Use AI peer targeting to build and query the agent's own self-knowledge:
 
 ### When NOT to call tools
 
-In `hybrid` and `context` modes, base context (user representation + card + session summary) is auto-injected before every turn. Do not re-fetch what was already injected. Call tools only when:
-- You need something the injected context doesn't have
+In `hybrid` and `context` modes, base context (user representation + card + session summary) is appended to the current user message at API-call time. Do not re-fetch what was already provided. Call tools only when:
+- You need something the automatic context does not include
 - The user explicitly asks you to recall or check memory
 - You're writing a conclusion about something new
 
@@ -412,7 +415,7 @@ Honcho sanitizes the `memory-context` block before injection to prevent prompt i
 - Strips XML/HTML tags from user-authored conclusions
 - Normalizes whitespace and control characters
 - Truncates individual conclusions that exceed `messageMaxChars`
-- Escapes delimiter sequences that could break the system prompt structure
+- Escapes delimiter sequences that could break the appended context structure
 
 This fix addresses edge cases where raw user conclusions containing markup or special characters could corrupt the injected context block.
 
@@ -434,7 +437,7 @@ Observation config is synced from the server on each session init. Start a new s
 Messages over `messageMaxChars` (default 25k) are automatically chunked with `[continued]` markers. If you're hitting this often, check if tool results or skill content is inflating message size.
 
 ### Context injection too large
-If you see warnings about context budget exceeded, lower `contextTokens` or reduce `dialecticDepth`. The session summary is trimmed first when the budget is tight.
+If context is too large, lower `contextTokens` or reduce `dialecticDepth`. The assembled context makes a best-effort cut at a nearby word boundary, but hard-cuts when none is found near the budget; no individual section is preserved preferentially.
 
 ### Session summary missing
 Session summary requires at least one prior turn in the current Honcho session. On cold start (new session, no history), the summary is omitted and Honcho uses the cold-start prompt strategy instead.

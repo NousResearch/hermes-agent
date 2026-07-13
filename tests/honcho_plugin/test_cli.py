@@ -154,3 +154,55 @@ class TestCmdStatus:
         out = capsys.readouterr().out
         assert "FAILED (Invalid API key)" in out
         assert "Connection... OK" not in out
+
+
+class TestProfileContextInjectionInheritance:
+    def test_clone_inherits_context_injection(self, monkeypatch):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg = {
+            "apiKey": "test-key",
+            "hosts": {
+                "hermes": {
+                    "contextInjection": {
+                        "sessionSummary": False,
+                        "aiPeerCard": False,
+                    },
+                },
+            },
+        }
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
+        monkeypatch.setattr(honcho_cli, "_write_config", lambda written: None)
+        monkeypatch.setattr(honcho_cli, "_ensure_peer_exists", lambda host: True)
+
+        assert honcho_cli.clone_honcho_for_profile("coder") is True
+        assert cfg["hosts"]["hermes.coder"]["contextInjection"] == {
+            "sessionSummary": False,
+            "aiPeerCard": False,
+        }
+
+    def test_enable_inherits_context_injection_for_new_profile_block(self, monkeypatch):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg = {
+            "hosts": {
+                "hermes": {
+                    "contextInjection": {
+                        "userRepresentation": False,
+                        "aiRepresentation": False,
+                    },
+                },
+            },
+        }
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes.coder")
+        monkeypatch.setattr(honcho_cli, "_write_config", lambda written: None)
+        monkeypatch.setattr(honcho_cli, "_ensure_peer_exists", lambda host: True)
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: "honcho.json")
+
+        honcho_cli.cmd_enable(SimpleNamespace())
+
+        assert cfg["hosts"]["hermes.coder"]["contextInjection"] == {
+            "userRepresentation": False,
+            "aiRepresentation": False,
+        }

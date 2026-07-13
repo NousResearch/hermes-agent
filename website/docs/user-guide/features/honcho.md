@@ -54,12 +54,16 @@ Get an API key at [honcho.dev](https://honcho.dev).
 
 ### Two-Layer Context Injection
 
-Every turn (in `hybrid` or `context` mode), Honcho assembles two layers of context injected into the system prompt:
+Every turn (in `hybrid` or `context` mode), Honcho assembles two layers of
+context that are appended to the current user message only at API-call time.
+The stored conversation and system prompt are not mutated, preserving
+prompt-cache reuse:
 
 1. **Base context** — session summary, user representation, user peer card, AI self-representation, and AI identity card. Refreshed on `contextCadence`. This is the "who is this user" layer.
 2. **Dialectic supplement** — LLM-synthesized reasoning about the user's current state and needs. Refreshed on `dialecticCadence`. This is the "what matters right now" layer.
 
-Both layers are concatenated and truncated to the `contextTokens` budget (if set).
+Both layers are concatenated and truncated to the `contextTokens` budget (if set)
+before being appended to the API request.
 
 ### Cold/Warm Prompt Selection
 
@@ -110,14 +114,15 @@ Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `contextTokens` | `null` (uncapped) | Token budget for auto-injected context per turn. Set to an integer (e.g. 1200) to cap. Truncates at word boundaries |
+| `contextTokens` | `null` (uncapped) | Token budget for automatic context per turn. Set to an integer (e.g. 1200) to cap. Makes a best-effort cut at a nearby word boundary, otherwise hard-cuts |
+| `contextInjection` | all `true` | Per-section controls for formatted base-context injection: `sessionSummary`, `userRepresentation`, `userPeerCard`, `aiRepresentation`, `aiPeerCard` |
 | `contextCadence` | `1` | Minimum turns between `context()` API calls (base layer refresh) |
 | `dialecticCadence` | `2` | Minimum turns between `peer.chat()` LLM calls (dialectic layer). Recommended 1–5. In `tools` mode, irrelevant — model calls explicitly |
 | `dialecticDepth` | `1` | Number of `.chat()` passes per dialectic invocation. Clamped to 1–3 |
 | `dialecticDepthLevels` | `null` | Optional array of reasoning levels per pass, e.g. `["minimal", "low", "medium"]`. Overrides proportional defaults |
 | `dialecticReasoningLevel` | `'low'` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |
 | `dialecticDynamic` | `true` | When `true`, model can override reasoning level per-call via tool param |
-| `dialecticMaxChars` | `600` | Max chars of dialectic result injected into system prompt |
+| `dialecticMaxChars` | `600` | Max chars of dialectic result appended to the API request |
 | `recallMode` | `'hybrid'` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
 | `writeFrequency` | `'async'` | When to flush messages: `async` (background thread), `turn` (sync), `session` (batch on end), or integer N |
 | `saveMessages` | `true` | Whether to persist messages to Honcho API |
@@ -133,9 +138,32 @@ Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho
 - `global` — single session across all directories.
 
 **Recall mode** controls how memory flows into conversations:
-- `hybrid` — context auto-injected into system prompt AND tools available (model decides when to query).
+- `hybrid` — context appended to the current user message at API-call time AND tools available (model decides when to query).
 - `context` — auto-injection only, tools hidden.
 - `tools` — tools only, no auto-injection. Agent must explicitly call `honcho_reasoning`, `honcho_search`, etc.
+
+**Context injection sections** can be disabled individually without disabling
+Honcho, its tools, message saving, or dialectic supplements. All sections default
+to `true`; host-level values override root-level values per key. Enabled sections
+are appended to the current user message at API-call time. For example:
+
+```json
+{
+  "contextInjection": {
+    "aiRepresentation": false,
+    "aiPeerCard": false
+  },
+  "hosts": {
+    "hermes.coder": {
+      "contextInjection": {
+        "sessionSummary": false
+      }
+    }
+  }
+}
+```
+
+Use `recallMode: "tools"` to disable automatic injection entirely.
 
 **Settings per recall mode:**
 

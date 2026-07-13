@@ -1,4 +1,4 @@
-"""Regression guard for #4466: DISCORD_ALLOW_BOTS works without DISCORD_ALLOWED_USERS.
+"""Regression guards for Discord bot authorisation.
 
 The bug had two sequential gates both rejecting bot messages:
 
@@ -9,8 +9,8 @@ The bug had two sequential gates both rejecting bot messages:
   Gate 2 — `_is_user_authorized` in gateway/run.py rejected bots at the
   gateway level even if they somehow reached that layer.
 
-These tests assert both gates now pass a bot message through when
-DISCORD_ALLOW_BOTS permits it AND no user allowlist entry exists.
+These tests assert both gates now require the bot policy and the exact
+Discord bot-ID allowlist while keeping the human allowlist separate.
 """
 
 from types import SimpleNamespace
@@ -28,6 +28,7 @@ def _isolate_discord_env(monkeypatch):
     """
     for var in (
         "DISCORD_ALLOW_BOTS",
+        "DISCORD_ALLOWED_BOT_IDS",
         "DISCORD_ALLOWED_USERS",
         "DISCORD_ALLOWED_ROLES",
         "DISCORD_ALLOW_ALL_USERS",
@@ -80,29 +81,45 @@ def _make_discord_human_source(user_id: str = "100200300"):
     )
 
 
-def test_discord_bot_authorized_when_allow_bots_mentions(monkeypatch):
-    """DISCORD_ALLOW_BOTS=mentions must authorize a bot sender even when
-    DISCORD_ALLOWED_USERS is set and the bot's ID is NOT in it.
-
-    This is the exact scenario from #4466 — a Cloudflare Worker webhook
-    posts Notion events to Discord, the Hermes bot gets @mentioned, and
-    the webhook's bot ID is not (and shouldn't be) on the human
-    allowlist.
-    """
+def test_discord_bot_rejected_without_exact_bot_allowlist(monkeypatch):
+    """The broad mode alone must not bypass the exact Discord bot-ID gate."""
     runner = _make_bare_runner()
 
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")  # human-only allowlist
 
     source = _make_discord_bot_source(bot_id="999888777")
+    assert runner._is_user_authorized(source) is False
+
+
+def test_discord_bot_authorized_when_exact_bot_id_is_listed(monkeypatch):
+    runner = _make_bare_runner()
+
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_IDS", "111222333, 999888777")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+
+    source = _make_discord_bot_source(bot_id="999888777")
     assert runner._is_user_authorized(source) is True
 
 
+def test_discord_bot_rejected_when_exact_bot_id_is_not_listed(monkeypatch):
+    runner = _make_bare_runner()
+
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_IDS", "111222333")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "999888777")
+
+    source = _make_discord_bot_source(bot_id="999888777")
+    assert runner._is_user_authorized(source) is False
+
+
 def test_discord_bot_authorized_when_allow_bots_all(monkeypatch):
-    """DISCORD_ALLOW_BOTS=all is a superset of =mentions — should also bypass."""
+    """The exact ID gate also applies when the broad mode is ``all``."""
     runner = _make_bare_runner()
 
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_IDS", "999888777")
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
 
     source = _make_discord_bot_source()

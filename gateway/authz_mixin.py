@@ -21,6 +21,7 @@ import os
 from typing import Optional
 
 from gateway.config import Platform
+from gateway.platforms.helpers import parse_numeric_id_allowlist
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
@@ -357,6 +358,15 @@ class GatewayAuthorizationMixin:
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
             if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+                # Discord requires an exact bot user-ID match in addition to the
+                # broad mode. This gate deliberately runs before the human
+                # allowlist: putting a bot ID in DISCORD_ALLOWED_USERS must not
+                # bypass the bot-specific allowlist.
+                if source.platform == Platform.DISCORD:
+                    raw_allowed_bot_ids = os.getenv("DISCORD_ALLOWED_BOT_IDS", "").strip()
+                    allowed_bot_ids = parse_numeric_id_allowlist(raw_allowed_bot_ids)
+                    if not user_id or str(user_id) not in allowed_bot_ids:
+                        return False
                 return True
 
         if not user_id:

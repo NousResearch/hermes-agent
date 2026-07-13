@@ -675,6 +675,76 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("DISCORD_BOTS_REQUIRE_INLINE_MENTION") == "true"
 
+    def test_bridges_discord_bot_id_allowlist_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  allow_bots: mentions\n"
+            "  allowed_bot_ids:\n"
+            "    - \"111222333\"\n"
+            "    - \"999888777\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+        monkeypatch.delenv("DISCORD_ALLOWED_BOT_IDS", raising=False)
+
+        try:
+            load_gateway_config()
+
+            assert os.environ.get("DISCORD_ALLOW_BOTS") == "mentions"
+            assert os.environ.get("DISCORD_ALLOWED_BOT_IDS") == "111222333,999888777"
+        finally:
+            # The plugin config bridge writes directly to os.environ, so remove
+            # its values before pytest moves on to tests that assert defaults.
+            os.environ.pop("DISCORD_ALLOW_BOTS", None)
+            os.environ.pop("DISCORD_ALLOWED_BOT_IDS", None)
+
+    def test_discord_bot_policy_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  allow_bots: all\n"
+            "  allowed_bot_ids:\n"
+            "    - \"111222333\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+        monkeypatch.setenv("DISCORD_ALLOWED_BOT_IDS", "999888777")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_ALLOW_BOTS") == "mentions"
+        assert os.environ.get("DISCORD_ALLOWED_BOT_IDS") == "999888777"
+
+    def test_discord_bot_policy_yaml_does_not_overwrite_explicit_empty_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  allow_bots: all\n"
+            "  allowed_bot_ids:\n"
+            "    - \"111222333\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_ALLOW_BOTS", "")
+        monkeypatch.setenv("DISCORD_ALLOWED_BOT_IDS", "")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_ALLOW_BOTS") == ""
+        assert os.environ.get("DISCORD_ALLOWED_BOT_IDS") == ""
+
     def test_bots_require_inline_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
         """Explicit env var should win over config.yaml for inline bot mention gating."""
         hermes_home = tmp_path / ".hermes"

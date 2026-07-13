@@ -302,7 +302,9 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
         channel/scope ids where ``require_mention`` is waived — same scope
         vocabulary the connector's δ scope grants + ε floor use).
       - ``allowOtherBots``     ← ``{PLATFORM}_ALLOW_BOTS`` in {"mentions","all"}
-        (whether bot-authored messages are admitted; default off).
+        for platforms whose full bot policy fits this broad flag. Discord is
+        always projected as ``False`` because its exact-ID allowlist and
+        mentions/all distinction cannot be represented by the relay contract.
 
     Read from the relay platform's config block (the platform the connector
     fronts, e.g. ``discord:``), falling back to the bridged top-level keys, then
@@ -346,16 +348,20 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
     except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
         pass
 
-    # allow_other_bots ← {PLATFORM}_ALLOW_BOTS in {"mentions","all"} (same gate as
-    # the gateway's own authz_mixin DISCORD_ALLOW_BOTS bypass).
+    # Discord bot relay is deliberately fail-closed. The connector's generic
+    # policy can carry only a broad boolean, not DISCORD_ALLOWED_BOT_IDS or the
+    # mentions/all distinction. Direct Discord intake still supports exact bot
+    # IDs; relayed Discord bot input remains off until the wire contract can
+    # preserve both controls end to end.
     allow_bots_env = os.environ.get(f"{platform.upper()}_ALLOW_BOTS", "").lower().strip()
-    allow_other_bots = allow_bots_env in {"mentions", "all"}
+    allow_other_bots = platform != "discord" and allow_bots_env in {"mentions", "all"}
 
     require_address = bool(require_mention) if require_mention is not None else False
 
-    # Nothing non-default to declare ⇒ let the connector keep its quiet default
-    # (matches absence-of-row semantics on the connector side).
-    if not require_address and not free_response and not allow_other_bots:
+    # Non-Discord platforms can omit an all-default row. Discord must actively
+    # send allowOtherBots=false so an older permissive connector policy cannot
+    # survive an upgrade as stale state.
+    if platform != "discord" and not require_address and not free_response and not allow_other_bots:
         return None
 
     return {

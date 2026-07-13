@@ -26,6 +26,8 @@ def _clean_env(monkeypatch):
         "GATEWAY_RELAY_PLATFORMS",
         "GATEWAY_RELAY_BOT_IDS",
         "DISCORD_ALLOW_BOTS",
+        "DISCORD_ALLOWED_BOT_IDS",
+        "SLACK_ALLOW_BOTS",
     ):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {}, raising=False)
@@ -51,15 +53,27 @@ def test_projection_maps_require_mention_and_free_response(monkeypatch):
     }
 
 
-def test_projection_allow_other_bots_from_env(monkeypatch):
+def test_projection_discord_refuses_other_bots_even_when_enabled_locally(monkeypatch):
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_IDS", "123456789012345678")
     monkeypatch.setattr(
         "gateway.run._load_gateway_config",
         lambda: {"discord": {"require_mention": True}},
         raising=False,
     )
     pol = relay.relay_relevance_policy()
+    assert pol is not None and pol["allowOtherBots"] is False
+
+
+def test_projection_non_discord_platform_preserves_allow_other_bots(monkeypatch):
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"slack": {"require_mention": True}},
+        raising=False,
+    )
+    pol = relay.relay_relevance_policy("slack")
     assert pol is not None and pol["allowOtherBots"] is True
 
 
@@ -85,12 +99,22 @@ def test_projection_falls_back_to_top_level_require_mention(monkeypatch):
     assert pol is not None and pol["requireAddress"] is True
 
 
-def test_projection_none_when_all_default(monkeypatch):
-    # No require_mention, no free-response, no allow-bots ⇒ nothing to declare
-    # (the connector's quiet default already matches).
+def test_projection_discord_declares_fail_closed_default(monkeypatch):
+    # Discord must actively overwrite a stale connector policy that once
+    # allowed bots, even when every local relevance knob is now at default.
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"discord": {}}, raising=False)
-    assert relay.relay_relevance_policy() is None
+    assert relay.relay_relevance_policy() == {
+        "platform": "discord",
+        "requireAddress": False,
+        "freeResponseScopes": [],
+        "allowOtherBots": False,
+    }
+
+
+def test_projection_none_when_non_discord_all_default(monkeypatch):
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"slack": {}}, raising=False)
+    assert relay.relay_relevance_policy("slack") is None
 
 
 def test_projection_none_when_platform_unresolved(monkeypatch):
@@ -152,13 +176,18 @@ def test_send_skips_when_no_secret(monkeypatch):
     assert called["n"] == 0  # never attempted without a secret to auth with
 
 
-def test_send_skips_when_nothing_to_declare(monkeypatch):
+def test_send_posts_discord_fail_closed_default(monkeypatch):
     _arm(monkeypatch)
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"discord": {}}, raising=False)
-    called = {"n": 0}
-    monkeypatch.setattr(relay, "_post_policy", lambda **k: called.__setitem__("n", called["n"] + 1) or 200)
-    assert relay.send_relay_policy() is False
-    assert called["n"] == 0  # no redundant write of the default
+    captured = {}
+
+    def _fake_post(**kwargs):
+        captured.update(kwargs)
+        return 200
+
+    monkeypatch.setattr(relay, "_post_policy", _fake_post)
+    assert relay.send_relay_policy() is True
+    assert captured["policy"]["allowOtherBots"] is False
 
 
 def test_send_fail_soft_on_transport_error(monkeypatch):

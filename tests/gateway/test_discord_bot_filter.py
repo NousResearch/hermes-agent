@@ -71,6 +71,7 @@ class TestDiscordBotFilter(unittest.TestCase):
         allow_bots="none",
         client_user=None,
         bots_require_inline_mention=False,
+        allowed_bot_ids=(),
     ):
         """Simulate the on_message filter logic and return whether message was accepted."""
         # Replicate the exact filter logic from discord.py on_message
@@ -79,9 +80,11 @@ class TestDiscordBotFilter(unittest.TestCase):
 
         if getattr(message.author, "bot", False):
             allow = allow_bots.lower().strip()
-            if allow == "none":
+            if allow not in {"mentions", "all"}:
                 return False
-            elif allow == "mentions":
+            if str(message.author.id) not in {str(bot_id) for bot_id in allowed_bot_ids}:
+                return False
+            if allow == "mentions":
                 if not self._self_is_explicitly_mentioned(message, client_user):
                     return False
             if (
@@ -113,32 +116,43 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot)
         self.assertFalse(self._run_filter(msg, "none"))
 
-    def test_allow_bots_all_accepts_bots(self):
-        """With allow_bots=all, all bot messages are accepted."""
+    def test_allow_bots_all_accepts_exactly_listed_bot(self):
+        """With allow_bots=all, an exactly listed bot is accepted."""
         bot = _make_author(bot=True)
         msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "all"))
+        self.assertTrue(self._run_filter(msg, "all", allowed_bot_ids={bot.id}))
+
+    def test_allow_bots_all_rejects_bot_without_exact_allowlist(self):
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot)
+        self.assertFalse(self._run_filter(msg, "all"))
 
     def test_allow_bots_mentions_rejects_without_mention(self):
         """With allow_bots=mentions, bot messages without @mention are rejected."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, mentions=[])
-        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+        self.assertFalse(
+            self._run_filter(msg, "mentions", our_user, allowed_bot_ids={bot.id})
+        )
 
     def test_allow_bots_mentions_accepts_with_mention(self):
-        """With allow_bots=mentions, bot messages with @mention are accepted."""
+        """With allow_bots=mentions, listed bot messages with @mention are accepted."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, mentions=[our_user])
-        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+        self.assertTrue(
+            self._run_filter(msg, "mentions", our_user, allowed_bot_ids={bot.id})
+        )
 
     def test_allow_bots_mentions_accepts_with_raw_content_mention(self):
         """Raw <@!ID> mention counts even when message.mentions is empty."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, content=f"<@!{our_user.id}> relay", mentions=[])
-        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+        self.assertTrue(
+            self._run_filter(msg, "mentions", our_user, allowed_bot_ids={bot.id})
+        )
 
     def test_inline_mention_requirement_off_preserves_reply_ping_behavior(self):
         """Default behavior: resolved reply-ping mentions still admit bot messages."""
@@ -152,6 +166,7 @@ class TestDiscordBotFilter(unittest.TestCase):
                 "all",
                 our_user,
                 bots_require_inline_mention=False,
+                allowed_bot_ids={bot.id},
             )
         )
 
@@ -167,6 +182,7 @@ class TestDiscordBotFilter(unittest.TestCase):
                 "all",
                 our_user,
                 bots_require_inline_mention=True,
+                allowed_bot_ids={bot.id},
             )
         )
 
@@ -186,6 +202,7 @@ class TestDiscordBotFilter(unittest.TestCase):
                 "all",
                 our_user,
                 bots_require_inline_mention=True,
+                allowed_bot_ids={bot.id},
             )
         )
 
@@ -213,8 +230,8 @@ class TestDiscordBotFilter(unittest.TestCase):
         """Allow_bots value should be case-insensitive."""
         bot = _make_author(bot=True)
         msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "ALL"))
-        self.assertTrue(self._run_filter(msg, "All"))
+        self.assertTrue(self._run_filter(msg, "ALL", allowed_bot_ids={bot.id}))
+        self.assertTrue(self._run_filter(msg, "All", allowed_bot_ids={bot.id}))
         self.assertFalse(self._run_filter(msg, "NONE"))
         self.assertFalse(self._run_filter(msg, "None"))
 

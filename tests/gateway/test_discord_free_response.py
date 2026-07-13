@@ -116,6 +116,7 @@ def adapter(monkeypatch):
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
         "DISCORD_ALLOW_BOTS",
+        "DISCORD_ALLOWED_BOT_IDS",
     ):
         monkeypatch.delenv(_var, raising=False)
 
@@ -140,6 +141,72 @@ def make_message(*, channel, content: str, mentions=None, msg_type=None):
         author=author,
         type=msg_type if msg_type is not None else discord_platform.discord.MessageType.default,
     )
+
+
+def test_bot_message_allowed_when_author_id_is_listed(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_IDS", "55, 77")
+    message = make_message(
+        channel=FakeTextChannel(),
+        content="<@999> wake up",
+        mentions=[adapter._client.user],
+    )
+    message.author = SimpleNamespace(id=55, bot=True)
+
+    assert adapter._discord_bot_message_is_allowed(message) is True
+
+
+def test_bot_message_rejected_when_author_id_is_not_listed(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_IDS", "77")
+    message = make_message(
+        channel=FakeTextChannel(),
+        content="<@999> wake up",
+        mentions=[adapter._client.user],
+    )
+    message.author = SimpleNamespace(id=55, bot=True)
+
+    assert adapter._discord_bot_message_is_allowed(message) is False
+
+
+def test_bot_message_rejected_when_exact_allowlist_is_empty(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    message = make_message(
+        channel=FakeTextChannel(),
+        content="<@999> wake up",
+        mentions=[adapter._client.user],
+    )
+    message.author = SimpleNamespace(id=55, bot=True)
+
+    assert adapter._discord_bot_message_is_allowed(message) is False
+
+
+def test_bot_message_rejected_for_unknown_allow_bots_mode(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "unexpected")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_IDS", "55")
+    message = make_message(
+        channel=FakeTextChannel(),
+        content="<@999> wake up",
+        mentions=[adapter._client.user],
+    )
+    message.author = SimpleNamespace(id=55, bot=True)
+
+    assert adapter._discord_bot_message_is_allowed(message) is False
+
+
+def test_bot_id_env_override_takes_precedence_over_adapter_config(adapter, monkeypatch):
+    adapter.config.extra["allow_bots"] = "all"
+    adapter.config.extra["allowed_bot_ids"] = ["77"]
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_IDS", "55")
+    message = make_message(
+        channel=FakeTextChannel(),
+        content="<@999> wake up",
+        mentions=[adapter._client.user],
+    )
+    message.author = SimpleNamespace(id=55, bot=True)
+
+    assert adapter._discord_bot_message_is_allowed(message) is True
 
 
 def make_history_message(
@@ -778,7 +845,7 @@ async def test_discord_thread_require_mention_via_config_extra(adapter, monkeypa
 @pytest.mark.asyncio
 async def test_fetch_channel_context_stops_at_self_message_and_reverses_to_chronological_order(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
-    adapter.config.extra["history_backfill_limit"] = 10
+    adapter.config.extra.update(history_backfill_limit=10, allowed_bot_ids=["55"])
 
     other_bot = SimpleNamespace(id=55, display_name="Gemini", name="Gemini", bot=True)
     human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
@@ -807,7 +874,7 @@ async def test_fetch_channel_context_stops_at_self_message_and_reverses_to_chron
 async def test_fetch_channel_context_skips_self_improvement_boundary_message(adapter, monkeypatch):
     """Delayed harness status bumps must not hide messages after the real reply."""
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
-    adapter.config.extra["history_backfill_limit"] = 10
+    adapter.config.extra.update(history_backfill_limit=10, allowed_bot_ids=["55"])
 
     codex = SimpleNamespace(id=55, display_name="Codex", name="Codex", bot=True)
     human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
@@ -966,6 +1033,31 @@ async def test_fetch_channel_context_skips_other_bots_when_allow_bots_none(adapt
     assert result == "[Recent channel messages]\n[Alice] human note"
 
 
+@pytest.mark.asyncio
+async def test_fetch_channel_context_skips_bot_outside_exact_allowlist(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_IDS", "77")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    unlisted_bot = SimpleNamespace(id=55, display_name="Gemini", name="Gemini", bot=True)
+    listed_bot = SimpleNamespace(id=77, display_name="Relay", name="Relay", bot=True)
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=listed_bot, content="trusted bot note", msg_id=3),
+            make_history_message(author=unlisted_bot, content="untrusted bot note", msg_id=2),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(
+        channel,
+        before=make_message(channel=channel, content="trigger"),
+    )
+
+    assert "trusted bot note" in result
+    assert "untrusted bot note" not in result
+
+
 # ---------------------------------------------------------------------------
 # TestChannelContextUnverifiedTagging
 # ---------------------------------------------------------------------------
@@ -1074,9 +1166,9 @@ class TestChannelContextUnverifiedTagging:
     async def test_bot_senders_bypass_auth_check(self, adapter, monkeypatch):
         """Bot messages are never tagged — the auth check is for human
         senders relative to the user allowlist, and bots are already gated
-        by DISCORD_ALLOW_BOTS."""
+        by DISCORD_ALLOW_BOTS and DISCORD_ALLOWED_BOT_IDS."""
         monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
-        adapter.config.extra["history_backfill_limit"] = 10
+        adapter.config.extra.update(history_backfill_limit=10, allowed_bot_ids=["58"])
         other_bot = SimpleNamespace(id=58, display_name="Gemini", name="Gemini", bot=True)
         channel = FakeHistoryChannel(
             [make_history_message(author=other_bot, content="bot note", msg_id=1)],
@@ -1211,7 +1303,7 @@ async def test_fetch_channel_context_cache_uses_latest_window_when_after_set(ada
     response, otherwise tool traces can crowd out the final answer.
     """
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
-    adapter.config.extra["history_backfill_limit"] = 3
+    adapter.config.extra.update(history_backfill_limit=3, allowed_bot_ids=["56"])
 
     codex = SimpleNamespace(id=56, display_name="Codex", name="Codex", bot=True)
     human = SimpleNamespace(id=57, display_name="Alice", name="Alice", bot=False)

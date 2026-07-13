@@ -192,6 +192,84 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("allowed_bot_ids", "author_id", "should_handle"),
+    [
+        ("not-a-snowflake", "not-a-snowflake", False),
+        ("bad-id, 123456789", "123456789", True),
+    ],
+)
+async def test_production_on_message_enforces_exact_numeric_bot_id(
+    monkeypatch,
+    allowed_bot_ids,
+    author_id,
+    should_handle,
+):
+    """The registered intake handler must use the fail-closed exact-ID predicate."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_IDS", allowed_bot_ids)
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(
+        message_content=False,
+        dm_messages=False,
+        guild_messages=False,
+        members=False,
+        voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        created["bot"] = FakeBot(intents=intents, allowed_mentions=allowed_mentions)
+        created["bot"].user.bot = True
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    handle_message = AsyncMock()
+    monkeypatch.setattr(adapter, "_handle_message", handle_message)
+
+    assert await adapter.connect() is True
+    try:
+        bot = created["bot"]
+        channel = SimpleNamespace(
+            id=123,
+            name="wake-bridge",
+            guild=SimpleNamespace(id=456, name="Hermes Server"),
+            parent_id=None,
+        )
+        message = SimpleNamespace(
+            id=789,
+            type=getattr(discord_platform.discord, "MessageType").default,
+            author=SimpleNamespace(
+                id=author_id,
+                bot=True,
+                name="RelayBot",
+                display_name="RelayBot",
+            ),
+            channel=channel,
+            guild=channel.guild,
+            content=f"<@{bot.user.id}> wake",
+            mentions=[bot.user],
+        )
+
+        await bot._events["on_message"](message)
+
+        if should_handle:
+            handle_message.assert_awaited_once()
+        else:
+            handle_message.assert_not_awaited()
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "initial_allowed",
     [
         {"*"},

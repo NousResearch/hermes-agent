@@ -264,7 +264,38 @@ You can run `hermes gateway` in the background or as a systemd service for persi
 
 ## Configuration Reference
 
-Discord behavior is controlled through two files: **`~/.hermes/.env`** for credentials and env-level toggles, and **`~/.hermes/config.yaml`** for structured settings. Environment variables always take precedence over config.yaml values when both are set.
+Put Discord behaviour in **`~/.hermes/config.yaml`**. Use
+**`~/.hermes/.env`** for the bot token and legacy environment overrides only.
+An explicit environment override takes precedence over the equivalent YAML key.
+
+### Bot input policy (`config.yaml`)
+
+`discord.allow_bots` controls whether Hermes accepts bot-authored messages:
+`"none"` (default), `"mentions"`, or `"all"`. Both enabled modes also require
+the author's exact ASCII numeric Discord user ID in `discord.allowed_bot_ids`.
+Malformed, empty, or missing IDs are ignored, and an empty resulting list rejects
+every bot. Human authorisation and `discord.require_mention` behaviour are
+unchanged.
+
+```yaml
+discord:
+  allow_bots: "mentions"
+  allowed_bot_ids:
+    - "123456789012345678"  # trusted wake bot user ID
+```
+
+:::caution Breaking upgrade requirement
+Existing installations using `discord.allow_bots: "mentions"` or `"all"` must
+now also configure `discord.allowed_bot_ids`. Without an exact numeric ID list,
+all bot-authored Discord messages are intentionally rejected.
+:::
+
+:::warning Bot-to-bot conversation is not supported
+This setting is for narrowly accepting input from a trusted wake or webhook bot,
+not for connecting auto-replying Hermes profiles. Discord bot-authored events
+delivered through the generic upstream relay remain disabled because the relay
+contract cannot express the exact-ID and per-message mention policy.
+:::
 
 ### Environment Variables (`.env`)
 
@@ -283,7 +314,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
-| `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
+| `DISCORD_ALLOW_BOTS` | No | `"none"` | Legacy environment override for `discord.allow_bots`. Configure bot-input mode and exact IDs under `discord:` in `config.yaml`; see below. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
@@ -301,15 +332,10 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | No | `0.6` | Grace window the adapter waits before flushing a queued text chunk. Useful for smoothing streamed output. |
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `2.0` | Delay between split chunks when a single message exceeds Discord's length limit. |
 
-:::warning Bot-to-bot conversation is not supported
-`DISCORD_ALLOW_BOTS` exists to accept input from a specific trusted bot (e.g. a relay or webhook bot), not to let two Hermes profiles talk to each other. The default, `"none"`, ignores all other bots and is the safe setting.
-
-Wiring multiple Hermes profiles to reply to one another in a shared channel — by setting `"mentions"` or `"all"` across several profiles — is an unsupported topology. Discord auto-`@mentions` the replied-to author on every reply, so under `"mentions"` two bots will satisfy each other's mention gate indefinitely and ack-loop. There is no circuit breaker for this because the supported configuration is simply to leave `DISCORD_ALLOW_BOTS` at `"none"`. If you must accept a particular bot, scope the acceptance narrowly and never to another auto-replying agent.
-:::
-
 ### Config File (`config.yaml`)
 
-The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Config.yaml settings are applied as defaults — if the equivalent env var is already set, the env var wins.
+The `discord` section in `~/.hermes/config.yaml` contains structured behaviour
+settings. If a legacy equivalent environment override is already set, it wins.
 
 ```yaml
 # Discord-specific settings
@@ -318,6 +344,9 @@ discord:
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
+  allow_bots: "none"              # "none", "mentions", or "all"
+  allowed_bot_ids: []             # Required exact IDs when allow_bots is enabled
+  bots_require_inline_mention: false # Require a literal inline @mention from bots
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading

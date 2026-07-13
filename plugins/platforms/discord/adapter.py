@@ -106,7 +106,12 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
+from gateway.platforms.helpers import (
+    MessageDeduplicator,
+    ThreadParticipationTracker,
+    convert_table_to_bullets,
+    parse_numeric_id_allowlist,
+)
 from utils import atomic_json_write, env_float, env_int
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -1128,19 +1133,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 _role_authorized = False
                 if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
+                    if not adapter_self._discord_bot_message_is_allowed(message):
                         return
-                    elif allow_bots == "mentions":
-                        if not self._self_is_explicitly_mentioned(message):
-                            return
-                    if (
-                        self._discord_bots_require_inline_mention()
-                        and not self._self_is_raw_mentioned(message)
-                    ):
-                        return
-                    # "all" falls through; bot is permitted — skip the
-                    # human-user allowlist below (bots aren't in it).
+                    # Permitted bots skip the human-user allowlist below (bots
+                    # are intentionally scoped by the bot policy instead).
                 else:
                     # Non-bot: enforce the configured user/role allowlists.
                     # Pass guild + is_dm so role checks are scoped to the
@@ -4900,6 +4896,41 @@ class DiscordAdapter(BasePlatformAdapter):
             "on",
         }
 
+    def _discord_allow_bots_mode(self) -> str:
+        """Return the validated bot-input mode with env taking precedence."""
+        configured = os.getenv("DISCORD_ALLOW_BOTS")
+        if configured is None:
+            configured = self.config.extra.get("allow_bots", "none")
+        mode = str(configured or "none").lower().strip()
+        return mode if mode in {"mentions", "all"} else "none"
+
+    def _discord_allowed_bot_ids(self) -> set[str]:
+        """Return the exact bot-ID allowlist with env taking precedence."""
+        configured = os.getenv("DISCORD_ALLOWED_BOT_IDS")
+        if configured is None:
+            configured = self.config.extra.get("allowed_bot_ids", ())
+        return parse_numeric_id_allowlist(configured)
+
+    def _discord_bot_message_is_allowed(self, message: Any) -> bool:
+        """Require both an enabled bot mode and an exact Discord bot-ID match."""
+        allow_bots = self._discord_allow_bots_mode()
+        if allow_bots == "none":
+            return False
+
+        allowed_bot_ids = self._discord_allowed_bot_ids()
+        author_id = str(getattr(message.author, "id", ""))
+        if not author_id or author_id not in allowed_bot_ids:
+            return False
+
+        if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
+            return False
+        if (
+            self._discord_bots_require_inline_mention()
+            and not self._self_is_raw_mentioned(message)
+        ):
+            return False
+        return True
+
     def _discord_channel_keys(self, message: Any, parent_channel_id: Optional[str] = None) -> set[str]:
         """Return channel identifiers accepted by Discord channel config gates.
 
@@ -5024,8 +5055,8 @@ class DiscordAdapter(BasePlatformAdapter):
             return ""
 
         # Determine which bot messages to include in context
-        allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-        include_other_bots = allow_bots_raw != "none"
+        include_other_bots = self._discord_allow_bots_mode() != "none"
+        allowed_bot_ids = self._discord_allowed_bot_ids()
 
         # Use the in-memory cache to narrow the fetch window on hot paths.
         # If we know our last message ID in this channel, pass it as `after`
@@ -5071,7 +5102,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 if (
                     is_bot_author
                     and msg.author != self._client.user
-                    and not include_other_bots
+                    and (
+                        not include_other_bots
+                        or str(getattr(msg.author, "id", "")) not in allowed_bot_ids
+                    )
                 ):
                     return None
                 if not content and msg.attachments:
@@ -8254,6 +8288,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
     ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``,
+    ``DISCORD_ALLOW_BOTS``, ``DISCORD_ALLOWED_BOT_IDS``,
     ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
     Rather than rewrite ~50 call sites inside the adapter to read from
     ``PlatformConfig.extra`` instead, this hook keeps the existing
@@ -8269,6 +8304,13 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
     if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
+    if "allow_bots" in discord_cfg and "DISCORD_ALLOW_BOTS" not in os.environ:
+        os.environ["DISCORD_ALLOW_BOTS"] = str(discord_cfg["allow_bots"]).lower()
+    allowed_bot_ids = discord_cfg.get("allowed_bot_ids")
+    if allowed_bot_ids is not None and "DISCORD_ALLOWED_BOT_IDS" not in os.environ:
+        if isinstance(allowed_bot_ids, list):
+            allowed_bot_ids = ",".join(str(value) for value in allowed_bot_ids)
+        os.environ["DISCORD_ALLOWED_BOT_IDS"] = str(allowed_bot_ids)
     if "bots_require_inline_mention" in discord_cfg and not os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION"):
         os.environ["DISCORD_BOTS_REQUIRE_INLINE_MENTION"] = str(discord_cfg["bots_require_inline_mention"]).lower()
     platforms_cfg = yaml_cfg.get("platforms")

@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
 from utils import atomic_json_write
 
@@ -19,6 +19,20 @@ if TYPE_CHECKING:
     from gateway.platforms.base import MessageEvent
 
 logger = logging.getLogger(__name__)
+
+
+def parse_numeric_id_allowlist(value: Any) -> set[str]:
+    """Parse comma-separated or iterable ASCII numeric IDs, dropping malformed values."""
+    if isinstance(value, (list, tuple, set, frozenset)):
+        values = value
+    else:
+        values = str(value or "").split(",")
+    parsed: set[str] = set()
+    for raw_value in values:
+        candidate = str(raw_value).strip()
+        if candidate and candidate.isascii() and candidate.isdigit():
+            parsed.add(candidate)
+    return parsed
 
 
 # ─── Message Deduplication ────────────────────────────────────────────────────

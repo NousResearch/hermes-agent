@@ -512,7 +512,7 @@ def cmd_mcp_add(args):
     print(color(f"  Connecting to '{name}'...", Colors.CYAN))
 
     try:
-        tools = _probe_single_server(name, server_config)
+        tools = _probe_single_server(name, server_config, connect_timeout=600)
     except Exception as exc:
         _error(f"Failed to connect: {exc}")
         if _confirm("Save config anyway (you can test later)?", default=False):

@@ -650,19 +650,18 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     # We just need to poll for the result.
     handler_cls, result = _make_callback_handler()
 
-    # Start a temporary server on the known port
+    # Start a temporary server on the known port.  The MCP SDK may have
+    # already started its own callback server on the same port — if so,
+    # we just poll for the result without creating a second one.
+    server = None
     try:
         server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
+        server_thread = threading.Thread(target=server.handle_request, daemon=True)
+        server_thread.start()
     except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — could not bind callback port. "
-            "Complete the authorization in a browser first, then retry."
-        )
-
-    server_thread = threading.Thread(target=server.handle_request, daemon=True)
-    server_thread.start()
+        # Port already in use — the server from the MCP SDK is running.
+        # Fall back to polling: the SDK's server will handle the callback.
+        pass
 
     # Optional paste-fallback thread: only on interactive TTYs. Reads one
     # line from stdin and writes the parsed code/state into the shared
@@ -692,7 +691,8 @@ async def _wait_for_callback() -> tuple[str, str | None]:
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
     finally:
-        server.server_close()
+        if server is not None:
+            server.server_close()
 
     if result["error"] == _USER_SKIPPED_SENTINEL:
         raise OAuthNonInteractiveError("user_skipped")

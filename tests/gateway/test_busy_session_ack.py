@@ -61,6 +61,7 @@ def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
     runner._running_agents_ts = {}
+    runner._active_turn_message_ids = {}
     runner._pending_messages = {}
     runner._busy_ack_ts = {}
     runner._draining = False
@@ -121,6 +122,99 @@ class TestBusySessionAck:
         assert adapter._pending_messages[sk] is event
         assert sk not in runner._pending_messages
         running_agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_hybrid_steers_only_edit_of_active_root(self, monkeypatch):
+        import gateway.run as gateway_run
+
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "hybrid"
+        adapter = _make_adapter()
+        event = _make_event(text="corrected requirement")
+        event.metadata["is_edit"] = True
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        runner._active_turn_message_ids[sk] = "msg1"
+        agent = MagicMock()
+        agent.steer.return_value = True
+        runner._running_agents[sk] = agent
+
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+        agent.steer.assert_called_once_with("corrected requirement")
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_hybrid_queues_new_message_and_unrelated_edit(self):
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "hybrid"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+        runner._active_turn_message_ids[sk] = "root"
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        new_message = MessageEvent(
+            text="next task",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="next",
+        )
+        old_edit = MessageEvent(
+            text="edited old task",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="old",
+            metadata={"is_edit": True},
+        )
+
+        await runner._handle_active_session_busy_message(new_message, sk)
+        await runner._handle_active_session_busy_message(old_edit, sk)
+        agent.steer.assert_not_called()
+        agent.interrupt.assert_not_called()
+        assert adapter._pending_messages[sk] is new_message
+        assert runner._queued_events[sk] == [old_edit]
+
+    def test_hybrid_edit_replaces_matching_queued_event(self):
+        runner, _sentinel = _make_runner()
+        runner._queued_events = {}
+        adapter = _make_adapter()
+        event = _make_event(text="queued original")
+        event.source.platform = Platform.TELEGRAM
+        event.message_id = "queued-id"
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        runner._queue_or_replace_pending_event(sk, event)
+
+        edited = _make_event(text="queued corrected")
+        edited.source = event.source
+        edited.message_id = "queued-id"
+        edited.metadata["is_edit"] = True
+        runner._queue_or_replace_pending_event(sk, edited)
+
+        assert adapter._pending_messages[sk] is edited
+        assert runner._queue_depth(sk, adapter=adapter) == 1
+
+    def test_hybrid_mode_loads_from_config(self, monkeypatch):
+        import gateway.run as gateway_run
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
+        monkeypatch.setattr(
+            gateway_run,
+            "_load_gateway_runtime_config",
+            lambda: {"display": {"busy_input_mode": "hybrid"}},
+        )
+        assert gateway_run.GatewayRunner._load_busy_input_mode() == "hybrid"
+        assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
 
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):

@@ -7831,9 +7831,13 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
-        await self._ensure_forum_commands(update.message)
+        await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        event.metadata["is_edit"] = bool(
+            getattr(update, "edited_message", None) is msg
+            or getattr(update, "edited_channel_post", None) is msg
+        )
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
@@ -7943,7 +7947,13 @@ class TelegramAdapter(BasePlatformAdapter):
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
-        if existing is None:
+        replaces_pending_edit = (
+            existing is not None
+            and bool(event.metadata.get("is_edit"))
+            and event.message_id is not None
+            and str(existing.message_id) == str(event.message_id)
+        )
+        if existing is None or replaces_pending_edit:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:

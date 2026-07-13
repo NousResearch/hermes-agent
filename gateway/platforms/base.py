@@ -1800,11 +1800,10 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
-    # Free-form per-event metadata.  Adapters may set platform-specific
-    # signals here (e.g. WhatsApp sets ``whatsapp_from_owner=True`` when
-    # the bridge is configured to forward owner-typed messages).  Plugins
-    # consume via ``event.metadata.get(...)`` and must not rely on any
-    # particular key existing.
+    # Free-form per-event metadata. ``is_edit=True`` is the generic adapter
+    # contract for an edit of an existing platform message; ``message_id``
+    # identifies the edited message. Adapters may also set platform-specific
+    # signals. Consumers must not assume optional keys exist.
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     # Timestamps

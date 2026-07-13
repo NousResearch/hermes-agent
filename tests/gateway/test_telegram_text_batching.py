@@ -7,7 +7,7 @@ from the same session and aggregate them before dispatching.
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -59,6 +59,50 @@ def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
 
 
 class TestTextBatching:
+    @pytest.mark.asyncio
+    async def test_edit_replaces_pending_text_batch_instead_of_appending(self):
+        adapter = _make_adapter()
+        original = _make_event("draft task")
+        original.message_id = "77"
+        edited = _make_event("corrected task")
+        edited.message_id = "77"
+        edited.metadata["is_edit"] = True
+
+        adapter._enqueue_text_event(original)
+        adapter._enqueue_text_event(edited)
+
+        pending = next(iter(adapter._pending_text_batches.values()))
+        assert pending is edited
+        assert pending.text == "corrected task"
+        task = next(iter(adapter._pending_text_batch_tasks.values()))
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_text_handler_marks_telegram_edit_metadata(self):
+        adapter = _make_adapter()
+        adapter._is_user_authorized_from_message = lambda message: True
+        adapter._should_process_message = lambda message, *, is_command=False: True
+        adapter._ensure_forum_commands = AsyncMock()
+        adapter._cache_replied_media = AsyncMock()
+        adapter._apply_telegram_group_observe_attribution = lambda event: event
+        adapter._enqueue_text_event = MagicMock()
+        message = SimpleNamespace(text="corrected task")
+        update = SimpleNamespace(
+            update_id=9,
+            effective_message=message,
+            message=None,
+            edited_message=message,
+            edited_channel_post=None,
+        )
+        built = _make_event("corrected task")
+        adapter._build_message_event = lambda *_args, **_kwargs: built
+        adapter._clean_bot_trigger_text = lambda text: text
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        assert built.metadata["is_edit"] is True
+
     @pytest.mark.asyncio
     async def test_single_message_dispatched_after_delay(self):
         adapter = _make_adapter()

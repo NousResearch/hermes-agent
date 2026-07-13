@@ -2838,6 +2838,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
+    _active_turn_message_ids: Dict[str, str] = {}
     _busy_input_mode: str = "interrupt"
     _busy_text_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
@@ -2887,6 +2888,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
+        self._active_turn_message_ids: Dict[str, str] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -4443,10 +4445,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return "restarting" if self._restart_requested else "shutting down"
 
     def _queue_during_drain_enabled(self) -> bool:
-        # Both "queue" and "steer" modes imply the user doesn't want messages
-        # to be lost during restart — queue them for the newly-spawned gateway
-        # process to pick up.  "interrupt" mode drops them (current behaviour).
-        return self._restart_requested and self._busy_input_mode in {"queue", "steer"}
+        # Non-interrupt modes preserve messages for the replacement gateway.
+        return self._restart_requested and self._busy_input_mode in {"queue", "steer", "hybrid"}
 
     # -------- /queue FIFO helpers --------------------------------------
     # /queue must produce one full agent turn per invocation, in FIFO
@@ -4993,7 +4993,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @staticmethod
     def _load_busy_input_mode() -> str:
-        """Load gateway drain-time busy-input behavior from config/env."""
+        """Load gateway busy-input behavior from config/env."""
         mode = os.getenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "").strip().lower()
         if not mode:
             cfg = _load_gateway_runtime_config()
@@ -5002,6 +5002,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "queue"
         if mode == "steer":
             return "steer"
+        if mode == "hybrid":
+            return "hybrid"
         return "interrupt"
 
     @staticmethod
@@ -5026,7 +5028,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "queue"
         # No explicit legacy knob → follow busy_input_mode.
         input_mode = GatewayRunner._load_busy_input_mode()
-        return "queue" if input_mode == "queue" else "interrupt"
+        return "queue" if input_mode in {"queue", "hybrid"} else "interrupt"
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -5351,6 +5353,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter = self._adapter_for_source(event.source)
         if not adapter:
             return
+        if bool(event.metadata.get("is_edit")) and event.message_id is not None:
+            message_id = str(event.message_id)
+            pending_slot = getattr(adapter, "_pending_messages", None)
+            if isinstance(pending_slot, dict):
+                pending = pending_slot.get(session_key)
+                if pending is not None and str(getattr(pending, "message_id", "")) == message_id:
+                    pending_slot[session_key] = event
+                    return
+            overflow = (getattr(self, "_queued_events", None) or {}).get(session_key, [])
+            for index, pending in enumerate(overflow):
+                if str(getattr(pending, "message_id", "")) == message_id:
+                    overflow[index] = event
+                    return
         # #28503 — Previously this called ``merge_pending_message_event``
         # with the default ``merge_text=False``, which silently OVERWROTE
         # the single pending slot when consecutive text messages arrived
@@ -5532,7 +5547,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
-            and effective_mode != "steer"
+            and effective_mode not in {"steer", "hybrid"}
         ):
             return False
 
@@ -5570,6 +5585,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
             )
             effective_mode = "queue"
+        active_message_id = self._active_turn_message_ids.get(session_key)
+        if effective_mode == "hybrid":
+            is_active_root_edit = (
+                bool(event.metadata.get("is_edit"))
+                and active_message_id is not None
+                and str(event.message_id or "") == active_message_id
+            )
+            effective_mode = "steer" if is_active_root_edit else "queue"
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
@@ -10438,6 +10461,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._active_session_leases = {}
             self._active_session_leases[_quick_key] = _active_session_lease
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
+        if event.message_id is not None:
+            self._active_turn_message_ids[_quick_key] = str(event.message_id)
         self._running_agents_ts[_quick_key] = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
@@ -16366,6 +16391,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Failed to release active session slot", exc_info=True)
         self._running_agents.pop(session_key, None)
         self._running_agents_ts.pop(session_key, None)
+        self._active_turn_message_ids.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
         # Turn boundary: a running-agent slot was just released.  Persist the

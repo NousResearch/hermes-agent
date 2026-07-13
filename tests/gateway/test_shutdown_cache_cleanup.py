@@ -60,6 +60,12 @@ class _FakeGateway:
         # there's never in-flight cron work to report.
         return 0
 
+    def _active_api_run_count(self):
+        # stop() reads this alongside _active_cron_job_count when logging the
+        # drain snapshot (#63529) -- this fake has no api_server runs, so
+        # there's never in-flight api work to report.
+        return 0
+
     def _update_runtime_status(self, *_a, **_kw):
         pass
 

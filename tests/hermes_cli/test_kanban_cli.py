@@ -452,6 +452,13 @@ def test_run_slash_specify_end_to_end(kanban_home, monkeypatch):
     covers both surfaces."""
     from unittest.mock import MagicMock
 
+    # The legacy auxiliary specifier is fail-off by design. This test covers
+    # its explicitly opted-in compatibility path.
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  auxiliary_planning_enabled: true\n",
+        encoding="utf-8",
+    )
+
     # Create a triage task via the same slash surface.
     create_out = kc.run_slash("create 'rough idea' --triage")
     import re

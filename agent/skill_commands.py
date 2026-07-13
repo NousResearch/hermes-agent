@@ -306,6 +306,27 @@ def _build_skill_message(
             f"(e.g. `node {skill_dir}/scripts/foo.js`)."
         )
 
+    related_available = loaded_skill.get("related_skills_available")
+    if not isinstance(related_available, list):
+        fallback_related = loaded_skill.get("related_skills")
+        related_available = fallback_related if isinstance(fallback_related, list) else []
+    related_missing = loaded_skill.get("related_skills_missing")
+    if not isinstance(related_missing, list):
+        related_missing = []
+
+    if related_available:
+        parts.append("")
+        parts.append("[Related skills that may be relevant for this task:]")
+        for related in related_available:
+            parts.append(f'- {related} (load with skill_view(name="{related}"))')
+
+    if related_missing:
+        parts.append("")
+        parts.append(
+            "[This skill declares related_skills that are not currently available:] "
+            + ", ".join(related_missing)
+        )
+
     if user_instruction:
         parts.append("")
         parts.append(f"The user has provided the following instruction alongside the skill invocation: {user_instruction}")

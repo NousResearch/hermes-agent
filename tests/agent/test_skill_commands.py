@@ -653,6 +653,46 @@ Generate some audio.
         assert msg is not None
         assert 'file_path="<path>"' in msg
 
+    def test_includes_related_skill_hints(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "reuse-helper")
+            _make_skill(
+                tmp_path,
+                "test-skill",
+                frontmatter_extra="related_skills: [reuse-helper, missing-helper]\n",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/test-skill", "do stuff")
+
+        assert msg is not None
+        assert "Related skills that may be relevant for this task" in msg
+        assert 'skill_view(name="reuse-helper")' in msg
+        assert "missing-helper" in msg
+
+    def test_includes_related_environment_gated_skill_hint(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("agent.skill_utils._detect_environment", lambda env: False)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "kanban-helper",
+                frontmatter_extra="environments: [kanban]\n",
+            )
+            _make_skill(
+                tmp_path,
+                "test-skill",
+                frontmatter_extra="related_skills: [kanban-helper]\n",
+            )
+            scanned = scan_skill_commands()
+            msg = build_skill_invocation_message("/test-skill", "do stuff")
+
+        assert "/kanban-helper" not in scanned
+        assert msg is not None
+        assert 'skill_view(name="kanban-helper")' in msg
+        assert "not currently available" not in msg
+
 
 class TestSkillDirectoryHeader:
     """The activation message must expose the absolute skill directory and

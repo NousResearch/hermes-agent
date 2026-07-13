@@ -486,6 +486,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        requested_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -562,6 +563,7 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            requested_provider=requested_provider,
         )
 
     def _get_session_db_for_recall(self):
@@ -1212,6 +1214,22 @@ class AIAgent:
             return False
         return hostname == "api.githubcopilot.com" or hostname.endswith(".githubcopilot.com")
 
+    def _effective_provider_config_id(self) -> str:
+        """Return the provider ID to use for per-provider config lookups.
+
+        When the runtime provider is ``"custom"`` (a named custom provider),
+        the agent's ``provider`` field holds the generic category.  This method
+        returns the *requested* provider (e.g. ``"custom:sub2api-openai"``)
+        which the timeout helpers can use to find the named provider's
+        ``providers.<name>`` config block.  Falls back to ``self.provider``
+        when no requested provider is recorded.
+        """
+        if self.provider == "custom":
+            requested = getattr(self, "_requested_provider", "")
+            if requested:
+                return requested
+        return self.provider
+
     def _resolved_api_call_timeout(self) -> float:
         """Resolve the effective per-call request timeout in seconds.
 
@@ -1227,7 +1245,8 @@ class AIAgent:
         passed as a per-call ``timeout=`` kwarg, overriding the client-level
         timeout the AIAgent.__init__ path configured.
         """
-        cfg = get_provider_request_timeout(self.provider, self.model)
+        provider_id = self._effective_provider_config_id()
+        cfg = get_provider_request_timeout(provider_id, self.model)
         if cfg is not None:
             return cfg
         return env_float("HERMES_API_TIMEOUT", 1800.0)
@@ -1250,7 +1269,8 @@ class AIAgent:
         explicitly configured a stale timeout, such as auto-disabling the
         detector for local endpoints.
         """
-        cfg = get_provider_stale_timeout(self.provider, self.model)
+        provider_id = self._effective_provider_config_id()
+        cfg = get_provider_stale_timeout(provider_id, self.model)
         if cfg is not None:
             return cfg, False
 

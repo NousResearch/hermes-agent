@@ -346,6 +346,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    requested_provider: str = None,
 ):
     """
     Initialize the AI Agent.
@@ -434,6 +435,7 @@ def init_agent(
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
+    agent._requested_provider = requested_provider or ""
     if credential_pool is not None:
         try:
             from agent.credential_pool import credential_pool_matches_provider
@@ -761,8 +763,15 @@ def init_agent(
     # Resolve per-provider / per-model request timeout once up front so
     # every client construction path below (Anthropic native, OpenAI-wire,
     # router-based implicit auth) can apply it consistently.  Bedrock
-    # Claude uses its own timeout path and is not covered here.
-    _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
+    # Claude uses its own timeout path and is not covered here.  When the
+    # caller passes ``requested_provider`` (gateway / runtime-resolution
+    # path), use it as the config-provider ID so named custom provider
+    # entries such as ``providers.sub2api-openai.request_timeout_seconds``
+    # are honored instead of falling back to the generic ``custom`` key
+    # (fixes #34001).  Direct-CLI callers without ``requested_provider``
+    # keep the legacy ``agent.provider`` lookup.
+    _init_provider_id = str(getattr(agent, "_requested_provider", "") or "").strip() or str(agent.provider or "")
+    _provider_timeout = get_provider_request_timeout(_init_provider_id, agent.model)
 
     if agent.api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token

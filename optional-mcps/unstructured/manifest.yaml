@@ -49,7 +49,9 @@ post_install: |
   On first connection, Hermes opens a browser to authenticate with Unstructured
   (OAuth 2.1) — sign in with your Unstructured account. Transform includes a
   free tier (15,000 pages/month), so no special approval is needed to start.
-  Tokens are cached under ~/.hermes/mcp-tokens/ and refreshed automatically.
+  Tokens are cached under your active Hermes home (HERMES_HOME/mcp-tokens/,
+  which is ~/.hermes/mcp-tokens/ on the default profile) and refreshed
+  automatically.
 
   Two things to know because auth happens on first connect:
     - The install-time tool probe often runs BEFORE you've completed OAuth, so

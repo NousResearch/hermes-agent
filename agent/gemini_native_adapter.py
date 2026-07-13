@@ -694,6 +694,26 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 sort_keys=True,
             )
             slot = tool_call_indices.get(call_key)
+            # Distinct parallel calls to the SAME tool collide on the same
+            # call_key: each arrives in its own SSE event with part_index=0,
+            # the same name, and (usually) no thoughtSignature. Without this
+            # guard the second call's arguments get appended to the first
+            # slot, producing concatenated JSON ('{"a":1}{"b":2}') that fails
+            # to parse downstream — the loop then stamps the turn with
+            # finish_reason='length' and gives up after retries with a
+            # misleading "Response truncated due to output length limit".
+            # If the existing slot already holds complete arguments and the
+            # new args_str is neither identical (re-send dedup) nor an
+            # extension (incremental streaming), treat it as a NEW call:
+            # walk a "#next" key chain until we find a compatible or empty
+            # slot.
+            while slot is not None:
+                prev_args = str(slot.get("last_arguments") or "")
+                if prev_args and args_str != prev_args and not args_str.startswith(prev_args):
+                    call_key += "#next"
+                    slot = tool_call_indices.get(call_key)
+                else:
+                    break
             if slot is None:
                 slot = {
                     "index": len(tool_call_indices),

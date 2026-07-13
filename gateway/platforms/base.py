@@ -34,6 +34,7 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
+_SESSION_CANCEL_TIMEOUT_SECONDS = 5.0
 
 
 def _platform_name(platform) -> str:
@@ -4472,19 +4473,30 @@ class BasePlatformAdapter(ABC):
         guard = interrupt_event or asyncio.Event()
         self._active_sessions[session_key] = guard
 
-        task = asyncio.create_task(self._process_message_background(event, session_key))
-        self._session_tasks[session_key] = task
+        coroutine = self._process_message_background(event, session_key)
         try:
-            self._background_tasks.add(task)
-        except TypeError:
-            # Tests stub create_task() with lightweight sentinels that are not
-            # hashable and do not support lifecycle callbacks.
-            self._session_tasks.pop(session_key, None)
+            task = asyncio.create_task(coroutine)
+        except Exception:
+            coroutine.close()
+            self._release_session_guard(session_key, guard=guard)
+            raise
+        if not isinstance(task, asyncio.Task):
+            coroutine.close()
             self._release_session_guard(session_key, guard=guard)
             return False
-        if hasattr(task, "add_done_callback"):
+        self._session_tasks[session_key] = task
+        self._background_tasks.add(task)
+        try:
             task.add_done_callback(self._background_tasks.discard)
             task.add_done_callback(self._expected_cancelled_tasks.discard)
+        except Exception:
+            task.cancel()
+            if self._session_tasks.get(session_key) is task:
+                self._session_tasks.pop(session_key, None)
+            self._background_tasks.discard(task)
+            self._expected_cancelled_tasks.discard(task)
+            self._release_session_guard(session_key, guard=guard)
+            raise
         return True
 
     async def cancel_session_processing(
@@ -4493,7 +4505,7 @@ class BasePlatformAdapter(ABC):
         *,
         release_guard: bool = True,
         discard_pending: bool = True,
-    ) -> None:
+    ) -> bool:
         """Cancel in-flight processing for a single session.
 
         ``release_guard=False`` keeps the adapter-level session guard in place
@@ -4506,24 +4518,37 @@ class BasePlatformAdapter(ABC):
         asyncio where the event loop's cancellation-propagation semantics
         differ subtly from a bare ``asyncio.run`` harness.
         """
-        task = self._session_tasks.pop(session_key, None)
+        task = self._session_tasks.get(session_key)
         if task is not None and not task.done():
+            def _drop_finished_owner(done_task: asyncio.Task) -> None:
+                if self._session_tasks.get(session_key) is done_task:
+                    self._session_tasks.pop(session_key, None)
+
+            task.add_done_callback(_drop_finished_owner)
             logger.debug(
                 "[%s] Cancelling active processing for session %s",
                 self.name,
                 session_key,
             )
             self._expected_cancelled_tasks.add(task)
-            task.cancel()
+            cancelling = getattr(task, "cancelling", None)
+            if not callable(cancelling) or cancelling() == 0:
+                task.cancel()
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+                await asyncio.wait_for(
+                    asyncio.shield(task),
+                    timeout=_SESSION_CANCEL_TIMEOUT_SECONDS,
+                )
             except asyncio.CancelledError:
-                pass
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
+                # The shielded owner itself completed as cancelled.
             except asyncio.TimeoutError:
                 logger.warning(
-                    "[%s] Cancelled task for %s did not exit within 5s; "
-                    "unblocking dispatch and letting the task unwind in the background",
-                    self.name, session_key,
+                    "[%s] Cancelled task for %s did not exit within %.1fs; "
+                    "keeping the session guard until owner unwind completes",
+                    self.name, session_key, _SESSION_CANCEL_TIMEOUT_SECONDS,
                 )
             except Exception:
                 logger.debug(
@@ -4532,11 +4557,18 @@ class BasePlatformAdapter(ABC):
                     session_key,
                     exc_info=True,
                 )
+            if not task.done():
+                return False
+            if self._session_tasks.get(session_key) is task:
+                self._session_tasks.pop(session_key, None)
+        elif task is not None and self._session_tasks.get(session_key) is task:
+            self._session_tasks.pop(session_key, None)
         if discard_pending:
             self._pending_messages.pop(session_key, None)
             self._discard_text_debounce(session_key)
         if release_guard:
             self._release_session_guard(session_key)
+        return True
 
     async def _drain_pending_after_session_command(
         self,
@@ -4549,14 +4581,172 @@ class BasePlatformAdapter(ABC):
         command-scoped guard, then — if a follow-up message landed while the
         command was running — spawns a fresh processing task for it.
         """
+        if getattr(self, "_background_task_teardown", False):
+            return
+        if self._active_sessions.get(session_key) is not command_guard:
+            return
         await self._flush_text_debounce_now(session_key)
+        if getattr(self, "_background_task_teardown", False):
+            return
+        if self._active_sessions.get(session_key) is not command_guard:
+            return
+        # No await between the final ownership check, pending pop, exact-guard
+        # release, and publication of the follow-up task.
         pending_event = self._pending_messages.pop(session_key, None)
         self._release_session_guard(session_key, guard=command_guard)
         if pending_event is None:
             return
-        self._start_session_processing(pending_event, session_key)
+        try:
+            started = self._start_session_processing(
+                pending_event, session_key
+            )
+        except Exception:
+            self._pending_messages[session_key] = pending_event
+            raise
+        if not started:
+            self._pending_messages[session_key] = pending_event
+
+    async def _run_with_session_command_lock(
+        self,
+        session_key: str,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Run under a refcounted per-session lock and evict it when idle."""
+        command_locks = getattr(self, "_session_command_locks", None)
+        if command_locks is None:
+            command_locks = {}
+            self._session_command_locks = command_locks
+        entry = command_locks.get(session_key)
+        if entry is None:
+            entry = {"lock": asyncio.Lock(), "users": 0}
+            command_locks[session_key] = entry
+        entry["users"] += 1
+        try:
+            async with entry["lock"]:
+                return await operation()
+        finally:
+            entry["users"] -= 1
+            if (
+                entry["users"] == 0
+                and command_locks.get(session_key) is entry
+            ):
+                command_locks.pop(session_key, None)
+
+    def _schedule_session_command_drain(
+        self,
+        session_key: str,
+        command_guard: asyncio.Event,
+    ) -> bool:
+        """Publish a durable exact-guard drain outside the caller task."""
+        if getattr(self, "_background_task_teardown", False):
+            return False
+
+        async def _owned_drain() -> None:
+            if getattr(self, "_background_task_teardown", False):
+                return
+            if self._active_sessions.get(session_key) is not command_guard:
+                return
+            try:
+                await self._drain_pending_after_session_command(
+                    session_key, command_guard
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "[%s] Deferred command drain failed for %s; recovering exact guard",
+                    self.name,
+                    session_key,
+                )
+                if self._active_sessions.get(session_key) is command_guard:
+                    pending_event = self._pending_messages.pop(
+                        session_key, None
+                    )
+                    self._release_session_guard(
+                        session_key, guard=command_guard
+                    )
+                    if pending_event is not None:
+                        try:
+                            started = self._start_session_processing(
+                                pending_event, session_key
+                            )
+                        except Exception:
+                            started = False
+                            logger.exception(
+                                "[%s] Deferred command drain recovery failed for %s",
+                                self.name,
+                                session_key,
+                            )
+                        if not started:
+                            self._pending_messages[session_key] = pending_event
+
+        async def _run() -> None:
+            await self._run_with_session_command_lock(
+                session_key, _owned_drain
+            )
+
+        drain_coroutine = _run()
+        drain_task: Optional[asyncio.Task] = None
+        try:
+            created_task = asyncio.create_task(drain_coroutine)
+            if not isinstance(created_task, asyncio.Task):
+                raise RuntimeError(
+                    "create_task did not return an asyncio.Task"
+                )
+            drain_task = created_task
+            self._background_tasks.add(drain_task)
+            drain_task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            if drain_task is None:
+                drain_coroutine.close()
+            else:
+                drain_task.cancel()
+                self._background_tasks.discard(drain_task)
+            logger.exception(
+                "[%s] Could not publish deferred command drain for %s",
+                self.name,
+                session_key,
+            )
+            # Preserve the pending event for a later inbound replay, but do not
+            # leave a command guard with no runnable owner behind.
+            self._release_session_guard(session_key, guard=command_guard)
+            return False
+        return True
+
+    def _defer_session_command_drain_until_owner_done(
+        self,
+        session_key: str,
+        command_guard: asyncio.Event,
+        owner_task: asyncio.Task,
+    ) -> None:
+        """Resume an exact command drain after a timed-out owner unwinds."""
+
+        def _resume_drain(done_task: asyncio.Task) -> None:
+            published = self._schedule_session_command_drain(
+                session_key, command_guard
+            )
+            if published and self._session_tasks.get(session_key) is done_task:
+                self._session_tasks.pop(session_key, None)
+
+        owner_task.add_done_callback(_resume_drain)
 
     async def _dispatch_active_session_command(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        cmd: str,
+    ) -> None:
+        """Serialize one reset-like command lifecycle per physical session."""
+        async def _owned_command() -> None:
+            await self._dispatch_active_session_command_owned(
+                event, session_key, cmd
+            )
+
+        await self._run_with_session_command_lock(
+            session_key, _owned_command
+        )
+
+    async def _dispatch_active_session_command_owned(
         self,
         event: MessageEvent,
         session_key: str,
@@ -4581,13 +4771,15 @@ class BasePlatformAdapter(ABC):
             session_key,
         )
 
-        current_guard = self._active_sessions.get(session_key)
+        current_owner_task = self._session_tasks.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
         thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
 
         try:
             response = await self._message_handler(event)
+            if self._active_sessions.get(session_key) is not command_guard:
+                return
             _text, _eph_ttl = self._unwrap_ephemeral(response)
             # Send the response BEFORE cancelling the old task so the send
             # cannot be affected by task-cancellation side effects (race
@@ -4616,19 +4808,45 @@ class BasePlatformAdapter(ABC):
                     )
             # Old adapter task (if any) is cancelled AFTER the response has
             # been sent — keeps ordering deterministic and avoids the race.
-            await self.cancel_session_processing(
+            if self._active_sessions.get(session_key) is not command_guard:
+                return
+            owner_task = self._session_tasks.get(session_key)
+            owner_unwound = await self.cancel_session_processing(
                 session_key,
                 release_guard=False,
                 discard_pending=False,
             )
-        except Exception:
-            # On failure, restore the original guard if one still exists so
-            # we don't leave the session in a half-reset state.
+            if not owner_unwound:
+                if owner_task is not None:
+                    self._defer_session_command_drain_until_owner_done(
+                        session_key,
+                        command_guard,
+                        owner_task,
+                    )
+                return
+        except (asyncio.CancelledError, Exception):
+            # Keep the exact command guard as the cancellation-recovery owner.
+            # Restoring the previous guard can orphan pending work when that
+            # owner's callback removes its finished task. Run replay in a
+            # separately tracked continuation so repeated caller cancellation
+            # cannot interrupt the transactional drain.
             if self._active_sessions.get(session_key) is command_guard:
-                if session_key in self._session_tasks and current_guard is not None:
-                    self._active_sessions[session_key] = current_guard
+                mapped_owner = self._session_tasks.get(session_key)
+                owner_done = getattr(current_owner_task, "done", None)
+                previous_owner_is_live = bool(
+                    current_owner_task is not None
+                    and mapped_owner is current_owner_task
+                    and callable(owner_done)
+                    and not owner_done()
+                )
+                if previous_owner_is_live and current_owner_task is not None:
+                    self._defer_session_command_drain_until_owner_done(
+                        session_key, command_guard, current_owner_task
+                    )
                 else:
-                    self._release_session_guard(session_key, guard=command_guard)
+                    self._schedule_session_command_drain(
+                        session_key, command_guard
+                    )
             raise
 
         await self._drain_pending_after_session_command(session_key, command_guard)
@@ -4901,6 +5119,36 @@ class BasePlatformAdapter(ABC):
             await self._stop_typing_refresh(
                 event.source.chat_id,
                 typing_task,
+            )
+
+        async def _wait_for_stamped_release_chain() -> bool:
+            """Wait through release-event handoffs while this guard is owned."""
+            while True:
+                if self._active_sessions.get(session_key) is not interrupt_event:
+                    return False
+                release_event = getattr(
+                    interrupt_event,
+                    "_hermes_stamped_process_release_event",
+                    None,
+                )
+                if release_event is not None:
+                    await release_event.wait()
+                await self._flush_text_debounce_now(session_key)
+                if self._active_sessions.get(session_key) is not interrupt_event:
+                    return False
+                if getattr(
+                    interrupt_event,
+                    "_hermes_stamped_process_release_event",
+                    None,
+                ) is release_event:
+                    return True
+
+        def _current_task_owns_drain() -> bool:
+            current_task = asyncio.current_task()
+            return bool(
+                current_task is not None
+                and self._active_sessions.get(session_key) is interrupt_event
+                and self._session_tasks.get(session_key) is current_task
             )
         
         try:
@@ -5207,49 +5455,47 @@ class BasePlatformAdapter(ABC):
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
             )
 
-            # The active drain owns debounce state. If a queue-mode timer has
-            # not fired yet, force-flush into _pending_messages here and let
-            # this task hand off the follow-up.
-            await self._flush_text_debounce_now(session_key)
+            # A foreground adapter task that discovered an out-of-band stamped
+            # process owner retains the adapter guard and pending-drain ownership
+            # until that synthetic lifecycle releases it. This prevents both a
+            # recursive redispatch loop and a replay gap outside the adapter guard.
+            # A stamped wrapper may hand ownership directly to a newer stamped
+            # generation while this foreground task waits. Follow that identity
+            # chain and only consume the pending head after a release + debounce
+            # flush where the guard still names the same event. A replacement
+            # command guard owns any pending drain after a guard swap.
+            if not await _wait_for_stamped_release_chain():
+                return
 
-            # Check if there's a pending message that was queued during our processing
-            if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
-                logger.debug("[%s] Processing queued follow-up message", self.name)
-                # Keep the _active_sessions entry live across the turn chain
-                # and only CLEAR the interrupt Event — do NOT delete the entry.
-                # If we deleted here, a concurrent inbound message arriving
-                # during the awaits below would pass the Level-1 guard, spawn
-                # its own _process_message_background, and run simultaneously
-                # with the recursive drain below.  Two agents on one
-                # session_key = duplicate responses, duplicate tool calls.
-                # Clearing the Event keeps the guard live so follow-ups take
-                # the busy-handler path as intended.
-                _active = self._active_sessions.get(session_key)
-                if _active is not None:
-                    _active.clear()
-                await _stop_typing_task()
-                # Spawn a fresh task for the pending message instead of
-                # recursing.  Issue #17758: `await
-                # self._process_message_background(...)` here grew the
-                # call stack one frame per chained follow-up, and under
-                # sustained pending-queue activity the C stack would
-                # exhaust at ~2000 frames and SIGSEGV the process.
-                # Mirror the late-arrival drain pattern below: hand off
-                # to a new task and return so this frame can unwind.
-                drain_task = asyncio.create_task(
-                    self._process_message_background(pending_event, session_key)
+            # Stop typing before claiming a pending follow-up. This await may
+            # let a reset-like command replace both the guard and owner task,
+            # so ownership must be re-proved immediately before pop/publication.
+            await _stop_typing_task()
+            if not await _wait_for_stamped_release_chain():
+                return
+            if _current_task_owns_drain():
+                # No await between exact guard/task proof, pending pop, and the
+                # transactional handoff to _start_session_processing.
+                pending_event = self._pending_messages.pop(
+                    session_key, None
                 )
-                # Hand ownership of the session to the drain task so
-                # stale-lock detection keeps working while it runs.
-                self._session_tasks[session_key] = drain_task
-                try:
-                    self._background_tasks.add(drain_task)
-                    drain_task.add_done_callback(self._background_tasks.discard)
-                except TypeError:
-                    # Tests stub create_task() with non-hashable sentinels; tolerate.
-                    pass
-                return  # Drain task owns the session now.
+                if pending_event is not None:
+                    logger.debug(
+                        "[%s] Processing queued follow-up message", self.name
+                    )
+                    interrupt_event.clear()
+                    try:
+                        started = self._start_session_processing(
+                            pending_event,
+                            session_key,
+                            interrupt_event=interrupt_event,
+                        )
+                    except Exception:
+                        self._pending_messages[session_key] = pending_event
+                        raise
+                    if not started:
+                        self._pending_messages[session_key] = pending_event
+                    return  # Follow-up task owns the session when started.
                 
         except asyncio.CancelledError:
             current_task = asyncio.current_task()
@@ -5326,9 +5572,20 @@ class BasePlatformAdapter(ABC):
                 None,
                 stop_attempts=1,
             )
-            # Final drain/release boundary: force-flush any timer that missed
-            # the in-band drain before deciding whether the guard can clear.
-            await self._flush_text_debounce_now(session_key)
+            # Final drain/release boundary. Only the task that still owns this
+            # exact guard may wait/flush/pop. A stamped generation can rebind its
+            # release event during cleanup, and a session command can replace the
+            # guard entirely; both handoffs must be honored before consuming work.
+            late_pending = None
+            if _current_task_owns_drain():
+                release_chain_current = (
+                    await _wait_for_stamped_release_chain()
+                )
+                if release_chain_current and _current_task_owns_drain():
+                    # No await between the final ownership check and pop.
+                    late_pending = self._pending_messages.pop(
+                        session_key, None
+                    )
             # Late-arrival drain: a message may have arrived during the
             # cleanup awaits above (typing_task cancel, stop_typing).  Such
             # messages passed the Level-1 guard (entry still live, Event
@@ -5336,45 +5593,25 @@ class BasePlatformAdapter(ABC):
             # busy-handler path.  Without this block, we would delete the
             # active-session entry and the queued message would be silently
             # dropped (user never gets a reply).
-            late_pending = self._pending_messages.pop(session_key, None)
             if late_pending is not None:
-                current_task = asyncio.current_task()
-                existing_task = self._session_tasks.get(session_key)
-                if (
-                    existing_task is not None
-                    and existing_task is not current_task
-                ):
-                    # The in-band drain (or an earlier late-arrival drain)
-                    # already spawned a follow-up task that owns this
-                    # session.  Re-queue the late-arrival event so that
-                    # task picks it up — avoids spawning two concurrent
-                    # _process_message_background tasks for the same key
-                    # (#17758 follow-up: prevents the create_task path
-                    # from racing with itself across the in-band/finally
-                    # boundary).
+                logger.debug(
+                    "[%s] Late-arrival pending message during cleanup — spawning drain task",
+                    self.name,
+                )
+                interrupt_event.clear()
+                try:
+                    started = self._start_session_processing(
+                        late_pending,
+                        session_key,
+                        interrupt_event=interrupt_event,
+                    )
+                except Exception:
                     self._pending_messages[session_key] = late_pending
-                else:
-                    logger.debug(
-                        "[%s] Late-arrival pending message during cleanup — spawning drain task",
-                        self.name,
-                    )
-                    _active = self._active_sessions.get(session_key)
-                    if _active is not None:
-                        _active.clear()
-                    drain_task = asyncio.create_task(
-                        self._process_message_background(late_pending, session_key)
-                    )
-                    # Hand ownership of the session to the drain task so stale-lock
-                    # detection keeps working while it runs.
-                    self._session_tasks[session_key] = drain_task
-                    try:
-                        self._background_tasks.add(drain_task)
-                        drain_task.add_done_callback(self._background_tasks.discard)
-                    except TypeError:
-                        # Tests stub create_task() with non-hashable sentinels; tolerate.
-                        pass
-                # Leave _active_sessions[session_key] populated — the drain
-                # task's own lifecycle will clean it up.
+                    raise
+                if not started:
+                    self._pending_messages[session_key] = late_pending
+                # Leave the exact guard populated when publication succeeds;
+                # the follow-up task's lifecycle owns its release.
             else:
                 # Clean up session tracking.  Guard-match both deletes so a
                 # reset-like command that already swapped in its own
@@ -5428,6 +5665,7 @@ class BasePlatformAdapter(ABC):
         whole shutdown path.  Stragglers are released from our tracking and
         allowed to finish unwinding on their own.
         """
+        self._background_task_teardown = True
         # Loop until no new tasks appear.  Without this, a message
         # arriving during the `await asyncio.gather` below would spawn
         # a fresh _process_message_background task (added to

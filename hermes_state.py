@@ -17,6 +17,7 @@ Key design decisions:
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -951,6 +952,7 @@ class SessionDB:
         self._write_count = 0
         self._fts_enabled = False
         self._trigram_available = False
+        self._simple_loaded = False
         self._fts_unavailable_warned = False
         self._conn = None
         try:
@@ -971,6 +973,7 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                self._apply_read_pragmas()
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -991,6 +994,8 @@ class SessionDB:
                 self._conn.row_factory = sqlite3.Row
                 apply_wal_with_fallback(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
+                self._apply_read_pragmas()
+                self._simple_loaded = self._load_simple_extension()
                 self._init_schema()
 
             try:
@@ -1383,6 +1388,53 @@ class SessionDB:
                         logger.debug(
                             "reconcile %s.%s: %s", table_name, col_name, exc,
                         )
+
+    def _apply_read_pragmas(self):
+        """Apply read-performance PRAGMAs after opening a connection.
+
+        These are connection-level settings — every new connection must
+        re-apply them.  The defaults (2 MB page cache, no mmap, file-backed
+        temp) are tuned for embedded use; state.db is 2+ GB.
+        """
+        try:
+            self._conn.execute("PRAGMA cache_size=-64000")       # 64 MB page cache
+            self._conn.execute("PRAGMA mmap_size=2147483648")     # 2 GB mmap (address space, not RAM)
+            self._conn.execute("PRAGMA temp_store=MEMORY")        # temp tables/storage in memory
+        except sqlite3.OperationalError:
+            pass  # read-only connection, acceptable
+
+    def _load_simple_extension(self):
+        """Load the ``simple`` FTS5 tokenizer extension (jieba-based CJK).
+
+        Ships as ``libsimple.so`` from
+        github.com/wangfenjin/simple/releases/tag/v0.7.1.  Returns ``True``
+        if the extension was loaded, ``False`` on any failure (graceful
+        degrade — CJK search falls back to LIKE).
+        """
+        simple_so = self._get_libsimple_path()
+        if not simple_so or not simple_so.exists():
+            logger.debug("simple tokenizer not found at %s — CJK FTS5 degrade", simple_so)
+            return False
+        try:
+            self._conn.enable_load_extension(True)
+            self._conn.load_extension(str(simple_so))
+            logger.info("loaded simple tokenizer from %s", simple_so)
+            return True
+        except Exception as exc:
+            logger.warning("failed to load simple tokenizer from %s: %s", simple_so, exc)
+            return False
+        finally:
+            try:
+                self._conn.enable_load_extension(False)
+            except sqlite3.OperationalError:
+                pass
+
+    def _get_libsimple_path(self):
+        """Resolve path to libsimple.so, preferring HERMES_LIBSIMPLE_PATH env var."""
+        env_path = os.environ.get("HERMES_LIBSIMPLE_PATH")
+        if env_path:
+            return Path(env_path)
+        return self._hermes_home / "libsimple" / "libsimple.so"
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.

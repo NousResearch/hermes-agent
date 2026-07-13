@@ -46,7 +46,7 @@ def _resolve_requests_verify() -> bool | str:
 # Only these are stripped — Ollama-style "model:tag" colons (e.g. "qwen3.5:27b")
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
-    "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
+    "openrouter", "nous", "openai-codex", "copilot", "copilot-acp", "claude-cli",
     "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita",
     "qwen-oauth",
@@ -213,6 +213,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     # OpenRouter-prefixed models resolve via OpenRouter live API or models.dev.
     "claude-fable-5": 1000000,
     "claude-fable": 1000000,
+    # Claude Sonnet 5 (launched 2026-06-30) — 1M context by default, 128k max
+    # output. Without this it substring-matches the "claude": 200K catch-all.
+    "claude-sonnet-5": 1000000,
     "claude-opus-4-8": 1000000,
     "claude-opus-4.8": 1000000,
     "claude-opus-4-7": 1000000,

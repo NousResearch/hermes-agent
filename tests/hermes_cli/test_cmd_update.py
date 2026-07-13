@@ -725,6 +725,80 @@ class TestCmdUpdateCheckBranchFlag:
 
         return side_effect
 
+    def _check_stale_ref_side_effect(
+        self,
+        target_branch: str,
+        *,
+        upstream_fetch_ok: bool = True,
+    ):
+        """Mock a shallow ``update --check`` stale-ref recovery flow.
+
+        The important invariant is that both fetch attempts preserve the
+        shallow ``--depth 1`` flags and the branch argument when the origin
+        fetch hits a stale remote-tracking ref.
+        """
+        state = {
+            "upstream_fetch_calls": [],
+            "origin_fetch_calls": [],
+            "prune_calls": 0,
+        }
+        stale_err = (
+            "error: refs/remotes/origin/dependabot/github_actions/"
+            "actions/setup-python-6.2.0 does not point to a valid object!\n"
+            "fatal: bad object refs/remotes/origin/dependabot/"
+            "github_actions/actions/setup-python-6.2.0\n"
+        )
+
+        def side_effect(cmd, **kwargs):
+            if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+
+            if cmd[:2] == ["git", "fetch"] and "upstream" in cmd:
+                state["upstream_fetch_calls"].append(list(cmd))
+                if upstream_fetch_ok:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                return subprocess.CompletedProcess(
+                    cmd,
+                    128,
+                    stdout="",
+                    stderr="fatal: 'upstream' does not appear to be a git repository\n",
+                )
+
+            if cmd[:2] == ["git", "fetch"] and "origin" in cmd:
+                state["origin_fetch_calls"].append(list(cmd))
+                if len(state["origin_fetch_calls"]) == 1:
+                    return subprocess.CompletedProcess(
+                        cmd, 128, stdout="", stderr=stale_err
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            if cmd == ["git", "remote", "prune", "origin"]:
+                state["prune_calls"] += 1
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            if cmd[:4] == ["git", "rev-parse", "--verify", "--quiet"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            if cmd == ["git", "rev-parse", "HEAD"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="local-sha\n", stderr="")
+
+            if cmd == ["git", "rev-parse", f"origin/{target_branch}"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="remote-sha\n", stderr=""
+                )
+
+            if cmd == ["git", "rev-parse", f"upstream/{target_branch}"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="remote-sha\n", stderr=""
+                )
+
+            if cmd[:2] == ["git", "rev-list"]:
+                raise AssertionError("shallow check path must not call rev-list")
+
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        return side_effect, state
+
     @patch("hermes_cli.config.detect_install_method", return_value="git")
     @patch("subprocess.run")
     def test_check_branch_compares_against_named_origin_branch(
@@ -798,6 +872,55 @@ class TestCmdUpdateCheckBranchFlag:
         # Compare ref is upstream/main (upstream fetch succeeded).
         rev_list_cmds = [c for c in commands if "rev-list" in c]
         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_branch_stale_ref_retry_keeps_shallow_scoped_origin_fetch(
+        self, mock_run, _mock_method, capsys
+    ):
+        """Non-main ``--check`` origin retries must preserve ``--depth 1`` and branch."""
+        mock_run.side_effect, state = self._check_stale_ref_side_effect("bb/gui")
+        args = SimpleNamespace(check=True, branch="bb/gui")
+
+        cmd_update(args)
+
+        out = capsys.readouterr().out
+        assert "stale remote-tracking ref" in out
+        assert state["prune_calls"] == 1
+        assert state["upstream_fetch_calls"] == []
+        assert state["origin_fetch_calls"] == [
+            ["git", "fetch", "--depth", "1", "origin", "bb/gui"],
+            ["git", "fetch", "--depth", "1", "origin", "bb/gui"],
+        ]
+        assert ["git", "fetch", "origin", "bb/gui"] not in state["origin_fetch_calls"]
+        assert ["git", "fetch", "origin"] not in state["origin_fetch_calls"]
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_check_main_upstream_fallback_stale_ref_retry_keeps_shallow_origin_fetch(
+        self, mock_run, _mock_method, capsys
+    ):
+        """Main-branch upstream fallback must keep ``--depth 1`` on both origin retries."""
+        mock_run.side_effect, state = self._check_stale_ref_side_effect(
+            "main", upstream_fetch_ok=False
+        )
+        args = SimpleNamespace(check=True, branch=None)
+
+        cmd_update(args)
+
+        out = capsys.readouterr().out
+        assert "Fetching from upstream" in out
+        assert "Fetching from origin" in out
+        assert state["prune_calls"] == 1
+        assert state["upstream_fetch_calls"] == [
+            ["git", "fetch", "--depth", "1", "upstream", "main"]
+        ]
+        assert state["origin_fetch_calls"] == [
+            ["git", "fetch", "--depth", "1", "origin", "main"],
+            ["git", "fetch", "--depth", "1", "origin", "main"],
+        ]
+        assert ["git", "fetch", "origin", "main"] not in state["origin_fetch_calls"]
+        assert ["git", "fetch", "origin"] not in state["origin_fetch_calls"]
 
     @patch("hermes_cli.config.detect_install_method", return_value="pip")
     @patch("hermes_cli.banner.check_via_pypi", return_value=0)

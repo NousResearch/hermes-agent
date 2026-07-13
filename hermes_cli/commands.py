@@ -152,6 +152,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("on", "off", "status")),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration"),
+    CommandDef("approvals", "Show or set the persistent dangerous-command approval mode",
+               "Configuration", args_hint="[manual|smart|off]",
+               subcommands=("manual", "smart", "off")),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide|full|clamp]",
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp")),
@@ -1163,7 +1166,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - version: read-only version info; reached via /hermes version on Slack after
+#     /approvals consumed the final native slot.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

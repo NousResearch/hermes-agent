@@ -142,6 +142,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
 
   // Backend-executed commands that render useful inline output
   {
+    name: '/approvals',
+    description: 'Show or set approval mode [manual|smart|off]',
+    surface: exec(),
+    args: true
+  },
+  {
     name: '/agents',
     description: 'Show active desktop sessions and running tasks',
     aliases: ['/tasks'],

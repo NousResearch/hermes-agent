@@ -9804,6 +9804,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
 
+        if canonical == "approvals":
+            return await self._handle_approvals_command(event)
+
         if canonical == "model":
             return await self._handle_model_command(event)
 

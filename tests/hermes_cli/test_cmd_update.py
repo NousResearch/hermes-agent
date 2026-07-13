@@ -872,3 +872,98 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+class TestCmdUpdateCheckCommitList:
+    """Regression tests for the pending-commit list in hermes update --check.
+
+    The commit list must use the same compare_branch that produced the
+    behind count (upstream/main, origin/main, or origin/<branch>) so
+    the list and the count are always consistent (PR #23700).
+    """
+
+    def _make_run_side_effect(self, compare_branch: str, behind: int, commits: list):
+        """Build a subprocess.run side_effect for the --check pipeline."""
+        def _side_effect(cmd, **kw):
+            cmd_str = " ".join(str(c) for c in cmd)
+            r = MagicMock()
+            r.returncode = 0
+            r.stdout = ""
+            r.stderr = ""
+            if "rev-parse" in cmd_str and "--abbrev-ref" in cmd_str:
+                r.stdout = "main\n"
+            elif "rev-parse" in cmd_str and "upstream" in cmd_str and "verify" not in cmd_str:
+                r.stdout = "abc123\n"
+            elif "rev-parse" in cmd_str and "verify" in cmd_str:
+                r.returncode = 0
+            elif "fetch" in cmd_str:
+                pass
+            elif "rev-list" in cmd_str and "--count" in cmd_str:
+                r.stdout = f"{behind}\n"
+            elif "log" in cmd_str and "--oneline" in cmd_str:
+                if compare_branch in cmd_str:
+                    r.stdout = "\n".join(commits) + "\n"
+                else:
+                    r.stdout = ""
+            elif "is-shallow-repository" in cmd_str:
+                r.stdout = "false\n"
+            return r
+        return _side_effect
+
+    def test_commit_list_uses_upstream_main_when_available(self, capsys, monkeypatch, tmp_path):
+        """When upstream/main is available, commit list uses upstream/main range."""
+        from hermes_cli.main import _cmd_update_check
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        commits = ["abc1234 fix: something", "def5678 feat: another thing"]
+        side_effect = self._make_run_side_effect("upstream/main", 2, commits)
+
+        with patch("subprocess.run", side_effect=side_effect), \
+             patch("hermes_cli.main.PROJECT_ROOT", tmp_path), \
+             patch("hermes_cli.main._resolve_repo_dir", return_value=str(tmp_path)), \
+             patch("hermes_cli.main.recommended_update_command", return_value="hermes update"):
+            _cmd_update_check()
+
+        out = capsys.readouterr().out
+        assert "2 commits behind" in out
+        assert "Pending changes" in out
+        assert "fix: something" in out
+        assert "feat: another thing" in out
+
+    def test_commit_list_suppressed_when_up_to_date(self, capsys, monkeypatch, tmp_path):
+        """When behind==0, no commit list should appear."""
+        from hermes_cli.main import _cmd_update_check
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        side_effect = self._make_run_side_effect("upstream/main", 0, [])
+
+        with patch("subprocess.run", side_effect=side_effect), \
+             patch("hermes_cli.main.PROJECT_ROOT", tmp_path), \
+             patch("hermes_cli.main._resolve_repo_dir", return_value=str(tmp_path)), \
+             patch("hermes_cli.main.recommended_update_command", return_value="hermes update"):
+            _cmd_update_check()
+
+        out = capsys.readouterr().out
+        assert "Already up to date" in out
+        assert "Pending changes" not in out
+
+    def test_commit_list_capped_at_ten(self, capsys, monkeypatch, tmp_path):
+        """When more than 10 commits are pending, output shows 10 + overflow hint."""
+        from hermes_cli.main import _cmd_update_check
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        commits = [f"{'abc' + str(i)} commit {i}" for i in range(15)]
+        side_effect = self._make_run_side_effect("upstream/main", 15, commits)
+
+        with patch("subprocess.run", side_effect=side_effect), \
+             patch("hermes_cli.main.PROJECT_ROOT", tmp_path), \
+             patch("hermes_cli.main._resolve_repo_dir", return_value=str(tmp_path)), \
+             patch("hermes_cli.main.recommended_update_command", return_value="hermes update"):
+            _cmd_update_check()
+
+        out = capsys.readouterr().out
+        assert "Pending changes" in out
+        assert "5 more commit" in out

@@ -404,7 +404,7 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
     """Effort levels natively supported by the Responses API pass through unchanged."""
     _patch_agent_bootstrap(monkeypatch)
 
-    for effort in ("low", "medium", "high", "xhigh"):
+    for effort in ("low", "medium", "high", "xhigh", "max"):
         agent = run_agent.AIAgent(
             model="gpt-5-codex",
             base_url="https://chatgpt.com/backend-api/codex",

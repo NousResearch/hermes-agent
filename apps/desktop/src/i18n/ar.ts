@@ -3799,6 +3799,16 @@ export const ar: Translations = {
       viewAllLogs: 'عرض جميع السجلات ←',
       messagingPlatforms: 'منصات المراسلة'
     },
+    approvalMode: {
+      title: 'وضع الموافقة',
+      ariaLabel: mode => `وضع الموافقة: ${mode}`,
+      manual: 'يدوي',
+      manualDescription: 'السؤال قبل الإجراءات التي تتطلب موافقة',
+      smart: 'ذكي',
+      smartDescription: 'تقييم الإجراءات تلقائيًا والسؤال عند الحاجة',
+      off: 'دون موافقة',
+      offDescription: 'التشغيل دون مطالبات بالموافقة'
+    },
     statusbar: {
       unknown: 'غير معروف',
       restart: 'إعادة التشغيل',

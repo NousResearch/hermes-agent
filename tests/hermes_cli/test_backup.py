@@ -110,6 +110,15 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
 
+    def test_excludes_state_snapshots(self):
+        """state-snapshots/ holds redundant copies of state.db and other DBs
+        already safe-copied into the backup. Including a second ~1 GB state.db
+        doubles the archive for zero recovery value."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("state-snapshots/20260712-060601-pre-update/state.db"))
+        assert _should_exclude(Path("state-snapshots/20260712-060601-pre-update/config.yaml"))
+        assert _should_exclude(Path("state-snapshots/some-snapshot/kanban.db"))
+
     def test_excludes_sqlite_sidecars(self):
         """SQLite WAL/SHM/journal sidecars must not ship alongside the
         safe-copied .db — pairing a fresh snapshot with stale sidecar state
@@ -406,6 +415,35 @@ class TestBackup:
             names = zf.namelist()
             pid_files = [n for n in names if n.endswith(".pid")]
             assert pid_files == []
+
+    def test_excludes_state_snapshots_dir(self, tmp_path, monkeypatch):
+        """Backup does NOT include state-snapshots/ — these are redundant
+        copies of state.db already captured by SQLite safe-copy."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+
+        # Simulate a state-snapshots directory with a large DB copy
+        snap_dir = hermes_home / "state-snapshots" / "20260712-pre-update"
+        snap_dir.mkdir(parents=True)
+        (snap_dir / "state.db").write_bytes(b"fake-large-db")
+        (snap_dir / "config.yaml").write_text("model: test\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            snap_files = [n for n in names if n.startswith("state-snapshots/")]
+            assert snap_files == [], f"state-snapshots leaked into backup: {snap_files}"
+            # But the live state.db at root should still be present
+            assert "hermes_state.db" in names or "state.db" in names
 
     def test_default_output_path(self, tmp_path, monkeypatch):
         """When no output path given, zip goes to ~/hermes-backup-*.zip."""

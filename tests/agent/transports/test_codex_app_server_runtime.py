@@ -177,6 +177,33 @@ class TestHermesCodexBridge:
         assert [tool["name"] for tool in specs[0]["tools"]] == ["session_search"]
         assert specs[0]["tools"][0]["inputSchema"]["type"] == "object"
 
+    def test_active_skill_manage_is_exposed_for_guarded_skill_persistence(self):
+        from agent.codex_bridge import build_dynamic_tools
+
+        tool_defs = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "skill_manage",
+                    "description": "Persist a reusable Hermes skill",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string"},
+                            "name": {"type": "string"},
+                        },
+                    },
+                },
+            }
+        ]
+
+        specs = build_dynamic_tools(tool_defs, {"skill_manage"})
+
+        assert [tool["name"] for tool in specs[0]["tools"]] == ["skill_manage"]
+        assert specs[0]["tools"][0]["inputSchema"]["properties"]["action"] == {
+            "type": "string"
+        }
+
     def test_dynamic_catalogue_requires_active_tools_and_deduplicates(self):
         from agent.codex_bridge import build_dynamic_tools
 

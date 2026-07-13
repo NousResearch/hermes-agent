@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 HERMES_DYNAMIC_TOOL_NAMESPACE = "hermes"
 HERMES_STATEFUL_TOOL_ALLOWLIST = frozenset(
-    {"memory", "session_search", "todo", "delegate_task"}
+    {"memory", "session_search", "todo", "delegate_task", "skill_manage"}
 )
 
 
@@ -68,7 +68,7 @@ def build_dynamic_tools(
             "type": "namespace",
             "name": HERMES_DYNAMIC_TOOL_NAMESPACE,
             "description": (
-                "Hermes session, memory, task-state, and delegation tools. "
+                "Hermes session, memory, task-state, delegation, and skill-lifecycle tools. "
                 "Use these when work depends on Hermes state rather than the local filesystem."
             ),
             "tools": functions,

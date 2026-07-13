@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
@@ -59,6 +57,7 @@ def test_key_rotation_clears_exhausted_status(tmp_path, monkeypatch):
     assert entry is not None, "Pool should have a usable entry after key rotation"
     assert entry.access_token == "new-rotated-key"
     assert entry.last_status is None, "last_status should be cleared after key rotation"
+    assert entry.last_status_at is None
     assert entry.last_error_code is None
     assert entry.last_error_reason is None
     assert entry.last_error_message is None

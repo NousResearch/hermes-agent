@@ -1133,6 +1133,7 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
     # exhaustion/error state — the old status is stale for the new key.
     if token_changed and existing.last_status is not None:
         field_updates["last_status"] = None
+        field_updates["last_status_at"] = None
         field_updates["last_error_code"] = None
         field_updates["last_error_reason"] = None
         field_updates["last_error_message"] = None

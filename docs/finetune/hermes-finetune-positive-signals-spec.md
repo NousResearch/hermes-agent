@@ -91,6 +91,8 @@ def tool_success_chain(assistant_turn, tool_results, next_user_turn) -> float:
     return score
 ```
 
+**Link 4 token hygiene:** "referenced tool output" means the user's next turn repeats a *distinctive* token from the tool result — not any 4-character word. Tool output is full of common English words ("this", "with", "from"), and matching those would saturate nearly every conversational session at 1.0, erasing the 0.7/0.9/1.0 gradation. A candidate token only counts as a reference when it (a) is not on the identifier stoplist shared with the artifact-path detector, and (b) looks identifier-like: contains a digit, `.`, `/`, `_`, `-`, or an internal capital, or is at least 8 characters long. Matching is word-boundary-aware (`name` never matches inside `rename`).
+
 **What "tool succeeded" means per tool type:**
 
 | Tool | Success indicator | Discriminative power |
@@ -449,6 +451,8 @@ w5 (manual override):         0.20   # was 0.2 — unchanged, highest confidence
 ```
 
 The shift: positive outcome signals are now the primary driver of inclusion, negative signals handle exclusion, conversation-level signals are context, and sentiment is a weak tiebreaker.
+
+These weights live in `~/.hermes/config.yaml` under `finetune.scoring.weights_positive` — a dict deliberately separate from the legacy mode's `finetune.scoring.weights`, since the two share key names and must never bleed into each other. At scoring time, w1–w4 are renormalized to sum to 1.0 (w5/manual_override is not part of the composite — manual labels override the score outright), so a perfect session can actually reach 1.0.
 
 ---
 

@@ -36,6 +36,18 @@ Train QLoRA adapters from your own Hermes session history. The pipeline extracts
 - User wants to label specific turns as good or bad for training
 - Trigger phrases: "fine-tune", "train adapter", "finetune status", "model training", "label turn"
 
+## Enabling the skill
+
+`/finetune` is gated behind a master switch, off by default. Nothing runs — no extraction, no feedback capture — until you opt in:
+
+```yaml
+# ~/.hermes/config.yaml
+finetune:
+  enabled: true
+```
+
+Every `/finetune` subcommand refuses with a pointer to this setting while disabled. The `Ctrl+Y`/`Ctrl+N` feedback keybindings additionally require `finetune.feedback.cli_keybindings: true`.
+
 ## Quick Reference
 
 | Command | Action |
@@ -65,6 +77,8 @@ Train QLoRA adapters from your own Hermes session history. The pipeline extracts
 | `/finetune cron` | Schedule recurring retraining |
 
 `/finetune` is CLI-only — it is not available from gateway platforms (Telegram/Discord/Slack).
+
+Long-running subcommands (`train`, `bench`, `run`) can be cancelled with `Ctrl+C` — first press stops the training/bench subprocess cleanly, a quick second press force-kills it. Mutating operations (`run`, `promote`, `rollback`, `redeploy`, `gc`, training) are serialized behind a coarse lock (`<hermes-home>/finetune/finetune.lock`); a second concurrent invocation exits with "another finetune operation is running" instead of corrupting the registry.
 
 ## How training data is built
 
@@ -140,19 +154,25 @@ The pipeline supports two retraining modes. Pick the one that matches your appet
 /finetune run --with-bench
 ```
 
+**Requires `serving.auto_redeploy: true` and a configured `server_command`** (see Auto-Redeploy below). The gate refuses to start without them, because a bench that isn't measuring the newly deployed adapter would be measuring the *previous* model and calling it a verdict on the new one.
+
 **What it does, in order:**
 1. Steps 1–5 from Workflow A (extract, score, cluster, train, register)
 2. **Promote** each new adapter to active
-3. **Run the benchmark** automatically (243 prompt cases against the now-active model)
-4. **Compare** the new bench result against the most recent prior bench result
-5. If regressed beyond the thresholds → **automatically rollback** the adapter the bench actually measured and surface the regression report
+3. **Redeploy** llama-server with the new adapter loaded (aborts the gate if this fails — it never falls back to benching the old model)
+4. **Run the benchmark** (243 prompt cases against the now-served adapter)
+5. **Compare** against the accepted baseline (`bench/baseline.json`)
+6. If regressed beyond the thresholds → **automatically rollback** (or, for a cluster's first-ever adapter, **deactivate**) the measured adapter and redeploy the previous adapter — or the bare base model if there is none. A regressed adapter is never left serving.
+7. If passed → the new result becomes the accepted baseline
 
-Note: with `auto_redeploy` on and more than one cluster promoted in a run, only the **last-deployed** adapter is being served, so the bench measures only that one — the pipeline prints a warning and, on regression, rolls back only the served adapter. When the served adapter is unknown (redeploy off or failed), all adapters promoted in the run are rolled back.
+Note: with more than one cluster promoted in a run, only the **last-deployed** adapter is being served, so the bench measures only that one — the pipeline prints a warning and, on regression, rolls back only the served adapter.
+
+**The baseline is a pointer, not "the most recent file."** Only runs that passed the gate (or the first-ever run) update `bench/baseline.json`. A regressed, rolled-back run can never become the next run's baseline — quality can't silently ratchet downward.
 
 **Trade-offs:**
 - Safe — a regressing adapter never stays active for long
 - Slow — the bench takes 20–35 min on top of the training time
-- Requires a prior bench result to compare against. If none exists, the new result is recorded as the new baseline and the gate is a no-op
+- Requires an accepted baseline to compare against. If none exists, the run passes by definition and is recorded as the baseline
 - Best for scheduled retraining (cron) and any retrain you don't intend to babysit
 
 **Regression thresholds** (hardcoded in `scripts/eval.py` and the bench env):
@@ -190,7 +210,7 @@ This is useful for:
 - Spot-checking the active model after manual changes
 - Investigating a regression flagged by Workflow B
 
-Results land in `~/.hermes/finetune/bench/results/bench_<timestamp>.json` and the most recent prior result is used as the comparison baseline automatically.
+Results land in `~/.hermes/finetune/bench/results/bench_<timestamp>.json` and are compared against the accepted baseline (`bench/baseline.json`); a passing standalone bench updates that baseline. The bench requires a running Docker daemon — it sandboxes every case and refuses to run agent-generated commands on the host unless you explicitly override (`FINETUNE_BENCH_ALLOW_UNSANDBOXED=1`).
 
 ## Auto-Redeploy (llama.cpp integration)
 
@@ -205,8 +225,11 @@ When `auto_redeploy: true` is set, after `/finetune run` finishes promoting a ne
 3. Calls llama.cpp's `convert_lora_to_gguf.py` to produce a GGUF copy of the adapter
 4. Stops the managed llama-server (strictly via its PID file — servers started outside the skill are never touched)
 5. Restarts llama-server with `--lora <path-to-gguf>` appended to the configured launch command
-6. Polls `/v1/models` until the new server is responsive (default 30s timeout)
-7. If the rest of the pipeline runs `/finetune run --with-bench`, the bench then measures the adapter that's *actually being served*
+6. Polls `/v1/models` until the new server is responsive (default 30s timeout) — and verifies the process it launched is the one answering, so a pre-existing server squatting on the port can't fake a healthy deploy
+7. Writes a serving manifest (`<hermes-home>/finetune/serving.json`) recording the server PID and which adapters it preloaded — this is what inference-time routing reads
+8. If the rest of the pipeline runs `/finetune run --with-bench`, the bench then measures the adapter that's *actually being served*
+
+GGUF conversion is atomic: a killed or timed-out conversion can never leave a truncated `adapter.gguf` behind for a later deploy to trust. The `%LORA%` path is shell-quoted at substitution time, so adapter paths containing spaces are safe.
 
 ### Configuration
 
@@ -281,29 +304,43 @@ You can also redeploy a specific cluster/version:
 
 ### Interaction with the bench gate
 
-When you run `/finetune run --with-bench` AND have `auto_redeploy: true`, the flow becomes:
+`/finetune run --with-bench` **requires** `auto_redeploy: true` (plus a `server_command`) and refuses to start without it. The flow:
 
 1. Train the adapter
 2. Promote it
-3. **Redeploy llama-server with the new adapter loaded**
+3. **Redeploy llama-server with the new adapter loaded** (gate aborts if this fails)
 4. Run the bench (now actually measuring the new adapter)
-5. Compare to baseline; if regressed → rollback the adapter AND redeploy the previous adapter so the served model matches the registry
+5. Compare to the accepted baseline; if regressed → rollback (or deactivate a first-ever adapter) AND redeploy the previous adapter — or the bare base model — so the served model always matches the registry; if passed → the result becomes the new accepted baseline
 
-This is the closed-loop "retrain and validate without human intervention" workflow. The cron-scheduled retraining mode (`/finetune cron weekly`) becomes truly hands-off when combined with `--with-bench` and `auto_redeploy: true`.
+This is the closed-loop "retrain and validate without human intervention" workflow. The cron-scheduled retraining mode (`/finetune cron weekly`) becomes truly hands-off when combined with `auto_redeploy: true` — `/finetune cron` schedules the gated pipeline automatically when serving is configured, and the ungated fast pipeline (with honest wording about the missing gate) when it isn't.
 
 ---
 
 ## Inference-Time Adapter Routing
 
-Once adapters are trained and promoted, hermes can pick the best one per
-prompt automatically. Routing runs as a standard hermes plugin
-(`finetune-routing`, shipped in this skill's `plugin/` directory) that
-registers `llm_request` middleware: it embeds the incoming prompt, matches
-it against cluster centroids, and injects the matched adapter as a
-per-request `extra_body.lora_adapters` entry for local llama.cpp
-endpoints. The decision is carried on the request payload — no
-process-global state — so concurrent sessions can't observe each other's
-adapter selection.
+Once adapters are trained, promoted, **and redeployed**, hermes can decide
+per prompt whether the served adapter should apply. Routing runs as a
+standard hermes plugin (`finetune-routing`, shipped in this skill's
+`plugin/` directory) that registers `llm_request` middleware.
+
+How it works — and its honest limits: llama.cpp cannot load an arbitrary
+adapter file per request. Its per-request API is scale control over
+adapters **preloaded** at server startup (`"lora": [{"id": N, "scale": s}]`,
+a llama.cpp extension field accepted through the OpenAI-compatible
+endpoint). So the middleware only activates when `/finetune redeploy` has
+written a serving manifest (`<hermes-home>/finetune/serving.json`)
+describing the server it launched and the adapters that server preloaded.
+It then embeds the incoming prompt, matches it against cluster centroids,
+and:
+
+- prompt routes to a **served** cluster → that adapter gets scale 1.0
+- prompt routes anywhere else → every served adapter gets scale 0.0, so
+  **off-domain prompts deliberately fall back to the base model**
+
+The decision is carried on the request payload — no process-global state —
+so concurrent sessions can't observe each other's adapter selection. The
+manifest is re-read when it changes on disk, so a redeploy or rollback in
+another process takes effect without restarting your session.
 
 ```bash
 /finetune route enable      # copy the plugin into <hermes-home>/plugins/
@@ -314,14 +351,16 @@ adapter selection.
 /finetune route disable     # remove the plugin
 ```
 
-The plugin only activates for local endpoints (localhost/127.0.0.1) — a
-remote provider can't load a LoRA from a local path. Restart hermes after
-enabling; plugins are discovered at session start.
+The plugin only activates when the request targets the host the manifest's
+server is on (loopback aliases — localhost/127.0.0.1/[::1] — are treated
+as equivalent); requests to remote providers are never touched. Restart
+hermes after enabling; plugins are discovered at session start.
 
-Routing only serves the GGUF adapter that `/finetune redeploy` produces
-(`adapter.gguf`). An adapter that has been trained and promoted but never
-redeployed routes to the base model — with a logged hint — until you run
-`/finetune redeploy`.
+An adapter that has been trained and promoted but never redeployed is not
+in the manifest and cannot be routed to — run `/finetune redeploy` first.
+With a single served adapter (the current serving model), routing's value
+is the off-domain fallback; the manifest's adapter list is the extension
+point for multi-adapter serving.
 
 ## Retroactive Labeling
 
@@ -385,7 +424,7 @@ After labeling, the next `/finetune score` run honors your labels. The scorer ap
 
 1. **Per-turn retro labels** — highest priority. Override the automated turn score directly.
 2. **Session-level retro labels** — apply to every assistant turn in the session that doesn't have a turn-level label.
-3. **In-the-moment feedback** — `Ctrl+Y`/`Ctrl+N` from the CLI (these only fire when the input line is empty and no modal prompt is open, so they never shadow emacs yank/next-line while typing). Gateway emoji reactions have a registered hook but no platform currently emits reaction events, so this path is dormant.
+3. **In-the-moment feedback** — `Ctrl+Y`/`Ctrl+N` from the CLI (these only fire when the input line is empty and no modal prompt is open, so they never shadow emacs yank/next-line while typing; they require `finetune.enabled` plus `finetune.feedback.cli_keybindings`). Gateway emoji reactions are **not** a feedback source: no platform adapter emits reaction events, and session-level labels from arbitrary chat members would be unsafe training signal. If platform reactions return, it will be as a proper design with per-turn attribution and authorship checks.
 4. **Automated heuristic** — falls through if nothing above applies.
 
 The trainer then includes a turn in the training set if and only if its effective score meets `min_turn_score`. A `good` retro label maps to 1.0; a `bad` label maps to 0.0; anything labeled `bad` is therefore guaranteed to be excluded.
@@ -420,7 +459,7 @@ Every step from Workflow A can be invoked on its own. This is mainly for debuggi
 | `/finetune route disable` | Remove the routing plugin |
 | `/finetune retro <subcommand>` | Retroactively label sessions and turns (see "Retroactive Labeling" above) |
 | `/finetune status` | Display pipeline state, active adapters, cluster maturity |
-| `/finetune cron weekly` | Schedule `/finetune run --with-bench` to run on a cron |
+| `/finetune cron weekly` | Create/update a real Hermes cron job (`finetune-retrain`) running the pipeline — gated (`--with-bench`) when serving is configured, ungated otherwise |
 | `/finetune gc --keep 2` | Garbage collect old adapter versions |
 
 ## Dependencies
@@ -447,6 +486,7 @@ pip install axolotl accelerate
 - **Catastrophic forgetting**: The canary test set catches this. If canary scores drop, the adapter is blocked from promotion regardless of other metrics.
 - **VRAM tightness on 12GB cards**: Training a 9B model with QLoRA needs ~10-11GB peak VRAM at `sequence_len: 1024`, `micro_batch_size: 1`. Stop any other CUDA processes (including any local llama.cpp serving the same GPU) before launching training. The default template settings target 12GB cards.
 - **Sessions still in progress**: extraction tracks per-session message counts, so a conversation that grows after being extracted is re-extracted in full on the next run. The first extract after upgrading re-extracts everything once (the old watermark format is ignored).
+- **What extraction includes**: each session is extracted standalone (compression continuations and `/branch` children are their own conversations, keyed to their root session so a lineage never straddles the train/eval split). Rewound turns, archived sessions, and delegate-subagent sessions are excluded — set `finetune.extract.include_delegates: true` if you want agent-to-agent traffic in your training data.
 - **Secrets in training data**: message and tool-output content passes a conservative redaction pass (API keys, bearer tokens, PEM blocks, password assignments → `[REDACTED]`) before being written to training records. It is pattern-based, not exhaustive — review `train.jsonl` before sharing adapters trained on sensitive sessions.
 
 ## Verification

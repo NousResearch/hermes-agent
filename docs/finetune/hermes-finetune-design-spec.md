@@ -53,13 +53,22 @@ The pipeline does not build its own capture layer. `SessionDB` in `hermes_state.
 
 ### 1.1 Extraction
 
-The extractor queries `state.db` for sessions matching configurable filters (minimum turn count, source exclusions, date range) and outputs normalized JSONL. Session lineage (`parent_session_id`) is preserved so compression-split conversations can be reconstructed.
+The extractor queries `state.db` for sessions matching configurable filters (minimum turn count, source exclusions, date range) and outputs normalized JSONL. It mirrors the core reader's semantics so training data reflects what the user actually saw:
+
+- **Active messages only** (`active = 1`): rewound/retracted turns and pre-compaction originals are soft-deleted rows and never extracted.
+- **Insertion order** (`ORDER BY id`, not timestamp): matches core, which orders by AUTOINCREMENT id because wall-clock regressions can reorder timestamps.
+- **Multipart content is decoded** from the core's sentinel-prefixed JSON encoding back into a parts list, so downstream flattening drops non-text parts (base64 image blobs never reach training data).
+- **Archived sessions are excluded** (`archived = 1`).
+- **Delegate subagent sessions are excluded by default** (the `_delegate_from` marker in `model_config`): they are agent-to-agent traffic, not user conversations. Set `finetune.extract.include_delegates: true` to keep them. `/branch` children and compression continuations are real user conversations and are extracted normally.
+
+**Each session is extracted standalone — lineages are never concatenated.** An earlier revision merged compression-split children into their root session; that behavior is **removed**. It was wrong twice over: it followed *every* `parent_session_id` edge (conflating compression continuations with `/branch` children and delegate runs), and a compression child begins with a re-flushed summary plus verbatim copies of retained parent turns, so concatenation duplicated content. Each session row is already a coherent conversation on its own (a compression child's leading summary is valid context). Lineage is retained only as a `root_session_id` field — computed by walking `parent_session_id` edges to the highest reachable ancestor — which the formatter uses to keep a session and its continuations on the same side of the train/eval split (§1.2).
 
 Normalized session format:
 
 ```json
 {
   "session_id": "uuid",
+  "root_session_id": "uuid (== session_id when the session has no ancestors)",
   "started_at": "ISO-8601",
   "turns": [
     {"role": "system", "content": "..."},
@@ -99,7 +108,7 @@ Bad and neutral turns are skipped entirely, not down-weighted. The trainer only 
 
 **Output format**: ShareGPT-style records compatible with Axolotl's `chat_template` dataset type. Each record's conversation list ends on a `gpt` turn so the trainer has a clear loss target. The shared system prompt and tool-call block formatting reuse Hermes's existing `agent/trajectory.py` normalization, plus reasoning-tag conversion (`<REASONING_SCRATCHPAD>` → `<think>`).
 
-**Train/eval split**: deterministic by `session_id` hash (10–15% held out). All turns from a single session land in the same split — this prevents context leakage where earlier turns in a session would otherwise act as a near-duplicate prompt for later turns in the held-out set. Within a split, individual turns from the same session can appear in different orders due to packing, but they never cross the split boundary.
+**Train/eval split**: deterministic by `root_session_id` hash, falling back to `session_id` for records without lineage data such as external imports (10–15% held out). All turns from a session — and from its compression/branch continuations, which share verbatim content with it — land in the same split. This prevents context leakage where earlier turns in a lineage would otherwise act as a near-duplicate prompt for held-out turns. Within a split, individual turns from the same session can appear in different orders due to packing, but they never cross the split boundary.
 
 **Why this matters**: with the old session-based approach, a user with 184 conversations would produce maybe 7 training examples that fit a 1024-token window. With the turn-based approach, the same data produces 250–800 training examples depending on the score threshold — a roughly 30–100× increase in usable training signal from identical raw data.
 
@@ -159,6 +168,8 @@ score = w1 * conversation_signal + w2 * turn_signal + w3 * sentiment + w4 * judg
 
 Default weights: `w1=0.3, w2=0.4, w3=0.1, w4=0.2`. Configurable in `~/.hermes/config.yaml` under `finetune.scoring.weights`.
 
+This composite (and `finetune.scoring.weights`) applies only to the **legacy** scoring mode (`finetune.scoring.mode: legacy`). The default `positive_signals` mode reads its own weight dict, `finetune.scoring.weights_positive` — the two dicts share some key names, so they are kept strictly separate to prevent legacy values from bleeding into the positive-signals math. See the positive-signals spec §"Updated Default Weights" for the default values.
+
 ### 2.6 Bucketing
 
 | Bucket | Score | Training action |
@@ -173,7 +184,7 @@ Users can override automated scores via two mechanisms:
 
 **CLI:** Keybindings (`Ctrl+Y` thumbs up, `Ctrl+N` thumbs down) on the last assistant response. Implemented as a post-response callback in `cli.py`, gated by `finetune.feedback.cli_keybindings` config flag.
 
-**Gateway:** Emoji reactions on bot messages (`👍`/`👎` on Telegram, Discord, etc.). Implemented as a reaction hook registered in `gateway/hooks.py`, gated by `finetune.feedback.gateway_reactions` config flag.
+**Gateway:** Not implemented (removed). No platform adapter emits reaction events into the gateway hook system, and session-level labels from arbitrary chat members are unsafe training signal (a one-emoji poisoning primitive). If platform reaction feedback returns, it needs per-turn attribution and reactor authorship checks first.
 
 Manual flags override the composite score to 1.0 (good) or 0.0 (bad) and are stored in `~/.hermes/finetune/feedback.jsonl`. They also serve as calibration anchors — periodic comparison of automated scores against manual flags tunes the heuristic weights.
 
@@ -472,17 +483,11 @@ When a prompt arrives at a local model provider:
 
 ### 7.2 Hermes Integration Point
 
-Routing plugs into Hermes's provider runtime resolution as a pre-request hook. It only activates when the active provider is local (llama.cpp, custom endpoint). For cloud providers (OpenRouter, Nous Portal, OpenAI), routing is a no-op.
+Routing ships as a standard hermes plugin (`finetune-routing`) registering `llm_request` middleware — no core changes. It only activates when (a) `finetune.routing.enabled` is true, (b) `manage.py redeploy` has written a serving manifest (`<hermes-home>/finetune/serving.json`) describing the llama-server it launched and the adapters that server preloaded, and (c) the request's base_url host matches the manifest server's host (loopback aliases are equivalent; parsed hosts, never substring matching). For cloud providers, routing is a no-op.
 
-This is the most sensitive core integration point. Implementation options in order of preference:
+### 7.3 llama.cpp Per-Request Adapter Scaling
 
-1. **Provider hook** in the runtime resolver — cleanest, no changes to `run_agent.py`.
-2. **Pre-call hook** in `AIAgent.run_conversation()` — more invasive but more flexible.
-3. **External routing proxy** — zero core changes, but re-introduces the proxy architecture we're trying to avoid.
-
-### 7.3 llama.cpp LoRA Hot-Swap
-
-llama.cpp supports loading LoRA adapters at runtime without reloading the base model. The routing layer selects the adapter path and passes it as a parameter. If hot-swap is unavailable, the fallback is serving the merged GGUF for the most commonly used cluster and swapping on restart.
+llama.cpp cannot load an arbitrary adapter path per request. Its per-request API is scale control over adapters **preloaded** via `--lora` at server startup: `"lora": [{"id": N, "scale": s}]`, an extension field accepted through the OpenAI-compatible endpoint, where `id` is the positional index of the `--lora` flag. The middleware therefore sets scale 1.0 on the served adapter whose cluster matches the routed cluster, and scale 0.0 on all served adapters for off-domain prompts — off-domain traffic deliberately falls back to the base model. The serving manifest's adapter list (single entry today) is the extension point for multi-adapter serving.
 
 ---
 
@@ -605,7 +610,6 @@ finetune:
 
   routing:
     enabled: true
-    providers: ["local", "llama-cpp", "custom"]
 
   retraining:
     data_growth_trigger: 0.2
@@ -613,7 +617,6 @@ finetune:
 
   feedback:
     cli_keybindings: true
-    gateway_reactions: true
 ```
 
 ---
@@ -626,8 +629,7 @@ The plugin minimizes core changes. For full integration, these touch points need
 |---|---|---|
 | Config schema: add `finetune` section | `hermes_cli/config.py` | Additive, no breaking changes. `finetune` key is optional and ignored if absent. |
 | CLI keybinding: thumbs up/down | `cli.py` | Optional, gated by `finetune.feedback.cli_keybindings`. No-op if finetune is not installed. |
-| Gateway hook: reaction → feedback | `gateway/hooks.py` | Additive hook registration. Gated by `finetune.feedback.gateway_reactions`. |
-| Provider hook: adapter routing | `run_agent.py` or provider runtime | Pre-request hook. Only activates for local providers when `finetune.routing.enabled` is true. |
+| Provider hook: adapter routing | plugin middleware (`llm_request`) | Ships inside the skill; only activates when `finetune.routing.enabled` is true AND a serving manifest exists (see routing section). |
 | Skill bundling | `optional-skills/mlops/finetune/` | Ships as official optional skill. |
 
 Everything else lives in `~/.hermes/finetune/` and the skill directory, requiring zero core modifications for basic functionality. The skill works without any core PRs — the core changes only enable the deeper integrations (feedback capture, inference routing).

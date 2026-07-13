@@ -20,7 +20,7 @@
 
 - Read from `~/.hermes/state.db` using the schema in `hermes_state.py` (tables: `sessions`, `messages`)
 - Query sessions matching configurable filters: minimum turn count, source exclusions, date range
-- Reconstruct compression-split conversations via `parent_session_id` lineage
+- Extract each session standalone; walk `parent_session_id` lineage only to stamp `root_session_id` (used to keep whole lineages on one side of the train/eval split). Transcript merging was removed — compression children re-flush retained parent turns, so concatenation duplicates content, and branch/delegate children are not continuations at all. Delegate-subagent sessions are excluded by default (`finetune.extract.include_delegates`).
 - Output normalized JSONL to `~/.hermes/finetune/data/extracted/` matching the format in design spec (session_id, started_at, turns, metadata)
 - Support incremental extraction (track last extraction timestamp to avoid re-processing)
 - Support external imports from `~/.hermes/finetune/data/imported/`
@@ -143,7 +143,7 @@
 
 ### 5.1 Benchmark environment (`environments/benchmarks/finetune_bench/`)
 
-- Create `finetune_bench_env.py` subclassing `HermesAgentBaseEnv` from `environments/hermes_base_env.py`
+- Create `finetune_bench_env.py` — standalone harness driving the production agent (`run_agent.AIAgent`) directly (the Atropos `HermesAgentBaseEnv` base it originally subclassed was removed upstream)
 - Implement `setup()`, `get_next_item()`, `format_prompt()`, `compute_reward()`, `evaluate()`
 - `CaseResult` and `FinetuneBenchConfig` dataclasses per bench spec
 
@@ -249,12 +249,10 @@ These are optional and additive. The skill works without them.
 - Gated by `finetune.feedback.cli_keybindings` config flag
 - Write feedback to `~/.hermes/finetune/feedback.jsonl`
 
-### 8.3 Gateway reaction hook
+### 8.3 Gateway reaction hook — REMOVED
 
-- **File:** `gateway/hooks.py` — register reaction handler for emoji feedback
-- Map `thumbs_up`/`thumbs_down` reactions to feedback signals
-- Gated by `finetune.feedback.gateway_reactions` config flag
-- Create hook in `~/.hermes/hooks/finetune-feedback/` with `HOOK.yaml` + `handler.py`
+- Originally: a `reaction:add` handler in `gateway/hooks.py` mapping emoji reactions to feedback signals.
+- Removed: no platform adapter emits `reaction:add`, so the handler could never fire, and its trust model was unsafe — any group-chat member's emoji would have become a last-writer-wins session-level training label. Platform reaction feedback may return later with per-turn attribution and reactor authorship checks.
 
 ### 8.4 Slash command registration
 

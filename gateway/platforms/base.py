@@ -4004,6 +4004,14 @@ class BasePlatformAdapter(ABC):
             self._post_delivery_callbacks.pop(session_key, None)
             return callback if callable(callback) else None
         if generation is not None:
+            # Bare callable stored without generation: the caller has
+            # generation context but the entry doesn't — treat as
+            # "any generation is acceptable" and pop it.  Otherwise
+            # callers that register before a session is active
+            # (generation=None) lose their callback.
+            if callable(entry):
+                self._post_delivery_callbacks.pop(session_key, None)
+                return entry
             return None
         self._post_delivery_callbacks.pop(session_key, None)
         return entry if callable(entry) else None

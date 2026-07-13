@@ -8303,6 +8303,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "mark_resume_pending failed for %s: %s",
                             _sk, _e,
                         )
+                    # Close the session in state.db so it is not left "active"
+                    # indefinitely when drain times out.  The agent's turn never
+                    # completed, so end_reason="agent_close" (== normal close) is
+                    # appropriate — not "session_reset" which signals an explicit
+                    # user or system wipe.  This prevents session accumulation on
+                    # every restart cycle (#XXXXX).
+                    _entry = self.async_session_store._entries.get(_sk)
+                    if _entry and _entry.session_id and self._session_db is not None:
+                        try:
+                            await self._session_db.end_session(_entry.session_id, "agent_close")
+                        except Exception as _e:
+                            logger.debug("end_session failed for %s: %s", _sk, _e)
                 self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
                 )

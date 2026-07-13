@@ -1805,12 +1805,10 @@ class AIAgent:
             # assistant responses never reach state.db (#46053).
             #
             # Track persistence with an intrinsic per-message marker rather than
-            # id(msg). `messages` is a shallow copy of `conversation_history`, so
-            # history dicts are skipped by identity, and new dicts appended
-            # during this turn are written once even if repair compacts the list
-            # around them. Unlike an id()-keyed set, a marker bound to the dict
-            # cannot be aliased onto a freed-then-reused address, so a real turn
-            # can never be silently skipped (see _DB_PERSISTED_MARKER).
+            # id(msg). Unmarked `conversation_history` dicts are only treated as
+            # durable when their persisted representation matches the active
+            # SessionDB prefix. This preserves the shallow-copy fast path without
+            # mistaking a shared in-memory history for a successful DB write.
             #
             # `self._flushed_db_message_ids` is still honoured as a *one-shot*
             # seed: external callers (gateway shutdown, tests) populate it with
@@ -1828,10 +1826,100 @@ class AIAgent:
                 if not isinstance(seed_ids, set):
                     seed_ids = set()
             self._flushed_db_message_session_id = current_session_id
-            history_ids = {
-                id(item) for item in (conversation_history or [])
+            history_items = [
+                item for item in (conversation_history or [])
                 if isinstance(item, dict)
-            }
+            ]
+            message_positions = {}
+            for item_idx, item in enumerate(messages):
+                if isinstance(item, dict):
+                    message_positions.setdefault(id(item), item_idx)
+
+            def _durable_message_key(item: Dict[str, Any], item_idx: Optional[int] = None) -> str:
+                role = item.get("role", "unknown")
+                content = item.get("content")
+                if item_idx == _ov_idx and role == "user":
+                    if _ov_content is not None and not isinstance(content, list):
+                        content = _ov_content
+                if _is_multimodal_tool_result(content):
+                    content = _multimodal_text_summary(content)
+                elif isinstance(content, list):
+                    text_parts = []
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            text_parts.append(str(part.get("text", "")))
+                        elif isinstance(part, dict) and part.get("type") in {
+                            "image", "image_url", "input_image",
+                        }:
+                            text_parts.append("[screenshot]")
+                    content = "\n".join(text_parts) if text_parts else None
+                if role in {"user", "assistant"} and isinstance(content, str):
+                    content = sanitize_context(content).strip()
+
+                object_tool_calls = getattr(item, "tool_calls", None)
+                if isinstance(object_tool_calls, list) and object_tool_calls:
+                    tool_calls_data = [
+                        {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments,
+                        }
+                        for tool_call in object_tool_calls
+                    ]
+                elif isinstance(item.get("tool_calls"), list) and item["tool_calls"]:
+                    tool_calls_data = item["tool_calls"]
+                else:
+                    tool_calls_data = None
+
+                comparable = {
+                    "role": role,
+                    "content": content,
+                    "tool_name": item.get("tool_name") or None,
+                    "tool_calls": tool_calls_data,
+                    "tool_call_id": item.get("tool_call_id") or None,
+                    "finish_reason": item.get("finish_reason") or None,
+                    "reasoning": (item.get("reasoning") or None) if role == "assistant" else None,
+                    "reasoning_content": item.get("reasoning_content") if role == "assistant" else None,
+                    "reasoning_details": (item.get("reasoning_details") or None) if role == "assistant" else None,
+                    "codex_reasoning_items": (item.get("codex_reasoning_items") or None) if role == "assistant" else None,
+                    "codex_message_items": (item.get("codex_message_items") or None) if role == "assistant" else None,
+                }
+                return json.dumps(
+                    comparable,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                )
+
+            durable_history_ids = set()
+            needs_history_recovery = any(
+                not item.get(_DB_PERSISTED_MARKER)
+                and not _is_ephemeral_scaffolding(item)
+                for item in history_items
+            )
+            if needs_history_recovery:
+                try:
+                    durable_rows = self._session_db.get_messages_as_conversation(
+                        str(current_session_id or "")
+                    )
+                except Exception:
+                    durable_rows = []
+                if not isinstance(durable_rows, list):
+                    durable_rows = []
+
+                durable_idx = 0
+                for item in history_items:
+                    if _is_ephemeral_scaffolding(item):
+                        continue
+                    if durable_idx >= len(durable_rows):
+                        break
+                    if (
+                        _durable_message_key(item, message_positions.get(id(item)))
+                        != _durable_message_key(durable_rows[durable_idx])
+                    ):
+                        break
+                    durable_history_ids.add(id(item))
+                    durable_idx += 1
 
             for _msg_idx, msg in enumerate(messages):
                 if not isinstance(msg, dict):
@@ -1849,10 +1937,10 @@ class AIAgent:
                     continue
                 if msg.get(_DB_PERSISTED_MARKER):
                     continue
-                # Already-durable messages: either carried over from the loaded
-                # history copy, or seeded by a caller. Stamp them so future
+                # Already-durable messages: either reconciled against the active
+                # SessionDB prefix, or seeded by a caller. Stamp them so future
                 # flushes skip them without consulting any id() set again.
-                if id(msg) in history_ids or id(msg) in seed_ids:
+                if id(msg) in durable_history_ids or id(msg) in seed_ids:
                     msg[_DB_PERSISTED_MARKER] = True
                     continue
                 role = msg.get("role", "unknown")

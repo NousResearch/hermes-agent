@@ -104,6 +104,82 @@ class TestIdentityFlush:
             finally:
                 db.close()
 
+    def test_shared_history_is_flushed_when_session_db_is_empty(self):
+        """Object identity alone must not claim an unpersisted history is durable."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                messages = [
+                    {"role": "user", "content": "missing question"},
+                    {"role": "assistant", "content": "missing answer"},
+                ]
+
+                agent._last_flushed_db_idx = len(messages)
+                agent._flush_messages_to_session_db(messages, list(messages))
+
+                assert _contents(db) == ["missing question", "missing answer"]
+                assert all(m.get("_db_persisted") is True for m in messages)
+            finally:
+                db.close()
+
+    def test_partial_durable_prefix_ignores_ephemeral_history_positions(self):
+        """Reconcile durable rows by representation, not raw list position/count."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                setattr(agent, "_persist_user_message_idx", 0)
+                setattr(agent, "_persist_user_message_override", "persisted question")
+                db.append_message(SESSION_ID, "user", "persisted question")
+                db.append_message(
+                    SESSION_ID,
+                    "assistant",
+                    "persisted answer\n[screenshot]",
+                )
+                messages = [
+                    {
+                        "role": "user",
+                        "content": "synthetic prefix\npersisted question",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "(empty)",
+                        "_empty_recovery_synthetic": True,
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "persisted answer"},
+                            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                        ],
+                    },
+                    {"role": "user", "content": "new question"},
+                    {"role": "assistant", "content": "new answer"},
+                ]
+
+                agent._last_flushed_db_idx = len(messages)
+                agent._flush_messages_to_session_db(messages, list(messages))
+
+                assert _contents(db) == [
+                    "persisted question",
+                    "persisted answer\n[screenshot]",
+                    "new question",
+                    "new answer",
+                ]
+                assert messages[0].get("_db_persisted") is True
+                assert messages[1].get("_db_persisted") is None
+                assert all(
+                    messages[index].get("_db_persisted") is True
+                    for index in (2, 3, 4)
+                )
+            finally:
+                db.close()
+
     def test_repeated_flush_same_turn_writes_once(self):
         """Identity tracking preserves #860 same-turn dedup behavior."""
         from hermes_state import SessionDB

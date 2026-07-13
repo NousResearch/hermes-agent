@@ -48,6 +48,7 @@ class TestFlushDeduplication:
             db = SessionDB(db_path=db_path)
             try:
                 agent = self._make_agent(db)
+                db.append_message("test-session-860", "user", "old message")
 
                 conversation_history = [
                     {"role": "user", "content": "old message"},
@@ -61,13 +62,17 @@ class TestFlushDeduplication:
                 agent._flush_messages_to_session_db(messages, conversation_history)
 
                 rows = db.get_messages(agent.session_id)
-                assert len(rows) == 2, f"Expected 2 messages, got {len(rows)}"
+                assert [row["content"] for row in rows] == [
+                    "old message",
+                    "new question",
+                    "new answer",
+                ]
 
                 # Second flush with SAME messages — should write 0 new messages
                 agent._flush_messages_to_session_db(messages, conversation_history)
 
                 rows = db.get_messages(agent.session_id)
-                assert len(rows) == 2, f"Expected still 2 messages after second flush, got {len(rows)}"
+                assert len(rows) == 3, f"Expected still 3 messages after second flush, got {len(rows)}"
             finally:
                 db.close()
 
@@ -111,6 +116,7 @@ class TestFlushDeduplication:
             db = SessionDB(db_path=db_path)
             try:
                 agent = self._make_agent(db)
+                db.append_message("test-session-860", "user", "old")
 
                 conversation_history = [{"role": "user", "content": "old"}]
                 messages = list(conversation_history) + [
@@ -125,7 +131,7 @@ class TestFlushDeduplication:
                     agent._persist_session(messages, conversation_history)
 
                 rows = db.get_messages(agent.session_id)
-                assert len(rows) == 4, f"Expected 4 messages, got {len(rows)} (duplication bug!)"
+                assert len(rows) == 5, f"Expected 5 messages, got {len(rows)} (duplication bug!)"
             finally:
                 db.close()
 

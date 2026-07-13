@@ -2863,6 +2863,25 @@ class TestRunJobWakeGate:
         assert success is True
         assert err is None
 
+    def test_wake_script_uses_workdir(self, tmp_path):
+        """Agent pre-run scripts should inherit the configured job workdir."""
+        import cron.scheduler as scheduler
+
+        workdir = tmp_path / "project"
+        workdir.mkdir()
+        agent = MagicMock()
+        agent.run_conversation = MagicMock(return_value={
+            "final_response": "ok", "messages": []
+        })
+        job = self._make_job()
+        job["workdir"] = str(workdir)
+        with patch.object(scheduler, "_run_job_script",
+                          return_value=(True, "regular output")) as script_fn, \
+             patch("run_agent.AIAgent", return_value=agent):
+            scheduler.run_job(job)
+
+        script_fn.assert_called_once_with("check.py", cwd=str(workdir.resolve()))
+
     def test_script_runs_only_once_on_wake(self):
         """Wake-true path must not re-run the script inside _build_job_prompt
         (script would execute twice otherwise, wasting work and risking
@@ -2870,7 +2889,7 @@ class TestRunJobWakeGate:
         import cron.scheduler as scheduler
 
         call_count = 0
-        def _script_stub(path):
+        def _script_stub(path, **kwargs):
             nonlocal call_count
             call_count += 1
             return (True, "regular output")

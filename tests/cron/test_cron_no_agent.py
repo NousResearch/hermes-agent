@@ -210,6 +210,38 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert "RAM 92% on host" in doc
 
 
+def test_run_job_no_agent_script_uses_workdir(hermes_env, tmp_path):
+    """no_agent script jobs should run from the configured project workdir."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    (workdir / "marker.txt").write_text("present\n")
+    script_path = hermes_env / "scripts" / "cwd_probe.py"
+    script_path.write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "print(f'cwd={os.getcwd()}')\n"
+        "print(f'marker={Path(\"marker.txt\").read_text().strip()}')\n"
+    )
+
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="cwd_probe.py",
+        no_agent=True,
+        deliver="local",
+        workdir=str(workdir),
+    )
+    success, doc, final_response, error = run_job(job)
+    assert success is True
+    assert error is None
+    assert f"cwd={workdir}" in final_response
+    assert "marker=present" in final_response
+    assert f"cwd={workdir}" in doc
+
+
 def test_run_job_no_agent_empty_output_is_silent(hermes_env):
     """Empty stdout → SILENT_MARKER, which suppresses delivery downstream."""
     from cron.jobs import create_job

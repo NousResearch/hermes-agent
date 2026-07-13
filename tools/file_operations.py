@@ -2115,12 +2115,6 @@ class ShellFileOperations(FileOperations):
     
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
-        # Auto-prepend **/ for recursive search if not already present
-        if not pattern.startswith('**/') and '/' not in pattern:
-            search_pattern = pattern
-        else:
-            search_pattern = pattern.split('/')[-1]
-
         search_root = Path(path)
         has_hidden_path_ancestor = any(
             part not in {".", ".."} and part.startswith(".")
@@ -2131,7 +2125,10 @@ class ShellFileOperations(FileOperations):
         # default, and has parallel directory traversal (~200x faster than
         # find on wide trees).  Mirrors _search_content which already uses rg.
         if self._has_command('rg'):
-            return self._search_files_rg(search_pattern, path, limit, offset)
+            # Preserve directory components. Dropping everything before the
+            # final slash turned `**/reference/**` into `**`, silently matching
+            # every file and making distinct searches return identical output.
+            return self._search_files_rg(pattern, path, limit, offset)
 
         # Fallback: find (slower, no .gitignore awareness)
         if not self._has_command('find'):
@@ -2140,6 +2137,17 @@ class ShellFileOperations(FileOperations):
                       "Install ripgrep for best results: "
                       "https://github.com/BurntSushi/ripgrep#installation"
             )
+
+        if '/' in pattern:
+            return SearchResult(
+                error=(
+                    "Path-aware file globs require ripgrep. Set `path` to the "
+                    "directory to search and use a basename glob such as `*.py`, "
+                    "or install ripgrep."
+                )
+            )
+
+        search_pattern = pattern
 
         # Exclude hidden directories (matching ripgrep's default behavior).
         hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""

@@ -41,7 +41,7 @@ def _install_test_provider(tmp_path, *, api_mode="chat_completions"):
         '    aliases=("rbx",),\n'
         '    display_name="RelayBox",\n'
         '    description="RelayBox test provider",\n'
-        '    env_vars=("RELAYBOX_API_KEY",),\n'
+        '    env_vars=("RELAYBOX_API_KEY", "RELAYBOX_BASE_URL"),\n'
         '    base_url="https://relaybox.example/v1",\n'
         '    auth_type="api_key",\n'
         f'    api_mode="{api_mode}",\n'
@@ -61,6 +61,7 @@ def test_plugin_provider_resolves_credentials_and_status(tmp_path, monkeypatch):
     hermes_home = _install_test_provider(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("RELAYBOX_API_KEY", "relaybox-secret")
+    monkeypatch.setenv("RELAYBOX_BASE_URL", "https://relaybox-env.example/v1")
     _clear_provider_caches()
 
     creds = resolve_api_key_provider_credentials("relaybox")
@@ -68,11 +69,11 @@ def test_plugin_provider_resolves_credentials_and_status(tmp_path, monkeypatch):
 
     assert creds["provider"] == "relaybox"
     assert creds["api_key"] == "relaybox-secret"
-    assert creds["base_url"] == "https://relaybox.example/v1"
+    assert creds["base_url"] == "https://relaybox-env.example/v1"
     assert creds["source"] == "RELAYBOX_API_KEY"
     assert status["configured"] is True
     assert status["logged_in"] is True
-    assert status["base_url"] == "https://relaybox.example/v1"
+    assert status["base_url"] == "https://relaybox-env.example/v1"
     assert status["key_source"] == "RELAYBOX_API_KEY"
 
     _clear_provider_caches()
@@ -143,7 +144,7 @@ def test_plugin_provider_picker_reads_dotenv(tmp_path, monkeypatch):
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
+        "hermes_cli.config.get_env_value_prefer_dotenv",
         lambda key: "dotenv-secret" if key == "RELAYBOX_API_KEY" else None,
     )
     _clear_provider_caches()
@@ -158,6 +159,30 @@ def test_plugin_provider_picker_reads_dotenv(tmp_path, monkeypatch):
     relaybox = next((p for p in providers if p["slug"] == "relaybox"), None)
     assert relaybox is not None, "Plugin provider with .env-only key should appear in picker"
     assert relaybox["models"] == ["relaybox-agent", "relaybox-fast"]
+
+    _clear_provider_caches()
+
+
+def test_plugin_provider_base_url_env_is_not_treated_as_api_key(tmp_path, monkeypatch):
+    hermes_home = _install_test_provider(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("RELAYBOX_API_KEY", raising=False)
+    monkeypatch.setenv("RELAYBOX_BASE_URL", "https://relaybox-env.example/v1")
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    _clear_provider_caches()
+
+    status = get_api_key_provider_status("relaybox")
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={},
+        custom_providers=[],
+        max_models=10,
+    )
+
+    assert status["configured"] is False
+    assert status["key_source"] == ""
+    assert next((p for p in providers if p["slug"] == "relaybox"), None) is None
 
     _clear_provider_caches()
 

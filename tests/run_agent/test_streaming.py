@@ -3,11 +3,8 @@
 Tests the unified streaming API call, delta callbacks, tool-call
 suppression, provider fallback, and CLI streaming display.
 """
-import json
-import threading
-import uuid
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -97,6 +94,99 @@ class TestStreamingAccumulator:
         assert response.choices[0].finish_reason == "stop"
         assert response.usage is not None
         assert response.usage.completion_tokens == 3
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_native_gemini_endpoint_omits_stream_options(self, mock_close, mock_create):
+        """Google's native Gemini REST endpoint rejects OpenAI-only stream_options."""
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([
+            _make_stream_chunk(content="Paris", finish_reason="stop", model="gemini"),
+        ])
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            model="gemini-3-flash-preview",
+            provider="gemini",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "Paris"
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["stream"] is True
+        assert "stream_options" not in call_kwargs
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_gemini_openai_compat_shim_keeps_stream_options(self, mock_close, mock_create):
+        """The Gemini OpenAI-compat shim (.../openai) accepts stream_options."""
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([
+            _make_stream_chunk(content="ok", finish_reason="stop", model="gemini"),
+            _make_empty_chunk(usage=SimpleNamespace(prompt_tokens=2, completion_tokens=1)),
+        ])
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-3-flash-preview",
+            provider="gemini",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "ok"
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["stream_options"] == {"include_usage": True}
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_openai_compatible_streaming_keeps_stream_options(self, mock_close, mock_create):
+        """OpenAI-compatible aggregators still request final usage chunks."""
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([
+            _make_stream_chunk(content="ok", finish_reason="stop", model="test-model"),
+            _make_empty_chunk(usage=SimpleNamespace(prompt_tokens=2, completion_tokens=1)),
+        ])
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            provider="openrouter",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "ok"
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["stream_options"] == {"include_usage": True}
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
@@ -536,6 +626,100 @@ class TestStreamingFallback:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_response_object_disables_streaming_and_returns_final_response(
+        self, mock_close, mock_create
+    ):
+        """Adapters that ignore stream=True should fall back cleanly."""
+        from run_agent import AIAgent
+
+        final_response = SimpleNamespace(
+            model="copilot-acp",
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="Hello from ACP",
+                    tool_calls=None,
+                    reasoning_content=None,
+                    reasoning=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = final_response
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            model="claude-sonnet-4.6",
+            provider="copilot-acp",
+            api_key="test-key",
+            base_url="http://localhost:1234/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        deltas = []
+        agent._stream_callback = lambda text: deltas.append(text)
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response is final_response
+        assert agent._disable_streaming is True
+        assert deltas == ["Hello from ACP"]
+
+    @pytest.mark.parametrize("choices", [[], None], ids=["empty", "none"])
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_completed_response_no_usable_choices_returned_not_iterated(
+        self, mock_close, mock_create, choices
+    ):
+        """A completed response whose ``choices`` is empty ``[]`` or ``None`` is
+        still a whole (non-iterable) response, not a token stream.
+
+        The pre-existing guard (#55932) recognized a completed response only
+        when ``choices`` was a *non-empty* list, so an empty/terminal or
+        error/content-filter frame fell through to ``for chunk in stream`` and
+        crashed with ``'types.SimpleNamespace' object is not iterable`` (#55933,
+        hit by the MoA openai-codex aggregator). It must now disable streaming
+        and return the object for the outer loop's invalid-response retry path
+        instead of iterating it.
+        """
+        from run_agent import AIAgent
+
+        final_response = SimpleNamespace(model="gpt-5.5", choices=choices, usage=None)
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = final_response
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            model="default",
+            provider="moa",
+            api_key="test-key",
+            base_url="moa://local",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        deltas = []
+        agent._stream_callback = lambda text: deltas.append(text)
+
+        # Must NOT raise "'types.SimpleNamespace' object is not iterable".
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response is final_response
+        assert agent._disable_streaming is True
+        assert deltas == []
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_stream_error_propagates_original(self, mock_close, mock_create):
         """The original streaming error propagates (not a fallback error)."""
         from run_agent import AIAgent
@@ -783,32 +967,28 @@ class TestCodexStreamCallbacks:
         agent.api_mode = "codex_responses"
         agent._interrupt_requested = False
 
-        # Mock the stream context manager
-        mock_event_text = SimpleNamespace(
-            type="response.output_text.delta",
-            delta="Hello from Codex!",
-        )
-        mock_event_done = SimpleNamespace(
-            type="response.completed",
-            delta="",
-        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.output_text.delta",
+                delta="Hello from Codex!",
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", id="r1", usage=None),
+            ),
+        ]
 
-        mock_stream = MagicMock()
-        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-        mock_stream.__iter__ = MagicMock(return_value=iter([mock_event_text, mock_event_done]))
-        mock_stream.get_final_response.return_value = SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="Hello from Codex!")],
-            )],
-            status="completed",
-        )
+        class _FakeCreateStream:
+            def __iter__(self_inner):
+                return iter(events)
+            def close(self_inner):
+                return None
 
         mock_client = MagicMock()
-        mock_client.responses.stream.return_value = mock_stream
+        mock_client.responses.create.return_value = _FakeCreateStream()
 
-        response = agent._run_codex_stream({}, client=mock_client)
+        agent._run_codex_stream({}, client=mock_client)
         assert "Hello from Codex!" in deltas
 
     def test_codex_stream_refreshes_activity_on_every_event(self):
@@ -828,56 +1008,39 @@ class TestCodexStreamCallbacks:
         touch_calls = []
         agent._touch_activity = lambda desc: touch_calls.append(desc)
 
-        mock_event_text_1 = SimpleNamespace(
-            type="response.output_text.delta",
-            delta="Hello",
-        )
-        mock_event_text_2 = SimpleNamespace(
-            type="response.output_text.delta",
-            delta=" world",
-        )
-        mock_event_done = SimpleNamespace(
-            type="response.completed",
-            delta="",
-        )
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta="Hello"),
+            SimpleNamespace(type="response.output_text.delta", delta=" world"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", id="r2", usage=None),
+            ),
+        ]
 
-        mock_stream = MagicMock()
-        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
-        mock_stream.__exit__ = MagicMock(return_value=False)
-        mock_stream.__iter__ = MagicMock(
-            return_value=iter([mock_event_text_1, mock_event_text_2, mock_event_done])
-        )
-        mock_stream.get_final_response.return_value = SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="Hello world")],
-            )],
-            status="completed",
-        )
+        class _FakeCreateStream:
+            def __iter__(self_inner):
+                return iter(events)
+            def close(self_inner):
+                return None
 
         mock_client = MagicMock()
-        mock_client.responses.stream.return_value = mock_stream
+        mock_client.responses.create.return_value = _FakeCreateStream()
 
         agent._run_codex_stream({}, client=mock_client)
 
         assert touch_calls.count("receiving stream response") == 3
 
-    def test_codex_remote_protocol_error_falls_back_to_create_stream(self):
+    def test_codex_remote_protocol_error_retries_then_raises(self):
+        """Transport errors from ``responses.create`` retry once then re-raise.
+
+        With the migration from ``responses.stream(...)`` to
+        ``responses.create(stream=True)``, there is no longer a separate
+        fallback function — the same call IS the streaming path.  When it
+        raises ``httpx.RemoteProtocolError``, we retry once (matching the
+        old behavior on the helper) and re-raise on the second failure.
+        """
         from run_agent import AIAgent
         import httpx
-
-        fallback_response = SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                content=[SimpleNamespace(type="output_text", text="fallback from create stream")],
-            )],
-            status="completed",
-        )
-
-        mock_client = MagicMock()
-        mock_client.responses.stream.side_effect = httpx.RemoteProtocolError(
-            "peer closed connection without sending complete message body"
-        )
 
         agent = AIAgent(
             api_key="test-key",
@@ -890,11 +1053,22 @@ class TestCodexStreamCallbacks:
         agent.api_mode = "codex_responses"
         agent._interrupt_requested = False
 
-        with patch.object(agent, "_run_codex_create_stream_fallback", return_value=fallback_response) as mock_fallback:
-            response = agent._run_codex_stream({}, client=mock_client)
+        call_count = {"n": 0}
 
-        assert response is fallback_response
-        mock_fallback.assert_called_once_with({}, client=mock_client)
+        def _create_side_effect(**kwargs):
+            call_count["n"] += 1
+            raise httpx.RemoteProtocolError(
+                "peer closed connection without sending complete message body"
+            )
+
+        mock_client = MagicMock()
+        mock_client.responses.create.side_effect = _create_side_effect
+
+        with pytest.raises(httpx.RemoteProtocolError):
+            agent._run_codex_stream({}, client=mock_client)
+
+        # 1 initial + 1 retry = 2 calls
+        assert call_count["n"] == 2
 
     def test_codex_create_stream_fallback_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent
@@ -998,6 +1172,98 @@ class TestAnthropicStreamCallbacks:
         agent._interruptible_streaming_api_call({})
 
         assert touch_calls.count("receiving stream response") == len(events)
+
+    @patch("run_agent.AIAgent._rebuild_anthropic_client")
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_anthropic_stream_parser_valueerror_retries_before_delivery(
+        self, mock_replace, mock_rebuild, monkeypatch,
+    ):
+        """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None.
+
+        On the Anthropic-native path the stream-retry cleanup must close + rebuild the
+        Anthropic client, NOT the OpenAI primary client (which would fail with
+        Missing-credentials and leave the wedged stream open). See #28161.
+        """
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.minimax.io/anthropic",
+            provider="minimax",
+            model="MiniMax-M2.7",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        class _BadStream:
+            response = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                raise ValueError("expected ident at line 1 column 149")
+
+        final_message = SimpleNamespace(content=[], stop_reason="end_turn")
+        good_stream = MagicMock()
+        good_stream.__enter__ = MagicMock(return_value=good_stream)
+        good_stream.__exit__ = MagicMock(return_value=False)
+        good_stream.__iter__ = MagicMock(return_value=iter([]))
+        good_stream.get_final_message.return_value = final_message
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = [
+            _BadStream(),
+            good_stream,
+        ]
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response is final_message
+        assert agent._anthropic_client.messages.stream.call_count == 2
+        # Anthropic-native cleanup: close + rebuild the Anthropic client, never
+        # the OpenAI primary client.
+        assert mock_replace.call_count == 0
+        assert mock_rebuild.call_count == 1
+        assert agent._anthropic_client.close.call_count == 1
+
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
+        self, mock_replace, monkeypatch,
+    ):
+        """Only known provider stream parser ValueErrors are treated as transient."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.minimax.io/anthropic",
+            provider="minimax",
+            model="MiniMax-M2.7",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = ValueError(
+            "invalid local request shape"
+        )
+
+        with pytest.raises(ValueError, match="invalid local request shape"):
+            agent._interruptible_streaming_api_call({})
+
+        assert agent._anthropic_client.messages.stream.call_count == 1
+        assert mock_replace.call_count == 0
 
 
 class TestPartialToolCallWarning:
@@ -1505,3 +1771,86 @@ class TestCopilotACPStreamingDecision:
 
         assert _use_streaming is True
 
+
+class TestBedrockIamStreamingFallback:
+    """bedrock_converse streaming branch: IAM denial of
+    InvokeModelWithResponseStream falls back to converse() inline and sets
+    _disable_streaming for the rest of the session."""
+
+    def _make_bedrock_agent(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="anthropic.claude-3-sonnet-20240229-v1:0",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "bedrock_converse"
+        agent._interrupt_requested = False
+        return agent
+
+    def test_iam_denial_falls_back_inline_and_disables_streaming(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        from botocore.exceptions import ClientError
+
+        agent = self._make_bedrock_agent()
+
+        client = MagicMock()
+        client.converse_stream.side_effect = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User is not authorized to perform: "
+                        "bedrock:InvokeModelWithResponseStream"
+                    ),
+                }
+            },
+            operation_name="ConverseStream",
+        )
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        }
+
+        with patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=client,
+        ):
+            response = agent._interruptible_streaming_api_call(
+                {"modelId": agent.model, "messages": []}
+            )
+
+        client.converse.assert_called_once()
+        assert response.choices[0].message.content == "hi"
+        assert getattr(agent, "_disable_streaming", False) is True
+
+    def test_other_bedrock_errors_still_propagate(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        from botocore.exceptions import ClientError
+
+        agent = self._make_bedrock_agent()
+
+        client = MagicMock()
+        client.converse_stream.side_effect = ClientError(
+            error_response={
+                "Error": {"Code": "ThrottlingException", "Message": "slow down"}
+            },
+            operation_name="ConverseStream",
+        )
+
+        with patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=client,
+        ):
+            with pytest.raises(ClientError):
+                agent._interruptible_streaming_api_call(
+                    {"modelId": agent.model, "messages": []}
+                )
+
+        client.converse.assert_not_called()
+        assert getattr(agent, "_disable_streaming", False) is False

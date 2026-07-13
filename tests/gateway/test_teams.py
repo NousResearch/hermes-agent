@@ -1,13 +1,10 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
-import asyncio
 import json
-import os
 import sys
 import types
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -89,6 +86,7 @@ def _ensure_teams_mock():
     microsoft_teams_api.MessageActivity = MagicMock
     microsoft_teams_api.ConversationReference = MagicMock
     microsoft_teams_api.MessageActivityInput = MagicMock
+    microsoft_teams_api.Attachment = MagicMock
 
     # TypingActivityInput mock
     class MockTypingActivityInput:
@@ -214,10 +212,39 @@ class TestTeamsRequirements:
         monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
         assert check_requirements() is True
 
-    def test_alias_matches(self, monkeypatch):
+    def test_check_teams_requirements_shortcircuits_when_present(self, monkeypatch):
+        # When the SDK + aiohttp are already importable, the active lazy-
+        # installer returns True immediately without attempting an install.
         monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", True)
         monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
+        called = {"ensure_and_bind": 0}
+
+        def _fake_ensure_and_bind(*_args, **_kwargs):
+            called["ensure_and_bind"] += 1
+            return True
+
+        monkeypatch.setattr(
+            "tools.lazy_deps.ensure_and_bind", _fake_ensure_and_bind
+        )
         assert check_teams_requirements() is True
+        assert called["ensure_and_bind"] == 0
+
+    def test_check_teams_requirements_lazy_installs_when_missing(self, monkeypatch):
+        # When deps are missing, the active installer delegates to
+        # ensure_and_bind("platform.teams", ...) — parity with Slack/Discord.
+        monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
+        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", False)
+        seen = {}
+
+        def _fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
+            seen["feature"] = feature
+            return True
+
+        monkeypatch.setattr(
+            "tools.lazy_deps.ensure_and_bind", _fake_ensure_and_bind
+        )
+        assert check_teams_requirements() is True
+        assert seen["feature"] == "platform.teams"
 
     def test_validate_config_with_env(self, monkeypatch):
         monkeypatch.setenv("TEAMS_CLIENT_ID", "test-id")
@@ -282,6 +309,17 @@ class TestTeamsAdapterInit:
         monkeypatch.setenv("TEAMS_PORT", "5000")
         adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
         assert adapter._port == 5000
+
+    def test_invalid_port_from_extra_falls_back_to_default(self):
+        adapter = TeamsAdapter(
+            _make_config(client_id="id", client_secret="secret", tenant_id="tenant", port="abc")
+        )
+        assert adapter._port == 3978
+
+    def test_invalid_port_from_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_PORT", "abc")
+        adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
+        assert adapter._port == 3978
 
     def test_platform_value(self):
         adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
@@ -363,6 +401,13 @@ class TestTeamsConnect:
     @pytest.mark.anyio
     async def test_connect_fails_without_sdk(self, monkeypatch):
         monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
+        # Simulate the SDK being unavailable AND not installable (offline /
+        # locked-down env): the lazy-installer can't rebind the globals, so
+        # TEAMS_SDK_AVAILABLE stays False and connect() must fail.
+        monkeypatch.setattr(
+            "tools.lazy_deps.ensure_and_bind",
+            lambda *_a, **_k: False,
+        )
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
         ))
@@ -705,6 +750,152 @@ class TestTeamsMessageHandling:
         assert adapter.handle_message.await_count == 1
 
 
+class TestTeamsAttachmentClassification:
+    """Document attachments must set MessageType.DOCUMENT so run.py's
+    document-context injection surfaces the cached file to the agent
+    (same bug class as Signal/Email/SimpleX, PR #44695)."""
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    def _make_activity(self, attachments, text="see attached"):
+        activity = MagicMock()
+        activity.text = text
+        activity.id = "activity-att-001"
+        activity.from_ = MagicMock()
+        activity.from_.id = "user-123"
+        activity.from_.aad_object_id = "aad-456"
+        activity.from_.name = "Test User"
+        activity.conversation = MagicMock()
+        activity.conversation.id = "19:abc@thread.v2"
+        activity.conversation.conversation_type = "personal"
+        activity.conversation.name = "Test Chat"
+        activity.conversation.tenant_id = "tenant-789"
+        activity.attachments = attachments
+        return activity
+
+    def _make_ctx(self, activity):
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    def _file_download_attachment(self, name="report.pdf", file_type="pdf"):
+        att = MagicMock()
+        att.content_type = "application/vnd.microsoft.teams.file.download.info"
+        att.content_url = None
+        att.name = name
+        att.content = {
+            "downloadUrl": "https://contoso.sharepoint.com/download/x",
+            "fileType": file_type,
+        }
+        return att
+
+    def _image_attachment(self):
+        att = MagicMock()
+        att.content_type = "image/png"
+        att.content_url = "https://smba.example.com/img.png"
+        att.name = "img.png"
+        return att
+
+    def _html_body_attachment(self):
+        # Teams mirrors the message body as a text/html attachment
+        att = MagicMock()
+        att.content_type = "text/html"
+        att.content_url = None
+        att.name = ""
+        return att
+
+    @pytest.mark.anyio
+    async def test_file_download_info_sets_document_type(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
+
+        activity = self._make_activity([self._file_download_attachment()])
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "Documents must be classified as DOCUMENT so run.py injects file context."
+        )
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["application/pdf"]
+
+    @pytest.mark.anyio
+    async def test_mixed_image_and_document_prefers_document(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
+
+        async def fake_cache_image(url, *a, **kw):
+            return "/tmp/img.png"
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_teams_mod, "cache_image_from_url", fake_cache_image)
+            activity = self._make_activity([
+                self._image_attachment(),
+                self._file_download_attachment(),
+            ])
+            await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert len(event.media_urls) == 2
+
+    @pytest.mark.anyio
+    async def test_html_body_attachment_stays_text(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        activity = self._make_activity([self._html_body_attachment()])
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.TEXT
+        assert event.media_urls == []
+
+    @pytest.mark.anyio
+    async def test_image_only_still_photo(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+
+        async def fake_cache_image(url, *a, **kw):
+            return "/tmp/img.png"
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_teams_mod, "cache_image_from_url", fake_cache_image)
+            activity = self._make_activity([self._image_attachment()])
+            await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/img.png"]
+
+    @pytest.mark.anyio
+    async def test_download_failure_degrades_to_text(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(side_effect=Exception("boom"))
+
+        activity = self._make_activity([self._file_download_attachment()])
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.TEXT
+        assert event.media_urls == []
+
+
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────
 
 
@@ -752,7 +943,7 @@ def _install_fake_aiohttp(monkeypatch, session):
     """Replace ``aiohttp`` in ``sys.modules`` so ``import aiohttp as _aiohttp``
     inside ``_standalone_send`` picks up our fake."""
     fake_aiohttp = types.SimpleNamespace(
-        ClientSession=lambda timeout=None: session,
+        ClientSession=lambda timeout=None, **kwargs: session,
         ClientTimeout=lambda total=None: None,
     )
     monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
@@ -877,3 +1068,60 @@ class TestTeamsStandaloneSend:
         assert "error" in result
         assert "Bot Framework conversation ID" in result["error"]
         assert len(session.calls) == 0
+
+
+class TestTeamsMediaAttachments:
+    """send_video / send_voice / send_document route through the same
+    Attachment mechanism as send_image so the gateway's media dispatch
+    (run.py) delivers native attachments instead of the base-class text
+    fallback (file path sent as plain text)."""
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter._app.send = AsyncMock(return_value=MagicMock(id="msg-001"))
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_video_remote_url_succeeds(self):
+        adapter = self._make_adapter()
+        result = await adapter.send_video("19:abc@thread.v2", "https://cdn.example.com/clip.mp4")
+        assert result.success
+        assert result.message_id == "msg-001"
+        adapter._app.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_voice_local_file_base64(self, tmp_path):
+        adapter = self._make_adapter()
+        audio = tmp_path / "reply.mp3"
+        audio.write_bytes(b"ID3fakeaudio")
+        result = await adapter.send_voice("19:abc@thread.v2", str(audio), caption="here you go")
+        assert result.success
+        adapter._app.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_document_local_file_base64(self, tmp_path):
+        adapter = self._make_adapter()
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF-1.4 fake")
+        result = await adapter.send_document("19:abc@thread.v2", str(doc))
+        assert result.success
+        adapter._app.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_video_without_app_fails(self):
+        adapter = self._make_adapter()
+        adapter._app = None
+        result = await adapter.send_video("19:abc@thread.v2", "https://cdn.example.com/clip.mp4")
+        assert not result.success
+        assert "not initialized" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_document_missing_file_fails_gracefully(self):
+        adapter = self._make_adapter()
+        result = await adapter.send_document("19:abc@thread.v2", "/no/such/file.pdf")
+        assert not result.success
+        adapter._app.send.assert_not_awaited()

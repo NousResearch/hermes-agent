@@ -3988,6 +3988,23 @@ def _tiny_bootstrap_fixture(tmp_path, monkeypatch):
         hashlib.sha256(archive).hexdigest(),
     )
 
+    def portable_no_replace(source, destination, *, exists_code, failed_code):
+        # These tests exercise the bootstrap recovery state machine, not the
+        # Darwin syscall contract.  The dedicated Darwin-only test below uses
+        # the real renamex_np(RENAME_EXCL) implementation.
+        if os.path.lexists(destination):
+            raise OwnerLauncherError(exists_code)
+        try:
+            os.rename(source, destination)
+        except OSError:
+            raise OwnerLauncherError(failed_code) from None
+
+    monkeypatch.setattr(
+        launcher,
+        "_darwin_rename_no_replace",
+        portable_no_replace,
+    )
+
     def downloader(path):
         downloads.append(path)
         launcher.Path(path).write_bytes(archive)

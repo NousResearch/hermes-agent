@@ -12,6 +12,8 @@ does four mechanical things after an exact, fresh coordinator authorization:
 Secret values are never accepted on argv, placed in the environment, written
 to a file, logged, or included in a receipt.  The temporary administrator is
 not considered cleaned up until a post-delete users.list proves it absent.
+The owner launcher is intentionally limited to Darwin and Linux and fails
+closed on every other platform before reading a secret.
 """
 
 from __future__ import annotations
@@ -1167,7 +1169,11 @@ class _OwnerSignalFence:
 
     def install(self) -> None:
         try:
-            for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            for signum in (
+                signal.SIGINT,
+                signal.SIGTERM,
+                signal.SIGHUP,  # windows-footgun: ok
+            ):
                 self._previous[signum] = signal.getsignal(signum)
                 signal.signal(signum, self._handle)
         except (OSError, RuntimeError, ValueError):
@@ -3590,7 +3596,7 @@ def _canonical_owner_home(*, environment: Mapping[str, str] = os.environ) -> str
     """Resolve the login home without consulting attacker-controlled ``HOME``."""
 
     try:
-        account = pwd.getpwuid(os.getuid())
+        account = pwd.getpwuid(os.getuid())  # windows-footgun: ok
         home = os.path.abspath(account.pw_dir)
         metadata = os.lstat(home)
     except (KeyError, OSError):
@@ -3599,7 +3605,7 @@ def _canonical_owner_home(*, environment: Mapping[str, str] = os.environ) -> str
         not os.path.isabs(account.pw_dir)
         or os.path.realpath(home) != home
         or not stat.S_ISDIR(metadata.st_mode)
-        or metadata.st_uid != os.getuid()
+        or metadata.st_uid != os.getuid()  # windows-footgun: ok
         or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
     ):
         raise OwnerLauncherError("canonical_owner_home_invalid")
@@ -3717,7 +3723,7 @@ class PinnedGcloudConfiguration:
             if (
                 os.path.realpath(home) != home
                 or not stat.S_ISDIR(metadata.st_mode)
-                or metadata.st_uid != os.getuid()
+                or metadata.st_uid != os.getuid()  # windows-footgun: ok
                 or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
             ):
                 raise OwnerLauncherError("canonical_owner_home_invalid")
@@ -3746,7 +3752,7 @@ class PinnedGcloudConfiguration:
         if (
             not stat.S_ISDIR(metadata.st_mode)
             or stat.S_ISLNK(metadata.st_mode)
-            or metadata.st_uid != os.getuid()
+            or metadata.st_uid != os.getuid()  # windows-footgun: ok
             or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
         ):
             raise OwnerLauncherError("trusted_gcloud_config_invalid")
@@ -3817,7 +3823,7 @@ class PinnedGcloudConfiguration:
             unavailable_code="trusted_gcloud_config_unavailable",
             invalid_code="trusted_gcloud_config_invalid",
             changed_code="trusted_gcloud_config_changed",
-            allowed_owners=frozenset({os.getuid()}),
+            allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
         )
         try:
             active_name = active_payload.decode("ascii", errors="strict")
@@ -3834,7 +3840,7 @@ class PinnedGcloudConfiguration:
             unavailable_code="trusted_gcloud_config_unavailable",
             invalid_code="trusted_gcloud_config_invalid",
             changed_code="trusted_gcloud_config_changed",
-            allowed_owners=frozenset({os.getuid()}),
+            allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
         )
         account = self._parse_configuration(configuration_payload)
         return (
@@ -3960,7 +3966,7 @@ class PinnedGoogleComputeKnownHosts:
         if (
             not stat.S_ISDIR(directory.st_mode)
             or stat.S_ISLNK(directory.st_mode)
-            or directory.st_uid != os.getuid()
+            or directory.st_uid != os.getuid()  # windows-footgun: ok
             or stat.S_IMODE(directory.st_mode) != 0o700
             or os.path.dirname(self._private_key) != self._ssh_root
             or os.path.dirname(self._public_key) != self._ssh_root
@@ -3987,7 +3993,7 @@ class PinnedGoogleComputeKnownHosts:
                 unavailable_code="trusted_known_hosts_unavailable",
                 invalid_code="trusted_known_hosts_invalid",
                 changed_code="trusted_known_hosts_changed",
-                allowed_owners=frozenset({os.getuid()}),
+                allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
             )
             if candidate == self._path:
                 self._validate_known_hosts_payload(payload)
@@ -4029,7 +4035,7 @@ class PinnedGoogleComputeKnownHosts:
             unavailable_code="trusted_known_hosts_unavailable",
             invalid_code="trusted_known_hosts_invalid",
             changed_code="trusted_known_hosts_changed",
-            allowed_owners=frozenset({os.getuid()}),
+            allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
         )
         try:
             line = payload.decode("ascii", errors="strict")
@@ -4079,7 +4085,7 @@ class _PinnedExecutablePath:
                 except OSError:
                     raise OwnerLauncherError(self._changed_code) from None
                 identity = (metadata.st_dev, metadata.st_ino)
-                if metadata.st_uid not in {0, os.getuid()}:
+                if metadata.st_uid not in {0, os.getuid()}:  # windows-footgun: ok
                     raise OwnerLauncherError(self._invalid_code)
                 if stat.S_ISLNK(metadata.st_mode):
                     if identity in seen:
@@ -4142,7 +4148,7 @@ class _PinnedExecutablePath:
                     unavailable_code=self._changed_code,
                     invalid_code=self._invalid_code,
                     changed_code=self._changed_code,
-                    allowed_owners=frozenset({0, os.getuid()}),
+                    allowed_owners=frozenset({0, os.getuid()}),  # windows-footgun: ok
                 )
                 return (tuple(chain), ("file", prefix, *file_fingerprint)), prefix
             if followed_link:
@@ -4302,7 +4308,7 @@ class TrustedGcloudExecutable:
                 or path.endswith((".pyc", ".pyo"))
             ):
                 raise OwnerLauncherError("trusted_gcloud_sdk_bytecode_forbidden")
-            if metadata.st_uid not in {0, os.getuid()}:
+            if metadata.st_uid not in {0, os.getuid()}:  # windows-footgun: ok
                 raise OwnerLauncherError(invalid_code)
             if metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
                 raise OwnerLauncherError(invalid_code)
@@ -4354,7 +4360,7 @@ class TrustedGcloudExecutable:
                     unavailable_code=changed_code,
                     invalid_code=invalid_code,
                     changed_code=changed_code,
-                    allowed_owners=frozenset({0, os.getuid()}),
+                    allowed_owners=frozenset({0, os.getuid()}),  # windows-footgun: ok
                     allow_empty=True,
                 )
                 total_bytes += len(payload)
@@ -4403,7 +4409,7 @@ class TrustedGcloudExecutable:
             unavailable_code="trusted_gcloud_sdk_changed",
             invalid_code="trusted_gcloud_sdk_invalid",
             changed_code="trusted_gcloud_sdk_changed",
-            allowed_owners=frozenset({0, os.getuid()}),
+            allowed_owners=frozenset({0, os.getuid()}),  # windows-footgun: ok
         )
         if payload != f"{_GCLOUD_SDK_VERSION}\n".encode("ascii"):
             raise OwnerLauncherError("trusted_gcloud_sdk_version_invalid")
@@ -4553,7 +4559,7 @@ class TrustedGcloudExecutable:
             unavailable_code="trusted_runtime_bootstrap_receipt_unavailable",
             invalid_code="trusted_runtime_bootstrap_receipt_invalid",
             changed_code="trusted_runtime_bootstrap_receipt_changed",
-            allowed_owners=frozenset({os.getuid()}),
+            allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
         )
         if stat.S_IMODE(int(fingerprint[0])) != 0o600 or int(fingerprint[5]) != 1:
             raise OwnerLauncherError("trusted_runtime_bootstrap_receipt_invalid")
@@ -4679,7 +4685,7 @@ def _require_private_owner_directory(
     if (
         not stat.S_ISDIR(metadata.st_mode)
         or stat.S_ISLNK(metadata.st_mode)
-        or metadata.st_uid != os.getuid()
+        or metadata.st_uid != os.getuid()  # windows-footgun: ok
         or stat.S_IMODE(metadata.st_mode) != 0o700
     ):
         raise OwnerLauncherError("trusted_runtime_directory_invalid")
@@ -4818,7 +4824,7 @@ def _current_launcher_sha256() -> str:
         unavailable_code="local_launcher_unavailable",
         invalid_code="local_launcher_invalid",
         changed_code="local_launcher_changed",
-        allowed_owners=frozenset({os.getuid()}),
+        allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
     )
     return str(fingerprint[-1])
 
@@ -4841,9 +4847,10 @@ def _capture_sdk_publication_tree(root: str) -> tuple[int, int, str]:
         relative = os.path.relpath(path, root)
         if os.path.basename(path) == "__pycache__" or path.endswith((".pyc", ".pyo")):
             raise OwnerLauncherError("trusted_gcloud_sdk_bytecode_forbidden")
-        if metadata.st_uid not in {0, os.getuid()} or metadata.st_mode & (
-            stat.S_IWGRP | stat.S_IWOTH
-        ):
+        if metadata.st_uid not in {
+            0,
+            os.getuid(),  # windows-footgun: ok
+        } or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
             raise OwnerLauncherError("trusted_runtime_publication_tree_invalid")
         if stat.S_ISDIR(metadata.st_mode):
             TrustedGcloudExecutable._feed_tree_entry(
@@ -4869,7 +4876,7 @@ def _capture_sdk_publication_tree(root: str) -> tuple[int, int, str]:
                 unavailable_code="trusted_runtime_publication_tree_changed",
                 invalid_code="trusted_runtime_publication_tree_invalid",
                 changed_code="trusted_runtime_publication_tree_changed",
-                allowed_owners=frozenset({0, os.getuid()}),
+                allowed_owners=frozenset({0, os.getuid()}),  # windows-footgun: ok
                 allow_empty=True,
             )
             total_bytes += len(payload)
@@ -4917,7 +4924,7 @@ def _validate_sdk_publication_intent(
         unavailable_code="trusted_runtime_publication_intent_unavailable",
         invalid_code="trusted_runtime_publication_intent_invalid",
         changed_code="trusted_runtime_publication_intent_changed",
-        allowed_owners=frozenset({os.getuid()}),
+        allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
     )
     if stat.S_IMODE(int(fingerprint[0])) != 0o600 or int(fingerprint[5]) != 1:
         raise OwnerLauncherError("trusted_runtime_publication_intent_invalid")
@@ -5289,7 +5296,7 @@ def bootstrap_trusted_gcloud_runtime(
             unavailable_code="trusted_runtime_bootstrap_receipt_unavailable",
             invalid_code="trusted_runtime_bootstrap_receipt_invalid",
             changed_code="trusted_runtime_bootstrap_receipt_changed",
-            allowed_owners=frozenset({os.getuid()}),
+            allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
         )
         return _decode_json_object(payload, maximum=_GCLOUD_MAX_CONFIG_BYTES)
 
@@ -5316,7 +5323,7 @@ def bootstrap_trusted_gcloud_runtime(
                 unavailable_code="trusted_runtime_archive_unavailable",
                 invalid_code="trusted_runtime_archive_invalid",
                 changed_code="trusted_runtime_archive_changed",
-                allowed_owners=frozenset({os.getuid()}),
+                allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
             )
             if (
                 archive_fingerprint[-2] != _GCLOUD_SDK_ARCHIVE_BYTES
@@ -5333,7 +5340,7 @@ def bootstrap_trusted_gcloud_runtime(
                 unavailable_code="trusted_runtime_archive_invalid",
                 invalid_code="trusted_runtime_archive_invalid",
                 changed_code="trusted_runtime_archive_changed",
-                allowed_owners=frozenset({os.getuid()}),
+                allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
             )
             if version != f"{_GCLOUD_SDK_VERSION}\n".encode("ascii"):
                 raise OwnerLauncherError("trusted_gcloud_sdk_version_invalid")
@@ -5477,7 +5484,7 @@ def bootstrap_trusted_gcloud_runtime(
             unavailable_code="trusted_runtime_bootstrap_receipt_unavailable",
             invalid_code="trusted_runtime_bootstrap_receipt_invalid",
             changed_code="trusted_runtime_bootstrap_receipt_changed",
-            allowed_owners=frozenset({os.getuid()}),
+            allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
         )
         return _decode_json_object(payload, maximum=_GCLOUD_MAX_CONFIG_BYTES)
     validate_runtime(release_sha)
@@ -5638,7 +5645,7 @@ def _validate_owner_interpreter_invocation(python_path: str) -> None:
         or os.path.realpath(module_path) != module_path
         or not stat.S_ISREG(module_metadata.st_mode)
         or stat.S_ISLNK(module_metadata.st_mode)
-        or module_metadata.st_uid != os.getuid()
+        or module_metadata.st_uid != os.getuid()  # windows-footgun: ok
         or flags.isolated != 1
         or flags.no_site != 1
         or flags.dont_write_bytecode != 1
@@ -6991,7 +6998,7 @@ class FixedLocalFinalApprovalFile:
                 not stat.S_ISREG(before.st_mode)
                 or stat.S_ISLNK(before.st_mode)
                 or before.st_nlink != 1
-                or before.st_uid != os.getuid()
+                or before.st_uid != os.getuid()  # windows-footgun: ok
                 or stat.S_IMODE(before.st_mode) != 0o600
                 or not 0 < before.st_size <= 128 * 1024
             ):
@@ -7435,14 +7442,17 @@ class _IapRemoteSession:
                 self._process.stdin.close()
             if self._process.poll() is None:
                 try:
-                    os.killpg(self._process.pid, signal.SIGTERM)
+                    os.killpg(self._process.pid, signal.SIGTERM)  # windows-footgun: ok
                 except (OSError, ProcessLookupError):
                     pass
                 try:
                     self._process.wait(self._termination_timeout)
                 except subprocess.TimeoutExpired:
                     try:
-                        os.killpg(self._process.pid, signal.SIGKILL)
+                        os.killpg(  # windows-footgun: ok
+                            self._process.pid,
+                            signal.SIGKILL,  # windows-footgun: ok
+                        )
                     except (OSError, ProcessLookupError):
                         pass
                     try:

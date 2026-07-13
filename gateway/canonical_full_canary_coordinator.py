@@ -7705,7 +7705,7 @@ def _terminate_exact_recovery_target(
                 signal_attempted = (
                     _pidfd_signal(
                         pidfd,
-                        signal.SIGKILL,
+                        signal.SIGKILL,  # windows-footgun: ok
                         code="recovery_process_sigkill_failed",
                     )
                     or signal_attempted

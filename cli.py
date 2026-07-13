@@ -12830,11 +12830,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not isinstance(messages, list) or not messages:
             return
 
+        # A normal turn builds a new list that reuses the resumed-history dicts.
+        # Keep that CLI history as the baseline so a signal between assigning
+        # ``_session_messages`` and the turn's DB flush cannot append its durable
+        # prefix a second time. Once the CLI takes the turn result, however, both
+        # names can point at the same live list; passing that alias would mark an
+        # unflushed tail durable without writing it. Marker-only persistence is
+        # correct only in that alias case.
+        conversation_history = getattr(self, "conversation_history", None)
+        if not isinstance(conversation_history, list) or conversation_history is messages:
+            conversation_history = None
+
         try:
-            # Do not pass CLI conversation_history here: during interrupted
-            # shutdown it can alias _session_messages, which makes the DB flush
-            # treat every live message as already durable.
-            agent._persist_session(messages)
+            agent._persist_session(messages, conversation_history)
             if getattr(agent, "session_id", None):
                 self.session_id = agent.session_id
         except (Exception, KeyboardInterrupt) as e:

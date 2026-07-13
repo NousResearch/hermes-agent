@@ -16,6 +16,8 @@ other tests keep their existing no-arg behaviour.
 
 from __future__ import annotations
 
+import threading
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 
@@ -131,7 +133,7 @@ def test_cli_close_persists_agent_session_messages_before_end_session():
 
     cli._persist_active_session_before_close()
 
-    agent._persist_session.assert_called_once_with(transcript)
+    agent._persist_session.assert_called_once_with(transcript, conversation_history)
     assert cli.session_id == "live-session"
 
 
@@ -149,7 +151,7 @@ def test_cli_close_persist_falls_back_to_conversation_history():
 
     cli._persist_active_session_before_close()
 
-    agent._persist_session.assert_called_once_with(conversation_history)
+    agent._persist_session.assert_called_once_with(conversation_history, None)
 
 
 def test_cli_close_persist_skips_empty_transcripts():
@@ -169,6 +171,47 @@ def test_cli_close_persist_skips_empty_transcripts():
     agent._persist_session.assert_not_called()
 
 
+def test_cli_close_uses_distinct_history_as_baseline():
+    """A pre-flush shutdown keeps the distinct CLI prefix as a DB baseline."""
+    import cli as cli_mod
+
+    history = [{"role": "user", "content": "resumed prompt"}]
+    live_messages = history + [{"role": "assistant", "content": "partial response"}]
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = history
+    cli.session_id = "session-id"
+    agent = MagicMock()
+    agent.session_id = "session-id"
+    agent._session_messages = live_messages
+    cli.agent = agent
+
+    cli._persist_active_session_before_close()
+
+    agent._persist_session.assert_called_once_with(live_messages, history)
+
+
+def _real_agent(db, session_id, session_messages):
+    """Build the real persistence seam without the heavyweight LLM client."""
+    from run_agent import AIAgent
+
+    agent = object.__new__(AIAgent)
+    agent._session_db = db
+    agent._session_db_created = True
+    agent.session_id = session_id
+    agent.platform = "cli"
+    agent.model = "test-model"
+    agent._session_messages = session_messages
+    agent._last_flushed_db_idx = 0
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
+    agent._persist_disabled = False
+    agent._cached_system_prompt = None
+    agent._session_init_model_config = None
+    agent._parent_session_id = None
+    agent._session_json_enabled = False
+    return agent
+
+
 def test_cli_close_persist_real_db_survives_history_alias(tmp_path, monkeypatch):
     """CLI close safety-net must persist even when history aliases messages.
 
@@ -182,7 +225,6 @@ def test_cli_close_persist_real_db_survives_history_alias(tmp_path, monkeypatch)
 
     import cli as cli_mod
     from hermes_state import SessionDB
-    from run_agent import AIAgent
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "cli-close-alias"
@@ -193,21 +235,7 @@ def test_cli_close_persist_real_db_survives_history_alias(tmp_path, monkeypatch)
         {"role": "assistant", "content": "partial answer"},
     ]
 
-    agent = object.__new__(AIAgent)
-    agent._session_db = db
-    agent._session_db_created = True
-    agent.session_id = session_id
-    agent.platform = "cli"
-    agent.model = "test-model"
-    agent._session_messages = transcript
-    agent._last_flushed_db_idx = 0
-    agent._flushed_db_message_ids = set()
-    agent._flushed_db_message_session_id = None
-    agent._persist_disabled = False
-    agent._cached_system_prompt = None
-    agent._session_init_model_config = None
-    agent._parent_session_id = None
-    agent._session_json_enabled = False
+    agent = _real_agent(db, session_id, transcript)
 
     cli = object.__new__(cli_mod.HermesCLI)
     cli.conversation_history = transcript
@@ -221,3 +249,115 @@ def test_cli_close_persist_real_db_survives_history_alias(tmp_path, monkeypatch)
     stored = db.get_messages_as_conversation(session_id)
     assert [m["content"] for m in stored] == ["long task", "partial answer"]
     assert cli.session_id == session_id
+
+
+def test_cli_close_preflush_resumed_prefix_is_not_duplicated(tmp_path, monkeypatch):
+    """A signal during the turn-start flush preserves the old DB prefix once.
+
+    The pause is after ``_persist_session`` records its live snapshot but before
+    its normal DB flush. The close helper must retain the distinct CLI baseline.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    import cli as cli_mod
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "cli-close-preflush-resume"
+    db.create_session(session_id=session_id, source="cli")
+    loaded = [
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    for message in loaded:
+        db.append_message(
+            session_id=session_id,
+            role=message["role"],
+            content=message["content"],
+        )
+
+    live_messages = list(loaded) + [{"role": "user", "content": "new prompt"}]
+    agent = _real_agent(db, session_id, [])
+    entered_flush = threading.Event()
+    release_flush = threading.Event()
+    flush_calls = 0
+
+    def _pause_before_flush(
+        messages: list[dict[str, Any]],
+        conversation_history: list[dict[str, Any]] | None = None,
+    ) -> None:
+        nonlocal flush_calls
+        flush_calls += 1
+        if flush_calls == 1:
+            # The worker has assigned its snapshot and is now paused before its
+            # regular DB write. The concurrent close call must stay live.
+            agent._session_messages = messages
+            entered_flush.set()
+            assert release_flush.wait(timeout=5)
+        from run_agent import AIAgent
+
+        # Runtime accepts None; the stub keeps that optional contract explicit.
+        return AIAgent._flush_messages_to_session_db(
+            agent,
+            messages,
+            conversation_history if conversation_history is not None else [],
+        )
+
+    agent._flush_messages_to_session_db = _pause_before_flush
+    worker = threading.Thread(
+        target=lambda: agent._persist_session(live_messages, loaded),
+        daemon=True,
+    )
+    worker.start()
+    assert entered_flush.wait(timeout=5)
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = list(loaded) + [{"role": "user", "content": "ui prompt"}]
+    cli.session_id = session_id
+    cli.agent = agent
+    cli._persist_active_session_before_close()
+
+    release_flush.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+
+    stored = db.get_messages_as_conversation(session_id)
+    assert [m["content"] for m in stored] == [
+        "old prompt",
+        "old answer",
+        "new prompt",
+    ]
+
+
+def test_cli_close_preserves_unflushed_tail_after_prior_prefix_flush(tmp_path, monkeypatch):
+    """Marker-only alias close writes only a new tail after a prior flush."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    import cli as cli_mod
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "cli-close-tail"
+    db.create_session(session_id=session_id, source="cli")
+    prefix = [
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    agent = _real_agent(db, session_id, prefix)
+    agent._flush_messages_to_session_db(prefix, [])
+    live_messages = prefix + [{"role": "assistant", "content": "new tail"}]
+    agent._session_messages = live_messages
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = live_messages
+    cli.session_id = session_id
+    cli.agent = agent
+
+    cli._persist_active_session_before_close()
+
+    stored = db.get_messages_as_conversation(session_id)
+    assert [m["content"] for m in stored] == [
+        "old prompt",
+        "old answer",
+        "new tail",
+    ]

@@ -66,6 +66,29 @@ def show_metadata(path):
         "format": doc.metadata.get("format", ""),
     }, indent=2))
 
+def parse_pages(args):
+    if "--pages" not in args:
+        return None
+
+    idx = args.index("--pages")
+    if idx + 1 >= len(args):
+        raise ValueError("--pages requires a value")
+
+    value = args[idx + 1]
+    try:
+        if "-" not in value:
+            return [int(value)]
+
+        parts = value.split("-")
+        if len(parts) != 2 or not all(parts):
+            raise ValueError
+        start, end = map(int, parts)
+        return list(range(start, end + 1))
+    except ValueError:
+        raise ValueError(
+            f"invalid --pages value {value!r}; expected N or START-END"
+        ) from None
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help"):
@@ -73,21 +96,11 @@ if __name__ == "__main__":
         sys.exit(0)
 
     path = args[0]
-    pages = None
-
-    if "--pages" in args:
-        idx = args.index("--pages")
-        p = args[idx + 1]
-        if "-" in p:
-            parts = p.split("-")
-            if len(parts) == 2:
-                start, end = parts
-                pages = list(range(int(start), int(end) + 1))
-            else:
-                print(f"ERROR: Invalid page range format: {p}", file=sys.stderr)
-                sys.exit(1)
-        else:
-            pages = [int(p)]
+    try:
+        pages = parse_pages(args)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if "--metadata" in args:
         show_metadata(path)

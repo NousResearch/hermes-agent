@@ -1,34 +1,48 @@
-"""防御性测试：extract_pymupdf 的 --pages 参数校验"""
+import importlib.util
+import runpy
 import sys
 from pathlib import Path
 
-script = Path(__file__).resolve().parents[3] / "skills/productivity/ocr-and-documents/scripts/extract_pymupdf.py"
-sys.path.insert(0, str(script.parent))
+import pytest
 
-def test_page_split_defensive():
-    """验证带有多个 '-' 的 page range 会被拒绝而不是 unpack ValueError"""
-    p = "1-2-3"
-    parts = p.split("-")
-    assert len(parts) == 3
-    # 原始代码的 start, end = p.split("-") 会在这里 ValueError
-    # 修复后的代码先检查 len(parts) == 2
-    if len(parts) != 2:
-        accepted = False
-    else:
-        accepted = True
-    assert not accepted
-    print("test_page_split_defensive passed")
 
-def test_valid_page_range_accepted():
-    """验证正常 page range 仍被接受"""
-    p = "1-5"
-    parts = p.split("-")
-    assert len(parts) == 2
-    start, end = parts
-    assert int(start) == 1
-    assert int(end) == 5
-    print("test_valid_page_range_accepted passed")
+SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "skills/productivity/ocr-and-documents/scripts/extract_pymupdf.py"
+)
+SPEC = importlib.util.spec_from_file_location("extract_pymupdf", SCRIPT)
+assert SPEC is not None and SPEC.loader is not None
+extract_pymupdf = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(extract_pymupdf)
 
-if __name__ == "__main__":
-    test_page_split_defensive()
-    test_valid_page_range_accepted()
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("3", [3]),
+        ("1-5", [1, 2, 3, 4, 5]),
+    ],
+)
+def test_parse_pages_accepts_valid_values(value, expected):
+    assert extract_pymupdf.parse_pages(["document.pdf", "--pages", value]) == expected
+
+
+@pytest.mark.parametrize(
+    "page_args",
+    [
+        ["--pages"],
+        ["--pages", "1-2-3"],
+        ["--pages", "abc"],
+        ["--pages", "1-x"],
+    ],
+)
+def test_invalid_pages_exit_cleanly(page_args, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "document.pdf", *page_args])
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_path(str(SCRIPT), run_name="__main__")
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "ERROR:" in captured.err
+    assert "Traceback" not in captured.err

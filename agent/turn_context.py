@@ -171,6 +171,19 @@ def build_turn_context(
     # Bind the skill write-origin ContextVar for this thread.
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
 
+    # Clear the route-change announce dedupe at the top of every turn.
+    #
+    # ``_last_fallback_announced`` de-dupes a re-entrant announce WITHIN one
+    # failover episode (I5: announce once per episode). It was reset only inside
+    # ``restore_primary_runtime`` — but that reset sits AFTER two early-returns
+    # (``auto_recovery=False`` and the primary rate-limit cooldown), so a session
+    # that fails over, gets cooldown-pinned, and re-fails-over to the SAME route
+    # on a later turn kept the stale transition and SILENTLY SUPPRESSED the repeat
+    # announce (the 2026-07-12 "model changed with no 🔄" report). A new turn is a
+    # new episode by definition, so clear it unconditionally here — before the
+    # restore path can early-return — so a genuinely new failover always announces.
+    agent._last_fallback_announced = None
+
     # Restore the primary runtime if the previous turn activated fallback.
     agent._restore_primary_runtime()
 

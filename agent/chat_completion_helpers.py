@@ -1712,6 +1712,13 @@ def _emit_fallback_announce(
         return
     transition = (old_route, new_route)
     if getattr(agent, "_last_fallback_announced", None) == transition:
+        # Already announced THIS transition in the current episode (I5: once per
+        # episode). Logged at INFO so "suppressed as a repeat" is distinguishable
+        # from "threw" when diagnosing a missing announce.
+        logger.info(
+            "route-change announce deduped (transition already announced this episode): %s → %s",
+            old_route, new_route,
+        )
         return
     agent._last_fallback_announced = transition
 
@@ -1771,6 +1778,14 @@ def _emit_fallback_announce(
     emit = getattr(agent, "_emit_status", None)
     if callable(emit):
         emit(msg)
+    else:
+        # No status sink bound (throwaway/CLI-less agent) — the route DID change
+        # but nobody can be told. Log at WARNING so a rebound/missing callback on
+        # a gateway agent is visible instead of silently dropping the announce.
+        logger.warning(
+            "route-change announce has no _emit_status sink; message dropped: %s",
+            msg,
+        )
 
 
 def _emit_switch_announce(
@@ -2371,8 +2386,15 @@ def try_activate_fallback(
                 kind="fallback",
                 reason=reason,
             )
-        except Exception:
-            logger.debug("fallback announce failed", exc_info=True)
+        except Exception as _announce_exc:
+            # A route change the user cannot see is a real visibility bug, not
+            # background chatter — surface it at WARNING so a broken announce
+            # path self-diagnoses in the logs instead of hiding at debug level.
+            logger.warning(
+                "route-change announce failed to reach chat: %s",
+                _announce_exc,
+                exc_info=True,
+            )
         # Reset the stale-call circuit breaker (#58962): the streak measured
         # the OLD provider's unresponsiveness.  Carrying it over would
         # short-circuit the freshly activated fallback before it gets a

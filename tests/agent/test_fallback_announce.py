@@ -158,3 +158,84 @@ def test_no_announce_when_destination_equals_source(monkeypatch):
     try_activate_fallback(agent, reason=FailoverReason.overloaded)
     announces = [m for (k, m) in agent._announced if "fallback" in m.lower()]
     assert announces == [], f"same-model no-op must be silent, got {announces!r}"
+
+
+# ─────────── Regression: dedupe must NOT survive a turn boundary ───────────
+# The 2026-07-12 "model changed with no 🔄" bug: _last_fallback_announced was
+# cleared only inside restore_primary_runtime, AFTER its cooldown/auto_recovery
+# early-returns. A session that failed over, got cooldown-pinned, and re-failed
+# over to the SAME route on a later turn kept the stale transition and silently
+# suppressed the repeat announce. The fix clears the dedupe unconditionally at
+# turn start (turn_context, before restore can early-return).
+
+def test_fallback_reannounces_on_new_turn_after_cooldown_pin(monkeypatch):
+    """A NEW turn is a NEW episode: the same route must re-announce.
+
+    Reproduces the real stranded-dedupe path: after a failover the primary is in
+    rate-limit cooldown, so restore_primary_runtime early-returns WITHOUT clearing
+    the dedupe. On the next turn a fresh failover to the same route must still
+    announce — because the per-turn reset (not the restore path) owns the clear.
+    """
+    _patch_resolver(monkeypatch)
+    ac.set_runtime_main("claude-pool", "claude-opus-4-8",
+                        base_url="http://127.0.0.1:18810/anthropic",
+                        api_key="primary-key", api_mode="anthropic_messages")
+    agent = _fake_agent(model="claude-opus-4-8", provider="claude-pool",
+                        base_url="http://127.0.0.1:18810/anthropic",
+                        api_mode="anthropic_messages")
+
+    # Turn 1: fail over to gpt-5.5 → announces once.
+    try_activate_fallback(agent, reason=FailoverReason.overloaded)
+    first = [m for (k, m) in agent._announced if "fallback" in m.lower()]
+    assert len(first) == 1, f"turn-1 should announce once, got {first!r}"
+
+    # The primary is now cooldown-pinned; simulate restore_primary_runtime's
+    # cooldown early-return (it does NOT clear the dedupe). The stale transition
+    # is still on the agent.
+    import time as _t
+    agent._rate_limited_until = _t.monotonic() + 3600
+    assert agent._last_fallback_announced is not None
+
+    # Turn 2 begins: the per-turn reset clears the dedupe (the fix). We call it
+    # the way turn_context does — unconditionally, before any restore early-return.
+    agent._last_fallback_announced = None  # <-- the fix, exercised here
+
+    # Reset agent back to the primary route so a fresh failover is a real
+    # transition again, then fail over to the SAME destination.
+    agent.model = "claude-opus-4-8"
+    agent.provider = "claude-pool"
+    agent._fallback_activated = False
+    agent._fallback_index = 0
+    try_activate_fallback(agent, reason=FailoverReason.overloaded)
+
+    second = [m for (k, m) in agent._announced if "fallback" in m.lower()]
+    assert len(second) == 2, (
+        "a genuinely new failover on a NEW turn must re-announce (dedupe must "
+        f"not survive the turn boundary), got {second!r}"
+    )
+
+
+def test_dedupe_reset_is_wired_into_turn_context():
+    """Guard the wiring: build_turn_context must clear _last_fallback_announced
+    BEFORE calling _restore_primary_runtime.
+
+    The fix lives in turn_context, not the restore path — and ORDER matters: the
+    restore path early-returns on cooldown/auto_recovery without clearing the
+    dedupe, so a reset placed after the restore call re-introduces the bug.
+    Assert both presence AND ordering so a refactor can't silently move the
+    clear back behind restore_primary_runtime's early-returns.
+    """
+    import inspect
+    from agent import turn_context as tc
+    src = inspect.getsource(tc)
+    reset_tok = "_last_fallback_announced = None"
+    restore_tok = "_restore_primary_runtime()"
+    assert reset_tok in src, (
+        "turn_context must unconditionally clear _last_fallback_announced at "
+        "turn start so a new failover episode re-announces"
+    )
+    assert restore_tok in src, "turn_context no longer calls _restore_primary_runtime?"
+    assert src.index(reset_tok) < src.index(restore_tok), (
+        "the dedupe reset must run BEFORE _restore_primary_runtime() — the "
+        "restore path early-returns on cooldown without clearing it"
+    )

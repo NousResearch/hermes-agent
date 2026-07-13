@@ -121,6 +121,36 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
 
+    def test_create_and_edit_attach_to_session(self, tmp_cron_dir, capsys):
+        cron_command(
+            SimpleNamespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Send a continuable briefing",
+                attach_to_session=True,
+            )
+        )
+        job = list_jobs()[0]
+        assert job["attach_to_session"] is True
+
+        cron_command(
+            SimpleNamespace(
+                cron_command="edit",
+                job_id=job["id"],
+                name="Renamed briefing",
+            )
+        )
+        assert get_job(job["id"])["attach_to_session"] is True
+
+        cron_command(
+            SimpleNamespace(
+                cron_command="edit",
+                job_id=job["id"],
+                attach_to_session=False,
+            )
+        )
+        assert get_job(job["id"])["attach_to_session"] is False
+
     def test_list_does_not_crash_when_repeat_is_null(self, tmp_cron_dir, capsys):
         """A one-shot job can be persisted with ``"repeat": null``. `cron
         list` must render it as ∞ rather than crashing on .get(...)\\.get."""

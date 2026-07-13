@@ -35,6 +35,7 @@ def _make_args(**kwargs):
         "deliver_chat_id": "",
         "secret": "",
         "payload": "",
+        "script": "",
     }
     defaults.update(kwargs)
     return Namespace(**defaults)
@@ -72,6 +73,12 @@ class TestSubscribe:
             webhook_action="subscribe", name="s", secret="my-secret"
         ))
         assert _load_subscriptions()["s"]["secret"] == "my-secret"
+
+    def test_script_option_is_persisted(self):
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="s", script="todoist_filter.py"
+        ))
+        assert _load_subscriptions()["s"]["script"] == "todoist_filter.py"
 
     def test_auto_secret(self):
         webhook_command(_make_args(webhook_action="subscribe", name="s"))
@@ -160,6 +167,20 @@ class TestEnableDisable:
 
         assert "Enabled" in out
         assert _load_subscriptions()["resume-me"]["enabled"] is True
+
+    def test_resubscribe_preserves_disabled_state(self):
+        webhook_command(_make_args(webhook_action="subscribe", name="keep-paused"))
+        webhook_command(_make_args(webhook_action="disable", name="keep-paused"))
+
+        webhook_command(
+            _make_args(
+                webhook_action="subscribe",
+                name="keep-paused",
+                description="Updated description",
+            )
+        )
+
+        assert _load_subscriptions()["keep-paused"]["enabled"] is False
 
     def test_missing_subscription_does_not_create_entry(self, capsys):
         webhook_command(_make_args(webhook_action="disable", name="missing"))

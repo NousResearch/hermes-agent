@@ -67,10 +67,34 @@ hermes webhook subscribe <name> \
 
 Returns the webhook URL and HMAC secret. The user configures their service to POST to that URL.
 
+### Filter or transform payloads before the agent runs
+
+Two mechanisms narrow broad event streams (e.g. Todoist/GitHub fire on every update) so only relevant payloads wake the agent:
+
+- **Declarative `filters`** (config.yaml routes only): list of conditions on payload fields, event type, or headers — operators `equals`, `not_equals`, `contains`, `exists`, `missing`, `in`, `in_file`, `regex`, with `all`/`any`/`not` grouping. Non-matching events are ignored with HTTP 200.
+- **Route scripts** (`--script` on subscribe, or `script:` on a config route): a script under `~/.hermes/scripts/` receives the payload as JSON on stdin. JSON stdout replaces the payload before prompt templating; empty stdout, `[SILENT]`, or a nonzero exit ignores the webhook. `.sh`/`.bash` run with bash, everything else with Python. Scripts cannot live outside `~/.hermes/scripts/` (path traversal is blocked).
+
+```bash
+hermes webhook subscribe todoist-hermes \
+  --prompt "Task changed: {payload.content}" \
+  --script "todoist-hermes-label.py" \
+  --deliver telegram --deliver-chat-id "12345"
+```
+
+Full filter syntax: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks#payload-filters
+
 ### List subscriptions
 ```bash
 hermes webhook list
 ```
+
+### Disable or re-enable a subscription
+```bash
+hermes webhook disable <name>
+hermes webhook enable <name>
+```
+
+Disabling pauses incoming events without deleting the dynamic subscription. It remains visible in `hermes webhook list` and can be re-enabled without restarting the gateway. Static routes from `config.yaml` must be changed in that file.
 
 ### Remove a subscription
 ```bash
@@ -177,7 +201,7 @@ Requires `--deliver` to be a real target (telegram, discord, slack, github_comme
 
 ## How It Works
 
-1. `hermes webhook subscribe` writes to `~/.hermes/webhook_subscriptions.json`
+1. `hermes webhook subscribe`, `disable`, and `enable` update `~/.hermes/webhook_subscriptions.json`
 2. The webhook adapter hot-reloads this file on each incoming request (mtime-gated, negligible overhead)
 3. When a POST arrives matching a route, the adapter formats the prompt and triggers an agent run
 4. The agent's response is delivered to the configured target (Telegram, Discord, GitHub comment, etc.)

@@ -703,7 +703,31 @@ def _mcp_structured_content_duplicates_text(
         parsed = json.loads(text)
     except (TypeError, json.JSONDecodeError):
         return False
-    return parsed == structured
+    return _json_values_equivalent(parsed, structured)
+
+
+def _json_values_equivalent(left: Any, right: Any) -> bool:
+    """Return True only when two JSON-native values match type-sensitively."""
+    if type(left) is not type(right):
+        return False
+
+    if isinstance(left, dict):
+        if left.keys() != right.keys():
+            return False
+        return all(_json_values_equivalent(left[key], right[key]) for key in left)
+
+    if isinstance(left, list):
+        if len(left) != len(right):
+            return False
+        return all(
+            _json_values_equivalent(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+
+    if left is None or isinstance(left, (bool, int, float, str)):
+        return left == right
+
+    return False
 
 
 def _cache_mcp_image_block(block) -> str:

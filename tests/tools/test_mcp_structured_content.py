@@ -136,6 +136,33 @@ class TestStructuredContentPreservation:
         )
         assert data == {"result": text}
 
+    def test_top_level_boolean_number_mismatch_preserves_structured_content(
+        self, _patch_mcp_server
+    ):
+        """JSON booleans are not equivalent to numbers for dedupe."""
+        data = _call_tool_result(
+            _patch_mcp_server,
+            [_FakeContentBlock("true")],
+            1,
+        )
+        assert data["result"] == "true"
+        assert data["structuredContent"] == 1
+
+    def test_nested_boolean_number_mismatch_preserves_structured_content(
+        self, _patch_mcp_server
+    ):
+        """Nested JSON booleans are not equivalent to numbers for dedupe."""
+        text_payload = {"items": [{"enabled": False}]}
+        structured_payload = {"items": [{"enabled": 0}]}
+        text = json.dumps(text_payload)
+        data = _call_tool_result(
+            _patch_mcp_server,
+            [_FakeContentBlock(text)],
+            structured_payload,
+        )
+        assert data["result"] == text
+        assert data["structuredContent"] == structured_payload
+
     def test_supplementary_human_file_text_remains_combined(self, _patch_mcp_server):
         """File/body text plus metadata is not a duplicate FastMCP payload."""
         file_text = "import os\nprint('hello')\n"

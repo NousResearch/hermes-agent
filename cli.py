@@ -395,6 +395,7 @@ def load_cli_config() -> Dict[str, Any]:
             "default": "",
             "base_url": "",
             "provider": "auto",
+            "responses_transport": "sse",
         },
         "terminal": {
             "env_type": "local",
@@ -3872,6 +3873,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
+        self.responses_transport = "sse"
         self.acp_command: Optional[str] = None
         self.acp_args: list[str] = []
         self.base_url = (

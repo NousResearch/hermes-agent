@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +8,7 @@ from agent.codex_websocket_transport import (
     CachedWebSocketContinuationState,
     WebSocketNotStartedError,
     build_cached_websocket_request_body,
+    build_codex_websocket_wire_body,
     cleanup_codex_websocket_sessions,
     get_cached_websocket_input_delta,
     is_supported_codex_websocket_backend,
@@ -60,6 +62,72 @@ def test_request_bodies_match_ignores_input_and_previous_response_id():
     assert request_bodies_match_except_input(a, b)
     c = _body(extra={"reasoning": {"effort": "high"}})
     assert not request_bodies_match_except_input(a, c)
+
+
+def test_wire_body_excludes_sdk_only_options():
+    body = build_codex_websocket_wire_body(
+        _body(extra={
+            "extra_body": {"unsupported": True},
+            "timeout": 12.0,
+            "stream": True,
+            "previous_response_id": "resp_1",
+        })
+    )
+
+    assert body["previous_response_id"] == "resp_1"
+    assert not ({"extra_headers", "extra_body", "timeout", "stream"} & body.keys())
+
+
+def test_emitted_frame_contains_only_wire_fields(monkeypatch):
+    import agent.codex_websocket_transport as mod
+
+    class FakeWS:
+        closed = False
+
+        def send(self, payload):
+            self.sent = payload
+
+        def recv(self, timeout=None):
+            return '{"type":"response.completed","response":{"id":"resp_1","status":"completed"}}'
+
+        def close(self):
+            self.closed = True
+
+    ws = FakeWS()
+    handshake = {}
+
+    def fake_connect(url, headers, timeout=None):
+        handshake["headers"] = dict(headers)
+        handshake["timeout"] = timeout
+        return ws
+
+    monkeypatch.setattr(mod, "_connect_websocket", fake_connect)
+    api_kwargs = _body(extra={
+        "extra_body": {"unsupported": True},
+        "timeout": 8.0,
+        "stream": True,
+        "previous_response_id": "resp_1",
+    })
+    run_codex_websocket_stream(
+        api_kwargs=api_kwargs,
+        client=SimpleNamespace(api_key="k", default_headers={}),
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        session_id=None,
+        transport="websocket",
+        timeout=8.0,
+        collect_events=lambda events, _getter: (
+            list(events),
+            SimpleNamespace(id="resp_1", status="completed", output=[]),
+        )[1],
+    )
+
+    frame = json.loads(ws.sent)
+    assert frame["type"] == "response.create"
+    assert frame["previous_response_id"] == "resp_1"
+    assert not ({"extra_headers", "extra_body", "timeout", "stream"} & frame.keys())
+    assert handshake["headers"]["session_id"]
+    assert handshake["timeout"] == 8.0
 
 
 def test_cached_delta_second_request_sends_suffix_and_previous_response_id():
@@ -148,7 +216,7 @@ def test_websocket_unsupported_provider_fails_before_start():
             base_url="https://api.openai.com/v1",
             session_id="s",
             transport="websocket-cached",
-            collect_events=lambda events, getter: getter(),
+            collect_events=lambda events, _getter: list(events),
         )
 
 
@@ -295,7 +363,7 @@ def test_recv_timeout_polls_interruption(monkeypatch):
             base_url="https://chatgpt.com/backend-api/codex",
             session_id="timeout-interrupt",
             transport="websocket-cached",
-            collect_events=lambda events, getter: getter(),
+            collect_events=lambda events, _getter: list(events),
             interrupted=interrupted,
         )
     assert calls["n"] >= 2

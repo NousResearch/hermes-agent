@@ -1645,6 +1645,7 @@ class CLICommandsMixin:
                     base_url=turn_route["runtime"].get("base_url"),
                     provider=turn_route["runtime"].get("provider"),
                     api_mode=turn_route["runtime"].get("api_mode"),
+                    responses_transport=turn_route["runtime"].get("responses_transport", "sse"),
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
                     max_tokens=turn_route["runtime"].get("max_tokens"),

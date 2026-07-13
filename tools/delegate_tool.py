@@ -1077,6 +1077,7 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    override_responses_transport: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
     override_max_tokens: Optional[int] = None,
     # ACP transport overrides from trusted delegation config.
@@ -1258,6 +1259,11 @@ def _build_child_agent(
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
         effective_api_mode = getattr(parent_agent, "api_mode", None)
+    effective_responses_transport = override_responses_transport or (
+        getattr(parent_agent, "responses_transport", "sse")
+        if effective_provider == _parent_provider
+        else "sse"
+    )
     # Defensive: validate trusted delegation.command exists on PATH before
     # honoring it. Stale config should not force a child onto the ACP transport
     # and then fail at subprocess startup.
@@ -1367,6 +1373,7 @@ def _build_child_agent(
         model=effective_model,
         provider=effective_provider,
         api_mode=effective_api_mode,
+        responses_transport=effective_responses_transport,
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
         max_iterations=max_iterations,
@@ -2586,6 +2593,7 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
+                override_responses_transport=creds.get("responses_transport"),
                 override_request_overrides=creds.get("request_overrides"),
                 override_max_tokens=creds.get("max_output_tokens"),
                 override_acp_command=creds.get("command"),
@@ -3189,6 +3197,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+            "responses_transport": None,
             "request_overrides": None,
             "max_output_tokens": None,
         }
@@ -3219,6 +3228,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
+        "responses_transport": runtime.get("responses_transport", "sse"),
         "request_overrides": dict(runtime.get("request_overrides") or {}),
         "max_output_tokens": runtime.get("max_output_tokens"),
         "command": runtime.get("command"),

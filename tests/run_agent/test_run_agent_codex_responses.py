@@ -295,9 +295,10 @@ def test_responses_transport_auto_falls_back_to_sse_before_start(monkeypatch):
         raise WebSocketNotStartedError("unsupported before start")
 
     class Responses:
-        def stream(self, **kwargs):
+        def create(self, **kwargs):
             calls["sse"] += 1
-            return _FakeResponsesStream(final_response=final)
+            assert kwargs["stream"] is True
+            return final
 
     monkeypatch.setattr("agent.codex_websocket_transport.run_codex_websocket_stream", fake_ws)
     result = agent._run_codex_stream(_codex_request_kwargs(), client=SimpleNamespace(responses=Responses()))
@@ -314,12 +315,46 @@ def test_responses_transport_websocket_forced_does_not_fallback(monkeypatch):
         raise WebSocketNotStartedError("unsupported before start")
 
     class Responses:
-        def stream(self, **kwargs):
+        def create(self, **kwargs):
             raise AssertionError("SSE must not run for forced websocket")
 
     monkeypatch.setattr("agent.codex_websocket_transport.run_codex_websocket_stream", fake_ws)
     with pytest.raises(Exception, match="unsupported before start"):
         agent._run_codex_stream(_codex_request_kwargs(), client=SimpleNamespace(responses=Responses()))
+
+
+def test_websocket_uses_current_raw_event_consumer_and_activity_watchdog(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.responses_transport = "websocket"
+    activity = []
+    deltas = []
+    agent._touch_activity = activity.append
+    agent._fire_stream_delta = deltas.append
+
+    def fake_ws(**kwargs):
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta="hello"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="resp_1",
+                    status="completed",
+                    usage=None,
+                ),
+            ),
+        ]
+        return kwargs["collect_events"](events, None)
+
+    monkeypatch.setattr("agent.codex_websocket_transport.run_codex_websocket_stream", fake_ws)
+    result = agent._run_codex_stream(
+        _codex_request_kwargs(),
+        client=SimpleNamespace(responses=SimpleNamespace()),
+    )
+
+    assert result.output_text == "hello"
+    assert deltas == ["hello"]
+    assert activity == ["receiving stream response", "receiving stream response"]
+    assert agent._codex_stream_last_event_ts > 0
 
 
 def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypatch):

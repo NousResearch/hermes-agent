@@ -97,7 +97,8 @@ export const ja = defineLocale({
       remoteSignInHint: signInLabel =>
         `保存済みのリモートブラウザセッションからサインアウトし、${signInLabel}を開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。`,
       signOutAndSignIn: 'サインアウトして再サインイン',
-      remoteFailureHint: '「ゲートウェイ設定」でゲートウェイの URL とサインインを確認するか、ローカルゲートウェイに切り替えてください。',
+      remoteFailureHint:
+        '「ゲートウェイ設定」でゲートウェイの URL とサインインを確認するか、ローカルゲートウェイに切り替えてください。',
       hideRecentLogs: '最近のログを非表示',
       showRecentLogs: '最近のログを表示',
       signedInTitle: 'サインインしました',
@@ -2205,7 +2206,12 @@ export const ja = defineLocale({
       loadFailedConsole: (code, message) => `読み込みに失敗しました${code ? ` (${code})` : ''}: ${message}`,
       unreachableDescription: 'プレビューページに到達できませんでした。',
       openTarget: url => `${url} を開く`,
-      fallbackTitle: 'プレビュー'
+      fallbackTitle: 'プレビュー',
+      goBack: '戻る',
+      goForward: '進む',
+      reload: 'プレビューを再読み込み',
+      address: 'プレビュー URL',
+      navigate: 'プレビューへ移動'
     }
   },
 

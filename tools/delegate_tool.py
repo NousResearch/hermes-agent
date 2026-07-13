@@ -1366,6 +1366,11 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    # Stash the child's RESOLVED toolsets (post parent-intersection and
+    # blocked-tool stripping) so _run_single_child can surface them on the
+    # result entry — the entry is built in _run_single_child's scope, where
+    # child_toolsets is not visible (issue #63887).
+    child._delegate_child_toolsets = list(child_toolsets)
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -1766,6 +1771,11 @@ def _run_single_child(
     _saved_tool_names = getattr(
         child, "_delegate_saved_tool_names", list(model_tools._last_resolved_tool_names)
     )
+
+    # The child's RESOLVED toolsets (post parent-intersection and blocked-tool
+    # stripping), stashed by _build_child_agent. Surfaced on the result entry
+    # so the parent can catch a goal/capability mismatch (issue #63887).
+    child_toolsets = list(getattr(child, "_delegate_child_toolsets", []) or [])
 
     child_pool = getattr(child, "_credential_pool", None)
     leased_cred_id = None

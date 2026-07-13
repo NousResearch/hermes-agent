@@ -29,6 +29,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
+import { extractGeneratedArtifactTargetsFromText } from '@/lib/generated-artifacts'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
@@ -74,11 +75,13 @@ export const AssistantMessage: FC<{
   )
 
   const previewTargets = useMemo(() => {
-    if (!completedText || !/(https?:\/\/|file:\/\/)/i.test(completedText)) {
+    if (!completedText) {
       return []
     }
 
-    return pickPrimaryPreviewTarget(extractPreviewTargets(completedText))
+    const targets = [...extractPreviewTargets(completedText), ...extractGeneratedArtifactTargetsFromText(completedText)]
+
+    return pickPrimaryPreviewTarget([...new Set(targets)])
   }, [completedText])
 
   const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])

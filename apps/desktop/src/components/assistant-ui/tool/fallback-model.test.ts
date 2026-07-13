@@ -145,6 +145,29 @@ describe('buildToolView file edit diffs', () => {
     expect(view.subtitle).toBe('src/demo.ts')
     expect(view.detail).toBe('')
   })
+
+  it('surfaces generated file artifacts beyond html diffs', () => {
+    expect(
+      buildToolView(
+        part({
+          args: { path: '/tmp/report.pdf' },
+          result: { success: true },
+          toolName: 'write_file'
+        }),
+        ''
+      ).previewTarget
+    ).toBe('/tmp/report.pdf')
+
+    expect(
+      buildToolView(
+        part({
+          result: { output: 'ZIP created: /tmp/test-backup.zip' },
+          toolName: 'terminal'
+        }),
+        ''
+      ).previewTarget
+    ).toBe('/tmp/test-backup.zip')
+  })
 })
 
 describe('buildToolView title actions', () => {

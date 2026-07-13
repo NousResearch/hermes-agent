@@ -1,8 +1,23 @@
 import { isDesktopFsRemoteMode, readDesktopFileText } from '@/lib/desktop-fs'
+import { artifactExtension } from '@/lib/generated-artifacts'
 import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
 const IMAGE_EXTENSIONS = new Set(['.bmp', '.gif', '.jpeg', '.jpg', '.png', '.svg', '.webp'])
+const BINARY_EXTENSIONS = new Set([
+  '.doc',
+  '.docx',
+  '.gz',
+  '.mov',
+  '.mp3',
+  '.mp4',
+  '.pdf',
+  '.tar',
+  '.wav',
+  '.xls',
+  '.xlsx',
+  '.zip'
+])
 
 const LANGUAGE_BY_EXT: Record<string, string> = {
   '.c': 'c',
@@ -43,13 +58,6 @@ function basename(value: string) {
   return value.split(/[\\/]/).filter(Boolean).pop() || value
 }
 
-function extension(value: string) {
-  const clean = value.split(/[?#]/, 1)[0] || value
-  const idx = clean.lastIndexOf('.')
-
-  return idx >= 0 ? clean.slice(idx).toLowerCase() : ''
-}
-
 function joinPath(base: string, rel: string) {
   if (!base) {
     return rel
@@ -58,10 +66,15 @@ function joinPath(base: string, rel: string) {
   return `${base.replace(/\/+$/, '')}/${rel.replace(/^\.?\//, '')}`
 }
 
+function isAbsoluteFileTarget(value: string): boolean {
+  return /^file:\/\//i.test(value) || value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value)
+}
+
 function pathToFileUrl(path: string) {
-  const encoded = path
+  const normalizedPath = path.replace(/\\/g, '/')
+  const encoded = normalizedPath
     .split('/')
-    .map(part => encodeURIComponent(part))
+    .map(part => (part.endsWith(':') ? part : encodeURIComponent(part)))
     .join('/')
 
   return `file://${encoded.startsWith('/') ? encoded : `/${encoded}`}`
@@ -86,23 +99,22 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
     } catch {
       path = raw.replace(/^file:\/\//i, '')
     }
-  } else if (!raw.startsWith('/') && cwd) {
+  } else if (!isAbsoluteFileTarget(raw) && cwd) {
     path = joinPath(cwd, raw)
   }
 
-  const ext = extension(path)
+  const ext = artifactExtension(path)
   const isHtml = HTML_EXTENSIONS.has(ext)
   const isImage = IMAGE_EXTENSIONS.has(ext)
+  const isBinary = BINARY_EXTENSIONS.has(ext)
 
   return {
+    binary: isBinary || undefined,
     kind: 'file',
     label: basename(path),
     language: LANGUAGE_BY_EXT[ext] || 'text',
     path,
-    // Renderer fallback can't stat/sniff without reading; assume text unless
-    // image/html extension says otherwise. LocalFilePreview still guards
-    // binary/large files when readFileText/readFileDataUrl returns metadata.
-    previewKind: isHtml ? 'html' : isImage ? 'image' : 'text',
+    previewKind: isHtml ? 'html' : isImage ? 'image' : isBinary ? 'binary' : 'text',
     source: raw,
     url: pathToFileUrl(path)
   }

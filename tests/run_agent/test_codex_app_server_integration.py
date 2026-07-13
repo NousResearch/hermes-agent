@@ -344,6 +344,33 @@ class TestRunConversationCodexPath:
             agent.run_conversation("hi")
         assert not client_mock.chat.completions.create.called
 
+    def test_hermes_user_skills_are_forwarded_to_codex(self, monkeypatch, tmp_path):
+        captured: dict = {}
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+            self._thread_id = "thread-stub-1"
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                turn_id="turn-stub-1",
+                thread_id="thread-stub-1",
+            )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+
+        assert captured["extra_skill_roots"] == [str(skills_root)]
+
     def test_gateway_terminal_cwd_seeds_codex_thread_cwd(self, monkeypatch, tmp_path):
         """Gateway sessions set TERMINAL_CWD without stamping agent.session_cwd.
         Codex app-server must still start in that configured workspace instead

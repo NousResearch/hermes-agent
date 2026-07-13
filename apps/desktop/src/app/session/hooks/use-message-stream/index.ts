@@ -354,27 +354,33 @@ export function useMessageStream({
         const streamId = state.streamId
         const finalText = renderMediaTags(text).trim()
         const completionError = completionErrorText(finalText)
-        const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
-          const dedupeReference = normalize(visibleFinalText)
+
+          // If final text is empty/missing, keep streamed content as-is instead
+          // of removing all text parts with nothing to replace them.
+          // This handles models that return reasoning-only responses where
+          // the server's final_response is empty.
+          if (!visibleFinalText) {
+            return parts.map(part => ({ ...part }))
+          }
 
           const kept = parts.filter(part => {
+            // Remove all text parts — they'll be replaced by the final text
             if (part.type === 'text') {
               return false
             }
 
-            if (part.type !== 'reasoning' || !dedupeReference) {
-              return true
-            }
-
-            const r = normalize(part.text)
-
-            return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
+            // Keep all non-text parts (reasoning, tool calls, etc.)
+            // Reasoning dedup was removed: the old prefix-match logic could
+            // silently drop reasoning content that naturally overlaps with
+            // the final answer text, making the thinking disclosure vanish
+            // on turn completion.
+            return true
           })
 
-          return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
+          return [...kept, assistantTextPart(visibleFinalText)]
         }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>

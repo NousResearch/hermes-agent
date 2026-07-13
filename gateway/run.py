@@ -19299,14 +19299,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # single consumer — so we leave them on the queue here.
             try:
                 from tools.process_registry import process_registry as _pr
-                _watch_events = _drain_gateway_watch_events(_pr.completion_queue)
-                for evt in _watch_events:
-                    synth_text = _format_gateway_process_notification(evt)
-                    if synth_text:
-                        try:
-                            await self._inject_watch_notification(synth_text, evt)
-                        except Exception as e2:
-                            logger.error("Watch notification injection error: %s", e2)
+                await self._drain_watch_notifications(_pr.completion_queue)
             except Exception as e:
                 logger.debug("Watch queue drain error: %s", e)
 
@@ -23557,6 +23550,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(evt.get("user_name") or "").strip() or None,
             scope_id=scope_id,
         )
+
+    async def _drain_watch_notifications(self, completion_queue) -> None:
+        """Consume queued watch events and inject them when notifications are enabled.
+
+        The queue is ALWAYS drained (so watch events don't rot or requeue-spin)
+        but injection is skipped entirely when
+        ``display.background_process_notifications`` is ``off`` (#9290).
+        """
+        watch_events = _drain_gateway_watch_events(completion_queue)
+        if self._load_background_notifications_mode() == "off":
+            return
+
+        for evt in watch_events:
+            synth_text = _format_gateway_process_notification(evt)
+            if not synth_text:
+                continue
+            try:
+                await self._inject_watch_notification(synth_text, evt)
+            except Exception as exc:
+                logger.error("Watch notification injection error: %s", exc)
 
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict,

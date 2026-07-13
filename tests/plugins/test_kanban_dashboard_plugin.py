@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -112,6 +113,102 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+
+
+def test_board_list_recommends_persistent_workspace_for_configured_workdir(
+    client, tmp_path
+):
+    """Board metadata should tell the UI which safe task default to use."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    kb.write_board_metadata("default", default_workdir=str(repo))
+
+    plain_dir = tmp_path / "notes"
+    plain_dir.mkdir()
+    kb.create_board("notes", default_workdir=str(plain_dir))
+    kb.create_board("disposable")
+
+    response = client.get("/api/plugins/kanban/boards")
+
+    assert response.status_code == 200
+    boards = {board["slug"]: board for board in response.json()["boards"]}
+    assert boards["default"]["default_workspace_kind"] == "worktree"
+    assert boards["notes"]["default_workspace_kind"] == "dir"
+    assert boards["disposable"]["default_workspace_kind"] == "scratch"
+
+
+def test_create_board_persists_project_directory(client, tmp_path):
+    """The dashboard board form should anchor future tasks to its project."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    response = client.post(
+        "/api/plugins/kanban/boards",
+        json={
+            "slug": "project-board",
+            "name": "Project Board",
+            "default_workdir": str(project_dir),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    board = response.json()["board"]
+    assert board["default_workdir"] == str(project_dir.resolve())
+    assert board["default_workspace_kind"] == "dir"
+    assert kb.read_board_metadata("project-board")["default_workdir"] == str(
+        project_dir.resolve()
+    )
+
+
+@pytest.mark.parametrize("path", ["relative/project", "~/missing-project"])
+def test_create_board_rejects_invalid_project_directory(client, path):
+    """A board must not persist a path that cannot anchor worker output."""
+    response = client.post(
+        "/api/plugins/kanban/boards",
+        json={"slug": "invalid-project", "default_workdir": path},
+    )
+
+    assert response.status_code == 400
+    assert "project directory" in response.json()["detail"].lower()
+
+
+def test_new_board_dialog_collects_project_directory():
+    """Board creation should expose the setting that controls safe task defaults."""
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "kanban"
+        / "dashboard"
+        / "dist"
+        / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'const [projectDirectory, setProjectDirectory] = useState("");' in bundle
+    assert "Project directory" in bundle
+    assert "Absolute path to the project folder" in bundle
+    assert "default_workdir: projectDirectory.trim() || undefined" in bundle
+
+
+def test_dashboard_workspace_picker_explains_persistence_contract():
+    """Task creation must make scratch deletion visible without a hover."""
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "kanban"
+        / "dashboard"
+        / "dist"
+        / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert "Temporary — deleted on completion" in bundle
+    assert "Git worktree — preserved" in bundle
+    assert "Directory — preserved" in bundle
+    assert "defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || \"\"" in bundle
+    assert (
+        "This workspace and any files left in it are deleted when the task completes."
+        in bundle
+    )
 
 
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
@@ -285,6 +382,19 @@ def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     assert "if (!storedBoard && !board && data && data.current)" in js
     assert "setBoard(data.current);" in js
     assert 'readSelectedBoard() || "default"' not in js
+
+
+def test_dashboard_markdown_html_is_sanitized_before_render():
+    """Markdown rendering must sanitize HTML before dangerouslySetInnerHTML."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function sanitizeMarkdownHtml(html)" in js
+    assert "MARKDOWN_ALLOWED_TAGS" in js
+    assert "sanitizeMarkdownHtml(renderMarkdown(props.source || \"\"))" in js
+    assert "dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || \"\") }" not in js
 
 
 # ---------------------------------------------------------------------------
@@ -775,18 +885,29 @@ def test_board_auto_initializes_missing_db(tmp_path, monkeypatch):
 
 
 def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
-    """When _SESSION_TOKEN is set (normal dashboard context), a missing or
-    wrong ?token= query param must be rejected with policy-violation."""
+    """Loopback mode: a missing or wrong ?token= must be rejected with
+    policy-violation; the correct token is accepted. The kanban WS now
+    delegates to web_server._ws_auth_ok, so we stub that with the real
+    loopback-token semantics (auth_required False → constant-time token
+    compare)."""
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
 
-    # Stub web_server so _check_ws_token has a token to compare against.
+    # Stub web_server with a loopback-mode _ws_auth_ok (auth_required False →
+    # accept only the correct ?token=). Mirrors the real gate's loopback path.
     import hermes_cli
     import types
-    stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz")
+
+    def _fake_ws_auth_ok(ws):
+        return ws.query_params.get("token", "") == "secret-xyz"
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=_fake_ws_auth_ok,
+    )
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
     monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
 
@@ -812,6 +933,51 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         "/api/plugins/kanban/events?token=secret-xyz"
     ) as ws:
         assert ws is not None  # handshake succeeded
+
+
+def test_ws_events_accepts_gated_ticket(tmp_path, monkeypatch):
+    """Gated OAuth mode: the WS must accept a single-use ?ticket= (and reject
+    a bare ?token=, even one matching _SESSION_TOKEN). This is the regression
+    for the hosted-dashboard bug where the kanban live-events WS 1008'd on
+    every gated deployment because its bespoke check only knew _SESSION_TOKEN.
+    We stub _ws_auth_ok with the real gated semantics (ticket-only)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    import hermes_cli
+    import types
+
+    def _fake_ws_auth_ok(ws):
+        # Gated mode: only a known ticket is accepted; token path rejected.
+        return ws.query_params.get("ticket", "") == "good-ticket"
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=_fake_ws_auth_ok,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    from starlette.websockets import WebSocketDisconnect
+
+    # Legacy token is rejected in gated mode, even if it's the real one.
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect("/api/plugins/kanban/events?token=secret-xyz"):
+            pass
+    assert exc.value.code == 1008
+
+    # A valid ticket is accepted.
+    with c.websocket_connect(
+        "/api/plugins/kanban/events?ticket=good-ticket"
+    ) as ws:
+        assert ws is not None
 
 
 def test_ws_events_board_query_param_default_overrides_current_board_pointer(tmp_path, monkeypatch):
@@ -846,7 +1012,10 @@ def test_ws_events_board_query_param_default_overrides_current_board_pointer(tmp
     import hermes_cli
     import types
 
-    stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz")
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=lambda ws: ws.query_params.get("token", "") == "secret-xyz",
+    )
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
     monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
 
@@ -875,8 +1044,6 @@ def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
     the cancellation outcome deterministically.
     """
     import asyncio
-    import types
-    import sys as _sys
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -884,10 +1051,10 @@ def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
 
-    # Short-circuit the token check — this test is about the cancellation
+    # Short-circuit the auth check — this test is about the cancellation
     # path, not auth.
     import plugins.kanban.dashboard.plugin_api as pa
-    monkeypatch.setattr(pa, "_check_ws_token", lambda t: True)
+    monkeypatch.setattr(pa, "_ws_upgrade_authorized", lambda ws: True)
 
     class _FakeWS:
         def __init__(self):
@@ -2235,3 +2402,127 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+# ---------------------------------------------------------------------------
+# Final result visibility for Done cards
+# ---------------------------------------------------------------------------
+
+
+def test_task_detail_exposes_result_and_latest_summary_separately(client):
+    """The drawer receives both source fields without a duplicate alias."""
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Task with explicit result"},
+    )
+    task_id = r.json()["task"]["id"]
+    client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "done", "result": "The final answer is 42.", "summary": "short handoff"},
+    )
+    r = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert r.status_code == 200
+    data = r.json()["task"]
+    assert data["result"] == "The final answer is 42."
+    assert data["latest_summary"] == "short handoff"
+    assert "final_result" not in data
+
+
+def test_task_detail_exposes_latest_summary_when_result_is_empty(client):
+    """Summary-only completions remain available to the drawer fallback."""
+    conn = kb.connect()
+    task_id = kb.create_task(conn, title="Task with only run summary")
+    kb.claim_task(conn, task_id)
+    kb.complete_task(conn, task_id, summary="Report written to /output/report.md")
+    conn.close()
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert r.status_code == 200
+    data = r.json()["task"]
+    assert data["status"] == "done"
+    assert not data["result"]
+    assert data["latest_summary"] == "Report written to /output/report.md"
+
+
+def test_task_detail_latest_summary_none_when_nothing_recorded(client):
+    """When no run summary exists, the existing field remains None."""
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Task with no result at all"},
+    )
+    task_id = r.json()["task"]["id"]
+    r = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert r.status_code == 200
+    assert r.json()["task"]["latest_summary"] is None
+
+
+def test_board_tasks_include_latest_summary(client):
+    """Board cards already expose the summary used by the drawer fallback."""
+    conn = kb.connect()
+    task_id = kb.create_task(conn, title="Board card with summary only")
+    kb.claim_task(conn, task_id)
+    kb.complete_task(conn, task_id, summary="Done: see attachment")
+    conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    done_col = next(c for c in r.json()["columns"] if c["name"] == "done")
+    card = next((t for t in done_col["tasks"] if t["id"] == task_id), None)
+    assert card is not None
+    assert "Done: see attachment" in card["latest_summary"]
+
+
+def test_dashboard_done_final_result_section_rendered_from_summary():
+    """Frontend must render Final Result section from run summary when task.result is empty."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    assert "t.result || t.latest_summary" in dist
+    assert "Final Result (run summary)" in dist
+    assert "No final result was recorded" in dist
+    assert "orchestrator" in dist or "parent task" in dist
+
+
+def test_task_detail_includes_child_result_summaries(client):
+    """Parent drawers should receive the child results they need to render."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="Research topic")
+        child = kb.create_task(conn, title="Collect sources")
+        kb.link_tasks(conn, parent, child)
+        kb.complete_task(conn, parent, summary="Delegated research to child tasks.")
+        kb.recompute_ready(conn)
+        kb.complete_task(conn, child, summary="Collected five primary sources.")
+
+    response = client.get(f"/api/plugins/kanban/tasks/{parent}")
+
+    assert response.status_code == 200
+    assert response.json()["child_results"] == [
+        {
+            "id": child,
+            "title": "Collect sources",
+            "status": "done",
+            "latest_summary": "Collected five primary sources.",
+            "result": None,
+        }
+    ]
+
+
+def test_dashboard_final_result_uses_existing_fields_without_alias():
+    """The drawer should not duplicate result/summary into another API field."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    api = (repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py").read_text()
+
+    assert "var finalResult = t.result || t.latest_summary || null;" in dist
+    assert "t.final_result" not in dist
+    assert 'd["final_result"]' not in api
+
+
+def test_dashboard_parent_notice_and_child_results_use_detail_links():
+    """Parent detection must use links.children, which exists in task detail."""
+    repo_root = Path(__file__).resolve().parents[2]
+    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    detail = dist[dist.index("function TaskDetail"):]
+
+    assert "links.children.length > 0" in detail
+    assert "t.link_counts" not in detail
+    assert "Child Results" in detail
+    assert "props.data.child_results" in detail

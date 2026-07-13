@@ -22,6 +22,111 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = CopilotACPClient(acp_cwd="/tmp")
 
+    def test_extracted_tool_calls_match_openai_sdk_shape(self) -> None:
+        tool_response = (
+            "I'll inspect that.\n"
+            "<tool_call>"
+            '{"id":"call_read","type":"function",'
+            '"function":{"name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}}'
+            "</tool_call>"
+        )
+
+        with patch.object(self.client, "_run_prompt", return_value=(tool_response, "")):
+            response = self.client._create_chat_completion(
+                model="copilot-acp",
+                messages=[{"role": "user", "content": "read README.md"}],
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {"name": "read_file", "parameters": {}},
+                    }
+                ],
+            )
+
+        choice = response.choices[0]
+        self.assertEqual(choice.finish_reason, "tool_calls")
+        tool_call = choice.message.tool_calls[0]
+        self.assertEqual(tool_call.id, "call_read")
+        self.assertEqual(tool_call.function.name, "read_file")
+        self.assertEqual(
+            json.loads(tool_call.function.arguments),
+            {"path": "README.md"},
+        )
+        self.assertEqual(dict(tool_call)["id"], "call_read")
+        self.assertEqual(dict(tool_call.function)["name"], "read_file")
+        self.assertEqual(choice.message.content, "I'll inspect that.")
+
+    def test_stream_true_returns_iterable_text_chunks(self) -> None:
+        with patch.object(self.client, "_run_prompt", return_value=("Hello from ACP", "")):
+            stream = self.client._create_chat_completion(
+                model="copilot-acp",
+                messages=[{"role": "user", "content": "hello"}],
+                stream=True,
+            )
+
+        chunks = list(stream)
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(chunks[0].choices[0].delta.content, "Hello from ACP")
+        self.assertIsNone(chunks[0].choices[0].delta.tool_calls)
+        self.assertEqual(chunks[0].choices[0].finish_reason, "stop")
+        self.assertEqual(chunks[1].choices, [])
+        self.assertEqual(chunks[1].usage.total_tokens, 0)
+
+    def test_stream_true_preserves_tool_call_deltas(self) -> None:
+        tool_response = (
+            "<tool_call>"
+            '{"id":"call_read","type":"function",'
+            '"function":{"name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}}'
+            "</tool_call>"
+        )
+
+        with patch.object(self.client, "_run_prompt", return_value=(tool_response, "")):
+            stream = self.client._create_chat_completion(
+                model="copilot-acp",
+                messages=[{"role": "user", "content": "read README.md"}],
+                stream=True,
+            )
+
+        chunks = list(stream)
+        delta = chunks[0].choices[0].delta
+        self.assertIsNone(delta.content)
+        self.assertEqual(chunks[0].choices[0].finish_reason, "tool_calls")
+        self.assertEqual(len(delta.tool_calls), 1)
+        tool_delta = delta.tool_calls[0]
+        self.assertEqual(tool_delta.index, 0)
+        self.assertEqual(tool_delta.id, "call_read")
+        self.assertEqual(tool_delta.function.name, "read_file")
+        self.assertEqual(
+            json.loads(tool_delta.function.arguments),
+            {"path": "README.md"},
+        )
+        self.assertEqual(chunks[1].choices, [])
+
+    def test_timeout_object_is_coerced_for_streaming_requests(self) -> None:
+        captured: dict[str, float] = {}
+
+        def fake_run_prompt(prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+            captured["timeout"] = timeout_seconds
+            return "ok", ""
+
+        timeout = type(
+            "TimeoutLike",
+            (),
+            {"read": 12.0, "write": 5.0, "connect": 3.0, "pool": 1.0},
+        )()
+
+        with patch.object(self.client, "_run_prompt", side_effect=fake_run_prompt):
+            list(
+                self.client._create_chat_completion(
+                    model="copilot-acp",
+                    messages=[{"role": "user", "content": "hello"}],
+                    timeout=timeout,
+                    stream=True,
+                )
+            )
+
+        self.assertEqual(captured["timeout"], 12.0)
+
     def _dispatch(self, message: dict, *, cwd: str) -> dict:
         process = _FakeProcess()
         handled = self.client._handle_server_message(
@@ -174,12 +279,13 @@ def _fake_popen_capture(captured):
     return _fake
 
 
-def test_run_prompt_prefers_profile_home_when_available(monkeypatch, tmp_path):
+def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch, tmp_path):
     hermes_home = tmp_path / "hermes"
-    profile_home = hermes_home / "home"
-    profile_home.mkdir(parents=True)
+    (hermes_home / "home").mkdir(parents=True)
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
 
-    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("HOME", str(real_home))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     captured = {}
@@ -189,7 +295,8 @@ def test_run_prompt_prefers_profile_home_when_available(monkeypatch, tmp_path):
         with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
             client._run_prompt("hello", timeout_seconds=1)
 
-    assert captured["kwargs"]["env"]["HOME"] == str(profile_home)
+    assert captured["kwargs"]["env"]["HOME"] == str(real_home)
+    assert captured["kwargs"]["env"]["HERMES_REAL_HOME"] == str(real_home)
 
 
 def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):

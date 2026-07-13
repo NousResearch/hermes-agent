@@ -29,7 +29,14 @@ def claimed_owner(tmp_path, monkeypatch):
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     with kb.connect() as conn:
-        task_id = kb.create_task(conn, title="deploy", assignee="developer")
+        workspace = Path(__file__).resolve().parents[2]
+        task_id = kb.create_task(
+            conn,
+            title="deploy",
+            assignee="developer",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
         task = kb.claim_task(conn, task_id, claimer="host:100")
         assert task is not None
         owner = pl.LeaseOwner(
@@ -39,6 +46,7 @@ def claimed_owner(tmp_path, monkeypatch):
             instance_id="instance-a",
             host=socket.gethostname(),
             pid=os.getpid(),
+            started_at=__import__("psutil").Process(os.getpid()).create_time(),
         )
     return home, owner
 
@@ -58,6 +66,9 @@ def test_production_delivery_key_unifies_deploy_and_migration():
 
 def test_worker_production_commands_require_lock_wrapper(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deploy")
+    monkeypatch.setenv(
+        "HERMES_KANBAN_WORKSPACE", str(Path(__file__).resolve().parents[2])
+    )
     assert pl.production_delivery_guard("vercel --prod")
     assert pl.production_delivery_guard("supabase db push")
     assert pl.production_delivery_guard("supabase db push && echo --local")
@@ -70,7 +81,16 @@ def test_worker_production_commands_require_lock_wrapper(monkeypatch):
     assert pl.production_delivery_guard("supabase db push --local") is None
     assert pl.production_delivery_guard(
         "hermes kanban lock run --project owner/repo --operation deploy -- vercel --prod"
+    )
+    assert pl.production_delivery_guard(
+        f"{Path(sys.executable).with_name('hermes')} kanban lock run "
+        "--project NousResearch/hermes-agent --operation deploy -- vercel --prod"
     ) is None
+    assert pl.production_delivery_guard(
+        "/tmp/hermes kanban lock run --project NousResearch/hermes-agent "
+        "--operation deploy -- vercel --prod"
+    )
+    assert pl.production_delivery_guard("python3 release.py")
     assert pl.production_delivery_guard(
         "hermes kanban lock run --project owner/repo --operation deploy -- true && vercel --prod"
     )
@@ -135,6 +155,34 @@ def test_wait_deadline_is_bounded_during_sqlite_contention(claimed_owner):
     assert lease is None
     assert waits
     assert elapsed < 0.2
+
+
+def test_wait_deadline_includes_lock_store_initialization(claimed_owner):
+    home, _ = claimed_owner
+    lock_path = home / "kanban" / "project-delivery-locks.db"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    blocker = __import__("sqlite3").connect(lock_path, isolation_level=None)
+    blocker.execute(
+        pl._LOCK_SCHEMA
+        .replace(", owner_started_at REAL", "")
+        .replace(", command_started_at REAL", "")
+    )
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        waits = []
+        started = time.monotonic()
+        with pytest.raises(pl.ProjectLockTimeout):
+            with pl.connect_project_locks(
+                deadline=started + 0.05,
+                on_wait=lambda holder: waits.append(holder),
+            ):
+                pass
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+    assert lock_path.exists()
+    assert waits
+    assert time.monotonic() - started < 0.2
 
 
 def test_atomic_handoff_and_stale_token_rejection(claimed_owner):
@@ -247,7 +295,17 @@ def test_expired_lease_does_not_overlap_a_live_local_holder(claimed_owner):
             conn, project="Pryapus/Drip-Research-Hub", operation="migration",
             owner=successor_owner, lease_seconds=2, now=102.0,
         ) is None
-        assert pl.release_project_lock(conn, first) is True
+        conn.execute(
+            "UPDATE project_delivery_locks SET owner_started_at=? "
+            "WHERE resource_key=?",
+            (owner.started_at - 1000, first.key),
+        )
+        successor = pl.acquire_project_lock(
+            conn, project="Pryapus/Drip-Research-Hub", operation="migration",
+            owner=successor_owner, lease_seconds=2, now=102.0,
+        )
+        assert successor is not None
+        assert successor.fence == first.fence + 1
 
 
 def test_cli_parser_exposes_bounded_production_lock_run():
@@ -280,6 +338,7 @@ def _worker_env(home: Path, owner: pl.LeaseOwner) -> dict[str, str]:
             "HERMES_KANBAN_TASK": owner.task_id,
             "HERMES_KANBAN_RUN_ID": str(owner.run_id),
             "HERMES_KANBAN_CLAIM_LOCK": owner.claim_lock,
+            "HERMES_KANBAN_WORKSPACE": str(Path(__file__).resolve().parents[2]),
             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
         }
     )
@@ -289,7 +348,7 @@ def _worker_env(home: Path, owner: pl.LeaseOwner) -> dict[str, str]:
 def _cli_lock_command(command: list[str], *, wait: int = 2) -> list[str]:
     return [
         str(Path(sys.executable).with_name("hermes")), "kanban", "lock", "run",
-        "--project", "Pryapus/Drip-Research-Hub", "--operation", "deploy",
+        "--project", "NousResearch/hermes-agent", "--operation", "deploy",
         "--wait", str(wait), "--lease", "2", "--", *command,
     ]
 
@@ -315,7 +374,25 @@ def test_locked_command_uses_parent_death_supervisor():
     assert command[command.index("--") + 1:] == ["deploy", "--production"]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Start-gated supervisor is POSIX-only")
+def test_supervisor_does_not_spawn_before_durable_attachment(tmp_path):
+    marker = tmp_path / "spawned"
+    gate_read, gate_write = os.pipe()
+    proc = subprocess.Popen(
+        pl._supervised_command(
+            [sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"],
+            start_gate_fd=gate_read,
+        ),
+        pass_fds=(gate_read,),
+    )
+    os.close(gate_read)
+    os.close(gate_write)
+    assert proc.wait(timeout=5) == 75
+    assert not marker.exists()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="SIGKILL crash probe is POSIX-only")
+@pytest.mark.live_system_guard_bypass
 def test_real_cli_killed_holder_hands_off_after_lease(claimed_owner, tmp_path):
     home, owner = claimed_owner
     with kb.connect() as conn:
@@ -332,17 +409,25 @@ def test_real_cli_killed_holder_hands_off_after_lease(claimed_owner, tmp_path):
     entered = tmp_path / "entered"
     handed_off = tmp_path / "handed-off"
     child_pid_path = tmp_path / "child-pid"
+    descendant_pid_path = tmp_path / "descendant-pid"
     completed = tmp_path / "completed"
+    descendant_code = (
+        "import os,pathlib,signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"pathlib.Path({str(descendant_pid_path)!r}).write_text(str(os.getpid())); "
+        "time.sleep(30); "
+        f"pathlib.Path({str(completed)!r}).write_text(str(time.time()))"
+    )
     holder = subprocess.Popen(
         _cli_lock_command(
             [
                 sys.executable,
                 "-c",
-                "import os,pathlib,time; "
+                "import os,pathlib,subprocess,sys,time; "
+                f"subprocess.Popen([sys.executable, '-c', {descendant_code!r}]); "
                 f"pathlib.Path({str(child_pid_path)!r}).write_text(str(os.getpid())); "
                 f"pathlib.Path({str(entered)!r}).write_text(str(time.time())); "
-                "time.sleep(30); "
-                f"pathlib.Path({str(completed)!r}).write_text(str(time.time()))",
+                "time.sleep(30)",
             ],
             wait=5,
         ),
@@ -353,14 +438,22 @@ def test_real_cli_killed_holder_hands_off_after_lease(claimed_owner, tmp_path):
     )
     command_pid = None
     child_pid = None
+    descendant_pid = None
     try:
         deadline = time.time() + 5
         while time.time() < deadline:
             with pl.connect_project_locks() as conn:
-                status = pl.project_lock_status(conn, "Pryapus/Drip-Research-Hub")
-            if entered.exists() and child_pid_path.exists() and status and status["command_pid"]:
+                status = pl.project_lock_status(conn, "NousResearch/hermes-agent")
+            if (
+                entered.exists()
+                and child_pid_path.exists()
+                and descendant_pid_path.exists()
+                and status
+                and status["command_pid"]
+            ):
                 command_pid = status["command_pid"]
                 child_pid = int(child_pid_path.read_text())
+                descendant_pid = int(descendant_pid_path.read_text())
                 break
             time.sleep(0.05)
         if command_pid is None:
@@ -381,12 +474,12 @@ def test_real_cli_killed_holder_hands_off_after_lease(claimed_owner, tmp_path):
                     "-c",
                     f"import pathlib; pathlib.Path({str(handed_off)!r}).write_text('successor')",
                 ],
-                wait=6,
+                wait=10,
             ),
             env=_worker_env(home, successor_owner),
             capture_output=True,
             text=True,
-            timeout=12,
+            timeout=16,
             check=False,
         )
         assert successor.returncode == 0, successor.stderr
@@ -397,6 +490,7 @@ def test_real_cli_killed_holder_hands_off_after_lease(claimed_owner, tmp_path):
         assert states[-2:] == ["acquired", "released"]
         assert events[-2]["timestamp"] >= float(entered.read_text())
         assert child_pid is not None and not kb._pid_alive(child_pid)
+        assert descendant_pid is not None and not kb._pid_alive(descendant_pid)
         assert not completed.exists()
     finally:
         if holder.poll() is None:
@@ -406,6 +500,8 @@ def test_real_cli_killed_holder_hands_off_after_lease(claimed_owner, tmp_path):
             os.kill(command_pid, signal.SIGKILL)
         if child_pid and kb._pid_alive(child_pid):
             os.kill(child_pid, signal.SIGKILL)
+        if descendant_pid and kb._pid_alive(descendant_pid):
+            os.kill(descendant_pid, signal.SIGKILL)
 
 
 def test_non_finite_wait_is_rejected(claimed_owner):

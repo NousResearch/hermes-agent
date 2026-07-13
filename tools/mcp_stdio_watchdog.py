@@ -105,25 +105,59 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
         pgid = os.getpgid(proc.pid)
     except (ProcessLookupError, OSError):
         return
+    identities = []
+    if psutil is not None:
+        for process in psutil.process_iter(["pid", "create_time"]):
+            try:
+                if os.getpgid(process.pid) == pgid:
+                    identities.append(
+                        (process.pid, float(process.info["create_time"]))
+                    )
+            except (OSError, ProcessLookupError, psutil.Error, TypeError):
+                continue
+
+    def same_process_alive(pid: int, created_at: float) -> bool:
+        if psutil is None:
+            return True
+        try:
+            process = psutil.Process(pid)
+            return (
+                process.is_running()
+                and process.status() != psutil.STATUS_ZOMBIE
+                and process.create_time() == created_at
+            )
+        except psutil.Error:
+            return False
+
     sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
     for sig in (signal.SIGTERM, sigkill):
         try:
             killpg(pgid, sig)
         except (ProcessLookupError, PermissionError, OSError):
             return
-        try:
-            proc.wait(timeout=_TERM_GRACE_S)
-            return
-        except subprocess.TimeoutExpired:
-            continue
+        deadline = time.monotonic() + _TERM_GRACE_S
+        while time.monotonic() < deadline:
+            proc.poll()
+            if identities and not any(
+                same_process_alive(pid, created_at)
+                for pid, created_at in identities
+            ):
+                return
+            time.sleep(0.05)
 
 
-def _watchdog_loop(proc: subprocess.Popen, original_ppid: int, parent_create_time: float) -> None:
+def _watchdog_loop(
+    proc: subprocess.Popen,
+    original_ppid: int,
+    parent_create_time: float,
+    done: threading.Event,
+) -> None:
     while proc.poll() is None:
         if _is_orphaned(original_ppid, parent_create_time):
             _terminate_process_group(proc)
             return
-        time.sleep(_POLL_INTERVAL_S)
+        if done.wait(_POLL_INTERVAL_S):
+            return
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -132,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--ppid", type=int, required=True)
     parser.add_argument("--create-time", type=float, required=True)
+    parser.add_argument("--start-gate-fd", type=int)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
 
@@ -141,6 +176,14 @@ def main(argv: list[str] | None = None) -> int:
     if not real_argv:
         print("mcp_stdio_watchdog: no command given after '--'", file=sys.stderr)
         return 2
+
+    if args.start_gate_fd is not None:
+        try:
+            start = os.read(args.start_gate_fd, 1)
+        finally:
+            os.close(args.start_gate_fd)
+        if start != b"1":
+            return 75
 
     # New process group so we can killpg() the whole tree the real command
     # may spawn (e.g. mcp-remote's own child `node` process), without
@@ -166,10 +209,10 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _forward_shutdown)
     signal.signal(signal.SIGINT, _forward_shutdown)
 
+    done = threading.Event()
     watchdog = threading.Thread(
         target=_watchdog_loop,
-        args=(proc, args.ppid, args.create_time),
-        daemon=True,
+        args=(proc, args.ppid, args.create_time, done),
     )
     watchdog.start()
 
@@ -178,6 +221,9 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         _terminate_process_group(proc)
         return 130
+    finally:
+        done.set()
+        watchdog.join()
 
 
 if __name__ == "__main__":

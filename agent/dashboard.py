@@ -1,224 +1,210 @@
-#!/usr/bin/env python3
-"""Agent Live Dashboard — ASCII real-time health monitor.
+"""Agent Dashboard — ASCII formatter + live view for tracer data.
 
-Usage:  python -m agent.dashboard [--interval 1]
-        hermes status --live    (future CLI integration)
+Reads from state.db tables (agent_traces, task_checkpoints, agent_messages,
+agent_blackboard, sessions) and renders a compact terminal view.
 
-Displays a live-refreshing dashboard of agent health:
-  - Tool execution stats (success rate, recent events)
-  - Task progress (phase, budget, completed steps)
-  - Multi-agent state (mailbox, blackboard, active agents)
-  - Error breakdown (by class)
-
-Reads from state.db + execution_tracer ring buffer.
-No new dependencies — uses only stdlib + hermes internals.
+Usage:
+    from agent.dashboard import render_snapshot, render_live
+    print(render_snapshot(session_id))
 """
 
 from __future__ import annotations
 
-import json
+import datetime as _dt
 import os
-import sys
 import time
-from datetime import datetime
-
-# ── Terminal helpers ────────────────────────────────────────────────────
+from typing import Any, Dict, List, Optional
 
 
-def _clear() -> None:
-    sys.stdout.write("\033[2J\033[H")
+# ── ASCII bar helper ───────────────────────────────────────────────────
 
 
 def _bar(pct: float, width: int = 20) -> str:
-    filled = round(pct * width)
-    blocks = ["█", "▓", "▒", "░", " "]
-    bar = ""
-    for i in range(width):
-        idx = min(3, max(0, round((i - filled) * 4))) if i >= filled else 0
-        bar += blocks[idx]
-    return bar
+    """Return a filled-bar like `████████░░░░░░░░░░ 40%`."""
+    pct = max(0.0, min(1.0, pct))
+    filled = int(pct * width)
+    empty = width - filled
+    return f"{'█' * filled}{'░' * empty} {pct * 100:.0f}%"
 
 
-def _color(status: str) -> str:
-    if status.startswith("✓"):
-        return f"\033[32m{status}\033[0m"
-    if status.startswith("✗"):
-        return f"\033[31m{status}\033[0m"
-    if status.startswith("↻"):
-        return f"\033[33m{status}\033[0m"
-    return status
+# ── Data collection ────────────────────────────────────────────────────
 
 
-# ── Data gatherers ──────────────────────────────────────────────────────
-
-
-def _get_tracer_stats(session_id: str) -> dict:
-    try:
-        from agent.execution_tracer import get_session_stats, get_recent_events
-        stats = get_session_stats(session_id)
-        events = get_recent_events(session_id, limit=10)
-        return {"stats": stats, "events": events}
-    except Exception:
-        return {"stats": {}, "events": []}
-
-
-def _get_task_state(session_id: str) -> dict | None:
-    try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        return db.load_task_checkpoint(session_id)
-    except Exception:
-        return None
-
-
-def _get_mailbox_state(session_id: str) -> list:
-    try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        return db.read_agent_mailbox(f"session:{session_id}", mark_read=False)
-    except Exception:
-        return []
-
-
-def _get_active_sessions() -> list:
+def _collect_snapshot(session_id: str) -> Dict[str, Any]:
+    """Pull all relevant data for *session_id* from state.db."""
     try:
         from hermes_state import SessionDB
         db = SessionDB()
 
-        def _do(conn):
-            rows = conn.execute(
-                "SELECT id, source, started_at FROM sessions "
-                "WHERE started_at > ? ORDER BY started_at DESC LIMIT 10",
-                (time.time() - 86400,),
-            ).fetchall()
-            return [{"id": r[0], "source": r[1], "at": r[2]} for r in rows]
+        def _q(sql, params=()):
+            rows = db._execute_write(lambda c: list(c.execute(sql, params)))
+            return [tuple(r) for r in rows]
 
-        return db._execute_write(_do)
-    except Exception:
-        return []
+        def _scalar(sql, params=()):
+            r = _q(sql, params)
+            return int(r[0][0]) if r else 0
+
+        # Session row
+        sess = _q("SELECT id, source, started_at, model FROM sessions WHERE id = ?", (session_id,))
+        session_info = {}
+        if sess:
+            sid, source, started_at, model = sess[0]
+            session_info = {"id": sid, "source": source, "started_at": started_at, "model": model}
+
+        # Checkpoint
+        cp = db.load_task_checkpoint(session_id) or {}
+
+        # Stats
+        total_tools = _scalar("SELECT COUNT(*) FROM agent_traces WHERE session_id = ?", (session_id,))
+        succeeded = _scalar("SELECT COUNT(*) FROM agent_traces WHERE session_id = ? AND success = 1", (session_id,))
+        failed = _q(
+            "SELECT error_class, COUNT(*) FROM agent_traces "
+            "WHERE session_id = ? AND success = 0 GROUP BY error_class",
+            (session_id,),
+        )
+        by_tool = _q(
+            "SELECT tool_name, COUNT(*) FROM agent_traces "
+            "WHERE session_id = ? GROUP BY tool_name ORDER BY 2 DESC",
+            (session_id,),
+        )
+        avg_dur = _scalar("SELECT AVG(duration_ms) FROM agent_traces WHERE session_id = ?", (session_id,))
+
+        # Mailbox
+        unread = _scalar(
+            "SELECT COUNT(*) FROM agent_messages "
+            "WHERE read_at IS NULL AND (to_id = ? OR to_id = '*')",
+            (f"session:{session_id}",),
+        )
+
+        return {
+            "session": session_info,
+            "checkpoint": cp,
+            "total_tools": total_tools,
+            "succeeded": succeeded,
+            "failed_total": total_tools - succeeded,
+            "errors_by_class": {r[0] or "unknown": r[1] for r in failed},
+            "calls_by_tool": {r[0]: r[1] for r in by_tool},
+            "avg_duration_ms": round(float(avg_dur or 0), 1),
+            "unread_mailbox": unread,
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
-# ── Dashboard renderer ──────────────────────────────────────────────────
+# ── Section renderers ──────────────────────────────────────────────────
 
 
-def render(session_id: str = "") -> str:
-    """Render a single-frame dashboard as a string."""
-    if not session_id:
-        sessions = _get_active_sessions()
-        if sessions:
-            session_id = sessions[0]["id"]
+def _render_header(session_id: str) -> List[str]:
+    now = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    return [
+        "┌" + "─" * 62 + "┐",
+        f"│ HERMES AGENT STATUS{' ' * 32}{now} │",
+        "├" + "─" * 62 + "┤",
+    ]
 
-    now = datetime.now().strftime("%H:%M:%S")
-    trace = _get_tracer_stats(session_id)
-    task = _get_task_state(session_id)
-    mailbox = _get_mailbox_state(session_id)
-    stats = trace.get("stats", {})
-    events = trace.get("events", [])
 
-    # ── Header ──
-    lines = []
-    lines.append("┌" + "─" * 56 + "┐")
-    title = f"│ HERMES AGENT STATUS  —  {now:8s}  session: {session_id[:16]:16s} │"
-    lines.append(title[:59] + "│")
+def _render_section_session(session_id: str, data: Dict[str, Any]) -> List[str]:
+    s = data.get("session", {})
+    cp = data.get("checkpoint", {})
+    goal = (cp.get("task_goal") or "")[:40]
+    phase = cp.get("current_phase") or "—"
+    budget_remaining = int(cp.get("iteration_budget_remaining", 0) or 0)
+    resume_count = int(cp.get("resume_count", 0) or 0)
 
-    # ── Health ──
-    rate = stats.get("success_rate", 0)
-    health_pct = int(rate * 100)
-    lines.append("├" + "─" * 56 + "┤")
-    lines.append(f"│ Health: {_bar(rate)} {health_pct:3d}%                        │")
+    # budget_remaining is what's LEFT; budget_used/max = consumed
+    budget_max = budget_remaining + resume_count or 50
+    budget_used = max(0, budget_max - budget_remaining)
+    budget_pct = budget_used / max(budget_max, 1)
 
-    # ── Tool stats ──
-    total = stats.get("total_tools", 0)
-    ok = stats.get("succeeded", 0)
-    fail = stats.get("failed", 0)
-    recov = stats.get("recovered", 0)
-    lines.append(f"│ Tools:  {ok:4d} succeeded, {fail:2d} failed, {recov:2d} recovered  {' ' * 17}│")
+    health_pct = (data.get("succeeded", 0) or 0) / max(data.get("total_tools", 1), 1)
+    model = (s.get("model") or "—")[:12]
 
-    # ── Budget ──
-    if task:
-        budget = task.get("iteration_budget_remaining", 0)
-        phase = task.get("current_phase", "—")
-        completed = len(task.get("completed_tool_calls", []))
-        lines.append(f"│ Budget: {budget:3d} turns left · Phase: {phase[:30]:30s} │")
-        lines.append(f"│ Done:   {completed:3d} steps completed                   {' ' * 20}│")
+    return [
+        f"│ Session:    {session_id[:30]:30s}  model: {model:12s} │",
+        f"│ Goal:       {goal:54s}│",
+        f"│ Phase:      {phase:54s}│",
+        f"│ Budget:     {_bar(budget_pct):30s}   │",
+        f"│ Health:     {_bar(health_pct):30s}   │",
+        "├" + "─" * 62 + "┤",
+    ]
+
+
+def _render_section_tools(data: Dict[str, Any]) -> List[str]:
+    total = data.get("total_tools", 0)
+    succ = data.get("succeeded", 0)
+    failed = data.get("failed_total", 0)
+    by_tool = data.get("calls_by_tool", {})
+
+    top_tools = sorted(by_tool.items(), key=lambda kv: -kv[1])[:5]
+    tools_str = ", ".join(f"{n}:{c}" for n, c in top_tools)[:50]
+
+    err_lines = []
+    for cls, cnt in data.get("errors_by_class", {}).items():
+        err_lines.append(f"│     • {cls:20s} {cnt:>3d}{' ' * 36}│")
+
+    if total:
+        first_line = f"│   total:      {total:4d}   ({tools_str:50s})│"
     else:
-        lines.append(f"│ {'(no active task)':56s} │")
+        first_line = "│   total:      0   " + " " * 45 + "│"
 
-    # ── Mailbox ──
-    unread = len(mailbox)
-    lines.append(f"│ Mailbox: {unread:3d} unread messages                        {' ' * 21}│")
+    body = [
+        "│ TOOL CALLS" + " " * 53 + "│",
+        first_line,
+        f"│   succeeded:  {succ:4d}{' ' * 50}│",
+        f"│   failed:     {failed:4d}{' ' * 50}│",
+    ] + err_lines + [
+        f"│   avg duration: {data.get('avg_duration_ms', 0):.0f}ms{' ' * 41}│",
+        "├" + "─" * 62 + "┤",
+    ]
+    return body
 
-    # ── Error breakdown ──
-    lines.append("├" + "─" * 56 + "┤")
-    breakdown = stats.get("error_breakdown", {})
-    if breakdown:
-        lines.append("│ Error breakdown:                                       │")
-        for cls, cnt in sorted(breakdown.items(), key=lambda x: -x[1])[:5]:
-            cls_short = cls[:22]
-            lines.append(f"│   {cls_short:22s}  {cnt:3d}                                │")
-    else:
-        lines.append("│ No errors recorded                                     │")
 
-    # ── Recent events ──
-    lines.append("├" + "─" * 56 + "┤")
-    lines.append("│ Recent events:                                         │")
-    if events:
-        for e in events[:5]:
-            icon = "✓" if e["success"] else ("↻" if e.get("recovery_action") else "✗")
-            tool = e["tool"][:12]
-            summary = e.get("result_summary", "") or e.get("error_class", "")[:22]
-            age = max(0, int(time.time() - e.get("at", time.time())))
-            age_str = f"{age}s ago" if age < 120 else f"{age//60}m ago"
-            lines.append(f"│  {_color(icon)} {age_str:8s}  {tool:12s}  {summary[:22]:22s} │")
-    else:
-        lines.append("│  (no events yet)                                       │")
+def _render_section_mailbox(data: Dict[str, Any]) -> List[str]:
+    unread = data.get("unread_mailbox", 0)
+    return [
+        "│ MAILBOX" + " " * 55 + "│",
+        f"│   unread: {unread:5d}{' ' * 49}│",
+        "└" + "─" * 62 + "┘",
+    ]
 
-    lines.append("└" + "─" * 56 + "┘")
-    lines.append(f"  Refresh: Ctrl+C to exit · {now}")
+
+# ── Public API ─────────────────────────────────────────────────────────
+
+
+def render_snapshot(session_id: str) -> str:
+    """Render a single dashboard snapshot for *session_id*. Returns string."""
+    data = _collect_snapshot(session_id)
+
+    if "error" in data:
+        return f"[dashboard unavailable: {data['error']}]"
+
+    lines = [
+        *_render_header(session_id),
+        *_render_section_session(session_id, data),
+        *_render_section_tools(data),
+        *_render_section_mailbox(data),
+        f"  Last refresh: {_dt.datetime.utcnow().strftime('%H:%M:%S')} UTC",
+    ]
     return "\n".join(lines)
 
 
-# ── Live loop ───────────────────────────────────────────────────────────
+def render_live(
+    session_id: str,
+    refresh_seconds: float = 2.0,
+    max_iters: Optional[int] = None,
+) -> None:
+    """Continuously render dashboard until interrupted.
 
-
-def live(session_id: str = "", interval: float = 2.0) -> None:
-    """Run live dashboard with periodic refresh."""
-    import signal
-
-    running = True
-
-    def _stop(sig, frame):
-        nonlocal running
-        running = False
-
-    signal.signal(signal.SIGINT, _stop)
-
-    try:
-        while running:
-            _clear()
-            print(render(session_id))
-            sys.stdout.flush()
-            time.sleep(interval)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        _clear()
-        print("[dashboard exited]")
-
-
-# ── CLI entry point ────────────────────────────────────────────────────
-
-
-if __name__ == "__main__":
-    import argparse
-
-    ap = argparse.ArgumentParser(description="Hermes Agent Live Dashboard")
-    ap.add_argument("--session", "-s", default="", help="Session ID to monitor")
-    ap.add_argument("--interval", "-i", type=float, default=2.0, help="Refresh interval (seconds)")
-    ap.add_argument("--once", action="store_true", help="Print one frame and exit")
-    args = ap.parse_args()
-
-    if args.once:
-        print(render(args.session))
-    else:
-        live(args.session, interval=args.interval)
+    Press Ctrl+C to stop. Pass *max_iters* for non-interactive runs.
+    """
+    i = 0
+    while max_iters is None or i < max_iters:
+        if os.name == "nt":
+            os.system("cls")
+        else:
+            os.system("clear")
+        print(render_snapshot(session_id))
+        i += 1
+        if max_iters is not None and i >= max_iters:
+            return
+        time.sleep(refresh_seconds)

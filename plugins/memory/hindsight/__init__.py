@@ -340,7 +340,9 @@ def _resolve_embedded_llm_runtime(
         if not base_url:
             base_url = str(creds.get("base_url") or "").strip()
 
-    daemon_provider = "openai" if provider in ("openai_compatible", "openrouter") else provider
+    # Upstream Hindsight only recognizes a few providers. 
+    # Copilot, OpenRouter, and OpenAI-compatible all use the OpenAI wire format.
+    daemon_provider = "openai" if provider in ("openai_compatible", "openrouter", "copilot") else provider
     return daemon_provider, api_key, base_url
 
 

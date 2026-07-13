@@ -325,6 +325,8 @@ class HonchoClientConfig:
     # Prefetch budget (None = no cap; set to an integer to bound auto-injected context)
     context_tokens: int | None = None
     # Dialectic (peer.chat) settings
+    # Minimum turns between dialectic peer.chat() LLM calls. 1 = every turn.
+    dialectic_cadence: int = 1
     # reasoning_level: "minimal" | "low" | "medium" | "high" | "max"
     dialectic_reasoning_level: str = "low"
     # When true, the model can override reasoning_level per-call via the
@@ -539,6 +541,11 @@ class HonchoClientConfig:
             context_tokens=_parse_context_tokens(
                 host_block.get("contextTokens"),
                 raw.get("contextTokens"),
+            ),
+            dialectic_cadence=_parse_int_config(
+                host_block.get("dialecticCadence"),
+                raw.get("dialecticCadence"),
+                default=1,
             ),
             dialectic_reasoning_level=(
                 host_block.get("dialecticReasoningLevel")

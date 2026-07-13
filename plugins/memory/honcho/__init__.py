@@ -313,11 +313,13 @@ class HonchoMemoryProvider(MemoryProvider):
                 raw = cfg.raw or {}
                 self._injection_frequency = raw.get("injectionFrequency", "every-turn")
                 self._context_cadence = int(raw.get("contextCadence", 1))
-                # Backwards-compat: unset dialecticCadence falls back to 1
-                # (every turn) so existing honcho.json configs without the key
-                # behave as they did before. New setups via `hermes honcho setup`
-                # get dialecticCadence=2 written explicitly by the wizard.
-                self._dialectic_cadence = int(raw.get("dialecticCadence", 1))
+                # dialectic_cadence is resolved by HonchoClientConfig with the
+                # correct host-block-wins-then-root precedence (see client.py
+                # _parse_int_config). Read the resolved field instead of the
+                # raw dict directly -- raw.get("dialecticCadence") only ever
+                # saw the config-file root and silently ignored per-host
+                # values written by `hermes honcho setup`/`hermes honcho tokens`.
+                self._dialectic_cadence = getattr(cfg, "dialectic_cadence", 1)
                 self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
                 self._dialectic_depth_levels = cfg.dialectic_depth_levels
                 self._reasoning_heuristic = cfg.reasoning_heuristic

@@ -30,6 +30,8 @@ interface BaseEmbed extends EmbedLayout {
   id: string
   /** Human-facing provider name (e.g. "YouTube"). */
   label: string
+  /** Optional image shown before the user consents to load the full embed. */
+  previewUrl?: string
   provider: EmbedProvider
   renderer: EmbedRenderer
   /** Canonical URL opened in the system browser from the card. */

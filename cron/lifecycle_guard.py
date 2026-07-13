@@ -61,8 +61,14 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both
     # token orders because real reproductions show both.
-    r"|(?:p?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
-    r"|(?:p?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    #   - LEADING \b on the command so `skill`/`skills` can't match the bare
+    #     `kill` substring (the false-positive that blocked read-only commands
+    #     mentioning skill paths: `skills-...safe-gateway...hermes-harness`).
+    #   - the gap between kill and its target tokens is bounded to a single
+    #     shell segment ([^\n;|&]*) so it can't greedily span across `;`/`&&`
+    #     into unrelated `hermes`/`gateway` path tokens later on the line.
+    r"|(?:\b(?:pkill|kill)\b[^\n;|&]*\bhermes\b[^\n;|&]*\bgateway)"
+    r"|(?:\b(?:pkill|kill)\b[^\n;|&]*\bgateway\b[^\n;|&]*\bhermes)"
 )
 
 
@@ -104,6 +110,76 @@ def _match_is_ssh_remote(text: str, match_start: int) -> bool:
     return True
 
 
+# Text-only consumer commands: when a lifecycle phrase appears as a QUOTED
+# ARGUMENT to one of these, it is DATA being printed/searched/read, not a
+# gateway command being executed — so it cannot SIGTERM this process.
+# Deliberately EXCLUDES shell interpreters (bash/sh/zsh/dash/eval/xargs/env
+# etc.): `bash -c "hermes gateway restart"` re-executes the phrase and MUST
+# stay blocked. Anchored at the start of the segment (optional leading path).
+_TEXT_CONSUMER_RE = re.compile(
+    r"(?i)(?:^|\s)(?:/\S*/)?(?:echo|printf|grep|egrep|fgrep|rg|cat|head|tail|"
+    r"less|more|comm|diff|sed\s+-n|awk|jq|tee|column|sort|uniq|wc)\b"
+)
+
+# Shell quote chars that open a data region. A `'` or `"` region makes the
+# OTHER quote char (and backticks) literal until it closes — so we track the
+# active region with a left-to-right scan rather than naive per-char counting
+# (which mis-reads a backtick nested inside a single-quoted string).
+_OPENING_QUOTES = ("'", '"')
+
+
+def _open_quote_at(s: str) -> Optional[str]:
+    """Left-to-right scan of *s*; return the quote char still OPEN at the end
+    of the string, or None if all quotes are balanced. Inside an active
+    single/double quote region the other quote char is literal."""
+    active: Optional[str] = None
+    for ch in s:
+        if active is None:
+            if ch in _OPENING_QUOTES:
+                active = ch
+        elif ch == active:
+            active = None
+    return active
+
+
+def _match_is_quoted_data(text: str, match_start: int, match_str: str) -> bool:
+    """Return True if the Branch-A `hermes gateway restart|stop` match at
+    *match_start* is a QUOTED DATA argument to a text-only consumer command
+    (echo/grep/printf/…), rather than an executed gateway command.
+
+    Two conditions BOTH required (fail-closed — any doubt → not-data → blocked):
+      1. The match sits inside an open single/double quote region (a proper
+         left-to-right scan, so a backtick or the other quote nested inside is
+         treated as literal), and that region closes after the match.
+      2. The enclosing shell segment's leading command is a text-only consumer
+         and NOT a shell interpreter (bash -c "…" stays blocked).
+
+    Only applied to Branch A. The launchctl/systemctl/pkill branches are not
+    exempted here — their command identifiers are distinctive enough that a
+    quoted-data occurrence is vanishingly rare and not worth the bypass risk.
+    """
+    line_start = text.rfind("\n", 0, match_start) + 1
+    line_end = text.find("\n", match_start)
+    if line_end == -1:
+        line_end = len(text)
+    prefix = text[line_start:match_start]
+    suffix = text[match_start + len(match_str):line_end]
+
+    # Condition 1: a single/double quote region is OPEN at the match, and it
+    # closes somewhere in the suffix (data is bounded, not a trailing dangle).
+    open_q = _open_quote_at(prefix)
+    if open_q is None or open_q not in suffix:
+        return False
+
+    # Condition 2: the segment's command is a text-only consumer, not an
+    # interpreter. Split on shell separators OUTSIDE quotes isn't worth the
+    # complexity here — the prefix up to the match is within one quoted arg, so
+    # take the segment before the opening quote and check its leading command.
+    seg_prefix = prefix[: prefix.rfind(open_q)]
+    segment = _SEGMENT_SPLIT_RE.split(seg_prefix)[-1]
+    return bool(_TEXT_CONSUMER_RE.search(segment))
+
+
 def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern.
 
@@ -115,8 +191,18 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     if not text:
         return False
     for match in _GATEWAY_LIFECYCLE_PATTERN.finditer(text):
-        if not _match_is_ssh_remote(text, match.start()):
-            return True
+        # ssh-wrapped remote lifecycle commands are legitimate fleet ops.
+        if _match_is_ssh_remote(text, match.start()):
+            continue
+        # Branch A only (`hermes gateway restart|stop`): exempt when the phrase
+        # is quoted DATA fed to a text-only consumer (echo/grep/printf/…), not
+        # an executed command. Interpreter re-exec (bash -c "…") is NOT exempt.
+        matched = match.group(0)
+        if matched.lower().startswith("hermes") and _match_is_quoted_data(
+            text, match.start(), matched
+        ):
+            continue
+        return True
     return False
 
 

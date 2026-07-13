@@ -84,9 +84,41 @@ class TestGatewayLifecyclePattern:
         "Monitor the gateway and tell me if a restart is recommended",
         "research how the OpenAI API gateway handles restart after rate limiting",
         "compare AWS API Gateway vs Cloudflare on restart latency",
+        # Regression (2026-07-13): the `skill`/`skills` word contains the bare
+        # `kill` substring; the old `p?kill\b[^\n]*` branch matched it and then
+        # greedily spanned across the whole line to reach the `gateway`/`hermes`
+        # tokens sitting in a SKILL PATH — blocking read-only git/grep commands
+        # that merely touched skills-shared/hermes-harness/safe-gateway-restart.
+        "git log -3 -- skills-shared/hermes-harness/safe-gateway-restart/SKILL.md",
+        "grep -c pattern skills-shared/hermes-harness/safe-gateway-restart/SKILL.md",
+        "cd ~/.hermes && echo x; git log -- skills/hermes-harness/safe-gateway-restart/SKILL.md",
+        "git status --short | grep -i safe-gateway; git log origin/main..HEAD",
+        "ls skills/hermes-harness/ && cat safe-gateway-restart/SKILL.md # hermes gateway notes",
+        # Regression (2026-07-13): the `hermes gateway restart` PHRASE as quoted
+        # DATA fed to a text-only consumer (echo/grep/printf) is not an executed
+        # command and must not block — this bit a doc/skill-writing session.
+        "echo \"hermes gateway restart\"",
+        "grep -c 'hermes gateway restart' file.md",
     ])
     def test_safe_commands(self, text):
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        # The quoted-data exemption must NOT open a bypass: an interpreter
+        # re-executing the phrase from a quoted string is still the foot-gun.
+        'bash -c "hermes gateway restart"',
+        "sh -c 'hermes gateway restart'",
+        # A real command after a benign echo segment is still blocked.
+        "echo hi && hermes gateway restart",
+        # A real kill targeting the gateway (word-boundary kill, not `skill`).
+        "kill $(pgrep -f hermes-gateway)",
+        "pkill -f gateway.run # hermes",
+        # A bare quoted phrase with NO text-consumer command is ambiguous —
+        # fail-closed (blocked) is the safe call.
+        "'Run hermes gateway restart from a separate shell'",
+    ])
+    def test_quoted_data_exemption_does_not_bypass(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
 
 class TestSshRemoteExemption:

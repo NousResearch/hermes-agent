@@ -74,6 +74,31 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_gateway_restart_notification_delivery_controls_roundtrip(self):
+        pc = PlatformConfig(
+            enabled=True,
+            gateway_restart_notification_active_sessions=False,
+            gateway_restart_notification_home_channel=False,
+            gateway_restart_notification_target=HomeChannel(
+                platform=Platform.TELEGRAM,
+                chat_id="-10042",
+                name="Alerts",
+                thread_id="2661",
+            ),
+        )
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.gateway_restart_notification_active_sessions is False
+        assert restored.gateway_restart_notification_home_channel is False
+        assert restored.gateway_restart_notification_target is not None
+        assert restored.gateway_restart_notification_target.chat_id == "-10042"
+        assert restored.gateway_restart_notification_target.thread_id == "2661"
+
+    def test_gateway_restart_notification_delivery_controls_default_true(self):
+        restored = PlatformConfig.from_dict({})
+        assert restored.gateway_restart_notification_active_sessions is True
+        assert restored.gateway_restart_notification_home_channel is True
+        assert restored.gateway_restart_notification_target is None
+
     def test_typing_indicator_defaults_true(self):
         assert PlatformConfig().typing_indicator is True
         assert PlatformConfig.from_dict({}).typing_indicator is True

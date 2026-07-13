@@ -1252,6 +1252,11 @@ class ContextCompressor(ContextEngine):
         self.threshold_tokens = self._compute_threshold_tokens(
             context_length, self.threshold_percent, self.max_tokens,
         )
+        # Re-apply the absolute token cap so it survives model switches
+        # and fallback activations. The cap is a first-class config value
+        # stored on the compressor instance, not a one-time post-construction
+        # patch — this is why update_model() must re-apply it.
+        self._apply_threshold_tokens_cap()
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
@@ -1313,6 +1318,36 @@ class ContextCompressor(ContextEngine):
         except (TypeError, ValueError):
             return None
         return ivalue if ivalue > 0 else None
+
+    @staticmethod
+    def _coerce_threshold_tokens_cap(value: Any) -> int | None:
+        """Normalize a threshold_tokens cap to a positive int or None.
+
+        None means "no absolute cap — use the ratio-based threshold only".
+        Non-numeric or non-positive values are treated as None so a bad
+        config value never silently caps the threshold at zero.
+        """
+        if value is None:
+            return None
+        try:
+            ivalue = int(value)
+        except (TypeError, ValueError):
+            return None
+        return ivalue if ivalue > 0 else None
+
+    def _apply_threshold_tokens_cap(self) -> None:
+        """Apply the absolute token cap if configured.
+
+        After ``threshold_tokens`` is (re)computed from the ratio-based
+        percent, clamp it to the cap so compression never fires later
+        than the user's preferred absolute token count. The cap itself
+        is clamped to the current context length so a cap larger than
+        the model's window is a no-op (the ratio-based threshold wins).
+        """
+        if self.threshold_tokens_cap is not None and self.threshold_tokens_cap > 0:
+            _effective_cap = min(self.threshold_tokens_cap, self.context_length)
+            if _effective_cap < self.threshold_tokens:
+                self.threshold_tokens = _effective_cap
 
     @staticmethod
     def _effective_threshold_percent(
@@ -1389,6 +1424,7 @@ class ContextCompressor(ContextEngine):
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None,
+        threshold_tokens_cap: Any = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -1408,6 +1444,14 @@ class ContextCompressor(ContextEngine):
             model, self.model_thresholds, threshold_percent,
         )
         self.threshold_percent = self._base_threshold_percent
+        # Absolute token cap from config (compression.threshold_tokens). When
+        # set, the effective trigger point is min(ratio-based threshold, cap)
+        # so compression never fires later than the user's preferred token
+        # count regardless of which model is active. Applied in __init__ and
+        # re-applied in update_model() so it survives model switches/fallbacks.
+        self.threshold_tokens_cap = self._coerce_threshold_tokens_cap(
+            threshold_tokens_cap,
+        )
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
@@ -1453,6 +1497,9 @@ class ContextCompressor(ContextEngine):
         self.threshold_tokens = self._compute_threshold_tokens(
             self.context_length, threshold_percent, self.max_tokens,
         )
+        # Apply absolute token cap (compression.threshold_tokens) — takes
+        # the lower of the ratio-based threshold and the cap.
+        self._apply_threshold_tokens_cap()
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context

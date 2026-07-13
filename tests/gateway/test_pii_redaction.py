@@ -1,14 +1,18 @@
 """Tests for PII redaction in gateway session context prompts."""
 
+import re
+
+from gateway.config import HomeChannel, Platform
+from gateway.delivery import DeliveryTarget
 from gateway.session import (
     SessionContext,
     SessionSource,
-    build_session_context_prompt,
+    _hash_chat_id,
     _hash_id,
     _hash_sender_id,
-    _hash_chat_id,
+    build_session_context_prompt,
 )
-from gateway.config import Platform, HomeChannel
+from tools.send_message_tool import _parse_target_ref
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +147,30 @@ class TestBuildSessionContextPromptRedaction:
         prompt = build_session_context_prompt(ctx)
 
         assert '`"telegram:-1001234567890:456"` → This thread' in prompt
+
+    def test_advertised_thread_target_round_trips_through_routing_parsers(self):
+        ctx = _make_context(
+            chat_id="-1001234567890",
+            thread_id="456",
+        )
+
+        prompt = build_session_context_prompt(ctx)
+        match = re.search(r'`"([^"]+)"` → This thread', prompt)
+        assert match is not None
+        advertised_target = match.group(1)
+
+        delivery_target = DeliveryTarget.parse(advertised_target)
+        assert delivery_target.platform == Platform.TELEGRAM
+        assert delivery_target.chat_id == ctx.source.chat_id
+        assert delivery_target.thread_id == ctx.source.thread_id
+        assert delivery_target.is_explicit is True
+
+        platform_name, target_ref = advertised_target.split(":", 1)
+        assert _parse_target_ref(platform_name, target_ref) == (
+            ctx.source.chat_id,
+            ctx.source.thread_id,
+            True,
+        )
 
     def test_redaction_omits_unusable_thread_target(self):
         home = {

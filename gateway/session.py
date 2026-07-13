@@ -640,8 +640,8 @@ def build_session_context_prompt(
         lines.append(
             "*IMPORTANT: When sending to this thread, always use the "
             "platform:chat_id:thread_id format. Using just the platform name "
-            "does NOT target this thread (it selects the platform's "
-            "home-channel route instead).*"
+            "does NOT target this thread; it uses the configured home-channel "
+            "route, or fails if none is configured.*"
         )
     elif supports_explicit_thread_target and redact_pii:
         lines.append(

@@ -72,6 +72,8 @@ def _run(binary: str, *args: str, timeout: float) -> subprocess.CompletedProcess
         [binary, *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         env=_child_env(),
         stdin=subprocess.DEVNULL,

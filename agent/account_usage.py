@@ -675,6 +675,46 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_deepseek_account_usage(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    """Fetch DeepSeek balance using the configured runtime credential."""
+    runtime = resolve_runtime_provider(
+        requested="deepseek",
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get("https://api.deepseek.com/user/balance", headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    details: list[str] = []
+    for balance in payload.get("balance_infos") or ():
+        if not isinstance(balance, dict):
+            continue
+        currency = str(balance.get("currency") or "").strip().upper()
+        total = balance.get("total_balance")
+        if not currency or total is None:
+            continue
+        symbol = "¥" if currency == "CNY" else "$"
+        details.append(f"Balance ({currency}): {symbol}{total}")
+    if not details and payload.get("is_available") is not None:
+        status = "Available" if payload.get("is_available") else "Low balance"
+        details.append(f"Status: {status}")
+    if not details:
+        return None
+    return AccountUsageSnapshot(
+        provider="deepseek",
+        source="balance_api",
+        fetched_at=_utc_now(),
+        details=tuple(details),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -691,6 +731,30 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "deepseek":
+            return _fetch_deepseek_account_usage(base_url, api_key)
     except Exception:
         return None
     return None
+
+
+_QUOTA_PROVIDER_IDS = ("openai-codex", "anthropic", "openrouter", "deepseek")
+
+
+def fetch_all_providers_quota() -> list[AccountUsageSnapshot]:
+    """Fetch quota data for supported providers with configured credentials.
+
+    Each provider's existing runtime/auth resolution is authoritative. This keeps
+    aggregate discovery aligned with normal provider configuration, including
+    OpenRouter credentials that are not exposed as environment variables.
+    """
+    snapshots: list[AccountUsageSnapshot] = []
+    for provider in _QUOTA_PROVIDER_IDS:
+        try:
+            snapshot = fetch_account_usage(provider)
+        except Exception:
+            logger.debug("quota ▸ %s lookup failed", provider, exc_info=True)
+            continue
+        if snapshot is not None:
+            snapshots.append(snapshot)
+    return snapshots

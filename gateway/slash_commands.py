@@ -29,7 +29,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from agent.account_usage import (
+    fetch_account_usage,
+    fetch_all_providers_quota,
+    render_account_usage_lines,
+)
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
@@ -3897,6 +3901,23 @@ class GatewaySlashCommandsMixin:
             lines.append("")
             lines.append(f"Top up: {view.topup_url}")
             lines.append("Complete your top-up in the browser — credits will appear in /credits shortly.")
+        return "\n".join(lines)
+
+    async def _handle_quota_command(self, event: MessageEvent) -> str:
+        """Handle /quota — aggregate configured-provider quota and balance data."""
+        try:
+            snapshots = await asyncio.to_thread(fetch_all_providers_quota)
+        except Exception:
+            logger.debug("quota ▸ aggregate lookup failed", exc_info=True)
+            snapshots = []
+
+        if not snapshots:
+            return "📊 **Provider Quotas**\n\nNo quota data is available for configured providers."
+
+        lines = ["📊 **Provider Quotas**"]
+        for snapshot in snapshots:
+            lines.append("")
+            lines.extend(render_account_usage_lines(snapshot, markdown=True))
         return "\n".join(lines)
 
     def _context_breakdown_lines(self, agent, source) -> list[str]:

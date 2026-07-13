@@ -82,7 +82,22 @@ else
         echo -e "${GREEN}✓${NC} uv found ($UV_VERSION)"
     else
         echo -e "${CYAN}→${NC} Installing uv..."
-        if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+        # Capture installer output so a failure shows the user WHY
+        # (network, glibc mismatch on old distros, missing curl, disk
+        # full, etc.) instead of "✗ Failed to install uv" with zero
+        # diagnostic.  Two-stage to avoid `curl | sh` masking curl
+        # failures (sh exits 0 on empty stdin under no pipefail).
+        _uv_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
+        _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
+        if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_log"; then
+            echo -e "${RED}✗${NC} Failed to download uv installer."
+            sed 's/^/    /' "$_uv_log" >&2
+            echo -e "${CYAN}→${NC} Install manually: https://docs.astral.sh/uv/"
+            rm -f "$_uv_log" "$_uv_installer"
+            exit 1
+        fi
+        if sh "$_uv_installer" >>"$_uv_log" 2>&1; then
+            rm -f "$_uv_installer"
             if [ -x "$HOME/.local/bin/uv" ]; then
                 UV_CMD="$HOME/.local/bin/uv"
             elif [ -x "$HOME/.cargo/bin/uv" ]; then
@@ -90,14 +105,22 @@ else
             fi
 
             if [ -n "$UV_CMD" ]; then
+                rm -f "$_uv_log"
                 UV_VERSION=$($UV_CMD --version 2>/dev/null)
                 echo -e "${GREEN}✓${NC} uv installed ($UV_VERSION)"
             else
-                echo -e "${RED}✗${NC} uv installed but not found. Add ~/.local/bin to PATH and retry."
+                echo -e "${RED}✗${NC} uv installer reported success but binary not found. Add ~/.local/bin to PATH and retry."
+                echo -e "${CYAN}→${NC} Installer output:"
+                sed 's/^/    /' "$_uv_log" >&2
+                rm -f "$_uv_log"
                 exit 1
             fi
         else
-            echo -e "${RED}✗${NC} Failed to install uv. Visit https://docs.astral.sh/uv/"
+            echo -e "${RED}✗${NC} Failed to install uv."
+            echo -e "${CYAN}→${NC} Installer output:"
+            sed 's/^/    /' "$_uv_log" >&2
+            echo -e "${CYAN}→${NC} Install manually: https://docs.astral.sh/uv/"
+            rm -f "$_uv_log" "$_uv_installer"
             exit 1
         fi
     fi
@@ -191,7 +214,7 @@ else
     # if mistral can't resolve.
     _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
     _ALL_EXTRAS=(
-        modal daytona vercel messaging matrix cron cli dev tts-premium slack
+        modal daytona messaging matrix cron cli dev tts-premium slack
         pty honcho mcp homeassistant sms acp voice dingtalk feishu google
         bedrock web youtube
     )
@@ -218,15 +241,21 @@ else
         # (the direct deps in pyproject.toml are exact-pinned, but
         # `uv pip install` re-resolves transitives fresh from PyPI).
         echo -e "${CYAN}→${NC} Using uv.lock for hash-verified installation..."
-        _UV_SYNC_LOG=$(mktemp)
-        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --all-extras --locked 2>"$_UV_SYNC_LOG"; then
+        echo -e "${CYAN}→${NC} (first run on a fresh venv can take 1-5 minutes; uv prints progress below)"
+        # Critical flag choice: `--extra all`, NOT `--all-extras`. The
+        # latter installs every [project.optional-dependencies] key,
+        # bypassing the curated [all] extra and pulling backends like
+        # [matrix] (python-olm needs make on Windows) and [rl] (git+https
+        # deps that fail offline). See pyproject.toml's [all] for the
+        # curated set, and tools/lazy_deps.py for backends that install
+        # at first use.
+        # Also: stream stderr through directly so the user sees uv's
+        # progress UI instead of staring at a frozen prompt.
+        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --extra all --locked; then
             echo -e "${GREEN}✓${NC} Dependencies installed (hash-verified via uv.lock)"
-            rm -f "$_UV_SYNC_LOG"
         else
-            echo -e "${YELLOW}⚠${NC} Lockfile sync failed (lockfile may be stale)."
+            echo -e "${YELLOW}⚠${NC} Lockfile sync failed (see uv output above)."
             echo -e "${YELLOW}⚠${NC} Falling back to PyPI resolve — transitives will NOT be hash-verified."
-            head -5 "$_UV_SYNC_LOG" | sed 's/^/    /'
-            rm -f "$_UV_SYNC_LOG"
             _try_install
             echo -e "${GREEN}✓${NC} Dependencies installed (transitives re-resolved, not hash-verified)"
         fi
@@ -238,22 +267,6 @@ else
 fi
 
 # ============================================================================
-# Submodules (terminal backend + RL training)
-# ============================================================================
-
-echo -e "${CYAN}→${NC} Installing optional submodules..."
-
-# tinker-atropos (RL training backend)
-if is_termux; then
-    echo -e "${CYAN}→${NC} Skipping tinker-atropos on Termux (not part of the tested Android path)"
-elif [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
-    $UV_CMD pip install -e "./tinker-atropos" && \
-        echo -e "${GREEN}✓${NC} tinker-atropos installed" || \
-        echo -e "${YELLOW}⚠${NC} tinker-atropos install failed (RL tools may not work)"
-else
-    echo -e "${YELLOW}⚠${NC} tinker-atropos not found (run: git submodule update --init --recursive)"
-fi
-
 # ============================================================================
 # Optional: ripgrep (for faster file search)
 # ============================================================================
@@ -316,9 +329,15 @@ fi
 if [ ! -f ".env" ]; then
     if [ -f ".env.example" ]; then
         cp .env.example .env
+        # .env holds API keys — restrict to owner-only access (matches
+        # scripts/install.sh which already chmods 600 after creation).
+        chmod 600 .env 2>/dev/null || true
         echo -e "${GREEN}✓${NC} Created .env from template"
     fi
 else
+    # Tighten an existing .env's perms in case it was created elsewhere
+    # under a permissive umask.
+    chmod 600 .env 2>/dev/null || true
     echo -e "${GREEN}✓${NC} .env exists"
 fi
 

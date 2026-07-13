@@ -174,7 +174,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
 
     # Try register(ctx) pattern first (how plugins are written)
     if hasattr(mod, "register"):
-        collector = _EngineCollector()
+        collector = _EngineCollector(engine_name=name)
         try:
             mod.register(collector)
             if collector.engine:
@@ -197,13 +197,79 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
 
 
 class _EngineCollector:
-    """Fake plugin context that captures register_context_engine calls."""
+    """Fake plugin context that captures register_context_engine calls.
 
-    def __init__(self):
+    Plugin context engines using the standard ``register(ctx)`` pattern may
+    also call ``ctx.register_command(...)`` to expose slash commands (e.g.
+    ``/lcm``). Forward those to the global plugin command registry so they
+    behave identically to commands registered by normal plugins.
+    """
+
+    def __init__(self, engine_name: str = ""):
         self.engine = None
+        self._engine_name = engine_name or "context_engine"
+        self._registered_commands: list[str] = []
 
     def register_context_engine(self, engine):
         self.engine = engine
+
+    def register_command(
+        self,
+        name: str,
+        handler,
+        description: str = "",
+        args_hint: str = "",
+    ) -> None:
+        """Forward to the global plugin command registry."""
+        clean = (name or "").lower().strip().lstrip("/").replace(" ", "-")
+        if not clean:
+            logger.warning(
+                "Context engine '%s' tried to register a command with an empty name.",
+                self._engine_name,
+            )
+            return
+
+        # Reject conflicts with built-in commands.
+        try:
+            from hermes_cli.commands import resolve_command
+            if resolve_command(clean) is not None:
+                logger.warning(
+                    "Context engine '%s' tried to register command '/%s' which conflicts "
+                    "with a built-in command. Skipping.",
+                    self._engine_name, clean,
+                )
+                return
+        except Exception:
+            pass
+
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            manager = get_plugin_manager()
+            if clean in manager._plugin_commands:
+                # Don't clobber a regular plugin's command — same conflict
+                # policy the plugin system uses for plugin-vs-plugin collisions.
+                logger.warning(
+                    "Context engine '%s' tried to register command '/%s' which "
+                    "is already registered by a plugin. Skipping.",
+                    self._engine_name, clean,
+                )
+                return
+            manager._plugin_commands[clean] = {
+                "handler": handler,
+                "description": description or "Context engine command",
+                "plugin": f"context-engine:{self._engine_name}",
+                "args_hint": (args_hint or "").strip(),
+            }
+            self._registered_commands.append(clean)
+            logger.debug(
+                "Context engine '%s' registered command: /%s",
+                self._engine_name, clean,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Context engine '%s' could not register /%s: %s",
+                self._engine_name, clean, exc,
+            )
 
     # No-op for other registration methods
     def register_tool(self, *args, **kwargs):

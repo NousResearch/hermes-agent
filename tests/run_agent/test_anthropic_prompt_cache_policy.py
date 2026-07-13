@@ -75,6 +75,57 @@ class TestOpenRouter:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
+class TestKimiMoonshotOnOpenRouter:
+    """Kimi/Moonshot on OpenRouter honour envelope-layout cache_control (#25970)."""
+
+    def test_kimi_k26_on_openrouter_caches_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="moonshotai/kimi-k2.6",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_moonshot_v1_on_openrouter_caches_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="moonshotai/moonshot-v1-8k",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_kimi_on_nous_portal_caches_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://api.nousresearch.com/v1",
+            api_mode="chat_completions",
+            model="moonshotai/kimi-k2.6",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_kimi_bare_release_slug_on_openrouter_caches(self):
+        """Bare release slugs (k2-thinking) lack the 'kimi'/'moonshot' substring;
+        the canonical family matcher must still catch them."""
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="k2-thinking",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_kimi_on_non_openrouter_host_does_not_cache(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://api.moonshot.cn/v1",
+            api_mode="chat_completions",
+            model="moonshotai/kimi-k2.6",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
 class TestThirdPartyAnthropicGateway:
     """Third-party gateways speaking the Anthropic protocol (MiniMax, Zhipu GLM, LiteLLM)."""
 
@@ -330,127 +381,3 @@ class TestExplicitOverrides:
 # Long-lived prefix cache policy (cross-session 1h tier)
 # ─────────────────────────────────────────────────────────────────────
 
-class TestSupportsLongLivedAnthropicCache:
-    """Narrower than _anthropic_prompt_cache_policy — only Claude on the 4
-    explicitly-validated endpoints get the long-lived layout."""
-
-    def test_native_anthropic_claude_supported(self):
-        agent = _make_agent(
-            provider="anthropic",
-            base_url="https://api.anthropic.com",
-            api_mode="anthropic_messages",
-            model="claude-sonnet-4.6",
-        )
-        assert agent._supports_long_lived_anthropic_cache() is True
-
-    def test_anthropic_oauth_supported(self):
-        # OAuth uses the same transport as native Anthropic
-        agent = _make_agent(
-            provider="anthropic",
-            base_url="https://api.anthropic.com",
-            api_mode="anthropic_messages",
-            model="claude-opus-4.6",
-        )
-        assert agent._supports_long_lived_anthropic_cache() is True
-
-    def test_openrouter_claude_supported(self):
-        agent = _make_agent(
-            provider="openrouter",
-            base_url="https://openrouter.ai/api/v1",
-            api_mode="chat_completions",
-            model="anthropic/claude-sonnet-4.6",
-        )
-        assert agent._supports_long_lived_anthropic_cache() is True
-
-    def test_nous_portal_claude_supported(self):
-        # Nous Portal proxies to OpenRouter — same wire format
-        agent = _make_agent(
-            provider="nous",
-            base_url="https://inference-api.nousresearch.com/v1",
-            api_mode="chat_completions",
-            model="anthropic/claude-opus-4.7",
-        )
-        assert agent._supports_long_lived_anthropic_cache() is True
-
-    def test_nous_portal_qwen_supported(self):
-        # Portal Qwen rides the same OpenRouter-equivalent transport as
-        # Portal Claude; long-lived (1h cross-session) cache_control
-        # markers apply identically.
-        agent = _make_agent(
-            provider="nous",
-            base_url="https://inference-api.nousresearch.com/v1",
-            api_mode="chat_completions",
-            model="qwen3.6-plus",
-        )
-        assert agent._supports_long_lived_anthropic_cache() is True
-
-    def test_nous_portal_qwen_vendored_slug_supported(self):
-        agent = _make_agent(
-            provider="nous",
-            base_url="https://inference-api.nousresearch.com/v1",
-            api_mode="chat_completions",
-            model="qwen/qwen3.6-plus",
-        )
-        assert agent._supports_long_lived_anthropic_cache() is True
-
-    def test_nous_portal_non_claude_non_qwen_rejected(self):
-        # Portal long-lived cache scope mirrors policy: Claude or Qwen only.
-        agent = _make_agent(
-            provider="nous",
-            base_url="https://inference-api.nousresearch.com/v1",
-            api_mode="chat_completions",
-            model="openai/gpt-5.4",
-        )
-        assert agent._supports_long_lived_anthropic_cache() is False
-
-    def test_openrouter_non_claude_rejected(self):
-        agent = _make_agent(
-            provider="openrouter",
-            base_url="https://openrouter.ai/api/v1",
-            api_mode="chat_completions",
-            model="openai/gpt-5.4",
-        )
-        assert agent._supports_long_lived_anthropic_cache() is False
-
-    def test_third_party_anthropic_gateway_rejected(self):
-        # MiniMax / Kimi / etc. — anthropic-wire but not in our validated list
-        agent = _make_agent(
-            provider="minimax",
-            base_url="https://api.minimax.io/anthropic",
-            api_mode="anthropic_messages",
-            model="minimax-m2.7",
-        )
-        assert agent._supports_long_lived_anthropic_cache() is False
-
-    def test_alibaba_dashscope_rejected(self):
-        agent = _make_agent(
-            provider="alibaba",
-            base_url="https://dashscope.aliyuncs.com/api/v1/anthropic",
-            api_mode="anthropic_messages",
-            model="qwen3.5-plus",
-        )
-        assert agent._supports_long_lived_anthropic_cache() is False
-
-    def test_opencode_qwen_rejected(self):
-        agent = _make_agent(
-            provider="opencode-go",
-            base_url="https://api.opencode-go.example/v1",
-            api_mode="chat_completions",
-            model="qwen3.6-plus",
-        )
-        assert agent._supports_long_lived_anthropic_cache() is False
-
-    def test_fallback_target_evaluated_independently(self):
-        # Starting on a non-supported provider, falling back to OpenRouter Claude
-        agent = _make_agent(
-            provider="minimax",
-            base_url="https://api.minimax.io/anthropic",
-            api_mode="anthropic_messages",
-            model="minimax-m2.7",
-        )
-        assert agent._supports_long_lived_anthropic_cache(
-            provider="openrouter",
-            base_url="https://openrouter.ai/api/v1",
-            api_mode="chat_completions",
-            model="anthropic/claude-sonnet-4.6",
-        ) is True

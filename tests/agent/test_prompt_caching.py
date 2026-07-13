@@ -1,13 +1,10 @@
 """Tests for agent/prompt_caching.py — Anthropic cache control injection."""
 
-import copy
-import pytest
 
 from agent.prompt_caching import (
     _apply_cache_marker,
+    _can_carry_marker,
     apply_anthropic_cache_control,
-    apply_anthropic_cache_control_long_lived,
-    mark_tools_for_long_lived_cache,
 )
 
 
@@ -27,18 +24,37 @@ class TestApplyCacheMarker:
         _apply_cache_marker(msg, MARKER, native_anthropic=False)
         assert "cache_control" not in msg
 
-    def test_none_content_gets_top_level_marker(self):
-        msg = {"role": "assistant", "content": None}
-        _apply_cache_marker(msg, MARKER)
+    def test_tool_message_wraps_non_empty_content_on_openrouter(self):
+        """Non-empty tool content should be wrapped so the marker lands on a content part."""
+        msg = {"role": "tool", "content": "tool result bytes"}
+        _apply_cache_marker(msg, MARKER, native_anthropic=False)
+        assert "cache_control" not in msg
+        assert isinstance(msg["content"], list)
+        assert msg["content"][0]["cache_control"] == MARKER
+
+    def test_empty_assistant_message_skips_marker_on_openrouter(self):
+        """OpenRouter path: empty assistant turns are pure tool_calls, marker would be ignored."""
+        msg = {"role": "assistant", "content": ""}
+        _apply_cache_marker(msg, MARKER, native_anthropic=False)
+        assert "cache_control" not in msg
+
+    def test_native_anthropic_empty_assistant_gets_top_level_marker(self):
+        """Native Anthropic layout can still carry top-level marker on empty content."""
+        msg = {"role": "assistant", "content": ""}
+        _apply_cache_marker(msg, MARKER, native_anthropic=True)
         assert msg["cache_control"] == MARKER
 
-    def test_empty_string_content_gets_top_level_marker(self):
-        """Empty text blocks cannot have cache_control (Anthropic rejects them)."""
-        msg = {"role": "assistant", "content": ""}
-        _apply_cache_marker(msg, MARKER)
+    def test_none_content_skips_marker_on_openrouter(self):
+        """OpenRouter path: None-content assistant turns are ignored."""
+        msg = {"role": "assistant", "content": None}
+        _apply_cache_marker(msg, MARKER, native_anthropic=False)
+        assert "cache_control" not in msg
+
+    def test_none_content_gets_top_level_marker_on_native_anthropic(self):
+        """Native Anthropic path: None content still gets top-level marker."""
+        msg = {"role": "assistant", "content": None}
+        _apply_cache_marker(msg, MARKER, native_anthropic=True)
         assert msg["cache_control"] == MARKER
-        # Must NOT wrap into [{"type": "text", "text": "", "cache_control": ...}]
-        assert msg["content"] == ""
 
     def test_string_content_wrapped_in_list(self):
         msg = {"role": "user", "content": "Hello"}
@@ -65,6 +81,41 @@ class TestApplyCacheMarker:
         msg = {"role": "user", "content": []}
         # Should not crash on empty list
         _apply_cache_marker(msg, MARKER)
+
+
+class TestCanCarryMarker:
+    def test_native_anthropic_always_true(self):
+        assert _can_carry_marker({"role": "assistant", "content": ""}, native_anthropic=True) is True
+        assert _can_carry_marker({"role": "tool", "content": ""}, native_anthropic=True) is True
+
+    def test_openrouter_content_parts_carry_marker(self):
+        assert _can_carry_marker({"role": "user", "content": "text"}, native_anthropic=False) is True
+        assert _can_carry_marker({"role": "user", "content": [{"type": "text", "text": "a"}]}, native_anthropic=False) is True
+
+    def test_openrouter_empty_or_none_does_not_carry_marker(self):
+        assert _can_carry_marker({"role": "assistant", "content": ""}, native_anthropic=False) is False
+        assert _can_carry_marker({"role": "assistant", "content": None}, native_anthropic=False) is False
+        assert _can_carry_marker({"role": "tool", "content": "result"}, native_anthropic=False) is True
+        assert _can_carry_marker({"role": "tool", "content": ""}, native_anthropic=False) is False
+
+    def test_openrouter_list_carrier_requires_last_part_dict(self):
+        """Carrier predicate must agree with _apply_cache_marker, which only marks
+        the LAST content part. A list whose last element isn't a dict cannot carry
+        a marker and must not consume a breakpoint."""
+        # Last part is a dict -> carrier.
+        assert _can_carry_marker(
+            {"role": "user", "content": [{"type": "text", "text": "a"}]},
+            native_anthropic=False,
+        ) is True
+        # Last part is a non-dict (stray raw string) -> NOT a carrier, even though
+        # an earlier part is a dict. Previously this passed the gate but got no
+        # marker, wasting a breakpoint.
+        assert _can_carry_marker(
+            {"role": "user", "content": [{"type": "text", "text": "a"}, "trailing raw"]},
+            native_anthropic=False,
+        ) is False
+        # Empty list -> not a carrier.
+        assert _can_carry_marker({"role": "user", "content": []}, native_anthropic=False) is False
 
 
 class TestApplyAnthropicCacheControl:
@@ -144,131 +195,31 @@ class TestApplyAnthropicCacheControl:
                 count += 1
         assert count <= 4
 
-
-class TestMarkToolsForLongLivedCache:
-    def test_returns_unchanged_for_empty_tools(self):
-        assert mark_tools_for_long_lived_cache(None) is None
-        assert mark_tools_for_long_lived_cache([]) == []
-
-    def test_marks_only_last_tool(self):
-        tools = [
-            {"type": "function", "function": {"name": "a"}},
-            {"type": "function", "function": {"name": "b"}},
-            {"type": "function", "function": {"name": "c"}},
-        ]
-        out = mark_tools_for_long_lived_cache(tools)
-        assert "cache_control" not in out[0]
-        assert "cache_control" not in out[1]
-        assert out[2]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
-
-    def test_does_not_mutate_input(self):
-        tools = [{"type": "function", "function": {"name": "a"}}]
-        mark_tools_for_long_lived_cache(tools)
-        assert "cache_control" not in tools[0]
-
-    def test_5m_ttl_drops_ttl_field(self):
-        tools = [{"type": "function", "function": {"name": "a"}}]
-        out = mark_tools_for_long_lived_cache(tools, long_lived_ttl="5m")
-        assert out[0]["cache_control"] == {"type": "ephemeral"}
-
-
-class TestApplyAnthropicCacheControlLongLived:
-    def test_empty_messages(self):
-        assert apply_anthropic_cache_control_long_lived([]) == []
-
-    def test_marks_first_block_of_split_system(self):
+    def test_tool_loop_empty_assistant_and_tool_messages_do_not_consume_breakpoints(self):
+        """Tool loops should keep breakpoints on messages that can carry markers."""
         msgs = [
-            {"role": "system", "content": [
-                {"type": "text", "text": "STABLE"},
-                {"type": "text", "text": "CONTEXT"},
-                {"type": "text", "text": "VOLATILE"},
-            ]},
-            {"role": "user", "content": "msg1"},
-            {"role": "assistant", "content": "msg2"},
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "run tool 1", "cache_control": MARKER},
+            {"role": "assistant", "content": "", "tool_calls": [{"type": "function"}]},
+            {"role": "tool", "content": "tool result 1"},
+            {"role": "user", "content": "run tool 2", "cache_control": MARKER},
+            {"role": "assistant", "content": "", "tool_calls": [{"type": "function"}]},
+            {"role": "tool", "content": "tool result 2"},
         ]
-        out = apply_anthropic_cache_control_long_lived(msgs)
-        sys_blocks = out[0]["content"]
-        assert sys_blocks[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
-        assert "cache_control" not in sys_blocks[1]
-        assert "cache_control" not in sys_blocks[2]
+        result = apply_anthropic_cache_control(msgs, native_anthropic=False)
+        # Empty assistant/tool turns should not get broken markers
+        assert "cache_control" not in result[2]
+        assert "cache_control" not in result[3]
+        assert "cache_control" not in result[5]
+        assert "cache_control" not in result[6]
 
-    def test_rolling_marker_on_last_2_messages(self):
+    def test_tool_message_marker_lands_on_content_part_on_openrouter(self):
+        """Non-empty tool content should be wrapped so the marker lands on a content part."""
         msgs = [
-            {"role": "system", "content": [{"type": "text", "text": "S"}]},
-            {"role": "user", "content": "u1"},
-            {"role": "assistant", "content": "a1"},
-            {"role": "user", "content": "u2"},
-            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "hello"},
+            {"role": "tool", "content": "tool output"},
         ]
-        out = apply_anthropic_cache_control_long_lived(msgs)
-
-        def has_marker(m):
-            c = m.get("content")
-            if isinstance(c, list) and c and isinstance(c[-1], dict):
-                return "cache_control" in c[-1]
-            return "cache_control" in m
-
-        # u1 and a1 (older messages) should NOT be marked
-        assert not has_marker(out[1])
-        assert not has_marker(out[2])
-        # u2 and a2 (last 2) SHOULD be marked
-        assert has_marker(out[3])
-        assert has_marker(out[4])
-
-    def test_rolling_marker_uses_5m_ttl(self):
-        msgs = [
-            {"role": "system", "content": [{"type": "text", "text": "S"}]},
-            {"role": "user", "content": "u1"},
-            {"role": "assistant", "content": "a1"},
-        ]
-        out = apply_anthropic_cache_control_long_lived(
-            msgs, long_lived_ttl="1h", rolling_ttl="5m",
-        )
-        # Last user message: cache_control on the wrapped text part should be 5m
-        last = out[-1]
-        c = last["content"]
-        assert isinstance(c, list)
-        assert c[-1]["cache_control"] == {"type": "ephemeral"}  # 5m has no ttl key
-
-    def test_string_system_falls_back_to_envelope_marker(self):
-        """When the caller didn't split the system message, we still place a marker."""
-        msgs = [
-            {"role": "system", "content": "Single string system"},
-            {"role": "user", "content": "u1"},
-        ]
-        out = apply_anthropic_cache_control_long_lived(msgs)
-        sys_content = out[0]["content"]
-        # Wrapped into a list and the (now sole) block gets the 1h marker
-        assert isinstance(sys_content, list)
-        assert sys_content[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
-
-    def test_does_not_mutate_input(self):
-        msgs = [
-            {"role": "system", "content": [{"type": "text", "text": "S"}]},
-            {"role": "user", "content": "u1"},
-        ]
-        before = copy.deepcopy(msgs)
-        apply_anthropic_cache_control_long_lived(msgs)
-        assert msgs == before
-
-    def test_max_4_breakpoints_with_split_system(self):
-        msgs = [
-            {"role": "system", "content": [{"type": "text", "text": "S"}, {"type": "text", "text": "V"}]},
-        ] + [
-            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg{i}"}
-            for i in range(10)
-        ]
-        out = apply_anthropic_cache_control_long_lived(msgs)
-        count = 0
-        for m in out:
-            c = m.get("content")
-            if isinstance(c, list):
-                for item in c:
-                    if isinstance(item, dict) and "cache_control" in item:
-                        count += 1
-            elif "cache_control" in m:
-                count += 1
-        # 1 system block + last 2 messages = 3 breakpoints from this function.
-        # tools[-1] is marked separately (not via this function), so a 4th
-        # breakpoint can be added at API-call time.
-        assert count == 3
+        result = apply_anthropic_cache_control(msgs, native_anthropic=False)
+        assert isinstance(result[1]["content"], list)
+        assert result[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in result[1]

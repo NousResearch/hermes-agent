@@ -3,7 +3,7 @@
 File Operations Module
 
 Provides file manipulation capabilities (read, write, patch, search) that work
-across all terminal backends (local, docker, ssh, singularity, modal, daytona, vercel_sandbox).
+across all terminal backends (local, docker, ssh, singularity, modal, daytona).
 
 The key insight is that all file operations can be expressed as shell commands,
 so we wrap the terminal backend's execute() interface to provide a unified file API.
@@ -30,14 +30,13 @@ import re
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, ClassVar
 from pathlib import Path
 from tools.binary_extensions import BINARY_EXTENSIONS
 
 from agent.file_safety import (
     build_write_denied_paths,
     build_write_denied_prefixes,
-    get_safe_write_root as _shared_get_safe_write_root,
     is_write_denied as _shared_is_write_denied,
 )
 
@@ -74,15 +73,74 @@ def _strip_terminal_fence_leaks(text: str) -> str:
     return "".join(cleaned_lines)
 
 
-def _get_safe_write_root() -> Optional[str]:
-    """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset.
+def _detect_line_ending(sample: str) -> Optional[str]:
+    """Return the dominant line ending in ``sample`` or None if undetermined.
 
-    When set, all write_file/patch operations are constrained to this
-    directory tree.  Writes outside it are denied even if the target is
-    not on the static deny list.  Opt-in hardening for gateway/messaging
-    deployments that should only touch a workspace checkout.
+    Looks at the first few line breaks and picks ``\\r\\n`` if any are
+    present (Windows / DOS), otherwise ``\\n`` (Unix).  Returns ``None``
+    for empty / single-line content where we can't tell.  Used to
+    preserve the file's original line endings across write_file and
+    patch operations — without this the agent's bare-LF tool args
+    silently normalize Windows-line-ending files, and patch produces
+    mixed endings when only a substituted region changes.
     """
-    return _shared_get_safe_write_root()
+    if not sample:
+        return None
+    # Look at the first chunk — enough to tell, cheap to scan.
+    head = sample[:4096]
+    if "\r\n" in head:
+        return "\r\n"
+    if "\n" in head:
+        return "\n"
+    return None
+
+
+def _normalize_line_endings(text: str, target: str) -> str:
+    """Convert all line endings in ``text`` to ``target`` (``\\n`` or ``\\r\\n``).
+
+    Idempotent: ``_normalize_line_endings(_normalize_line_endings(x, "\\r\\n"), "\\r\\n") == _normalize_line_endings(x, "\\r\\n")``.
+    Strips lone ``\\r`` characters as well, so mixed-ending content is
+    homogenized in a single pass.
+    """
+    # First collapse to LF (handle CRLF and lone CR), then expand if target
+    # is CRLF.  Order matters: doing the replacements separately would
+    # double-convert a CRLF -> LFLF.
+    lf_normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if target == "\n":
+        return lf_normalized
+    if target == "\r\n":
+        return lf_normalized.replace("\n", "\r\n")
+    return text
+
+
+# UTF-8 byte order mark. Some Windows editors (Notepad, older Visual Studio,
+# some PowerShell redirects) prepend this invisible 3-byte marker
+# (EF BB BF == U+FEFF) to UTF-8 text files. It renders as nothing but is a
+# real character at the start of the decoded string, so without handling it:
+#   - read_file would surface a stray U+FEFF as the first character (the
+#     model sees a phantom char before `import ...`), and
+#   - patch matches against the true first line would miss, and write_file
+#     would silently drop or double the marker on rewrite.
+# We strip it on read so the model sees clean content, and restore it on
+# write when the original file had one — exactly mirroring the line-ending
+# preservation above (detect on disk, preserve across the edit).
+_UTF8_BOM = "\ufeff"
+
+
+def _strip_bom(text: str) -> tuple[str, bool]:
+    """Return (text-without-leading-BOM, had_bom).
+
+    Only a single leading BOM is stripped; a BOM appearing mid-content is
+    left alone (it's legitimate data there, not a file marker).
+    """
+    if text and text.startswith(_UTF8_BOM):
+        return text[len(_UTF8_BOM):], True
+    return text, False
+
+
+def _has_bom(text: Optional[str]) -> bool:
+    """True if ``text`` begins with a UTF-8 BOM."""
+    return bool(text) and text.startswith(_UTF8_BOM)
 
 
 def _is_write_denied(path: str) -> bool:
@@ -120,6 +178,13 @@ class WriteResult:
     bytes_written: int = 0
     dirs_created: bool = False
     lint: Optional[Dict[str, Any]] = None
+    # Semantic diagnostics from the LSP layer, when applicable.  Kept in
+    # its own field (not folded into ``lint``) so the model and any
+    # downstream parsers can read syntax errors and semantic errors as
+    # separate signals.  ``None`` when LSP is disabled, when the file
+    # isn't in a git workspace, or when no diagnostics were introduced
+    # by this edit.
+    lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
     warning: Optional[str] = None
 
@@ -136,6 +201,8 @@ class PatchResult:
     files_created: List[str] = field(default_factory=list)
     files_deleted: List[str] = field(default_factory=list)
     lint: Optional[Dict[str, Any]] = None
+    # See :class:`WriteResult.lsp_diagnostics`.
+    lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
     
     def to_dict(self) -> dict:
@@ -150,6 +217,8 @@ class PatchResult:
             result["files_deleted"] = self.files_deleted
         if self.lint:
             result["lint"] = self.lint
+        if self.lsp_diagnostics:
+            result["lsp_diagnostics"] = self.lsp_diagnostics
         if self.error:
             result["error"] = self.error
         return result
@@ -172,21 +241,70 @@ class SearchResult:
     counts: Dict[str, int] = field(default_factory=dict)
     total_count: int = 0
     truncated: bool = False
+    limit_reason: Optional[str] = None
+    warning: Optional[str] = None
     error: Optional[str] = None
     
-    def to_dict(self) -> dict:
-        result = {"total_count": self.total_count}
+    # Densify content-mode matches into a path-grouped text block above this
+    # many matches. Below it, the verbose array is already compact enough that
+    # the path-grouping header costs more than it saves.
+    _DENSIFY_MIN_MATCHES: ClassVar[int] = 5
+
+    def _densify_matches(self) -> Optional[str]:
+        """Render content-mode matches as a compact, path-grouped text block.
+
+        The verbose form repeats the ``{"path","line","content"}`` keys and the
+        full path string for every match. This groups consecutive matches by
+        path (path printed once, then ``  <line>: <content>`` rows), which is
+        lossless — every path, line number, and content byte is preserved — and
+        readable by the model without any decode step.
+
+        Returns ``None`` when densification is not worthwhile (too few matches),
+        so the caller falls back to the verbose array.
+        """
+        if len(self.matches) < self._DENSIFY_MIN_MATCHES:
+            return None
+        # ripgrep emits matches path-ordered (all hits in a file are
+        # consecutive), so grouping on path change collapses each file to a
+        # single header without reordering results.
+        lines: list[str] = []
+        current_path: Optional[str] = None
+        for m in self.matches:
+            if m.path != current_path:
+                lines.append(m.path)
+                current_path = m.path
+            # rstrip trailing whitespace only; leading indentation in code is
+            # meaningful and preserved verbatim after the "<line>: " prefix.
+            lines.append(f"  {m.line_number}: {m.content.rstrip()}")
+        return "\n".join(lines)
+
+    def to_dict(self, densify: bool = False) -> dict:
+        result: dict[str, object] = {"total_count": self.total_count}
         if self.matches:
-            result["matches"] = [
-                {"path": m.path, "line": m.line_number, "content": m.content}
-                for m in self.matches
-            ]
+            dense = self._densify_matches() if densify else None
+            if dense is not None:
+                # Self-describing: the format key tells the model how to read
+                # the block so it never has to guess the shape.
+                result["matches_format"] = (
+                    "path-grouped: each file path on its own line, followed by "
+                    "indented '<line>: <content>' rows for matches in that file"
+                )
+                result["matches_text"] = dense
+            else:
+                result["matches"] = [
+                    {"path": m.path, "line": m.line_number, "content": m.content}
+                    for m in self.matches
+                ]
         if self.files:
             result["files"] = self.files
         if self.counts:
             result["counts"] = self.counts
         if self.truncated:
             result["truncated"] = True
+        if self.limit_reason:
+            result["limit_reason"] = self.limit_reason
+        if self.warning:
+            result["warning"] = self.warning
         if self.error:
             result["error"] = self.error
         return result
@@ -214,6 +332,73 @@ class ExecuteResult:
     """Result from executing a shell command."""
     stdout: str = ""
     exit_code: int = 0
+
+
+_SEARCH_TIMEOUT_MARKER_RE = re.compile(r"\n?\[Command timed out after \d+s\]\s*$")
+
+
+def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]:
+    """Return stdout cleaned for parsing and a limit reason for search timeouts."""
+    if result.exit_code == 124:
+        return _SEARCH_TIMEOUT_MARKER_RE.sub("", result.stdout), "search_timeout"
+    return result.stdout, None
+
+
+def _split_tool_diagnostics(output: str) -> tuple[str, str]:
+    """Separate rg/grep diagnostic lines from real match output.
+
+    ``_exec`` runs commands with ``stderr=subprocess.STDOUT``, so error and
+    warning text from ``rg``/``grep`` is interleaved with match lines in a
+    single stream. Diagnostics must not be parsed as matches, and on a hard
+    failure they are the error message to surface.
+
+    Returns ``(diagnostics, payload)`` where ``payload`` contains only lines
+    that look like real search output — a match line (``file:line:content``),
+    a files-only path, a count line, or a context line/separator. Everything
+    else (tool-prefixed errors, rg's multi-line ``regex parse error`` block
+    with its indented carets, blank lines) is folded into ``diagnostics``.
+
+    Classifying by *shape* rather than by error prefix is what lets the
+    exit-2 guard distinguish a pure failure (no usable payload → surface the
+    error) from a partial failure (some files matched, one was unreadable →
+    keep the matches). It also means error text can never be mis-parsed as a
+    match, a latent bug that predates the exit-code fix.
+    """
+    diagnostics: list[str] = []
+    payload: list[str] = []
+    for line in output.split('\n'):
+        if not line.strip():
+            continue
+        # Tool diagnostics always carry the "<tool>: " prefix (e.g.
+        # "rg: <file>: Permission denied", "grep: Invalid regular
+        # expression", "rg: regex parse error:"). Check this first: a real
+        # match path can legitimately contain "-<digit>" (e.g. a tmp dir like
+        # ".../pytest-686/..."), which the shape regex would otherwise treat
+        # as a match line.
+        stripped = line.lstrip()
+        if stripped.startswith("rg: ") or stripped.startswith("grep: "):
+            diagnostics.append(line)
+            continue
+        # Otherwise classify by output shape. rg's regex-parse-error block
+        # also emits an indented caret line and a trailing "error: ..." line
+        # with no tool prefix; neither matches a search-output shape, so they
+        # fall through to diagnostics.
+        #   match / count : "<path>:<...>"   (has a colon; rg -c uses path:count)
+        #   files_only    : "<path>"         (no whitespace, no leading colon)
+        #   context line  : "<path>-<line>-" or the "--" group separator
+        if line == "--" or _SEARCH_OUTPUT_RE.match(line):
+            payload.append(line)
+        else:
+            diagnostics.append(line)
+    return '\n'.join(diagnostics), '\n'.join(payload)
+
+
+# A real rg/grep output line starts with a path token and is followed by a
+# ``:`` (match/count), a ``-`` (context), or nothing (files_only). Tool
+# diagnostics ("rg: ...", "grep: ...", "error: ...", indented carets) never
+# match because the path token forbids whitespace and a leading tool prefix
+# like "rg" is followed by ": " (space) which the negated class rejects.
+_SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
 
 
 def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
@@ -284,6 +469,16 @@ class FileOperations(ABC):
         """Delete a file. Returns WriteResult with .error set on failure."""
         ...
 
+    def delete_path(self, path: str, recursive: bool = False) -> WriteResult:
+        """Cross-platform delete that handles files and (with recursive=True)
+        directory trees. Default implementation delegates to ``delete_file``
+        for the non-recursive case; backends with native recursive support
+        should override.
+        """
+        if recursive:
+            return WriteResult(error="Recursive delete not implemented for this backend")
+        return self.delete_file(path)
+
     @abstractmethod
     def move_file(self, src: str, dst: str) -> WriteResult:
         """Move/rename a file from src to dst. Returns WriteResult with .error set on failure."""
@@ -315,6 +510,93 @@ LINTERS = {
     '.rs': 'rustfmt --check {file} 2>&1',
 }
 
+# Extensions where the per-file shell linter is structurally weaker than
+# a real LSP server AND produces phantom errors on real-world projects:
+#
+# - ``.ts``: ``tsc --noEmit FILE.ts`` ignores ``tsconfig.json`` and
+#   defaults to no-lib / ES5, so every ES2015+ stdlib reference
+#   (``Promise``, ``Map``, ``Set``, ``ReadonlySet``, ``Iterable``,
+#   ``Math.imul``, ``Number.isFinite``, etc.) reports as missing.  This
+#   floods the agent's lint field with 20K+ tokens of false positives on
+#   every edit.  No supported tsc flag fixes the single-file invocation;
+#   the canonical replacement is ``tsserver`` via LSP, which respects
+#   tsconfig and gives true diagnostics.
+#
+#   ``.tsx`` is intentionally NOT in ``LINTERS`` (and therefore not
+#   here): it has no shell linter entry, so it falls through to the
+#   ``ext not in LINTERS`` skip case unchanged.  Pre-PR behavior:
+#   ``.tsx`` was implicitly ``skipped``.  Keeping it that way means
+#   ``.tsx`` edits with LSP disabled get no per-file syntax check
+#   (same as before this PR) instead of the broken ``tsc`` invocation
+#   that ``.ts`` used to get.  When LSP is enabled, ``.tsx`` is covered
+#   by the LSP tier via ``_maybe_lsp_diagnostics`` exactly as ``.ts``.
+#
+# - ``.go``: ``go vet FILE.go`` fails outside a module / GOPATH with
+#   "cannot find package" — already partially handled by
+#   ``_LINTER_UNUSABLE_PATTERNS`` but only when the package error is the
+#   ONLY output; mixed real+phantom output still leaks through.
+#   ``gopls`` is the canonical replacement.
+#
+# - ``.rs``: ``rustfmt --check FILE.rs`` is style, not type-checking, and
+#   rejects non-Cargo project files.  ``rust-analyzer`` is the canonical
+#   replacement.
+#
+# When the LSP service is configured AND ``enabled_for(path)`` for this
+# extension's file, ``_check_lint`` skips the shell linter for these
+# extensions — the ``lsp_diagnostics`` channel carries the real signal.
+# Everything else in ``LINTERS`` (Python ``py_compile``, ``node --check``)
+# is fast, file-local, and correct, so it runs unconditionally.
+_SHELL_LINTER_LSP_REDUNDANT = frozenset({'.ts', '.go', '.rs'})
+
+
+# Patterns that indicate the linter base command exists on PATH but
+# couldn't actually run — e.g. ``npx tsc`` when tsc isn't installed in
+# node_modules, or rustfmt complaining there's no Cargo project.  When
+# any of these substrings appears in the linter output, ``_check_lint``
+# returns ``skipped`` instead of ``error`` so:
+#
+# 1. The write isn't flagged for a tooling problem the agent can't fix.
+# 2. The LSP semantic tier still runs (it gates on success/skipped).
+#
+# Patterns are matched case-insensitively against linter stdout.
+_LINTER_UNUSABLE_PATTERNS = {
+    'npx': (
+        # npx prints this banner when the package isn't installed locally
+        # AND it can't auto-install (no internet, registry off, etc.) or
+        # when the binary it tried to run is the wrong one.
+        'this is not the tsc command you are looking for',
+        # npx with --no-install resolution failures
+        'could not determine executable to run',
+        'not found in npm registry',
+    ),
+    'rustfmt': (
+        # rustfmt outside a Cargo project
+        'no input filename given',
+        'error: not a workspace',
+    ),
+    'go': (
+        # ``go vet`` on a file outside a module / GOPATH
+        'cannot find package',
+        'go: cannot find main module',
+    ),
+}
+
+
+def _looks_like_linter_unusable(base_cmd: str, output: str) -> bool:
+    """Return True iff ``output`` from ``base_cmd`` indicates the linter
+    itself couldn't run (a tooling gap), as opposed to a real lint error
+    in the file being checked.
+
+    ``base_cmd`` is the first word of the linter command line (``npx``,
+    ``rustfmt``, ``go``, ...).  ``output`` is the stdout/stderr captured
+    from running it.
+    """
+    patterns = _LINTER_UNUSABLE_PATTERNS.get(base_cmd)
+    if not patterns:
+        return False
+    lower = output.lower()
+    return any(p in lower for p in patterns)
+
 
 def _lint_json_inproc(content: str) -> tuple[bool, str]:
     """In-process JSON syntax check.  Returns (ok, error_message)."""
@@ -332,6 +614,18 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
     """In-process YAML syntax check.  Returns (ok, error_message).
 
     Skipped gracefully if PyYAML isn't installed — YAML parsing is optional.
+
+    Deliberately a *syntax-only* scan (``yaml.parse``), not ``safe_load``:
+    loading rejects perfectly valid YAML that merely isn't a single plain
+    document — multi-document streams (``---``-separated Kubernetes
+    manifests raise ``ComposerError``) and application-defined tags
+    (CloudFormation ``!Sub``/``!Ref``, Ansible ``!vault`` raise
+    ``ConstructorError``).  Those are content conventions for whatever
+    consumes the file, not syntax errors, and this linter's verdict is
+    used as a fail-closed WRITE gate in ``write_file`` — a false positive
+    here refuses a legitimate write outright.  ``yaml.parse`` still
+    catches real scanner/parser failures (unclosed quotes, bad
+    indentation, tab-mangled block maps).
     """
     try:
         import yaml as _yaml
@@ -339,7 +633,8 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
         # PyYAML not available — skip silently, caller treats as no linter.
         return True, "__SKIP__"
     try:
-        _yaml.safe_load(content)
+        for _event in _yaml.parse(content):
+            pass
         return True, ""
     except _yaml.YAMLError as e:
         return False, f"YAMLError: {e}"
@@ -395,6 +690,21 @@ LINTERS_INPROC = {
     '.toml': _lint_toml_inproc,
 }
 
+# Subset of LINTERS_INPROC that the pre-write fail-closed gate in
+# ``write_file`` (see below) refuses on, rather than merely reporting.
+# Deliberately excludes ``.py``: unlike JSON/YAML/TOML (atomic structured
+# data blobs where "doesn't parse" always means "corrupt"), ``.py`` is
+# used throughout this codebase's own test fixtures as a generic
+# stand-in extension for arbitrary non-Python text content (e.g.
+# ``tests/tools/test_file_operations.py``'s
+# ``TestPatchReplacePostWriteVerification`` writes "hello world" /
+# "hi world" through a ``*.py`` path purely to exercise write-mechanics,
+# not Python validity). Hard-refusing on invalid Python would treat that
+# established, exercised pattern as an error and break it. Python source
+# keeps the existing (unchanged) post-write lint-delta *report* — still
+# visible to the caller, just not a write-blocking refusal.
+_FAIL_CLOSED_INPROC_EXTS = frozenset({'.json', '.yaml', '.yml', '.toml'})
+
 # Max limits for read operations
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
@@ -438,6 +748,45 @@ def normalize_search_pagination(offset: Any = DEFAULT_SEARCH_OFFSET,
     normalized_offset = max(0, _coerce_int(offset, DEFAULT_SEARCH_OFFSET))
     normalized_limit = max(1, _coerce_int(limit, DEFAULT_SEARCH_LIMIT))
     return normalized_offset, normalized_limit
+
+
+_REGEX_NEWLINE_ESCAPE_RE = re.compile(r"(?<!\\)(?:\\\\)*\\n")
+
+
+def _pattern_has_regex_newline(pattern: str) -> bool:
+    """Return True when a content-search regex tries to match a newline.
+
+    ``search_files`` runs rg/grep in line-oriented mode, not rg
+    ``-U``/``--multiline`` mode, so newline regexes cannot match across
+    lines.  Detect both a literal newline already decoded into the tool
+    argument and a regex ``\n`` escape (odd number of backslashes before
+    ``n``).  Even backslashes, e.g. ``\\n``, mean a literal backslash+n
+    search and should not warn.
+    """
+    return "\n" in pattern or bool(_REGEX_NEWLINE_ESCAPE_RE.search(pattern))
+
+
+def _is_line_oriented_newline_error(error: Optional[str]) -> bool:
+    """Return True for rg's hard error when multiline mode is required."""
+    if not error:
+        return False
+    return "literal \"\\n\" is not allowed" in error and "--multiline" in error
+
+
+def _maybe_warn_line_oriented_newline_pattern(result: SearchResult, pattern: str) -> SearchResult:
+    """Attach a newline-regex warning only when search found no usable results."""
+    if result.total_count != 0 or not _pattern_has_regex_newline(pattern):
+        return result
+    if result.error and not _is_line_oriented_newline_error(result.error):
+        return result
+    result.error = None
+    result.warning = (
+        "0 results found. Note: search_files content search is line-oriented "
+        "and does not run ripgrep with -U/--multiline, so `\\n` in the regex "
+        "does not match line breaks. Use context=N to inspect neighboring "
+        "lines, or escape as `\\\\n` when searching for a literal backslash+n."
+    )
+    return result
 
 
 class ShellFileOperations(FileOperations):
@@ -546,7 +895,20 @@ class ShellFileOperations(FileOperations):
         return ext in IMAGE_EXTENSIONS
     
     def _add_line_numbers(self, content: str, start_line: int = 1) -> str:
-        """Add line numbers to content in LINE_NUM|CONTENT format."""
+        """Add line numbers to content in ``LINE_NUM|CONTENT`` format.
+
+        The gutter uses a compact ``<n>|`` prefix (e.g. ``34|foo``) rather
+        than a fixed-width zero/space-padded one (``    34|foo``). The
+        padding was pure token overhead: on dense source the padded gutter
+        cost ~48% more tokens than the bare content and ~16% more than the
+        compact form, because the leading spaces + zero-padding tokenize
+        into extra tokens on every single line. An A/B (Sonnet 4.6, 2
+        passes) showed the compact gutter matches the padded gutter on
+        line-reference / patch / value-lookup / structure tasks (4/4 both),
+        while dropping line numbers entirely regressed line-referencing
+        (the model hand-counted and was off-by-one, 3/4) — so we keep the
+        numbers, just not the padding.
+        """
         from tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
         lines = content.split('\n')
@@ -555,7 +917,7 @@ class ShellFileOperations(FileOperations):
             # Truncate long lines
             if len(line) > max_line_length:
                 line = line[:max_line_length] + "... [truncated]"
-            numbered.append(f"{i:6d}|{line}")
+            numbered.append(f"{i}|{line}")
         return '\n'.join(numbered)
     
     def _expand_path(self, path: str) -> str:
@@ -596,10 +958,114 @@ class ShellFileOperations(FileOperations):
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:
-        """Escape a string for safe use in shell commands."""
+        """Escape a string for safe use in shell commands.
+
+        On Windows native drive paths (``C:\\Users\\x`` / ``C:/Users/x``)
+        and mixed MSYS leftovers (``/c/Users\\x``) are rewritten to the
+        Git Bash ``/c/Users/x`` form via ``_bash_safe_path``: bash eats
+        backslashes and MSYS otherwise mangles drive paths into the
+        ``Directory \\drivers\\etc does not exist`` failure class. Reuses
+        the env-layer translator so shell file ops and the terminal ``cd``
+        agree on the path form. No-op off Windows and for plain POSIX paths.
+        """
+        from tools.environments.local import _bash_safe_path
+
+        arg = _bash_safe_path(arg)
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
-    
+
+    def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
+        """Write ``content`` to ``path`` atomically via temp-file + rename.
+
+        Streams ``content`` over stdin into a temp file in the SAME
+        directory as ``path`` (so the final ``mv`` is a real rename on the
+        same filesystem, not a non-atomic cross-device copy), preserves the
+        existing file's mode if it exists, then renames over the target.
+        On any failure the temp file is removed so we never leak a partial
+        ``.hermes-tmp`` file next to the user's data, and the original file
+        is left untouched. Content rides stdin so there is no ARG_MAX limit.
+
+        Returns an :class:`ExecuteResult`; ``exit_code == 0`` means the file
+        was swapped into place atomically. A non-zero exit means nothing was
+        renamed and the original (if any) is intact.
+        """
+        q_path = self._escape_shell_arg(path)
+        parent = os.path.dirname(path) or "."
+        q_parent = self._escape_shell_arg(parent)
+        # template basename: hidden so it doesn't show up in casual `ls`,
+        # carries a marker so an orphaned temp (only possible on a hard
+        # crash *between* cat and mv) is identifiable.
+        tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
+
+        # One shell script, fully quoted. Notes:
+        #  - `mktemp` lands the temp in the target's own dir (-p) so `mv` is
+        #    same-FS atomic; we fall back to a PID-stamped name if the
+        #    backend lacks mktemp (rare; busybox/macOS/Linux all ship it).
+        #  - `chmod --reference` is GNU-only, so we read the octal mode with
+        #    `stat` (GNU `-c%a` or BSD `-f%Lp`) and `chmod` it explicitly;
+        #    silent best-effort — a perms-copy failure must not abort the
+        #    write, the file still lands with default umask perms.
+        #  - `trap ... EXIT` guarantees the temp is removed on every error
+        #    path (cat failure, mv failure, signal) but NOT after a
+        #    successful mv (the temp no longer exists by then).
+        #  - we `cat >` the temp, then `mv -f` it over the target.
+        script = (
+            "set -e; "
+            f"d={q_parent}; t={q_path}; "
+            'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
+            '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
+            '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
+            '[ -n "$tmp" ] || { echo "atomic write: could not create temp file" >&2; exit 1; }; '
+            "trap 'rm -f \"$tmp\"' EXIT; "
+            # preserve mode of an existing target (best-effort, never fatal)
+            'if [ -e "$t" ]; then '
+            'm="$(stat -c%a "$t" 2>/dev/null || stat -f%Lp "$t" 2>/dev/null || true)"; '
+            '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
+            "fi; "
+            'cat > "$tmp"; '
+            'mv -f "$tmp" "$t"; '
+            "trap - EXIT"
+        )
+        return self._exec(script, stdin_data=content)
+
+    def _detect_file_line_ending(self, path: str, pre_content: Optional[str] = None) -> Optional[str]:
+        """Detect the dominant line ending of a file on disk.
+
+        If ``pre_content`` is already available (we just read the file
+        for lint/LSP purposes), inspect that — zero extra exec calls.
+        Otherwise issue a tiny ``head -c 4096`` to sample the first 4KB.
+
+        Returns ``"\\r\\n"`` for CRLF (Windows), ``"\\n"`` for LF (Unix),
+        or ``None`` if undetermined (new file, empty file, single-line
+        file with no line break in the first chunk).
+        """
+        if pre_content:
+            return _detect_line_ending(pre_content)
+        # File may not exist (new write) — `head` exits 0 with empty
+        # stdout in that case which yields None below.  Cheap probe.
+        head_cmd = f"head -c 4096 {self._escape_shell_arg(path)} 2>/dev/null"
+        head_result = self._exec(head_cmd)
+        if head_result.exit_code != 0 or not head_result.stdout:
+            return None
+        return _detect_line_ending(head_result.stdout)
+
+    def _file_has_bom(self, path: str, pre_content: Optional[str] = None) -> bool:
+        """Whether the file on disk starts with a UTF-8 BOM.
+
+        Uses ``pre_content`` if we already read the file (zero extra exec
+        calls); otherwise issues a tiny ``head -c 3`` to sample just the
+        marker. A missing/empty file returns False (new writes get no BOM
+        unless the caller explicitly includes one).
+        """
+        if pre_content is not None:
+            return _has_bom(pre_content)
+        head_cmd = f"head -c 3 {self._escape_shell_arg(path)} 2>/dev/null"
+        head_result = self._exec(head_cmd)
+        if head_result.exit_code != 0 or not head_result.stdout:
+            return False
+        return _has_bom(head_result.stdout)
+
+
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
         """Generate unified diff between old and new content."""
         old_lines = old_content.splitlines(keepends=True)
@@ -683,6 +1149,11 @@ class ShellFileOperations(FileOperations):
         if read_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {read_result.stdout}")
         read_output = _strip_terminal_fence_leaks(read_result.stdout)
+        # Strip a leading UTF-8 BOM so the model never sees a phantom U+FEFF
+        # before the first real character. Only meaningful on the first
+        # chunk (the marker lives at byte 0); later pages can't carry it.
+        if offset == 1:
+            read_output, _ = _strip_bom(read_output)
         
         # Get total line count
         wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
@@ -787,19 +1258,76 @@ class ShellFileOperations(FileOperations):
         cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
         if cat_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
+        # Strip a leading UTF-8 BOM so patch's fuzzy matcher operates on
+        # clean content (a phantom U+FEFF before line 1 would defeat an
+        # exact first-line match). write_file restores the BOM on the way
+        # back out — it re-probes the on-disk file, which still has the
+        # marker — so the round-trip preserves it.
+        raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(cat_result.stdout))
         return ReadResult(
-            content=_strip_terminal_fence_leaks(cat_result.stdout),
+            content=raw_content,
             file_size=file_size,
         )
 
     def delete_file(self, path: str) -> WriteResult:
-        """Delete a file via rm."""
+        """Delete a single file.
+
+        Cross-platform: runs via ``python -c`` against the terminal env's
+        Python so it works on Windows shells (``cmd.exe``/PowerShell) that
+        don't ship ``rm``. Directories are rejected here — use
+        ``delete_path(recursive=True)`` for trees.
+        """
+        return self._python_delete(path, recursive=False)
+
+    def delete_path(self, path: str, recursive: bool = False) -> WriteResult:
+        """Cross-platform delete that handles files and (with recursive=True)
+        directory trees. Always preferred over emitting ``rm -rf`` /
+        ``Remove-Item -Recurse`` directly so the same tool call works on
+        every backend (local / docker / ssh / Windows).
+        """
+        return self._python_delete(path, recursive=recursive)
+
+    def _python_delete(self, path: str, recursive: bool) -> WriteResult:
         path = self._expand_path(path)
         if _is_write_denied(path):
             return WriteResult(error=f"Delete denied: {path} is a protected path")
-        result = self._exec(f"rm -f {self._escape_shell_arg(path)}")
+
+        # We can't shell out to ``rm`` here — it doesn't exist on Windows
+        # ``cmd.exe`` or PowerShell, so this code path is what's left when
+        # the backend's terminal is a Windows shell. Path is baked into the
+        # snippet via ``repr()`` so quoting is correct on every shell.
+        snippet = (
+            "import shutil, pathlib, sys\n"
+            f"p = pathlib.Path({path!r})\n"
+            f"recursive = {bool(recursive)!r}\n"
+            "try:\n"
+            "    if p.is_dir() and not p.is_symlink():\n"
+            "        if recursive:\n"
+            "            shutil.rmtree(p)\n"
+            "        else:\n"
+            "            print('is a directory: ' + str(p), file=sys.stderr); sys.exit(2)\n"
+            "    else:\n"
+            # NOTE: avoid ``unlink(missing_ok=True)`` — that kwarg lands in
+            # Python 3.8 and the remote interpreter (docker/ssh) may still
+            # be 3.7 on older distros. The FileNotFoundError handler below
+            # covers the same case and works back to 3.4.
+            "        p.unlink()\n"
+            "except FileNotFoundError:\n"
+            "    pass\n"
+            "except Exception as exc:\n"
+            "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
+        )
+
+        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+
+        # Fall back to ``python`` (Windows / older systems where there's no
+        # ``python3`` symlink but a ``python`` binary is on PATH).
+        if result.exit_code != 0 and "python3" in (result.stdout or ""):
+            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+
         if result.exit_code != 0:
-            return WriteResult(error=f"Failed to delete {path}: {result.stdout}")
+            return WriteResult(error=f"Failed to delete {path}: {(result.stdout or '').strip() or 'unknown error'}")
+
         return WriteResult()
 
     def move_file(self, src: str, dst: str) -> WriteResult:
@@ -828,12 +1356,21 @@ class ShellFileOperations(FileOperations):
         files. The content never appears in the shell command string —
         only the file path does.
 
-        After the write, runs a post-first / pre-lazy lint check via
-        ``_check_lint_delta()``.  If the new content is clean, the lint
-        call is O(one parse).  If the new content has errors, the pre-write
-        content is linted too and only errors newly introduced by this
-        write are surfaced — pre-existing problems are filtered out so
-        the agent isn't distracted chasing them.
+        Before anything touches disk, a fail-closed syntax gate runs
+        against the CANDIDATE content: if ``path``'s extension is in
+        ``_FAIL_CLOSED_INPROC_EXTS`` (JSON/YAML/TOML — structured data
+        formats where a parse failure always means corruption) and the
+        candidate content doesn't parse, the write is refused outright.
+        No temp file, no rename, nothing on disk changes.
+
+        After a write that clears the gate, runs a post-first / pre-lazy
+        lint check via ``_check_lint_delta()``.  If the new content is
+        clean, the lint call is O(one parse).  If the new content has
+        errors the gate didn't already catch (i.e. errors from a linter
+        outside ``_FAIL_CLOSED_INPROC_EXTS``, such as Python), the
+        pre-write content is linted too and only errors newly introduced
+        by this write are surfaced — pre-existing problems are filtered
+        out so the agent isn't distracted chasing them.
 
         Args:
             path: File path to write
@@ -849,23 +1386,100 @@ class ShellFileOperations(FileOperations):
         if _is_write_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
-        # Capture pre-write content for lint-delta computation.  Only do this
-        # when an in-process OR shell linter exists for this extension — no
-        # point paying for the read otherwise.  For in-process linters we
-        # pass the content directly; for shell linters the pre-state isn't
-        # useful (we'd have to re-write-read to lint the old version, which
-        # defeats the purpose), so we skip the capture and accept the naive
-        # "all errors" report.
+        # ── Fail-closed pre-write syntax gate ───────────────────────────
+        # Validate the CANDIDATE content BEFORE any bytes touch disk —
+        # previously this only ran as a post-write lint *report* that the
+        # caller could ignore (or that ``files_modified`` gating wouldn't
+        # catch, since a lint failure never set the top-level ``error``
+        # key). A structured-format write that doesn't even parse (mashed
+        # quotes, truncated generation, wrong indentation dialect) is a
+        # corrupt write, not a style nit — refuse it outright instead of
+        # writing first and reporting the damage afterward.
+        #
+        # Scope: only extensions in ``_FAIL_CLOSED_INPROC_EXTS`` (JSON/
+        # YAML/TOML). ``.py`` deliberately keeps its pre-existing,
+        # non-blocking lint-delta *report* instead of a hard refusal — see
+        # ``_FAIL_CLOSED_INPROC_EXTS``'s docstring above for why. Extensions
+        # with no in-process linter at all (including ones only covered by
+        # a shell linter) are completely unaffected — this gate never runs
+        # for them, so behavior there is unchanged.
+        #
+        # Checked against the raw ``content`` argument, before the
+        # BOM/CRLF preservation shims below run. Those shims exist purely
+        # to match the on-disk file's existing conventions; linting
+        # post-shim would false-positive a JSONDecodeError on a
+        # legitimately BOM-marked JSON file purely because this method
+        # re-adds the marker the read layer strips — see
+        # ``_file_has_bom``/``_UTF8_BOM`` below.
         ext = os.path.splitext(path)[1].lower()
+        inproc_linter = LINTERS_INPROC.get(ext) if ext in _FAIL_CLOSED_INPROC_EXTS else None
+        if inproc_linter is not None:
+            _ok, _lint_err = inproc_linter(content)
+            if not _ok and _lint_err != "__SKIP__":
+                return WriteResult(
+                    error=(
+                        f"Refusing to write '{path}': candidate content fails "
+                        f"{ext} syntax validation ({_lint_err}). The file was "
+                        "NOT created or modified. Fix the content and retry."
+                    )
+                )
+
+        # Capture pre-write content.  Two consumers want it:
+        #
+        #   1. The lint-delta layer (for in-process linters like ast.parse
+        #      and json.loads) needs the previous content to compute the
+        #      set of NEW lint errors introduced by this write.
+        #   2. The LSP layer needs pre/post content to build a line-shift
+        #      map — pre-existing diagnostics below the edit point shift
+        #      when lines are added/removed, and the shift map remaps
+        #      baseline diagnostics into post-edit coordinates so the
+        #      strict (range-aware) delta key matches.
+        #
+        # The set of extensions we capture pre_content for is therefore
+        # the UNION of in-process lint coverage and LSP coverage.  For
+        # extensions outside both sets (binaries, opaque formats),
+        # skipping the read keeps the hot path fast.
         pre_content: Optional[str] = None
-        if ext in LINTERS_INPROC:
+        want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
+        if want_pre:
             # Best-effort read; failure (file missing, permission) leaves
-            # pre_content as None which makes the delta step degrade
-            # gracefully to "report all errors".
+            # pre_content as None which makes both downstream consumers
+            # degrade gracefully (lint reports all errors; LSP skips the
+            # shift map).
             read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
             read_result = self._exec(read_cmd)
             if read_result.exit_code == 0 and read_result.stdout:
                 pre_content = read_result.stdout
+
+        # ── Line-ending preservation (Roo Code pattern) ──────────────
+        # If the file existed with CRLF endings and the agent's content
+        # has bare LFs, convert to CRLF before writing.  Otherwise the
+        # write silently normalizes a Windows-line-ending file (and patch
+        # produces mixed endings when only a substituted region changes).
+        # Detect from a small head sample to avoid reading the full file
+        # for line-ending purposes alone.
+        original_ending = self._detect_file_line_ending(path, pre_content)
+        if original_ending == "\r\n":
+            content = _normalize_line_endings(content, "\r\n")
+
+        # ── BOM preservation ──────────────────────────────────────────
+        # If the file on disk started with a UTF-8 BOM, keep it. read_file
+        # strips the BOM so the agent never sees it, which means the
+        # content it hands back to write_file / patch has no BOM either —
+        # without restoring it here a round-trip would silently strip the
+        # marker and change the file's byte signature (some Windows
+        # toolchains key on it). Only prepend when the original had a BOM
+        # and the new content doesn't already carry one (guards against
+        # double-BOM if a caller passed raw bytes).
+        if self._file_has_bom(path, pre_content) and not _has_bom(content):
+            content = _UTF8_BOM + content
+
+        # Snapshot LSP diagnostics for this file (best-effort) so the
+        # post-write LSP layer can return only diagnostics introduced
+        # by this specific edit.  Mirrors claude-code's
+        # ``beforeFileEdited`` pattern but wired to the local LSP
+        # rather than an external IDE.
+        self._snapshot_lsp_baseline(path)
 
         # Create parent directories
         parent = os.path.dirname(path)
@@ -877,10 +1491,22 @@ class ShellFileOperations(FileOperations):
             if mkdir_result.exit_code == 0:
                 dirs_created = True
 
-        # Write via stdin pipe — content bypasses shell arg parsing entirely,
-        # so there's no ARG_MAX limit regardless of file size.
-        write_cmd = f"cat > {self._escape_shell_arg(path)}"
-        write_result = self._exec(write_cmd, stdin_data=content)
+        # Write atomically: stream into a temp file in the SAME directory,
+        # then ``mv`` it over the target. The rename is atomic on POSIX
+        # (and on every backend FS we run on), so a crash / power loss /
+        # truncated pipe mid-write leaves the original file intact instead
+        # of a half-written corrupt file. Same-directory is load-bearing —
+        # ``mv`` across filesystems degrades to copy+unlink, which is NOT
+        # atomic; keeping the temp beside the target guarantees a real
+        # rename. Content still rides stdin so there's no ARG_MAX limit.
+        #
+        # The temp file is created with ``mktemp`` (collision-safe) when the
+        # backend has it, falling back to a PID-stamped name otherwise. We
+        # then chmod the temp to match the existing file's mode (if any) so
+        # the atomic swap doesn't silently widen or narrow permissions, and
+        # clean the temp up on any failure so we never leak a ``.hermes-tmp``
+        # turd next to the user's file.
+        write_result = self._atomic_write(path, content)
 
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
@@ -897,10 +1523,25 @@ class ShellFileOperations(FileOperations):
         # Post-write lint with delta refinement.
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
 
+        # Semantic diagnostics from the LSP layer — separate channel.
+        # Only fired when the syntax tier reported clean (no point asking
+        # an LSP for a file that won't even parse).  Pass pre/post
+        # content so the LSP layer can build a line-shift map and
+        # remap baseline diagnostics into post-edit coordinates.
+        # Best-effort: ``""`` is returned for any failure path.
+        lsp_diagnostics: Optional[str] = None
+        if lint_result.success or lint_result.skipped:
+            block = self._maybe_lsp_diagnostics(
+                path, pre_content=pre_content, post_content=content
+            )
+            if block:
+                lsp_diagnostics = block
+
         return WriteResult(
             bytes_written=bytes_written,
             dirs_created=dirs_created,
             lint=lint_result.to_dict() if lint_result else None,
+            lsp_diagnostics=lsp_diagnostics,
         )
     
     # =========================================================================
@@ -936,7 +1577,13 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=f"Failed to read file: {path}")
         
         content = read_result.stdout
-        
+        # Strip a leading UTF-8 BOM before matching so the fuzzy matcher and
+        # the diff operate on clean content (a phantom U+FEFF before line 1
+        # defeats an exact first-line match). write_file restores the BOM on
+        # the way back out by re-probing the on-disk file, so the round-trip
+        # preserves the marker.
+        content, _ = _strip_bom(content)
+
         # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace
         
@@ -952,6 +1599,19 @@ class ShellFileOperations(FileOperations):
             except Exception:
                 pass
             return PatchResult(error=err_msg)
+
+        # ── Line-ending preservation ──────────────────────────────────
+        # Models nearly always send old_string/new_string with bare LF
+        # in tool args (JSON-encoded), but the file may have CRLF on
+        # disk.  After fuzzy_find_and_replace, ``new_content`` is a
+        # mixed-ending string: the substituted region is LF, surrounding
+        # text keeps the file's CRLF.  Normalize the whole thing to the
+        # file's detected line ending so the on-disk file is consistent
+        # and the unified diff below reflects the actual change.
+        file_ending = _detect_line_ending(content)
+        if file_ending:
+            new_content = _normalize_line_endings(new_content, file_ending)
+
         # Write back
         write_result = self.write_file(path, new_content)
         if write_result.error:
@@ -972,8 +1632,13 @@ class ShellFileOperations(FileOperations):
         # ``new_content`` string has bare LFs.  Without this normalization
         # every patch on Windows returns a bogus "wrote 39, read 42"
         # false-negative even though the edit landed correctly.  POSIX
-        # backends don't translate, so this is a no-op there.
-        _verify_stdout_normalized = verify_result.stdout.replace("\r\n", "\n").replace("\r", "\n")
+        # backends don't translate, so this is a no-op there.  We also
+        # strip a leading BOM from the re-read: write_file restored the
+        # marker on disk but ``new_content`` is the BOM-less string we
+        # matched against, so the comparison must drop it to stay
+        # apples-to-apples.
+        _verify_bomless, _ = _strip_bom(verify_result.stdout)
+        _verify_stdout_normalized = _verify_bomless.replace("\r\n", "\n").replace("\r", "\n")
         _new_content_normalized = new_content.replace("\r\n", "\n").replace("\r", "\n")
         if _verify_stdout_normalized != _new_content_normalized:
             return PatchResult(error=(
@@ -996,7 +1661,14 @@ class ShellFileOperations(FileOperations):
             success=True,
             diff=diff,
             files_modified=[path],
-            lint=lint_result.to_dict() if lint_result else None
+            lint=lint_result.to_dict() if lint_result else None,
+            # Propagate the LSP diagnostics already captured by the
+            # internal ``write_file`` call.  Its baseline was the
+            # pre-patch content (taken at the start of write_file via
+            # ``_snapshot_lsp_baseline``) so the delta is correct for
+            # the patch as a whole.  Keep the field separate from the
+            # syntax-check ``lint`` so the agent can read both signals.
+            lsp_diagnostics=write_result.lsp_diagnostics,
         )
     
     def patch_v4a(self, patch_content: str) -> PatchResult:
@@ -1070,6 +1742,19 @@ class ShellFileOperations(FileOperations):
         if ext not in LINTERS:
             return LintResult(skipped=True, message=f"No linter for {ext} files")
 
+        # If a real LSP server is active and claims this file, skip the
+        # shell linter for extensions whose per-file shell invocation is
+        # structurally weaker / floods phantom errors.  See
+        # ``_SHELL_LINTER_LSP_REDUNDANT`` above for the rationale per ext.
+        # The LSP tier runs separately via ``_maybe_lsp_diagnostics`` and
+        # carries the real diagnostics in ``lsp_diagnostics`` on the
+        # WriteResult / PatchResult.
+        if ext in _SHELL_LINTER_LSP_REDUNDANT and self._lsp_will_handle(path):
+            return LintResult(
+                skipped=True,
+                message=f"LSP server handles {ext} — shell linter skipped",
+            )
+
         linter_cmd = LINTERS[ext]
         # Extract the base command (first word)
         base_cmd = linter_cmd.split()[0]
@@ -1081,6 +1766,24 @@ class ShellFileOperations(FileOperations):
         cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
         result = self._exec(cmd, timeout=30)
 
+        if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
+            # The linter command exists on PATH but couldn't actually run
+            # (e.g. ``npx tsc`` when tsc isn't in node_modules; ``rustfmt
+            # --check`` without a Cargo project).  This is a tooling gap,
+            # not a real lint failure — surface it as ``skipped`` so the
+            # write doesn't get flagged AND so the LSP tier still runs.
+            from tools.ansi_strip import strip_ansi
+            cleaned = strip_ansi(result.stdout).strip()
+            # Collapse to a single line — the npx banner is multi-line ASCII.
+            first_line = next(
+                (ln.strip() for ln in cleaned.splitlines() if ln.strip()),
+                cleaned[:120],
+            )
+            return LintResult(
+                skipped=True,
+                message=f"{base_cmd} not usable: {first_line[:200]}",
+            )
+
         return LintResult(
             success=result.exit_code == 0,
             output=result.stdout.strip() if result.stdout.strip() else ""
@@ -1089,21 +1792,25 @@ class ShellFileOperations(FileOperations):
     def _check_lint_delta(self, path: str, pre_content: Optional[str],
                           post_content: Optional[str] = None) -> LintResult:
         """
-        Run post-write lint with pre-write baseline comparison.
+        Run post-write syntax lint with pre-write baseline comparison.
 
-        Strategy (post-first, pre-lazy):
-        1. Lint the post-write state.  If clean → return clean immediately.
-           This is the hot path and matches _check_lint() in cost.
-        2. If post-lint found errors AND we have pre-write content, lint
-           that too.  If the pre-write file was already broken, return only
-           the *new* errors introduced by this edit — errors that existed
-           before aren't the agent's problem to chase right now.
-        3. If pre_content is None (new file or unavailable), skip the delta
-           step and return all post-write errors.
+        Two-tier strategy:
 
-        This mirrors Cline's and OpenCode's post-edit LSP pattern: surface
-        only the errors this specific edit introduced, so the agent doesn't
-        get distracted by pre-existing problems.
+        1. **Syntax check** (in-process or shell-based, microseconds).
+           Catches the bug class that motivated this layer: corrupt
+           writes, mashed quotes, truncated output.  Hot path.
+
+        2. **Delta refinement against pre-write content** when the
+           syntax tier reports errors.  Filter out errors that already
+           existed pre-edit so the agent isn't distracted by inherited
+           state.
+
+        Semantic diagnostics from the LSP layer are fetched separately
+        via :meth:`_maybe_lsp_diagnostics` and surfaced in the
+        ``lsp_diagnostics`` field on :class:`WriteResult` /
+        :class:`PatchResult`.  Keeping the two channels separate lets
+        the agent (and any downstream parsers) read syntax errors and
+        semantic errors as independent signals.
 
         Args:
             path: File path (for linter selection).
@@ -1122,12 +1829,12 @@ class ShellFileOperations(FileOperations):
         """
         post = self._check_lint(path, content=post_content)
 
-        # Hot path: clean post-write, no pre-lint needed.
+        # Hot path: clean post-write syntactically.
         if post.success or post.skipped:
             return post
 
-        # Post-write has errors.  If we have pre-content, run the delta
-        # refinement to filter out pre-existing errors.
+        # Post-write has syntax errors.  If we have pre-content, run the
+        # delta refinement to filter out pre-existing errors.
         if pre_content is None:
             return post
 
@@ -1166,6 +1873,173 @@ class ShellFileOperations(FileOperations):
                 "(pre-existing errors filtered out):\n" + "\n".join(post_lines)
             )
         )
+
+    def _lsp_local_only(self) -> bool:
+        """Return True iff this FileOperations is wired to a local backend.
+
+        LSP servers run on the host process — they need access to the
+        files they're linting.  Remote/sandboxed backends (Docker,
+        Modal, SSH, Daytona) keep files inside the sandbox where the
+        host-side LSP server can't reach them, so we skip the LSP
+        path for those entirely.
+        """
+        env = getattr(self, "env", None)
+        if env is None:
+            # Defensive: some tests construct ShellFileOperations via
+            # ``__new__`` without going through ``__init__``, so
+            # ``self.env`` may be missing.  No env = no LSP path.
+            return False
+        try:
+            from tools.environments.local import LocalEnvironment
+        except Exception:  # noqa: BLE001
+            return False
+        return isinstance(env, LocalEnvironment)
+
+    def _lsp_handles_extension(self, ext: str) -> bool:
+        """Return True iff some registered LSP server claims this extension.
+
+        Used to decide whether to capture pre-write content for the
+        line-shift map.  Capturing is cheap (one ``cat`` on the host)
+        but pointless if no LSP would ever look at the file.
+
+        Safe to call on remote backends — the registry is purely
+        in-process metadata; we still gate the actual LSP path on
+        :meth:`_lsp_local_only`.
+        """
+        if not ext:
+            return False
+        try:
+            from agent.lsp.servers import SERVERS
+        except Exception:  # noqa: BLE001
+            return False
+        ext_lower = ext.lower()
+        for srv in SERVERS:
+            if ext_lower in srv.extensions:
+                return True
+        return False
+
+    def _lsp_will_handle(self, path: str) -> bool:
+        """Return True iff the LSP service is active AND will lint this file.
+
+        Stronger than :meth:`_lsp_handles_extension` — that one only checks
+        the static server registry.  This one additionally requires the
+        LSP service to be configured/enabled and the file to pass
+        :meth:`agent.lsp.manager.LSPService.enabled_for` (which gates on
+        workspace detection, disabled-server set, and the broken-pair
+        short-circuit).
+
+        Used by :meth:`_check_lint` to decide whether to skip the per-file
+        shell linter for extensions in ``_SHELL_LINTER_LSP_REDUNDANT``.
+
+        Best-effort: any failure path returns False so the shell linter
+        runs as before — never suppress lint based on an LSP probe that
+        couldn't actually answer the question.
+        """
+        if not self._lsp_local_only():
+            return False
+        try:
+            from agent.lsp import get_service
+        except Exception:  # noqa: BLE001
+            return False
+        try:
+            svc = get_service()
+        except Exception:  # noqa: BLE001
+            return False
+        if svc is None:
+            return False
+        try:
+            return bool(svc.enabled_for(path))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _snapshot_lsp_baseline(self, path: str) -> None:
+        """Capture pre-edit LSP diagnostics so the post-write delta is correct.
+
+        Best-effort.  Silent on every failure path — LSP is an
+        enrichment layer and must never break a write.
+
+        Skipped entirely on non-local backends (Docker, Modal, SSH,
+        etc.) — the server can't see files inside the sandbox.
+        """
+        if not self._lsp_local_only():
+            return
+        try:
+            from agent.lsp import get_service
+            svc = get_service()
+        except Exception:  # noqa: BLE001
+            return
+        if svc is None:
+            return
+        try:
+            svc.snapshot_baseline(path)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _maybe_lsp_diagnostics(
+        self,
+        path: str,
+        *,
+        pre_content: Optional[str] = None,
+        post_content: Optional[str] = None,
+    ) -> str:
+        """Best-effort LSP semantic diagnostics for ``path``.
+
+        Returns a formatted ``<diagnostics>`` block, or empty string
+        when LSP is unavailable / disabled / produced no errors.
+
+        When both ``pre_content`` and ``post_content`` are provided,
+        a line-shift map is built and passed to the LSPService so
+        baseline diagnostics are remapped into post-edit coordinates
+        before the set-difference.  Without this, edits that delete
+        or insert lines surface every pre-existing diagnostic below
+        the edit point as "introduced by this edit".
+
+        Wraps everything in a try/except so a misbehaving LSP server
+        can't break a write.  This intentionally swallows all errors
+        — the calling tier already returned a clean syntax result, so
+        ``""`` here just means "no extra info to add".
+
+        Skipped entirely on non-local backends (Docker, Modal, SSH,
+        etc.) — same reasoning as ``_snapshot_lsp_baseline``.
+        """
+        if not self._lsp_local_only():
+            return ""
+        try:
+            from agent.lsp import get_service
+        except Exception:  # noqa: BLE001
+            return ""
+        try:
+            svc = get_service()
+        except Exception:  # noqa: BLE001
+            return ""
+        if svc is None or not svc.enabled_for(path):
+            return ""
+
+        # Build a line-shift map when we have both pre and post — it
+        # remaps baseline diagnostics into post-edit coordinates so
+        # the strict (range-aware) delta key matches correctly.
+        line_shift = None
+        if pre_content is not None and post_content is not None and pre_content != post_content:
+            try:
+                from agent.lsp.range_shift import build_line_shift
+                line_shift = build_line_shift(pre_content, post_content)
+            except Exception:  # noqa: BLE001
+                line_shift = None
+
+        try:
+            diagnostics = svc.get_diagnostics_sync(path, delta=True, line_shift=line_shift)
+        except Exception:  # noqa: BLE001
+            return ""
+        if not diagnostics:
+            return ""
+        try:
+            from agent.lsp.reporter import report_for_file, truncate
+            block = report_for_file(path, diagnostics)
+            if not block:
+                return ""
+            return truncate("LSP diagnostics introduced by this edit:\n" + block)
+        except Exception:  # noqa: BLE001
+            return ""
     
     # =========================================================================
     # SEARCH Implementation
@@ -1277,15 +2151,17 @@ class ShellFileOperations(FileOperations):
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
+        stdout, limit_reason = _search_stdout_and_limit(result)
 
-        if not result.stdout.strip():
+        if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
+            stdout, limit_reason = _search_stdout_and_limit(result)
 
         files = []
-        for line in result.stdout.strip().split('\n'):
+        for line in stdout.strip().split('\n'):
             if not line:
                 continue
             parts = line.split(' ', 1)
@@ -1313,7 +2189,9 @@ class ShellFileOperations(FileOperations):
 
         return SearchResult(
             files=files,
-            total_count=len(files)
+            total_count=len(files),
+            truncated=bool(limit_reason),
+            limit_reason=limit_reason,
         )
 
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
@@ -1339,9 +2217,10 @@ class ShellFileOperations(FileOperations):
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
-        all_files = [f for f in result.stdout.strip().split('\n') if f]
+        stdout, limit_reason = _search_stdout_and_limit(result)
+        all_files = [f for f in stdout.strip().split('\n') if f]
 
-        if not all_files:
+        if not all_files and not limit_reason:
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
@@ -1349,14 +2228,16 @@ class ShellFileOperations(FileOperations):
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            stdout, limit_reason = _search_stdout_and_limit(result)
+            all_files = [f for f in stdout.strip().split('\n') if f]
 
         page = all_files[offset:offset + limit]
 
         return SearchResult(
             files=page,
             total_count=len(all_files),
-            truncated=len(all_files) >= fetch_limit,
+            truncated=len(all_files) >= fetch_limit or bool(limit_reason),
+            limit_reason=limit_reason,
         )
     
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
@@ -1364,17 +2245,19 @@ class ShellFileOperations(FileOperations):
         """Search for content inside files (grep-like)."""
         # Try ripgrep first (fast), fallback to grep (slower but works)
         if self._has_command('rg'):
-            return self._search_with_rg(pattern, path, file_glob, limit, offset, 
-                                        output_mode, context)
-        elif self._has_command('grep'):
-            return self._search_with_grep(pattern, path, file_glob, limit, offset,
+            result = self._search_with_rg(pattern, path, file_glob, limit, offset,
                                           output_mode, context)
+        elif self._has_command('grep'):
+            result = self._search_with_grep(pattern, path, file_glob, limit, offset,
+                                            output_mode, context)
         else:
             # Neither rg nor grep available (Windows without Git Bash, etc.)
             return SearchResult(
                 error="Content search requires ripgrep (rg) or grep. "
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation"
             )
+
+        return _maybe_warn_line_oriented_newline_pattern(result, pattern)
     
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
@@ -1405,24 +2288,46 @@ class ShellFileOperations(FileOperations):
         fetch_limit = limit + offset + 200 if context > 0 else limit + offset
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
-        cmd = " ".join(cmd_parts)
+        # `set -o pipefail` so rg's exit status propagates through `| head`.
+        # Without it the pipeline reports head's status (0), masking rg's
+        # error code (2) and making the guard below unreachable. rg handles a
+        # truncating head cleanly (exit 0 on SIGPIPE), so pipefail does not
+        # introduce false errors on a successful-but-truncated search.
+        cmd = "set -o pipefail; " + " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
-        
-        # rg exit codes: 0=matches found, 1=no matches, 2=error
-        if result.exit_code == 2 and not result.stdout.strip():
-            error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
+        stdout, limit_reason = _search_stdout_and_limit(result)
+
+        # _exec merges stderr into stdout (stderr=subprocess.STDOUT), so rg's
+        # diagnostic lines ("rg: <file>: <error>", "rg: regex parse error:")
+        # are interleaved with match output. Split them out: diagnostics must
+        # not be parsed as matches, and on a hard error they ARE the message.
+        diagnostics, payload = _split_tool_diagnostics(stdout)
+
+        # rg exit codes: 0=matches found, 1=no matches, 2=error. rg returns 2
+        # even on partial errors (e.g. one unreadable file in a tree that
+        # otherwise matched), so only surface an error when exit==2 AND no
+        # usable match payload remains. Otherwise we keep the real matches.
+        if result.exit_code == 2 and not payload.strip():
+            error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
-        
+
+        # Parse the diagnostic-free payload so error text never becomes a match.
+        stdout = payload
         # Parse results based on output mode
         if output_mode == "files_only":
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            all_files = [f for f in stdout.strip().split('\n') if f]
             total = len(all_files)
             page = all_files[offset:offset + limit]
-            return SearchResult(files=page, total_count=total)
+            return SearchResult(
+                files=page,
+                total_count=total,
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            )
         
         elif output_mode == "count":
             counts = {}
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
@@ -1430,7 +2335,12 @@ class ShellFileOperations(FileOperations):
                             counts[parts[0]] = int(parts[1])
                         except ValueError:
                             pass
-            return SearchResult(counts=counts, total_count=sum(counts.values()))
+            return SearchResult(
+                counts=counts,
+                total_count=sum(counts.values()),
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            )
         
         else:
             # Parse content matches and context lines.
@@ -1441,7 +2351,7 @@ class ShellFileOperations(FileOperations):
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             matches = []
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if not line or line == "--":
                     continue
                 
@@ -1471,7 +2381,8 @@ class ShellFileOperations(FileOperations):
             return SearchResult(
                 matches=page,
                 total_count=total,
-                truncated=total > offset + limit
+                truncated=total > offset + limit or bool(limit_reason),
+                limit_reason=limit_reason,
             )
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
@@ -1505,23 +2416,44 @@ class ShellFileOperations(FileOperations):
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
-        cmd = " ".join(cmd_parts)
+        # `set -o pipefail` so grep's exit status propagates through `| head`
+        # (without it the pipeline reports head's 0, masking grep's error 2).
+        # A truncating head makes grep exit 141 (SIGPIPE) on an otherwise
+        # successful search; the strict `== 2` guard below ignores that, so
+        # pipefail does not turn truncated results into false errors.
+        cmd = "set -o pipefail; " + " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
-        
-        # grep exit codes: 0=matches found, 1=no matches, 2=error
-        if result.exit_code == 2 and not result.stdout.strip():
-            error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
+        stdout, limit_reason = _search_stdout_and_limit(result)
+
+        # _exec merges stderr into stdout, so grep's diagnostic lines
+        # ("grep: <file>: <error>") are interleaved with matches. Split them
+        # out so they're never parsed as matches and so a hard error has a
+        # clean message.
+        diagnostics, payload = _split_tool_diagnostics(stdout)
+
+        # grep exit codes: 0=matches found, 1=no matches, 2=error. grep
+        # returns 2 on partial errors (e.g. an unreadable file) even when
+        # other files matched, so only surface an error when exit==2 AND no
+        # usable match payload remains.
+        if result.exit_code == 2 and not payload.strip():
+            error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
-        
+
+        stdout = payload
         if output_mode == "files_only":
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            all_files = [f for f in stdout.strip().split('\n') if f]
             total = len(all_files)
             page = all_files[offset:offset + limit]
-            return SearchResult(files=page, total_count=total)
+            return SearchResult(
+                files=page,
+                total_count=total,
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            )
         
         elif output_mode == "count":
             counts = {}
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
@@ -1529,7 +2461,12 @@ class ShellFileOperations(FileOperations):
                             counts[parts[0]] = int(parts[1])
                         except ValueError:
                             pass
-            return SearchResult(counts=counts, total_count=sum(counts.values()))
+            return SearchResult(
+                counts=counts,
+                total_count=sum(counts.values()),
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            )
         
         else:
             # grep match lines:   "file:lineno:content" (colon)
@@ -1539,7 +2476,7 @@ class ShellFileOperations(FileOperations):
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             matches = []
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if not line or line == "--":
                     continue
                 
@@ -1567,5 +2504,6 @@ class ShellFileOperations(FileOperations):
             return SearchResult(
                 matches=page,
                 total_count=total,
-                truncated=total > offset + limit
+                truncated=total > offset + limit or bool(limit_reason),
+                limit_reason=limit_reason,
             )

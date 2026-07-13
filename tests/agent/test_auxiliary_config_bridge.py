@@ -4,14 +4,13 @@ are properly mapped to environment variables by both CLI and gateway loaders.
 Also tests the vision_tools and browser_tool model override env vars.
 """
 
-import json
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
-import yaml
+
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -198,22 +197,32 @@ class TestGatewayBridgeCodeParity:
     """Verify the gateway/run.py config bridge contains the auxiliary section."""
 
     def test_gateway_has_auxiliary_bridge(self):
-        """The gateway config bridge must include auxiliary.* bridging."""
+        """The gateway config bridge must include auxiliary.* bridging.
+
+        After the plugin-aux-task API refactor (2026-05), gateway env-var
+        names are derived dynamically (``AUXILIARY_<KEY_UPPER>_*``) so the
+        literal strings ``AUXILIARY_VISION_PROVIDER`` etc. no longer appear
+        in source. Assert the dynamic shape and the canonical built-in keys
+        bridged set instead.
+        """
         gateway_path = Path(__file__).parent.parent.parent / "gateway" / "run.py"
         # Pin encoding to UTF-8: source files in this repo are UTF-8, but
         # Path.read_text() defaults to the system locale — which is cp1252
         # on most Western Windows installs and crashes as soon as the file
         # contains any non-ASCII byte (e.g. an em-dash in a comment).
         content = gateway_path.read_text(encoding="utf-8")
-        # Check for key patterns that indicate the bridge is present
-        assert "AUXILIARY_VISION_PROVIDER" in content
-        assert "AUXILIARY_VISION_MODEL" in content
-        assert "AUXILIARY_VISION_BASE_URL" in content
-        assert "AUXILIARY_VISION_API_KEY" in content
-        assert "AUXILIARY_WEB_EXTRACT_PROVIDER" in content
-        assert "AUXILIARY_WEB_EXTRACT_MODEL" in content
-        assert "AUXILIARY_WEB_EXTRACT_BASE_URL" in content
-        assert "AUXILIARY_WEB_EXTRACT_API_KEY" in content
+        # Dynamic env-var derivation present
+        assert 'f"AUXILIARY_{_upper}_PROVIDER"' in content
+        assert 'f"AUXILIARY_{_upper}_MODEL"' in content
+        assert 'f"AUXILIARY_{_upper}_BASE_URL"' in content
+        assert 'f"AUXILIARY_{_upper}_API_KEY"' in content
+        # Built-in bridged keys present
+        assert "_aux_bridged_keys" in content
+        assert '"vision"' in content
+        assert '"web_extract"' in content
+        assert '"approval"' in content
+        # Plugin-aux-task discovery hooked into bridging
+        assert "get_plugin_auxiliary_tasks" in content
 
     def test_gateway_no_compression_env_bridge(self):
         """Gateway should NOT bridge compression config to env vars (config-only)."""
@@ -231,22 +240,30 @@ class TestGatewayBridgeCodeParity:
 class TestVisionModelOverride:
     """Test that AUXILIARY_VISION_MODEL env var overrides the default model in the handler."""
 
-    def test_env_var_overrides_default(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_env_var_overrides_default(self, monkeypatch):
         monkeypatch.setenv("AUXILIARY_VISION_MODEL", "openai/gpt-4o")
         from tools.vision_tools import _handle_vision_analyze
-        with patch("tools.vision_tools.vision_analyze_tool", new_callable=MagicMock) as mock_tool:
+        with (
+            patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as mock_tool,
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+        ):
             mock_tool.return_value = '{"success": true}'
-            _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
+            await _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
             call_args = mock_tool.call_args
             # 3rd positional arg = model
             assert call_args[0][2] == "openai/gpt-4o"
 
-    def test_default_model_when_no_override(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_default_model_when_no_override(self, monkeypatch):
         monkeypatch.delenv("AUXILIARY_VISION_MODEL", raising=False)
         from tools.vision_tools import _handle_vision_analyze
-        with patch("tools.vision_tools.vision_analyze_tool", new_callable=MagicMock) as mock_tool:
+        with (
+            patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as mock_tool,
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+        ):
             mock_tool.return_value = '{"success": true}'
-            _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
+            await _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
             call_args = mock_tool.call_args
             # With no AUXILIARY_VISION_MODEL env var, model should be None
             # (the centralized call_llm router picks the provider default)

@@ -101,9 +101,13 @@ class DaytonaEnvironment(BaseEnvironment):
 
             if self._sandbox is None:
                 try:
-                    page = self._daytona.list(labels=labels, page=1, limit=1)
-                    if page.items:
-                        self._sandbox = page.items[0]
+                    # Daytona SDK >=0.108.0 uses cursor-based pagination and
+                    # list() returns an iterator. Offset-based pagination
+                    # (page=1) is removed on June 10, 2026.
+                    results = self._daytona.list(labels=labels, limit=1)
+                    legacy = next(iter(results), None)
+                    if legacy is not None:
+                        self._sandbox = legacy
                         self._sandbox.start()
                         logger.info("Daytona: resumed legacy sandbox %s for task %s",
                                     self._sandbox.id, task_id)
@@ -150,7 +154,7 @@ class DaytonaEnvironment(BaseEnvironment):
     def _daytona_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via Daytona SDK."""
         parent = str(Path(remote_path).parent)
-        self._sandbox.process.exec(f"mkdir -p {parent}")
+        self._sandbox.process.exec(quoted_mkdir_command([parent]))
         self._sandbox.fs.upload_file(host_path, remote_path)
 
     def _daytona_bulk_upload(self, files: list[tuple[str, str]]) -> None:

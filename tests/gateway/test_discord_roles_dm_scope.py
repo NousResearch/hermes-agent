@@ -18,9 +18,8 @@ opts into a single trusted guild.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
-from gateway.platforms.discord import DiscordAdapter
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 def _set_dm_role_auth_guild(monkeypatch, guild_id=None):
@@ -257,11 +256,59 @@ def test_user_id_allowlist_works_in_guild():
     )
 
 
-def test_empty_allowlists_allow_everyone():
+def test_empty_allowlists_deny_without_opt_in():
     adapter = _make_adapter()
     assert (
         adapter._is_allowed_user("42", author=None, guild=None, is_dm=True)
+        is False
+    )
+
+
+def test_channel_allowlist_requires_channel_context(monkeypatch):
+    """DISCORD_ALLOWED_CHANNELS must not authorize guild traffic without
+    validated channel ids — e.g. voice utterances call _is_allowed_user
+    with guild/is_dm only."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")
+    guild = SimpleNamespace(id=111111, get_member=lambda uid: None)
+    adapter = _make_adapter(guilds=[guild])
+
+    assert (
+        adapter._is_allowed_user("42", author=None, guild=guild, is_dm=False)
+        is False
+    )
+
+
+def test_channel_allowlist_authorizes_with_matching_channel_context(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")
+    guild = SimpleNamespace(id=111111, get_member=lambda uid: None)
+    adapter = _make_adapter(guilds=[guild])
+
+    assert (
+        adapter._is_allowed_user(
+            "42",
+            author=None,
+            guild=guild,
+            is_dm=False,
+            channel_ids={"999"},
+        )
         is True
+    )
+
+
+def test_channel_allowlist_rejects_non_matching_channel_context(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")
+    guild = SimpleNamespace(id=111111, get_member=lambda uid: None)
+    adapter = _make_adapter(guilds=[guild])
+
+    assert (
+        adapter._is_allowed_user(
+            "42",
+            author=None,
+            guild=guild,
+            is_dm=False,
+            channel_ids={"1111"},
+        )
+        is False
     )
 
 

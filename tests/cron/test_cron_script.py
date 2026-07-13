@@ -9,11 +9,10 @@ Tests cover:
 
 import json
 import os
-import stat
 import sys
 import textwrap
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -88,6 +87,19 @@ class TestJobScriptField:
         assert updated.get("script") is None
 
 
+def test_cronjob_tool_rejects_stale_past_one_shot(cron_env, monkeypatch):
+    from tools.cronjob_tools import cronjob
+
+    now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+    stale = (now - timedelta(minutes=5)).isoformat()
+
+    result = json.loads(cronjob(action="create", prompt="Too late", schedule=stale))
+
+    assert result["success"] is False
+    assert "past and cannot be scheduled" in result["error"]
+
+
 class TestRunJobScript:
     """Test the _run_job_script() function."""
 
@@ -133,6 +145,31 @@ class TestRunJobScript:
         assert success is False
         assert "exited with code 1" in output
         assert "error info" in output
+
+    def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
+        """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""
+        from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+        from cron.scheduler import _run_job_script
+
+        # sorted() so the probed var is deterministic across runs
+        # (frozenset iteration order varies with PYTHONHASHSEED).
+        blocked_var = sorted(_HERMES_PROVIDER_ENV_BLOCKLIST)[0]
+        monkeypatch.setenv(blocked_var, "must_not_leak")
+
+        script = cron_env / "scripts" / "env_probe.py"
+        script.write_text(
+            textwrap.dedent(
+                f"""\
+                import os
+                key = {blocked_var!r}
+                print("PRESENT" if os.environ.get(key) else "ABSENT")
+                """
+            )
+        )
+
+        success, output = _run_job_script("env_probe.py")
+        assert success is True
+        assert output == "ABSENT"
 
     def test_script_empty_output(self, cron_env):
         from cron.scheduler import _run_job_script

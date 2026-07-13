@@ -2,7 +2,6 @@
 state management, streaming TTS activation, voice message prefix, _vprint."""
 
 import ast
-import os
 import queue
 import threading
 from types import SimpleNamespace
@@ -514,8 +513,8 @@ class TestEdgeTTSLazyImport:
                     if isinstance(n, _ast.Name) and n.id == "edge_tts"
                 ]
                 assert bare_refs == [], (
-                    f"_generate_edge_tts uses bare 'edge_tts' name — "
-                    f"should use _import_edge_tts() lazy helper"
+                    "_generate_edge_tts uses bare 'edge_tts' name — "
+                    "should use _import_edge_tts() lazy helper"
                 )
 
                 # Must have a call to _import_edge_tts
@@ -1214,6 +1213,11 @@ class TestVoiceStopAndTranscribeReal:
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()
         assert cli._pending_input.empty()
+        _unl.assert_not_called()
+        assert any(
+            "Recording preserved at: /tmp/test.wav" in str(call)
+            for call in _cp.call_args_list
+        )
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")
@@ -1227,6 +1231,11 @@ class TestVoiceStopAndTranscribeReal:
         recorder.stop.return_value = "/tmp/test.wav"
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()  # Should not raise
+        _unl.assert_not_called()
+        assert any(
+            "Recording preserved at: /tmp/test.wav" in str(call)
+            for call in _cp.call_args_list
+        )
 
     @patch("cli._cprint")
     @patch("tools.voice_mode.play_beep")

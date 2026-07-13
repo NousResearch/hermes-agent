@@ -10,8 +10,14 @@ describe("normalizeLearnDeepLinkSeed", () => {
   });
 
   it("collapses control characters so a deep link cannot submit extra PTY input", () => {
-    expect(normalizeLearnDeepLinkSeed("notes\r/exit\n\u001b[31mnext\u0007")).toBe(
-      "notes /exit [31mnext",
+    expect(normalizeLearnDeepLinkSeed("notes\r/exit\nnext\u0007")).toBe(
+      "notes /exit next",
+    );
+  });
+
+  it("drops complete ANSI escape sequences instead of leaking their payload text", () => {
+    expect(normalizeLearnDeepLinkSeed("notes \u001b[31mred\u001b[0m")).toBe(
+      "notes red",
     );
   });
 

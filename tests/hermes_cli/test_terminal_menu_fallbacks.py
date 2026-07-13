@@ -101,6 +101,149 @@ def test_remove_custom_provider_falls_back_on_menu_runtime_error(tmp_path, monke
     ]
 
 
+def test_edit_legacy_custom_provider(tmp_path, monkeypatch):
+    """Edit a provider stored in the legacy custom_providers list."""
+    from hermes_cli.main import _edit_custom_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
+
+    cfg = load_config()
+    cfg["custom_providers"] = [
+        {"name": "Local A", "base_url": "http://localhost:8001/v1", "model": "old-model"},
+        {"name": "Local B", "base_url": "http://localhost:8002/v1"},
+    ]
+    save_config(cfg)
+
+    input_responses = iter(["1", "Renamed A", "", "new-model", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(input_responses))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "")
+
+    _edit_custom_provider(cfg)
+
+    reloaded = load_config()
+    edited = reloaded["custom_providers"][0]
+    assert edited["name"] == "Renamed A"
+    assert edited["base_url"] == "http://localhost:8001/v1"
+    assert edited["model"] == "new-model"
+
+
+def test_edit_v12_providers_entry(tmp_path, monkeypatch):
+    """Edit a provider stored in the v12 keyed providers dict."""
+    from hermes_cli.main import _edit_custom_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
+
+    cfg = load_config()
+    cfg["providers"] = {
+        "my-local": {
+            "name": "My Local",
+            "api": "http://localhost:11434/v1",
+            "default_model": "llama3",
+            "models": {
+                "llama3": {"context_length": 8192, "supports_vision": False},
+            },
+        },
+    }
+    save_config(cfg)
+
+    input_responses = iter(["1", "My Local Renamed", "", "llama3.1", "128k"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(input_responses))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "")
+
+    _edit_custom_provider(cfg)
+
+    reloaded = load_config()
+    entry = reloaded["providers"]["my-local"]
+    assert entry["name"] == "My Local Renamed"
+    assert entry["api"] == "http://localhost:11434/v1"
+    assert entry["default_model"] == "llama3.1"
+    assert "llama3" not in entry["models"]
+    assert entry["models"]["llama3.1"]["context_length"] == 128000
+    assert entry["models"]["llama3.1"]["supports_vision"] is False
+
+
+def test_edit_custom_provider_preserves_model_metadata(tmp_path, monkeypatch):
+    """Changing context length must not drop supports_vision or other metadata."""
+    from hermes_cli.main import _edit_custom_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
+
+    cfg = load_config()
+    cfg["custom_providers"] = [
+        {
+            "name": "Local",
+            "base_url": "http://localhost:8001/v1",
+            "model": "qwen",
+            "models": {"qwen": {"context_length": 32768, "supports_vision": True}},
+        },
+    ]
+    save_config(cfg)
+
+    input_responses = iter(["1", "", "", "", "128k"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(input_responses))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "")
+
+    _edit_custom_provider(cfg)
+
+    reloaded = load_config()
+    model_meta = reloaded["custom_providers"][0]["models"]["qwen"]
+    assert model_meta["context_length"] == 128000
+    assert model_meta["supports_vision"] is True
+
+
+
+def test_edit_custom_provider_cancel_selection(tmp_path, monkeypatch, capsys):
+    from hermes_cli.main import _edit_custom_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
+
+    cfg = load_config()
+    cfg["custom_providers"] = [
+        {"name": "Local A", "base_url": "http://localhost:8001/v1"},
+    ]
+    save_config(cfg)
+
+    input_responses = iter(["2"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(input_responses))
+
+    _edit_custom_provider(cfg)
+
+    captured = capsys.readouterr()
+    assert "No change." in captured.out
+    reloaded = load_config()
+    assert reloaded["custom_providers"][0]["name"] == "Local A"
+
+
+def test_edit_custom_provider_no_providers(tmp_path, monkeypatch, capsys):
+    from hermes_cli.main import _edit_custom_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    cfg = load_config()
+    cfg["custom_providers"] = []
+    save_config(cfg)
+
+    _edit_custom_provider(cfg)
+
+    captured = capsys.readouterr()
+    assert "No custom providers configured." in captured.out
+
+
+def test_parse_context_length_input():
+    from hermes_cli.main import _parse_context_length_input
+
+    assert _parse_context_length_input("128k") == 128000
+    assert _parse_context_length_input("32K") == 32000
+    assert _parse_context_length_input("32,768") == 32768
+    assert _parse_context_length_input("") is None
+    assert _parse_context_length_input("", fallback=4096) == 4096
+    assert _parse_context_length_input("abc", fallback=4096) == 4096
+
+
 def test_named_custom_provider_model_picker_falls_back_on_menu_runtime_error(tmp_path, monkeypatch):
     from hermes_cli.main import _model_flow_named_custom
 

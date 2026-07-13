@@ -3071,6 +3071,8 @@ def select_provider_and_model(args=None):
             ordered.append((key, label, []))
 
     ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
+    if _custom_provider_map:
+        ordered.append(("edit-custom", "Edit a saved custom provider", []))
     _has_saved_custom_list = isinstance(config.get("custom_providers"), list) and bool(
         config.get("custom_providers")
     )
@@ -3150,6 +3152,8 @@ def select_provider_and_model(args=None):
             )
             return
         _model_flow_named_custom(config, provider_info)
+    elif selected_provider == "edit-custom":
+        _edit_custom_provider(config)
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
     elif selected_provider == "anthropic":
@@ -3195,6 +3199,7 @@ def select_provider_and_model(args=None):
     if selected_provider not in {
         "custom",
         "cancel",
+        "edit-custom",
         "remove-custom",
     } and not selected_provider.startswith("custom:"):
         _clear_stale_openai_base_url()
@@ -3838,6 +3843,188 @@ def _save_custom_provider(
     save_config(cfg)
     print(f'  💾 Saved to custom providers as "{name}" (edit in config.yaml)')
 
+
+def _get_context_length(models_dict, model_name):
+    """Read context_length for *model_name* from a provider's ``models`` dict."""
+    if not isinstance(models_dict, dict) or not model_name:
+        return None
+    info = models_dict.get(model_name)
+    return info.get("context_length") if isinstance(info, dict) else None
+
+
+def _parse_context_length_input(raw, fallback=None):
+    """Parse a human-entered context-length string (e.g. ``"128k"``, ``"32768"``).
+
+    Returns an ``int`` on success, *fallback* on empty/invalid input.
+    """
+    if not raw:
+        return fallback
+    try:
+        value = int(raw.replace(",", "").replace("k", "000").replace("K", "000"))
+        return value if value > 0 else fallback
+    except ValueError:
+        print(f"Invalid context length: {raw} — keeping previous value.")
+        return fallback
+
+
+
+def _select_custom_provider(title):
+    """Show a menu to pick one saved custom provider from any config schema.
+
+    Returns ``(normalized_entry, schema, ref, config_dict)`` on selection,
+    or ``None`` if the user cancels or no providers exist.
+
+    *schema* is ``"legacy"`` (entry lives in ``custom_providers`` list) or
+    ``"providers"`` (entry lives in the keyed ``providers`` dict).
+    *ref* is the list index for legacy entries or the dict key for v12 entries.
+    """
+    from hermes_cli.config import get_compatible_custom_providers, load_config
+
+    cfg = load_config()
+    entries = get_compatible_custom_providers(cfg)
+    if not entries:
+        print("No custom providers configured.")
+        return None
+
+    choices = []
+    for entry in entries:
+        name = entry.get("name", "unnamed")
+        url = entry.get("base_url", "")
+        short_url = url.replace("https://", "").replace("http://", "").rstrip("/")
+        choices.append(f"{name} ({short_url})")
+    choices.append("Cancel")
+
+    try:
+        from hermes_cli.curses_ui import curses_radiolist
+
+        idx = curses_radiolist(
+            title,
+            list(choices),
+            selected=0,
+            cancel_returns=-1,
+        )
+        print()
+        if idx < 0:
+            idx = None
+    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
+        for i, c in enumerate(choices, 1):
+            print(f"  {i}. {c}")
+        print()
+        try:
+            val = input(f"Choice [1-{len(choices)}]: ").strip()
+            idx = int(val) - 1 if val else None
+        except (ValueError, KeyboardInterrupt, EOFError):
+            idx = None
+
+    if idx is None or idx >= len(entries):
+        print("No change.")
+        return None
+
+    selected = entries[idx]
+    provider_key = (selected.get("provider_key") or "").strip()
+
+    if provider_key:
+        return selected, "providers", provider_key, cfg
+
+    sel_name = (selected.get("name") or "").strip()
+    sel_url = (selected.get("base_url") or "").rstrip("/")
+    legacy_list = cfg.get("custom_providers") or []
+    for i, raw in enumerate(legacy_list):
+        if isinstance(raw, dict):
+            raw_name = (raw.get("name") or "").strip()
+            raw_url = (raw.get("base_url") or "").rstrip("/")
+            if raw_name == sel_name and raw_url == sel_url:
+                return selected, "legacy", i, cfg
+
+    return selected, "legacy", 0, cfg
+
+
+def _edit_custom_provider(config):
+    """Let the user edit a saved custom provider in config.yaml.
+
+    Handles both legacy ``custom_providers`` list entries and v12+
+    ``providers`` dict entries.  Preserves per-model metadata (e.g.
+    ``supports_vision``) when changing model name or context length.
+    """
+    from hermes_cli.config import save_config
+
+    print("Edit a custom provider:\n")
+    result = _select_custom_provider("Select provider to edit:")
+    if result is None:
+        return
+    normalized, schema, ref, cfg = result
+
+    old_name = normalized.get("name", "")
+    old_base_url = normalized.get("base_url", "")
+    old_api_key = normalized.get("api_key", "")
+    old_model = normalized.get("model", "")
+    old_models = normalized.get("models") if isinstance(normalized.get("models"), dict) else {}
+    old_context_length = _get_context_length(old_models, old_model)
+
+    print(f"Editing: {old_name}")
+    print("Press Enter to keep current value, or type a new value.\n")
+
+    try:
+        import getpass
+
+        new_name = input(f"  Name [{old_name}]: ").strip() or old_name
+        new_base_url = input(f"  Base URL [{old_base_url}]: ").strip() or old_base_url
+        key_display = old_api_key[:8] + "..." if old_api_key else "none"
+        new_api_key = getpass.getpass(f"  API key [{key_display}]: ").strip() or old_api_key
+        new_model = input(f"  Model [{old_model or 'none'}]: ").strip() or old_model
+        ctx_display = str(old_context_length) if old_context_length else "auto-detect"
+        raw_context = input(f"  Context length [{ctx_display}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    if not new_base_url.startswith(("http://", "https://")):
+        print(f"Invalid URL: {new_base_url} (must start with http:// or https://)")
+        return
+
+    new_context_length = _parse_context_length_input(raw_context, fallback=old_context_length)
+
+    if schema == "providers":
+        raw_entry = cfg.get("providers", {}).get(ref, {})
+        if new_name != old_name:
+            raw_entry["name"] = new_name
+        if new_base_url != old_base_url:
+            raw_entry["api"] = new_base_url
+        if new_api_key != old_api_key:
+            raw_entry["api_key"] = new_api_key
+        if new_model != old_model:
+            raw_entry["default_model"] = new_model
+    else:
+        legacy_list = cfg.get("custom_providers", [])
+        raw_entry = legacy_list[ref] if isinstance(legacy_list, list) and ref < len(legacy_list) else {}
+        if new_name != old_name:
+            raw_entry["name"] = new_name
+        if new_base_url != old_base_url:
+            raw_entry["base_url"] = new_base_url
+        if new_api_key != old_api_key:
+            raw_entry["api_key"] = new_api_key
+        if new_model != old_model:
+            raw_entry["model"] = new_model
+
+    raw_models = raw_entry.get("models")
+    if not isinstance(raw_models, dict):
+        raw_models = {}
+
+    if old_model and new_model and new_model != old_model and old_model in raw_models:
+        old_meta = raw_models.pop(old_model)
+        if isinstance(old_meta, dict):
+            raw_models.setdefault(new_model, {}).update(old_meta)
+
+    if new_model and new_context_length is not None:
+        raw_models.setdefault(new_model, {})["context_length"] = new_context_length
+
+    if raw_models:
+        raw_entry["models"] = raw_models
+    else:
+        raw_entry.pop("models", None)
+
+    save_config(cfg)
+    print(f'\nUpdated "{new_name}" in custom providers.')
 
 
 

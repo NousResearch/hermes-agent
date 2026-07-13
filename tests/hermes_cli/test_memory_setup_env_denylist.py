@@ -17,6 +17,8 @@ before ``main()``.
 The fix routes through ``save_env_value`` so the same gates fire.
 """
 
+import os
+
 import pytest
 
 from hermes_cli.config import ensure_hermes_home, get_env_path, load_env
@@ -169,6 +171,7 @@ def test_value_with_embedded_newline_is_stripped():
     assert "EVIL" not in _env_file_keys()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
 def test_env_file_created_with_secure_permissions(tmp_path):
     """Regression guard for the TOCTOU window the direct ``Path.write_text``
     + post-hoc ``chmod`` implementation had: ``save_env_value`` creates the

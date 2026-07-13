@@ -154,6 +154,169 @@ class TestStartRun:
         assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_start_preserves_tool_chain_with_explicit_history(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                explicit_history = [
+                    {"role": "user", "content": "Read this file", "finish_reason": "stop"},
+                    {
+                        "role": "assistant",
+                        "name": "assistant-main",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_read",
+                                "type": "function",
+                                "function": {"name": "read_file", "arguments": '{"path":"foo.txt"}'},
+                            }
+                        ],
+                        "reasoning_content": "Need tool output first.",
+                        "metadata": {"trace_id": "deadbeef"},
+                    },
+                    {
+                        "role": "tool",
+                        "name": "tool-writer",
+                        "tool_call_id": "call_read",
+                        "content": '{"content": "ok"}',
+                        "reasoning_content": "tool thinking",
+                    },
+                ]
+
+                start_resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Now summarize",
+                        "conversation_history": explicit_history,
+                    },
+                )
+                assert start_resp.status == 202
+                run_id = (await start_resp.json())["run_id"]
+
+                # Wait for background execution to consume the constructed history.
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] in {"completed", "failed", "error"}:
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert mock_agent.run_conversation.call_count == 1
+                call_kwargs = mock_agent.run_conversation.call_args.kwargs
+                assert call_kwargs["user_message"] == "Now summarize"
+                assert call_kwargs["conversation_history"] == [
+                    {"role": "user", "content": "Read this file"},
+                    {
+                        "role": "assistant",
+                        "name": "assistant-main",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_read",
+                                "type": "function",
+                                "function": {"name": "read_file", "arguments": '{"path":"foo.txt"}'},
+                            }
+                        ],
+                        "reasoning_content": "Need tool output first.",
+                    },
+                    {
+                        "role": "tool",
+                        "name": "tool-writer",
+                        "tool_call_id": "call_read",
+                        "content": '{"content": "ok"}',
+                    },
+                ]
+                assert "finish_reason" not in call_kwargs["conversation_history"][0]
+                assert "metadata" not in call_kwargs["conversation_history"][1]
+                assert "reasoning_content" not in call_kwargs["conversation_history"][2]
+
+    @pytest.mark.asyncio
+    async def test_start_array_input_preserves_tool_chain(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [
+                            {"role": "user", "content": "Read this file", "metadata": {"trace": "skip"}},
+                            {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_read",
+                                        "type": "function",
+                                        "function": {"name": "read_file", "arguments": '{"path":"foo.txt"}'},
+                                    }
+                                ],
+                                "reasoning_content": "Need content",
+                                "reasoning_details": {"secret": "drop"},
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "call_read",
+                                "content": '{"content":"ok"}',
+                                "codex_reasoning_items": ["drop"],
+                            },
+                            {"role": "user", "content": "Now summarize"},
+                        ],
+                    },
+                )
+                assert start_resp.status == 202
+                run_id = (await start_resp.json())["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] in {"completed", "failed", "error"}:
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert mock_agent.run_conversation.call_count == 1
+                call_kwargs = mock_agent.run_conversation.call_args.kwargs
+                assert call_kwargs["user_message"] == "Now summarize"
+                assert call_kwargs["conversation_history"] == [
+                    {"role": "user", "content": "Read this file"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_read",
+                                "type": "function",
+                                "function": {"name": "read_file", "arguments": '{"path":"foo.txt"}'},
+                            }
+                        ],
+                        "reasoning_content": "Need content",
+                    },
+                    {
+                        "role": "tool",
+                        "content": '{"content":"ok"}',
+                        "tool_call_id": "call_read",
+                    },
+                ]
+                assert "metadata" not in call_kwargs["conversation_history"][0]
+                assert "reasoning_details" not in call_kwargs["conversation_history"][1]
+                assert "codex_reasoning_items" not in call_kwargs["conversation_history"][2]
+
+    @pytest.mark.asyncio
     async def test_start_invalid_history_does_not_allocate_run(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

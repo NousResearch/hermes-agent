@@ -1684,6 +1684,79 @@ class TestChatCompletionsEndpoint:
             assert call_kwargs["conversation_history"][1] == {"role": "assistant", "content": "2"}
 
     @pytest.mark.asyncio
+    async def test_tool_chain_history_is_preserved_for_chat(self, adapter):
+        """Tool-call messages keep continuity metadata and drop extra fields."""
+        mock_result = {"final_response": "Done", "messages": [], "api_calls": 1}
+        messages = [
+            {"role": "user", "content": "Read this file"},
+            {
+                "role": "assistant",
+                "name": "assistant-main",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": "{\"path\":\"foo.txt\"}",
+                        },
+                    }
+                ],
+                "reasoning_content": "Need tool output first.",
+                "metadata": {"trace_id": "deadbeef"},
+                "finish_reason": "tool_calls",
+            },
+            {
+                "role": "tool",
+                "name": "tool-writer",
+                "tool_call_id": "call_read",
+                "content": "{\"content\": \"ok\"}",
+                "reasoning_content": "tool thinking",
+            },
+            {"role": "user", "content": "Summarize it"},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post("/v1/chat/completions", json={"model": "hermes-agent", "messages": messages})
+
+        assert resp.status == 200
+        call_kwargs = mock_run.call_args.kwargs
+        expected_history = [
+            {"role": "user", "content": "Read this file"},
+            {
+                "role": "assistant",
+                "name": "assistant-main",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": "{\"path\":\"foo.txt\"}",
+                        },
+                    }
+                ],
+                "reasoning_content": "Need tool output first.",
+            },
+            {
+                "role": "tool",
+                "name": "tool-writer",
+                "content": "{\"content\": \"ok\"}",
+                "tool_call_id": "call_read",
+            },
+        ]
+        assert call_kwargs["conversation_history"] == expected_history
+        assert call_kwargs["user_message"] == "Summarize it"
+        assert "metadata" not in call_kwargs["conversation_history"][1]
+        assert "finish_reason" not in call_kwargs["conversation_history"][1]
+        assert "tool_call_id" not in call_kwargs["conversation_history"][1]
+
+    @pytest.mark.asyncio
     async def test_agent_error_returns_500(self, adapter):
         """Agent exception returns 500."""
         app = _create_app(adapter)
@@ -1877,6 +1950,151 @@ class TestResponsesEndpoint:
             # Last message is user_message, rest are history
             assert call_kwargs["user_message"] == "What is 2+2?"
             assert len(call_kwargs["conversation_history"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_explicit_conversation_history_preserves_tool_chain(self, adapter):
+        """Explicit response history preserves only continuity-relevant fields."""
+        mock_result = {"final_response": "Done", "messages": [], "api_calls": 1}
+        explicit_history = [
+            {
+                "role": "user",
+                "content": "Read this file",
+                "metadata": {"bad": "drop-me"},
+            },
+            {
+                "role": "assistant",
+                "name": "assistant-main",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{\"path\":\"foo.txt\"}"},
+                    }
+                ],
+                "reasoning_content": "Tool needed",
+                "reasoning_details": {"depth": "high"},
+                "finish_reason": "tool_calls",
+            },
+            {
+                "role": "tool",
+                "content": "{\"content\":\"ok\"}",
+                "tool_call_id": "call_read",
+                "codex_reasoning_items": ["ignore"],
+                "codex_message_items": ["ignore"],
+            },
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Please summarize",
+                        "conversation_history": explicit_history,
+                    },
+                )
+
+            assert resp.status == 200
+
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs["user_message"] == "Please summarize"
+        assert call_kwargs["conversation_history"] == [
+            {"role": "user", "content": "Read this file"},
+            {
+                "role": "assistant",
+                "name": "assistant-main",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{\"path\":\"foo.txt\"}"},
+                    }
+                ],
+                "reasoning_content": "Tool needed",
+            },
+            {
+                "role": "tool",
+                "content": "{\"content\":\"ok\"}",
+                "tool_call_id": "call_read",
+            },
+        ]
+        assert "metadata" not in call_kwargs["conversation_history"][0]
+        assert "reasoning_details" not in call_kwargs["conversation_history"][1]
+        assert "finish_reason" not in call_kwargs["conversation_history"][1]
+        assert "codex_reasoning_items" not in call_kwargs["conversation_history"][2]
+        assert "codex_message_items" not in call_kwargs["conversation_history"][2]
+
+    @pytest.mark.asyncio
+    async def test_array_input_preserves_tool_chain(self, adapter):
+        """Array input preserves tool-call continuity metadata."""
+        mock_result = {"final_response": "Done", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [
+                            {"role": "user", "content": "Read this file", "metadata": {"bad": True}},
+                            {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_read",
+                                        "type": "function",
+                                        "function": {"name": "read_file", "arguments": "{\"path\":\"foo.txt\"}"},
+                                    }
+                                ],
+                                "reasoning_content": "Need content",
+                                "reasoning_details": {"secret": "drop"},
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "call_read",
+                                "content": "{\"content\":\"ok\"}",
+                                "codex_reasoning_items": ["drop"],
+                            },
+                            {"role": "user", "content": "Now summarize"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs["user_message"] == "Now summarize"
+        assert call_kwargs["conversation_history"] == [
+            {"role": "user", "content": "Read this file"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{\"path\":\"foo.txt\"}"},
+                    }
+                ],
+                "reasoning_content": "Need content",
+            },
+            {
+                "role": "tool",
+                "content": "{\"content\":\"ok\"}",
+                "tool_call_id": "call_read",
+            },
+        ]
+        assert "metadata" not in call_kwargs["conversation_history"][0]
+        assert "reasoning_details" not in call_kwargs["conversation_history"][1]
+        assert "codex_reasoning_items" not in call_kwargs["conversation_history"][2]
 
     @pytest.mark.asyncio
     async def test_instructions_as_ephemeral_prompt(self, adapter):

@@ -1211,9 +1211,17 @@ class TestQuickSnapshot:
         (hermes_home / "pairing" / "matrix-approved.json").write_text(
             '{"@charlie:server": {"user_name": "charlie"}}'
         )
-        # Feishu's separate JSON
+        # Feishu's separate JSONs: pairing (subscription state) + rules
+        # (access-control allowlist). Both live outside state.db and must be
+        # captured by the pre-update snapshot so the user-defined allowlist
+        # survives a recovery — same class of state as the pairing fix in
+        # #15733, missing counterpart tracked in PR #27346.
         (hermes_home / "feishu_comment_pairing.json").write_text(
             '{"doc_abc": {"allow_from": ["user_xyz"]}}'
+        )
+        (hermes_home / "feishu_comment_rules.json").write_text(
+            '{"enabled": true, "policy": "allowlist", '
+            '"allow_from": ["ou_admin", "ou_bob"]}'
         )
 
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
@@ -1224,6 +1232,7 @@ class TestQuickSnapshot:
         assert (snap_dir / "platforms" / "pairing" / "discord-approved.json").exists()
         assert (snap_dir / "pairing" / "matrix-approved.json").exists()
         assert (snap_dir / "feishu_comment_pairing.json").exists()
+        assert (snap_dir / "feishu_comment_rules.json").exists()
 
         with open(snap_dir / "manifest.json") as f:
             meta = json.load(f)
@@ -1232,6 +1241,7 @@ class TestQuickSnapshot:
         assert "platforms/pairing/discord-approved.json" in files
         assert "pairing/matrix-approved.json" in files
         assert "feishu_comment_pairing.json" in files
+        assert "feishu_comment_rules.json" in files
 
     def test_restore_recovers_pairing_data(self, hermes_home):
         """After restore, deleted pairing files reappear with original content."""
@@ -1243,21 +1253,36 @@ class TestQuickSnapshot:
         approved.write_text('{"12345": {"user_name": "alice"}}')
         feishu = hermes_home / "feishu_comment_pairing.json"
         feishu.write_text('{"doc_abc": {"allow_from": ["user_xyz"]}}')
+        rules = hermes_home / "feishu_comment_rules.json"
+        rules.write_text(
+            '{"enabled": true, "policy": "allowlist", '
+            '"allow_from": ["ou_admin", "ou_bob"]}'
+        )
 
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         assert snap_id is not None
 
-        # Simulate the disaster — user loses both pairing files.
+        # Simulate the disaster — user loses pairing files AND the
+        # access-control allowlist.
         approved.unlink()
         feishu.unlink()
+        rules.unlink()
         assert not approved.exists()
         assert not feishu.exists()
+        assert not rules.exists()
 
         assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
         assert approved.exists()
         assert '"alice"' in approved.read_text()
         assert feishu.exists()
         assert '"user_xyz"' in feishu.read_text()
+        # Content assertion: the user-defined allowlist must survive the
+        # full snapshot/restore round-trip unchanged — the regression guard
+        # requested by hermes-sweeper on PR #27346.
+        assert rules.exists()
+        restored_rules = json.loads(rules.read_text())
+        assert restored_rules["policy"] == "allowlist"
+        assert restored_rules["allow_from"] == ["ou_admin", "ou_bob"]
 
     def test_empty_pairing_dir_does_not_fail(self, hermes_home):
         """An empty pairing directory should be silently skipped."""

@@ -689,6 +689,11 @@ class HindsightMemoryProvider(MemoryProvider):
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
         self._prefetch_query = ""
+        # Every queued prefetch takes the next generation. A worker may only
+        # publish its result while its generation is still the current one, so
+        # a slow recall that lands after its turn was served — or after a
+        # session switch — is dropped instead of overwriting a newer answer.
+        self._prefetch_gen = 0
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         # Single-writer model for retain. sync_turn() enqueues; the writer
@@ -1555,6 +1560,7 @@ class HindsightMemoryProvider(MemoryProvider):
             result = self._prefetch_result
             self._prefetch_result = ""
             self._prefetch_query = ""
+            self._prefetch_gen += 1
         if not result:
             logger.debug("Prefetch: no results available")
             return ""
@@ -1634,6 +1640,8 @@ class HindsightMemoryProvider(MemoryProvider):
         query = self._clean_prefetch_query(query)
         with self._prefetch_lock:
             self._prefetch_query = query
+            self._prefetch_gen += 1
+            gen = self._prefetch_gen
 
         def _run():
             try:
@@ -1644,6 +1652,10 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.debug("Prefetch: %s returned %d chars", self._prefetch_method, len(text))
                 if text:
                     with self._prefetch_lock:
+                        if gen != self._prefetch_gen:
+                            logger.debug("Prefetch: dropping stale result (gen %d, current %d)",
+                                         gen, self._prefetch_gen)
+                            return
                         self._prefetch_result = text
             except Exception as e:
                 logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)
@@ -1996,6 +2008,9 @@ class HindsightMemoryProvider(MemoryProvider):
         with self._prefetch_lock:
             self._prefetch_result = ""
             self._prefetch_query = ""
+            # The join is bounded: a worker that outlives it must not resurrect
+            # the old session's recall in the new one.
+            self._prefetch_gen += 1
 
         # 3. Now rotate to the new session.
         if parent_session_id:

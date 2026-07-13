@@ -1977,3 +1977,65 @@ class TestPrefetchRecallsCurrentQuery:
 
         assert p.prefetch("uma pergunta") == ""   # returns, does not hang
         assert started.is_set()
+
+    def test_a_recall_that_lands_after_its_turn_cannot_overwrite_the_next_one(self, provider_with_config):
+        """The wait is bounded, so a slow worker outlives the turn that queued
+        it. If it may still publish, it overwrites the NEXT turn's recall with
+        the previous question's memories — the turn-late answer this cache was
+        keyed by query to stop, only now wearing a fresh label."""
+        import threading as _t
+        p = provider_with_config()
+        p._prefetch_wait_seconds = 0.05
+        release = _t.Event()
+        landed = _t.Event()
+
+        def _slow(bank_id, query, *, method, numbered=False):
+            release.wait(5)
+            landed.set()
+            return "- memory for the old question"
+        p._recall_text_for_bank = _slow
+
+        assert p.prefetch("old question") == ""    # bounded wait expires; the worker lives on
+        stale = p._prefetch_thread
+
+        # Next turn: its own recall completes and owns the slot.
+        p._recall_text_for_bank = (
+            lambda bank_id, query, *, method, numbered=False: "- memory for the new question"
+        )
+        p.queue_prefetch("new question")
+        p._prefetch_thread.join(5)
+
+        release.set()                              # only now does the old worker return
+        assert landed.wait(5)
+        stale.join(5)
+
+        with p._prefetch_lock:
+            assert p._prefetch_result == "- memory for the new question"
+        assert "old question" not in p.prefetch("new question")
+
+    def test_a_recall_outliving_the_session_switch_join_is_dropped(self, provider_with_config):
+        """on_session_switch drains the in-flight worker with a 3s join. A
+        worker slower than that must not resurrect the old session's memories
+        in the new one — the join bounds the wait, the generation bounds the write."""
+        import threading as _t
+        p = provider_with_config()
+        release = _t.Event()
+        landed = _t.Event()
+
+        def _slow(bank_id, query, *, method, numbered=False):
+            release.wait(5)
+            landed.set()
+            return "- old-session recall: user likes Rust"
+        p._recall_text_for_bank = _slow
+
+        p.queue_prefetch("old question")
+        stale = p._prefetch_thread
+        p._prefetch_thread = None      # simulate a worker that outlived the bounded join
+        p.on_session_switch("new-sid")
+
+        release.set()
+        assert landed.wait(5)
+        stale.join(5)
+
+        with p._prefetch_lock:
+            assert p._prefetch_result == ""

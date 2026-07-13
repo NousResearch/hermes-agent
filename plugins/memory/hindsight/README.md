@@ -60,7 +60,8 @@ Config file: `~/.hermes/hindsight/config.json`
 | Key | Default | Description |
 |-----|---------|-------------|
 | `bank_id` | `hermes` | Memory bank name (static fallback used when `bank_id_template` is unset or resolves empty) |
-| `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. Example: `hermes-{profile}` isolates memory per active Hermes profile. Empty placeholders collapse cleanly (e.g. `hermes-{user}` with no user becomes `hermes`). |
+| `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{project}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. Example: `hermes-{profile}` isolates memory per active Hermes profile. Empty placeholders collapse cleanly (e.g. `hermes-{user}` with no user becomes `hermes`). |
+| — `{project}` | — | The repo (or directory) name of the session's cwd, resolved the same way the Hindsight plugins for Claude Code and Codex resolve it — so a bare `{project}` template puts all three harnesses in **one bank per project**. Outside any project it resolves empty and the static `bank_id` is used. |
 | `bank_mission` | — | Reflect mission (identity/framing for reflect reasoning). Applied via Banks API. |
 | `bank_retain_mission` | — | Retain mission (steers what gets extracted). Applied via Banks API. |
 
@@ -75,6 +76,8 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |
 | `recall_tags` | — | Tags to filter when searching memories |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |
+| `recall_additional_banks` | — | Extra banks merged into every recall, **read-only** — retains always go to `bank_id`. List or comma-separated string. Use it to layer a shared bank under a per-project one (e.g. `user-global` alongside a `{project}` bank). |
+| `prefetch_wait_seconds` | `15` | How long a turn waits for its own recall before proceeding without it. Auto-recall is warmed at the end of the previous turn; when the current question misses that cache, it is recalled now and awaited up to this bound. A wedged Hindsight then costs the turn its memory, never the turn itself. |
 | `recall_types` | `observation` | Fact types surfaced by recall (both auto-recall and the `hindsight_recall` tool). Comma-separated string or JSON list. **Default narrowed to `observation` only** (see "Behavior change" below). Set to `observation,world,experience` to also include raw facts. |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 

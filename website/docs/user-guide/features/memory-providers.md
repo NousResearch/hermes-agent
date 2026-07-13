@@ -424,6 +424,9 @@ The setup wizard installs dependencies automatically and only installs what's ne
 |-----|---------|-------------|
 | `mode` | `cloud` | `cloud` or `local` |
 | `bank_id` | `hermes` | Memory bank identifier |
+| `bank_id_template` | — | Derive the bank name dynamically. Placeholders: `{profile}`, `{project}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. A bare `{project}` (the repo name of the session's cwd) shares one bank per project with the Hindsight plugins for Claude Code and Codex |
+| `recall_additional_banks` | — | Extra banks merged into every recall, read-only — retains still go to `bank_id`. List or comma-separated (e.g. `user-global`) |
+| `prefetch_wait_seconds` | `15` | Max seconds a turn waits for its own memory recall before proceeding without it |
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
 | `memory_mode` | `hybrid` | `hybrid` (context + tools), `context` (auto-inject only), `tools` (tools only) |
 | `auto_retain` | `true` | Automatically retain conversation turns |

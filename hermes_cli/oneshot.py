@@ -390,40 +390,60 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
-    agent = AIAgent(
-        api_key=runtime.get("api_key"),
-        base_url=runtime.get("base_url"),
-        provider=runtime.get("provider"),
-        api_mode=runtime.get("api_mode"),
-        model=effective_model,
-        enabled_toolsets=toolsets_list,
-        quiet_mode=True,
-        platform="cli",
-        session_db=session_db,
-        credential_pool=runtime.get("credential_pool"),
-        fallback_model=_fb or None,
-        # Interactive callbacks are intentionally NOT wired beyond this
-        # one.  In oneshot mode there's no user sitting at a terminal:
-        #   - clarify  → returns a synthetic "pick a default" instruction
-        #                so the agent continues instead of stalling on
-        #                the tool's built-in "not available" error
-        #   - sudo password prompt → terminal_tool gates on
-        #                HERMES_INTERACTIVE which we never set
-        #   - shell-hook approval → auto-approved via HERMES_ACCEPT_HOOKS=1
-        #                (set above); also falls back to deny on non-tty
-        #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
-        #   - skill secret capture → returns gracefully when no callback set
-        clarify_callback=_oneshot_clarify_callback,
-    )
+    agent = None
+    try:
+        agent = AIAgent(
+            api_key=runtime.get("api_key"),
+            base_url=runtime.get("base_url"),
+            provider=runtime.get("provider"),
+            api_mode=runtime.get("api_mode"),
+            model=effective_model,
+            enabled_toolsets=toolsets_list,
+            quiet_mode=True,
+            platform="cli",
+            session_db=session_db,
+            credential_pool=runtime.get("credential_pool"),
+            fallback_model=_fb or None,
+            # Interactive callbacks are intentionally NOT wired beyond this
+            # one.  In oneshot mode there's no user sitting at a terminal:
+            #   - clarify  → returns a synthetic "pick a default" instruction
+            #                so the agent continues instead of stalling on
+            #                the tool's built-in "not available" error
+            #   - sudo password prompt → terminal_tool gates on
+            #                HERMES_INTERACTIVE which we never set
+            #   - shell-hook approval → auto-approved via HERMES_ACCEPT_HOOKS=1
+            #                (set above); also falls back to deny on non-tty
+            #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
+            #   - skill secret capture → returns gracefully when no callback set
+            clarify_callback=_oneshot_clarify_callback,
+        )
 
-    # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
-    # display callbacks that would bypass our stdout capture.
-    agent.suppress_status_output = True
-    agent.stream_delta_callback = None
-    agent.tool_gen_callback = None
+        # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
+        # display callbacks that would bypass our stdout capture.
+        agent.suppress_status_output = True
+        agent.stream_delta_callback = None
+        agent.tool_gen_callback = None
 
-    result = agent.run_conversation(prompt)
-    return (result.get("final_response") or "", result)
+        result = agent.run_conversation(prompt)
+        return (result.get("final_response") or "", result)
+    finally:
+        # Oneshot bypasses cli.py, including its atexit cleanup.  Mirror the
+        # supported AIAgent lifecycle explicitly so memory-provider workers do
+        # not survive into interpreter finalization after the response prints.
+        if agent is not None and hasattr(agent, "shutdown_memory_provider"):
+            try:
+                session_messages = getattr(agent, "_session_messages", None)
+                agent.shutdown_memory_provider(
+                    session_messages if isinstance(session_messages, list) else []
+                )
+            except Exception as exc:
+                logging.debug("Oneshot memory-provider shutdown failed: %s", exc)
+        close_session_db = getattr(session_db, "close", None)
+        if callable(close_session_db):
+            try:
+                close_session_db()
+            except Exception as exc:
+                logging.debug("Oneshot session database close failed: %s", exc)
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

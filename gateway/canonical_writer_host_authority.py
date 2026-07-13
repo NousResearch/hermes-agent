@@ -3032,8 +3032,13 @@ def _discord_process_pids() -> list[int]:
             raise RuntimeError("Discord process argv is invalid") from exc
         if (
             (discord_uid is not None and int(values[1]) == discord_uid)
+            or "gateway.discord_edge_bootstrap" in argv
             or "scripts.discord_edge_bootstrap" in argv
-            or any(value.endswith("/scripts/discord_edge_bootstrap.py") for value in argv)
+            or any(
+                value.endswith("/gateway/discord_edge_bootstrap.py")
+                or value.endswith("/scripts/discord_edge_bootstrap.py")
+                for value in argv
+            )
         ):
             result.add(int(item.name))
     return sorted(result)

@@ -839,6 +839,11 @@ def test_installed_runtime_requires_copied_venv_and_no_dynamic_site_path(tmp_pat
     spec.interpreter.write_bytes(b"copied")
     spec.interpreter.chmod(0o555)
     spec.site_packages.mkdir(parents=True)
+    for relative_path in writer_release._PACKAGED_DISCORD_EDGE_MODULES:
+        module_path = spec.site_packages / relative_path
+        module_path.parent.mkdir(parents=True, exist_ok=True)
+        module_path.write_text("PACKAGED = True\n", encoding="utf-8")
+        module_path.chmod(0o644)
     (spec.venv_root / "pyvenv.cfg").write_text(
         "home = " + str(managed.parent) + "\n"
         "include-system-site-packages = false\n"
@@ -853,6 +858,48 @@ def test_installed_runtime_requires_copied_venv_and_no_dynamic_site_path(tmp_pat
         encoding="utf-8",
     )
     with pytest.raises(RuntimeError, match="dynamic site path"):
+        writer_release._validate_installed_runtime(spec, managed)
+
+
+@pytest.mark.parametrize("mutation", ("missing", "symlink", "mode", "empty"))
+def test_installed_runtime_requires_exact_packaged_discord_edge_modules(
+    tmp_path,
+    mutation,
+):
+    spec = _spec(tmp_path)
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"managed")
+    managed.chmod(0o555)
+    spec.interpreter.parent.mkdir(parents=True)
+    spec.interpreter.write_bytes(b"copied")
+    spec.interpreter.chmod(0o555)
+    spec.site_packages.mkdir(parents=True)
+    (spec.venv_root / "pyvenv.cfg").write_text(
+        "home = " + str(managed.parent) + "\n"
+        "include-system-site-packages = false\n"
+        "executable = " + str(managed) + "\n",
+        encoding="utf-8",
+    )
+    module_paths = []
+    for relative_path in writer_release._PACKAGED_DISCORD_EDGE_MODULES:
+        module_path = spec.site_packages / relative_path
+        module_path.parent.mkdir(parents=True, exist_ok=True)
+        module_path.write_text("PACKAGED = True\n", encoding="utf-8")
+        module_path.chmod(0o644)
+        module_paths.append(module_path)
+    target = module_paths[0]
+    if mutation == "missing":
+        target.unlink()
+    elif mutation == "symlink":
+        target.unlink()
+        target.symlink_to(module_paths[1])
+    elif mutation == "mode":
+        target.chmod(0o664)
+    else:
+        target.write_bytes(b"")
+
+    with pytest.raises(RuntimeError, match="packaged Discord edge module"):
         writer_release._validate_installed_runtime(spec, managed)
 
 

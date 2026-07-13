@@ -22,16 +22,18 @@ from gateway.discord_edge_runtime import (
     DiscordEdgeRuntimeError,
     DurableDiscordEdgeJournal,
 )
-from gateway.discord_rest_edge import DiscordRestEdgeError
-from scripts import discord_edge_bootstrap as bootstrap_module
-from scripts.discord_edge_bootstrap import (
+from gateway import discord_edge_bootstrap as bootstrap_module
+from gateway.discord_edge_bootstrap import (
     DiscordEdgeBootstrap,
     bootstrap_journal,
     build_service,
     load_service_config,
     serve_service,
 )
-from scripts.discord_edge_service import DiscordEdgeUnixServer
+from gateway.discord_edge_service import DiscordEdgeUnixServer
+from gateway.discord_rest_edge import DiscordRestEdgeError
+from scripts import discord_edge_bootstrap as compatibility_bootstrap
+from scripts import discord_edge_service as compatibility_service
 
 
 class _FakeAdapter:
@@ -67,6 +69,11 @@ class _FakeAdapter:
 
     def read_created_public_thread(self, *_args, **_kwargs):
         raise AssertionError("not exercised during bootstrap")
+
+
+def test_source_compatibility_modules_delegate_to_packaged_boundary():
+    assert compatibility_bootstrap.main is bootstrap_module.main
+    assert compatibility_service.DiscordEdgeUnixServer is DiscordEdgeUnixServer
 
 
 def _write_file(path: Path, body: bytes, mode: int) -> None:

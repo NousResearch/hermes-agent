@@ -2836,8 +2836,15 @@ def _require_exclusive_service_uids(
 def _pids_for_exact_python_module(module: str) -> list[int]:
     """Inventory processes whose exact argv activates one pinned module."""
 
-    if module != "scripts.discord_edge_bootstrap":
+    pinned_modules = frozenset(
+        {
+            "gateway.discord_edge_bootstrap",
+            "scripts.discord_edge_bootstrap",
+        }
+    )
+    if module not in pinned_modules:
         raise ValueError("collector process module is not pinned")
+    direct_suffix = f"/{module.replace('.', '/')}.py"
     result: list[int] = []
     for item in Path("/proc").iterdir():
         if not item.name.isdigit():
@@ -2858,11 +2865,7 @@ def _pids_for_exact_python_module(module: str) -> list[int]:
             argv[index] == "-m" and argv[index + 1] == module
             for index in range(max(0, len(argv) - 1))
         )
-        direct = any(
-            value == "/scripts/discord_edge_bootstrap.py"
-            or value.endswith("/scripts/discord_edge_bootstrap.py")
-            for value in argv[1:]
-        )
+        direct = any(value.endswith(direct_suffix) for value in argv[1:])
         if activated or direct:
             result.append(int(item.name))
     return sorted(result)
@@ -2877,6 +2880,7 @@ def _discord_edge_process_pids() -> list[int]:
         edge_uid = None
     return sorted(
         set(_pids_for_uid(edge_uid) if edge_uid is not None else ())
+        | set(_pids_for_exact_python_module("gateway.discord_edge_bootstrap"))
         | set(_pids_for_exact_python_module("scripts.discord_edge_bootstrap"))
     )
 

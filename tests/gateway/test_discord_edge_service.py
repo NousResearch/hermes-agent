@@ -42,7 +42,7 @@ from gateway.discord_edge_runtime import (
     DiscordMutationReadback,
     DurableDiscordEdgeJournal,
 )
-from scripts.discord_edge_service import (
+from gateway.discord_edge_service import (
     SOCKET_MODE,
     DiscordEdgePeerCredentials,
     DiscordEdgeUnixServer,

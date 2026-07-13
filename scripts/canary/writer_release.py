@@ -84,6 +84,11 @@ _PINNED_BUILD_CONSTRAINTS = (
 _SAFE_WHEEL_NAME_RE = re.compile(r"^[A-Za-z0-9_.+-]+\.whl$")
 _VIRTUALENV_SITE_HOOK_NAME = "_virtualenv.pth"
 _VIRTUALENV_SITE_HOOK_BYTES = b"import _virtualenv"
+_PACKAGED_DISCORD_EDGE_MODULES = (
+    Path("gateway/discord_edge_bootstrap.py"),
+    Path("gateway/discord_edge_service.py"),
+)
+
 
 def _effective_uid() -> int:
     getter = getattr(os, "geteuid", None)
@@ -1102,6 +1107,24 @@ def _validate_installed_runtime(
         raise RuntimeError("release contains an editable egg-link")
     if list(spec.site_packages.glob("*.pth")):
         raise RuntimeError("release contains a dynamic site path")
+    for relative_path in _PACKAGED_DISCORD_EDGE_MODULES:
+        module_path = spec.site_packages / relative_path
+        try:
+            module_stat = os.lstat(module_path)
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "release is missing a packaged Discord edge module"
+            ) from exc
+        if (
+            not stat.S_ISREG(module_stat.st_mode)
+            or stat.S_ISLNK(module_stat.st_mode)
+            or module_stat.st_nlink != 1
+            or module_stat.st_uid != site_stat.st_uid
+            or module_stat.st_gid != site_stat.st_gid
+            or stat.S_IMODE(module_stat.st_mode) != 0o644
+            or module_stat.st_size == 0
+        ):
+            raise RuntimeError("release packaged Discord edge module is invalid")
     for direct_url in spec.site_packages.glob("*.dist-info/direct_url.json"):
         raw = direct_url.read_bytes()
         if len(raw) > 64 * 1024:
@@ -1119,6 +1142,8 @@ def _validate_installed_runtime(
     forbidden_scripts = (
         spec.site_packages / "scripts/canonical_writer_bootstrap.py",
         spec.site_packages / "scripts/canonical_writer_service.py",
+        spec.site_packages / "scripts/discord_edge_bootstrap.py",
+        spec.site_packages / "scripts/discord_edge_service.py",
     )
     if any(path.exists() or path.is_symlink() for path in forbidden_scripts):
         raise RuntimeError("release contains a legacy scripts bootstrap")

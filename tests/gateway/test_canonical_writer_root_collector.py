@@ -2099,7 +2099,15 @@ def test_missing_discord_edge_account_is_stronger_absence_evidence(monkeypatch):
     monkeypatch.setattr(
         collector,
         "_pids_for_exact_python_module",
-        lambda module: [] if module == "scripts.discord_edge_bootstrap" else [1],
+        lambda module: (
+            []
+            if module
+            in {
+                "gateway.discord_edge_bootstrap",
+                "scripts.discord_edge_bootstrap",
+            }
+            else [1]
+        ),
     )
 
     assert collector._discord_edge_process_pids() == []

@@ -335,6 +335,73 @@ class TestSkillMatchesPlatformTermux:
             assert skill_matches_platform(fm) is True
 
 
+class TestSkillMatchesPlatformFreeBSD:
+    """FreeBSD reports sys.platform as "freebsd15" (etc.). Skills tagged
+    platforms:[linux] must load there because FreeBSD is a POSIX-compatible
+    Unix. This mirrors the Termux handling — widen linux-tagged skills for
+    a POSIX userland that happens not to report itself as "linux".
+    """
+
+    def test_linux_skill_loads_on_freebsd(self):
+        fm = {"platforms": ["linux"]}
+        with (
+            patch("agent.skill_utils.sys.platform", "freebsd15"),
+            patch("agent.skill_utils.is_termux", return_value=False),
+        ):
+            assert skill_matches_platform(fm) is True
+
+    def test_linux_macos_windows_skill_loads_on_freebsd(self):
+        # The common bundled-skill tag used by github-*, devops, mlops, etc.
+        fm = {"platforms": ["linux", "macos", "windows"]}
+        with (
+            patch("agent.skill_utils.sys.platform", "freebsd15"),
+            patch("agent.skill_utils.is_termux", return_value=False),
+        ):
+            assert skill_matches_platform(fm) is True
+
+    def test_macos_only_skill_still_excluded_on_freebsd(self):
+        # macOS-only skills should NOT load on FreeBSD. The fallback only
+        # widens platforms:[linux,...].
+        fm = {"platforms": ["macos"]}
+        with (
+            patch("agent.skill_utils.sys.platform", "freebsd15"),
+            patch("agent.skill_utils.is_termux", return_value=False),
+        ):
+            assert skill_matches_platform(fm) is False
+
+    def test_windows_only_skill_still_excluded_on_freebsd(self):
+        fm = {"platforms": ["windows"]}
+        with (
+            patch("agent.skill_utils.sys.platform", "freebsd15"),
+            patch("agent.skill_utils.is_termux", return_value=False),
+        ):
+            assert skill_matches_platform(fm) is False
+
+    def test_explicit_freebsd_tag_matches(self):
+        with (
+            patch("agent.skill_utils.sys.platform", "freebsd15"),
+            patch("agent.skill_utils.is_termux", return_value=False),
+        ):
+            assert skill_matches_platform({"platforms": ["freebsd"]}) is True
+
+    def test_linux_skill_on_real_linux_unaffected(self):
+        # The non-FreeBSD Linux path must not change.
+        fm = {"platforms": ["linux"]}
+        with (
+            patch("agent.skill_utils.sys.platform", "linux"),
+            patch("agent.skill_utils.is_termux", return_value=False),
+        ):
+            assert skill_matches_platform(fm) is True
+
+    def test_linux_skill_on_macos_unaffected(self):
+        fm = {"platforms": ["linux"]}
+        with (
+            patch("agent.skill_utils.sys.platform", "darwin"),
+            patch("agent.skill_utils.is_termux", return_value=False),
+        ):
+            assert skill_matches_platform(fm) is False
+
+
 class TestNormalizeSkillLookupName:
     def test_relative_path_unchanged(self, tmp_path, monkeypatch):
         from agent.skill_utils import normalize_skill_lookup_name

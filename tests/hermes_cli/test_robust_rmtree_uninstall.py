@@ -175,3 +175,82 @@ def test_uninstall_full_uninstall_path_uses_robust_remove(tmp_path, monkeypatch,
     leftover_str = "\n".join(leftovers)
     assert "state.db" in leftover_str
     assert "agent.log" in leftover_str or "logs" in leftover_str
+
+
+def test_run_uninstall_full_uses_robust_remove_and_reports_leftovers(
+    tmp_path, monkeypatch, capsys
+):
+    """Caller-level regression for #34185.
+
+    Drive the real ``run_uninstall`` full-uninstall path with a stubbed
+    interactive prompt and all *other* destructive side effects mocked out,
+    then assert:
+
+    1. The production caller actually routes ~/.hermes removal through
+       ``_robust_rmtree_with_retry`` (not a bare ``shutil.rmtree``).
+    2. When removal cannot complete, the user-facing output lists the
+       leftover paths AND the platform-specific manual-cleanup remediation —
+       the behaviour that was missing before #34185 (a single warn line).
+    """
+    import hermes_cli.uninstall as un
+
+    hermes_home = tmp_path / "hermes-home"
+    (hermes_home / "logs").mkdir(parents=True)
+    (hermes_home / "logs" / "agent.log").write_text("...")
+    (hermes_home / "state.db").write_text("...")
+    project_root = tmp_path / "hermes-agent"
+    project_root.mkdir()
+
+    # Point the uninstaller at our temp dirs.
+    monkeypatch.setattr(un, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(un, "get_project_root", lambda: project_root)
+
+    # No named profiles; keep this a plain default-profile full uninstall.
+    monkeypatch.setattr(un, "_is_default_hermes_home", lambda h: True)
+    monkeypatch.setattr(un, "_discover_named_profiles", lambda: [])
+    monkeypatch.setattr(un, "_is_windows", lambda: False)
+
+    # Neutralize every other destructive / environment-touching step so the
+    # test only exercises the ~/.hermes removal branch.
+    monkeypatch.setattr(un, "uninstall_gateway_service", lambda: False)
+    monkeypatch.setattr(un, "remove_path_from_shell_configs", lambda: [])
+    monkeypatch.setattr(un, "remove_wrapper_script", lambda: [])
+    monkeypatch.setattr(un, "remove_node_symlinks", lambda h: [])
+
+    # Track that the robust helper is the thing the caller invokes, and force
+    # it to report an unremovable tree so the leftover-listing path runs.
+    calls = {"robust": 0}
+
+    def fake_robust(target, *args, **kwargs):
+        calls["robust"] += 1
+        return False, [str(hermes_home / "state.db"), str(hermes_home / "logs" / "agent.log")]
+
+    monkeypatch.setattr(un, "_robust_rmtree_with_retry", fake_robust)
+
+    # A bare shutil.rmtree on hermes_home would be the pre-#34185 bug — make
+    # it fail loudly if the caller regresses to using it for the data dir.
+    real_rmtree = shutil.rmtree
+
+    def guarded_rmtree(path, *args, **kwargs):
+        assert Path(path) != hermes_home, (
+            "run_uninstall must remove ~/.hermes via _robust_rmtree_with_retry, "
+            "not a bare shutil.rmtree"
+        )
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", guarded_rmtree)
+
+    # Stub the interactive prompts: option 2 (full), then "yes" to confirm.
+    answers = iter(["2", "yes"])
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+
+    un.run_uninstall(args=None)
+
+    assert calls["robust"] == 1, "run_uninstall did not use _robust_rmtree_with_retry"
+
+    out = capsys.readouterr().out
+    assert "Could not fully remove" in out
+    assert "state.db" in out
+    assert "agent.log" in out
+    # POSIX remediation hint (we forced _is_windows() False).
+    assert "rm -rf" in out

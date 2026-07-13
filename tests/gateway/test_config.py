@@ -427,6 +427,45 @@ class TestLoadGatewayConfig:
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
 
+    def test_typing_status_text_from_toplevel_platform_block(self, tmp_path, monkeypatch):
+        """A top-level ``slack:`` block reaches PlatformConfig via the
+        shared-key bridge (bridged into extra, then the from_dict extra
+        fallback) — the route a bare ``hermes config set``-style YAML uses."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            'slack:\n  typing_status_text: "is pouncing… 🐾"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.SLACK].typing_status_text
+            == "is pouncing… 🐾"
+        )
+
+    def test_typing_status_text_from_nested_platforms_block(self, tmp_path, monkeypatch):
+        """``platforms.slack.typing_status_text`` reaches PlatformConfig via
+        _merge_platform_map + the from_dict top-level read."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    enabled: true\n"
+            '    typing_status_text: "chasing yarn…"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.SLACK].typing_status_text == "chasing yarn…"
+        )
+
     def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
         """``gateway.multiplex_profiles: true`` (the nested form written by
         ``hermes config set gateway.multiplex_profiles true``) must enable

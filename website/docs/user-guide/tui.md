@@ -36,7 +36,16 @@ hermes          # now uses the TUI
 hermes chat     # same
 ```
 
-The classic CLI remains available as the default. Anything documented in [CLI Interface](cli.md) — slash commands, quick commands, skill preloading, personalities, multi-line input, interrupts — works in the TUI identically.
+Or make it the persistent default in `~/.hermes/config.yaml`:
+
+```yaml
+display:
+  interface: tui   # "cli" (default) or "tui"
+```
+
+With `display.interface: tui`, a bare `hermes` (and `hermes chat`) launches the TUI. Explicit flags always win — run `hermes --cli` to drop back to the classic REPL for a single invocation, or `hermes --tui` / `HERMES_TUI=1` to force the TUI when the config default is `cli`.
+
+The classic CLI remains the shipped default. Anything documented in [CLI Interface](cli.md) — slash commands, quick commands, skill preloading, personalities, multi-line input, interrupts — works in the TUI identically.
 
 ## Why the TUI
 
@@ -89,7 +98,7 @@ Keybindings match the [Classic CLI](cli.md#keybindings) exactly. The only behavi
 - **`Cmd+V` / `Ctrl+V`** first tries normal text paste, then falls back to OSC52/native clipboard reads, and finally image attach when the clipboard or pasted payload resolves to an image.
 - **`/terminal-setup`** installs local VS Code / Cursor / Windsurf terminal bindings for better `Cmd+Enter` and undo/redo parity on macOS.
 - **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown.
-- **`Ctrl+X`** — when a queued message is highlighted (sent while the agent was still running), delete it from the queue. **`Esc`** cancels editing and unhighlights without deleting.
+- **`Ctrl+X`** opens the live session switcher. When a queued message is highlighted (sent while the agent was still running), it still deletes that queued message instead. **`Esc`** cancels editing and unhighlights without deleting.
 - **`Ctrl+G` / `Ctrl+X Ctrl+E`** — open the current input buffer in `$EDITOR` for multi-line / long-prompt composition; save-and-exit sends the contents back as the prompt.
 
 ## Slash commands
@@ -99,16 +108,41 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | Command | TUI behavior |
 |---------|--------------|
 | `/help` | Overlay with categorized commands, arrow-key navigable |
-| `/sessions` | Modal session picker — preview, title, token totals, resume inline |
+| `/sessions` (alias `/switch`) | Live session switcher — list open TUI sessions, switch between them, close them, or start another one |
 | `/model` | Modal model picker grouped by provider, with cost hints |
 | `/skin` | Live preview — theme change applies as you browse |
 | `/details` | Toggle verbose tool-call details (global or per-section) |
 | `/usage` | Rich token / cost / context panel |
 | `/agents` (alias `/tasks`) | Observability overlay — live subagent tree with kill/pause controls, per-branch cost / token / file rollups, turn-by-turn history |
 | `/reload` | Re-reads `~/.hermes/.env` into the running TUI process so newly added API keys take effect without a restart |
-| `/mouse` | Toggle mouse tracking on/off at runtime (also persists to `display.mouse_tracking` in `config.yaml`) |
+| `/mouse [on\|off\|toggle\|wheel\|buttons\|all]` | Pick a mouse tracking preset at runtime (also persists to `display.mouse_tracking` in `config.yaml`). `wheel` (1000+1006) keeps scroll-wheel scrolling without the hover events that make tmux spam "No image in clipboard" over the prompt row; `buttons` adds drag-to-select; `all` is the default with hover-driven UI. |
 
 Every other slash command (including installed skills, quick commands, and personality toggles) works identically to the classic CLI. See [Slash Commands Reference](../reference/slash-commands.md).
+
+## Live session switcher
+
+Use the live session switcher when you want one terminal to act as a dispatcher for several TUI sessions. It lists only sessions that are currently live in this TUI process; closed sessions remain saved transcripts and can still be reopened with `/resume` or `hermes --tui --resume <id-or-title>`.
+
+Open it with any of these:
+
+- `Ctrl+X` from the TUI.
+- `/sessions` or `/switch`.
+- `/sessions new` to create a fresh live session immediately.
+- Click the `N live sessions` count in the status line.
+
+<img alt="Hermes TUI Session Orchestrator with one live session and a +new row" src="/img/docs/tui-session-orchestrator/session-orchestrator.png" />
+
+<video controls muted loop playsInline src="/img/docs/tui-session-orchestrator/session-orchestrator-demo.mp4" title="Hermes TUI Session Orchestrator demo" />
+
+Inside the switcher:
+
+- `↑` / `↓` move the selection; mouse clicks select rows too.
+- `Enter` switches to the selected live session.
+- `Ctrl+D` closes the selected live session.
+- `Ctrl+N` starts a blank live session.
+- `Ctrl+R` refreshes the live-session list.
+- `Esc` closes the switcher.
+- Select `+new`, type a prompt, and press `Enter` to dispatch a new live session. Press `Tab` first if you want to choose a model just for that new session.
 
 ## LaTeX math rendering
 
@@ -190,7 +224,13 @@ display:
     thinking: expanded       # always open
     tools: expanded          # always open
     activity: collapsed      # opt back IN to the activity panel (hidden by default)
-  mouse_tracking: true       # disable if your terminal conflicts with mouse reporting
+  mouse_tracking: all        # off | wheel | buttons | all (or true/false for back-compat).
+                             #   wheel   — 1000+1006 (scroll + click; no drag, no hover —
+                             #             recommended inside tmux to silence the prompt-row
+                             #             "No image in clipboard" spam from hover events)
+                             #   buttons — adds 1002 for terminal-side drag selection
+                             #   all     — adds 1003 for hover (scrollbar paginate-on-hover,
+                             #             link mouseenter, etc.)
 ```
 
 Runtime toggles:
@@ -231,28 +271,19 @@ Sessions are shared between the TUI and the classic CLI — both write to the sa
 
 See [Sessions](sessions.md) for lifecycle, search, compression, and export.
 
-## Attaching to a running gateway
+## How the TUI talks to its gateway
 
-By default the TUI spawns its own in-process gateway, so each TUI instance is self-contained. If you already have a long-lived gateway running (e.g. `hermes gateway run` in tmux, or the systemd / launchd service), you can point the TUI at that gateway instead — the TUI then becomes a thin client and shares state with every other surface (messaging platforms, web dashboard, other TUI sessions) that's attached to the same gateway.
+By default the TUI spawns its own in-process gateway, so each TUI instance is self-contained — there's nothing to configure.
 
-Set the websocket URL via env before launching:
+You may see a `HERMES_TUI_GATEWAY_URL` env var referenced in the codebase or logs. This is an **internal wiring detail of the web dashboard**, not a user-facing remote-attach knob. When you open the dashboard's "Chat" tab (`hermes dashboard` → `/chat`), the dashboard's web server spawns an embedded TUI child process and injects `HERMES_TUI_GATEWAY_URL` so that child attaches to the dashboard's own in-process `tui_gateway` over a loopback WebSocket (`/api/ws`). The `/api/ws` endpoint exists only inside the dashboard server (`hermes_cli/web_server.py`) and is bound to that process's lifetime and auth.
 
-```bash
-export HERMES_TUI_GATEWAY_URL="ws://localhost:8765/api/ws?token=<auth-token>"
-hermes --tui
-```
+There is no general "point any TUI at any standalone gateway port" mode. In particular, the OpenAI-compatible API server (`hermes gateway` / the `api_server` platform) does **not** serve `/api/ws` — it's the model-backend surface (`/v1/chat/completions`, `/v1/models`, …) and deliberately does not expose the TUI's JSON-RPC control channel. Setting `HERMES_TUI_GATEWAY_URL` to that port will 404.
 
-The token comes from the gateway's API auth configuration (see [API Server](features/api-server.md)). When the env var is set, the TUI:
-
-- Skips spawning a local gateway entirely — no duplicate platform adapters, no port conflicts.
-- Routes every action (slash commands, image attach, browser progress, voice events, …) over the websocket to the shared gateway.
-- Reconnects automatically if the gateway URL rotates (new token) between requests.
-
-This is the same channel the web dashboard's embedded TUI uses (see [Web Dashboard](features/web-dashboard.md#chat)) — one gateway, many clients.
+If you want multiple surfaces to share one set of sessions, use the shared `~/.hermes/state.db` (see [Sessions](sessions.md)) or the web dashboard's embedded chat (see [Web Dashboard](features/web-dashboard.md#chat)) — not a hand-set gateway URL.
 
 ## Reverting to the classic CLI
 
-Launching `hermes` (without `--tui`) stays on the classic CLI. To make a machine prefer the TUI, set `HERMES_TUI=1` in your shell profile. To go back, unset it.
+Launching `hermes` (without `--tui`) stays on the classic CLI by default. To make a machine prefer the TUI, set `display.interface: tui` in `~/.hermes/config.yaml` (persistent) or `HERMES_TUI=1` in your shell profile (per-shell). To go back, set `interface: cli` / unset the env var, or pass `hermes --cli` for a one-off.
 
 If the TUI fails to launch (no Node, missing bundle, TTY issue), Hermes prints a diagnostic and falls back — rather than leaving you stuck.
 

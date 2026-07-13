@@ -8,7 +8,6 @@ import warnings
 from concurrent.futures import Future
 from unittest.mock import patch
 
-import pytest
 
 from agent.async_utils import safe_schedule_threadsafe
 
@@ -21,8 +20,7 @@ def _no_unawaited_warnings(caught, *, coro_name: str = "") -> bool:
     """Return True if no "X was never awaited" warning slipped through.
 
     When *coro_name* is provided, only warnings naming that coroutine are
-    counted — xdist workers may emit unrelated unawaited-coroutine warnings
-    (e.g. ``AsyncMockMixin._execute_mock_call``) from concurrent tests.
+    counted
     """
     bad = [
         w for w in caught

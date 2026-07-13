@@ -13,7 +13,7 @@ from hermes_cli import main as hermes_main
 # ---------------------------------------------------------------------------
 # Module isolation: _import_cli() wipes tools.* / cli / run_agent from
 # sys.modules so it can re-import cli fresh.  Without cleanup the wiped
-# modules leak into subsequent tests on the same xdist worker, breaking
+# modules leak into subsequent tests, breaking
 # mock patches that target "tools.file_tools._get_file_ops" etc.
 # ---------------------------------------------------------------------------
 
@@ -271,7 +271,10 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
 
 
 def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_tts(monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.managed_nous_tools_enabled",
+        lambda *args, **kwargs: True,
+    )
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "elevenlabs"},
@@ -305,8 +308,192 @@ def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_
     assert config["browser"]["cloud_provider"] == "browser-use"
 
 
+def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeypatch):
+    import yaml
+
+    config_home = tmp_path / "hermes"
+    config_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(config_home))
+
+    config_path = config_home / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "provider": "custom",
+                    "default": "glm-5.2",
+                    "base_url": "https://api.neuralwatt.com/v1",
+                    "api_key": "${NEURALWATT_API_KEY}",
+                    "api_mode": "chat_completions",
+                }
+            },
+            sort_keys=False,
+        )
+    )
+
+    stale_config = yaml.safe_load(config_path.read_text()) or {}
+    selected_model = "deepseek/deepseek-v4-flash"
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_provider_auth_state",
+        lambda provider: {
+            "access_token": "nous-token",
+            "portal_base_url": "https://portal.example.com",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_runtime_credentials",
+        lambda *args, **kwargs: {
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "nous-key",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.get_curated_nous_model_ids",
+        lambda: [selected_model],
+    )
+    monkeypatch.setattr("hermes_cli.models.get_pricing_for_provider", lambda provider: {})
+    monkeypatch.setattr("hermes_cli.models.check_nous_free_tier", lambda **kwargs: False)
+    monkeypatch.setattr(
+        "hermes_cli.models.union_with_portal_paid_recommendations",
+        lambda model_ids, pricing, portal_url: (model_ids, pricing),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *args, **kwargs: selected_model,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.prompt_enable_tool_gateway",
+        lambda config: None,
+    )
+
+    hermes_main._model_flow_nous(stale_config, current_model="glm-5.2")
+
+    config = yaml.safe_load(config_path.read_text()) or {}
+    model = config.get("model")
+    assert model["provider"] == "nous"
+    assert model["default"] == selected_model
+    assert model["base_url"] == "https://inference-api.nousresearch.com/v1"
+    assert "api_key" not in model
+    assert "api_mode" not in model
+
+
+def _seed_stale_custom_model(tmp_path, monkeypatch):
+    import yaml
+
+    config_home = tmp_path / "hermes"
+    config_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(config_home))
+    config_path = config_home / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "provider": "custom",
+                    "default": "glm-5.2",
+                    "base_url": "https://api.neuralwatt.com/v1",
+                    "api_key": "${NEURALWATT_API_KEY}",
+                    "api": "legacy-stale-key",
+                    "api_mode": "anthropic_messages",
+                }
+            },
+            sort_keys=False,
+        )
+    )
+    (config_home / ".env").write_text("")
+    return config_path
+
+
+def test_model_flow_openrouter_clears_stale_custom_key(tmp_path, monkeypatch):
+    import yaml
+
+    config_path = _seed_stale_custom_model(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_api_key",
+        lambda *args, **kwargs: ("sk-openrouter", False),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.model_ids",
+        lambda **kwargs: ["anthropic/claude-sonnet-4.6"],
+    )
+    monkeypatch.setattr("hermes_cli.models.get_pricing_for_provider", lambda *a, **k: {})
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *args, **kwargs: "anthropic/claude-sonnet-4.6",
+    )
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+
+    hermes_main._model_flow_openrouter({}, current_model="glm-5.2")
+
+    config = yaml.safe_load(config_path.read_text()) or {}
+    model = config["model"]
+    assert model["provider"] == "openrouter"
+    assert model["default"] == "anthropic/claude-sonnet-4.6"
+    assert model["api_mode"] == "chat_completions"
+    assert "api_key" not in model
+    assert "api" not in model
+
+
+def test_model_flow_anthropic_clears_stale_custom_key_and_mode(tmp_path, monkeypatch):
+    import yaml
+
+    config_path = _seed_stale_custom_model(tmp_path, monkeypatch)
+
+    monkeypatch.setattr("hermes_cli.auth.get_anthropic_key", lambda: "sk-ant-api03-test")
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.is_claude_code_token_valid",
+        lambda creds: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_setup_flows._prompt_auth_credentials_choice",
+        lambda title: "use",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *args, **kwargs: "claude-sonnet-4-6",
+    )
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+
+    hermes_main._model_flow_anthropic({}, current_model="glm-5.2")
+
+    config = yaml.safe_load(config_path.read_text()) or {}
+    model = config["model"]
+    assert model["provider"] == "anthropic"
+    assert model["default"] == "claude-sonnet-4-6"
+    assert "base_url" not in model
+    assert "api_key" not in model
+    assert "api" not in model
+    assert "api_mode" not in model
+
+
 def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
+    from hermes_cli.nous_account import NousPortalAccountInfo
+
+    # Entitled account (paid → all tools eligible) drives the offer; the prompt
+    # is a per-tool checklist now, so capture the call rather than scrape stdout.
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda **kwargs: NousPortalAccountInfo(
+            logged_in=True,
+            source="account_api",
+            fresh=True,
+            paid_service_access=True,
+        ),
+    )
+    captured = {}
+
+    def _fake_checklist(title, items, pre_selected=None):
+        captured["title"] = title
+        captured["items"] = list(items)
+        return []  # decline; we only assert the prompt was offered
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_checklist", _fake_checklist, raising=False)
+
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "edge"},
@@ -332,10 +519,9 @@ def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatc
     monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
     hermes_main._model_flow_nous(config, current_model="claude-opus-4-6")
 
-    out = capsys.readouterr().out
-    # Tool Gateway prompt should be shown (input() raises OSError in pytest
-    # which is caught, so the prompt text appears but nothing is applied)
-    assert "Tool Gateway" in out
+    # The per-tool Tool Gateway checklist was offered.
+    assert "title" in captured
+    assert "Tool Gateway" in captured["title"] or "tool pool" in captured["title"].lower()
 
 
 def test_codex_provider_uses_config_model(monkeypatch):
@@ -534,7 +720,7 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     # then display name. The api_mode prompt also runs before model selection.
     answers = iter(["http://localhost:8000", "local-key", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    monkeypatch.setattr("getpass.getpass", lambda _prompt="": next(answers))
+    monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": next(answers))
 
     hermes_main._model_flow_custom({})
     output = capsys.readouterr().out
@@ -592,7 +778,7 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
         ]
     )
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "test-key")
+    monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": "test-key")
 
     hermes_main._model_flow_custom({"model": {"provider": "custom"}})
 

@@ -11,6 +11,14 @@ Credential pools let you register multiple API keys or OAuth tokens for the same
 
 This is different from [fallback providers](./fallback-providers.md), which switch to a *different* provider entirely. Credential pools are same-provider rotation; fallback providers are cross-provider failover. Pools are tried first — if all pool keys are exhausted, *then* the fallback provider activates.
 
+:::warning Key rotation resets the prompt cache
+Provider-side prompt caches (Anthropic, OpenAI, OpenRouter) are scoped to the account/API key that made the request. When the pool rotates to a different key mid-session, the new key has no cached prefix for your conversation — the next request re-reads the full history at undiscounted input price, and rotating back later is another full re-read unless the earlier key's cache TTL is still alive. Rotation keeps your session running, which is the point, but on long conversations each rotation costs one full-price pass over the context.
+:::
+
+:::tip
+Credential pools are mainly for API-key providers (OpenRouter, Anthropic). A single [Nous Portal](/integrations/nous-portal) OAuth covers 300+ models, so most users don't need a pool when on Portal.
+:::
+
 ## How It Works
 
 ```
@@ -18,8 +26,11 @@ Your request
   → Pick key from pool (round_robin / least_used / fill_first / random)
   → Send to provider
   → 429 rate limit?
-      → Retry same key once (transient blip)
-      → Second 429 → rotate to next pool key
+      → Plan/usage limit reached (e.g. ChatGPT/Codex "usage limit reached")?
+          → Rotate to next pool key immediately (no retry — the cap won't clear on retry)
+      → Generic / transient 429?
+          → Retry same key once (transient blip)
+          → Second 429 → rotate to next pool key
       → All keys exhausted → fallback_model (different provider)
   → 402 billing error?
       → Immediately rotate to next pool key (24h cooldown)
@@ -179,6 +190,8 @@ Hermes automatically discovers credentials from multiple sources and seeds the p
 
 Auto-seeded entries are updated on each pool load — if you remove an env var, its pool entry is automatically pruned. Manual entries (added via `hermes auth add`) are never auto-pruned.
 
+Borrowed runtime secrets (for example env vars, Bitwarden/Vault/keyring/systemd references, and custom config values) are reference-only at the `auth.json` boundary. Hermes can use the resolved value in memory for the current run, but it persists only metadata such as the source ref, label, status, request counters, and a non-reversible fingerprint. Manual entries and Hermes-owned OAuth/device-code state keep the durable tokens they need to refresh.
+
 ## Delegation & Subagent Sharing
 
 When the agent spawns subagents via `delegate_task`, the parent's credential pool is automatically shared with children:
@@ -219,14 +232,27 @@ Pool state is stored in `~/.hermes/auth.json` under the `credential_pool` key:
         "auth_type": "api_key",
         "priority": 0,
         "source": "env:OPENROUTER_API_KEY",
-        "access_token": "sk-or-v1-...",
+        "secret_source": "bitwarden",
+        "secret_fingerprint": "sha256:12ab34cd56ef7890",
         "last_status": "ok",
         "request_count": 142
       }
+    ],
+    "anthropic": [
+      {
+        "id": "manual1",
+        "label": "personal-api-key",
+        "auth_type": "api_key",
+        "priority": 0,
+        "source": "manual",
+        "access_token": "sk-ant-api03-..."
+      }
     ]
-  },
+  }
 }
 ```
+
+The OpenRouter entry above was borrowed from an external source, so the raw key is not stored in `auth.json`. The manual Anthropic entry was intentionally added to Hermes' credential store, so its token remains persistable.
 
 Strategies are stored in `config.yaml` (not `auth.json`):
 

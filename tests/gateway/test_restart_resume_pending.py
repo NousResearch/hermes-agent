@@ -27,7 +27,7 @@ PRs #9850, #9934, #7536):
 
 import asyncio
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1420,3 +1420,51 @@ class TestStuckLoopEscalation:
                 {"indent": None},
             )
         ]
+
+
+# ---------------------------------------------------------------------------
+# Resume scheduler uses the configured Hermes timezone clock
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resume_scheduler_uses_configured_timezone_clock_not_server_clock(
+    monkeypatch,
+):
+    """_schedule_resume_pending_sessions() must compare against the same
+    clock that wrote last_resume_marked_at (gateway_now), not server-local
+    datetime.now(), or a configured non-server timezone makes fresh
+    sessions look stale and skips their auto-resume.
+    """
+    import hermes_time
+
+    offset = timedelta(hours=20)  # exceeds any real IANA UTC offset
+    monkeypatch.setattr(
+        hermes_time, "now", lambda: datetime.now(timezone.utc) - offset
+    )
+
+    from gateway.session import gateway_now
+
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="tz-clock-chat")
+    marker = gateway_now()
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:tz-clock-chat",
+        session_id="sid",
+        created_at=marker,
+        updated_at=marker,
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=marker,
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    adapter.handle_message.assert_awaited_once()

@@ -865,12 +865,20 @@ def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
     # so their forever-unset agent_ready must not make them immortal.
     if ready is not None and not ready.is_set() and not session.get("lazy"):
         return False
-    # NB: no transport-liveness gate here. A client WebSocket is shared across ALL
-    # of that client's sessions, and prompt.submit re-binds the live transport onto
-    # every session it touches, so "transport is alive" only means "some client is
-    # connected to the gateway" -- never "this session is in use". Gating on it made
-    # every session immortal for as long as the app stayed open. The correct
-    # per-session activity signal is last_active, checked below.
+    # Transport liveness is only a valid proxy for THIS session's liveness when the
+    # transport is 1:1 with it. That holds for stdio (a standalone `hermes --tui`
+    # owns its transport), so keep protecting those sessions from the reaper.
+    #
+    # It does NOT hold for a WebSocket: one client WS is shared across ALL of that
+    # client's sessions, and prompt.submit re-binds it onto every session it touches
+    # (see the `session["transport"] = t` there). So a live WS only means "some
+    # client is connected to the gateway" -- never "this session is in use". Gating
+    # on it made every session immortal for as long as the app stayed open, which is
+    # the leak in #46082. For those, fall through to the last_active check below,
+    # which is the correct per-session activity signal.
+    transport = session.get("transport")
+    if transport is _stdio_transport and not _transport_is_dead(transport):
+        return False
     last_active = float(session.get("last_active") or 0.0)
     created_at = float(session.get("created_at") or 0.0)
     return (now - last_active) > _SESSION_TTL_S and (now - created_at) > _SESSION_TTL_S

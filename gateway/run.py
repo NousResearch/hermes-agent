@@ -415,6 +415,21 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_GATEWAY_INTERNAL_SYSTEM_NOTE_RE = re.compile(
+    r"\[System note:\s*The previous turn was interrupted by\s+"
+    r"a gateway (?:restart|shutdown|interruption);\s*"
+    r"the gateway is now back online\.[\s\S]*?"
+    r"Do NOT re-execute old tool calls\s*[—-]\s*skip any unfinished\s+"
+    r"work from the conversation history\.\]\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_gateway_internal_system_notes(text: str) -> str:
+    """Remove current gateway recovery notes if a model echoes them."""
+    cleaned = _GATEWAY_INTERNAL_SYSTEM_NOTE_RE.sub("", text)
+    return cleaned.strip() if cleaned != text else text
+
 
 def _looks_like_gateway_provider_error(text: str) -> bool:
     """True when text is infrastructure/provider failure, not normal content.
@@ -454,12 +469,14 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if _gateway_surface_passes_raw_text(platform):
         return text
 
+    sanitized = _strip_gateway_internal_system_notes(str(text))
+
     # Cancellation metadata, not assistant prose. ACP/TUI already suppress
     # this sentinel; chat surfaces should too (#7921).
-    if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
+    if sanitized.strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = _redact_gateway_user_facing_secrets(sanitized)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted

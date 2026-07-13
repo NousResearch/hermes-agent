@@ -144,6 +144,38 @@ def test_chat_gateways_keep_normal_answers(platform):
     assert _sanitize_gateway_final_response(platform, answer) == answer
 
 
+CURRENT_RESTART_RECOVERY_NOTES = [
+    (
+        "[System note: The previous turn was interrupted by a gateway restart; "
+        "the gateway is now back online. Any restart/shutdown command in the history "
+        "has already run — do NOT re-execute or verify it. Address the user's NEW "
+        "message below FIRST and focus on what the user is asking now. Do NOT "
+        "re-execute old tool calls — skip any unfinished work from the conversation "
+        "history.]"
+    ),
+    (
+        "[System note: The previous turn was interrupted by a gateway restart; "
+        "the gateway is now back online. Any restart/shutdown command in the history "
+        "has already run — do NOT re-execute or verify it. Report to the user that "
+        "the session was restored successfully and ask what they would like to do "
+        "next. Do NOT re-execute old tool calls — skip any unfinished work from the "
+        "conversation history.]"
+    ),
+]
+
+
+@pytest.mark.parametrize("recovery_note", CURRENT_RESTART_RECOVERY_NOTES)
+def test_chat_gateway_strips_current_restart_system_notes(recovery_note):
+    """Fixtures mirror both recovery-note producers in current gateway main."""
+    answer = "Done — the fix is applied."
+    raw = f"{recovery_note}\n\n{answer}"
+
+    sanitized = _sanitize_gateway_final_response(Platform.WHATSAPP, raw)
+
+    assert sanitized == answer
+    assert "System note" not in sanitized
+
+
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
 def test_chat_gateways_drop_interrupt_sentinel(platform):
     """The interrupt-while-waiting sentinel is metadata, not a reply (#7921)."""

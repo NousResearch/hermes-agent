@@ -284,8 +284,14 @@ class TestSmartModeFiresHooks:
     ):
         self._configure(monkeypatch, verdict)
         captured = []
+
+        def fail_observer_redaction(text, *, force=False):
+            if force:
+                raise RuntimeError("observer redactor failed")
+            return text
+
         with (
-            patch("agent.redact.redact_sensitive_text", side_effect=RuntimeError("redactor failed")),
+            patch("agent.redact.redact_sensitive_text", side_effect=fail_observer_redaction),
             patch(
                 "hermes_cli.plugins.invoke_hook",
                 side_effect=lambda name, **kwargs: captured.append((name, kwargs)),

@@ -2254,6 +2254,153 @@ async def fs_git_root(path: str):
     return {"root": _fs_find_git_root(start)}
 
 
+import glob as _glob
+from datetime import date as _date, timedelta as _timedelta
+
+_DAILY_REPORTS_DIR = os.path.expanduser("~/aiworkspace/aiknowledge/daily-reports")
+
+
+def _report_date_from_filename(name: str) -> str | None:
+    """Extract YYYY-MM-DD from a daily-report filename."""
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    parts = stem.split("-")
+    if len(parts) >= 3 and len(parts[0]) == 4 and len(parts[1]) == 2 and len(parts[2]) == 2:
+        return f"{parts[0]}-{parts[1]}-{parts[2]}"
+    return None
+
+
+@app.get("/api/daily-reports")
+async def list_daily_reports(year: int | None = None, month: int | None = None):
+    """List daily reports, optionally filtered by year/month."""
+    if not os.path.isdir(_DAILY_REPORTS_DIR):
+        return {"reports": []}
+
+    reports = []
+    for f in sorted(os.listdir(_DAILY_REPORTS_DIR), reverse=True):
+        if not f.endswith(".md"):
+            continue
+        date_str = _report_date_from_filename(f)
+        if not date_str:
+            continue
+        if year is not None or month is not None:
+            parts = date_str.split("-")
+            if year is not None and int(parts[0]) != year:
+                continue
+            if month is not None and int(parts[1]) != month:
+                continue
+        fpath = os.path.join(_DAILY_REPORTS_DIR, f)
+        try:
+            size = os.path.getsize(fpath)
+        except OSError:
+            size = 0
+        reports.append({
+            "date": date_str,
+            "filename": f,
+            "size": size,
+        })
+    return {"reports": reports}
+
+
+@app.get("/api/daily-reports/{date}")
+async def get_daily_report(date: str):
+    """Get the content of a specific daily report by date (YYYY-MM-DD)."""
+    fpath = os.path.join(_DAILY_REPORTS_DIR, f"{date}.md")
+    if not os.path.isfile(fpath):
+        # Try alternative filename patterns
+        for f in os.listdir(_DAILY_REPORTS_DIR):
+            if date in f and f.endswith(".md"):
+                fpath = os.path.join(_DAILY_REPORTS_DIR, f)
+                break
+        else:
+            raise HTTPException(status_code=404, detail=f"No report found for {date}")
+
+    try:
+        with open(fpath, encoding="utf-8") as fh:
+            content = fh.read()
+        return {
+            "date": date,
+            "content": content,
+            "filename": os.path.basename(fpath),
+            "size": len(content),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/calendar/{year}/{month}")
+async def get_calendar_month(year: int, month: int):
+    """Return which days in a month have activity — for calendar rendering.
+
+    Data sources:
+    1. Session count per day (universal — every Hermes user has sessions)
+    2. Cron job run count per day (if user has active cron jobs)
+    """
+    import calendar as _calendar
+
+    # ── Session and cron counts ──
+    last_day = _calendar.monthrange(year, month)[1]
+    try:
+        from hermes_state import SessionDB, DEFAULT_DB_PATH
+        db = SessionDB(db_path=DEFAULT_DB_PATH, read_only=True)
+        start_date = f"{year:04d}-{month:02d}-01"
+        end_date = f"{year:04d}-{month:02d}-{last_day:04d}"
+        sessions = db.list_sessions_rich(
+            limit=5000,
+            order_by_last_active=False,
+        )
+        sessions_by_day: dict[str, list[dict]] = {}
+        cron_by_day: dict[str, int] = {}
+        for s in sessions:
+            created = s.get("created_at") or ""
+            sdate = created[:10] if len(created) >= 10 else ""
+            if sdate and start_date <= sdate <= end_date:
+                sid = (s.get("id") or "").lower()
+                if sid.startswith("cron_") or s.get("source") == "cron":
+                    cron_by_day[sdate] = cron_by_day.get(sdate, 0) + 1
+                else:
+                    sessions_by_day.setdefault(sdate, []).append({
+                        "id": s.get("id"),
+                        "title": s.get("title") or s.get("session_id", "")[:40],
+                    })
+        db.close()
+    except Exception:
+        sessions_by_day = {}
+        cron_by_day = {}
+
+    days = []
+    for d in range(1, last_day + 1):
+        date_str = f"{year:04d}-{month:02d}-{d:02d}"
+        day_sessions = sessions_by_day.get(date_str, [])
+        session_count = len(day_sessions)
+        cron_count = cron_by_day.get(date_str, 0)
+
+        has_activity = session_count > 0 or cron_count > 0
+        preview_parts = []
+        if session_count > 0:
+            titles = [s["title"] for s in day_sessions[:2]]
+            preview_parts.append(f"💬 {session_count} session{'s' if session_count != 1 else ''}")
+            if titles:
+                preview_parts.append(" · ".join(titles))
+        if cron_count > 0:
+            preview_parts.append(f"⏱️ {cron_count} cron run{'s' if cron_count != 1 else ''}")
+        preview = " · ".join(preview_parts)[:150] if preview_parts else ""
+
+        days.append({
+            "day": d,
+            "hasActivity": has_activity,
+            "sessionCount": session_count,
+            "cronCount": cron_count,
+            "preview": preview,
+        })
+
+    return {
+        "year": year,
+        "month": month,
+        "days": days,
+        "activityCount": sum(1 for d in days if d["hasActivity"]),
+    }
+
+
 @app.get("/api/fs/default-cwd")
 async def fs_default_cwd():
     cwd = _fs_default_cwd()

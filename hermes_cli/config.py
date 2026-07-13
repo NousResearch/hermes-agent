@@ -4204,6 +4204,13 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "messaging",
     },
+    "MATRIX_PASSWORD": {
+        "description": "Matrix password (used for password-based login at startup)",
+        "prompt": "Matrix password",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
     "MATRIX_USER_ID": {
         "description": "Matrix user ID (e.g. @hermes:example.org)",
         "prompt": "Matrix user ID (@user:server)",

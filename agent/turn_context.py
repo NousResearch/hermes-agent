@@ -346,6 +346,14 @@ def build_turn_context(
 
     active_system_prompt = agent._cached_system_prompt
 
+    # PROMPT-005: strip option (c) escape hatch on every normal turn
+    import re as _re_005_tc
+    active_system_prompt = _re_005_tc.sub(
+        r'\(c\) report a specific blocker.*?valid and complete response\.',
+        '(c) report a specific blocker — NOT a complete response. File ticket + ask user.',
+        active_system_prompt
+    )
+
     # Create the DB session row now that _cached_system_prompt is populated, so
     # the persisted snapshot is written non-NULL on the first turn (Issue
     # #45499). Idempotent: _ensure_db_session() no-ops once the row exists.

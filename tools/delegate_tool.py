@@ -2095,6 +2095,20 @@ def _run_single_child(
         # it instead of silently accepting zero-content "success".
         _empty_sentinel = summary.strip() == "(empty)"
 
+        # PROMPT-005: 429 Auto-Throttle — reduce concurrency if >5% rate-limited
+        _child_error = result.get("error") or ""
+        if "429" in str(_child_error) or "rate_limit" in str(_child_error).lower():
+            import threading as _thr_429
+            _429_key = "__hermes_005_rate_limited_count"
+            _429_total_key = "__hermes_005_subagent_total"
+            _limited = getattr(_thr_429, _429_key, 0) + 1
+            _total = getattr(_thr_429, _429_total_key, 0) + 1
+            setattr(_thr_429, _429_key, _limited)
+            setattr(_thr_429, _429_total_key, _total)
+            if _total >= 20 and _limited / _total > 0.05:
+                # Reduce effective concurrency for remaining dispatches
+                setattr(_thr_429, "__hermes_005_throttle_active", True)
+
         if interrupted:
             status = "interrupted"
         elif summary and not _empty_sentinel:
@@ -2104,6 +2118,24 @@ def _run_single_child(
             status = "completed"
         else:
             status = "failed"
+
+        # PROMPT-005: 2-Strike Reaper — kill subagent after 2 consecutive API timeouts
+        _error_detail = result.get("error_detail") or result.get("error") or ""
+        _is_api_timeout = any(
+            kw in str(_error_detail).lower()
+            for kw in ("timeout", "timed out", "deadline exceeded", "rate_limit")
+        )
+        if _is_api_timeout:
+            import threading as _thr_005
+            _strike_key = f"__hermes_005_strikes_{getattr(result, 'subagent_id', id(result))}"
+            _strikes = getattr(_thr_005, _strike_key, 0)
+            if not hasattr(_thr_005, _strike_key):
+                setattr(_thr_005, _strike_key, 0)
+            _strikes += 1
+            setattr(_thr_005, _strike_key, _strikes)
+            if _strikes >= 2:
+                status = "killed_reaper_2strike"
+                summary = summary or "(killed by 2-strike reaper — 2 consecutive API timeouts)"
 
         # Build tool trace from conversation messages (already in memory).
         # Uses tool_call_id to correctly pair parallel tool calls with results.

@@ -1711,6 +1711,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             api_messages.append(api_msg)
 
         effective_system = agent._cached_system_prompt or ""
+        # PROMPT-005: strip option (c) escape hatch from subagent inherited cache
+        import re as _re_005
+        effective_system = _re_005.sub(
+            r'\(c\) report a specific blocker.*?valid and complete response\.',
+            '(c) report a specific blocker — NOT a complete response. File ticket + ask user.',
+            effective_system
+        )
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:

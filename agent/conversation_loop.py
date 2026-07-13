@@ -656,6 +656,33 @@ def run_conversation(
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")
 
+        # PROMPT-005: Soft Bank — auto-pause at 200 turns without verified deliverable
+        if api_call_count >= 200 and agent.max_iterations > 200:
+            from pathlib import Path
+            _last_commit = Path(agent.workspace_path or ".") / ".git" / "logs" / "HEAD"
+            _need_pause = True
+            if _last_commit.exists():
+                import time, subprocess
+                try:
+                    _r = subprocess.run(
+                        ["git", "log", "-1", "--format=%ct"],
+                        capture_output=True, text=True, timeout=5,
+                        cwd=agent.workspace_path or "."
+                    )
+                    _ct = int(_r.stdout.strip()) if _r.stdout.strip() else 0
+                    if time.time() - _ct < 300:  # commit in last 5 minutes
+                        _need_pause = False
+                except Exception:
+                    pass
+            if _need_pause:
+                _turn_exit_reason = "soft_bank_pause"
+                if not agent.quiet_mode:
+                    agent._safe_print(
+                        f"\n⏸️  SOFT BANK: 200 turns reached without verified deliverable. "
+                        f"Pausing session — review progress with user."
+                    )
+                break
+
         # Grace call: the budget is exhausted but we gave the model one
         # more chance.  Consume the grace flag so the loop exits after
         # this iteration regardless of outcome.

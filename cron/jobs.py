@@ -1110,7 +1110,7 @@ def create_job(
     if deliver is None:
         deliver = "origin" if origin else "local"
 
-    job_id = uuid.uuid4().hex[:12]
+    job_id = str(uuid.uuid4())
     now = _hermes_now().isoformat()
 
     normalized_skills = _normalize_skill_list(skill, skills)
@@ -1792,7 +1792,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     # "job_id" key when present, else synthesize one, and persist.
     for rj in raw_jobs:
         if not rj.get("id"):
-            rj["id"] = rj.pop("job_id", None) or uuid.uuid4().hex[:12]
+            rj["id"] = rj.pop("job_id", None) or str(uuid.uuid4())
             needs_save = True
 
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]

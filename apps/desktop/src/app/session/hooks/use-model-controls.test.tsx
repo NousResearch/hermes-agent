@@ -238,4 +238,31 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('openai-codex')
     expect(getCurrentModelSource()).toBe('default')
   })
+
+  // Regression for #63835: an onboarding seed marks the composer `default`, not
+  // `manual`, so a stale seeded provider (e.g. `nous` from a Nous Portal login)
+  // must still yield to config.yaml on the next boot instead of overriding the
+  // configured Anthropic key. This is the `default`-source sibling of the legacy
+  // case above — it guards the seed path, not just missing/legacy localStorage.
+  it('refreshes a default-sourced seeded provider from config.yaml', async () => {
+    setCurrentModel('nous/claude-opus-4-6')
+    setCurrentProvider('nous')
+    setCurrentModelSource('default')
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'claude-opus-4-6', provider: 'anthropic' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect(getGlobalModelInfo).toHaveBeenCalled()
+    expect($currentModel.get()).toBe('claude-opus-4-6')
+    expect($currentProvider.get()).toBe('anthropic')
+    expect(getCurrentModelSource()).toBe('default')
+  })
 })

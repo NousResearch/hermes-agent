@@ -2021,7 +2021,10 @@ class HermesACPAgent(acp.Agent):
                 lines.append(f"Compression threshold: ~{threshold_tokens:,} tokens")
 
         if getattr(agent, "compression_enabled", True) is False:
-            lines.append("Compression is disabled for this agent.")
+            lines.append(
+                "Auto-compaction is disabled (compression.enabled: false); "
+                "/compact still compresses manually."
+            )
         else:
             lines.append("Tip: run /compress to compress manually before the threshold.")
 
@@ -2048,8 +2051,9 @@ class HermesACPAgent(acp.Agent):
             return "Nothing to compress — conversation is empty."
         try:
             agent = state.agent
-            if not getattr(agent, "compression_enabled", True):
-                return "Context compression is disabled for this agent."
+            # No compression_enabled gate: the flag disables *automatic*
+            # compaction only; manual /compact must keep working (matches
+            # the CLI /compress and gateway handlers).
             if not hasattr(agent, "_compress_context"):
                 return "Context compression not available for this agent."
 
@@ -2074,6 +2078,7 @@ class HermesACPAgent(acp.Agent):
                     getattr(agent, "_cached_system_prompt", "") or "",
                     approx_tokens=approx_tokens,
                     task_id=state.session_id,
+                    force=True,
                 )
             finally:
                 agent._session_db = original_session_db

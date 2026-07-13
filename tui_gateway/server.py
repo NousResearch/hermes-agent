@@ -3644,12 +3644,18 @@ def _compress_session_history(
     # cached prompt (which already contains the agent identity block)
     # makes the rebuild append the identity a second time. Mirrors the
     # CLI's _manual_compress fix for issue #15281.
+    # force=True: every caller of this helper is a manual /compress path
+    # (session.compress RPC, slash compress/compact, slash-worker mirror) —
+    # auto-compaction runs inside the agent loop, not here. Manual
+    # compaction bypasses the summary-failure cooldown, matching the CLI
+    # and gateway handlers.
     try:
         compressed, _ = agent._compress_context(
             history,
             None,
             approx_tokens=approx_tokens,
             focus_topic=focus_topic or None,
+            force=True,
             defer_context_engine_notification=True,
         )
     except Exception:

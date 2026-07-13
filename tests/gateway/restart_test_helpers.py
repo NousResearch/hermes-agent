@@ -1,7 +1,10 @@
 import asyncio
 from collections import OrderedDict
+import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
@@ -50,6 +53,13 @@ def make_restart_source(
 def make_restart_runner(
     adapter: BasePlatformAdapter | None = None,
 ) -> tuple[GatewayRunner, BasePlatformAdapter]:
+    configured_home = os.environ.get("HERMES_HOME")
+    if configured_home:
+        assert gateway_run._hermes_home != Path(configured_home), (
+            "restart tests must monkeypatch gateway.run._hermes_home before "
+            "constructing a runner; refusing to write restart markers into "
+            "the configured Hermes profile"
+        )
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}

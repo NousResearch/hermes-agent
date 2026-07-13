@@ -15,7 +15,11 @@ from tests.gateway.restart_test_helpers import make_restart_runner, make_restart
 
 
 @pytest.mark.asyncio
-async def test_restart_command_while_busy_requests_drain_without_interrupt(monkeypatch):
+async def test_restart_command_while_busy_requests_drain_without_interrupt(tmp_path, monkeypatch):
+    # This test executes the real /restart marker-writing path. Keep all
+    # lifecycle markers inside pytest's temporary directory — never the
+    # configured Hermes profile.
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     # Ensure INVOCATION_ID is NOT set — systemd sets this in service mode,
     # which changes the restart call signature.
     monkeypatch.delenv("INVOCATION_ID", raising=False)

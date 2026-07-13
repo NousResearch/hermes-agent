@@ -305,8 +305,12 @@ def test_global_message_timestamps_decorate_model_context_but_persist_clean_text
 
     with (
         patch(
-            "hermes_cli.config.load_config",
+            "hermes_cli.config.load_config_readonly",
             return_value={"message_timestamps": {"enabled": True}},
+        ),
+        patch(
+            "hermes_cli.config.load_config",
+            side_effect=AssertionError("turn hot path must use readonly config"),
         ),
         patch("hermes_time.get_timezone", return_value=tz),
         patch("agent.message_timestamps.time.time", return_value=current_ts),

@@ -391,11 +391,305 @@ class TestReadManifest:
         assert result == {}
 
 
+# ── plugin onboarding ─────────────────────────────────────────────────────────
+
+
+class TestPluginOnboarding:
+    def test_format_onboarding_command_expands_placeholders(self, tmp_path):
+        from hermes_cli import plugins_cmd
+
+        plugin_dir = tmp_path / "my-plugin"
+
+        assert plugins_cmd._format_onboarding_command(
+            "python {plugin_dir}/setup.py setup --name {plugin_name}",
+            plugin_dir,
+        ) == f"python {plugin_dir}/setup.py setup --name my-plugin"
+
+    def test_format_onboarding_command_does_not_reexpand_replacement_text(self, tmp_path):
+        from hermes_cli import plugins_cmd
+
+        plugin_dir = tmp_path / "{plugin_name}" / "actual-plugin"
+
+        assert plugins_cmd._format_onboarding_command(
+            "cd {plugin_dir} && echo {plugin_name}",
+            plugin_dir,
+        ) == f"cd {plugin_dir} && echo actual-plugin"
+
+    def test_display_onboarding_prints_declared_steps(self, tmp_path):
+        from rich.console import Console
+
+        from hermes_cli import plugins_cmd
+
+        plugin_dir = tmp_path / "web-search-plus"
+        manifest = {
+            "name": "web-search-plus",
+            "onboarding": {
+                "setup_command": "python {plugin_dir}/setup.py setup",
+                "status_command": "python {plugin_dir}/setup.py status",
+                "note": "At least one provider key is required.",
+                "recommended_env": [
+                    {
+                        "name": "TAVILY_API_KEY",
+                        "description": "Tavily search",
+                        "url": "https://tavily.com",
+                    },
+                    "BRAVE_API_KEY",
+                ],
+            },
+        }
+        console = Console(record=True, force_terminal=False, width=120)
+
+        plugins_cmd._display_onboarding(manifest, plugin_dir, console)
+
+        out = console.export_text()
+        assert "Plugin onboarding" in out
+        assert f"python {plugin_dir}/setup.py setup" in out
+        assert f"python {plugin_dir}/setup.py status" in out
+        assert "TAVILY_API_KEY" in out
+        assert "BRAVE_API_KEY" in out
+
+    def test_display_onboarding_ignores_scalar_recommended_env(self, tmp_path):
+        from rich.console import Console
+
+        from hermes_cli import plugins_cmd
+
+        console = Console(record=True, force_terminal=False)
+
+        plugins_cmd._display_onboarding(
+            {"onboarding": {"recommended_env": "FOO_API_KEY"}},
+            tmp_path / "plugin",
+            console,
+        )
+
+        assert console.export_text() == ""
+
+    def test_display_onboarding_renders_markup_like_values_literally(self, tmp_path):
+        from rich.console import Console
+
+        from hermes_cli import plugins_cmd
+
+        console = Console(record=True, force_terminal=False, width=160)
+        plugins_cmd._display_onboarding(
+            {
+                "onboarding": {
+                    "note": "[/]",
+                    "setup_command": "[link=https://evil.example]safe-command[/link]",
+                }
+            },
+            tmp_path / "plugin",
+            console,
+        )
+
+        out = console.export_text()
+        assert "[/]" in out
+        assert "[link=https://evil.example]safe-command[/link]" in out
+
+    def test_display_onboarding_filters_malformed_field_types(self, tmp_path):
+        from rich.console import Console
+
+        from hermes_cli import plugins_cmd
+
+        console = Console(record=True, force_terminal=False, width=160)
+        plugins_cmd._display_onboarding(
+            {
+                "onboarding": {
+                    "note": ["not text"],
+                    "setup_command": {"command": "not a string"},
+                    "status_command": 123,
+                    "recommended_env": [
+                        "PLAIN_API_KEY",
+                        {"name": 456},
+                        {"name": "BAD_DESCRIPTION", "description": ["not text"]},
+                        {"name": "BAD_URL", "url": 789},
+                        {
+                            "name": "VALID_API_KEY",
+                            "description": "Valid provider",
+                            "url": "https://example.com/keys",
+                        },
+                    ],
+                }
+            },
+            tmp_path / "plugin",
+            console,
+        )
+
+        out = console.export_text()
+        assert "PLAIN_API_KEY" in out
+        assert "VALID_API_KEY" in out
+        assert "BAD_DESCRIPTION" not in out
+        assert "BAD_URL" not in out
+        assert "456" not in out
+        assert "not a string" not in out
+        assert "123" not in out
+
+    def test_display_onboarding_skips_all_invalid_recommendations(self, tmp_path):
+        from rich.console import Console
+
+        from hermes_cli import plugins_cmd
+
+        console = Console(record=True, force_terminal=False)
+        plugins_cmd._display_onboarding(
+            {
+                "onboarding": {
+                    "recommended_env": [
+                        {"name": 123},
+                        {"description": "missing name"},
+                        ["not a mapping"],
+                    ]
+                }
+            },
+            tmp_path / "plugin",
+            console,
+        )
+
+        assert console.export_text() == ""
+
+    def test_display_onboarding_escapes_terminal_control_characters(self, tmp_path):
+        from rich.console import Console
+
+        from hermes_cli import plugins_cmd
+
+        console = Console(record=True, force_terminal=False, width=240)
+        plugins_cmd._display_onboarding(
+            {
+                "onboarding": {
+                    "note": "\x1b[2Jclear attempt",
+                    "setup_command": (
+                        "\x1b]8;;https://evil.example\x07linked command\x1b]8;;\x07"
+                    ),
+                    "recommended_env": [
+                        {
+                            "name": "SAFE\x9b2J_API_KEY",
+                            "description": "before\rafter",
+                        }
+                    ],
+                }
+            },
+            tmp_path / "plugin",
+            console,
+        )
+
+        out = console.export_text()
+        assert "\\x1b[2Jclear attempt" in out
+        assert "\\x1b]8;;https://evil.example\\x07linked command" in out
+        assert "SAFE\\x9b2J_API_KEY" in out
+        assert "before\\x0dafter" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
+        assert "\x9b" not in out
+        assert "\r" not in out
+
+    def test_display_onboarding_renders_lf_tab_only_metadata_as_visible_escapes(
+        self, tmp_path
+    ):
+        from rich.console import Console
+
+        from hermes_cli import plugins_cmd
+
+        console = Console(record=True, force_terminal=False)
+        plugins_cmd._display_onboarding(
+            {"onboarding": {"note": "\n\t"}},
+            tmp_path / "plugin",
+            console,
+        )
+
+        out = console.export_text()
+        assert "Plugin onboarding" in out
+        assert "\\x0a\\x09" in out
+
+    def test_display_onboarding_suppresses_plain_whitespace_only_metadata(self, tmp_path):
+        from rich.console import Console
+
+        from hermes_cli import plugins_cmd
+
+        console = Console(record=True, force_terminal=False)
+        plugins_cmd._display_onboarding(
+            {
+                "onboarding": {
+                    "note": "   ",
+                    "setup_command": " ",
+                    "status_command": "   ",
+                    "recommended_env": ["   ", {"name": "  "}],
+                }
+            },
+            tmp_path / "plugin",
+            console,
+        )
+
+        assert console.export_text() == ""
+
+    @patch("hermes_cli.plugins_cmd.subprocess.run")
+    def test_display_onboarding_never_executes_declared_commands(self, mock_run, tmp_path):
+        from rich.console import Console
+
+        from hermes_cli import plugins_cmd
+
+        console = Console(record=True, force_terminal=False)
+        plugins_cmd._display_onboarding(
+            {"onboarding": {"setup_command": "touch /tmp/must-not-run"}},
+            tmp_path / "plugin",
+            console,
+        )
+
+        mock_run.assert_not_called()
+
+
 # ── cmd_install tests ─────────────────────────────────────────────────────────
 
 
 class TestCmdInstall:
     """Test the install command."""
+
+    def test_install_forwards_installed_manifest_to_onboarding(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd
+
+        target = tmp_path / "example-plugin"
+        target.mkdir()
+        (target / "plugin.yaml").write_text("name: example-plugin\n", encoding="utf-8")
+        manifest = {
+            "name": "example-plugin",
+            "onboarding": {"setup_command": "python {plugin_dir}/setup.py setup"},
+        }
+        display_events: list[str] = []
+        prompt_env = MagicMock()
+        display_after_install = MagicMock(
+            side_effect=lambda *_args: display_events.append("after-install")
+        )
+        display_onboarding = MagicMock(
+            side_effect=lambda *_args: display_events.append("onboarding")
+        )
+
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_resolve_git_url",
+            lambda _identifier: ("https://github.com/owner/repo.git", None),
+        )
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_install_plugin_core",
+            lambda _identifier, force=False: (target, manifest, "example-plugin"),
+        )
+        monkeypatch.setattr(plugins_cmd, "_prompt_plugin_env_vars", prompt_env)
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_display_after_install",
+            display_after_install,
+        )
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_display_onboarding",
+            display_onboarding,
+            raising=False,
+        )
+
+        plugins_cmd.cmd_install("owner/repo", enable=False)
+
+        display_onboarding.assert_called_once()
+        args = display_onboarding.call_args.args
+        assert args[0] is manifest
+        assert args[1] == target
+        assert args[2] is prompt_env.call_args.args[1]
+        assert display_events == ["after-install", "onboarding"]
 
     def test_install_requires_identifier(self):
         from hermes_cli.plugins_cmd import cmd_install

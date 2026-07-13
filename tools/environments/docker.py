@@ -791,14 +791,14 @@ class DockerEnvironment(BaseEnvironment):
         # Note: docker_forward_env vars are also injected by _build_init_env_args()
         # during init_session, but setting them here ensures they are part of the
         # container's native environment (visible to non-bash processes and
-        # docker inspect).
+        # docker inspect). The forward-env dict delegates to the same
+        # shell-first, ~/.hermes/.env fallback semantics as _build_init_env_args()
+        # so both injection points agree on which values win.
         env_args = []
         for key in sorted(self._env):
             env_args.extend(["-e", f"{key}={self._env[key]}"])
-        for key in sorted(self._forward_env):
-            value = os.environ.get(key)
-            if value is not None:
-                env_args.extend(["-e", f"{key}={value}"])
+        for key, value in self._build_forward_env_dict().items():
+            env_args.extend(["-e", f"{key}={value}"])
 
         # Optional: run the container as the host user so files written into
         # bind-mounted dirs (/workspace, /root, docker_volumes entries) are
@@ -1025,6 +1025,30 @@ class DockerEnvironment(BaseEnvironment):
         # Initialize session snapshot inside the container
         self.init_session()
 
+    def _build_forward_env_dict(self) -> dict[str, str]:
+        """Return {key: value} for the set of host env vars to forward into the container.
+
+        Resolution order per key:
+          1. Shell env (``os.environ``) — non-empty wins.
+          2. ``~/.hermes/.env`` (via ``_load_hermes_env_vars()``).
+
+        Only ``docker_forward_env`` keys are honoured here (explicit opt-in
+        means we ignore the implicit passthrough set and the
+        ``_HERMES_PROVIDER_ENV_BLOCKLIST``). This mirrors the per-key fallback
+        semantics used by ``_build_init_env_args()`` so the container's native
+        -e flags match the snapshot injected at init_session time.
+        """
+        forward_keys: set[str] = set(self._forward_env)
+        hermes_env = _load_hermes_env_vars() if forward_keys else {}
+        resolved: dict[str, str] = {}
+        for key in sorted(forward_keys):
+            value = os.getenv(key)
+            if not value:
+                value = hermes_env.get(key)
+            if value:
+                resolved[key] = value
+        return resolved
+
     def _build_init_env_args(self) -> list[str]:
         """Build -e KEY=VALUE args for injecting host env vars into init_session.
 
@@ -1033,7 +1057,6 @@ class DockerEnvironment(BaseEnvironment):
         """
         exec_env: dict[str, str] = dict(self._env)
 
-        explicit_forward_keys = set(self._forward_env)
         passthrough_keys: set[str] = set()
         try:
             from tools.env_passthrough import get_all_passthrough
@@ -1048,6 +1071,7 @@ class DockerEnvironment(BaseEnvironment):
         _implicit_forward = {
             k for k in passthrough_keys if not _is_hermes_internal_secret(k)
         }
+        explicit_forward_keys = set(self._forward_env)
         forward_keys = explicit_forward_keys | (_implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         for key in sorted(forward_keys):

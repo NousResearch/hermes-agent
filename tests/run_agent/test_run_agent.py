@@ -4651,6 +4651,11 @@ class TestRunConversation:
         mock_compress.assert_called_once()
         assert result["final_response"] == "All done"
         assert result["completed"] is True
+        # The preflight-compression restart is discarded before dispatch; only
+        # the tool-call and follow-up requests consume call/budget accounting.
+        assert result["api_calls"] == 2
+        assert agent._api_call_count == 2
+        assert agent.iteration_budget.used == 2
 
     def test_glm_prompt_exceeds_max_length_triggers_compression(self, agent):
         """GLM/Z.AI uses 'Prompt exceeds max length' for context overflow."""

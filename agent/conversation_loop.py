@@ -1106,9 +1106,9 @@ def run_conversation(
             conversation_history = conversation_history_after_compression(
                 agent, messages
             )
-            api_call_count -= 1
-            agent._api_call_count = api_call_count
-            agent.iteration_budget.refund()
+            # Compression discarded this iteration before dispatch, so refund
+            # both the optimistic call count and its consumed budget slot.
+            _refund_api_call(refund_budget=True)
             continue
         
         # Thinking spinner for quiet mode (animated during API call)

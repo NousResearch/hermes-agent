@@ -313,6 +313,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--workspace", default="scratch",
                           help="scratch | worktree | worktree:<path> | dir:<path> "
                                "(default: scratch)")
+    p_create.add_argument(
+        "--delivery-required", action="store_true",
+        help="Require review, merge, production, E2E, and Slack receipt gates before Done",
+    )
     p_create.add_argument("--branch", default=None,
                           help="Branch name for worktree tasks, e.g. wt/t6-wire")
     p_create.add_argument("--project", default=None,
@@ -1359,6 +1363,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            delivery_required=bool(getattr(args, "delivery_required", False)),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

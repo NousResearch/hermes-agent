@@ -676,6 +676,8 @@ class GatewayKanbanWatchersMixin:
                 platform=sub["platform"],
                 chat_id=sub["chat_id"],
                 message_id=message_id,
+                thread_id=sub.get("thread_id") or "",
+                notifier_profile=sub.get("notifier_profile") or None,
             )
         finally:
             conn.close()

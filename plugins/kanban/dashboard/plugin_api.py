@@ -475,11 +475,11 @@ def get_board(
                 # needs the summary.
                 d["diagnostics"] = diags
                 d["warnings"] = _warnings_summary_from_diagnostics(diags)
-            # Cancellation is terminal but not successful; keep the visible
-            # workflow stable while preserving the raw status for its badge.
-            col = "done" if t.status == "cancelled" else (
-                t.status if t.status in columns else "todo"
-            )
+            # Cancellation is terminal but not successful. It remains
+            # available through task detail/list APIs, never in Done.
+            if t.status == "cancelled":
+                continue
+            col = t.status if t.status in columns else "todo"
             columns[col].append(d)
 
         # Stable per-column ordering already applied by list_tasks

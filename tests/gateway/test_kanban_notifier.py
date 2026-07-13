@@ -40,7 +40,8 @@ async def _run_one_notifier_tick(monkeypatch, runner):
 def _make_runner(adapter):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {Platform.TELEGRAM: adapter, Platform.SLACK: adapter}
+    runner._profile_adapters = {"developer": {Platform.SLACK: adapter}}
     runner._kanban_sub_fail_counts = {}
     return runner
 
@@ -71,6 +72,21 @@ def _unseen_terminal_events(tid):
         conn.close()
 
 
+def _delivery_gates():
+    head = "a" * 40
+    merge = "b" * 40
+    return {
+        "delivery": {
+            "final_head": head,
+            "review": {"verdict": "PASS", "head": head, "reviewer": "reviewer", "evidence": "https://example.test/review"},
+            "merge": {"head": head, "commit": merge, "evidence": "https://example.test/merge"},
+            "production": {"deployed": True, "commit": merge, "evidence": "https://example.test/deploy"},
+            "migration": {"required": False},
+            "e2e": {"passed": True, "commit": merge, "evidence": "https://example.test/e2e"},
+        }
+    }
+
+
 def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monkeypatch):
     db_path = tmp_path / "shared-kanban.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
@@ -94,15 +110,7 @@ def test_coding_completion_reaches_done_only_after_receipt(tmp_path, monkeypatch
     db_path = tmp_path / "coding-receipt.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
-    metadata = {
-        "delivery": {
-            "review": {"verdict": "PASS", "head": "abc123"},
-            "merge": {"commit": "merge123"},
-            "production": {"deployed": True, "evidence": "release"},
-            "migration": {"required": False},
-            "e2e": {"passed": True, "evidence": "smoke"},
-        }
-    }
+    metadata = _delivery_gates()
     with kb.connect() as conn:
         tid = kb.create_task(
             conn,
@@ -110,8 +118,12 @@ def test_coding_completion_reaches_done_only_after_receipt(tmp_path, monkeypatch
             assignee="worker",
             workspace_kind="worktree",
             workspace_path=str(tmp_path / "worktree"),
+            delivery_required=True,
         )
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="slack", chat_id="C0BGA1TAYRY",
+            notifier_profile="developer",
+        )
         assert kb.complete_task(conn, tid, summary="merged production verified", metadata=metadata)
         pending = kb.get_task(conn, tid)
         assert pending is not None and pending.status == "review"
@@ -131,15 +143,7 @@ def test_notifier_recovers_post_send_crash_without_duplicate(tmp_path, monkeypat
     db_path = tmp_path / "post-send-crash.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
-    metadata = {
-        "delivery": {
-            "review": {"verdict": "PASS", "head": "abc123"},
-            "merge": {"commit": "merge123"},
-            "production": {"deployed": True, "evidence": "release"},
-            "migration": {"required": False},
-            "e2e": {"passed": True, "evidence": "smoke"},
-        }
-    }
+    metadata = _delivery_gates()
     with kb.connect() as conn:
         tid = kb.create_task(
             conn,
@@ -147,14 +151,18 @@ def test_notifier_recovers_post_send_crash_without_duplicate(tmp_path, monkeypat
             assignee="worker",
             workspace_kind="worktree",
             workspace_path=str(tmp_path / "worktree"),
+            delivery_required=True,
         )
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="slack", chat_id="C0BGA1TAYRY",
+            notifier_profile="developer",
+        )
         assert kb.complete_task(conn, tid, summary="verified", metadata=metadata)
         _, _, events = kb.claim_unseen_events_for_sub(
             conn,
             task_id=tid,
-            platform="telegram",
-            chat_id="chat-1",
+            platform="slack",
+            chat_id="C0BGA1TAYRY",
             kinds=["completed"],
         )
         assert len(events) == 1
@@ -162,9 +170,10 @@ def test_notifier_recovers_post_send_crash_without_duplicate(tmp_path, monkeypat
             conn,
             tid,
             event_id=events[0].id,
-            platform="telegram",
-            chat_id="chat-1",
+            platform="slack",
+            chat_id="C0BGA1TAYRY",
             message_id="receipt-before-crash",
+            notifier_profile="developer",
         )
         conn.execute(
             "UPDATE kanban_notify_subs SET pending_claimed_at = 0 "

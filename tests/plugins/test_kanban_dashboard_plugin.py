@@ -115,6 +115,26 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_cancelled_task_is_not_projected_as_done(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "cancelled", "assignee": "developer"},
+    ).json()["task"]
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{created['id']}",
+        json={"status": "cancelled", "block_reason": "stopped"},
+    )
+    assert response.status_code == 200
+
+    board = client.get("/api/plugins/kanban/board").json()
+    done_ids = {
+        task["id"]
+        for column in board["columns"] if column["name"] == "done"
+        for task in column["tasks"]
+    }
+    assert created["id"] not in done_ids
+
+
 def test_board_list_recommends_persistent_workspace_for_configured_workdir(
     client, tmp_path
 ):

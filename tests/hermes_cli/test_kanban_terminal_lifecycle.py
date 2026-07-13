@@ -16,13 +16,16 @@ def kanban_home(tmp_path, monkeypatch):
 
 
 def _delivery_gates():
+    head = "a" * 40
+    merge = "b" * 40
     return {
         "delivery": {
-            "review": {"verdict": "PASS", "head": "final-head"},
-            "merge": {"commit": "merge-commit"},
-            "production": {"deployed": True, "evidence": "deployment-url"},
+            "final_head": head,
+            "review": {"verdict": "PASS", "head": head, "reviewer": "reviewer", "evidence": "https://example.test/review"},
+            "merge": {"head": head, "commit": merge, "evidence": "https://example.test/merge"},
+            "production": {"deployed": True, "commit": merge, "evidence": "https://example.test/deploy"},
             "migration": {"required": False},
-            "e2e": {"passed": True, "evidence": "production-smoke"},
+            "e2e": {"passed": True, "commit": merge, "evidence": "https://example.test/e2e"},
         }
     }
 
@@ -55,6 +58,30 @@ def test_done_task_cannot_run_again_without_explicit_reopen(kanban_home):
         assert kb.claim_task(conn, task_id, claimer="allowed") is not None
 
 
+def test_reopen_preserves_handoff_and_audits_child_demotion(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="developer")
+        child = kb.create_task(conn, title="child", assignee="developer", parents=[parent])
+        assert kb.complete_task(conn, parent, result="historical", summary="historical")
+        assert kb.reopen_task(conn, parent, actor="mika", reason="new work")
+
+        assert kb.get_task(conn, parent).result == "historical"
+        assert kb.get_task(conn, child).status == "todo"
+        assert any(
+            event.kind == "status" and event.payload.get("status") == "todo"
+            for event in kb.list_events(conn, child)
+        )
+
+
+def test_done_handoff_cannot_be_edited_in_place(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="done", assignee="developer")
+        assert kb.complete_task(conn, task_id, result="original", summary="original")
+        assert not kb.edit_completed_task_result(conn, task_id, result="rewritten")
+        assert kb.get_task(conn, task_id).result == "original"
+        assert kb.latest_summary(conn, task_id) == "original"
+
+
 def test_child_reads_only_current_handoff_after_reopen(kanban_home):
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent", assignee="developer")
@@ -77,6 +104,11 @@ def test_coding_done_waits_for_delivery_gates_and_notification_ack(kanban_home):
             title="ship code",
             assignee="developer",
             workspace_kind="worktree",
+            delivery_required=True,
+        )
+        kb.add_notify_sub(
+            conn, task_id=task_id, platform="slack", chat_id="C0BGA1TAYRY",
+            notifier_profile="developer",
         )
         claimed = kb.claim_task(conn, task_id, claimer="coder")
         assert claimed is not None
@@ -86,13 +118,7 @@ def test_coding_done_waits_for_delivery_gates_and_notification_ack(kanban_home):
                 conn,
                 task_id,
                 summary="not shipped",
-                metadata={
-                    "delivery": {
-                        "review": {"verdict": "PASS", "head": "final-head"},
-                        "merge": {"commit": "merge-commit"},
-                        "migration": {"required": False},
-                    }
-                },
+                metadata={"delivery": {"migration": {"required": False}}},
                 expected_run_id=claimed.current_run_id,
             )
         assert kb.get_task(conn, task_id).status == "running"
@@ -125,6 +151,7 @@ def test_coding_done_waits_for_delivery_gates_and_notification_ack(kanban_home):
             platform="slack",
             chat_id="C0BGA1TAYRY",
             message_id="123.456",
+            notifier_profile="developer",
         )
         done = kb.get_task(conn, task_id)
         assert done.status == "done"
@@ -136,5 +163,6 @@ def test_coding_done_waits_for_delivery_gates_and_notification_ack(kanban_home):
             platform="slack",
             chat_id="C0BGA1TAYRY",
             message_id="duplicate",
+            notifier_profile="developer",
         )
         assert [event.kind for event in kb.list_events(conn, task_id)].count("completion_acknowledged") == 1

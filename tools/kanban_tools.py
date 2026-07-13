@@ -898,6 +898,9 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    delivery_required, delivery_bool_error = _parse_bool_arg(args, "delivery_required")
+    if delivery_bool_error:
+        return tool_error(delivery_bool_error)
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -958,6 +961,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                delivery_required=delivery_required,
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
@@ -1530,6 +1534,14 @@ KANBAN_CREATE_SCHEMA = {
                     "require immediate human ops (R3 gate) to skip the "
                     "brief running-to-blocked transition. Defaults to "
                     "'running', which preserves the usual dispatch path."
+                ),
+            },
+            "delivery_required": {
+                "type": "boolean",
+                "description": (
+                    "Require independent review, merge, production, migration "
+                    "(when applicable), E2E, and one Slack receipt before Done. "
+                    "Use for coding deliveries."
                 ),
             },
             "skills": {

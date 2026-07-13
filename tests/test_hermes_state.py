@@ -4965,6 +4965,75 @@ class TestApplyWalProbe:
         assert not any("checkpoint_fullfsync" in sql for sql in conn.executed), (
             "checkpoint_fullfsync must not be issued off macOS"
         )
+        assert not any("synchronous=FULL" in sql for sql in conn.executed), (
+            "synchronous=FULL must not be issued off macOS"
+        )
+
+    def test_macos_synchronous_full_enforced_fresh(self, tmp_path, monkeypatch):
+        """On Darwin, apply_wal_with_fallback enforces synchronous=FULL (issue #63531)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        db_path = tmp_path / "macos_fresh_sync.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("synchronous=FULL" in sql for sql in conn.executed), (
+            "synchronous=FULL must be enforced on macOS"
+        )
+
+    def test_macos_synchronous_full_enforced_already_wal(self, tmp_path, monkeypatch):
+        """synchronous=FULL is enforced even when DB is already in WAL mode (issue #63531)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        # Prime the file into WAL mode first (simulating an existing WAL DB).
+        db_path = tmp_path / "macos_wal_sync.db"
+        with sqlite3.connect(str(db_path)) as seed:
+            seed.execute("PRAGMA journal_mode=WAL")
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        # The early-return path for existing WAL must also enforce synchronous=FULL.
+        assert any("synchronous=FULL" in sql for sql in conn.executed), (
+            "synchronous=FULL must be enforced even on existing WAL DBs"
+        )
+        assert not any("journal_mode=WAL" in sql for sql in conn.executed), (
+            "set-pragma must not run when already in WAL mode"
+        )
 
     def test_apply_wal_concurrent_connects_no_eio(self, tmp_path):
         """20 threads calling connect() on the same DB must not see disk I/O error."""

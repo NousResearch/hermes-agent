@@ -37,20 +37,30 @@ def test_dashboard_slot_reports_down_when_disabled(
     slot as DOWN (not up-with-sleep-infinity, which would
     false-positive `hermes doctor` and any other health check).
 
-    Locks the PR #30136 review item I3 fix: cont-init.d/03-dashboard-toggle
-    writes a `down` marker file in the live service-dir when
-    HERMES_DASHBOARD is unset, so the slot reflects reality.
+    The dashboard is always declared as a supervised s6 slot. When
+    HERMES_DASHBOARD is unset, ``run`` exits 0 immediately and ``finish``
+    exits 125 (s6's "permanent failure, do not restart" marker), so the
+    slot settles to 'down' with no dashboard process ever running. See
+    docker/s6-rc.d/dashboard/{run,finish}.
+
+    s6-rc exec's the ``run`` wrapper once when it brings the user bundle
+    up, so svstat can briefly report ``up (...) 0 seconds`` before ``run``
+    exits and ``finish`` settles the slot down. Poll for the settled
+    'down' state rather than checking once — symmetric to
+    test_dashboard_slot_reports_up_when_enabled — which also avoids racing
+    that one-time startup flap.
     """
     start_container(built_image, container_name, cmd="sleep 60")
     # /command/ isn't on PATH for docker-exec sessions, so call by
-    # absolute path.
-    r = docker_exec(
-        container_name, "/command/s6-svstat", "/run/service/dashboard",
+    # absolute path. Anchor on '^down' so a transitioning
+    # 'up (...) want down' line can't false-match a bare 'down'.
+    ok, last = poll_container(
+        container_name,
+        "/command/s6-svstat /run/service/dashboard | grep -q '^down'",
     )
-    assert r.returncode == 0, f"s6-svstat failed: {r.stderr!r} / {r.stdout!r}"
-    assert "down" in r.stdout, (
-        f"Dashboard slot should be 'down' without HERMES_DASHBOARD; "
-        f"svstat reports: {r.stdout!r}"
+    assert ok, (
+        f"Dashboard slot should settle to 'down' without HERMES_DASHBOARD; "
+        f"last svstat: {last!r}"
     )
 
 

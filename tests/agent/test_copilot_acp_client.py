@@ -312,3 +312,137 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+# ── Failed prompt-turn detection (issue #63815) ──────────────────────
+#
+# The Copilot ACP server reports quota exhaustion by streaming the backend
+# error text as a normal agent_message_chunk and ending the turn with
+# stopReason "refusal" — not with a JSON-RPC error.  Before the fix the
+# client returned that text as the assistant's answer, so the conversation
+# loop never classified the failure and fallback_providers never activated.
+
+from agent.copilot_acp_client import _failed_prompt_turn_detail
+
+_QUOTA_LINE = (
+    "Error: You have exceeded your monthly quota "
+    "(Request ID: A540:22A007:3849658:44F52D9:6A541F53)"
+)
+
+
+class _ScriptedACPProcess:
+    """Fake `copilot --acp` subprocess with a pre-scripted stdout dialogue."""
+
+    def __init__(self, script: list[dict]) -> None:
+        self.stdin = io.StringIO()
+        self.stdout = io.StringIO(
+            "".join(json.dumps(msg) + "\n" for msg in script)
+        )
+        self.stderr = io.StringIO()
+        self.pid = 4242
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        pass
+
+
+def _scripted_prompt_turn(*, chunks: list[str], stop_reason: str) -> list[dict]:
+    """JSON-RPC script for initialize → session/new → session/prompt."""
+    script = [
+        {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}},
+        {"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "sess-1"}},
+    ]
+    for chunk in chunks:
+        script.append(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": chunk},
+                    }
+                },
+            }
+        )
+    script.append({"jsonrpc": "2.0", "id": 3, "result": {"stopReason": stop_reason}})
+    return script
+
+
+def _run_scripted_completion(tmp_path, script: list[dict]):
+    client = _make_home_client(tmp_path)
+    with _patch(
+        "agent.copilot_acp_client.subprocess.Popen",
+        return_value=_ScriptedACPProcess(script),
+    ):
+        return client._create_chat_completion(
+            model="copilot-acp",
+            messages=[{"role": "user", "content": "hello"}],
+            timeout=5,
+        )
+
+
+def test_refusal_turn_with_quota_error_raises(tmp_path):
+    script = _scripted_prompt_turn(chunks=[_QUOTA_LINE], stop_reason="refusal")
+    with pytest.raises(RuntimeError, match="exceeded your monthly quota"):
+        _run_scripted_completion(tmp_path, script)
+
+
+def test_end_turn_with_bare_backend_error_raises(tmp_path):
+    """CLI builds that end the error turn with end_turn are still caught."""
+    script = _scripted_prompt_turn(chunks=[_QUOTA_LINE], stop_reason="end_turn")
+    with pytest.raises(RuntimeError, match="exceeded your monthly quota"):
+        _run_scripted_completion(tmp_path, script)
+
+
+def test_refusal_turn_without_content_raises(tmp_path):
+    script = _scripted_prompt_turn(chunks=[], stop_reason="refusal")
+    with pytest.raises(RuntimeError, match="stopReason='refusal' and no content"):
+        _run_scripted_completion(tmp_path, script)
+
+
+def test_normal_turn_still_returns_text(tmp_path):
+    script = _scripted_prompt_turn(chunks=["Hello ", "from ACP"], stop_reason="end_turn")
+    response = _run_scripted_completion(tmp_path, script)
+    assert response.choices[0].message.content == "Hello from ACP"
+    assert response.choices[0].finish_reason == "stop"
+
+
+def test_error_line_quoted_inside_longer_answer_is_not_flagged(tmp_path):
+    """A legitimate answer that merely quotes an error line must pass through."""
+    answer = (
+        "That message — "
+        f"{_QUOTA_LINE} — means your Copilot plan ran out for the month."
+    )
+    script = _scripted_prompt_turn(chunks=[answer], stop_reason="end_turn")
+    response = _run_scripted_completion(tmp_path, script)
+    assert response.choices[0].message.content == answer
+
+
+def test_failed_turn_detail_ignores_partial_output_stop_reasons():
+    # max_tokens / max_turn_requests / cancelled carry legitimate partial
+    # output and must not be converted into errors.
+    assert _failed_prompt_turn_detail("max_tokens", "partial answer") is None
+    assert _failed_prompt_turn_detail("max_turn_requests", "partial") is None
+    assert _failed_prompt_turn_detail("cancelled", "partial") is None
+    assert _failed_prompt_turn_detail("end_turn", "normal answer") is None
+
+
+def test_quota_refusal_classifies_as_billing_with_fallback():
+    """Contract with the error classifier: the raised message must route to
+    billing/should_fallback so the conversation loop activates the chain."""
+    from agent.error_classifier import FailoverReason, classify_api_error
+
+    detail = _failed_prompt_turn_detail("refusal", _QUOTA_LINE)
+    err = RuntimeError(f"Copilot ACP session/prompt failed: {detail}")
+    classified = classify_api_error(err, provider="copilot-acp", model="auto")
+    assert classified.reason == FailoverReason.billing
+    assert classified.should_fallback is True

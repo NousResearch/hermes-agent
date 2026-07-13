@@ -59,6 +59,44 @@ def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
     return any(marker in lower for marker in _DEPRECATION_MARKERS)
 
 
+# The Copilot ACP server reports backend failures (monthly quota exhaustion,
+# entitlement problems) as a *successful* ``session/prompt`` turn: the error
+# text is streamed like a normal agent_message_chunk and the turn ends with
+# ``stopReason: "refusal"`` — not with a JSON-RPC error response.  GitHub's
+# own ACP integration example treats any ``stopReason`` other than
+# ``end_turn`` as the failure path.  If Hermes returns that text as an
+# ordinary assistant message, the conversation loop never sees an exception,
+# ``classify_api_error()`` never runs, and ``fallback_providers`` never
+# activate — the raw quota error is delivered to the user as the agent's
+# reply.  ``max_tokens`` / ``max_turn_requests`` / ``cancelled`` still carry
+# legitimate partial output and are NOT treated as failures.  (issue #63815)
+_REFUSAL_STOP_REASON = "refusal"
+
+# Copilot backend error lines have a stable shape:
+#   Error: You have exceeded your monthly quota (Request ID: A540:22A007:...)
+# Matched against the ENTIRE stripped response, so a legitimate answer that
+# merely quotes such a line inside longer prose can never trip it.  This
+# catches CLI builds that stream the backend error but still end the turn
+# with ``end_turn`` instead of ``refusal``.
+_BACKEND_ERROR_RESPONSE_RE = re.compile(
+    r"error:\s+\S.{0,2000}\(request id:\s*[0-9a-f:]+\)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _failed_prompt_turn_detail(stop_reason: str, response_text: str) -> str | None:
+    """Return error detail for a failed prompt turn, or ``None`` on success."""
+
+    text = (response_text or "").strip()
+    if stop_reason == _REFUSAL_STOP_REASON:
+        if text:
+            return f"turn ended with stopReason={stop_reason!r}: {text[:2000]}"
+        return f"turn ended with stopReason={stop_reason!r} and no content"
+    if text and _BACKEND_ERROR_RESPONSE_RE.fullmatch(text):
+        return text
+    return None
+
+
 def _resolve_command() -> str:
     return (
         os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
@@ -643,7 +681,7 @@ class CopilotACPClient:
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
-            _request(
+            prompt_result = _request(
                 "session/prompt",
                 {
                     "sessionId": session_id,
@@ -657,7 +695,19 @@ class CopilotACPClient:
                 text_parts=text_parts,
                 reasoning_parts=reasoning_parts,
             )
-            return "".join(text_parts), "".join(reasoning_parts)
+            stop_reason = ""
+            if isinstance(prompt_result, dict):
+                stop_reason = str(prompt_result.get("stopReason") or "").strip()
+            response_text = "".join(text_parts)
+            failure_detail = _failed_prompt_turn_detail(stop_reason, response_text)
+            if failure_detail is not None:
+                # Raise instead of returning the error text as the answer so
+                # the conversation loop's classifier can route it (billing /
+                # rate-limit) and activate fallback_providers.  (issue #63815)
+                raise RuntimeError(
+                    f"Copilot ACP session/prompt failed: {failure_detail}"
+                )
+            return response_text, "".join(reasoning_parts)
         finally:
             self.close()
 

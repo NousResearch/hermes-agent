@@ -4793,7 +4793,12 @@ def run_conversation(
                         messages, tools=agent.tools or None
                     )
 
-                if agent.compression_enabled and _compressor.should_compress(_real_tokens):
+                if (
+                    agent.compression_enabled
+                    and compression_attempts < 3
+                    and _compressor.should_compress(_real_tokens)
+                ):
+                    compression_attempts += 1
                     agent._safe_print("  ⟳ compacting context…")
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,

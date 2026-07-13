@@ -2063,6 +2063,18 @@ def terminal_tool(
                 "status": "error",
             }, ensure_ascii=False)
 
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            from hermes_cli.project_lock import production_delivery_guard
+
+            delivery_error = production_delivery_guard(command)
+            if delivery_error:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": delivery_error,
+                    "status": "blocked",
+                }, ensure_ascii=False)
+
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]

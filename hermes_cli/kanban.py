@@ -850,6 +850,32 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit one JSON object per task on stdout",
     )
 
+    # --- lock ---
+    p_lock = sub.add_parser(
+        "lock",
+        help="Serialize Production deploys and migrations per project",
+    )
+    lock_sub = p_lock.add_subparsers(dest="lock_action")
+    p_lock_run = lock_sub.add_parser(
+        "run", help="Run a command while holding the project Production lease",
+    )
+    p_lock_run.add_argument("--project", required=True, help="Repository owner/name or URL")
+    p_lock_run.add_argument(
+        "--operation", required=True, choices=("deploy", "migration"),
+    )
+    p_lock_run.add_argument(
+        "--wait", type=float, default=600.0,
+        help="Maximum observable wait in seconds (default: 600)",
+    )
+    p_lock_run.add_argument(
+        "--lease", type=float, default=90.0,
+        help="Lease duration in seconds; renewed while command runs (default: 90)",
+    )
+    p_lock_run.add_argument("lock_command", nargs=argparse.REMAINDER)
+    p_lock_status = lock_sub.add_parser("status", help="Show the current project lease")
+    p_lock_status.add_argument("--project", required=True, help="Repository owner/name or URL")
+    p_lock_status.add_argument("--json", action="store_true")
+
     # --- gc ---
     p_gc = sub.add_parser(
         "gc", help="Garbage-collect archived-task workspaces, old events, and old logs",
@@ -973,6 +999,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "context":  _cmd_context,
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
+            "lock":      _cmd_lock,
             "gc":       _cmd_gc,
         }
         handler = handlers.get(action)
@@ -1001,6 +1028,39 @@ def _profile_author() -> str:
         return get_active_profile_name() or "user"
     except Exception:
         return "user"
+
+
+def _cmd_lock(args: argparse.Namespace) -> int:
+    from hermes_cli import project_lock
+
+    action = getattr(args, "lock_action", None)
+    if action == "run":
+        command = list(getattr(args, "lock_command", []) or [])
+        if command[:1] == ["--"]:
+            command = command[1:]
+        return project_lock.run_locked_command(
+            command,
+            project=args.project,
+            operation=args.operation,
+            lease_seconds=args.lease,
+            wait_seconds=args.wait,
+        )
+    if action == "status":
+        with kb.connect() as conn:
+            status = project_lock.project_lock_status(conn, args.project)
+        if getattr(args, "json", False):
+            print(json.dumps(status, indent=2, sort_keys=True))
+        elif status is None or status.get("owner_task_id") is None:
+            print("unlocked")
+        else:
+            print(
+                f"locked by task={status['owner_task_id']} run={status['owner_run_id']} "
+                f"operation={status['operation']} fence={status['fence']} "
+                f"expires_at={status['expires_at']}"
+            )
+        return 0
+    print("kanban lock: choose 'run' or 'status'", file=sys.stderr)
+    return 2
 
 
 # ---------------------------------------------------------------------------

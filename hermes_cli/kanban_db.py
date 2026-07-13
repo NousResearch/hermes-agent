@@ -1264,6 +1264,28 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- One lease row per project Production delivery target. Deploys and
+-- migrations intentionally share the same resource key so they cannot overlap.
+CREATE TABLE IF NOT EXISTS project_delivery_locks (
+    resource_key       TEXT PRIMARY KEY,
+    project            TEXT NOT NULL,
+    target             TEXT NOT NULL,
+    operation          TEXT NOT NULL,
+    owner_task_id      TEXT,
+    owner_run_id       INTEGER,
+    owner_claim_lock   TEXT,
+    owner_instance     TEXT,
+    owner_host         TEXT,
+    owner_pid          INTEGER,
+    command_pid        INTEGER,
+    owner_token        TEXT,
+    fence              INTEGER NOT NULL DEFAULT 0,
+    acquired_at        REAL,
+    renewed_at         REAL,
+    expires_at         REAL,
+    released_at        REAL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1274,6 +1296,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_project_delivery_owner ON project_delivery_locks(owner_task_id, owner_run_id);
 """
 
 

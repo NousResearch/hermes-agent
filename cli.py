@@ -5088,12 +5088,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if isinstance(values, list):
                 for value in values:
                     try:
-                        # Status segments are a display API, not a generic
-                        # serialization surface. Reject accidental dict/list/
-                        # numeric returns instead of exposing Python reprs.
-                        if not isinstance(value, str):
+                        # Hook callbacks are allowed to expose compact scalar
+                        # state without formatting it themselves. Falsey
+                        # values are omissions; truthy values are stringified
+                        # independently so one malformed contribution cannot
+                        # discard healthy siblings.
+                        if not value:
                             continue
-                        display_value = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", value).strip()
+                        display_value = re.sub(
+                            r"[\x00-\x1f\x7f-\x9f]", " ", str(value)
+                        ).strip()
                         if display_value:
                             normalized.append(display_value)
                     except Exception:
@@ -5180,19 +5184,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             parts.extend(plugin_values)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
-            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            agent = getattr(self, "agent", None)
+            model_name = (
+                getattr(agent, "model", None)
+                or getattr(self, "model", None)
+                or "Hermes"
+            )
+            fallback = f"⚕ {model_name}"
+            if width is not None:
+                fallback = self._trim_status_bar_text(fallback, width)
+            return fallback
 
     def _get_status_bar_fragments(self):
         if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
             return []
+        width: Optional[int] = None
         try:
-            snapshot = self._get_status_bar_snapshot()
-            # Use prompt_toolkit's own terminal width when running inside the
-            # TUI — shutil.get_terminal_size() can return stale or fallback
-            # values (especially on SSH) that differ from what prompt_toolkit
-            # actually renders, causing the fragments to overflow to a second
-            # line and produce duplicated status bar rows over long sessions.
+            # Resolve the live width before any snapshot or plugin work that can
+            # fail. prompt_toolkit's width can differ from shutil on SSH, and
+            # the exception fallback must obey the same one-row bound.
             width = self._get_tui_terminal_width()
+            snapshot = self._get_status_bar_snapshot()
+            plugin_values = self._get_status_bar_plugin_values(snapshot)
             duration_label = snapshot["duration"]
             yolo_active = self._is_session_yolo_active()
 
@@ -5206,7 +5219,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if yolo_active:
                     frags.append(("class:status-bar-dim", " · "))
                     frags.append(("class:status-bar-yolo", "⚠ YOLO"))
-                frags.append(("class:status-bar", " "))
             else:
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
@@ -5240,7 +5252,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
-                    frags.append(("class:status-bar", " "))
                 else:
                     if snapshot["context_length"]:
                         ctx_total = _format_context_length(snapshot["context_length"])
@@ -5293,7 +5304,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
-                    frags.append(("class:status-bar", " "))
+
+            plugin_separator = " · " if width < 76 else " │ "
+            for plugin_value in plugin_values:
+                frags.append(("class:status-bar-dim", plugin_separator))
+                frags.append(("class:status-bar", plugin_value))
+            frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -5302,7 +5318,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return [("class:status-bar", trimmed)]
             return frags
         except Exception:
-            return [("class:status-bar", f" {self._build_status_bar_text()} ")]
+            # Preserve the full text-renderer fallback. Plugin values are
+            # cached by _get_status_bar_plugin_values(), so delegating after a
+            # fragment-only failure does not redispatch callbacks in the same
+            # render.
+            fallback_width = width if width is not None else 80
+            fallback = f" {self._build_status_bar_text(width=fallback_width)} "
+            fallback = self._trim_status_bar_text(fallback, fallback_width)
+            return [("class:status-bar", fallback)]
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""

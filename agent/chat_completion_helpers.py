@@ -29,7 +29,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.gemini_native_adapter import is_native_gemini_base_url
-from agent.model_metadata import is_local_endpoint
+from agent.model_metadata import estimate_messages_tokens_rough, is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
@@ -87,29 +87,37 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
             return len(value)
         return len(str(value))
 
-    def _message_chars(messages: Any) -> int:
-        if not isinstance(messages, list):
-            return _chars(messages)
-        return sum(_chars(item) for item in messages)
+    def _input_is_message_list(value: Any) -> bool:
+        """True when ``value`` looks like a Responses API message list."""
+        if not isinstance(value, list) or not value:
+            return False
+        first = value[0]
+        return isinstance(first, dict) and ("role" in first or "type" in first or "content" in first)
+
+    # ── estimation ───────────────────────────────────────────────────
 
     if isinstance(api_payload, list):
-        return _message_chars(api_payload) // 4
+        if api_payload and isinstance(api_payload[0], dict):
+            return estimate_messages_tokens_rough(api_payload)
+        return _chars(api_payload) // 4
 
     if isinstance(api_payload, dict):
         messages = api_payload.get("messages")
         if isinstance(messages, list):
-            total_chars = _message_chars(messages)
+            total = estimate_messages_tokens_rough(messages) if messages and isinstance(messages[0], dict) else _chars(messages) // 4
             if "tools" in api_payload:
-                total_chars += _chars(api_payload.get("tools"))
-            return total_chars // 4
+                total += _chars(api_payload.get("tools")) // 4
+            return total
 
         if "input" in api_payload:
-            total_chars = (
-                _chars(api_payload.get("input"))
-                + _chars(api_payload.get("instructions"))
-                + _chars(api_payload.get("tools"))
-            )
-            return total_chars // 4
+            raw_input = api_payload.get("input")
+            if _input_is_message_list(raw_input):
+                total = estimate_messages_tokens_rough(raw_input)
+            else:
+                total = _chars(raw_input) // 4
+            total += _chars(api_payload.get("instructions")) // 4
+            total += _chars(api_payload.get("tools")) // 4
+            return total
 
         return sum(_chars(value) for value in api_payload.values()) // 4
 

@@ -1479,6 +1479,96 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     assert 'terminal: "' not in all_content
 
 
+class PrefixSharingTerminalAgent:
+    """Two prefix-sharing but DISTINCT terminal commands, then an adjacent
+    true repeat.  The shared prefix is longer than the preview cap, so a
+    head-cut would render CMD_A and CMD_B identically and wrongly fold them
+    into one ``(×N)`` bubble — the reason dedup must key on raw identity."""
+
+    CMD_A = "cd /srv/really/long/shared/workspace/path && make build TARGET=alpha_service"
+    CMD_B = "cd /srv/really/long/shared/workspace/path && make build TARGET=beta_service"
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        cb("tool.started", "terminal", self.CMD_A, {"command": self.CMD_A})
+        cb("tool.started", "terminal", self.CMD_B, {"command": self.CMD_B})
+        cb("tool.started", "terminal", self.CMD_B, {"command": self.CMD_B})  # true repeat
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+async def _run_prefix_sharing_agent(monkeypatch, tmp_path, adapter):
+    import yaml
+
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = PrefixSharingTerminalAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    # Cap short enough that CMD_A and CMD_B share a prefix longer than the cap
+    # (a head-cut would make them identical).
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"tool_preview_length": 40}}), encoding="utf-8"
+    )
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=adapter.platform, chat_id="12345", chat_type="dm", thread_id=None
+    )
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-prefix-dedup",
+        session_key="agent:main:telegram:dm:12345",
+    )
+    assert result["final_response"] == "done"
+    content = " ".join(c["content"] for c in adapter.sent)
+    content += " " + " ".join(c["content"] for c in adapter.edits)
+    return content
+
+
+@pytest.mark.asyncio
+async def test_prefix_sharing_terminal_dedup_on_raw_identity_code_block(monkeypatch, tmp_path):
+    """supports_code_blocks path: two prefix-sharing but distinct commands must
+    NOT collapse into one ``(×N)`` (a head-cut of the shared prefix would), while
+    an adjacent true repeat still collapses.  Dedup keys on raw tool identity,
+    truncation is presentation only (PR #24304, teknium1 review)."""
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    content = await _run_prefix_sharing_agent(monkeypatch, tmp_path, adapter)
+    # Distinct commands render distinctly — both differentiators survive.
+    assert "alpha_service" in content
+    assert "beta_service" in content
+    # The adjacent true repeat DID collapse...
+    assert "(×2)" in content
+    # ...but the two distinct commands were NOT folded together.
+    assert "(×3)" not in content
+
+
+@pytest.mark.asyncio
+async def test_prefix_sharing_terminal_dedup_on_raw_identity_plain(monkeypatch, tmp_path):
+    """Same guarantee on the plain-preview path (adapter without code blocks):
+    distinct prefix-sharing commands stay distinct, true repeat collapses."""
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)  # supports_code_blocks False
+    content = await _run_prefix_sharing_agent(monkeypatch, tmp_path, adapter)
+    assert "alpha_service" in content
+    assert "beta_service" in content
+    assert "(×2)" in content
+    assert "(×3)" not in content
+
+
 @pytest.mark.asyncio
 async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_path):
     """Verbose mode on a markdown-capable gateway renders the FULL multi-line

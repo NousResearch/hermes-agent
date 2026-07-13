@@ -187,6 +187,79 @@ def _truncate_preview(text: str, max_len: int | None) -> str:
     return text
 
 
+# --- Diff-aware preview truncation (PR #24304) --------------------------
+# Presentation only: reveal what differs from the previous preview so
+# sibling tool calls read distinctly.  Deduplication keys on RAW tool
+# identity (see gateway/run.py progress_callback), NOT on this rendered
+# output, so this never needs to preserve equality across re-calls.
+_ELLIPSIS = "..."
+_TAIL_FRACTION_NUM = 2
+_TAIL_FRACTION_DEN = 5
+
+
+def truncate_middle(text: str, max_len: int, prev: str | None = None) -> str:
+    """Truncate ``text`` to at most ``max_len`` chars for display, filling
+    the budget with as much content as possible while revealing what
+    differs from ``prev``.
+
+    Resolution order (each step skipped if it doesn't apply):
+
+    1. ``text`` fits in ``max_len`` → return it unchanged.
+    2. ``prev`` provided → show ``text`` from the first differing char
+       through the end (the part the reader needs), then prepend as much
+       of the shared prefix as budget allows, joined by ``"..."``.
+    3. Otherwise → stateless head + ellipsis + short tail.
+
+    ``max_len <= 0`` produces ``""``.  Presentation only — dedup keys on
+    raw identity elsewhere, so a fallback that renders two distinct
+    inputs identically is harmless (it never merges their bubbles).
+    """
+    if max_len <= 0:
+        return ""
+    if len(text) <= max_len:
+        return text
+    if prev:
+        diff_view = _truncate_around_diff(text, prev, max_len)
+        if diff_view is not None:
+            return diff_view
+    return _head_tail_truncate(text, max_len)
+
+
+def _truncate_around_diff(text: str, prev: str, max_len: int) -> str | None:
+    """``text[:keep] + "..." + text[diff:]`` filling ``max_len`` while
+    keeping everything from the first divergence onward visible.  Returns
+    ``None`` when no useful diff-aware truncation exists (no shared prefix,
+    or the must-show tail alone overflows)."""
+    n = min(len(text), len(prev))
+    i = 0
+    while i < n and text[i] == prev[i]:
+        i += 1
+    if i == 0 or i == len(text):
+        return None
+    tail = text[i:]
+    if len(tail) > max_len:
+        return None
+    head_budget = max_len - len(tail)
+    el = len(_ELLIPSIS)
+    if head_budget >= el + 1:
+        keep = head_budget - el
+        return text[:keep] + _ELLIPSIS + tail
+    if el + len(tail) <= max_len:
+        return _ELLIPSIS + tail
+    return tail
+
+
+def _head_tail_truncate(text: str, max_len: int) -> str:
+    """Stateless: keep the head, drop the middle, keep a short tail.
+    Fallback when no ``prev`` preview is available."""
+    avail = max_len - len(_ELLIPSIS)
+    if avail < 2:
+        return text[:max_len]
+    suffix_len = max(1, avail * _TAIL_FRACTION_NUM // _TAIL_FRACTION_DEN)
+    prefix_len = avail - suffix_len
+    return text[:prefix_len] + _ELLIPSIS + text[-suffix_len:]
+
+
 _SHELL_SILENT_HEADS = {"cd", "pushd", "popd", "export", "set", "unset", "source", ".", "true", "false", ":"}
 _SHELL_PIPE_TAIL_HEADS = {"head", "tail", "wc", "sort", "uniq"}
 

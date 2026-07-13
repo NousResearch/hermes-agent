@@ -28,8 +28,7 @@ import {
   DASHBOARD_MODAL_PANEL,
   shouldCloseOuterModalOnEscape,
 } from "@/lib/dashboard-modal-shell";
-import { formatTokenCount } from "@/lib/format";
-import { formatTokens } from "@/lib/token-format";
+import { formatTokenCount, formatTokens } from "@/lib/format";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";

@@ -131,6 +131,16 @@ class TestDiscoverBundledSkills:
         skills = _discover_bundled_skills(tmp_path)
         assert len(skills) == 0
 
+    @pytest.mark.parametrize("support_dir", ["references", "scripts", "templates", "assets"])
+    def test_ignores_nested_skill_packages_in_support_dirs(self, tmp_path, support_dir):
+        real = tmp_path / "category" / "umbrella"
+        nested = real / support_dir / "archived-skill"
+        nested.mkdir(parents=True)
+        (real / "SKILL.md").write_text("---\nname: umbrella\n---\n")
+        (nested / "SKILL.md").write_text("---\nname: archived-skill\n---\n")
+
+        assert [name for name, _ in _discover_bundled_skills(tmp_path)] == ["umbrella"]
+
     def test_nonexistent_dir_returns_empty(self, tmp_path):
         skills = _discover_bundled_skills(tmp_path / "nonexistent")
         assert skills == []

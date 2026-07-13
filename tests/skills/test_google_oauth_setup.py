@@ -6,7 +6,10 @@ code exchange happen in separate process invocations.
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
+import textwrap
 import types
 from pathlib import Path
 
@@ -115,7 +118,7 @@ def setup_module(monkeypatch, tmp_path):
     assert spec.loader is not None
     spec.loader.exec_module(module)
 
-    monkeypatch.setattr(module, "_ensure_deps", lambda: None)
+    monkeypatch.setattr(module, "_ensure_deps", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "CLIENT_SECRET_PATH", tmp_path / "google_client_secret.json")
     monkeypatch.setattr(module, "TOKEN_PATH", tmp_path / "google_token.json")
     monkeypatch.setattr(module, "PENDING_AUTH_PATH", tmp_path / "google_oauth_pending.json", raising=False)
@@ -297,6 +300,38 @@ class TestExchangeAuthCode:
 
         out = capsys.readouterr().out
         assert "state mismatch" in out.lower()
+        assert not setup_module.TOKEN_PATH.exists()
+
+    def test_json_state_mismatch_returns_fresh_auth_url(self, setup_module, capsys):
+        setup_module.PENDING_AUTH_PATH.write_text(
+            json.dumps(
+                {
+                    "state": "saved-state",
+                    "code_verifier": "saved-verifier",
+                    "services": ["calendar"],
+                    "requested_scopes": setup_module.CALENDAR_SCOPES,
+                }
+            )
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            setup_module.exchange_auth_code(
+                "http://localhost:1/?code=4/extracted-code&state=wrong-state",
+                "json",
+            )
+
+        assert excinfo.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "error"
+        assert payload["error"] == "oauth_state_mismatch"
+        assert payload["fresh_auth_url"] == "https://auth.example/authorize?state=generated-state"
+        assert payload["services"] == ["calendar"]
+
+        saved = json.loads(setup_module.PENDING_AUTH_PATH.read_text())
+        assert saved["state"] == "generated-state"
+        assert saved["services"] == ["calendar"]
+        assert saved["requested_scopes"] == setup_module.CALENDAR_SCOPES
+        assert setup_module.LAST_AUTH_URL_PATH.read_text() == payload["fresh_auth_url"]
         assert not setup_module.TOKEN_PATH.exists()
 
     def test_requires_pending_auth_session(self, setup_module, capsys):
@@ -551,11 +586,13 @@ def _load_setup_module(monkeypatch):
     return module
 
 
-def _force_deps_missing(monkeypatch):
-    """Make `import googleapiclient` / `import google_auth_oauthlib` fail so
-    install_deps() proceeds past its early-return short-circuit."""
-    for name in ("googleapiclient", "google_auth_oauthlib"):
-        monkeypatch.setitem(sys.modules, name, None)
+def _force_deps_missing(monkeypatch, module):
+    """Make the exact pinned requirements appear absent or stale."""
+    monkeypatch.setattr(
+        module,
+        "_missing_required_packages",
+        lambda: list(module.REQUIRED_PACKAGES),
+    )
 
 
 class TestInstallDeps:
@@ -567,34 +604,28 @@ class TestInstallDeps:
     """
 
     def test_returns_early_when_already_installed(self, monkeypatch):
-        """If both libs import, no installer subprocess runs at all."""
+        """If all exact pins are current, no installer subprocess runs."""
         module = _load_setup_module(monkeypatch)
-        # Don't force-missing: real test env has the libs importable. Guard
-        # against any subprocess being spawned.
+        monkeypatch.setattr(module, "_missing_required_packages", lambda: [])
         calls = []
         monkeypatch.setattr(
             module.subprocess, "check_call", lambda *a, **k: calls.append(a)
         )
-        # google_auth_oauthlib may not be installed in the test env; only run
-        # this assertion when the early-return path is actually reachable.
-        try:
-            import googleapiclient  # noqa: F401
-            import google_auth_oauthlib  # noqa: F401
-        except ImportError:
-            pytest.skip("Google libs not installed in test env")
+
         assert module.install_deps() is True
         assert calls == []
 
     def test_uses_pip_when_available(self, monkeypatch):
         """When pip works, install_deps succeeds via pip and never calls uv."""
         module = _load_setup_module(monkeypatch)
-        _force_deps_missing(monkeypatch)
+        _force_deps_missing(monkeypatch, module)
 
         recorded = []
 
         def fake_check_call(cmd, **kwargs):
             recorded.append(cmd)
-            # pip path is the first attempt — succeed.
+            # pip path is the first attempt — succeed and expose current pins.
+            monkeypatch.setattr(module, "_missing_required_packages", lambda: [])
             return 0
 
         which_calls = []
@@ -611,7 +642,7 @@ class TestInstallDeps:
     def test_falls_back_to_uv_when_pip_missing(self, monkeypatch):
         """No pip → uv pip install --python <interpreter> is used."""
         module = _load_setup_module(monkeypatch)
-        _force_deps_missing(monkeypatch)
+        _force_deps_missing(monkeypatch, module)
 
         recorded = []
 
@@ -619,7 +650,8 @@ class TestInstallDeps:
             recorded.append(cmd)
             if cmd[:3] == [module.sys.executable, "-m", "pip"]:
                 raise module.subprocess.CalledProcessError(1, cmd)
-            return 0  # uv invocation succeeds
+            monkeypatch.setattr(module, "_missing_required_packages", lambda: [])
+            return 0  # uv invocation succeeds and exposes current pins
 
         monkeypatch.setattr(module.subprocess, "check_call", fake_check_call)
         monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/local/bin/uv")
@@ -633,9 +665,9 @@ class TestInstallDeps:
             assert pkg in uv_cmd
 
     def test_returns_false_when_no_pip_and_no_uv(self, monkeypatch, capsys):
-        """No pip AND no uv → failure, with the [google] extra hint printed."""
+        """No pip AND no uv → failure, with the supported setup hint printed."""
         module = _load_setup_module(monkeypatch)
-        _force_deps_missing(monkeypatch)
+        _force_deps_missing(monkeypatch, module)
 
         def fake_check_call(cmd, **kwargs):
             raise module.subprocess.CalledProcessError(1, cmd)
@@ -645,12 +677,12 @@ class TestInstallDeps:
 
         assert module.install_deps() is False
         out = capsys.readouterr().out
-        assert "hermes-agent[google]" in out
+        assert "hermes setup" in out
 
     def test_returns_false_when_uv_fallback_also_fails(self, monkeypatch, capsys):
         """uv present but its install fails → failure surfaced (not swallowed)."""
         module = _load_setup_module(monkeypatch)
-        _force_deps_missing(monkeypatch)
+        _force_deps_missing(monkeypatch, module)
 
         def fake_check_call(cmd, **kwargs):
             raise module.subprocess.CalledProcessError(1, cmd)
@@ -661,3 +693,83 @@ class TestInstallDeps:
         assert module.install_deps() is False
         out = capsys.readouterr().out
         assert "via uv" in out
+
+    def test_json_auth_url_auto_install_keeps_stdout_machine_readable(self, tmp_path):
+        """Dependency installation diagnostics stay off stdout in JSON mode."""
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        (hermes_home / "google_client_secret.json").write_text(
+            json.dumps(
+                {
+                    "installed": {
+                        "client_id": "client-id",
+                        "client_secret": "client-secret",
+                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                        "token_uri": "https://oauth2.googleapis.com/token",
+                    }
+                }
+            )
+        )
+
+        child = textwrap.dedent(
+            """
+            import importlib.metadata
+            import runpy
+            import subprocess
+            import sys
+            import types
+
+            script = sys.argv[1]
+            installed = False
+
+            class InstalledVersion:
+                def __eq__(self, other):
+                    return installed
+
+                def __ne__(self, other):
+                    return not installed
+
+            importlib.metadata.version = lambda name: InstalledVersion()
+
+            class Flow:
+                code_verifier = "generated-code-verifier"
+
+                @classmethod
+                def from_client_secrets_file(cls, *args, **kwargs):
+                    return cls()
+
+                def authorization_url(self, **kwargs):
+                    return "https://auth.example/authorize?state=generated-state", "generated-state"
+
+            google_auth_oauthlib = types.ModuleType("google_auth_oauthlib")
+            flow_module = types.ModuleType("google_auth_oauthlib.flow")
+            flow_module.Flow = Flow
+            google_auth_oauthlib.flow = flow_module
+            sys.modules["googleapiclient"] = None
+            sys.modules["google_auth_oauthlib"] = google_auth_oauthlib
+            sys.modules["google_auth_oauthlib.flow"] = flow_module
+
+            def fake_check_call(*args, **kwargs):
+                global installed
+                installed = True
+                return 0
+
+            subprocess.check_call = fake_check_call
+            sys.argv = [script, "--auth-url", "--services", "calendar", "--format", "json"]
+            runpy.run_path(script, run_name="__main__")
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", child, str(SCRIPT_PATH)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HERMES_HOME": str(hermes_home)},
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["auth_url"] == "https://auth.example/authorize?state=generated-state"
+        assert payload["services"] == ["calendar"]
+        assert result.stdout.strip() == json.dumps(payload)
+        assert "Installing Google API dependencies" in result.stderr

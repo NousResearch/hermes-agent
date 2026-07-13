@@ -193,14 +193,15 @@ def _missing_required_packages() -> list[str]:
     return missing
 
 
-def install_deps():
+def install_deps(output_format: str = "text"):
     """Install missing or stale Google API packages. Returns True on success."""
+    output = sys.stderr if output_format == "json" else sys.stdout
     missing = _missing_required_packages()
     if not missing:
-        print("Dependencies already installed.")
+        print("Dependencies already installed.", file=output)
         return True
 
-    print("Installing Google API dependencies...")
+    print("Installing Google API dependencies...", file=output)
 
     # First choice: pip in the current interpreter. Works for most installs.
     try:
@@ -210,9 +211,12 @@ def install_deps():
         )
         remaining = _missing_required_packages()
         if remaining:
-            print(f"ERROR: Dependencies remain stale after pip install: {' '.join(remaining)}")
+            print(
+                f"ERROR: Dependencies remain stale after pip install: {' '.join(remaining)}",
+                file=output,
+            )
             return False
-        print("Dependencies installed.")
+        print("Dependencies installed.", file=output)
         return True
     except subprocess.CalledProcessError as e:
         pip_error = e
@@ -232,28 +236,38 @@ def install_deps():
             )
             remaining = _missing_required_packages()
             if remaining:
-                print(f"ERROR: Dependencies remain stale after uv install: {' '.join(remaining)}")
+                print(
+                    f"ERROR: Dependencies remain stale after uv install: {' '.join(remaining)}",
+                    file=output,
+                )
                 return False
-            print("Dependencies installed.")
+            print("Dependencies installed.", file=output)
             return True
         except subprocess.CalledProcessError as e:
-            print(f"ERROR: Failed to install dependencies via uv: {e}")
-            print(f"Manually: {uv} pip install --python {sys.executable} {' '.join(REQUIRED_PACKAGES)}")
+            print(f"ERROR: Failed to install dependencies via uv: {e}", file=output)
+            print(
+                f"Manually: {uv} pip install --python {sys.executable} {' '.join(REQUIRED_PACKAGES)}",
+                file=output,
+            )
             return False
 
-    print(f"ERROR: Failed to install dependencies: {pip_error}")
+    print(f"ERROR: Failed to install dependencies: {pip_error}", file=output)
     print(
         "On environments without pip (e.g. Nix, or the Hermes Docker image's "
-        "uv-managed venv), install the optional extra instead:"
+        "uv-managed venv), install the optional extra instead:",
+        file=output,
     )
-    print("  hermes setup")
-    print(f"Or manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
+    print("  hermes setup", file=output)
+    print(
+        f"Or manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}",
+        file=output,
+    )
     return False
 
 
-def _ensure_deps():
+def _ensure_deps(output_format: str = "text"):
     """Check exact dependency versions, install if stale, exit on failure."""
-    if _missing_required_packages() and not install_deps():
+    if _missing_required_packages() and not install_deps(output_format):
         sys.exit(1)
 
 
@@ -435,11 +449,13 @@ def _extract_code_and_state(code_or_url: str) -> tuple[str, str | None]:
     return params["code"][0], state
 
 
-def _start_auth_session(services: str | None = "all") -> dict:
+def _start_auth_session(
+    services: str | None = "all", output_format: str = "text"
+) -> dict:
     service_names = _parse_services(services)
     requested_scopes = _scopes_for_services(service_names)
 
-    _ensure_deps()
+    _ensure_deps(output_format)
     from google_auth_oauthlib.flow import Flow
 
     flow = Flow.from_client_secrets_file(
@@ -478,7 +494,7 @@ def get_auth_url(services: str | None = "all", output_format: str = "text"):
         sys.exit(1)
 
     try:
-        payload = _start_auth_session(services)
+        payload = _start_auth_session(services, output_format)
     except ValueError as e:
         if output_format == "json":
             print(json.dumps({"status": "error", "error": "invalid_services", "message": str(e)}))
@@ -510,12 +526,25 @@ def exchange_auth_code(code: str, output_format: str = "text"):
     code, returned_state = _extract_code_and_state(code)
     if returned_state and returned_state != pending_auth["state"]:
         if output_format == "json":
-            print(json.dumps({"status": "error", "error": "oauth_state_mismatch", "message": "OAuth state mismatch. Run --auth-url again to start a fresh session."}))
+            payload = {
+                "status": "error",
+                "error": "oauth_state_mismatch",
+                "message": "OAuth state mismatch. Use the fresh authorization URL and retry with its redirect.",
+                "services": services if isinstance(services, list) else [services_arg],
+            }
+            try:
+                fresh = _start_auth_session(services_arg, output_format)
+                payload["fresh_auth_url"] = fresh["auth_url"]
+                payload["services"] = fresh["services"]
+                payload["scopes"] = fresh["scopes"]
+            except Exception as fresh_error:
+                payload["fresh_auth_error"] = str(fresh_error)
+            print(json.dumps(payload))
         else:
             print("ERROR: OAuth state mismatch. Run --auth-url again to start a fresh session.")
         sys.exit(1)
 
-    _ensure_deps()
+    _ensure_deps(output_format)
     from google_auth_oauthlib.flow import Flow
     from urllib.parse import parse_qs, urlparse
 
@@ -548,7 +577,7 @@ def exchange_auth_code(code: str, output_format: str = "text"):
                 "services": services if isinstance(services, list) else [services_arg],
             }
             try:
-                fresh = _start_auth_session(services_arg)
+                fresh = _start_auth_session(services_arg, output_format)
                 payload["fresh_auth_url"] = fresh["auth_url"]
                 payload["services"] = fresh["services"]
                 payload["scopes"] = fresh["scopes"]

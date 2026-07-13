@@ -199,6 +199,41 @@ describe('LogUpdate.render diff contract', () => {
     expect(hasDecstbm(stdoutOnly(diff))).toBe(true)
   })
 
+  it.each([
+    { direction: 'up', delta: 1, oldRow: 2, newRow: 1 },
+    { direction: 'down', delta: -1, oldRow: 2, newRow: 3 }
+  ])('clears shifted row tails outside narrow damage when scrolling $direction', ({
+    delta,
+    oldRow,
+    newRow
+  }) => {
+    const w = 40
+    const h = 6
+    const oldText = 'this-is-a-much-longer-row'
+    const newText = 'short'
+    const prev = mkScreen(w, h)
+    const next = mkScreen(w, h)
+
+    paint(prev, oldRow, oldText)
+    // The old row settled in an earlier frame, so it no longer contributes
+    // damage when the terminal later shifts it into the dirty row.
+    prev.damage = undefined
+    paint(next, newRow, newText)
+    next.damage = { x: 0, y: newRow, width: newText.length, height: 1 }
+
+    const nextFrame: Frame = {
+      ...mkFrame(next, w, h),
+      scrollHint: { top: 1, bottom: 4, delta }
+    }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, w, h), nextFrame, true, true)
+    const written = stdoutOnly(diff)
+
+    expect(hasDecstbm(written)).toBe(true)
+    expect(written).toContain(' '.repeat(oldText.length - newText.length))
+  })
+
   it('skips DECSTBM when scroll region touches the bottom row', () => {
     const w = 12
     const h = 6

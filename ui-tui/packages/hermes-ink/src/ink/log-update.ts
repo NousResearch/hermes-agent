@@ -3,7 +3,7 @@ import { type AnsiCode, ansiCodesToString, diffAnsiCodes } from '@alcalzone/ansi
 import { logForDebugging } from '../utils/debug.js'
 
 import type { Diff, FlickerReason, Frame } from './frame.js'
-import type { Point } from './layout/geometry.js'
+import { type Point, unionRect } from './layout/geometry.js'
 import {
   type Cell,
   cellAt,
@@ -178,6 +178,31 @@ export class LogUpdate {
       // it can leave transient ghosting/bleed artifacts until a later repaint.
       if (top >= 0 && bottom < prev.screen.height - 1 && bottom < next.screen.height - 1) {
         shiftRows(prev.screen, top, bottom, delta)
+
+        // DECSTBM shifts full-width terminal rows, but a shorter replacement
+        // can leave next.damage covering only its new text. Widen only the
+        // dirty rows inside the scroll region so diffEach also clears tails
+        // shifted in from settled rows whose previous damage is already gone.
+        const damage = next.screen.damage
+
+        if (damage) {
+          const dirtyTop = Math.max(top, damage.y)
+          const dirtyBottom = Math.min(bottom + 1, damage.y + damage.height)
+
+          if (dirtyTop < dirtyBottom) {
+            const shiftedDirtyRows = {
+              x: 0,
+              y: dirtyTop,
+              width: prev.screen.width,
+              height: dirtyBottom - dirtyTop
+            }
+
+            prev.screen.damage = prev.screen.damage
+              ? unionRect(prev.screen.damage, shiftedDirtyRows)
+              : shiftedDirtyRows
+          }
+        }
+
         scrollPatch = [
           {
             type: 'stdout',

@@ -3821,6 +3821,24 @@ class GatewaySlashCommandsMixin:
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 model_config={"_branched_from": parent_session_id},
                 parent_session_id=parent_session_id,
+                # Gateway routing columns — forward ALL of them at CREATE time,
+                # same fix as the compression-rotation bug in
+                # agent/conversation_compression.py. Without these, the branched
+                # child row has NULL routing columns until switch_session() below
+                # calls _record_gateway_session_peer() — a crash/kill anywhere
+                # between here and there (most plausibly mid-history-copy, since
+                # each append_message call a few lines down is independently
+                # best-effort) leaves the branch permanently unroutable:
+                # unreachable by chat/thread lookup, and unreachable via /resume's
+                # IDOR guard too (which requires the row's chat_id/thread_id to
+                # match the caller's). user_id is critical for the fallback lookup
+                # path (hermes_state.py:1994-2009) that searches by the complete
+                # peer tuple when session_key doesn't match.
+                user_id=source.user_id,
+                session_key=session_key,
+                chat_id=source.chat_id,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
             )
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)

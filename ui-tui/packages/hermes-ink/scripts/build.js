@@ -1,4 +1,4 @@
-import { buildSync } from '../node_modules/esbuild/lib/main.js';
+import { buildSync } from 'esbuild';
 import path from 'path';
 import { fileURLToPath } from 'url';
 

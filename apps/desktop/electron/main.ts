@@ -3597,9 +3597,35 @@ async function ensureRuntime(backend) {
   return backend
 }
 
+// Assemble a single-file multipart/form-data body (FastAPI `UploadFile`
+// endpoints, e.g. kanban attachments). Hand-rolled because node's http has no
+// FormData and the payload is one file — a dependency would be overkill.
+function multipartBody(upload) {
+  const boundary = `----hermes-${crypto.randomBytes(12).toString('hex')}`
+  const filename = String(upload.filename || 'file').replace(/["\r\n]/g, '_')
+
+  const body = Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+        `Content-Type: ${upload.contentType || 'application/octet-stream'}\r\n\r\n`
+    ),
+    Buffer.from(upload.bytes),
+    Buffer.from(`\r\n--${boundary}--\r\n`)
+  ])
+
+  return { body, contentType: `multipart/form-data; boundary=${boundary}` }
+}
+
 function fetchJson(url, token, options: any = {}) {
   return new Promise((resolve, reject) => {
-    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
+    const { body, contentType } = options.upload
+      ? multipartBody(options.upload)
+      : {
+          body: options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body)),
+          contentType: 'application/json'
+        }
+
     const parsed = new URL(url)
     const client = parsed.protocol === 'https:' ? https : http
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
@@ -3615,7 +3641,7 @@ function fetchJson(url, token, options: any = {}) {
       {
         method: options.method || 'GET',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': contentType,
           'X-Hermes-Session-Token': token,
           ...(body ? { 'Content-Length': String(body.length) } : {})
         }
@@ -4576,14 +4602,13 @@ function buildApplicationMenu() {
     submenu: [
       IS_MAC
         ? {
-            accelerator: 'CommandOrControl+W',
-            click: () => {
-              if (previewShortcutActive) {
-                sendClosePreviewRequested()
-              } else {
-                mainWindow?.close()
-              }
-            },
+            // NO accelerator: on macOS a registered ⌘W is consumed by the OS
+            // menu before the web contents ever sees it (and registerAccelerator
+            // false is a no-op on mac — electron#18295). Leaving it off lets the
+            // `before-input-event` handler below intercept ⌘W and route it to the
+            // renderer's close-active-tab. Clicking the item still closes the tab
+            // (or window) via the same request.
+            click: () => sendClosePreviewRequested(),
             label: 'Close'
           }
         : { role: 'quit' }
@@ -4689,9 +4714,12 @@ function installDevToolsShortcut(window) {
 function installPreviewShortcut(window) {
   window.webContents.on('before-input-event', (event, input) => {
     const key = String(input.key || '').toLowerCase()
-    const isPreviewCloseShortcut = key === 'w' && (IS_MAC ? input.meta : input.control) && !input.alt && !input.shift
+    const isCloseTabShortcut = key === 'w' && (IS_MAC ? input.meta : input.control) && !input.alt && !input.shift
 
-    if (!isPreviewCloseShortcut || !previewShortcutActive) {
+    // Always claim ⌘W here (the File>Close item deliberately has no
+    // accelerator, so nothing else does). The renderer decides tab-vs-window
+    // — no `previewShortcutActive` gate, so it works for every closeable tab.
+    if (!isCloseTabShortcut) {
       return
     }
 
@@ -7870,6 +7898,12 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   // session so the cookie attaches automatically. Token/local modes keep using
   // the static session-token header.
   if (connection.authMode === 'oauth') {
+    // The OAuth path rides electron.net with JSON headers; multipart isn't
+    // wired there. Fail loudly rather than corrupting the upload.
+    if (request?.upload) {
+      throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
+    }
+
     return fetchJsonViaOauthSession(url, {
       method: request?.method,
       body: request?.body,
@@ -7880,6 +7914,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   return fetchJson(url, connection.token, {
     method: request?.method,
     body: request?.body,
+    upload: request?.upload,
     timeoutMs
   })
 })
@@ -8377,6 +8412,28 @@ ipcMain.handle('hermes:fs:reveal', async (_event, targetPath) => {
     return true
   } catch {
     return false
+  }
+})
+
+// Open a DIRECTORY in the OS file manager, creating it first if needed. Unlike
+// `reveal` (which selects an existing item and silently no-ops on a missing
+// path — the "Open plugins folder" Windows bug), this is for the plugins door,
+// which often doesn't exist on first use. `shell.openPath` returns '' on
+// success or an error string; both mkdir + openPath failures are surfaced.
+ipcMain.handle('hermes:fs:openDir', async (_event, dirPath) => {
+  const dir = String(dirPath || '').trim()
+
+  if (!dir) {
+    return { ok: false, error: 'no path' }
+  }
+
+  try {
+    await fs.promises.mkdir(dir, { recursive: true })
+    const error = await shell.openPath(path.normalize(dir))
+
+    return error ? { ok: false, error } : { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
 })
 

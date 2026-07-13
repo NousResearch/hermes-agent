@@ -35,6 +35,7 @@ from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
+from agent.context_compressor import _evict_old_tool_result_images
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
     _repair_tool_call_arguments,
@@ -955,6 +956,15 @@ def run_conversation(
         # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
+
+        # Evict old tool-result screenshots on the OpenAI-compatible path
+        # to bound memory pressure on local VLMs (LM Studio / Ollama / vLLM).
+        # The Anthropic adapter does its own eviction in
+        # ``convert_messages_to_anthropic`` via ``_evict_old_screenshots``;
+        # this is the chat.completions equivalent. Operates on the per-call
+        # copy only — stored conversation history is never mutated, matching
+        # the per-conversation prompt-caching invariant. See issue #63849.
+        api_messages = _evict_old_tool_result_images(api_messages)
 
         # Calculate approximate request size for logging and pressure checks.
         # estimate_messages_tokens_rough(api_messages) includes the system

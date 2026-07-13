@@ -586,6 +586,80 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     return result if changed else messages
 
 
+def _evict_old_tool_result_images(
+    messages: List[Dict[str, Any]], max_keep: int = 3
+) -> List[Dict[str, Any]]:
+    """Evict old tool-result screenshot images on the OpenAI-compatible path.
+
+    Anthropic adapter runs its own eviction (``_evict_old_screenshots`` in
+    ``agent/anthropic_adapter.py``). The chat.completions path had no
+    equivalent, so browser_vision / vision_analyze screenshots accumulated
+    in conversation history forever and OOM'd local VLMs on long browser
+    sessions. See issue #63849.
+
+    Walks ``messages`` backward, counting tool-role messages whose ``content``
+    list carries at least one image part. Once the running count exceeds
+    ``max_keep``, older image parts on those messages are replaced with a
+    short text placeholder. Only ``tool``-role messages are touched — user
+    images are preserved (the Anthropic eviction mirrors this scoping).
+
+    Shallow copies of touched messages only; the input list and any
+    untouched message are never mutated. If no eviction was needed, the
+    original list reference is returned unchanged.
+    """
+    if not messages:
+        return messages
+
+    placeholder = {"type": "text", "text": "[screenshot removed to save context]"}
+
+    # First pass: locate tool-role image-bearing messages, counting newest
+    # => oldest. We need the indices whose running count > max_keep.
+    tool_image_indices: List[int] = []
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        if _content_has_images(msg.get("content")):
+            tool_image_indices.append(i)
+
+    # tool_image_indices is newest-first (highest index first). The first
+    # max_keep entries are kept; everything older (the rest of the list) is
+    # evicted. If total count <= max_keep, nothing to do.
+    if len(tool_image_indices) <= max_keep:
+        return messages
+
+    evict_set = set(tool_image_indices[max_keep:])
+
+    changed = False
+    result: List[Dict[str, Any]] = []
+    for i, msg in enumerate(messages):
+        if i not in evict_set:
+            result.append(msg)
+            continue
+        # Shallow copy and replace image parts with placeholder.
+        new_msg = msg.copy()
+        new_content = []
+        content = msg.get("content")
+        if isinstance(content, list):
+            for p in content:
+                if _is_image_part(p):
+                    new_content.append(placeholder)
+                else:
+                    new_content.append(p)
+            new_msg["content"] = new_content
+        else:
+            # Defensive: content isn't a list — shouldn't happen because
+            # _content_has_images already filtered, but leave untouched
+            # rather than risk corrupting an unexpected shape.
+            new_content = content
+        result.append(new_msg)
+        changed = True
+
+    return result if changed else messages
+
+
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Create an informative 1-line summary of a tool call + result.
 

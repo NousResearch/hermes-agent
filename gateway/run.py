@@ -69,7 +69,19 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
+_PROGRESS_EDIT_INTERVAL_SECONDS = 1.5
+_STALE_PROGRESS_EDIT_MARKERS = (
+    "message to edit not found",
+    "message_id_invalid",
+)
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+
+
+def _is_stale_progress_edit_error(error: Any) -> bool:
+    """Return whether an edit failed because its message anchor is gone."""
+    normalized = str(error or "").lower()
+    return any(marker in normalized for marker in _STALE_PROGRESS_EDIT_MARKERS)
+
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
@@ -17560,7 +17572,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             progress_msg_id = None   # ID of the current progress message to edit
             can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
-            _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+            _ROLL_NO_ROLL = "no_roll"
+            _ROLL_HANDLED = "handled"
+            _ROLL_NEEDS_FALLBACK = "needs_fallback"
 
             _progress_len_fn = (
                 adapter.message_len_fn
@@ -17642,26 +17656,103 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _track_progress_result(result)
                 return result
 
-            async def _roll_progress_overflow_if_needed() -> bool:
+            async def _send_progress_groups(groups: list[list]) -> None:
+                """Best-effort delivery of every pre-sized progress group."""
+                for group in groups:
+                    try:
+                        result = await _send_progress_text(_progress_text(group))
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] Failed to deliver progress fallback group: %s",
+                            adapter.name,
+                            exc,
+                        )
+                        continue
+                    if not result.success:
+                        logger.warning(
+                            "[%s] Failed to deliver progress fallback group: %s",
+                            adapter.name,
+                            getattr(result, "error", "unknown error"),
+                        )
+
+            async def _replace_stale_progress_anchor(error, full_text: str):
+                """Replace a deleted edit anchor and report the delivery outcome."""
+                nonlocal progress_msg_id, can_edit
+                if not _is_stale_progress_edit_error(error):
+                    return "not_stale"
+
+                # Never retry the known-dead anchor, including when replacement
+                # delivery itself raises or returns an unsuccessful result.
+                progress_msg_id = None
+                try:
+                    replacement = await _send_progress_text(full_text)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Failed to replace stale progress anchor: %s",
+                        adapter.name,
+                        exc,
+                    )
+                    can_edit = False
+                    return "failed"
+
+                if replacement.success:
+                    if replacement.message_id:
+                        progress_msg_id = replacement.message_id
+                        can_edit = True
+                        return "editable"
+                    # The text landed, but the adapter provided no future edit
+                    # anchor. Stay send-only without duplicating this update.
+                    can_edit = False
+                    return "delivered"
+
+                can_edit = False
+                return "failed"
+
+            async def _roll_progress_overflow_if_needed() -> str:
                 """Start fresh editable progress bubbles before a bubble exceeds limit.
 
-                Returns True when it delivered/split the current buffer and the
-                caller should skip the normal send/edit path for this tick.
+                Return ``no_roll`` when the buffer fits, ``handled`` when all
+                overflow groups were delivered, or ``needs_fallback`` when the
+                old anchor failed and the caller must deliver the whole buffer.
                 """
                 nonlocal progress_msg_id, progress_lines, can_edit
                 if not progress_lines or not can_edit:
-                    return False
+                    return _ROLL_NO_ROLL
                 groups = _split_progress_groups(progress_lines)
                 if len(groups) <= 1:
-                    return False
+                    return _ROLL_NO_ROLL
 
                 first_text = _progress_text(groups[0])
                 if progress_msg_id is not None:
-                    result = await _edit_progress_message(progress_msg_id, first_text)
-                    if not result.success:
-                        can_edit = False
-                        # Fall back to the existing non-edit behavior below.
-                        return False
+                    try:
+                        result = await _edit_progress_message(progress_msg_id, first_text)
+                    except Exception as exc:
+                        recovery = await _replace_stale_progress_anchor(exc, first_text)
+                        if recovery == "failed":
+                            await _send_progress_groups(groups)
+                            progress_lines = groups[-1]
+                            return _ROLL_HANDLED
+                        if recovery == "not_stale":
+                            progress_msg_id = None
+                            can_edit = False
+                            return _ROLL_NEEDS_FALLBACK
+                        result = None
+                    if result is not None and not result.success:
+                        recovery = await _replace_stale_progress_anchor(
+                            getattr(result, "error", ""), first_text
+                        )
+                        if recovery == "failed":
+                            # The dead anchor and its first replacement both
+                            # failed. Retry every already-sized group here so
+                            # the normal path cannot collapse the fallback to
+                            # only the line that triggered rollover.
+                            await _send_progress_groups(groups)
+                            progress_lines = groups[-1]
+                            return _ROLL_HANDLED
+                        if recovery == "not_stale":
+                            progress_msg_id = None
+                            can_edit = False
+                            return _ROLL_NEEDS_FALLBACK
                 else:
                     result = await _send_progress_text(first_text)
                     if result.success and result.message_id:
@@ -17676,7 +17767,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # just its lines so subsequent edits update it instead of
                 # replaying the full historical transcript into new messages.
                 progress_lines = groups[-1]
-                return True
+                return _ROLL_HANDLED
+
+            async def _fallback_progress_lines(lines: list) -> None:
+                """Deliver a complete buffer in bounded send-only groups."""
+                nonlocal progress_msg_id, can_edit
+                progress_msg_id = None
+                can_edit = False
+                await _send_progress_groups(_split_progress_groups(lines))
+
+            async def _flush_editable_progress_buffer() -> None:
+                """Finalize pending editable progress, falling back on any failure."""
+                if not (can_edit and progress_lines and progress_msg_id):
+                    return
+
+                roll_outcome = await _roll_progress_overflow_if_needed()
+                if roll_outcome == _ROLL_NEEDS_FALLBACK:
+                    await _fallback_progress_lines(progress_lines)
+                    return
+                if roll_outcome == _ROLL_HANDLED and not can_edit:
+                    # Overflow recovery already delivered every group.
+                    return
+                if not can_edit or progress_msg_id is None:
+                    # A non-stale overflow edit failure disabled editing before
+                    # the final flush could run. Preserve the complete buffer.
+                    await _fallback_progress_lines(progress_lines)
+                    return
+
+                full_text = _progress_text(progress_lines)
+                try:
+                    result = await _edit_progress_message(progress_msg_id, full_text)
+                except Exception as exc:
+                    recovery = await _replace_stale_progress_anchor(exc, full_text)
+                    if recovery not in ("editable", "delivered"):
+                        await _fallback_progress_lines(progress_lines)
+                    return
+
+                if result.success:
+                    return
+                recovery = await _replace_stale_progress_anchor(
+                    getattr(result, "error", ""), full_text
+                )
+                if recovery not in ("editable", "delivered"):
+                    await _fallback_progress_lines(progress_lines)
 
             while True:
                 try:
@@ -17709,9 +17842,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Handle dedup messages: update last line with repeat counter
                     if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
-                        if progress_lines:
-                            progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                        msg = progress_lines[-1] if progress_lines else base_msg
+                        dedup_msg = f"{base_msg} (×{count + 1})"
+                        if can_edit and progress_lines:
+                            progress_lines[-1] = dedup_msg
+                            msg = progress_lines[-1]
+                        else:
+                            await _send_progress_text(dedup_msg)
+                            _last_edit_ts = time.monotonic()
+                            continue
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                         # Content bubble just landed on the platform — close off
                         # the current tool-progress bubble so the next tool
@@ -17730,7 +17868,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         msg = raw
                         progress_lines.append(msg)
 
-                    if await _roll_progress_overflow_if_needed():
+                    roll_outcome = await _roll_progress_overflow_if_needed()
+                    if roll_outcome == _ROLL_NEEDS_FALLBACK:
+                        await _fallback_progress_lines(progress_lines)
+                        progress_lines = []
+                    if roll_outcome in (_ROLL_HANDLED, _ROLL_NEEDS_FALLBACK):
                         _last_edit_ts = time.monotonic()
                         await asyncio.sleep(0.3)
                         if _run_still_current():
@@ -17742,7 +17884,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # (grammY auto-retry pattern: proactively rate-limit
                     # instead of reacting to 429s.)
                     _now = time.monotonic()
-                    _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
+                    _remaining = _PROGRESS_EDIT_INTERVAL_SECONDS - (_now - _last_edit_ts)
                     if _remaining > 0:
                         # Wait out the throttle interval, then loop back to
                         # drain any additional queued messages before sending
@@ -17762,8 +17904,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # Transient network errors (ConnectError, timeouts)
                             # must not permanently disable progress-message
                             # editing — the next cycle can catch up.  Only
-                            # permanent failures (flood control, message not
-                            # found, permissions) should set can_edit = False.
+                            # A deleted/invalid anchor is replaced below;
+                            # other permanent failures disable editing.
                             if getattr(result, "retryable", False):
                                 logger.debug(
                                     "[%s] Transient edit failure — keeping can_edit=True",
@@ -17778,20 +17920,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     adapter.name,
                                 )
                                 _last_edit_ts = time.monotonic()
+                                _flood_result = await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=msg,
+                                    reply_to=_progress_reply_to,
+                                    metadata=_progress_metadata,
+                                )
+                                _track_progress_result(_flood_result)
+                            elif _is_stale_progress_edit_error(_err):
+                                # The editable bubble was deleted or otherwise
+                                # invalidated. Re-send the complete accumulated
+                                # progress so the replacement is self-contained,
+                                # then continue coalescing against its new ID.
+                                recovery = await _replace_stale_progress_anchor(
+                                    _err, full_text
+                                )
+                                if recovery == "failed":
+                                    await _send_progress_text(full_text)
                             else:
                                 can_edit = False
-                            _flood_result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
-                            if (
-                                _cleanup_progress
-                                and getattr(_flood_result, "success", False)
-                                and getattr(_flood_result, "message_id", None)
-                            ):
-                                _cleanup_msg_ids.append(str(_flood_result.message_id))
+                                progress_msg_id = None
+                                await _send_progress_text(msg)
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
@@ -17831,38 +17980,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             raw = progress_queue.get_nowait()
                             if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                                 _, base_msg, count = raw
-                                if progress_lines:
-                                    progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                                    await _roll_progress_overflow_if_needed()
+                                dedup_msg = f"{base_msg} (×{count + 1})"
+                                if can_edit and progress_lines:
+                                    progress_lines[-1] = dedup_msg
+                                    roll_outcome = await _roll_progress_overflow_if_needed()
+                                    if roll_outcome == _ROLL_NEEDS_FALLBACK:
+                                        await _fallback_progress_lines(progress_lines)
+                                        progress_lines = []
+                                    elif roll_outcome == _ROLL_HANDLED and not can_edit:
+                                        progress_lines = []
+                                else:
+                                    await _send_progress_text(dedup_msg)
                             elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                                 # Content-bubble marker during drain: close off
                                 # the current progress bubble and start a fresh
                                 # one for any tool lines that arrived after.
-                                await _roll_progress_overflow_if_needed()
-                                if can_edit and progress_lines and progress_msg_id:
-                                    _pending_text = _progress_text(progress_lines)
-                                    try:
-                                        await _edit_progress_message(progress_msg_id, _pending_text)
-                                    except Exception:
-                                        pass
+                                await _flush_editable_progress_buffer()
                                 progress_msg_id = None
                                 progress_lines = []
                                 last_progress_msg[0] = None
                                 repeat_count[0] = 0
                             else:
+                                if not can_edit:
+                                    await _send_progress_text(str(raw))
+                                    continue
                                 progress_lines.append(raw)
-                                await _roll_progress_overflow_if_needed()
+                                roll_outcome = await _roll_progress_overflow_if_needed()
+                                if roll_outcome == _ROLL_NEEDS_FALLBACK:
+                                    await _fallback_progress_lines(progress_lines)
+                                    progress_lines = []
+                                elif roll_outcome == _ROLL_HANDLED and not can_edit:
+                                    progress_lines = []
                         except Exception:
                             break
-                    # Final edit with all remaining tools (only if editing works)
-                    if can_edit and progress_lines and progress_msg_id:
-                        await _roll_progress_overflow_if_needed()
-                    if can_edit and progress_lines and progress_msg_id:
-                        full_text = _progress_text(progress_lines)
-                        try:
-                            await _edit_progress_message(progress_msg_id, full_text)
-                        except Exception:
-                            pass
+                    # Final edit with all remaining tools. Any edit/replacement
+                    # failure falls back to bounded sends before this task exits.
+                    await _flush_editable_progress_buffer()
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)

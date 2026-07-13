@@ -152,6 +152,14 @@ def enrich_model_switch_warnings_for_gateway(
 
     messages = None
     db = getattr(runner, "_session_db", None)
+    # The gateway's _session_db is an AsyncSessionDB (every attr access
+    # returns an async-offloaded wrapper); calling it here without await
+    # would silently drop the read and hand a stray coroutine to
+    # merge_preflight_compression_warning below (#63712). Unwrap to the
+    # sync handle before calling — same idiom used elsewhere for
+    # synchronous session_db reads (e.g. gateway/run.py's Telegram topic
+    # helpers).
+    db = getattr(db, "_db", db)
     store = getattr(runner, "session_store", None)
     if db is not None and store is not None:
         try:

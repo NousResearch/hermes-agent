@@ -703,6 +703,9 @@ export const en: Translations = {
       auxiliaryTitle: 'Auxiliary models',
       resetAllToMain: 'Reset all to main',
       auxiliaryDesc: 'Helper tasks run on the main model by default. Assign a dedicated model to any task to override.',
+      staleAuxWarning: (count, names, provider) =>
+        `${count} auxiliary task${count === 1 ? '' : 's'} (${names}) still run on ${provider}, not your main model.`,
+      otherProviders: 'other providers',
       setToMain: 'Set to main',
       change: 'Change',
       autoUseMain: 'auto · use main model',
@@ -710,6 +713,21 @@ export const en: Translations = {
       fallbackAdd: 'Add fallback',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
+      moa: {
+        title: 'Mixture of Agents',
+        description:
+          'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.',
+        presetPlaceholder: 'Preset',
+        setDefault: 'Set default',
+        deletePreset: 'Delete',
+        newPresetPlaceholder: 'new preset',
+        addPreset: 'Add preset',
+        defaultLabel: 'Default:',
+        referenceTitle: index => `Reference ${index}`,
+        removeReference: 'Remove',
+        addReferenceModel: 'Add reference model',
+        aggregatorTitle: 'Aggregator'
+      },
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         web_extract: { label: 'Web extract', hint: 'Page summarization' },
@@ -1770,6 +1788,45 @@ export const en: Translations = {
         text: 'Please explain how this works and point me to the key files.'
       }
     }
+  },
+
+  intro: {
+    fallbackCopy: [
+      {
+        headline: 'What are we moving today?',
+        body: "Send a bug, branch, plan, or rough idea. I'll inspect the repo and turn it into the next concrete step."
+      },
+      {
+        headline: "What's on your mind?",
+        body: "Bring the code, question, or stuck part. I'll read the room before making changes."
+      },
+      {
+        headline: 'What should Hermes look at?',
+        body: "Send the task, failing path, or half-formed plan. I'll help turn it into action."
+      },
+      {
+        headline: 'Where should we start?',
+        body: "Bring the problem, goal, or file. I'll inspect first and keep the next step concrete."
+      },
+      {
+        headline: 'What needs attention?',
+        body: "Send the context you have. I'll help sort it into a plan or a fix."
+      }
+    ],
+    fallbackTemplates: {
+      modeOnHeadline: label => `${label} mode is on. What should we work on?`,
+      modeOnBody:
+        "Send the task, file, or rough idea. I'll use your configured voice and keep the work grounded in this repo.",
+      needSeeHeadline: label => `What does ${label} Hermes need to see?`,
+      needSeeBody: "Bring the context or the stuck part. I'll adapt to your configured personality.",
+      readyHeadline: label => `${label} mode is ready.`,
+      readyBody: "Send the problem, file, or idea. I'll follow the personality you've configured.",
+      tackleHeadline: label => `What should ${label} Hermes tackle?`,
+      tackleBody: "Drop the task here. I'll keep the work grounded in the repo.",
+      beginHeadline: 'Where should we begin?',
+      beginBody: label => `Give me the context and I'll answer in ${label} mode.`
+    },
+    copy: {}
   },
 
   statusStack: {

@@ -47,6 +47,11 @@ interface AuxTaskCopy {
   hint: string
 }
 
+export interface IntroCopy {
+  headline: string
+  body: string
+}
+
 export interface Translations {
   common: {
     apply: string
@@ -607,6 +612,8 @@ export interface Translations {
       auxiliaryTitle: string
       resetAllToMain: string
       auxiliaryDesc: string
+      staleAuxWarning: (count: number, names: string, provider: string) => string
+      otherProviders: string
       setToMain: string
       change: string
       autoUseMain: string
@@ -614,6 +621,20 @@ export interface Translations {
       fallbackAdd: string
       fallbackEmpty: string
       notInCatalog: string
+      moa: {
+        title: string
+        description: string
+        presetPlaceholder: string
+        setDefault: string
+        deletePreset: string
+        newPresetPlaceholder: string
+        addPreset: string
+        defaultLabel: string
+        referenceTitle: (index: number) => string
+        removeReference: string
+        addReferenceModel: string
+        aggregatorTitle: string
+      }
       tasks: Record<string, AuxTaskCopy>
     }
     providers: {
@@ -1447,6 +1468,23 @@ export interface Translations {
     snippets: Record<string, { label: string; description: string; text: string }>
     dropFiles: string
     dropSession: string
+  }
+
+  intro?: {
+    fallbackCopy: readonly IntroCopy[]
+    fallbackTemplates: {
+      modeOnHeadline: (label: string) => string
+      modeOnBody: string
+      needSeeHeadline: (label: string) => string
+      needSeeBody: string
+      readyHeadline: (label: string) => string
+      readyBody: string
+      tackleHeadline: (label: string) => string
+      tackleBody: string
+      beginHeadline: string
+      beginBody: (label: string) => string
+    }
+    copy: Record<string, readonly IntroCopy[]>
   }
 
   statusStack: {

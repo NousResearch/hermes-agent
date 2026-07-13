@@ -1,5 +1,8 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { I18nProvider } from '@/i18n'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
@@ -20,6 +23,7 @@ const saveMoaModels = vi.fn()
 const setEnvVar = vi.fn()
 const getHermesConfigRecord = vi.fn()
 const saveHermesConfig = vi.fn()
+const setApiRequestProfile = vi.fn()
 const startManualProviderOAuth = vi.fn()
 
 vi.mock('@/hermes', () => ({
@@ -32,7 +36,8 @@ vi.mock('@/hermes', () => ({
   saveMoaModels: (body: unknown) => saveMoaModels(body),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   getHermesConfigRecord: () => getHermesConfigRecord(),
-  saveHermesConfig: (config: unknown) => saveHermesConfig(config)
+  saveHermesConfig: (config: unknown) => saveHermesConfig(config),
+  setApiRequestProfile: (profile: string) => setApiRequestProfile(profile)
 }))
 
 vi.mock('@/store/onboarding', () => ({
@@ -69,10 +74,22 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderModelSettings() {
+async function renderModelSettings(locale?: 'zh') {
   const { ModelSettings } = await import('./model-settings')
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const content = locale ? (
+    <I18nProvider configClient={null} initialLocale={locale}>
+      <ModelSettings />
+    </I18nProvider>
+  ) : (
+    <ModelSettings />
+  )
 
-  return render(<ModelSettings />)
+  return render(
+    <QueryClientProvider client={queryClient}>
+      {content}
+    </QueryClientProvider>
+  )
 }
 
 describe('ModelSettings', () => {
@@ -163,8 +180,8 @@ describe('ModelSettings', () => {
     fireEvent.click(applyButton)
 
     // The switch-time notice names the pinned provider and offers a reset.
-    expect(await screen.findByText(/still run on/)).toBeTruthy()
-    expect(screen.getByText('nous')).toBeTruthy()
+    const warning = await screen.findByText(/still run on/)
+    expect(warning.textContent).toContain('nous')
   })
 
   it('shows a persistent banner when a loaded aux slot mismatches the main provider', async () => {
@@ -177,5 +194,44 @@ describe('ModelSettings', () => {
 
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
+  })
+
+  it('renders stale auxiliary and MoA copy from the zh i18n catalog', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'curator', provider: 'openrouter', model: 'anthropic/claude-opus-4.7', base_url: '' }]
+    })
+    getMoaModels.mockResolvedValueOnce({
+      active_preset: 'default',
+      aggregator: { provider: 'nous', model: 'hermes-4' },
+      aggregator_temperature: 0,
+      default_preset: 'default',
+      enabled: true,
+      max_tokens: 4096,
+      presets: {
+        default: {
+          aggregator: { provider: 'nous', model: 'hermes-4' },
+          aggregator_temperature: 0,
+          enabled: true,
+          max_tokens: 4096,
+          reference_models: [{ provider: 'nous', model: 'hermes-4-mini' }],
+          reference_temperature: 0
+        }
+      },
+      reference_models: [{ provider: 'nous', model: 'hermes-4-mini' }],
+      reference_temperature: 0
+    })
+
+    await renderModelSettings('zh')
+
+    expect(await screen.findByText('1 个辅助任务（维护器）仍在 openrouter 上运行，而不是主模型。')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: '全部重置为主模型' }).length).toBeGreaterThan(0)
+    expect(screen.getByText('Mixture of Agents')).toBeTruthy()
+    expect(
+      screen.getByText('配置命名预设，它们会显示为 Mixture of Agents 提供方下的模型。聚合器是实际执行的模型。')
+    ).toBeTruthy()
+    expect(screen.getByText('参考模型 1')).toBeTruthy()
+    expect(screen.getByText('添加参考模型')).toBeTruthy()
+    expect(screen.getByText('聚合器')).toBeTruthy()
   })
 })

@@ -1,17 +1,16 @@
 import { type CSSProperties, useState } from 'react'
 
+import { type IntroCopy, type Translations, useI18n } from '@/i18n'
+import { en } from '@/i18n/en'
 import { capitalize, normalize } from '@/lib/text'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
-type IntroCopy = {
-  headline: string
-  body: string
-}
-
 type IntroCopyRecord = IntroCopy & {
   personality: string
 }
+
+type IntroTranslations = NonNullable<Translations['intro']>
 
 export type IntroProps = {
   personality?: string
@@ -19,29 +18,6 @@ export type IntroProps = {
 }
 
 const NEUTRAL_PERSONALITIES = new Set(['', 'default', 'none', 'neutral'])
-
-const FALLBACK_COPY: IntroCopy[] = [
-  {
-    headline: 'What are we moving today?',
-    body: "Send a bug, branch, plan, or rough idea. I'll inspect the repo and turn it into the next concrete step."
-  },
-  {
-    headline: "What's on your mind?",
-    body: "Bring the code, question, or stuck part. I'll read the room before making changes."
-  },
-  {
-    headline: 'What should Hermes look at?',
-    body: "Send the task, failing path, or half-formed plan. I'll help turn it into action."
-  },
-  {
-    headline: 'Where should we start?',
-    body: "Bring the problem, goal, or file. I'll inspect first and keep the next step concrete."
-  },
-  {
-    headline: 'What needs attention?',
-    body: "Send the context you have. I'll help sort it into a plan or a fix."
-  }
-]
 
 function normalizeKey(value?: string): string {
   return normalize(value)
@@ -104,61 +80,99 @@ function parseIntroCopy(raw: string): Record<string, IntroCopy[]> {
 }
 
 const INTRO_COPY_BY_PERSONALITY = parseIntroCopy(introCopyJsonl)
+const DEFAULT_INTRO_TRANSLATIONS = en.intro!
 
-function neutralCopy(): IntroCopy[] {
-  return INTRO_COPY_BY_PERSONALITY.none || INTRO_COPY_BY_PERSONALITY.default || FALLBACK_COPY
+function validCopy(copies: readonly IntroCopy[] | undefined): readonly IntroCopy[] | null {
+  return copies?.length ? copies : null
 }
 
-function fallbackCopyForPersonality(personalityKey: string): IntroCopy[] {
+function neutralCopy(
+  localized: Record<string, readonly IntroCopy[]>,
+  fallbackCopy: readonly IntroCopy[]
+): readonly IntroCopy[] {
+  return (
+    validCopy(localized.none) ||
+    validCopy(localized.default) ||
+    validCopy(INTRO_COPY_BY_PERSONALITY.none) ||
+    validCopy(INTRO_COPY_BY_PERSONALITY.default) ||
+    fallbackCopy
+  )
+}
+
+function localizedCopyForPersonality(
+  localized: Record<string, readonly IntroCopy[]>,
+  personalityKey: string
+): readonly IntroCopy[] | null {
   if (NEUTRAL_PERSONALITIES.has(personalityKey)) {
-    return neutralCopy()
+    return validCopy(localized[personalityKey]) || validCopy(localized.none) || validCopy(localized.default)
+  }
+
+  return validCopy(localized[personalityKey])
+}
+
+function fallbackCopyForPersonality(
+  personalityKey: string,
+  fallbackTemplates: IntroTranslations['fallbackTemplates']
+): readonly IntroCopy[] {
+  if (NEUTRAL_PERSONALITIES.has(personalityKey)) {
+    return []
   }
 
   const label = titleize(personalityKey)
 
   return [
     {
-      headline: `${label} mode is on. What should we work on?`,
-      body: "Send the task, file, or rough idea. I'll use your configured voice and keep the work grounded in this repo."
+      headline: fallbackTemplates.modeOnHeadline(label),
+      body: fallbackTemplates.modeOnBody
     },
     {
-      headline: `What does ${label} Hermes need to see?`,
-      body: "Bring the context or the stuck part. I'll adapt to your configured personality."
+      headline: fallbackTemplates.needSeeHeadline(label),
+      body: fallbackTemplates.needSeeBody
     },
     {
-      headline: `${label} mode is ready.`,
-      body: "Send the problem, file, or idea. I'll follow the personality you've configured."
+      headline: fallbackTemplates.readyHeadline(label),
+      body: fallbackTemplates.readyBody
     },
     {
-      headline: `What should ${label} Hermes tackle?`,
-      body: "Drop the task here. I'll keep the work grounded in the repo."
+      headline: fallbackTemplates.tackleHeadline(label),
+      body: fallbackTemplates.tackleBody
     },
     {
-      headline: 'Where should we begin?',
-      body: `Give me the context and I'll answer in ${label} mode.`
+      headline: fallbackTemplates.beginHeadline,
+      body: fallbackTemplates.beginBody(label)
     }
   ]
 }
 
-function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
-  return copies[Math.abs(seed) % copies.length] || FALLBACK_COPY[0]
+function pickCopy(copies: readonly IntroCopy[], seed = 0, fallbackCopy: readonly IntroCopy[]): IntroCopy {
+  return copies[Math.abs(seed) % copies.length] || fallbackCopy[0]
 }
 
 const WORDMARK = 'HERMES AGENT'
 
-function resolveCopy(personality?: string, seed?: number): IntroCopy {
+function resolveCopy(
+  personality: string | undefined,
+  seed: number | undefined,
+  translations: IntroTranslations
+): IntroCopy {
   const personalityKey = normalizeKey(personality)
+  const localizedCopy = localizedCopyForPersonality(translations.copy, personalityKey)
+
+  if (localizedCopy) {
+    return pickCopy(localizedCopy, seed, translations.fallbackCopy)
+  }
 
   const copies = NEUTRAL_PERSONALITIES.has(personalityKey)
-    ? INTRO_COPY_BY_PERSONALITY[personalityKey] || neutralCopy()
-    : INTRO_COPY_BY_PERSONALITY[personalityKey] || fallbackCopyForPersonality(personalityKey)
+    ? neutralCopy(translations.copy, translations.fallbackCopy)
+    : INTRO_COPY_BY_PERSONALITY[personalityKey] || fallbackCopyForPersonality(personalityKey, translations.fallbackTemplates)
 
-  return pickCopy(copies, seed)
+  return pickCopy(copies, seed, translations.fallbackCopy)
 }
 
 export function Intro({ personality, seed }: IntroProps) {
+  const { t } = useI18n()
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
-  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const copy = resolveCopy(personality, mountSeed + (seed ?? 0), t.intro ?? DEFAULT_INTRO_TRANSLATIONS)
 
   return (
     <div

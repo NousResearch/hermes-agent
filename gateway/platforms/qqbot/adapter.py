@@ -196,24 +196,42 @@ class QQAdapter(BasePlatformAdapter):
     def is_connected(self) -> bool:
         """Return True only when the QQ WebSocket transport is usable."""
         return bool(self._running and self._ws and not self._ws.closed)
-    # -- Active instance registry (class-level singleton) -------------------
-
-    _active_instance: ClassVar[Optional["QQAdapter"]] = None
-
-    @classmethod
-    def get_active(cls) -> Optional["QQAdapter"]:
-        """Return the currently connected QQAdapter, or None."""
-        return cls._active_instance
+    # -- Active instance registry (profile-aware) --------------------------
+    # Keyed by profile name so profile multiplexing does not route a send
+    # through another profile's connection or credentials.
+    _active_instances: ClassVar[Dict[str, "QQAdapter"]] = {}
 
     @classmethod
-    def set_active(cls, adapter: Optional["QQAdapter"]) -> None:
-        """Register (or clear) the active adapter instance."""
-        cls._active_instance = adapter
+    def get_active(cls, profile_name: Optional[str] = None) -> Optional["QQAdapter"]:
+        """Return the connected QQAdapter for *profile_name*, or None.
+
+        When *profile_name* is omitted, returns the first connected adapter
+        (backwards-compatible single-profile lookup).
+        """
+        if profile_name:
+            return cls._active_instances.get(profile_name)
+        for adapter in cls._active_instances.values():
+            if adapter.is_connected:
+                return adapter
+        return None
+
+    @classmethod
+    def set_active(
+        cls, adapter: Optional["QQAdapter"], profile_name: Optional[str] = None
+    ) -> None:
+        """Register (or clear) the active adapter instance for *profile_name*."""
+        if profile_name is None:
+            profile_name = getattr(adapter, "_profile_name", "default") if adapter else "default"
+        if adapter is None:
+            cls._active_instances.pop(profile_name, None)
+        else:
+            cls._active_instances[profile_name] = adapter
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.QQBOT)
 
         extra = config.extra or {}
+        self._profile_name = str(extra.get("profile_name") or "default").strip()
         self._app_id = str(extra.get("app_id") or os.getenv("QQ_APP_ID", "")).strip()
         self._client_secret = str(
             extra.get("client_secret") or os.getenv("QQ_CLIENT_SECRET", "")
@@ -339,7 +357,7 @@ class QQAdapter(BasePlatformAdapter):
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             self._mark_connected()
-            QQAdapter.set_active(self)
+            QQAdapter.set_active(self, profile_name=self._profile_name)
             logger.info("[%s] Connected", self._log_tag)
             return True
         except Exception as exc:
@@ -354,8 +372,7 @@ class QQAdapter(BasePlatformAdapter):
         """Close all connections and stop listeners."""
         self._running = False
         self._mark_disconnected()
-        if QQAdapter._active_instance is self:
-            QQAdapter.set_active(None)
+        QQAdapter.set_active(None, profile_name=self._profile_name)
 
         if self._listen_task:
             self._listen_task.cancel()
@@ -2473,23 +2490,33 @@ class QQAdapter(BasePlatformAdapter):
         _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
         _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 
-        # Deliver media files first
+        # Deliver media files first — propagate every SendResult so a failed
+        # upload (or an unsupported-chat result that does not raise) surfaces
+        # instead of being silently dropped.
         for media_path, is_voice in media_files:
             try:
                 ext = Path(media_path).suffix.lower()
                 if is_voice or ext in _AUDIO_EXTS:
-                    await self.send_voice(chat_id=chat_id, audio_path=media_path)
+                    media_result = await self.send_voice(chat_id=chat_id, audio_path=media_path)
                 elif ext in _VIDEO_EXTS:
-                    await self.send_video(chat_id=chat_id, video_path=media_path)
+                    media_result = await self.send_video(chat_id=chat_id, video_path=media_path)
                 elif ext in _IMAGE_EXTS:
-                    await self.send_image_file(chat_id=chat_id, image_path=media_path)
+                    media_result = await self.send_image_file(chat_id=chat_id, image_path=media_path)
                 else:
-                    await self.send_document(chat_id=chat_id, file_path=media_path)
+                    media_result = await self.send_document(chat_id=chat_id, file_path=media_path)
             except Exception as exc:
                 logger.warning(
                     "[%s] media delivery failed for %s: %s",
                     self._log_tag, media_path, exc,
                 )
+                return SendResult(success=False, error=f"Media delivery failed: {exc}", retryable=True)
+
+            if not media_result.success:
+                logger.warning(
+                    "[%s] media delivery failed for %s: %s",
+                    self._log_tag, media_path, media_result.error,
+                )
+                return media_result
 
         # Deliver remaining text content
         if cleaned_content and cleaned_content.strip():

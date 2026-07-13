@@ -1606,17 +1606,22 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None):
             "Start the gateway with qqbot platform enabled first."
         )
 
-    # Re-inject MEDIA: tags so adapter.send() → extract_media() picks them up
+    # Re-inject MEDIA: tags so adapter.send() → extract_media() picks them up.
+    # Use [[audio_as_voice]] + MEDIA:<path> (the established contract) instead
+    # of a VOICE:<path> tag that extract_media() does not parse.
     content = message or ""
     if media_files:
         tags = []
+        voice_directive = ""
         for item in media_files:
             if isinstance(item, tuple):
                 path, is_voice = item
-                tags.append(f"VOICE:{path}" if is_voice else f"MEDIA:{path}")
+                if is_voice:
+                    voice_directive = "[[audio_as_voice]]\n"
+                tags.append(f"MEDIA:{path}")
             else:
                 tags.append(f"MEDIA:{item}")
-        content = "\n".join(tags) + ("\n" + content if content else "")
+        content = voice_directive + "\n".join(tags) + ("\n" + content if content else "")
 
     try:
         result = await adapter.send(chat_id, content)

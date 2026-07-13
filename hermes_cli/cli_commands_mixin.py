@@ -36,7 +36,28 @@ from hermes_cli.browser_connect import (
 )
 
 
-def _stream_finetune_subprocess(cmd_args, *, cwd, env, timeout_seconds, print_fn):
+# Serializes reads/writes of the CLI instance's ``_finetune_active_proc``
+# between the process_loop worker thread (which runs the finetune child) and
+# the prompt_toolkit UI thread (whose Ctrl+C handler kills it).
+_FINETUNE_PROC_LOCK = threading.Lock()
+
+
+def _signal_finetune_group(proc, sig) -> None:
+    """Signal ``proc``'s process group, falling back to the child alone."""
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(proc.pid, sig)
+        else:  # pragma: no cover - non-POSIX fallback
+            proc.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def _stream_finetune_subprocess(cmd_args, *, cwd, env, timeout_seconds, print_fn,
+                                on_proc=None):
     """Run ``cmd_args`` streaming stdout lines to ``print_fn`` with a hard deadline.
 
     A reader thread feeds lines into a queue and the main loop polls it with
@@ -48,6 +69,13 @@ def _stream_finetune_subprocess(cmd_args, *, cwd, env, timeout_seconds, print_fn
     The child is launched with ``start_new_session=True`` so on timeout or
     Ctrl+C the whole process group can be killed cleanly, including any
     grandchildren the script spawned.
+
+    ``on_proc``, when given, is called with the live ``Popen`` right after
+    launch and with ``None`` once the child is done (always, via finally).
+    The TUI Ctrl+C handler uses this to find and kill the child: this
+    function runs in the process_loop worker thread, where the
+    ``KeyboardInterrupt`` branch below is unreachable in TUI mode because
+    prompt_toolkit consumes Ctrl+C on the UI thread.
 
     Returns the child's exit code; raises ``subprocess.TimeoutExpired`` when
     the deadline passes.
@@ -66,67 +94,73 @@ def _stream_finetune_subprocess(cmd_args, *, cwd, env, timeout_seconds, print_fn
         env=env,
         start_new_session=True,
     )
+    if on_proc is not None:
+        on_proc(proc)
 
-    def _kill_group(sig) -> None:
-        """Signal the child's process group, falling back to the child alone."""
-        try:
-            if hasattr(os, "killpg"):
-                os.killpg(proc.pid, sig)
-            else:  # pragma: no cover - non-POSIX fallback
-                proc.kill()
-        except (ProcessLookupError, PermissionError, OSError):
-            try:
-                proc.kill()
-            except OSError:
-                pass
-
-    lines: "queue_mod.Queue" = queue_mod.Queue()
-
-    def _reader() -> None:
-        try:
-            for line in proc.stdout:
-                lines.put(line)
-        except Exception:
-            pass
-        finally:
-            lines.put(None)  # EOF sentinel
-
-    reader = threading.Thread(target=_reader, daemon=True)
-    reader.start()
-
-    deadline = time.time() + timeout_seconds
-    timed_out = False
     try:
-        while True:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                timed_out = True
-                break
-            try:
-                line = lines.get(timeout=min(remaining, 1.0))
-            except queue_mod.Empty:
-                continue  # no output yet — loop re-checks the deadline
-            if line is None:
-                break  # EOF — child closed stdout
-            print_fn(line.rstrip("\n"))
-    except KeyboardInterrupt:
-        _kill_group(signal.SIGTERM)
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _kill_group(signal.SIGKILL)
-        raise
+        lines: "queue_mod.Queue" = queue_mod.Queue()
 
-    if timed_out:
-        _kill_group(signal.SIGKILL)
+        def _reader() -> None:
+            try:
+                for line in proc.stdout:
+                    lines.put(line)
+            except Exception:
+                pass
+            finally:
+                lines.put(None)  # EOF sentinel
+
+        reader = threading.Thread(target=_reader, daemon=True)
+        reader.start()
+
+        deadline = time.time() + timeout_seconds
+        timed_out = False
+        try:
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                try:
+                    line = lines.get(timeout=min(remaining, 1.0))
+                except queue_mod.Empty:
+                    continue  # no output yet — loop re-checks the deadline
+                if line is None:
+                    break  # EOF — child closed stdout
+                print_fn(line.rstrip("\n"))
+        except KeyboardInterrupt:
+            _signal_finetune_group(proc, signal.SIGTERM)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _signal_finetune_group(proc, signal.SIGKILL)
+            raise
+
+        if timed_out:
+            _signal_finetune_group(proc, signal.SIGKILL)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:  # pragma: no cover - kill -9 raced
+                pass
+            raise subprocess.TimeoutExpired(cmd_args, timeout_seconds)
+
         try:
             proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:  # pragma: no cover - kill -9 raced
-            pass
-        raise subprocess.TimeoutExpired(cmd_args, timeout_seconds)
-
-    proc.wait(timeout=10)
-    return proc.returncode
+        except subprocess.TimeoutExpired:
+            # The child closed stdout but is still alive >10s later (e.g. it
+            # redirected its own output and kept working). Kill the group and
+            # report what actually happened, instead of letting this
+            # TimeoutExpired escape to the caller and masquerade as the
+            # overall deadline ("timed out after 6h") with the child alive.
+            _signal_finetune_group(proc, signal.SIGKILL)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:  # pragma: no cover - kill -9 raced
+                pass
+            print_fn("Child closed stdout but kept running; killed its process group.")
+        return proc.returncode
+    finally:
+        if on_proc is not None:
+            on_proc(None)
 
 
 class CLICommandsMixin:
@@ -1267,6 +1301,31 @@ class CLICommandsMixin:
         _set_active(result.slug)
         print(f"(^_^)b {result.display_name} hatched and adopted — it'll pop in shortly!")
 
+    def _set_finetune_active_proc(self, proc) -> None:
+        """Track the live /finetune child Popen (clear with ``None``).
+
+        Set/cleared by ``_stream_finetune_subprocess`` (via its ``on_proc``
+        callback) so the TUI Ctrl+C handler on the UI thread can find and
+        kill the child running in the process_loop worker thread.
+        """
+        with _FINETUNE_PROC_LOCK:
+            self._finetune_active_proc = proc
+
+    def _interrupt_finetune_subprocess(self, *, force: bool = False) -> bool:
+        """Signal the tracked /finetune child's process group.
+
+        SIGTERM by default, SIGKILL when ``force``. Returns True when a live
+        child was signalled, False when there is nothing to interrupt.
+        """
+        import signal
+
+        with _FINETUNE_PROC_LOCK:
+            proc = getattr(self, "_finetune_active_proc", None)
+        if proc is None or proc.poll() is not None:
+            return False
+        _signal_finetune_group(proc, signal.SIGKILL if force else signal.SIGTERM)
+        return True
+
     def _handle_finetune_command(self, cmd: str):
         """Handle the /finetune command — runs scripts from the finetune skill."""
         import shlex
@@ -1275,7 +1334,19 @@ class CLICommandsMixin:
 
         import cli as _cli_mod
         from cli import _cprint
-        from hermes_cli.config import get_hermes_home
+        from hermes_cli.config import get_hermes_home, load_config
+
+        # Master gate: the whole pipeline is opt-in via finetune.enabled.
+        # Refuse every subcommand while disabled so config alone decides
+        # whether any skill script can run.
+        try:
+            ft_enabled = bool(load_config().get("finetune", {}).get("enabled"))
+        except Exception:
+            ft_enabled = False
+        if not ft_enabled:
+            _cprint("Finetune is disabled.")
+            _cprint("  Enable it in config.yaml: finetune: { enabled: true }")
+            return
 
         # Locate the skill scripts directory.
         # Prefer the bundled optional-skills location; fall back to ~/.hermes/skills.
@@ -1290,7 +1361,11 @@ class CLICommandsMixin:
             return
 
         # Parse subcommand + args
-        parts = shlex.split(cmd)
+        try:
+            parts = shlex.split(cmd)
+        except ValueError as e:
+            _cprint(f"Couldn't parse /finetune arguments: {e}")
+            return
         if len(parts) < 2:
             _cprint("Usage: /finetune <subcommand> [args]")
             _cprint("Subcommands: status, extract, score, cluster, train, eval, bench, retro, promote, rollback, redeploy, route, run, cron, gc")
@@ -1384,6 +1459,9 @@ class CLICommandsMixin:
                         env=child_env,
                         timeout_seconds=timeout_seconds,
                         print_fn=_cprint,
+                        # Track the child on the CLI instance so the TUI
+                        # Ctrl+C handler can kill its process group.
+                        on_proc=self._set_finetune_active_proc,
                     )
                     if returncode != 0:
                         _cprint(f"Command exited with code {returncode}")

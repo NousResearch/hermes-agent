@@ -1,17 +1,24 @@
 """Integration tests for the finetune skill's wiring into core CLI/gateway.
 
 Covers the review findings on the feat/finetune integration:
-  - gateway reaction-hook registration honors finetune.feedback.gateway_reactions
-    (the registration must actually run — it was previously dead code)
+  - finetune.enabled is a real master gate: /finetune refuses every
+    subcommand while disabled, and the Ctrl+Y/Ctrl+N feedback keybindings
+    require it in addition to feedback.cli_keybindings
+  - the gateway reaction-feedback builtin is gone from core (no platform
+    adapter ever emitted reaction:add, and session-level emoji labels from
+    arbitrary chat members are unsafe as training signal)
   - /finetune command registration is cli_only and includes the gc subcommand
   - streaming subprocess runner enforces its deadline even when the child
-    hangs silently (no output)
+    hangs silently (no output), tracks the live child via on_proc so the TUI
+    Ctrl+C handler can kill it, and kills the child honestly when it closes
+    stdout but keeps running
   - the CLI feedback writer never raises out of a prompt_toolkit key handler,
     even with a read-only/unwritable HERMES_HOME
   - the finetune-routing plugin restores sys.path after importing route.py
 """
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -26,72 +33,108 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ---------------------------------------------------------------------------
-# 1. Gateway reaction-hook registration (config-gated builtin)
+# 1. Gateway reactions — removed from core
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def hooks_registry(monkeypatch, tmp_path):
-    """Return a factory producing a fresh HookRegistry with a given config."""
+def test_reaction_hook_removed_from_core(monkeypatch, tmp_path):
+    """No reaction:add handler exists, even with a stale legacy config flag."""
     import gateway.hooks as hooks_mod
     import hermes_cli.config as config_mod
 
-    # No on-disk hooks — only builtins should register.
+    assert not hasattr(hooks_mod, "_finetune_reaction_handler")
+
+    # No on-disk hooks — only builtins could register.
     monkeypatch.setattr(hooks_mod, "HOOKS_DIR", tmp_path / "no-such-hooks")
-
-    def _make(config):
-        monkeypatch.setattr(config_mod, "load_config", lambda *a, **k: config)
-        registry = hooks_mod.HookRegistry()
-        registry.discover_and_load()
-        return registry
-
-    return _make
-
-
-def test_reaction_hook_registered_when_gateway_reactions_enabled(hooks_registry):
-    import gateway.hooks as hooks_mod
-
-    registry = hooks_registry(
-        {"finetune": {"feedback": {"gateway_reactions": True}}}
+    # A user config still carrying the removed flag must not resurrect it.
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda *a, **k: {
+            "finetune": {"enabled": True, "feedback": {"gateway_reactions": True}}
+        },
     )
-    handlers = registry._handlers.get("reaction:add", [])
-    assert hooks_mod._finetune_reaction_handler in handlers
-    names = [h["name"] for h in registry.loaded_hooks]
-    assert "finetune-feedback" in names
+    registry = hooks_mod.HookRegistry()
+    registry.discover_and_load()
+    assert "reaction:add" not in registry._handlers
+    assert all(h["name"] != "finetune-feedback" for h in registry.loaded_hooks)
+
+
+# ---------------------------------------------------------------------------
+# 1b. finetune.enabled master gate — /finetune command
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def finetune_cmd(monkeypatch):
+    """Run _handle_finetune_command against a given config; return printed lines."""
+    import cli as cli_mod
+    import hermes_cli.config as config_mod
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+    printed = []
+    monkeypatch.setattr(cli_mod, "_cprint", printed.append)
+
+    def _run(cmd, config):
+        monkeypatch.setattr(config_mod, "load_config", lambda *a, **k: config)
+        CLICommandsMixin._handle_finetune_command(types.SimpleNamespace(), cmd)
+        return printed
+
+    return _run
 
 
 @pytest.mark.parametrize(
     "config",
     [
-        {"finetune": {"feedback": {"gateway_reactions": False}}},
+        {"finetune": {"enabled": False}},
         {"finetune": {}},
         {},
     ],
 )
-def test_reaction_hook_not_registered_when_disabled(hooks_registry, config):
-    registry = hooks_registry(config)
-    assert "reaction:add" not in registry._handlers
-    names = [h["name"] for h in registry.loaded_hooks]
-    assert "finetune-feedback" not in names
+def test_finetune_command_refused_when_disabled(finetune_cmd, config):
+    """Every subcommand — even read-only status — is refused while disabled."""
+    printed = finetune_cmd("/finetune status", config)
+    out = "\n".join(printed)
+    assert "disabled" in out.lower()
+    assert "enabled: true" in out  # tells the user how to turn it on
+    assert "Running:" not in out  # no script was launched
 
 
-def test_reaction_handler_writes_feedback(hooks_registry, monkeypatch, tmp_path):
-    """The registered handler records thumbs up/down into feedback.jsonl."""
-    import gateway.hooks as hooks_mod
+def test_finetune_command_allowed_when_enabled(finetune_cmd):
+    """With the master gate on, /finetune proceeds (bare command → usage)."""
+    printed = finetune_cmd("/finetune", {"finetune": {"enabled": True}})
+    out = "\n".join(printed)
+    assert "disabled" not in out.lower()
+    assert "Usage: /finetune" in out
 
-    home = tmp_path / "hermes-home"
-    home.mkdir()
-    monkeypatch.setattr(hooks_mod, "get_hermes_home", lambda: home)
 
-    hooks_mod._finetune_reaction_handler(
-        "reaction:add",
-        {"emoji": "👍", "session_id": "sess-1", "platform": "telegram"},
+def test_finetune_command_unbalanced_quotes_friendly_error(finetune_cmd):
+    """shlex ValueError (unbalanced quotes) surfaces as a message, not a crash."""
+    printed = finetune_cmd(
+        "/finetune retro good 'sess-1", {"finetune": {"enabled": True}}
     )
-    feedback = home / "finetune" / "feedback.jsonl"
-    assert feedback.exists()
-    record = json.loads(feedback.read_text().strip())
-    assert record["session_id"] == "sess-1"
-    assert record["score"] == 1.0
-    assert record["signal"] == "thumbs_up"
+    out = "\n".join(printed)
+    assert "Couldn't parse /finetune arguments" in out
+
+
+# ---------------------------------------------------------------------------
+# 1c. finetune.enabled master gate — feedback keybindings
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "config, expected",
+    [
+        ({"finetune": {"enabled": True, "feedback": {"cli_keybindings": True}}}, True),
+        ({"finetune": {"enabled": False, "feedback": {"cli_keybindings": True}}}, False),
+        ({"finetune": {"enabled": True, "feedback": {"cli_keybindings": False}}}, False),
+        ({"finetune": {"enabled": True}}, False),
+        ({"finetune": {"feedback": {"cli_keybindings": True}}}, False),
+        ({}, False),
+    ],
+)
+def test_feedback_keybindings_require_enabled_and_flag(config, expected):
+    """Ctrl+Y/Ctrl+N need BOTH finetune.enabled and feedback.cli_keybindings."""
+    import cli as cli_mod
+
+    assert cli_mod.HermesCLI._finetune_feedback_keys_enabled(config) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +209,118 @@ def test_streaming_runner_streams_output_and_returns_exit_code(tmp_path):
         print_fn=lines.append,
     )
     assert rc == 3
+
+
+def test_streaming_runner_tracks_active_proc(tmp_path):
+    """on_proc gets the live Popen at launch and None when done — always."""
+    from hermes_cli.cli_commands_mixin import _stream_finetune_subprocess
+
+    seen = []
+    rc = _stream_finetune_subprocess(
+        [sys.executable, "-c", "print('ok')"],
+        cwd=str(tmp_path),
+        env=os.environ.copy(),
+        timeout_seconds=30,
+        print_fn=lambda line: None,
+        on_proc=seen.append,
+    )
+    assert rc == 0
+    assert len(seen) == 2
+    assert seen[0] is not None and seen[0].pid > 0
+    assert seen[-1] is None
+
+    # Cleared even when the runner exits by raising (deadline hit).
+    seen.clear()
+    with pytest.raises(subprocess.TimeoutExpired):
+        _stream_finetune_subprocess(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            cwd=str(tmp_path),
+            env=os.environ.copy(),
+            timeout_seconds=1.0,
+            print_fn=lambda line: None,
+            on_proc=seen.append,
+        )
+    assert seen[-1] is None
+
+
+def test_streaming_runner_kills_child_that_outlives_stdout(monkeypatch, tmp_path):
+    """A child that closes stdout but keeps running >10s is killed and
+    reported honestly — the tail-wait TimeoutExpired must not escape and
+    masquerade as the overall deadline in the caller."""
+    import hermes_cli.cli_commands_mixin as mixin_mod
+    from hermes_cli.cli_commands_mixin import _stream_finetune_subprocess
+
+    class FakeProc:
+        def __init__(self):
+            self.pid = 424242
+            self.stdout = io.StringIO("line1\n")
+            self.returncode = None
+            self.wait_calls = 0
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                # stdout hit EOF but the child is still alive.
+                raise subprocess.TimeoutExpired("fake-cmd", timeout)
+            self.returncode = -9
+            return self.returncode
+
+    fake = FakeProc()
+    kills = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: fake)
+    monkeypatch.setattr(mixin_mod.os, "killpg", lambda pid, sig: kills.append((pid, sig)))
+
+    lines = []
+    rc = _stream_finetune_subprocess(
+        ["fake-cmd"],
+        cwd=str(tmp_path),
+        env={},
+        timeout_seconds=30,
+        print_fn=lines.append,
+    )
+    import signal as signal_mod
+
+    assert rc == -9  # honest exit code, no TimeoutExpired raised
+    assert (fake.pid, signal_mod.SIGKILL) in kills
+    assert any("kept running" in line for line in lines)
+
+
+def test_interrupt_finetune_subprocess_signals_group():
+    """The UI-thread Ctrl+C path kills the tracked child's process group."""
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+    )
+    try:
+        dummy = types.SimpleNamespace(_finetune_active_proc=proc)
+        assert CLICommandsMixin._interrupt_finetune_subprocess(dummy) is True
+        assert proc.wait(timeout=10) != 0  # SIGTERM landed
+        # A dead child is no longer interruptible.
+        assert CLICommandsMixin._interrupt_finetune_subprocess(dummy) is False
+    finally:
+        if proc.poll() is None:  # pragma: no cover - cleanup on assert failure
+            proc.kill()
+
+    # Nothing tracked (attribute never set, or cleared) → nothing to do.
+    assert CLICommandsMixin._interrupt_finetune_subprocess(
+        types.SimpleNamespace()
+    ) is False
+    assert CLICommandsMixin._interrupt_finetune_subprocess(
+        types.SimpleNamespace(_finetune_active_proc=None)
+    ) is False
+
+
+def test_set_finetune_active_proc_sets_and_clears():
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+    dummy = types.SimpleNamespace()
+    sentinel = object()
+    CLICommandsMixin._set_finetune_active_proc(dummy, sentinel)
+    assert dummy._finetune_active_proc is sentinel
+    CLICommandsMixin._set_finetune_active_proc(dummy, None)
+    assert dummy._finetune_active_proc is None
 
 
 # ---------------------------------------------------------------------------

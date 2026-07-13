@@ -72,30 +72,17 @@ class HookRegistry:
     def _register_builtin_hooks(self) -> None:
         """Register built-in (shipped) hooks.
 
-        Built-ins currently shipped:
-          - finetune-feedback: records thumbs up/down reactions as finetune
-            quality signals (gated by ``finetune.feedback.gateway_reactions``).
+        No built-ins currently ship. This stays as the extension point for
+        future always-on gateway hooks so they drop in without re-plumbing
+        discover_and_load().
 
-        Extension point for future always-on gateway hooks so they drop in
-        without re-plumbing discover_and_load().
+        Note: an earlier ``finetune-feedback`` builtin registered here for
+        ``reaction:add`` — an event no platform adapter emits — and recorded
+        any chat member's emoji as a session-level training label. It was
+        removed; platform reaction feedback needs a real design first
+        (per-turn attribution, reactor authorship checks).
         """
-        # Finetune feedback: record thumbs up/down reactions as quality signals.
-        # Gated by finetune.feedback.gateway_reactions config flag.
-        try:
-            from hermes_cli.config import load_config
-            ft_cfg = load_config().get("finetune", {})
-            if ft_cfg.get("feedback", {}).get("gateway_reactions"):
-                self._handlers.setdefault("reaction:add", []).append(
-                    _finetune_reaction_handler
-                )
-                self._loaded_hooks.append({
-                    "name": "finetune-feedback",
-                    "description": "Record emoji reactions as finetune quality signals",
-                    "events": ["reaction:add"],
-                    "path": "(builtin)",
-                })
-        except Exception:
-            pass  # finetune not configured — skip silently
+        return
 
     def discover_and_load(self) -> None:
         """
@@ -244,49 +231,3 @@ class HookRegistry:
             except Exception as e:
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
         return results
-
-
-def _finetune_reaction_handler(event_type: str, context: Dict[str, Any]) -> None:
-    """Record emoji reactions as finetune quality feedback.
-
-    Expected context keys:
-        emoji: str — the reaction emoji (e.g. "👍", "thumbsup", "thumbsdown")
-        session_id: str — the session the reacted message belongs to
-        message_id: str — optional, the specific message
-        platform: str — telegram, discord, slack, etc.
-    """
-    import json
-    from datetime import datetime
-
-    emoji = context.get("emoji", "")
-    session_id = context.get("session_id", "")
-
-    # Map common emoji names/chars to scores
-    positive = {"👍", "thumbsup", "thumbs_up", "+1", "heart", "❤️", "⭐", "star"}
-    negative = {"👎", "thumbsdown", "thumbs_down", "-1", "💩", "poop"}
-
-    emoji_lower = emoji.lower().strip(":")
-    if emoji_lower in positive or emoji == "👍":
-        score = 1.0
-        signal = "thumbs_up"
-    elif emoji_lower in negative or emoji == "👎":
-        score = 0.0
-        signal = "thumbs_down"
-    else:
-        return  # Ignore non-feedback reactions
-
-    feedback_path = get_hermes_home() / "finetune" / "feedback.jsonl"
-    feedback_path.parent.mkdir(parents=True, exist_ok=True)
-
-    record = {
-        "session_id": session_id,
-        "score": score,
-        "signal": signal,
-        "platform": context.get("platform", ""),
-        "timestamp": datetime.now().isoformat(),
-    }
-    try:
-        with open(feedback_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
-    except Exception:
-        pass

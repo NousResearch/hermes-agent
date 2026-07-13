@@ -13083,6 +13083,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         return
 
+    @staticmethod
+    def _finetune_feedback_keys_enabled(config) -> bool:
+        """True when the Ctrl+Y/Ctrl+N feedback keybindings should register.
+
+        Requires BOTH the finetune.enabled master switch and the
+        finetune.feedback.cli_keybindings opt-in, so disabling the pipeline
+        also stops feedback collection.
+        """
+        ft_cfg = config.get("finetune", {}) or {}
+        return bool(ft_cfg.get("enabled")) and bool(
+            ft_cfg.get("feedback", {}).get("cli_keybindings")
+        )
+
     def _register_finetune_feedback_keybindings(self, kb, *, input_area=None) -> None:
         """Register Ctrl+Y / Ctrl+N for finetune quality feedback.
 
@@ -13922,6 +13935,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # If we only cleared overlays and the agent is NOT running, stop here
             # (don't fall through to the interrupt/exit path).
             if _overlay_cleared and not (self._agent_running and self.agent):
+                return
+
+            # A /finetune train|bench|run child is streaming in the process_loop
+            # worker thread.  This handler runs on the UI thread, so the
+            # runner's own KeyboardInterrupt path never fires in TUI mode —
+            # kill the tracked child's process group directly instead.  First
+            # press SIGTERMs; a second press within 2s escalates to SIGKILL.
+            _finetune_force = now - self._last_ctrl_c_time < 2.0
+            if self._interrupt_finetune_subprocess(force=_finetune_force):
+                self._last_ctrl_c_time = now
+                if _finetune_force:
+                    print("\n⚡ Force-killing finetune subprocess (SIGKILL)...")
+                else:
+                    print("\n⚡ Stopping finetune subprocess (SIGTERM)... (press Ctrl+C again to force kill)")
                 return
 
             if self._agent_running and self.agent:
@@ -14990,14 +15017,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
 
         # Built-in finetune feedback keybindings (Ctrl+Y / Ctrl+N), gated by
-        # finetune.feedback.cli_keybindings.  Registered here in the normal
-        # setup path — NOT inside _register_extra_tui_keybindings — so wrapper
-        # CLIs that override that extension hook without calling super()
-        # can't silently disable a built-in feature.
+        # the finetune.enabled master switch AND finetune.feedback.cli_keybindings.
+        # Registered here in the normal setup path — NOT inside
+        # _register_extra_tui_keybindings — so wrapper CLIs that override that
+        # extension hook without calling super() can't silently disable a
+        # built-in feature.
         try:
             from hermes_cli.config import load_config as _load_ft_cfg
-            _ft_cfg = _load_ft_cfg().get("finetune", {})
-            if _ft_cfg.get("feedback", {}).get("cli_keybindings"):
+            if self._finetune_feedback_keys_enabled(_load_ft_cfg()):
                 self._register_finetune_feedback_keybindings(kb, input_area=input_area)
         except Exception:
             pass

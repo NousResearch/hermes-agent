@@ -55,8 +55,8 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
                 args=(
                     weakref.ref(self, weakref_cb),
                     self._work_queue,
-                    self._initializer,
-                    self._initargs,
+                    getattr(self, '_initializer', None),
+                    getattr(self, '_initargs', ()),
                 ),
                 daemon=True,
             )

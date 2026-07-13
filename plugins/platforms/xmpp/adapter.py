@@ -395,6 +395,11 @@ class XmppAdapter(BasePlatformAdapter):
     # that don't define it) and the adapter's own send paths chunk against it.
     MAX_MESSAGE_LENGTH = 10000
 
+    # send() chunks via _chunk_body(MAX_MESSAGE_LENGTH); without this flag
+    # gateway/delivery.py truncates cron output at 4,000 chars before send()
+    # ever sees it.
+    splits_long_messages = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("xmpp"))
         extra = config.extra or {}
@@ -415,6 +420,21 @@ class XmppAdapter(BasePlatformAdapter):
         self._password: str = str(extra.get("password", ""))
         self.host: Optional[str] = extra.get("host")
         self.port: int = int(extra.get("port", 5222))
+
+        # Direct TLS ("TLS from byte one", XEP-0368 — the classic port-5223
+        # posture). Auto-enabled when the operator points us at port 5223,
+        # overridable either way via XMPP_DIRECT_TLS / direct_tls. slixmpp
+        # falls back to STARTTLS if the direct-TLS attempt fails, and
+        # plaintext stays refused in every configuration.
+        _direct_raw = str(
+            extra.get("direct_tls", os.getenv("XMPP_DIRECT_TLS", ""))
+        ).strip().lower()
+        if _direct_raw in ("1", "true", "yes", "on"):
+            self.direct_tls: bool = True
+        elif _direct_raw in ("0", "false", "no", "off"):
+            self.direct_tls = False
+        else:
+            self.direct_tls = self.port == 5223
         self.muc_nick: str = extra.get("muc_nick") or self._default_nick()
         self.muc_rooms: List[_MucRoom] = _parse_muc_rooms(
             extra.get("muc_rooms", ""), self.muc_nick
@@ -428,6 +448,11 @@ class XmppAdapter(BasePlatformAdapter):
         self.allowed_users = {
             j.strip() for j in allowed_env.split(",") if j.strip()
         }
+
+        # True only for the one-shot send_xmpp_message() path: connect as an
+        # ephemeral second resource without taking (or releasing) the
+        # per-account scoped lock held by the running gateway.
+        self._ephemeral_sender = False
 
         # Lazily created in connect()
         self.client: Optional[Any] = None
@@ -486,6 +511,24 @@ class XmppAdapter(BasePlatformAdapter):
         # watcher-driven reconnect — we accept the flag and connect normally.
         self._closing = False
         self._session_established = False
+        # One gateway per account: two adapters logged into the same JID both
+        # receive inbound stanzas (the server fans out by resource), so every
+        # message would be handled twice. Lock on the normalized bare JID —
+        # localpart/domain are case-insensitive. A same-process reacquire
+        # succeeds, so watcher-driven reconnects pass. Released from
+        # disconnect(), which every failed-connect path below goes through.
+        # The one-shot cron sender (send_xmpp_message) skips this: it attaches
+        # as a short-lived second resource, which XMPP permits by design.
+        if not self._ephemeral_sender:
+            lock_jid = self._bare(self.jid).lower()
+            if not self._acquire_platform_lock(
+                "xmpp", lock_jid, f"XMPP account {lock_jid}"
+            ):
+                # The base helper leaves the identity set on failure; clear it
+                # so a later disconnect() from this never-connected adapter
+                # can't release a lock owned by a same-PID profile.
+                self._platform_lock_identity = None
+                return False
         client = slixmpp.ClientXMPP(self.jid, self._password)
         # Plugins we need: chat states, MUC, HTTP File Upload, OOB, disco,
         # ping, delayed delivery (MUC history detection), EME hints.
@@ -518,12 +561,13 @@ class XmppAdapter(BasePlatformAdapter):
             )
 
         # Enforce TLS, refuse plaintext. The load-bearing knob in current
-        # slixmpp is ``enable_plaintext = False`` (with STARTTLS allowed and
-        # Direct-TLS off by default); the legacy ``use_starttls`` /
+        # slixmpp is ``enable_plaintext = False``. ``enable_direct_tls``
+        # follows the direct-TLS config (auto-on for port 5223) with STARTTLS
+        # kept available as a fallback; the legacy ``use_starttls`` /
         # ``force_starttls`` names are set too so the posture holds across the
         # supported slixmpp range (older releases honored those instead).
         client.enable_starttls = True
-        client.enable_direct_tls = False
+        client.enable_direct_tls = self.direct_tls
         client.enable_plaintext = False
         client.use_starttls = True       # legacy slixmpp name
         client.force_starttls = True     # legacy slixmpp name
@@ -623,6 +667,7 @@ class XmppAdapter(BasePlatformAdapter):
             self._process_task.cancel()
             self._process_task = None
         self.client = None
+        self._release_platform_lock()
         self._mark_disconnected()
 
     async def _run_process(self) -> None:
@@ -1221,6 +1266,9 @@ async def send_xmpp_message(
     a running gateway adapter instance.
     """
     adapter = XmppAdapter(pconfig)
+    # Ephemeral resource on the account — must not consult or release the
+    # gateway adapter's per-JID scoped lock (compare IRC's "-cron" nick).
+    adapter._ephemeral_sender = True
     if not check_xmpp_requirements():
         return {"success": False, "error": "slixmpp not installed"}
     try:
@@ -1368,7 +1416,10 @@ def interactive_setup() -> None:
     )
     if host:
         save_env_value("XMPP_HOST", host.strip())
-    port = prompt("Port (default 5222)", default=get_env_value("XMPP_PORT") or "")
+    port = prompt(
+        "Port (default 5222 STARTTLS; 5223 switches to direct TLS)",
+        default=get_env_value("XMPP_PORT") or "",
+    )
     if port:
         try:
             save_env_value("XMPP_PORT", str(int(port)))

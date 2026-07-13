@@ -468,9 +468,10 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATRIX_RECOVERY_KEY` | Recovery key for cross-signing verification after device key rotation. Recommended for E2EE setups with cross-signing enabled. |
 | `MATRIX_RECOVERY_KEY_OUTPUT_FILE` | Optional one-time path for a generated Matrix recovery key. Created with mode `0600` and never overwritten. |
 | `XMPP_JID` | Bot Jabber ID (e.g. `hermes@example.org`) — required to enable the XMPP platform |
-| `XMPP_PASSWORD` | XMPP account password (sent over STARTTLS only — TLS is mandatory) |
+| `XMPP_PASSWORD` | XMPP account password (sent over TLS only — STARTTLS or direct TLS; plaintext is refused) |
 | `XMPP_HOST` | Override SRV lookup if the server hostname differs from the JID domain (optional) |
-| `XMPP_PORT` | Server port (default: `5222` STARTTLS, or `5223` for direct TLS) |
+| `XMPP_PORT` | Server port (default: `5222` STARTTLS; `5223` automatically switches to direct TLS) |
+| `XMPP_DIRECT_TLS` | Force direct TLS on/off (`true`/`false`; default: enabled only when the port is `5223`) |
 | `XMPP_MUC_ROOMS` | Comma-separated MUC (group room) JIDs to join (e.g. `dev@conference.example.org/hermes`). The optional `/nick` suffix overrides `XMPP_MUC_NICK` per room. |
 | `XMPP_MUC_NICK` | Default nickname when joining MUC rooms without an explicit `/nick` suffix |
 | `XMPP_HOME_CHANNEL` | JID where cron jobs deliver results by default (DM JID or MUC room JID) |

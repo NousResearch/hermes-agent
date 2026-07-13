@@ -20,7 +20,7 @@ pip install 'hermes-agent[xmpp]'
 
 ## Security model
 
-TLS to your server is mandatory (STARTTLS is forced, plaintext refused). On top of that, the adapter does **OMEMO end-to-end encryption (XEP-0384)** for 1:1 chats, **on by default**. Like Matrix's E2EE, the OMEMO dependency (`slixmpp-omemo`) ships with the platform — it's included in `pip install 'hermes-agent[xmpp]'` and the gateway lazy-installs it on first use, so there's no separate step. (It's pure Python — no native build — so it installs cleanly on every OS.) To run TLS-only instead, set `XMPP_OMEMO_ENABLED=false`.
+TLS to your server is mandatory (STARTTLS on port 5222, direct TLS on port 5223 — plaintext is refused either way). On top of that, the adapter does **OMEMO end-to-end encryption (XEP-0384)** for 1:1 chats, **on by default**. Like Matrix's E2EE, the OMEMO dependency (`slixmpp-omemo`) ships with the platform — it's included in `pip install 'hermes-agent[xmpp]'` and the gateway lazy-installs it on first use, so there's no separate step. (It's pure Python — no native build — so it installs cleanly on every OS.) To run TLS-only instead, set `XMPP_OMEMO_ENABLED=false`.
 
 With OMEMO active, 1:1 message bodies are encrypted to the recipient's published device keys and inbound OMEMO messages are decrypted automatically. Your server operator sees only ciphertext. Details that matter:
 
@@ -69,7 +69,8 @@ Pick **XMPP (Jabber)** from the platform list. You'll be prompted for:
 | `XMPP_JID` | yes | Bot JID, e.g. `hermes@example.org` |
 | `XMPP_PASSWORD` | yes | Sent over TLS only |
 | `XMPP_HOST` | no | Override SRV lookup if your hostname differs from JID domain |
-| `XMPP_PORT` | no | Defaults to 5222 (STARTTLS). Use 5223 for direct TLS. |
+| `XMPP_PORT` | no | Defaults to 5222 (STARTTLS). Port 5223 automatically switches to direct TLS. |
+| `XMPP_DIRECT_TLS` | no | Force direct TLS on/off (`true`/`false`). Default: enabled only when the port is 5223. Plaintext is refused either way. |
 | `XMPP_MUC_ROOMS` | no | Comma-separated `room@conference.server[/nick]` entries |
 | `XMPP_MUC_NICK` | no | Default nick when a MUC entry doesn't specify one |
 | `XMPP_HOME_CHANNEL` | no | JID where cron jobs deliver results by default |

@@ -427,6 +427,183 @@ class TestXmppConnectTLSPosture:
             # force_starttls attribute is inert in current slixmpp.
             assert fake_client.enable_plaintext is False
             assert fake_client.enable_starttls is True
+            # Default port (5222) means STARTTLS; direct TLS stays off so
+            # slixmpp doesn't waste a TLS-from-byte-one attempt per connect.
+            assert fake_client.enable_direct_tls is False
+
+    @pytest.mark.asyncio
+    async def test_connect_port_5223_enables_direct_tls(self, monkeypatch):
+        # The docs advertise port 5223 for direct TLS ("TLS from byte one");
+        # pointing the adapter at 5223 must actually engage it.
+        adapter = _make_xmpp_adapter(monkeypatch, host="xmpp.example.org", port=5223)
+        fake_client = MagicMock()
+        fake_client.connect = MagicMock(
+            side_effect=lambda *a, **k: adapter._session_ready.set()
+        )
+        with patch(
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ):
+            assert await adapter.connect() is True
+        assert fake_client.enable_direct_tls is True
+        # Plaintext stays refused in every TLS configuration.
+        assert fake_client.enable_plaintext is False
+
+    def test_direct_tls_defaults_off_on_standard_port(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch)
+        assert adapter.direct_tls is False
+
+    def test_direct_tls_env_override_forces_on(self, monkeypatch):
+        # Nonstandard direct-TLS port (e.g. behind a proxy) — explicit opt-in.
+        monkeypatch.setenv("XMPP_DIRECT_TLS", "true")
+        adapter = _make_xmpp_adapter(monkeypatch, port=7443)
+        assert adapter.direct_tls is True
+
+    def test_direct_tls_env_override_forces_off_beats_port(self, monkeypatch):
+        monkeypatch.setenv("XMPP_DIRECT_TLS", "false")
+        adapter = _make_xmpp_adapter(monkeypatch, port=5223)
+        assert adapter.direct_tls is False
+
+    def test_direct_tls_extra_key_forces_on(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch, direct_tls="true")
+        assert adapter.direct_tls is True
+
+
+# ---------------------------------------------------------------------------
+# One gateway per JID (scoped account lock)
+# ---------------------------------------------------------------------------
+
+class TestXmppScopedJidLock:
+    """Two adapters logged into the same account would both consume inbound
+    stanzas (the server fans out by resource), handling every message twice.
+    connect() must take the scoped account lock (normalized bare JID) before
+    opening the persistent connection and release it from disconnect() — which
+    every failed-connect path already goes through.
+    """
+
+    def _patch_lock(self, monkeypatch, acquired=True, existing=None):
+        acquire_calls = []
+        release_calls = []
+
+        def fake_acquire(scope, identity, metadata=None):
+            acquire_calls.append((scope, identity))
+            return acquired, existing
+
+        def fake_release(scope, identity):
+            release_calls.append((scope, identity))
+
+        monkeypatch.setattr("gateway.status.acquire_scoped_lock", fake_acquire)
+        monkeypatch.setattr("gateway.status.release_scoped_lock", fake_release)
+        return acquire_calls, release_calls
+
+    @staticmethod
+    def _fake_client(adapter):
+        fake_client = MagicMock()
+        fake_client.connect = MagicMock(
+            side_effect=lambda *a, **k: adapter._session_ready.set()
+        )
+        return fake_client
+
+    @pytest.mark.asyncio
+    async def test_connect_acquires_lock_on_normalized_bare_jid(self, monkeypatch):
+        # JID localpart/domain are case-insensitive — the lock identity must
+        # be normalized so Hermes@Example.ORG and hermes@example.org collide.
+        adapter = _make_xmpp_adapter(monkeypatch, jid="Hermes@Example.ORG")
+        acquire_calls, _ = self._patch_lock(monkeypatch)
+        fake_client = self._fake_client(adapter)
+        with patch(
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ):
+            assert await adapter.connect() is True
+        assert acquire_calls == [("xmpp", "hermes@example.org")]
+
+    @pytest.mark.asyncio
+    async def test_connect_conflict_fails_before_opening_connection(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch)
+        self._patch_lock(monkeypatch, acquired=False, existing={"pid": 4242})
+        with patch("plugin_adapter_xmpp.slixmpp.ClientXMPP") as ctor:
+            assert await adapter.connect() is False
+        assert not ctor.called
+        assert adapter.has_fatal_error is True
+        # The base helper leaves the identity set on a failed acquire; the
+        # adapter must clear it so a later disconnect() from this
+        # never-connected instance can't release the owner's lock (profiles
+        # in the same process share a PID, which release treats as ownership).
+        assert adapter._platform_lock_identity is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_releases_lock(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch)
+        _, release_calls = self._patch_lock(monkeypatch)
+        fake_client = self._fake_client(adapter)
+        with patch(
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ):
+            assert await adapter.connect() is True
+            assert release_calls == []
+            await adapter.disconnect()
+        assert release_calls == [("xmpp", "hermes@example.org")]
+
+    @pytest.mark.asyncio
+    async def test_failed_connect_releases_lock(self, monkeypatch):
+        # Session never establishes → connect() times out, cleans up via
+        # disconnect(), and must not leave the account lock held.
+        adapter = _make_xmpp_adapter(monkeypatch)
+        monkeypatch.setattr(adapter, "_CONNECT_TIMEOUT_SECS", 0.01)
+        _, release_calls = self._patch_lock(monkeypatch)
+        fake_client = MagicMock()
+        fake_client.connect = MagicMock()  # never fires session_start
+        with patch(
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ):
+            assert await adapter.connect() is False
+        assert release_calls == [("xmpp", "hermes@example.org")]
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_skips_lock(self, monkeypatch):
+        # send_xmpp_message() is the one-shot cron / send_message_tool path.
+        # It attaches as a short-lived second *resource* on the account
+        # (protocol-legal in XMPP) and must not trip — or worse, release —
+        # the running gateway's account lock. Compare IRC, whose standalone
+        # sender connects under a distinct "-cron" nick for the same reason.
+        monkeypatch.setenv("XMPP_ALLOWED_USERS", "")
+        monkeypatch.setenv("XMPP_ALLOW_ALL_USERS", "")
+        monkeypatch.setenv("XMPP_OMEMO_ENABLED", "false")
+        acquire_calls, release_calls = self._patch_lock(
+            monkeypatch, acquired=False, existing={"pid": 4242}
+        )
+        config = PlatformConfig()
+        config.enabled = True
+        config.extra = {"jid": "hermes@example.org", "password": "pw"}
+
+        fake_client = MagicMock()
+
+        def _connect(*a, **k):
+            # session_ready is created inside connect(); resolve it via the
+            # adapter the standalone helper constructed.
+            _connect.owner._session_ready.set()
+
+        fake_client.connect = MagicMock(side_effect=_connect)
+        sent = []
+        fake_client.send_message = lambda **kw: sent.append(kw) or MagicMock()
+
+        orig_init = _xmpp.XmppAdapter.__init__
+
+        def _capture_init(self, cfg):
+            orig_init(self, cfg)
+            _connect.owner = self
+
+        monkeypatch.setattr(_xmpp.XmppAdapter, "__init__", _capture_init)
+        with patch(
+            "plugin_adapter_xmpp.slixmpp.ClientXMPP", return_value=fake_client
+        ):
+            result = await _xmpp.send_xmpp_message(
+                config, "alice@example.org", "cron says hi"
+            )
+        # The lock (held by the "other gateway" per acquired=False) must be
+        # neither consulted nor released by the one-shot sender.
+        assert acquire_calls == []
+        assert release_calls == []
+        assert result["success"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -725,6 +902,42 @@ class TestXmppChunking:
     don't define MAX_MESSAGE_LENGTH; the adapter must define it and its own
     send paths must split (never truncate) longer bodies.
     """
+
+    def test_splits_long_messages_declared_for_delivery(self, monkeypatch):
+        # gateway/delivery.py truncates cron output at 4,000 chars for
+        # adapters that don't declare native chunking — send() chunks, so
+        # the adapter must declare splits_long_messages to receive the full
+        # payload.
+        adapter = _make_xmpp_adapter(monkeypatch)
+        assert adapter.splits_long_messages is True
+
+    @pytest.mark.asyncio
+    async def test_send_delivers_oversized_cron_payload_untruncated(self, monkeypatch):
+        # A cron result above delivery.py's 4,000-char non-chunking clip but
+        # under MAX_MESSAGE_LENGTH must arrive intact as a single stanza.
+        adapter = _make_xmpp_adapter(monkeypatch)
+        adapter.client = MagicMock()
+        sent = []
+        adapter.client.send_message = lambda **kw: sent.append(kw) or MagicMock()
+        payload = "cron-line\n" * 600  # 6,000 chars
+        result = await adapter.send("alice@example.org", payload)
+        assert result.success is True
+        assert len(sent) == 1
+        assert sent[0]["mbody"] == payload
+
+    @pytest.mark.asyncio
+    async def test_send_splits_beyond_stanza_cap_without_losing_content(self, monkeypatch):
+        adapter = _make_xmpp_adapter(monkeypatch, max_message_length="1000")
+        adapter.client = MagicMock()
+        sent = []
+        adapter.client.send_message = lambda **kw: sent.append(kw) or MagicMock()
+        payload = ("word " * 700).strip()  # 3,499 chars
+        result = await adapter.send("alice@example.org", payload)
+        assert result.success is True
+        assert len(sent) > 1
+        assert all(len(kw["mbody"]) <= 1000 for kw in sent)
+        # Every word survives the split — chunked, never truncated.
+        assert sum(kw["mbody"].count("word") for kw in sent) == 700
 
     def test_max_message_length_default(self, monkeypatch):
         adapter = _make_xmpp_adapter(monkeypatch)

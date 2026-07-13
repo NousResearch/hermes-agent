@@ -81,4 +81,18 @@ describe('rebaseAsyncPasteResult', () => {
       })
     ).toBeNull()
   })
+
+  it('drops stale async paste results when the suffix mutated after the original cursor', () => {
+    // Prefix is intact but the original suffix was edited in flight: the
+    // captured anchor no longer exists, so the async paste must be dropped
+    // rather than inserted at a stale position.
+    expect(
+      rebaseAsyncPasteResult({
+        currentValue: 'prefix changed',
+        result: { cursor: 18, value: 'prefix [[paste]] suffix' },
+        startCursor: 'prefix '.length,
+        startValue: 'prefix suffix'
+      })
+    ).toBeNull()
+  })
 })

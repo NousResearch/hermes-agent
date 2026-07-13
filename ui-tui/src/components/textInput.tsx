@@ -269,7 +269,11 @@ export function rebaseAsyncPasteResult({
 
   if (currentValue.startsWith(startValue)) {
     insertAt = cursor
-  } else if (currentValue.startsWith(prefix)) {
+  } else if (currentValue.startsWith(prefix) && (!suffix || currentValue.endsWith(suffix))) {
+    // Same-cursor rebase: prefix is intact, but also require the original
+    // suffix to remain present when non-empty. Otherwise a user edit after the
+    // original cursor (suffix mutation) would still receive a stale paste at
+    // an anchor that no longer exists.
     insertAt = prefix.length
   }
 

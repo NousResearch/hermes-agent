@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-31T03:27:32Z",
+  "updated_at": "2026-07-09T18:38:59Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -13,6 +13,10 @@
       },
       "models": [
         {
+          "id": "anthropic/claude-fable-5",
+          "description": ""
+        },
+        {
           "id": "anthropic/claude-opus-4.8",
           "description": ""
         },
@@ -21,11 +25,35 @@
           "description": "2x price, higher output speed"
         },
         {
-          "id": "anthropic/claude-sonnet-4.6",
+          "id": "anthropic/claude-sonnet-5",
           "description": ""
         },
         {
           "id": "anthropic/claude-haiku-4.5",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.6-sol",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.6-sol-pro",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.6-terra",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.6-terra-pro",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.6-luna",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.6-luna-pro",
           "description": ""
         },
         {
@@ -53,7 +81,7 @@
           "description": ""
         },
         {
-          "id": "x-ai/grok-4.3",
+          "id": "x-ai/grok-4.5",
           "description": ""
         },
         {
@@ -69,6 +97,10 @@
           "description": ""
         },
         {
+          "id": "qwen/qwen3.7-plus",
+          "description": ""
+        },
+        {
           "id": "qwen/qwen3.6-35b-a3b",
           "description": ""
         },
@@ -77,7 +109,15 @@
           "description": "recommended"
         },
         {
-          "id": "minimax/minimax-m2.7",
+          "id": "moonshotai/kimi-k2.7-code",
+          "description": ""
+        },
+        {
+          "id": "minimax/minimax-m3",
+          "description": ""
+        },
+        {
+          "id": "z-ai/glm-5.2",
           "description": ""
         },
         {
@@ -89,7 +129,7 @@
           "description": ""
         },
         {
-          "id": "tencent/hy3-preview",
+          "id": "tencent/hy3",
           "description": ""
         },
         {
@@ -101,6 +141,10 @@
           "description": ""
         },
         {
+          "id": "sakana/fugu-ultra",
+          "description": ""
+        },
+        {
           "id": "openrouter/pareto-code",
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
@@ -109,15 +153,19 @@
           "description": "free"
         },
         {
-          "id": "openrouter/owl-alpha",
+          "id": "poolside/laguna-m.1:free",
           "description": "free"
         },
         {
-          "id": "tencent/hy3-preview:free",
+          "id": "tencent/hy3:free",
           "description": "free"
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
           "description": "free"
         },
         {
@@ -133,13 +181,34 @@
       },
       "models": [
         {
+          "id": "anthropic/claude-fable-5"
+        },
+        {
           "id": "anthropic/claude-opus-4.8"
         },
         {
-          "id": "anthropic/claude-sonnet-4.6"
+          "id": "anthropic/claude-sonnet-5"
         },
         {
           "id": "anthropic/claude-haiku-4.5"
+        },
+        {
+          "id": "openai/gpt-5.6-sol"
+        },
+        {
+          "id": "openai/gpt-5.6-sol-pro"
+        },
+        {
+          "id": "openai/gpt-5.6-terra"
+        },
+        {
+          "id": "openai/gpt-5.6-terra-pro"
+        },
+        {
+          "id": "openai/gpt-5.6-luna"
+        },
+        {
+          "id": "openai/gpt-5.6-luna-pro"
         },
         {
           "id": "openai/gpt-5.5"
@@ -160,7 +229,7 @@
           "id": "google/gemini-3.5-flash"
         },
         {
-          "id": "x-ai/grok-4.3"
+          "id": "x-ai/grok-4.5"
         },
         {
           "id": "deepseek/deepseek-v4-pro"
@@ -172,13 +241,22 @@
           "id": "qwen/qwen3.7-max"
         },
         {
+          "id": "qwen/qwen3.7-plus"
+        },
+        {
           "id": "qwen/qwen3.6-35b-a3b"
         },
         {
           "id": "moonshotai/kimi-k2.6"
         },
         {
-          "id": "minimax/minimax-m2.7"
+          "id": "moonshotai/kimi-k2.7-code"
+        },
+        {
+          "id": "minimax/minimax-m3"
+        },
+        {
+          "id": "z-ai/glm-5.2"
         },
         {
           "id": "z-ai/glm-5.1"
@@ -187,13 +265,16 @@
           "id": "xiaomi/mimo-v2.5-pro"
         },
         {
-          "id": "tencent/hy3-preview"
+          "id": "tencent/hy3"
         },
         {
           "id": "stepfun/step-3.7-flash"
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b"
+        },
+        {
+          "id": "sakana/fugu-ultra"
         }
       ]
     }

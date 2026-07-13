@@ -8,8 +8,6 @@ description: "How to update Hermes Agent to the latest version or uninstall it"
 
 ## Updating
 
-### Git installs
-
 Update to the latest version with a single command:
 
 ```bash
@@ -18,26 +16,11 @@ hermes update
 
 This pulls the latest code from `main`, updates dependencies, and prompts you to configure any new options that were added since your last update.
 
-### pip installs
-
-PyPI releases track **tagged versions** (major and minor releases), not every commit on `main`. Check for updates and upgrade with:
-
-```bash
-hermes update --check    # see if a newer release is on PyPI
-hermes update            # runs pip install --upgrade hermes-agent
-```
-
-Or manually:
-
-```bash
-pip install --upgrade hermes-agent    # or: uv pip install --upgrade hermes-agent
-```
-
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
 :::
 
-### What happens during an update (git installs)
+### What happens during an update
 
 When you run `hermes update`, the following steps occur:
 
@@ -59,9 +42,27 @@ hermes update --check --branch experimental   # preview behindness only
 
 If your local checkout is on a different branch, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
 
+### Local changes on non-interactive updates
+
+When you run `hermes update` in a terminal, Hermes stashes any uncommitted source-tree changes, pulls, then **asks** whether to restore them — exactly as it always has. Nothing changes for interactive updates.
+
+When the update runs **without a terminal** — from the desktop/chat app's "Update" button or a gateway-triggered update — there's no prompt to answer. The `updates.non_interactive_local_changes` setting decides what happens to your stashed changes:
+
+```yaml
+# ~/.hermes/config.yaml
+updates:
+  non_interactive_local_changes: stash   # default: keep + auto-restore
+  # non_interactive_local_changes: discard  # throw local source edits away
+```
+
+- `stash` (default) — auto-stash, pull, then auto-restore your changes on top of the updated code. Nothing is lost; if a restore hits conflicts they're preserved in a git stash for manual recovery.
+- `discard` — auto-stash and drop the stash after the pull, so the update always lands on a clean tree. Use this only on machines where you never intend to keep local edits to the Hermes source. It stash-drops (not `git reset --hard` + `git clean -fd`), so ignored paths like `node_modules`, `venv`, and build outputs are never touched.
+
+In the desktop app this is **Settings → Advanced → In-App Update Local Changes**.
+
 ### Preview-only: `hermes update --check`
 
-Want to know if an update is available before pulling? Run `hermes update --check` — for git installs it fetches and compares commits against `origin/main`; for pip installs it queries PyPI for the latest release. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+Want to know if an update is available before pulling? Run `hermes update --check` — it fetches and compares commits against `origin/main`. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
 
 ### Full pre-update backup: `--backup`
 
@@ -100,6 +101,8 @@ $ hermes update
 ```
 
 Close the listed processes and re-run. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
+
+A second, separate guard refuses to touch the venv while any process is running from its Python interpreter (the Desktop app's backend, a gateway, a Python REPL). Those processes keep native extension files (`.pyd`) locked, and a dependency sync that dies partway on an access-denied error strands the install between versions. This guard is **not** bypassed by `--force`; if you're certain the detected holders are false positives, use the explicit `hermes update --force-venv`.
 
 Expected output looks like:
 
@@ -170,7 +173,9 @@ If you installed manually (not via the quick installer):
 
 ```bash
 cd /path/to/hermes-agent
-export VIRTUAL_ENV="$(pwd)/venv"
+# Activate the venv you created during install (outside the source tree)
+export VIRTUAL_ENV="$HOME/.hermes/venvs/hermes-dev"
+export PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Pull latest code
 git pull origin main
@@ -195,7 +200,6 @@ git log --oneline -10
 
 # Roll back to a specific commit
 git checkout <commit-hash>
-git submodule update --init --recursive
 uv pip install -e ".[all]"
 
 # Restart the gateway if running
@@ -206,7 +210,6 @@ To roll back to a specific release tag (substitute your previous tag — e.g. a 
 
 ```bash
 git checkout vX.Y.Z
-git submodule update --init --recursive
 uv pip install -e ".[all]"
 ```
 
@@ -216,7 +219,7 @@ Rolling back may cause config incompatibilities if new options were added. Run `
 
 ### Note for Nix users
 
-If you installed via Nix flake, updates are managed through the Nix package manager:
+Nix is no longer an explicitly supported install path (best-effort only) — see [Nix Setup](./nix-setup.md). If you installed via Nix flake, updates are managed through the Nix package manager:
 
 ```bash
 # Update the flake input
@@ -238,20 +241,11 @@ See [Nix Setup](./nix-setup.md) for more details.
 
 ## Uninstalling
 
-### Git installs
-
 ```bash
 hermes uninstall
 ```
 
 The uninstaller gives you the option to keep your configuration files (`~/.hermes/`) for a future reinstall.
-
-### pip installs
-
-```bash
-pip uninstall hermes-agent
-rm -rf ~/.hermes            # Optional — keep if you plan to reinstall
-```
 
 ### Manual Uninstall
 

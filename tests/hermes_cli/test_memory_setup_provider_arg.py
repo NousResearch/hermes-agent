@@ -48,3 +48,58 @@ class TestMemorySetupProviderRouting:
         out = capsys.readouterr().out
         assert "not found" in out
         assert "hermes memory setup" in out
+
+
+class TestInstallDependenciesRunner:
+    """`_install_dependencies` must route through the canonical
+    ``_pip_install`` ladder (uv → pip → ensurepip): uv when present, standard
+    pip when uv is unavailable, and an ensurepip bootstrap for pip-less venvs
+    instead of dead-ending with "cannot install"."""
+
+    def _run_with_missing_dep(self, tmp_path, which_side_effect, run_behavior=None):
+        """Drive _install_dependencies for a plugin that declares one missing
+        pip dep, capturing every subprocess.run argv issued by the ladder."""
+        import sys
+
+        (tmp_path / "plugin.yaml").write_text(
+            "pip_dependencies:\n  - definitely-not-installed-xyz\n", encoding="utf-8"
+        )
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if run_behavior:
+                return run_behavior(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
+             patch("hermes_cli.tools_config.shutil.which", side_effect=which_side_effect), \
+             patch("hermes_cli.tools_config.subprocess.run", fake_run):
+            memory_setup._install_dependencies("x")
+        return calls, sys.executable
+
+    def test_uses_uv_when_available(self, tmp_path):
+        calls, _ = self._run_with_missing_dep(
+            tmp_path, lambda b: "/usr/bin/uv" if b == "uv" else None
+        )
+        assert calls
+        assert calls[0][:3] == ["/usr/bin/uv", "pip", "install"]
+
+    def test_falls_back_to_pip_when_uv_missing(self, tmp_path):
+        """No uv but pip importable -> python -m pip install."""
+        calls, py = self._run_with_missing_dep(tmp_path, lambda b: None)
+        assert calls
+        # Ladder probes pip first, then installs with it.
+        assert calls[0][:3] == [py, "-m", "pip"]
+        assert calls[-1][:4] == [py, "-m", "pip", "install"]
+
+    def test_bootstraps_pip_via_ensurepip_when_missing(self, tmp_path):
+        """Neither uv nor pip -> ensurepip bootstrap, then pip install."""
+        def behavior(cmd):
+            if cmd[-1] == "--version":
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        calls, py = self._run_with_missing_dep(tmp_path, lambda b: None, behavior)
+        assert any("ensurepip" in c for c in calls)
+        assert calls[-1][:4] == [py, "-m", "pip", "install"]

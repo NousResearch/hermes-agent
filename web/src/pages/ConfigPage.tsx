@@ -110,6 +110,14 @@ type AllowlistEntry = {
   kind: "manual" | "danger_category";
 };
 
+type AllowlistTestResult = {
+  command: string;
+  matched: boolean;
+  matched_pattern: string | null;
+  matched_kind: "manual" | "danger_category" | null;
+  blocked_by_shell_operator: boolean;
+};
+
 export default function ConfigPage() {
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [schema, setSchema] = useState<Record<
@@ -137,6 +145,8 @@ export default function ConfigPage() {
   const [allowlistEditTarget, setAllowlistEditTarget] = useState<string | null>(null);
   const [allowlistEditDraft, setAllowlistEditDraft] = useState("");
   const [allowlistTestCommand, setAllowlistTestCommand] = useState("");
+  const [allowlistTestResult, setAllowlistTestResult] = useState<AllowlistTestResult | null>(null);
+  const [allowlistTestLoading, setAllowlistTestLoading] = useState(false);
   const [allowlistRestartingGateway, setAllowlistRestartingGateway] = useState(false);
   const [allowlistDangerExpanded, setAllowlistDangerExpanded] = useState(false);
   const [allowlistConfirm, setAllowlistConfirm] = useState<
@@ -216,9 +226,19 @@ export default function ConfigPage() {
       .getDefaults()
       .then(setDefaults)
       .catch(() => {});
+    // getConfigRaw is profile-scoped (fetchJSON appends ?profile=), so its
+    // `path` reflects the switched profile's config.yaml. /api/status's
+    // config_path is machine-global (the dashboard's own profile) — wrong
+    // header under the global profile switcher, so it's only a fallback.
+    api
+      .getConfigRaw()
+      .then((resp) => {
+        if (resp.path) setConfigPath(resp.path);
+      })
+      .catch(() => {});
     api
       .getStatus()
-      .then((resp) => setConfigPath(resp.config_path))
+      .then((resp) => setConfigPath((prev) => prev ?? resp.config_path))
       .catch(() => {});
     loadCommandAllowlist();
   }, []);
@@ -309,10 +329,32 @@ export default function ConfigPage() {
     () => allowlistEntries.filter((entry) => entry.kind === "danger_category"),
     [allowlistEntries],
   );
-  const exactTestMatch = useMemo(() => {
-    if (!exactTestCandidate) return null;
-    return allowlistPatterns.find((pattern) => pattern === exactTestCandidate) ?? null;
-  }, [allowlistPatterns, exactTestCandidate]);
+  useEffect(() => {
+    if (!exactTestCandidate) {
+      setAllowlistTestResult(null);
+      setAllowlistTestLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setAllowlistTestLoading(true);
+    const timer = window.setTimeout(() => {
+      api
+        .testCommandAllowlist(exactTestCandidate)
+        .then((resp) => {
+          if (!cancelled) setAllowlistTestResult(resp);
+        })
+        .catch(() => {
+          if (!cancelled) setAllowlistTestResult(null);
+        })
+        .finally(() => {
+          if (!cancelled) setAllowlistTestLoading(false);
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [exactTestCandidate]);
   const dangerCategoryCollapseThreshold = 3;
   const shouldCollapseDangerCategories =
     dangerCategoryAllowlistEntries.length > dangerCategoryCollapseThreshold;
@@ -852,14 +894,27 @@ export default function ConfigPage() {
         <div className="grid gap-2 border border-border/60 bg-muted/10 px-4 py-3">
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-sm font-medium">Test exact match</p>
+              <p className="text-sm font-medium">Test runtime allow match</p>
               <p className="text-xs text-muted-foreground">
-                Paste a full command to check for an exact saved string match. Approval-generated category keys like <code>recursive delete</code> are shown as stored labels, not reconstructed commands.
+                Paste a full command to check the real runtime allowlist contract: exact strings, wildcard patterns, danger-category approvals, and shell-operator rejection.
               </p>
             </div>
             {exactTestCandidate ? (
-              <Badge tone={exactTestMatch ? "success" : "destructive"} className="text-xs">
-                {exactTestMatch ? "Matched" : "No match"}
+              <Badge
+                tone={
+                  allowlistTestLoading
+                    ? "secondary"
+                    : allowlistTestResult?.matched
+                      ? "success"
+                      : "destructive"
+                }
+                className="text-xs"
+              >
+                {allowlistTestLoading
+                  ? "Checking"
+                  : allowlistTestResult?.matched
+                    ? "Matched"
+                    : "No match"}
               </Badge>
             ) : null}
           </div>
@@ -871,18 +926,27 @@ export default function ConfigPage() {
             disabled={allowlistBusy}
           />
           {exactTestCandidate ? (
-            exactTestMatch ? (
+            allowlistTestLoading ? (
+              <p className="text-xs text-muted-foreground">Checking runtime allowlist rules…</p>
+            ) : allowlistTestResult?.blocked_by_shell_operator ? (
+              <p className="text-xs text-amber-300">
+                Rejected for allowlist shortcut: compound shell operators are not eligible for command allowlist matching.
+              </p>
+            ) : allowlistTestResult?.matched ? (
               <p className="text-xs text-emerald-400">
-                Exact match found: <code>{exactTestMatch}</code>
+                Runtime match found: <code>{allowlistTestResult.matched_pattern}</code>
+                {allowlistTestResult.matched_kind === "danger_category"
+                  ? " (danger category approval)"
+                  : ""}
               </p>
             ) : (
               <p className="text-xs text-muted-foreground">
-                No saved pattern matches this command exactly.
+                No saved allowlist rule matches this command under runtime rules.
               </p>
             )
           ) : (
             <p className="text-xs text-muted-foreground">
-              Matching is exact string matching, not substring or wildcard matching.
+              This tester uses the backend matcher, not a frontend-only guess.
             </p>
           )}
         </div>

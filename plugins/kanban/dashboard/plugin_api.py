@@ -36,10 +36,8 @@ the port.
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
-import os
 import sqlite3
 import time
 from dataclasses import asdict
@@ -63,15 +61,29 @@ router = APIRouter()
 # existing plugin-bypass; this is documented above).
 # ---------------------------------------------------------------------------
 
-def _check_ws_token(provided: Optional[str]) -> bool:
-    """Constant-time compare against the dashboard session token.
+def _ws_upgrade_authorized(ws: "WebSocket") -> bool:
+    """Authorize a WebSocket upgrade by delegating to the dashboard's canonical
+    WS auth gate (``hermes_cli.web_server._ws_auth_ok``).
+
+    Delegating (rather than re-implementing a ``_SESSION_TOKEN``-only check)
+    means this endpoint transparently accepts whatever the core gate accepts
+    in each mode:
+
+      * loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>``
+      * gated OAuth: single-use ``?ticket=`` (the browser SDK's
+        ``buildWsUrl`` mints one per connect)
+      * server-internal: the process-lifetime ``?internal=`` credential
+
+    The previous bespoke check only understood ``_SESSION_TOKEN``, so the
+    kanban live-events WS was rejected on every OAuth-gated deployment even
+    though the rest of the dashboard worked. Routing through the shared gate
+    also means this can never drift from core auth again.
 
     Imported lazily so the plugin still loads in test contexts where the
-    dashboard web_server module isn't importable (e.g. the bare-FastAPI
-    test harness).
+    dashboard ``web_server`` module isn't importable (e.g. the bare-FastAPI
+    test harness); there we accept so the tail loop stays testable, matching
+    the prior behaviour.
     """
-    if not provided:
-        return False
     try:
         from hermes_cli import web_server as _ws
     except Exception:
@@ -79,10 +91,7 @@ def _check_ws_token(provided: Optional[str]) -> bool:
         # testable; in production the dashboard module always imports
         # cleanly because it's the caller.
         return True
-    expected = getattr(_ws, "_SESSION_TOKEN", None)
-    if not expected:
-        return True
-    return hmac.compare_digest(str(provided), str(expected))
+    return bool(_ws._ws_auth_ok(ws))
 
 
 def _resolve_board(board: Optional[str]) -> Optional[str]:
@@ -537,6 +546,21 @@ def get_task(
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
         task_d = _task_dict(task, latest_summary=full_summary)
+        links = _links_for(conn, task_id)
+        child_ids = links["children"]
+        child_summaries = kanban_db.latest_summaries(conn, child_ids)
+        child_results = []
+        for child_id in child_ids:
+            child = kanban_db.get_task(conn, child_id)
+            if child is None:
+                continue
+            child_results.append({
+                "id": child.id,
+                "title": child.title,
+                "status": child.status,
+                "latest_summary": child_summaries.get(child.id),
+                "result": child.result,
+            })
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])
@@ -549,7 +573,8 @@ def get_task(
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
             "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],
-            "links": _links_for(conn, task_id),
+            "links": links,
+            "child_results": child_results,
             "runs": [
                 _run_dict(r)
                 for r in kanban_db.list_runs(
@@ -581,6 +606,8 @@ class CreateTaskBody(BaseModel):
     idempotency_key: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     skills: Optional[list[str]] = None
+    goal_mode: bool = False
+    goal_max_turns: Optional[int] = None
 
 
 @router.post("/tasks")
@@ -603,6 +630,8 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             idempotency_key=payload.idempotency_key,
             max_runtime_seconds=payload.max_runtime_seconds,
             skills=payload.skills,
+            goal_mode=payload.goal_mode,
+            goal_max_turns=payload.goal_max_turns,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
@@ -633,7 +662,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 
 # Cap a single upload so a runaway request can't fill the disk. 25 MB
 # comfortably covers PDFs, images, and source docs — the kanban use case.
-_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+_MAX_ATTACHMENT_BYTES = kanban_db.KANBAN_ATTACHMENT_MAX_BYTES
 
 
 def _safe_attachment_name(raw: str) -> str:
@@ -1606,10 +1635,12 @@ def specify_task_endpoint(
     """
     board = _resolve_board(board)
     # Pin the board for the duration of this call so the specifier module
-    # (which calls ``kb.connect()`` with no args) hits the right DB.
-    prev_env = os.environ.get("HERMES_KANBAN_BOARD")
-    try:
-        os.environ["HERMES_KANBAN_BOARD"] = board or kanban_db.DEFAULT_BOARD
+    # (which calls ``kb.connect()`` with no args) hits the right DB. Use a
+    # context-local override rather than mutating the process-global
+    # HERMES_KANBAN_BOARD env var — this endpoint runs in FastAPI's
+    # threadpool, so two concurrent requests for different boards would
+    # otherwise race on the shared env var and cross-write (issue #38323).
+    with kanban_db.scoped_current_board(board or kanban_db.DEFAULT_BOARD):
         # Import lazily so a missing auxiliary client at import time
         # doesn't break plugin load.
         from hermes_cli import kanban_specify  # noqa: WPS433 (intentional)
@@ -1618,11 +1649,6 @@ def specify_task_endpoint(
             task_id,
             author=(payload.author or None),
         )
-    finally:
-        if prev_env is None:
-            os.environ.pop("HERMES_KANBAN_BOARD", None)
-        else:
-            os.environ["HERMES_KANBAN_BOARD"] = prev_env
 
     return {
         "ok": bool(outcome.ok),
@@ -1972,6 +1998,7 @@ class CreateBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    default_workdir: Optional[str] = None
     switch: bool = False
 
 
@@ -2000,6 +2027,17 @@ def _board_counts(slug: str) -> dict[str, int]:
         return {}
 
 
+def _default_workspace_kind(board: dict[str, Any]) -> str:
+    """Recommend a non-destructive task workspace from board metadata."""
+    workdir = str(board.get("default_workdir") or "").strip()
+    if not workdir:
+        return "scratch"
+    try:
+        return "worktree" if kanban_db._git_toplevel(Path(workdir)) else "dir"
+    except (OSError, ValueError):
+        return "dir"
+
+
 @router.get("/boards")
 def list_boards(include_archived: bool = Query(False)):
     """Return every board on disk with task counts and the active slug."""
@@ -2009,12 +2047,27 @@ def list_boards(include_archived: bool = Query(False)):
         b["is_current"] = (b["slug"] == current)
         b["counts"] = _board_counts(b["slug"])
         b["total"] = sum(b["counts"].values())
+        b["default_workspace_kind"] = _default_workspace_kind(b)
     return {"boards": boards, "current": current}
 
 
 @router.post("/boards")
 def create_board_endpoint(payload: CreateBoardBody):
     """Create a new board. Idempotent — ``slug`` collision returns existing."""
+    default_workdir = None
+    if payload.default_workdir:
+        requested = Path(payload.default_workdir).expanduser()
+        if not requested.is_absolute():
+            raise HTTPException(
+                status_code=400,
+                detail="Project directory must be an absolute path.",
+            )
+        if not requested.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail="Project directory must be an existing directory.",
+            )
+        default_workdir = str(requested.resolve())
     try:
         meta = kanban_db.create_board(
             payload.slug,
@@ -2022,6 +2075,7 @@ def create_board_endpoint(payload: CreateBoardBody):
             description=payload.description,
             icon=payload.icon,
             color=payload.color,
+            default_workdir=default_workdir,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -2030,6 +2084,7 @@ def create_board_endpoint(payload: CreateBoardBody):
             kanban_db.set_current_board(meta["slug"])
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+    meta["default_workspace_kind"] = _default_workspace_kind(meta)
     return {"board": meta, "current": kanban_db.get_current_board()}
 
 
@@ -2194,7 +2249,7 @@ def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
 
 
 # ---------------------------------------------------------------------------
-# Decompose endpoint (orchestrator-driven fan-out)
+# Decompose endpoint (built-in decomposer fan-out)
 # ---------------------------------------------------------------------------
 
 class DecomposeBody(BaseModel):
@@ -2219,19 +2274,16 @@ def decompose_task_endpoint(
     can take minutes on reasoning models.
     """
     board = _resolve_board(board)
-    prev_env = os.environ.get("HERMES_KANBAN_BOARD")
-    try:
-        os.environ["HERMES_KANBAN_BOARD"] = board or kanban_db.DEFAULT_BOARD
+    # Context-local board pin (see specify endpoint above): this sync
+    # endpoint runs in FastAPI's threadpool, so mutating the process-global
+    # HERMES_KANBAN_BOARD env var would let concurrent requests for
+    # different boards race and cross-write (issue #38323).
+    with kanban_db.scoped_current_board(board or kanban_db.DEFAULT_BOARD):
         from hermes_cli import kanban_decompose  # noqa: WPS433 (intentional)
         outcome = kanban_decompose.decompose_task(
             task_id,
             author=(payload.author or None),
         )
-    finally:
-        if prev_env is None:
-            os.environ.pop("HERMES_KANBAN_BOARD", None)
-        else:
-            os.environ["HERMES_KANBAN_BOARD"] = prev_env
 
     return {
         "ok": bool(outcome.ok),
@@ -2371,11 +2423,12 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
 
 @router.websocket("/events")
 async def stream_events(ws: WebSocket):
-    # Enforce the dashboard session token as a query param — browsers can't
-    # set Authorization on a WS upgrade. This matches how the PTY bridge
-    # authenticates in hermes_cli/web_server.py.
-    token = ws.query_params.get("token")
-    if not _check_ws_token(token):
+    # Authorize the upgrade via the dashboard's canonical WS gate so the
+    # correct credential is accepted in every mode (loopback token / gated
+    # single-use ticket / server-internal credential). Browsers can't set
+    # Authorization on a WS upgrade, so the credential rides in the query
+    # string — the browser SDK's buildWsUrl() assembles it.
+    if not _ws_upgrade_authorized(ws):
         await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
         return
     await ws.accept()

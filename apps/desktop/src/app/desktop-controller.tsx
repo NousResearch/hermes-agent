@@ -47,7 +47,7 @@ import {
 } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
-import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
+import { $startWorkSessionRequest, followActiveSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
   $activeSessionId,
@@ -65,8 +65,6 @@ import {
   sessionPinId,
   setAwaitingResponse,
   setBusy,
-  setCurrentBranch,
-  setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
   setMessages,
@@ -117,6 +115,7 @@ import { useRouteResume } from './session/hooks/use-route-resume'
 import { useSessionActions } from './session/hooks/use-session-actions'
 import { useSessionListActions } from './session/hooks/use-session-list-actions'
 import { useSessionStateCache } from './session/hooks/use-session-state-cache'
+import { startWorkspaceSession } from './session/workspace-session-target'
 import { AppShell } from './shell/app-shell'
 import { useOverlayRouting } from './shell/hooks/use-overlay-routing'
 import { useStatusSnapshot } from './shell/hooks/use-status-snapshot'
@@ -735,42 +734,16 @@ export function DesktopController() {
 
   const startSessionInWorkspace = useCallback(
     (path: null | string) => {
-      startFreshSessionDraft()
-
-      // A worktree lane carries its own path; the trunk "+" can be path-less (the
-      // main checkout is implicit), so fall back to the active project's root
-      // instead of no-op'ing on null — that was "+ on main does nothing".
-      const target = path?.trim() || resolveNewSessionCwd()
-
-      if (!target) {
-        return
-      }
-
-      // The next message creates the backend session in $currentCwd, so seed
-      // it (and the branch) from the workspace the user clicked the + on.
-      setCurrentCwd(target)
-      void requestGateway<{ branch?: string; cwd?: string }>('config.get', { key: 'project', cwd: target })
-        .then(info => {
-          const resolved = info.cwd || target
-
-          setCurrentCwd(resolved)
-          setCurrentBranch(info.branch || '')
-
-          // An EXPLICIT target (a worktree/lane path — e.g. just-created via
-          // "convert a branch" / "new worktree") drills the sidebar into that
-          // project so the new lane is visible at once. Without this, a brand-new
-          // worktree session is invisible from the all-projects overview (the
-          // live overlay skips `.worktrees` rows, and the session.info cwd-follow
-          // only fires on a same-session move, not a fresh session). The
-          // path-less trunk "+" keeps the current scope untouched.
-          if (path?.trim()) {
-            restoreWorktree(resolved)
-            void followActiveSessionCwd(resolved)
-          }
-        })
-        .catch(() => undefined)
+      startWorkspaceSession({
+        activeSessionIdRef,
+        followActiveSessionCwd,
+        onExplicitWorkspace: restoreWorktree,
+        path,
+        requestGateway,
+        startFreshSessionDraft
+      })
     },
-    [requestGateway, startFreshSessionDraft]
+    [activeSessionIdRef, requestGateway, startFreshSessionDraft]
   )
 
   // Composer "branch off into a new worktree": the composer already created the
@@ -812,6 +785,7 @@ export function DesktopController() {
     branchCurrentSession: branchInNewChat,
     busyRef,
     createBackendSessionForSend,
+    getRouteToken,
     handleSkinCommand,
     openMemoryGraph: openStarmap,
     refreshSessions,
@@ -847,7 +821,7 @@ export function DesktopController() {
     // window's gateway (the overlay has none) so it survives restart.
     setPetOverlayScaleHandler(scale => setPetScale(requestGatewayRef.current, scale))
     // Mail icon: $sessions is ordered most-recent-first; the pet is global (not
-    // per session) so "most recent" is the right target. main.cjs already raised
+    // per session) so "most recent" is the right target. main.ts already raised
     // the window before forwarding this.
     setPetOverlayOpenAppHandler(() => {
       const recent = $sessions.get()[0]

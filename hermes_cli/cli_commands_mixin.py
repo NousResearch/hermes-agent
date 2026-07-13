@@ -34,6 +34,7 @@ from hermes_cli.browser_connect import (
     launch_chrome_debug,
     manual_chrome_debug_command,
 )
+from hermes_cli.cmux_integration import rename_cmux_workspace_for_goal
 
 
 class CLICommandsMixin:
@@ -2107,6 +2108,11 @@ class CLICommandsMixin:
             _cprint(f"  Invalid goal: {exc}")
             return
 
+        rename_cmux_workspace_for_goal(
+            state.goal,
+            config=getattr(self, "config", None),
+        )
+
         _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
         if state.has_contract():
             _cprint(f"  {_DIM}Completion contract:{_RST}")
@@ -2150,6 +2156,11 @@ class CLICommandsMixin:
         except ValueError as exc:
             _cprint(f"  Invalid goal: {exc}")
             return
+
+        rename_cmux_workspace_for_goal(
+            state.goal,
+            config=getattr(self, "config", None),
+        )
 
         _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
         if state.has_contract():

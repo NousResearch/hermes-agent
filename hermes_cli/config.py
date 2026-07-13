@@ -2284,6 +2284,15 @@ DEFAULT_CONFIG = {
         "max_turns": 20,
     },
 
+    # cmux — optional host UI niceties when Hermes runs inside cmux.
+    # The workspace rename is fail-soft: outside cmux or without the cmux CLI,
+    # Hermes goal semantics are unchanged.
+    "cmux": {
+        "auto_rename_workspace_on_goal": True,
+        "goal_title_prefix": "Goal: ",
+        "goal_title_max_chars": 60,
+    },
+
     # Mixture of Agents — named presets used by /moa. A preset is an execution
     # mode around the main model, not a provider/model itself: references +
     # aggregator synthesize private guidance before each main-model iteration.

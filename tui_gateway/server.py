@@ -24,6 +24,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.cmux_integration import rename_cmux_workspace_for_goal
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
@@ -12196,6 +12197,11 @@ def _(rid, params: dict) -> dict:
             state = mgr.set(arg)
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
+
+        rename_cmux_workspace_for_goal(
+            state.goal,
+            config=_load_cfg(),
+        )
 
         notice = (
             f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"

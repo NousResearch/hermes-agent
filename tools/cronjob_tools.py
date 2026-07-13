@@ -604,11 +604,11 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
 def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
     """Execute a cron job immediately, outside the scheduler tick.
 
-    Atomically claims the job first via ``claim_job_for_fire`` — the same
-    at-most-once CAS the scheduler/external-provider fire path uses — so a
-    concurrently-running gateway ticker cannot also fire it (the claim both
-    blocks a duplicate fire and advances ``next_run_at`` for recurring jobs).
-    If the claim is lost (another fire is in flight), this is a no-op.
+    Recurring jobs acquire same-host full-run ownership before
+    ``claim_job_for_fire`` can advance their schedule. The held ownership is
+    transferred into ``run_one_job`` and retained through execution, delivery,
+    and completion marking. One-shots keep their existing durable store-claim
+    path without depending on the recurring lock backend.
 
     The actual firing is delegated to ``run_one_job`` — the single shared
     execute→save→deliver→mark body the ticker and external providers use — so
@@ -618,11 +618,35 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
     Returns {"claimed": bool, "success": bool, "error": str|None}.
     """
     job_id = job["id"]
+    claimed = False
+    run_lock = None
     try:
-        from cron.scheduler import run_one_job
+        from cron.scheduler import (
+            _try_acquire_job_run_lock,
+            run_one_job,
+        )
 
-        # At-most-once claim: bail without running if a tick/other fire owns it.
-        if not claim_job_for_fire(job_id):
+        schedule = job.get("schedule")
+        schedule_kind = schedule.get("kind") if isinstance(schedule, dict) else None
+        recurring = schedule_kind in {"cron", "interval"}
+        if recurring:
+            # Match tick/provider ordering: ownership must precede the store CAS,
+            # because that CAS advances next_run_at for recurring jobs.
+            run_lock = _try_acquire_job_run_lock(job_id)
+            if run_lock is None:
+                return {
+                    "claimed": False,
+                    "success": False,
+                    "error": "Job is already running in another process; not run again.",
+                }
+
+        # Reject a concurrent schedule-kind edit before mutating the store. This
+        # preserves one-shot durable claims while preventing a stale one-shot
+        # snapshot from advancing a record that has become recurring.
+        claimed = claim_job_for_fire(
+            job_id, expected_schedule_kind=schedule_kind
+        )
+        if not claimed:
             # claim_job_for_fire returns False for paused/disabled/missing
             # jobs too — don't mislabel those as "already being fired"
             # (#60703): that message sends the user chasing a phantom
@@ -638,7 +662,10 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
-        processed = run_one_job(job)
+        if recurring:
+            processed = run_one_job(job, _run_lock=run_lock)
+        else:
+            processed = run_one_job(job)
         refreshed = get_job(job_id) or {}
         ok = refreshed.get("last_status") == "ok"
         return {
@@ -649,11 +676,17 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
-        try:
-            mark_job_run(job_id, False, str(e))
-        except Exception:
-            pass
-        return {"claimed": True, "success": False, "error": str(e)}
+        if claimed:
+            try:
+                mark_job_run(job_id, False, str(e))
+            except Exception:
+                pass
+        return {"claimed": claimed, "success": False, "error": str(e)}
+    finally:
+        if run_lock is not None:
+            # run_one_job releases after the full lifecycle. Idempotence covers
+            # every claim/get/dispatch failure before ownership is transferred.
+            run_lock.release()
 
 
 def cronjob(

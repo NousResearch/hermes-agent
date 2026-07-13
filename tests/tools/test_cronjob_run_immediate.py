@@ -29,8 +29,11 @@ class TestCronjobRunExecutesImmediately:
         assert out["success"] is True
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is True
-        m_claim.assert_called_once_with("job-run-1")   # at-most-once claim taken
-        m_run.assert_called_once()                       # fired via the shared body
+        m_claim.assert_called_once_with(
+            "job-run-1", expected_schedule_kind="cron"
+        )
+        m_run.assert_called_once()
+        assert m_run.call_args.kwargs["_run_lock"] is not None
 
     def test_run_skips_when_claim_lost(self):
         """If the scheduler already holds the fire claim, do NOT double-run."""
@@ -79,3 +82,79 @@ class TestCronjobRunExecutesImmediately:
         assert res["success"] is False
         assert "boom" in res["error"]
         m_mark.assert_called_once()
+
+    def test_recurring_claim_loss_releases_preclaim_run_lock(self):
+        """A recurring loser releases ownership and never enters the run body."""
+        released = []
+
+        class RecordingLock:
+            def release(self):
+                released.append(True)
+
+        with patch(
+            "cron.scheduler._try_acquire_job_run_lock",
+            return_value=RecordingLock(),
+        ), patch(
+            "tools.cronjob_tools.claim_job_for_fire", return_value=False
+        ) as m_claim, patch("cron.scheduler.run_one_job") as m_run, patch(
+            "tools.cronjob_tools.get_job", return_value=dict(_JOB)
+        ):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["claimed"] is False
+        m_claim.assert_called_once_with(
+            "job-run-1", expected_schedule_kind="cron"
+        )
+        m_run.assert_not_called()
+        assert released == [True]
+
+    def test_recurring_claim_exception_releases_preclaim_run_lock(self):
+        """Store failures before a claim cannot leak recurring ownership."""
+        released = []
+
+        class RecordingLock:
+            def release(self):
+                released.append(True)
+
+        with patch(
+            "cron.scheduler._try_acquire_job_run_lock",
+            return_value=RecordingLock(),
+        ), patch(
+            "tools.cronjob_tools.claim_job_for_fire",
+            side_effect=RuntimeError("claim store unavailable"),
+        ), patch("cron.scheduler.run_one_job") as m_run, patch(
+            "tools.cronjob_tools.mark_job_run"
+        ) as m_mark:
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["claimed"] is False
+        assert "claim store unavailable" in res["error"]
+        m_run.assert_not_called()
+        m_mark.assert_not_called()
+        assert released == [True]
+
+    def test_one_shot_immediate_run_keeps_durable_claim_without_run_lock(self):
+        """One-shots retain the existing store-claim path and run semantics."""
+        one_shot = {
+            **_JOB,
+            "schedule": {"kind": "once", "run_at": "2099-01-01T00:00:00+00:00"},
+        }
+        completed = {**one_shot, "last_status": "ok", "last_error": None}
+
+        with patch(
+            "cron.scheduler._try_acquire_job_run_lock",
+            side_effect=AssertionError("one-shot acquired recurring run ownership"),
+        ), patch(
+            "tools.cronjob_tools.claim_job_for_fire", return_value=True
+        ) as m_claim, patch(
+            "cron.scheduler.run_one_job", return_value=True
+        ) as m_run, patch(
+            "tools.cronjob_tools.get_job", return_value=completed
+        ):
+            res = _execute_job_now(one_shot)
+
+        assert res == {"claimed": True, "success": True, "error": None}
+        m_claim.assert_called_once_with(
+            "job-run-1", expected_schedule_kind="once"
+        )
+        m_run.assert_called_once_with(one_shot)

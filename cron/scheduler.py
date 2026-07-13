@@ -4,14 +4,17 @@ Cron job scheduler - executes due jobs.
 Provides tick() which checks for due jobs and runs them. The gateway
 calls this every 60 seconds from a background thread.
 
-Uses a file-based lock (~/.hermes/cron/.tick.lock) so only one tick
-runs at a time if multiple processes overlap.
+Uses ``.tick.lock`` to serialize dispatch and per-job OS locks to prevent a
+recurring invocation from overlapping across same-host scheduler processes that
+share the active cron store. This is not a distributed/NFS ownership protocol.
 """
 
 import asyncio
 import atexit
 import concurrent.futures
 import contextvars
+import errno
+import hashlib
 import json
 import logging
 import os
@@ -21,16 +24,17 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 
-# fcntl is Unix-only; on Windows use msvcrt for file locking
+# fcntl is Unix-only; on Windows use msvcrt for file locking.
 try:
     import fcntl
 except ImportError:
     fcntl = None
-    try:
-        import msvcrt
-    except ImportError:
-        msvcrt = None
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -238,7 +242,16 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.jobs import (
+    advance_next_run,
+    claim_dispatch,
+    get_cron_store_dir,
+    get_due_jobs,
+    get_job,
+    heartbeat_run_claim,
+    mark_job_run,
+    save_job_output,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -557,6 +570,154 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+_live_job_run_locks: "weakref.WeakSet[_JobRunLock]" = weakref.WeakSet()
+
+
+class _JobRunLockError(RuntimeError):
+    """The recurring-run lock backend failed (distinct from contention)."""
+
+    def __init__(self, job_id: str, lock_path: Path, cause: BaseException) -> None:
+        self.job_id = job_id
+        self.lock_path = lock_path
+        self.cause = cause
+        super().__init__(
+            f"cron job {job_id!r} cannot establish run ownership at "
+            f"{lock_path}: {cause}"
+        )
+
+
+class _JobRunLock:
+    """A held OS advisory lock for one cron job's full execution lifetime.
+
+    The guarantee is intentionally same-host: independent processes addressing
+    the same active cron store contend on the same local lock inode. The lock
+    file deliberately remains after release; only the live descriptor lock is
+    ownership. Network/distributed filesystem lock semantics are not assumed.
+    """
+
+    def __init__(self, lock_fd) -> None:
+        self._lock_fd = lock_fd
+        _live_job_run_locks.add(self)
+
+    def _close_in_fork_child(self) -> None:
+        """Close the inherited descriptor without unlocking the parent's OFD."""
+        lock_fd, self._lock_fd = self._lock_fd, None
+        if lock_fd is None:
+            return
+        try:
+            lock_fd.close()
+        except OSError:
+            pass
+
+    def release(self) -> None:
+        """Release and close the lock. Idempotent for competing cleanup paths."""
+        lock_fd, self._lock_fd = self._lock_fd, None
+        _live_job_run_locks.discard(self)
+        if lock_fd is None:
+            return
+        try:
+            lock_fd.seek(0)
+            if fcntl is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            elif msvcrt is not None:
+                getattr(msvcrt, "locking")(
+                    lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+                )
+        except (OSError, IOError):
+            # close() below also releases advisory locks, including during
+            # interpreter teardown when an explicit unlock can fail.
+            pass
+        finally:
+            try:
+                lock_fd.close()
+            except OSError:
+                pass
+
+
+def _close_job_run_locks_after_fork() -> None:
+    """Do not let a bare-fork child prolong scheduler ownership after death."""
+    for run_lock in tuple(_live_job_run_locks):
+        run_lock._close_in_fork_child()
+    _live_job_run_locks.clear()
+
+
+if hasattr(os, "register_at_fork"):  # POSIX only; opened FDs are also exec-safe.
+    os.register_at_fork(after_in_child=_close_job_run_locks_after_fork)
+
+
+def _job_run_lock_path(job_id: str) -> Path:
+    """Return a traversal-safe lock path in the active cron store context."""
+    digest = hashlib.sha256(str(job_id).encode("utf-8", errors="replace")).hexdigest()
+    return get_cron_store_dir() / ".run-locks" / f"{digest}.lock"
+
+
+def _is_job_run_lock_contention(exc: OSError) -> bool:
+    """Return True only for non-blocking lock-loss errno values."""
+    return exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}
+
+
+def _try_acquire_job_run_lock(job_id: str) -> Optional[_JobRunLock]:
+    """Try to own one recurring job for its full run without waiting.
+
+    ``None`` means genuine lock contention. Backend, open, permission, and I/O
+    failures raise ``_JobRunLockError`` so callers can fail closed with an
+    actionable, truthful reason instead of claiming another process is running.
+    """
+    lock_path = _job_run_lock_path(job_id)
+    lock_fd = None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(lock_path.parent, 0o700)
+        except (OSError, NotImplementedError):
+            pass
+
+        # Binary update mode lets Windows lock a real byte. Two creators may
+        # append two bytes before either locks; all contenders still lock byte 0.
+        lock_fd = open(lock_path, "a+b")
+        lock_fd.seek(0, os.SEEK_END)
+        if lock_fd.tell() == 0:
+            lock_fd.write(b"\0")
+            lock_fd.flush()
+        lock_fd.seek(0)
+    except (OSError, IOError) as exc:
+        if lock_fd is not None:
+            try:
+                lock_fd.close()
+            except OSError:
+                pass
+        raise _JobRunLockError(job_id, lock_path, exc) from exc
+
+    try:
+        if fcntl is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif msvcrt is not None:
+            getattr(msvcrt, "locking")(
+                lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
+            )
+        else:  # pragma: no cover - supported runtimes provide one backend
+            raise _JobRunLockError(
+                job_id,
+                lock_path,
+                RuntimeError("no supported OS advisory-lock backend is available"),
+            )
+    except (OSError, IOError) as exc:
+        try:
+            lock_fd.close()
+        except OSError:
+            pass
+        if _is_job_run_lock_contention(exc):
+            return None
+        raise _JobRunLockError(job_id, lock_path, exc) from exc
+    except BaseException:
+        try:
+            lock_fd.close()
+        except OSError:
+            pass
+        raise
+    return _JobRunLock(lock_fd)
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -3394,21 +3555,61 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
+def run_one_job(
+    job: dict,
+    *,
+    adapters=None,
+    loop=None,
+    verbose: bool = False,
+    _run_lock: Optional[_JobRunLock] = None,
+) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
     This is the shared firing body extracted from ``tick``'s per-job closure so
     that BOTH the built-in ticker and an external provider's ``fire_due`` (e.g.
     Chronos) run the identical sequence — no duplicated correctness.
 
-    It does NOT decide whether the job is due, claim it, or compute the next
-    run — those are the caller's concern (``tick`` advances ``next_run_at``
-    under the file lock before dispatch; an external provider claims via the
-    store CAS). This function only fires the given job once.
+    Built-in and external schedulers acquire recurring-job ownership before
+    advancing/claiming schedule state and pass it through the private
+    ``_run_lock`` argument. Direct/manual callers acquire here instead.
+    One-shots retain their existing durable ``run_claim`` semantics.
 
     Returns True if the job was processed (even if the job itself failed —
-    failure is recorded via ``mark_job_run``), False only if processing raised.
+    failure is recorded via ``mark_job_run``), False if processing raised or a
+    different process already owns this recurring job's run.
     """
+    schedule = job.get("schedule")
+    schedule_kind = schedule.get("kind") if isinstance(schedule, dict) else None
+    if _run_lock is None and schedule_kind in {"cron", "interval"}:
+        try:
+            _run_lock = _try_acquire_job_run_lock(job["id"])
+        except _JobRunLockError as exc:
+            logger.error(
+                "Job '%s' not dispatched: %s; refusing this recurring run "
+                "because same-host ownership cannot be verified",
+                job.get("name", job["id"]),
+                exc,
+            )
+            return False
+        if _run_lock is None:
+            logger.info(
+                "Job '%s' already running in another same-host process using "
+                "cron store %s — skipping",
+                job.get("name", job["id"]),
+                get_cron_store_dir(),
+            )
+            return False
+    try:
+        return _run_one_job_owned(
+            job, adapters=adapters, loop=loop, verbose=verbose
+        )
+    finally:
+        if _run_lock is not None:
+            _run_lock.release()
+
+
+def _run_one_job_owned(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
+    """Execute ``job`` after any required full-run ownership is established."""
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
@@ -3590,7 +3791,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         return 0
 
     try:
-        due_jobs = get_due_jobs()
+        # A due scan may identify a stale recurring slot, but must not advance
+        # that slot before this process owns the per-job full-run lock.
+        due_jobs = get_due_jobs(defer_recurring_advance=True)
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
@@ -3598,14 +3801,6 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
-
-        # Advance next_run_at for all recurring jobs FIRST, under the file lock,
-        # before any execution begins.  This preserves at-most-once semantics.
-        # For parallel jobs that are already running, advance_next_run keeps
-        # bumping next_run_at forward so the grace window never expires.
-        # mark_job_run() overwrites next_run_at on completion.
-        for job in due_jobs:
-            advance_next_run(job["id"])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
@@ -3634,12 +3829,18 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 _max_workers if _max_workers else "unbounded",
             )
 
-        def _process_job(job: dict) -> bool:
+        def _process_job(job: dict, run_lock: Optional[_JobRunLock]) -> bool:
             """Run one due job end-to-end. Thin wrapper around the shared
             module-level ``run_one_job`` so ``tick`` and external providers
             (Chronos ``fire_due``) use the identical execute→save→deliver→mark
             body."""
-            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
+            return run_one_job(
+                job,
+                adapters=adapters,
+                loop=loop,
+                verbose=verbose,
+                _run_lock=run_lock,
+            )
 
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
@@ -3677,11 +3878,107 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     logger.info("Job '%s' already running — skipping", job.get("name", job_id))
                     return None
                 _running_job_ids.add(job_id)
+
+            # The process-local set above protects sibling threads. Recurring
+            # jobs also need OS-backed ownership across gateway/desktop/daemon
+            # processes for the ENTIRE run. Acquire before advance_next_run so
+            # a losing contender changes neither side effects nor schedule.
+            schedule = job.get("schedule")
+            schedule_kind = schedule.get("kind") if isinstance(schedule, dict) else None
+            run_lock: Optional[_JobRunLock] = None
+            if schedule_kind in {"cron", "interval"}:
+                try:
+                    run_lock = _try_acquire_job_run_lock(job_id)
+                except _JobRunLockError as exc:
+                    with _running_lock:
+                        _running_job_ids.discard(job_id)
+                    logger.error(
+                        "Job '%s' not dispatched: %s; refusing this recurring run "
+                        "because same-host ownership cannot be verified",
+                        job.get("name", job_id),
+                        exc,
+                    )
+                    return None
+                if run_lock is None:
+                    with _running_lock:
+                        _running_job_ids.discard(job_id)
+                    logger.info(
+                        "Job '%s' already running in another same-host process "
+                        "using cron store %s — skipping",
+                        job.get("name", job_id),
+                        get_cron_store_dir(),
+                    )
+                    return None
+
+            try:
+                # Crash safety for recurring jobs: once THIS process owns the
+                # full run, advance before submitting the side effect. A False
+                # result means this stale due snapshot did not transition the
+                # active store, so revalidate for diagnostics and never dispatch.
+                if schedule_kind in {"cron", "interval"}:
+                    assert run_lock is not None
+                    if not advance_next_run(
+                        job_id,
+                        expected_next_run_at=job.get("next_run_at"),
+                        expected_schedule_kind=schedule_kind,
+                    ):
+                        current_job = get_job(job_id)
+                        if current_job is None:
+                            reason = "job no longer exists in the active cron store"
+                        elif (
+                            not current_job.get("enabled", True)
+                            or current_job.get("state") == "paused"
+                        ):
+                            reason = "job is now disabled or paused"
+                        elif current_job.get("schedule", {}).get("kind") != schedule_kind:
+                            reason = "schedule kind changed while the tick was dispatching"
+                        elif current_job.get("next_run_at") != job.get("next_run_at"):
+                            reason = "schedule state changed while the tick was dispatching"
+                        else:
+                            reason = "the recurring schedule could not be advanced"
+                        logger.warning(
+                            "Job '%s' not dispatched after run-lock acquisition: %s",
+                            job.get("name", job_id),
+                            reason,
+                        )
+                        run_lock.release()
+                        with _running_lock:
+                            _running_job_ids.discard(job_id)
+                        return None
+
+                    # The compare-and-set above claims the scheduled slot, not
+                    # the whole job snapshot. Re-read from the active store so
+                    # prompt/script/delivery edits made during the due scan are
+                    # honored, and fail closed if the record changed category.
+                    current_job = get_job(job_id)
+                    if (
+                        current_job is None
+                        or not current_job.get("enabled", True)
+                        or current_job.get("state") == "paused"
+                        or current_job.get("schedule", {}).get("kind")
+                        != schedule_kind
+                    ):
+                        logger.warning(
+                            "Job '%s' not dispatched after schedule advancement: "
+                            "the active record failed revalidation",
+                            job.get("name", job_id),
+                        )
+                        run_lock.release()
+                        with _running_lock:
+                            _running_job_ids.discard(job_id)
+                        return None
+                    job = current_job
+            except BaseException:
+                if run_lock is not None:
+                    run_lock.release()
+                with _running_lock:
+                    _running_job_ids.discard(job_id)
+                raise
             _ctx = contextvars.copy_context()
 
-            def _run_and_release(j=job, ctx=_ctx):
+            def _run_and_release(j=job, ctx=_ctx, owned_lock=run_lock):
                 try:
-                    return ctx.run(_process_job, j)
+                    return ctx.run(_process_job, j, owned_lock)
                 finally:
                     with _running_lock:
                         _running_job_ids.discard(j["id"])
@@ -3689,16 +3986,24 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             try:
                 return pool.submit(_run_and_release)
             except RuntimeError as submit_err:
-                # Interpreter began finalizing between the guard above and the
-                # submit — release the in-flight claim we just took and skip.
+                # Submission failed after ownership was established. Release
+                # both guards so a later healthy tick can recover.
+                if run_lock is not None:
+                    run_lock.release()
+                with _running_lock:
+                    _running_job_ids.discard(job_id)
                 if _interpreter_shutting_down(submit_err):
-                    with _running_lock:
-                        _running_job_ids.discard(job_id)
                     logger.warning(
                         "Job '%s' not dispatched — interpreter is shutting down",
                         job.get("name", job_id),
                     )
                     return None
+                raise
+            except BaseException:
+                if run_lock is not None:
+                    run_lock.release()
+                with _running_lock:
+                    _running_job_ids.discard(job_id)
                 raise
 
         # Sequential pass for env-mutating (workdir) jobs.

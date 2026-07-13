@@ -150,27 +150,36 @@ callback through to the verifier. (Also registered on the optional
   - valid → **202 `{"status": "accepted", "job_id": "..."}`** immediately, and
     the job runs in the background. 202-before-run means a long agent turn never
     trips the relay's HTTP timeout.
-- **At-most-once:** the agent claims the job with a store-level compare-and-set
-  (`claim_job_for_fire`) before running. A relay/scheduler retry that arrives
-  while the first fire is in flight (or after it completed) loses the claim and
-  does not double-run.
+- **Retry de-duplication / ownership scope:** `claim_job_for_fire` is a
+  store-level compare-and-set with a 300-second stale-recovery TTL. It de-dupes
+  ordinary relay retries. Recurring runs additionally hold a full-lifetime
+  advisory lock against the active cron store, but that lock guarantees
+  exclusion only for same-host processes sharing that store on a filesystem
+  with normal local lock semantics. It is **not** a distributed lease: a run
+  longer than 300 seconds can overlap a reclaimed fire on another host, and no
+  full-run guarantee is made for NFS/SMB advisory locking.
 
 ---
 
-## At-most-once & re-arm semantics
+## Claim, ownership & re-arm semantics
 
-- **Recurring (cron/interval):** on fire, the agent advances `next_run_at`
-  (under its store lock) as part of the claim, runs the job, then re-provisions
-  a one-shot for the new `next_run_at`. A duplicate relay for the old `fire_at`
-  finds the claim taken / time advanced and is dropped.
+- **Recurring (cron/interval):** on fire, the agent first takes the same-host
+  per-job advisory lock, then advances `next_run_at` under the store claim, runs
+  through delivery and completion marking, and finally re-provisions a one-shot
+  for the new `next_run_at`. A duplicate relay inside the 300-second claim TTL
+  is dropped. The local lock prevents overlap for same-host processes sharing
+  the active store even when a run exceeds that TTL; it does not extend the TTL
+  into a distributed full-run lease across hosts.
 - **One-shot (`30m`, `+90s`, etc.):** fires once; `mark_job_run` marks it
   completed. No re-arm.
 - **`repeat.times = N`:** `mark_job_run` deletes the job at the limit, so
   `get_job` returns `None` after the final fire → the agent does **not** re-arm
   → the schedule stops cleanly with no orphaned one-shot.
-- **Multi-replica agents:** the store CAS makes the fire at-most-once across N
-  gateway replicas sharing one `HERMES_HOME` — exactly one replica runs each
-  fire.
+- **Multi-replica agents:** the store CAS de-dupes retries while its
+  300-second `fire_claim` is fresh. Same-host replicas sharing the active cron
+  store also get full-run recurring exclusion from the per-job advisory lock.
+  Cross-host full-run exclusion is not provided; deployments that need it must
+  add a renewable distributed lease in the external scheduler/store layer.
 
 ## Reconcile (self-healing)
 

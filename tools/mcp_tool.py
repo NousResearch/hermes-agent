@@ -1527,12 +1527,14 @@ class MCPServerTask:
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
         "_reconnect_retries",
+        "max_reconnect_retries",
     )
 
     def __init__(self, name: str):
         self.name = name
         self.session: Optional[Any] = None
         self.tool_timeout: float = _DEFAULT_TOOL_TIMEOUT
+        self.max_reconnect_retries: int = _MAX_RECONNECT_RETRIES
         self._task: Optional[asyncio.Task] = None
         self._ready = asyncio.Event()
         self._shutdown_event = asyncio.Event()
@@ -2611,6 +2613,7 @@ class MCPServerTask:
         """
         self._config = config
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+        self.max_reconnect_retries = config.get("max_reconnect_retries", _MAX_RECONNECT_RETRIES)
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
         self._max_lifetime_seconds = _get_lifecycle_seconds(config, "max_lifetime_seconds")
@@ -2823,11 +2826,11 @@ class MCPServerTask:
                     return
 
                 self._reconnect_retries += 1
-                if self._reconnect_retries > _MAX_RECONNECT_RETRIES:
+                if self.max_reconnect_retries > 0 and self._reconnect_retries > self.max_reconnect_retries:
                     logger.warning(
                         "MCP server '%s' failed after %d reconnection attempts, "
                         "parking; will self-probe every %ds until it recovers: %s",
-                        self.name, _MAX_RECONNECT_RETRIES,
+                        self.name, self.max_reconnect_retries,
                         _PARKED_RETRY_INTERVAL, exc,
                     )
                     # Do NOT return — exiting the task orphans the server:
@@ -2856,15 +2859,15 @@ class MCPServerTask:
                     )
                     # One probe attempt per wake: budget of 1 so a still-dead
                     # server parks again for another interval instead of
-                    # burning 5 rapid retries each cycle.
-                    self._reconnect_retries = _MAX_RECONNECT_RETRIES
+                    # burning the full retry budget each cycle.
+                    self._reconnect_retries = self.max_reconnect_retries
                     backoff = 1.0
                     continue
 
                 logger.warning(
                     "MCP server '%s' connection lost (attempt %d/%d), "
                     "reconnecting in %.0fs: %s",
-                    self.name, self._reconnect_retries, _MAX_RECONNECT_RETRIES,
+                    self.name, self._reconnect_retries, self.max_reconnect_retries,
                     backoff, exc,
                 )
                 await asyncio.sleep(backoff)

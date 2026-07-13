@@ -18,6 +18,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
+from gateway.session_context import get_session_env
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _approval_event_choices,
@@ -209,6 +210,57 @@ class TestStartRun:
                     headers={"Authorization": "Bearer sk-secret"},
                 )
                 assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_start_binds_valid_custom_session_source(self, adapter):
+        app = _create_runs_app(adapter)
+        observed_sources = []
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def _run(**_kwargs):
+                    observed_sources.append(get_session_env("HERMES_SESSION_SOURCE"))
+                    return {"final_response": "ok"}
+
+                mock_agent.run_conversation.side_effect = _run
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello"},
+                    headers={"X-Hermes-Session-Source": "ctrl_systems"},
+                )
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert observed_sources == ["ctrl_systems"]
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_invalid_custom_session_source(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"input": "hello"},
+                headers={"X-Hermes-Session-Source": "CTRL Systems!"},
+            )
+
+            assert resp.status == 400
+            data = await resp.json()
+        assert data["error"]["code"] == "invalid_session_source"
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
 
 
 # ---------------------------------------------------------------------------

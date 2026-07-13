@@ -1535,6 +1535,8 @@ class APIServerAdapter(BasePlatformAdapter):
     # (e.g. ``agent:main:webui:dm:user-42``) while staying small enough
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
+    _MAX_SESSION_SOURCE_LEN = 64
+    _SESSION_SOURCE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
     def _parse_session_key_header(
         self, request: "web.Request"
@@ -1586,6 +1588,30 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        return raw, None
+
+    def _parse_session_source_header(
+        self, request: "web.Request"
+    ) -> tuple[Optional[str], Optional["web.Response"]]:
+        """Extract a safe client source id from ``X-Hermes-Session-Source``.
+
+        The source is persisted as session metadata so API clients can receive
+        their own section in session browsers without changing the agent's
+        ``api_server`` platform/tool configuration. An absent header preserves
+        the historical ``api_server`` source.
+        """
+        raw = request.headers.get("X-Hermes-Session-Source", "").strip()
+        if not raw:
+            return None, None
+        if len(raw) > self._MAX_SESSION_SOURCE_LEN or not self._SESSION_SOURCE_RE.fullmatch(raw):
+            return None, web.json_response(
+                _openai_error(
+                    "Invalid session source. Use 1-64 lowercase letters, numbers, underscores, or hyphens, starting with a letter.",
+                    code="invalid_session_source",
+                    param="X-Hermes-Session-Source",
+                ),
+                status=400,
+            )
         return raw, None
 
     # ------------------------------------------------------------------
@@ -2472,6 +2498,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        session_source, source_err = self._parse_session_source_header(request)
+        if source_err is not None:
+            return source_err
         session_id = request.match_info["session_id"]
         _, err = await self._get_existing_session_or_404(session_id)
         if err:
@@ -2492,6 +2521,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            session_source=session_source,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -2514,6 +2544,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        session_source, source_err = self._parse_session_source_header(request)
+        if source_err is not None:
+            return source_err
         session_id = request.match_info["session_id"]
         _, err = await self._get_existing_session_or_404(session_id)
         if err:
@@ -2581,6 +2614,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    session_source=session_source,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -2713,6 +2747,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        session_source, source_err = self._parse_session_source_header(request)
+        if source_err is not None:
+            return source_err
 
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
@@ -2864,6 +2901,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                session_source=session_source,
                 route=route,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
@@ -2884,6 +2922,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                session_source=session_source,
                 route=route,
             )
 
@@ -3792,6 +3831,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        session_source, source_err = self._parse_session_source_header(request)
+        if source_err is not None:
+            return source_err
 
         # Parse request body
         try:
@@ -3948,6 +3990,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                session_source=session_source,
                 route=route,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
@@ -3982,6 +4025,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                session_source=session_source,
                 route=route,
             )
 
@@ -4593,6 +4637,7 @@ class APIServerAdapter(BasePlatformAdapter):
         chat_id: str = "",
         session_key: str = "",
         session_id: str = "",
+        session_source: str = "",
     ) -> list:
         """Bind session contextvars for an API-server agent run.
 
@@ -4613,6 +4658,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return set_session_vars(
             platform="api_server",
+            source=session_source,
             chat_id=chat_id,
             session_key=session_key,
             session_id=session_id,
@@ -4631,6 +4677,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        session_source: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
@@ -4662,6 +4709,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     chat_id=session_id or "",
                     session_key=gateway_session_key or session_id or "",
                     session_id=session_id or "",
+                    session_source=session_source or "",
                 )
                 try:
                     agent = self._create_agent(
@@ -4779,6 +4827,9 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        session_source, source_err = self._parse_session_source_header(request)
+        if source_err is not None:
+            return source_err
 
         # Enforce concurrency limit (shared across all agent-serving
         # endpoints; configurable via gateway.api_server.max_concurrent_runs).
@@ -4974,6 +5025,8 @@ class APIServerAdapter(BasePlatformAdapter):
                             approval_token = set_current_session_key(approval_session_key)
                             session_tokens = self._bind_api_server_session(
                                 session_key=approval_session_key,
+                                session_id=session_id,
+                                session_source=session_source or "",
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
                             r = agent.run_conversation(

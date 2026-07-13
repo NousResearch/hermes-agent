@@ -189,6 +189,7 @@ class TurnController {
   private activeReasoningText = ''
   private reasoningSegmentIndex: null | number = null
   private interimBoundaryIndex: null | number = null
+  private reasoningSegmentIndices = new Set<number>()
   private activityId = 0
   private reasoningStreamingTimer: Timer = null
   private reasoningTimer: Timer = null
@@ -344,10 +345,13 @@ class TurnController {
     this.streamTimer = clear(this.streamTimer)
     this.bufRef = ''
     // `keepTurnArchive`: the turn-over signal arrived before the final; the sealed segments
-    // and finished tool rows wait for `recordMessageComplete` to archive them.
+    // and finished tool rows wait for `recordMessageComplete` to archive them. Keep the
+    // reasoning indices too: completion may still need to redact committed reasoning.
+
     if (!opts.keepTurnArchive) {
       this.pendingSegmentTools = []
       this.segmentMessages = []
+      this.reasoningSegmentIndices.clear()
     }
 
     patchTurnState({
@@ -487,6 +491,7 @@ class TurnController {
 
     if (this.reasoningSegmentIndex === null) {
       this.reasoningSegmentIndex = this.segmentMessages.length
+      this.reasoningSegmentIndices.add(this.reasoningSegmentIndex)
       this.segmentMessages = [...this.segmentMessages, msg]
     } else {
       this.segmentMessages = this.segmentMessages.map((item, i) => (i === this.reasoningSegmentIndex ? msg : item))
@@ -664,6 +669,7 @@ class TurnController {
     this.clearStatusTimer()
     this.pendingSegmentTools = []
     this.segmentMessages = []
+    this.reasoningSegmentIndices.clear()
     this.turnTools = []
     this.persistedToolLabels.clear()
 
@@ -673,6 +679,47 @@ class TurnController {
 
   recordMessageComplete(payload: MessageCompletePayload) {
     this.closeReasoningSegment()
+
+    // When display.show_reasoning is off, drop any saved/streamed/payload
+    // reasoning so finalized assistant messages don't render `thinking`. The
+    // visible text is still split out of `<think>` tags below. See #22894.
+    const showReasoning = getUiState().showReasoning
+
+    // Reasoning captured while show_reasoning was still on lives in committed
+    // trail segments (closed/synced just above). Honour the setting at
+    // completion time: strip `thinking` from those segments and drop any that
+    // end up empty. MoA reference segments are not reasoning and stay put.
+    if (!showReasoning && this.reasoningSegmentIndices.size) {
+      // Dropping segments renumbers the array, so the interim boundary — the
+      // index message.complete slices from to skip sealed interims — has to
+      // shift by however many pre-boundary segments the filter removes.
+      const boundary = this.interimBoundaryIndex
+      let droppedBeforeBoundary = 0
+
+      this.segmentMessages = this.segmentMessages
+        .map((msg, i) => {
+          if (!this.reasoningSegmentIndices.has(i)) {
+            return msg
+          }
+
+          const { thinking, thinkingTokens, ...redacted } = msg
+
+          return redacted
+        })
+        .filter((msg, i) => {
+          const keep = Boolean(msg.text) || hasDetails(msg)
+
+          if (!keep && boundary !== null && i < boundary) {
+            droppedBeforeBoundary += 1
+          }
+
+          return keep
+        })
+
+      if (boundary !== null && droppedBeforeBoundary) {
+        this.interimBoundaryIndex = boundary - droppedBeforeBoundary
+      }
+    }
 
     // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
     // (`payload.rendered`) is for terminals that can't.  Prioritising
@@ -706,14 +753,8 @@ class TurnController {
     // review: duplicate-message blocker)
     const dedupeStart = payload.response_previewed ? 0 : (this.interimBoundaryIndex ?? 0)
     const finalText = finalTail(split.text, this.segmentMessages.slice(dedupeStart))
-    // When display.show_reasoning is off, drop any saved/streamed/payload
-    // reasoning so finalized assistant messages don't render `thinking`. The
-    // visible text is still split out of `<think>` tags above. See #22894.
-    const showReasoning = getUiState().showReasoning
 
-    const existingReasoning = showReasoning
-      ? this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
-      : ''
+    const existingReasoning = showReasoning ? this.reasoningText.trim() || String(payload.reasoning ?? '').trim() : ''
 
     const savedReasoning = showReasoning
       ? [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
@@ -1033,6 +1074,7 @@ class TurnController {
     this.reasoningSegmentIndex = null
     this.interimBoundaryIndex = null
     this.segmentMessages = []
+    this.reasoningSegmentIndices.clear()
     this.turnTools = []
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()

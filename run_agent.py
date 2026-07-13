@@ -119,6 +119,7 @@ from agent.iteration_budget import IterationBudget
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
+    get_provider_streaming_enabled,
     get_provider_stale_timeout,
 )
 
@@ -4560,11 +4561,19 @@ class AIAgent:
         # api_mode-flip race (the Anthropic SDK raises a non-retryable
         # TypeError on them). See #31673.
         from agent.anthropic_adapter import create_anthropic_message
+        _streaming_override = get_provider_streaming_enabled(
+            self.provider,
+            self.model,
+            getattr(self, "_anthropic_base_url", None) or self.base_url,
+        )
         return create_anthropic_message(
             self._anthropic_client,
             api_kwargs,
             log_prefix=getattr(self, "log_prefix", ""),
-            prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
+            prefer_stream=(
+                not bool(getattr(self, "_disable_streaming", False))
+                and _streaming_override is not False
+            ),
         )
 
     def _rebuild_anthropic_client(self) -> None:

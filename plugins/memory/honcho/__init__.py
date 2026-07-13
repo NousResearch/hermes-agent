@@ -472,10 +472,10 @@ class HonchoMemoryProvider(MemoryProvider):
             logger.debug("Honcho memory file migration skipped: %s", e)
 
         # ----- B7: Pre-warming at init -----
-        # Context prewarm warms peer.context() (base layer), consumed via
-        # pop_context_result() in prefetch(). Dialectic prewarm runs the
-        # full configured depth and writes into _prefetch_result so turn 1
-        # consumes the result directly.
+        # Context prewarm warms peer.context() (Honcho v3 context endpoint,
+        # zero-LLM base layer), consumed via pop_context_result() in prefetch().
+        # Dialectic prewarm runs the full configured depth and writes into
+        # _prefetch_result so turn 1 consumes the result directly.
         if self._recall_mode in {"context", "hybrid"}:
             try:
                 self._manager.prefetch_context(self._session_key)

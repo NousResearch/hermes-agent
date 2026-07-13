@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import threading
 from pathlib import Path
 
@@ -22,6 +23,52 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
+
+
+def _init_git_repo(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    origin = repo.parent / f"{repo.name}-origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", "main"], check=True, capture_output=True, text=True)
+
+
+def _make_git_worktree(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(worktree), "-b", "wt/live", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return worktree
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +154,50 @@ def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):
     assert task.branch_name == "wt/t6-wire"
 
 
+def test_task_to_dict_uses_live_worker_workspace_snapshot(
+    kanban_home, tmp_path, monkeypatch
+):
+    worktree = _make_git_worktree(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(worktree))
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship worktree",
+            workspace_kind="worktree",
+            workspace_path="/stale/path",
+            branch_name="wt/stale",
+        )
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    payload = kc._task_to_dict(task)
+    assert payload["workspace_kind"] == "worktree"
+    assert payload["workspace_path"] == str(worktree.resolve())
+    assert payload["branch_name"] == "wt/live"
+
+
+def test_task_to_dict_includes_delivery_state(kanban_home, tmp_path):
+    artifact = tmp_path / "delivery.md"
+    artifact.write_text("delivery\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship delivery state")
+        kb.init_task_delivery_state(
+            conn,
+            tid,
+            stage="implementation",
+            workflow_stream_id="t_stream",
+            artifact_ref={"kind": "file", "path": str(artifact)},
+        )
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    payload = kc._task_to_dict(task)
+    assert payload["delivery_state"]["workflow_stream_id"] == "t_stream"
+    assert payload["delivery_state"]["artifact"]["readable"] is True
+
+
 def test_run_slash_rejects_branch_without_worktree(kanban_home):
     out = kc.run_slash("create 'bad branch' --workspace scratch --branch wt/bad")
     assert "--branch is only valid with --workspace worktree" in out
@@ -157,6 +248,63 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     kc.run_slash(f"claim {tid}")
     assert "Blocked" in kc.run_slash(f"block {tid} 'need decision'")
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
+
+
+def test_run_slash_claim_uses_fresh_origin_main_and_records_branch(kanban_home, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    origin = repo.parent / f"{repo.name}-origin.git"
+    upstream = tmp_path / "upstream"
+    real_run = subprocess.run
+    real_run(["git", "clone", str(origin), str(upstream)], check=True, capture_output=True, text=True)
+    real_run(["git", "-C", str(upstream), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True)
+    real_run(["git", "-C", str(upstream), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True)
+    (upstream / "fresh.txt").write_text("fresh\n", encoding="utf-8")
+    real_run(["git", "-C", str(upstream), "add", "fresh.txt"], check=True, capture_output=True, text=True)
+    real_run(["git", "-C", str(upstream), "commit", "-m", "fresh origin"], check=True, capture_output=True, text=True)
+    real_run(["git", "-C", str(upstream), "push", "origin", "main"], check=True, capture_output=True, text=True)
+    fresh_head = real_run(["git", "-C", str(upstream), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    stale_head = real_run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    assert fresh_head != stale_head, "local main should be stale relative to origin/main for this regression test"
+
+    board = "claim-board"
+    kb.create_board(board, default_workdir=str(repo), worktree_base_ref="origin/main")
+    kb.set_current_board(board)
+
+    out = kc.run_slash("create 'claim me' --assignee alice")
+    import re
+    match = re.search(r"(t_[a-f0-9]+)", out)
+    assert match is not None
+    tid = match.group(1)
+
+    calls = []
+
+    def spy(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(kb.subprocess, "run", spy)
+    claim = kc.run_slash(f"claim {tid}")
+    assert "Claimed" in claim
+    assert "Workspace:" in claim
+    assert ".worktrees" in claim
+
+    expected = repo / ".worktrees" / tid
+    with kb.connect(board=board) as conn:
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.workspace_kind == "worktree"
+    assert task.workspace_path == str(expected)
+    assert task.branch_name == f"wt/{tid}"
+    assert task.workspace_base_ref == "origin/main"
+    assert task.workspace_base_commit == fresh_head
+    assert task.workspace_base_commit != stale_head
+    assert expected.exists()
+
+    fetch_idx = next(i for i, cmd in enumerate(calls) if cmd == ["git", "-C", str(repo), "fetch", "origin", "main"])
+    worktree_idx = next(i for i, cmd in enumerate(calls) if cmd[:6] == ["git", "-C", str(repo), "worktree", "add", "-b"])
+    assert fetch_idx < worktree_idx, calls
 
 
 def test_run_slash_json_output(kanban_home):

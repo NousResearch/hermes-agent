@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 
 import pytest
+
+from hermes_cli import kanban_db as kb
+import tools.kanban_tools as kt
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +175,38 @@ def worker_env(monkeypatch, tmp_path):
     return tid
 
 
+def _make_git_worktree(tmp_path):
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(worktree), "-b", "wt/live", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return worktree
+
+
 def test_show_defaults_to_env_task_id(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_show({})
@@ -194,6 +230,88 @@ def test_show_explicit_task_id(worker_env):
     out = kt._handle_show({"task_id": other})
     d = json.loads(out)
     assert d["task"]["id"] == other
+
+
+def test_show_uses_live_worktree_snapshot(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    worktree = _make_git_worktree(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(worktree))
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="live show",
+            workspace_kind="worktree",
+            workspace_path="/stale/path",
+            branch_name="wt/stale",
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_show({"task_id": tid})
+    d = json.loads(out)
+    assert d["task"]["workspace_kind"] == "worktree"
+    assert d["task"]["workspace_path"] == str(worktree.resolve())
+    assert d["task"]["branch_name"] == "wt/live"
+
+
+def test_tool_board_override_create_and_comment_beat_ambient_pins(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    kb.create_board("ambient")
+    kb.create_board("override")
+    monkeypatch.setenv(
+        "HERMES_KANBAN_DB",
+        str(home / "kanban" / "boards" / "ambient" / "kanban.db"),
+    )
+    monkeypatch.setenv(
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        str(home / "kanban" / "boards" / "ambient" / "workspaces"),
+    )
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "ambient")
+
+    from tools import kanban_tools as kt
+    created = json.loads(kt._handle_create({
+        "title": "override child",
+        "assignee": "peer",
+        "board": "override",
+    }))
+    assert created["ok"] is True
+    task_id = created["task_id"]
+
+    commented = json.loads(kt._handle_comment({
+        "task_id": task_id,
+        "body": "hello",
+        "board": "override",
+    }))
+    assert commented["ok"] is True
+
+    with kb.connect_closing(board="ambient") as conn:
+        assert kb.get_task(conn, task_id) is None
+    with kb.connect_closing(board="override") as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        comments = kb.list_comments(conn, task_id)
+        assert len(comments) == 1
+        assert comments[0].body == "hello"
 
 
 def test_list_filters_tasks(monkeypatch, worker_env):
@@ -306,7 +424,9 @@ def test_complete_happy_path(worker_env):
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
         assert run.summary == "got the thing done"
-        assert run.metadata == {"files": 2}
+        assert run.metadata is not None
+        assert run.metadata["files"] == 2
+        assert run.metadata["delivery_evidence"]["tool_call"]["action"] == "kanban_complete"
     finally:
         conn.close()
 
@@ -334,7 +454,10 @@ def test_complete_metadata_round_trips_through_show(worker_env):
     shown = json.loads(show_out)
     assert shown["task"]["status"] == "done"
     assert shown["runs"][-1]["summary"] == "finished with structured evidence"
-    assert shown["runs"][-1]["metadata"] == handoff
+    shown_metadata = shown["runs"][-1]["metadata"]
+    assert shown_metadata["changed_files"] == handoff["changed_files"]
+    assert shown_metadata["verification"] == handoff["verification"]
+    assert shown_metadata["delivery_evidence"]["tool_call"]["action"] == "kanban_complete"
 
 
 def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
@@ -354,10 +477,11 @@ def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata == {
-            "files": 2,
-            "worker_session_id": "session-trusted",
-        }
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata["files"] == 2
+        assert run.metadata["worker_session_id"] == "session-trusted"
+        assert run.metadata["delivery_evidence"]["tool_call"]["worker_session_id"] == "session-trusted"
     finally:
         conn.close()
 
@@ -381,10 +505,11 @@ def test_complete_does_not_stamp_worker_session_id_without_scoped_task(
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata == {
-            "files": 2,
-            "worker_session_id": "user-provided",
-        }
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata["files"] == 2
+        assert run.metadata["worker_session_id"] == "user-provided"
+        assert run.metadata["delivery_evidence"]["tool_call"]["worker_session_id"] == "session-trusted"
     finally:
         conn.close()
 
@@ -702,6 +827,11 @@ def test_block_happy_path(worker_env):
     conn = kb.connect()
     try:
         assert kb.get_task(conn, worker_env).status == "blocked"
+        run = kb.latest_run(conn, worker_env)
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata["delivery_evidence"]["tool_call"]["action"] == "kanban_block"
+        assert run.metadata["delivery_evidence"]["tool_call"]["reason_present"] is True
     finally:
         conn.close()
 
@@ -1350,8 +1480,11 @@ def test_worker_lifecycle_through_tools(worker_env):
         assert parent.status == "done"
         assert parent.current_run_id is None
         run = kb.latest_run(conn, worker_env)
+        assert run is not None
         assert run.outcome == "completed"
-        assert run.metadata == {"child_task": child_out["task_id"]}
+        assert run.metadata is not None
+        assert run.metadata["child_task"] == child_out["task_id"]
+        assert run.metadata["delivery_evidence"]["tool_call"]["action"] == "kanban_complete"
         # Child is todo (parent just finished, but recompute_ready may
         # have promoted it — complete_task runs recompute internally).
         child = kb.get_task(conn, child_out["task_id"])

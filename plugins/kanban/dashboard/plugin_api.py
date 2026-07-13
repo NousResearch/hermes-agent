@@ -161,6 +161,9 @@ def _task_dict(
     latest_summary: Optional[str] = None,
 ) -> dict[str, Any]:
     d = asdict(task)
+    live = kanban_db.live_worker_workspace_snapshot(task)
+    if live:
+        d.update(live)
     # Add derived age metrics so the UI can colour stale cards without
     # computing deltas client-side.
     try:
@@ -616,6 +619,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            board=board,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}

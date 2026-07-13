@@ -9,6 +9,7 @@ Uses python-telegram-bot library for:
 
 import asyncio
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -8639,6 +8640,59 @@ def _is_connected(config) -> bool:
     return bool(str(token).strip())
 
 
+def _standalone_send_log_payload(
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    disable_link_previews=False,
+    result=None,
+):
+    """Safe structured telemetry for Telegram standalone sends.
+
+    Keeps observability high while avoiding raw destination IDs, filenames,
+    tokens, or other sensitive config values in logs.
+    """
+    media_files = media_files or []
+
+    def _hash_value(value):
+        if value in (None, ""):
+            return None
+        return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+
+    def _media_kind(media_path, is_voice):
+        if is_voice:
+            return "voice"
+        ext = os.path.splitext(str(media_path or ""))[1].lower().lstrip(".")
+        return ext or "unknown"
+
+    payload = {
+        "chat_id_hash": _hash_value(chat_id),
+        "thread_id_hash": _hash_value(thread_id),
+        "message_chars": len(message or ""),
+        "has_text": bool((message or "").strip()),
+        "media_count": len(media_files),
+        "media_types": sorted({_media_kind(path, is_voice) for path, is_voice in media_files}),
+        "disable_link_previews": bool(disable_link_previews),
+    }
+    if result is not None:
+        from tools.send_message_tool import _sanitize_error_text
+
+        if isinstance(result, dict):
+            payload["success"] = bool(result.get("success"))
+            if result.get("message_id") is not None:
+                payload["message_id"] = str(result.get("message_id"))
+            if result.get("warnings"):
+                payload["warning_count"] = len(result.get("warnings") or [])
+            if result.get("error"):
+                payload["error"] = _sanitize_error_text(str(result.get("error")))
+        else:
+            payload["success"] = False
+            payload["result_type"] = type(result).__name__
+    return payload
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -8658,16 +8712,56 @@ async def _standalone_send(
     disable_link_previews = bool(
         getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")
     )
-    from tools.send_message_tool import _send_telegram
-    return await _send_telegram(
-        token,
+    start_payload = _standalone_send_log_payload(
         chat_id,
         message,
-        media_files=media_files,
         thread_id=thread_id,
+        media_files=media_files,
         disable_link_previews=disable_link_previews,
-        force_document=force_document,
     )
+    logger.info(
+        "[telegram] standalone send start %s",
+        json.dumps(start_payload, sort_keys=True),
+    )
+    from tools.send_message_tool import _send_telegram, _sanitize_error_text
+
+    try:
+        result = await _send_telegram(
+            token,
+            chat_id,
+            message,
+            media_files=media_files,
+            thread_id=thread_id,
+            disable_link_previews=disable_link_previews,
+            force_document=force_document,
+        )
+    except Exception as exc:
+        error_payload = dict(start_payload)
+        error_payload.update({
+            "success": False,
+            "error": _sanitize_error_text(str(exc)),
+        })
+        logger.warning(
+            "[telegram] standalone send exception %s",
+            json.dumps(error_payload, sort_keys=True),
+        )
+        raise
+
+    logger.info(
+        "[telegram] standalone send result %s",
+        json.dumps(
+            _standalone_send_log_payload(
+                chat_id,
+                message,
+                thread_id=thread_id,
+                media_files=media_files,
+                disable_link_previews=disable_link_previews,
+                result=result,
+            ),
+            sort_keys=True,
+        ),
+    )
+    return result
 
 
 def interactive_setup() -> None:

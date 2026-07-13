@@ -345,3 +345,57 @@ def test_decompose_no_aux_client_configured(kanban_home):
 
     assert outcome.ok is False
     assert "no auxiliary client" in outcome.reason
+
+
+def test_decompose_rejects_brand_mismatch(kanban_home, monkeypatch):
+    # Since the board-override fix (explicit/scoped board beats a stale
+    # HERMES_KANBAN_DB pin), a cross-board leak is refused at connect time:
+    # the foreign task is simply not visible on the active board. The brand
+    # guard's specific audit message still covers IN-DB mismatches (e.g.
+    # imported/migrated rows), staged here by rewriting the brand column.
+    kb.create_board("brand-a")
+    kb.create_board("brand-b")
+    with kb.connect(board="brand-b") as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+        conn.execute("UPDATE tasks SET brand = 'brand-a' WHERE id = ?", (tid,))
+        conn.commit()
+
+    with kb.scoped_current_board("brand-b"):
+        outcome = decomp.decompose_task(tid, author="me")
+
+    assert outcome.ok is False
+    assert "does not match active board" in outcome.reason
+
+    # The pre-fix leak scenario (task on another board's DB, env pinned to
+    # that DB, different active board) now refuses even earlier.
+    with kb.connect(board="brand-a") as conn:
+        tid2 = kb.create_task(conn, title="ship another feature", triage=True)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="brand-a")))
+    with kb.scoped_current_board("brand-b"):
+        outcome2 = decomp.decompose_task(tid2, author="me")
+
+    assert outcome2.ok is False
+    assert outcome2.reason == "unknown task id"
+
+
+def test_decompose_allows_unknown_brand(kanban_home, monkeypatch):
+    # Legacy/pre-migration rows have brand=NULL. The brand-mismatch gate must
+    # NOT reject them (a null brand cannot prove a mismatch); they fall through
+    # to normal decomposition. Regression guard for the intentional
+    # transitional bypass in decompose_task.
+    kb.create_board("brand-a")
+    kb.create_board("brand-b")
+    with kb.connect(board="brand-a") as conn:
+        tid = kb.create_task(conn, title="legacy task", triage=True)
+        # Simulate a pre-migration row whose brand was never populated.
+        conn.execute("UPDATE tasks SET brand = NULL WHERE id = ?", (tid,))
+        conn.commit()
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="brand-a")))
+    with kb.scoped_current_board("brand-b"):
+        outcome = decomp.decompose_task(tid, author="me")
+
+    # It must get PAST the brand gate — i.e. it is not rejected for a brand
+    # mismatch. It may still stop later (e.g. no auxiliary client in tests);
+    # the point is the gate did not fire on a null brand.
+    assert "does not match active board" not in (outcome.reason or "")

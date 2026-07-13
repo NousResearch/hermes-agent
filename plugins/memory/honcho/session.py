@@ -652,8 +652,18 @@ class HonchoSessionManager:
                     ) or ""
             else:
                 # Without cross-observation, each peer queries its own context.
+                # Be explicit about the target when the peer is not the AI self,
+                # so the backend does not silently fall back to the observer's
+                # self-model.
                 target_peer = self._get_or_create_peer(target_peer_id)
-                result = target_peer.chat(query, reasoning_level=level) or ""
+                if target_peer_id == session.assistant_peer_id:
+                    result = target_peer.chat(query, reasoning_level=level) or ""
+                else:
+                    result = target_peer.chat(
+                        query,
+                        target=target_peer_id,
+                        reasoning_level=level,
+                    ) or ""
 
             # Apply Hermes-side char cap before caching
             if result and self._dialectic_max_chars and len(result) > self._dialectic_max_chars:

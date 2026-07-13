@@ -497,8 +497,12 @@ def _scan_gateway_pids(
                     pass
 
             if not _found_via_proc:
+                ps_cmd = ["ps", "-A", "eww", "-o", "pid=,command="]
+                if is_macos():
+                    # Darwin rejects the GNU-style `eww` positional token.
+                    ps_cmd = ["ps", "-A", "-ww", "-o", "pid=,command="]
                 result = subprocess.run(
-                    ["ps", "-A", "eww", "-o", "pid=,command="],
+                    ps_cmd,
                     capture_output=True,
                     text=True,
                     timeout=10,

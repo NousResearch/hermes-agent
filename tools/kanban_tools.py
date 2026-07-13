@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -39,6 +40,95 @@ from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Commit-before-handoff guard
+# ---------------------------------------------------------------------------
+
+# Branches we must NEVER auto-commit on (in addition to the remote default).
+_CHECKPOINT_PROTECTED_BRANCHES = {"main", "master"}
+
+
+def _git_ws(args: list[str], cwd: str, timeout: int = 30) -> tuple[int, str, str]:
+    """Run a git command in ``cwd``; return (rc, stdout, stderr). Never raises."""
+    try:
+        p = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+    except Exception as exc:  # pragma: no cover - defensive
+        return 1, "", str(exc)
+
+
+def _checkpoint_workspace(tid: str) -> None:
+    """Best-effort: commit a dirty worktree to its task branch before handoff.
+
+    Safe by design: this never raises, never pushes, and only acts for the
+    dispatched worker's own task while the workspace is a git worktree on a
+    non-default branch outside merge/rebase/cherry-pick/revert/bisect states.
+    """
+    try:
+        if os.environ.get("HERMES_KANBAN_TASK") != tid:
+            return
+        ws = os.environ.get("HERMES_KANBAN_WORKSPACE")
+        if not ws or not os.path.isdir(ws):
+            return
+
+        rc, out, _ = _git_ws(["rev-parse", "--is-inside-work-tree"], ws)
+        if rc != 0 or out != "true":
+            return
+
+        rc, git_dir, _ = _git_ws(["rev-parse", "--git-dir"], ws)
+        if rc != 0 or not git_dir:
+            return
+        gd = git_dir if os.path.isabs(git_dir) else os.path.join(ws, git_dir)
+        for marker in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply"):
+            if os.path.exists(os.path.join(gd, marker)):
+                return
+
+        rc, branch, _ = _git_ws(["symbolic-ref", "--short", "-q", "HEAD"], ws)
+        if rc != 0 or not branch:
+            return
+
+        rc, def_ref, _ = _git_ws(["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"], ws)
+        default = def_ref.split("/", 1)[1] if (rc == 0 and "/" in def_ref) else "main"
+        if branch == default or branch in _CHECKPOINT_PROTECTED_BRANCHES:
+            return
+
+        rc_tracked, _, _ = _git_ws(["diff", "--quiet", "--ignore-submodules", "HEAD"], ws)
+        has_tracked = rc_tracked != 0
+        rc_untracked, untracked, _ = _git_ws(["ls-files", "--others", "--exclude-standard"], ws)
+        has_untracked = rc_untracked == 0 and bool(untracked)
+        if not has_tracked and not has_untracked:
+            return
+
+        _git_ws(["add", "-A"], ws)
+        commit_args = [
+            "commit", "--no-verify",
+            "-m", f"wip: kanban worker checkpoint for {tid} on {branch}",
+            "-m", (
+                "Auto-committed before block/complete so the branch carries the "
+                "work for the reviewer / downstream card / PR. Safe to squash or amend."
+            ),
+        ]
+        rc_id, email, _ = _git_ws(["config", "user.email"], ws)
+        if rc_id != 0 or not email:
+            commit_args = [
+                "-c", "user.email=kanban-worker@hermes.local",
+                "-c", "user.name=hermes-kanban-worker",
+            ] + commit_args
+        rc, _, err = _git_ws(commit_args, ws)
+        if rc == 0:
+            logger.info("kanban checkpoint: committed worktree for %s on %s", tid, branch)
+        else:
+            logger.warning("kanban checkpoint: commit failed for %s on %s: %s", tid, branch, err)
+    except Exception:
+        logger.warning("kanban checkpoint: skipped for %s (unexpected error)", tid, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +220,60 @@ def _stamp_worker_session_metadata(
     stamped = dict(metadata or {})
     stamped["worker_session_id"] = session_id
     return stamped
+
+
+def _delivery_evidence_artifact_checks(metadata: Optional[dict]) -> list[dict[str, Any]]:
+    if not isinstance(metadata, dict):
+        return []
+    raw = metadata.get("artifacts")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    checks: list[dict[str, Any]] = []
+    for item in raw:
+        path = str(item).strip()
+        if not path:
+            continue
+        expanded = os.path.expanduser(path)
+        checks.append({
+            "path": path,
+            "readable": os.path.isfile(expanded),
+        })
+    return checks
+
+
+def _write_tool_run_delivery_evidence(
+    kb,
+    conn,
+    task_id: str,
+    run_id: Optional[int],
+    *,
+    action: str,
+    summary: Optional[str] = None,
+    result: Optional[str] = None,
+    reason: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> None:
+    if run_id is None:
+        return
+    workspace = os.environ.get("HERMES_KANBAN_WORKSPACE")
+    evidence: dict[str, Any] = {
+        "tool_call": {
+            "action": action,
+            "task_id": task_id,
+            "worker_session_id": os.environ.get("HERMES_SESSION_ID"),
+            "scoped_worker_task": os.environ.get("HERMES_KANBAN_TASK"),
+            "workspace_path": workspace,
+            "workspace_exists": bool(workspace and os.path.exists(workspace)),
+            "summary_present": bool(summary),
+            "result_present": bool(result),
+            "reason_present": bool(reason),
+            "metadata_keys": sorted(metadata.keys()) if isinstance(metadata, dict) else [],
+        }
+    }
+    artifact_checks = _delivery_evidence_artifact_checks(metadata)
+    if artifact_checks:
+        evidence["artifact_checks"] = artifact_checks
+    kb.write_run_delivery_evidence(conn, int(run_id), evidence)
 
 
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
@@ -386,16 +530,27 @@ def _handle_show(args: dict, **kw) -> str:
             children = kb.child_ids(conn, tid)
 
             def _task_dict(t):
+                live = kb.live_worker_workspace_snapshot(t)
+                if live:
+                    workspace_kind = live.get("workspace_kind", t.workspace_kind)
+                    workspace_path = live.get("workspace_path", t.workspace_path)
+                    branch_name = live.get("branch_name", t.branch_name)
+                else:
+                    workspace_kind = t.workspace_kind
+                    workspace_path = t.workspace_path
+                    branch_name = t.branch_name
                 return {
                     "id": t.id, "title": t.title, "body": t.body,
                     "assignee": t.assignee, "status": t.status,
                     "tenant": t.tenant, "priority": t.priority,
-                    "workspace_kind": t.workspace_kind,
-                    "workspace_path": t.workspace_path,
+                    "workspace_kind": workspace_kind,
+                    "workspace_path": workspace_path,
+                    "branch_name": branch_name,
                     "created_by": t.created_by, "created_at": t.created_at,
                     "started_at": t.started_at,
                     "completed_at": t.completed_at,
                     "result": t.result,
+                    "delivery_state": t.delivery_state,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
                 }
@@ -511,6 +666,7 @@ def _handle_complete(args: dict, **kw) -> str:
     ownership_err = _enforce_worker_task_ownership(tid)
     if ownership_err:
         return ownership_err
+    _checkpoint_workspace(tid)
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
@@ -587,6 +743,40 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
+    if metadata is not None and "deviations" in metadata:
+        deviations = metadata.get("deviations")
+        if isinstance(deviations, str):
+            if deviations.strip().lower() != "none":
+                return tool_error(
+                    "metadata.deviations must be either the string 'none' or "
+                    "a list of objects describing plan/spec departures"
+                )
+            metadata["deviations"] = "none"
+        elif isinstance(deviations, (list, tuple)):
+            normalized = []
+            for idx, item in enumerate(deviations):
+                if not isinstance(item, dict):
+                    return tool_error(
+                        "metadata.deviations entries must be objects; "
+                        f"entry {idx} is {type(item).__name__}"
+                    )
+                departure = (
+                    item.get("departure")
+                    or item.get("what")
+                    or item.get("deviation")
+                )
+                why = item.get("why") or item.get("reason")
+                if not str(departure or "").strip() or not str(why or "").strip():
+                    return tool_error(
+                        "each metadata.deviations entry must include a non-empty "
+                        "departure/what/deviation field and a non-empty why/reason field"
+                    )
+                normalized.append(item)
+            metadata["deviations"] = normalized
+        else:
+            return tool_error(
+                "metadata.deviations must be either the string 'none' or a list"
+            )
     metadata = _stamp_worker_session_metadata(tid, metadata)
     board = args.get("board")
     try:
@@ -650,11 +840,27 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
+            except kb.CompletionGateError as gate_err:
+                details = getattr(gate_err, "details", {}) or {}
+                extra = ""
+                if details:
+                    extra = f" Details: {json.dumps(details, sort_keys=True)}"
+                return tool_error(f"kanban_complete blocked: {gate_err}.{extra}")
             if not ok:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
+            _write_tool_run_delivery_evidence(
+                kb,
+                conn,
+                tid,
+                run.id if run else None,
+                action="kanban_complete",
+                summary=summary,
+                result=result,
+                metadata=metadata,
+            )
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
             conn.close()
@@ -675,6 +881,7 @@ def _handle_block(args: dict, **kw) -> str:
     ownership_err = _enforce_worker_task_ownership(tid)
     if ownership_err:
         return ownership_err
+    _checkpoint_workspace(tid)
     reason = args.get("reason")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
@@ -725,6 +932,14 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
+            _write_tool_run_delivery_evidence(
+                kb,
+                conn,
+                tid,
+                run.id if run else None,
+                action="kanban_block",
+                reason=str(reason),
+            )
             # Tell the worker where the task actually landed so it doesn't
             # assume it's sitting in 'blocked' when routing sent it elsewhere.
             landed = kb.get_task(conn, tid)
@@ -865,6 +1080,9 @@ def _handle_create(args: dict, **kw) -> str:
     workspace_path = args.get("workspace_path")
     project_id = args.get("project") or args.get("project_id")
     _inherit_workspace = workspace_kind is None and workspace_path is None
+    # An explicitly chosen kind is pinned: create/dispatch never
+    # auto-upgrade it to a worktree on git-backed boards.
+    workspace_pinned = workspace_kind is not None
     if workspace_kind is None:
         workspace_kind = "scratch"
     triage, bool_error = _parse_bool_arg(args, "triage")
@@ -933,6 +1151,8 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                board=board,
+                workspace_pinned=workspace_pinned,
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
@@ -1201,7 +1421,10 @@ KANBAN_COMPLETE_SCHEMA = {
         "downstream workers and humans. Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
-        "tests_run, decisions, findings, etc). At least one of "
+        "tests_run, decisions, findings, etc). When the work departed "
+        "from the requested plan/spec, include ``metadata.deviations`` "
+        "as either the explicit string ``'none'`` or a list of objects "
+        "with at least ``departure`` and ``why`` fields. At least one of "
         "``summary`` or ``result`` is required. If you created new "
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "
@@ -1233,8 +1456,9 @@ KANBAN_COMPLETE_SCHEMA = {
                 "description": (
                     "Free-form dict of structured facts about this "
                     "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
-                    "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "\"findings\": [...], \"deviations\": \"none\" or "
+                    "[{\"departure\": \"...\", \"why\": \"...\"}]}. "
+                    "Surfaced to downstream workers alongside ``summary``."
                 ),
             },
             "result": {

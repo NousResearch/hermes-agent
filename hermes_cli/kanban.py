@@ -58,6 +58,15 @@ def _fmt_task_line(t: kb.Task) -> str:
 
 
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
+    live = kb.live_worker_workspace_snapshot(t)
+    if live:
+        workspace_kind = live.get("workspace_kind", t.workspace_kind)
+        workspace_path = live.get("workspace_path", t.workspace_path)
+        branch_name = live.get("branch_name", t.branch_name)
+    else:
+        workspace_kind = t.workspace_kind
+        workspace_path = t.workspace_path
+        branch_name = t.branch_name
     return {
         "id": t.id,
         "title": t.title,
@@ -66,15 +75,16 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "status": t.status,
         "priority": t.priority,
         "tenant": t.tenant,
-        "workspace_kind": t.workspace_kind,
-        "workspace_path": t.workspace_path,
-        "branch_name": t.branch_name,
+        "workspace_kind": workspace_kind,
+        "workspace_path": workspace_path,
+        "branch_name": branch_name,
         "project_id": t.project_id,
         "created_by": t.created_by,
         "created_at": t.created_at,
         "started_at": t.started_at,
         "completed_at": t.completed_at,
         "result": t.result,
+        "delivery_state": t.delivery_state,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
         "session_id": t.session_id,
@@ -310,9 +320,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
-    p_create.add_argument("--workspace", default="scratch",
+    p_create.add_argument("--workspace", default=None,
                           help="scratch | worktree | worktree:<path> | dir:<path> "
-                               "(default: scratch)")
+                               "(default: scratch). An explicit choice is "
+                               "pinned: it is never auto-upgraded to a "
+                               "worktree on git-backed boards.")
     p_create.add_argument("--branch", default=None,
                           help="Branch name for worktree tasks, e.g. wt/t6-wire")
     p_create.add_argument("--project", default=None,
@@ -1304,7 +1316,10 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 def _cmd_create(args: argparse.Namespace) -> int:
     try:
-        ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+        # None = the flag was omitted; an explicit value pins the choice so
+        # create/dispatch never auto-upgrade it to a worktree.
+        ws_pinned = args.workspace is not None
+        ws_kind, ws_path = _parse_workspace_flag(args.workspace or "scratch")
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
     except argparse.ArgumentTypeError as exc:
         print(f"kanban: {exc}", file=sys.stderr)
@@ -1325,7 +1340,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    with kb.connect_closing() as conn:
+    current_board = kb.get_current_board()
+    with kb.connect_closing(board=current_board) as conn:
         task_id = kb.create_task(
             conn,
             title=args.title,
@@ -1347,6 +1363,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            board=current_board,
+            workspace_pinned=ws_pinned,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1515,6 +1533,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.branch_name:
         print(f"  branch:    {task.branch_name}")
+    if task.delivery_state:
+        print(
+            "  delivery:  "
+            f"{task.delivery_state.get('stage', '?')} / "
+            f"{task.delivery_state.get('delivery_verdict', '?')}"
+        )
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
     if task.model_override:
@@ -1814,6 +1838,7 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 
 def _cmd_claim(args: argparse.Namespace) -> int:
+    board_slug = args.board or kb.get_current_board()
     with kb.connect_closing() as conn:
         task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
         if task is None:
@@ -1828,7 +1853,18 @@ def _cmd_claim(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        workspace = kb.resolve_workspace(task)
+        use_worktree = task.workspace_kind == "worktree" or (
+            kb._board_is_git_backed(board_slug) and not getattr(task, "goal_mode", False)
+        )
+        if use_worktree:
+            workspace, resolved_branch_name, base_ref, base_commit = kb._resolve_worktree_workspace(
+                task, board=board_slug
+            )
+            kb.set_workspace_kind(conn, task.id, "worktree")
+            kb.set_branch_name(conn, task.id, resolved_branch_name)
+            kb.set_workspace_base(conn, task.id, base_ref, base_commit)
+        else:
+            workspace = kb.resolve_workspace(task, board=board_slug)
         kb.set_workspace_path(conn, task.id, str(workspace))
     print(f"Claimed {task.id}")
     print(f"Workspace: {workspace}")
@@ -2148,6 +2184,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             _kanban_cfg.get("max_spawn")
         )
     except Exception:
+        _kanban_cfg = {}
         default_assignee = None
         max_in_progress_per_profile = None
         max_in_progress = None
@@ -2161,6 +2198,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            route_watchdog=(_kanban_cfg.get("route_watchdog") if isinstance(_kanban_cfg, dict) else None),
         )
     if getattr(args, "json", False):
         print(json.dumps({

@@ -12196,6 +12196,7 @@ def main():
         if action == "repair":
             from hermes_state import (
                 DEFAULT_DB_PATH,
+                _crypto_error_types,
                 _db_opens_cleanly,
                 repair_state_db_schema,
             )
@@ -12204,7 +12205,18 @@ def main():
             if not db_path.exists():
                 print(f"No session database at {db_path} (nothing to repair).")
                 return
-            reason = _db_opens_cleanly(db_path)
+            try:
+                reason = _db_opens_cleanly(db_path)
+            except _crypto_error_types() as exc:
+                # Encrypted DB + locked keystore. We cannot see inside the file,
+                # so we know nothing about its integrity — say so and stop.
+                # Offering schema surgery here would invite the user to run
+                # writable_schema DELETEs against a healthy encrypted database.
+                print(f"✗ {db_path} is encrypted and the keystore could not be unlocked:")
+                print(f"    {exc}")
+                print("  This is NOT corruption. Unlock and retry:")
+                print("    hermes encrypt unlock")
+                return
             if reason is None:
                 print(f"✓ {db_path} opens cleanly — no repair needed.")
                 return

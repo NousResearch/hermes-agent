@@ -1227,22 +1227,37 @@ def run_doctor(args):
     state_db_path = hermes_home / "state.db"
     if state_db_path.exists():
         try:
-            # hermes_state rebinds sqlite3 to the keyed sqlcipher3 module when
-            # database encryption is on; _apply_db_key is a no-op otherwise.
-            # A plain sqlite3.connect here would misreport a healthy encrypted
+            # connect_state_db applies the SQLCipher key before the first
+            # statement; it is a plain sqlite3.connect when encryption is off.
+            # A bare sqlite3.connect here would misreport a healthy encrypted
             # state.db as "has issues: file is not a database".
-            from hermes_state import _apply_db_key
-            from hermes_state import sqlite3 as _state_sqlite3
-            conn = _state_sqlite3.connect(str(state_db_path))
-            _apply_db_key(conn)
+            from hermes_state import connect_state_db
+            conn = connect_state_db(state_db_path)
             cursor = conn.execute("SELECT COUNT(*) FROM sessions")
             count = cursor.fetchone()[0]
             conn.close()
             check_ok(f"{_DHH}/state.db exists ({count} sessions)")
         except Exception as e:
-            from hermes_state import is_malformed_db_error, repair_state_db_schema
+            from hermes_state import (
+                _crypto_error_types,
+                connect_state_db,
+                is_malformed_db_error,
+                repair_state_db_schema,
+            )
 
-            if is_malformed_db_error(e):
+            if isinstance(e, _crypto_error_types()):
+                # The DB is encrypted and the keystore would not unlock. That
+                # says nothing about the file's integrity — never present it as
+                # corruption, or the user will "repair" a healthy database.
+                check_warn(
+                    f"{_DHH}/state.db is encrypted but the keystore could not be unlocked",
+                    f"({e}) — run 'hermes encrypt unlock'; this is not corruption",
+                )
+                issues.append(
+                    "state.db is encrypted and locked — run 'hermes encrypt unlock' "
+                    "(do NOT run 'hermes sessions repair'; the database is not corrupt)"
+                )
+            elif is_malformed_db_error(e):
                 # sqlite_master itself is malformed (e.g. duplicate
                 # messages_fts) — every statement fails before it runs, so
                 # this is NOT a plain FTS-index rebuild. Repair sqlite_master
@@ -1255,7 +1270,7 @@ def run_doctor(args):
                     report = repair_state_db_schema(state_db_path)
                     if report.get("repaired"):
                         try:
-                            conn = sqlite3.connect(str(state_db_path))
+                            conn = connect_state_db(state_db_path)
                             count = conn.execute(
                                 "SELECT COUNT(*) FROM sessions"
                             ).fetchone()[0]
@@ -1301,10 +1316,8 @@ def run_doctor(args):
                     "(may indicate missed checkpoints)"
                 )
                 if should_fix:
-                    from hermes_state import _apply_db_key
-                    from hermes_state import sqlite3 as _state_sqlite3
-                    conn = _state_sqlite3.connect(str(state_db_path))
-                    _apply_db_key(conn)
+                    from hermes_state import connect_state_db
+                    conn = connect_state_db(state_db_path)
                     conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     conn.close()
                     new_size = wal_path.stat().st_size if wal_path.exists() else 0

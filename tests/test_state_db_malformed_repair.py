@@ -14,6 +14,7 @@ sqlite_master surgery path recovers the canonical data and self-heals on open.
 """
 import sqlite3
 import uuid
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -242,3 +243,55 @@ def test_repair_on_clean_db_is_noop(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 10
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     conn.close()
+
+
+def test_connect_state_db_is_plain_sqlite_when_encryption_off(tmp_path):
+    """The keyed-connect helper must be a no-op on the default (plaintext) path."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+
+    assert hermes_state._DB_ENCRYPTED is False
+    conn = hermes_state.connect_state_db(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    conn.close()
+
+
+def test_doctor_fix_reports_real_session_count(tmp_path, monkeypatch, capsys):
+    """`doctor --fix` must print the recovered session count, not '?'.
+
+    Regression: doctor's post-repair count ran ``sqlite3.connect(...)`` while
+    ``sqlite3`` was never imported in doctor.py — a NameError swallowed by the
+    surrounding ``except Exception: count = "?"``. The count was therefore
+    *always* "?", and the bug was invisible because the fallback looked benign.
+    """
+    import sys
+    import types
+
+    import hermes_cli.doctor as doctor_mod
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    db_path = hermes_home / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+    monkeypatch.setattr(hermes_state, "_repair_attempted_paths", set())
+    # Cut doctor short once it is past the state.db block — the tool-availability
+    # probe is expensive and irrelevant here.
+    monkeypatch.setitem(
+        sys.modules,
+        "model_tools",
+        types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        doctor_mod.run_doctor(Namespace(fix=True))
+
+    out = capsys.readouterr().out
+    assert "sessions recovered" in out, out
+    assert "? sessions recovered" not in out, out
+    assert "1 sessions recovered" in out, out

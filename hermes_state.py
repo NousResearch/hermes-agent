@@ -60,6 +60,12 @@ def _apply_db_key(conn) -> None:
     """Issue ``PRAGMA key`` on a SQLCipher connection (no-op for plain sqlite3).
 
     Must run before any other statement on the connection.
+
+    Stays the exported primitive for callers that must key a connection they
+    opened themselves — ``hermes_cli/backup.py`` keys a *destination* handle it
+    creates, and ``hermes_cli/kanban_db.py`` probes a *different* DB file
+    through its own connector. Everything that opens a state.db by path should
+    use :func:`connect_state_db` instead.
     """
     if not _DB_ENCRYPTED:
         return
@@ -67,6 +73,48 @@ def _apply_db_key(conn) -> None:
 
     hexkey = get_data_key().hex()
     conn.execute(f"PRAGMA key = \"x'{hexkey}'\"")
+
+
+def _crypto_error_types() -> tuple:
+    """Exception types that mean "cannot unlock", not "corrupt database".
+
+    ``_apply_db_key`` can raise ``LockedError`` / ``KeystoreError`` /
+    ``DependencyError`` (all ``HermesCryptoError``) — none of which are
+    ``sqlite3.DatabaseError``. Callers must keep those distinct from
+    corruption: reporting a locked keystore as a malformed schema would invite
+    destructive ``writable_schema`` surgery on a perfectly healthy encrypted
+    database. Returns ``()`` when the encryption extra is absent, which makes
+    ``except _crypto_error_types()`` a correct no-op.
+    """
+    try:
+        from hermes_crypto.errors import HermesCryptoError
+    except ImportError:
+        return ()
+    return (HermesCryptoError,)
+
+
+def connect_state_db(db_path, **kwargs):
+    """Open a state.db connection with the SQLCipher key already applied.
+
+    The single entry point for opening a state database by path. When database
+    encryption is on, ``hermes_state.sqlite3`` is the rebound SQLCipher module
+    and the file has no plaintext SQLite structure, so ``PRAGMA key`` must be
+    the *first* statement on the connection — an unkeyed handle raises
+    ``file is not a database`` on whatever statement runs first, which reads as
+    corruption. ``_apply_db_key`` is a no-op when encryption is OFF (the
+    default), so the unencrypted path is byte-for-byte a plain
+    ``sqlite3.connect``.
+
+    Closes the connection before re-raising if keying fails, so a locked
+    keystore cannot leak a handle.
+    """
+    conn = sqlite3.connect(str(db_path), **kwargs)
+    try:
+        _apply_db_key(conn)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
 
 
 def _delegate_from_json(col: str = "model_config") -> str:
@@ -431,8 +479,22 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     Runs the same first-statement (``PRAGMA journal_mode``) that trips the
     malformed-schema parse, then ``PRAGMA integrity_check`` and a canonical
     ``sessions`` read.
+
+    Three-state contract:
+
+    * ``None``  — healthy.
+    * ``str``   — corrupt; the string is the reason.
+    * *raises*  — cannot determine. A ``HermesCryptoError`` here means database
+      encryption is on but the keystore could not be unlocked. That is
+      deliberately **not** converted into a corruption reason: callers offer
+      destructive schema surgery on any non-None return, and a locked keystore
+      says nothing at all about the file's integrity.
+
+    Connects via :func:`connect_state_db` so the key is applied before the
+    first statement — an unkeyed probe of an encrypted DB would report a
+    perfectly healthy file as ``file is not a database``, every single time.
     """
-    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn = connect_state_db(db_path, isolation_level=None)
     try:
         conn.execute("PRAGMA journal_mode").fetchone()
         rows = conn.execute("PRAGMA integrity_check").fetchall()
@@ -479,13 +541,31 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
         report["error"] = f"{db_path} does not exist"
         return report
 
+    # Pre-flight the SQLCipher key BEFORE taking a backup or touching
+    # sqlite_master. Without a usable key every statement below fails on
+    # ciphertext we cannot read, so there is nothing to repair and nothing
+    # worth backing up — bail out with a keystore error instead of leaving a
+    # stray .malformed-backup-* file and running writable_schema surgery blind.
+    # No-op when encryption is off: _apply_db_key returns immediately.
+    if _DB_ENCRYPTED:
+        try:
+            from hermes_crypto import get_data_key
+
+            get_data_key()
+        except _crypto_error_types() as exc:
+            report["error"] = (
+                "database encryption is enabled but the keystore could not be "
+                f"unlocked ({exc}) — this is not corruption; unlock and retry"
+            )
+            return report
+
     if backup:
         bpath = _backup_db_file(db_path)
         report["backup_path"] = str(bpath) if bpath else None
 
     # ── Strategy 1: de-duplicate sqlite_master (keeps FTS index) ──
     try:
-        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn = connect_state_db(db_path, isolation_level=None)
         try:
             conn.execute("PRAGMA writable_schema=ON")
             dupes = conn.execute(
@@ -515,7 +595,7 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
 
     # ── Strategy 2: drop all FTS schema, VACUUM, rebuild on next open ──
     try:
-        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn = connect_state_db(db_path, isolation_level=None)
         try:
             conn.execute("PRAGMA writable_schema=ON")
             conn.execute("DELETE FROM sqlite_master WHERE name LIKE 'messages_fts%'")
@@ -737,21 +817,20 @@ class SessionDB:
                 # must already exist + be initialised (callers guard on
                 # db_path.exists()); a SELECT against an empty file raises and
                 # the caller degrades per-profile.
-                self._conn = sqlite3.connect(
+                self._conn = connect_state_db(
                     f"file:{self.db_path}?mode=ro",
                     uri=True,
                     check_same_thread=False,
                     timeout=1.0,
                     isolation_level=None,
                 )
-                _apply_db_key(self._conn)
                 self._conn.row_factory = sqlite3.Row
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
             def _connect_and_init():
-                self._conn = sqlite3.connect(
+                self._conn = connect_state_db(
                     str(self.db_path),
                     check_same_thread=False,
                     # Short timeout — application-level retry with random
@@ -763,7 +842,6 @@ class SessionDB:
                     # transactions ourselves.
                     isolation_level=None,
                 )
-                _apply_db_key(self._conn)
                 self._conn.row_factory = sqlite3.Row
                 apply_wal_with_fallback(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
@@ -1068,6 +1146,10 @@ class SessionDB:
         Adding a column to SCHEMA_SQL is all that's needed; the
         reconciliation loop picks it up automatically.
         """
+        # Deliberately NOT connect_state_db(): this throwaway in-memory DB
+        # parses the reference schema and persists no bytes, so keying it would
+        # buy nothing while forcing a keystore unlock (and a possible prompt)
+        # in the middle of a pure column reconcile.
         ref = sqlite3.connect(":memory:")
         try:
             ref.executescript(schema_sql)

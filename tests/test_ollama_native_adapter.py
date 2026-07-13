@@ -11,9 +11,11 @@ import os
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 from agent.ollama_native_adapter import (
     _OLLAMA_PROBE_CACHE,
+    OllamaAPIError,
     AsyncOllamaNativeClient,
     OllamaNativeClient,
     _translate_embeddings,
@@ -28,6 +30,17 @@ from agent.ollama_native_adapter import (
 def _mock_client(handler):
     """A real OllamaNativeClient wired to an httpx.MockTransport request handler."""
     return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+@pytest.fixture(autouse=True)
+def _clear_thinking_cap_cache():
+    """The capability probe memoizes per (base_url, model) for the process; clear it
+    around every test so cases don't leak cached verdicts into each other."""
+    from agent.ollama_native_adapter import _THINKING_CAP_CACHE
+
+    _THINKING_CAP_CACHE.clear()
+    yield
+    _THINKING_CAP_CACHE.clear()
 
 
 # ── request construction ──────────────────────────────────────────────────────
@@ -333,3 +346,273 @@ def test_async_client_roundtrip():
     )
     assert result.choices[0].message.content == "async hi"
     assert aclient.base_url == "http://h:11434"
+
+
+# ── thinking-capability gate (/api/show) ──────────────────────────────────────
+
+
+def _cap_handler(caps, capture):
+    """Route /api/show (returns given capabilities) and /api/chat (captures body)."""
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            body = {"capabilities": caps} if caps is not None else {}
+            return httpx.Response(200, json=body)
+        capture["body"] = json.loads(request.content)
+        return httpx.Response(
+            200, json={"message": {"role": "assistant", "content": "ok"}, "done_reason": "stop"}
+        )
+
+    return handler
+
+
+def _fresh_cap_client(caps, capture):
+    return OllamaNativeClient(
+        base_url="http://h:11434", http_client=_mock_client(_cap_handler(caps, capture))
+    )
+
+
+def test_think_dropped_for_non_thinking_model():
+    """Newer Ollama 400s on `think` for models without the capability — never send it."""
+    capture = {}
+    client = _fresh_cap_client(["completion", "tools"], capture)
+    client.chat.completions.create(
+        model="llama3.2", messages=[{"role": "user", "content": "x"}], extra_body={"think": False}
+    )
+    assert "think" not in capture["body"]
+
+
+def test_think_kept_for_thinking_model():
+    capture = {}
+    client = _fresh_cap_client(["completion", "tools", "thinking"], capture)
+    client.chat.completions.create(
+        model="qwen3.5", messages=[{"role": "user", "content": "x"}], extra_body={"think": False}
+    )
+    assert capture["body"]["think"] is False
+
+
+def test_think_string_level_passes_through():
+    """Newer Ollama accepts think as a string level ("low"/"medium"/"high"/"max");
+    the adapter forwards the value verbatim (no bool coercion)."""
+    capture = {}
+    client = _fresh_cap_client(["completion", "thinking"], capture)
+    client.chat.completions.create(
+        model="gpt-oss", messages=[{"role": "user", "content": "x"}], extra_body={"think": "high"}
+    )
+    assert capture["body"]["think"] == "high"
+
+
+def test_think_kept_when_capabilities_absent():
+    """Pre-capability Ollama (no `capabilities` key) accepts think for every model."""
+    capture = {}
+    client = _fresh_cap_client(None, capture)
+    client.chat.completions.create(
+        model="m", messages=[{"role": "user", "content": "x"}], extra_body={"think": True}
+    )
+    assert capture["body"]["think"] is True
+
+
+def test_no_probe_when_think_not_requested():
+    seen = {"show": 0}
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            seen["show"] += 1
+            return httpx.Response(200, json={"capabilities": []})
+        return httpx.Response(
+            200, json={"message": {"role": "assistant", "content": "ok"}, "done_reason": "stop"}
+        )
+
+    client = OllamaNativeClient(base_url="http://h:11434", http_client=_mock_client(handler))
+    client.chat.completions.create(model="m", messages=[{"role": "user", "content": "x"}])
+    assert seen["show"] == 0  # zero overhead unless `think` is present
+
+
+def test_think_kept_when_probe_fails_and_failure_is_ttl_cached():
+    """Fail-open: uncertainty never suppresses think — and the failure is TTL-cached
+    so a flaky /api/show can't add a round trip to every chat call."""
+    seen = {"show": 0}
+    capture = {}
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            seen["show"] += 1
+            raise httpx.ConnectError("down")
+        capture["body"] = json.loads(request.content)
+        return httpx.Response(
+            200, json={"message": {"role": "assistant", "content": "ok"}, "done_reason": "stop"}
+        )
+
+    client = OllamaNativeClient(base_url="http://h:11434", http_client=_mock_client(handler))
+    for _ in range(3):
+        client.chat.completions.create(
+            model="m", messages=[{"role": "user", "content": "x"}], extra_body={"think": False}
+        )
+    assert capture["body"]["think"] is False
+    assert seen["show"] == 1
+
+
+def test_probe_result_is_cached_per_model():
+    seen = {"show": 0}
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            seen["show"] += 1
+            return httpx.Response(200, json={"capabilities": ["completion"]})
+        return httpx.Response(
+            200, json={"message": {"role": "assistant", "content": "ok"}, "done_reason": "stop"}
+        )
+
+    client = OllamaNativeClient(base_url="http://h:11434", http_client=_mock_client(handler))
+    for _ in range(3):
+        client.chat.completions.create(
+            model="m", messages=[{"role": "user", "content": "x"}], extra_body={"think": False}
+        )
+    assert seen["show"] == 1  # definitive answer memoized
+
+
+# ── error-body parsing + parallel-frame tool calls ────────────────────────────
+
+
+def test_error_body_message_is_parsed():
+    """Ollama reports failures as {"error": "<str>"} — surface the message itself."""
+
+    def handler(request):
+        return httpx.Response(400, json={"error": "model does not support thinking"})
+
+    client = OllamaNativeClient(base_url="http://h:11434", http_client=_mock_client(handler))
+    try:
+        client.chat.completions.create(model="m", messages=[{"role": "user", "content": "x"}])
+        raise AssertionError("expected OllamaAPIError")
+    except OllamaAPIError as e:
+        assert e.status_code == 400
+        assert "model does not support thinking" in str(e)
+        assert '{"error"' not in str(e)  # message, not the raw JSON blob
+
+
+def test_parallel_tool_calls_in_separate_frames_get_distinct_indices():
+    """Ollama can emit parallel calls in separate NDJSON frames with no ids; a
+    per-frame index would merge them into one unparseable call. The counter is
+    stream-global, so each call gets a distinct index and synthesized id."""
+    tool_idx = {"n": 0}
+    f1 = translate_stream_line(
+        {"message": {"tool_calls": [{"function": {"name": "a", "arguments": {}}}]}}, "m", tool_idx
+    )
+    f2 = translate_stream_line(
+        {"message": {"tool_calls": [{"function": {"name": "b", "arguments": {}}}]}}, "m", tool_idx
+    )
+    tc1 = f1[0].choices[0].delta.tool_calls[0]
+    tc2 = f2[0].choices[0].delta.tool_calls[0]
+    assert (tc1.index, tc2.index) == (0, 1)
+    assert tc1.id and tc2.id and tc1.id != tc2.id
+
+
+def test_error_body_non_json_falls_back_to_raw_text():
+    """A plain-text error (overloaded proxy, HTML gateway page) must surface its
+    raw text, not "<unreadable>"."""
+
+    def handler(request):
+        return httpx.Response(502, text="upstream proxy exploded")
+
+    client = OllamaNativeClient(base_url="http://h:11434", http_client=_mock_client(handler))
+    try:
+        client.chat.completions.create(model="m", messages=[{"role": "user", "content": "x"}])
+        raise AssertionError("expected OllamaAPIError")
+    except OllamaAPIError as e:
+        assert e.status_code == 502
+        assert "upstream proxy exploded" in str(e)
+        assert "<unreadable>" not in str(e)
+
+
+def test_probe_sends_auth_headers():
+    """Behind an authenticated reverse proxy an unauthenticated probe would 401
+    and silently disable the gate — the probe must send the client's headers."""
+    seen = {}
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            seen["auth"] = request.headers.get("Authorization")
+            return httpx.Response(200, json={"capabilities": ["completion"]})
+        return httpx.Response(
+            200, json={"message": {"role": "assistant", "content": "ok"}, "done_reason": "stop"}
+        )
+
+    client = OllamaNativeClient(
+        base_url="http://h:11434", api_key="proxy-secret", http_client=_mock_client(handler)
+    )
+    client.chat.completions.create(
+        model="m", messages=[{"role": "user", "content": "x"}], extra_body={"think": False}
+    )
+    assert seen["auth"] == "Bearer proxy-secret"
+
+
+def test_think_kept_on_non_200_probe_and_bounded():
+    """A proxy that 404s /api/show while /api/chat works must not disable chat —
+    think is forwarded (fail-open) and the failure is TTL-cached, not re-probed
+    on every request."""
+    seen = {"show": 0}
+    capture = {}
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            seen["show"] += 1
+            return httpx.Response(404)
+        capture["body"] = json.loads(request.content)
+        return httpx.Response(
+            200, json={"message": {"role": "assistant", "content": "ok"}, "done_reason": "stop"}
+        )
+
+    client = OllamaNativeClient(base_url="http://h:11434", http_client=_mock_client(handler))
+    for _ in range(3):
+        client.chat.completions.create(
+            model="m", messages=[{"role": "user", "content": "x"}], extra_body={"think": True}
+        )
+    assert capture["body"]["think"] is True
+    assert seen["show"] == 1
+
+
+def test_failure_ttl_expires_then_recovers_to_definitive(monkeypatch):
+    """The load-bearing TTL contract: a cached failure is re-probed after the TTL
+    lapses, and a now-healthy server yields a definitive answer that is memoized
+    (and, for a non-thinking model, finally suppresses `think`)."""
+    from types import SimpleNamespace
+
+    from agent import ollama_native_adapter as adapter
+
+    import time as real_time
+
+    now = {"t": 1000.0}
+    monkeypatch.setattr(
+        adapter, "time", SimpleNamespace(monotonic=lambda: now["t"], time=real_time.time)
+    )
+
+    seen = {"show": 0}
+    capture = {}
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            seen["show"] += 1
+            if seen["show"] == 1:
+                raise httpx.ConnectError("down")
+            return httpx.Response(200, json={"capabilities": ["completion"]})
+        capture["body"] = json.loads(request.content)
+        return httpx.Response(
+            200, json={"message": {"role": "assistant", "content": "ok"}, "done_reason": "stop"}
+        )
+
+    client = OllamaNativeClient(base_url="http://h:11434", http_client=_mock_client(handler))
+    kw = dict(model="m", messages=[{"role": "user", "content": "x"}], extra_body={"think": False})
+
+    client.chat.completions.create(**kw)  # probe fails -> fail-open, TTL-cached
+    assert capture["body"]["think"] is False
+    client.chat.completions.create(**kw)  # within TTL -> cached, no re-probe
+    assert seen["show"] == 1
+
+    now["t"] += adapter._NEG_PROBE_TTL + 1  # TTL lapses
+    client.chat.completions.create(**kw)  # re-probe -> definitive: no thinking cap
+    assert seen["show"] == 2
+    assert "think" not in capture["body"]
+    assert adapter._THINKING_CAP_CACHE[("http://h:11434", "m")] == (False, None)
+
+    client.chat.completions.create(**kw)  # memoized -> no further probes
+    assert seen["show"] == 2

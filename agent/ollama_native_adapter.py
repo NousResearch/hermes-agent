@@ -109,6 +109,14 @@ def is_native_ollama_base_url(base_url: str) -> bool:
     return _probe_is_ollama(native_root(base_url))
 
 
+# Cache of (root, model) -> (supports_thinking, expires_at_monotonic_or_None).
+# Definitive answers (any 200 from /api/show) are memoized for the process; probe
+# failures are cached with the short `_NEG_PROBE_TTL` (same pattern as the version
+# probe above) so a flaky /api/show can't add a round trip to every chat call,
+# while a recovered server is re-probed shortly after.
+_THINKING_CAP_CACHE: Dict[Tuple[str, str], Tuple[bool, Optional[float]]] = {}
+
+
 # ── Request construction ────────────────────────────────────────────────────
 
 
@@ -470,10 +478,16 @@ class OllamaAPIError(Exception):
 
 
 def _http_error(response: httpx.Response) -> OllamaAPIError:
+    # Ollama's native API reports failures as {"error": "<str>"} — surface that
+    # message directly instead of the raw JSON blob; fall back to raw body text.
+    body = "<unreadable>"
     try:
         body = response.text[:500]
+        parsed = response.json()
+        if isinstance(parsed, dict) and isinstance(parsed.get("error"), str):
+            body = parsed["error"][:500]
     except Exception:
-        body = "<unreadable>"
+        pass  # non-JSON body: keep the raw text captured above
     return OllamaAPIError(
         f"Ollama native API error {response.status_code}: {body}",
         status_code=response.status_code,
@@ -578,6 +592,53 @@ class OllamaNativeClient:
         we never want."""
         return {"timeout": timeout if timeout is not None else self._default_timeout}
 
+    def _model_supports_thinking(self, model: str) -> bool:
+        """Whether the model advertises the "thinking" capability via /api/show.
+
+        Returns True on any uncertainty — a missing capabilities list (older
+        Ollama accepts `think` for every model) or a failed probe — so the gate
+        only ever suppresses `think` on a positive "not supported" signal.
+        Cached per (base_url, model) for the process.
+        """
+        key = (self.base_url, model)
+        entry = _THINKING_CAP_CACHE.get(key)
+        if entry is not None:
+            cached_supports, expires_at = entry
+            if expires_at is None or time.monotonic() < expires_at:
+                return cached_supports
+        supports = True
+        definitive = False
+        try:
+            # Send the same headers as real requests — behind an authenticated
+            # reverse proxy an unauthenticated probe would 401 and the gate
+            # would silently never engage.
+            resp = self._http.post(
+                f"{self.base_url}/api/show",
+                json={"model": model},
+                headers=self._headers(),
+                timeout=2.0,
+            )
+            if resp.status_code == 200:
+                caps = resp.json().get("capabilities")
+                if isinstance(caps, list):
+                    supports = "thinking" in caps
+                # A 200 is definitive (capabilities absent = pre-capability
+                # server, which accepts `think` for every model).
+                definitive = True
+            else:
+                logger.debug(
+                    "thinking-capability probe got HTTP %s for %s", resp.status_code, model
+                )
+        except Exception as exc:
+            logger.debug("thinking-capability probe failed for %s: %s", model, exc)
+        # Definitive answers are memoized; failures forward `think` (fail-open)
+        # and are TTL-cached so a persistently failing /api/show doesn't add a
+        # round trip to every chat call.
+        _THINKING_CAP_CACHE[key] = (
+            (supports, None) if definitive else (supports, time.monotonic() + _NEG_PROBE_TTL)
+        )
+        return supports
+
     def _create_chat_completion(
         self,
         *,
@@ -600,6 +661,16 @@ class OllamaNativeClient:
         if isinstance(extra_body, dict):
             options = extra_body.get("options")
             think = extra_body.get("think")
+
+        # Newer Ollama 400s on a truthy `think` (true or a "low"/"high" level)
+        # for models without the "thinking" capability; `think: false` is
+        # tolerated everywhere. Drop `think` entirely for non-thinking models
+        # (mirrors Ollama's own relax_thinking path, and a false/None think is
+        # equivalent for a model that cannot think anyway). Unknown capability
+        # (older Ollama, probe failure) forwards `think` unchanged.
+        if think is not None and not self._model_supports_thinking(model):
+            logger.debug("model %s lacks 'thinking' capability; dropping think=%r", model, think)
+            think = None
 
         request = build_ollama_request(
             model=model,

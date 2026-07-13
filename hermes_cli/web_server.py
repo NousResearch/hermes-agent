@@ -16453,6 +16453,7 @@ async def get_dashboard_plugins():
 
 
 @app.get("/api/dashboard/plugins/rescan")
+@app.post("/api/dashboard/plugins/rescan")
 async def rescan_dashboard_plugins():
     """Force re-scan of dashboard plugins."""
     plugins = _get_dashboard_plugins(force_rescan=True)

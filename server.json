@@ -3,8 +3,8 @@
   "name": "io.github.nousresearch/hermes-agent",
   "title": "Hermes Agent",
   "description": "Control Hermes Agent conversations, messaging, approvals, and events over MCP.",
-  "version": "0.16.0",
-  "websiteUrl": "https://hermes-agent.nousresearch.com/docs/guides/hermes-as-an-mcp-server",
+  "version": "0.19.0",
+  "websiteUrl": "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp#running-hermes-as-an-mcp-server",
   "repository": {
     "url": "https://github.com/NousResearch/hermes-agent",
     "source": "github",
@@ -14,9 +14,19 @@
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
-      "identifier": "hermes-agent[mcp]",
-      "version": "0.16.0",
+      "identifier": "hermes",
+      "version": "0.19.0",
       "runtimeHint": "uvx",
+      "runtimeArguments": [
+        {
+          "type": "positional",
+          "value": "--from"
+        },
+        {
+          "type": "positional",
+          "value": "hermes-agent[mcp]==0.19.0"
+        }
+      ],
       "transport": {
         "type": "stdio"
       },

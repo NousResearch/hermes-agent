@@ -1,5 +1,6 @@
 """Regression tests for packaging metadata in pyproject.toml."""
 
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -260,11 +261,9 @@ def test_mcp_serve_module_is_packaged_for_registry_launch():
 def test_mcp_registry_package_launches_cli_with_mcp_extra():
     """Registry installs should include the MCP SDK and invoke `hermes mcp serve`.
 
-    The package identifier includes the `[mcp]` extra so clients using a
-    Python package runner (for example `uvx`) install the optional MCP SDK.
-    The package runner commonly infers the executable from the package name,
-    so the `hermes-agent` console script must dispatch through the main CLI
-    instead of the legacy direct-agent entry point.
+    The PyPI runtime uses `uvx --from hermes-agent[mcp]==<version> hermes`
+    so the registry launches the canonical `hermes` CLI explicitly instead of
+    repurposing the legacy `hermes-agent` direct-agent console script.
     """
     root = Path(__file__).resolve().parents[1]
     server_json = json.loads((root / "server.json").read_text(encoding="utf-8"))
@@ -276,15 +275,49 @@ def test_mcp_registry_package_launches_cli_with_mcp_extra():
     assert package["version"] == project["version"]
     assert package["registryType"] == "pypi"
     assert package["registryBaseUrl"] == "https://pypi.org"
-    assert package["identifier"] == "hermes-agent[mcp]"
+    assert package["identifier"] == "hermes"
     assert package["runtimeHint"] == "uvx"
+    assert [arg["value"] for arg in package["runtimeArguments"]] == [
+        "--from",
+        f"hermes-agent[mcp]=={project['version']}",
+    ]
     assert [arg["value"] for arg in package["packageArguments"]] == ["mcp", "serve"]
-    assert project["scripts"]["hermes-agent"] == "hermes_cli.main:main"
+    assert project["scripts"]["hermes"] == "hermes_cli.main:main"
+    assert project["scripts"]["hermes-agent"] == "run_agent:main"
 
 
-def test_mcp_server_docs_match_registry_identifier():
+def test_mcp_server_docs_use_canonical_server_mode_section():
     root = Path(__file__).resolve().parents[1]
     server_json = json.loads((root / "server.json").read_text(encoding="utf-8"))
-    docs = (root / "website/docs/guides/hermes-as-an-mcp-server.md").read_text(encoding="utf-8")
+    docs = (root / "website/docs/user-guide/features/mcp.md").read_text(encoding="utf-8")
 
-    assert f'`"identifier": "{server_json["packages"][0]["identifier"]}"`' in docs
+    assert server_json["websiteUrl"].endswith(
+        "/user-guide/features/mcp#running-hermes-as-an-mcp-server"
+    )
+    assert "## Running Hermes as an MCP server" in docs
+    assert "hermes mcp serve" in docs
+
+
+def test_release_script_updates_mcp_registry_manifest(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    source_manifest = root / "server.json"
+    manifest = tmp_path / "server.json"
+    manifest.write_text(source_manifest.read_text(encoding="utf-8"), encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location("release_script", root / "scripts/release.py")
+    assert spec is not None
+    release_script = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(release_script)
+    setattr(release_script, "MCP_REGISTRY_MANIFEST", manifest)
+
+    getattr(release_script, "_update_mcp_registry_versions")("9.8.7")
+
+    updated = json.loads(manifest.read_text(encoding="utf-8"))
+    package = updated["packages"][0]
+    assert updated["version"] == "9.8.7"
+    assert package["version"] == "9.8.7"
+    assert [arg["value"] for arg in package["runtimeArguments"]] == [
+        "--from",
+        "hermes-agent[mcp]==9.8.7",
+    ]

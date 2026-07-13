@@ -47,6 +47,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from pathlib import PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import (
@@ -141,6 +142,30 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     return env
 
 
+def _wsl_windows_path_to_posix(path: str) -> str:
+    """Translate a Windows absolute manifest command when Hermes runs in WSL.
+
+    Windows cua-driver manifests can report ``C:\\Users\\...\\cua-driver.exe``
+    even though the Hermes process uses POSIX subprocess spawning inside WSL.
+    The same file is reachable through DrvFS as ``/mnt/c/Users/...``.
+    Non-Windows paths and non-WSL hosts are returned unchanged.
+    """
+    if not re.match(r"^[A-Za-z]:[\\/]", path):
+        return path
+    try:
+        from hermes_constants import is_wsl
+
+        if not is_wsl():
+            return path
+    except Exception:
+        return path
+    win = PureWindowsPath(path)
+    drive = (win.drive or "").rstrip(":").lower()
+    if not drive:
+        return path
+    return os.path.join("/mnt", drive, *(str(part) for part in win.parts[1:]))
+
+
 def _resolve_mcp_invocation(
     driver_cmd: str,
     *,
@@ -192,7 +217,7 @@ def _resolve_mcp_invocation(
         # The driver knows the subcommand but didn't surface its own path.
         # Keep our resolved driver_cmd; the args are still authoritative.
         return driver_cmd, args
-    return command, args
+    return _wsl_windows_path_to_posix(command), args
 
 # Regex to parse element lines from get_window_state AX tree markdown.
 #

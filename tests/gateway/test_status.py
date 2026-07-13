@@ -460,6 +460,44 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid()
         assert payload["start_time"] == 2000
 
+    def test_starting_runtime_status_clears_stale_effective_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 1000,
+            "kind": "hermes-gateway",
+            "gateway_state": "running",
+            "platforms": {},
+            "effective_config": {
+                "schema": 1,
+                "complete": True,
+                "profiles": {"default": {"config_sha256": "stale"}},
+            },
+        }))
+
+        status.write_runtime_status(gateway_state="starting")
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "starting"
+        assert payload["pid"] == os.getpid()
+        assert payload["effective_config"] is None
+
+    def test_startup_failed_runtime_status_clears_stale_effective_config(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.write_runtime_status(
+            gateway_state="running",
+            effective_config={"schema": 1, "profiles": {"default": {}}},
+        )
+
+        status.write_runtime_status(gateway_state="startup_failed")
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "startup_failed"
+        assert payload["effective_config"] is None
+
     def test_runtime_status_running_pid_rejects_stale_record_for_supervisor_pid(self, monkeypatch):
         """Regression: stale profile runtime state must not mark s6 supervisors live.
 

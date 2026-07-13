@@ -8,9 +8,12 @@ Handles loading and validating configuration for:
 - Delivery preferences
 """
 
+import copy
+import json
 import logging
 import os
-import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
@@ -973,9 +976,28 @@ class GatewayConfig:
         return "public"
 
 
+_config_yaml_snapshot_override: ContextVar[Optional[dict]] = ContextVar(
+    "gateway_config_yaml_snapshot", default=None
+)
+
+
+@contextmanager
+def _gateway_config_yaml_snapshot(config_yaml: dict):
+    """Make one parsed YAML snapshot visible to the canonical no-arg loader."""
+    token = _config_yaml_snapshot_override.set(config_yaml)
+    try:
+        yield
+    finally:
+        _config_yaml_snapshot_override.reset(token)
+
+
 def load_gateway_config() -> GatewayConfig:
     """
     Load gateway configuration from multiple sources.
+
+    Startup may pin an exact parsed byte snapshot through the private context
+    manager above, avoiding a second config.yaml read without changing this
+    loader's established no-argument contract.
 
     Priority (highest to lowest):
     1. Environment variables
@@ -1003,10 +1025,14 @@ def load_gateway_config() -> GatewayConfig:
     # Primary source: config.yaml
     try:
         import yaml
+        config_yaml = _config_yaml_snapshot_override.get()
         config_yaml_path = _home / "config.yaml"
-        if config_yaml_path.exists():
-            with open(config_yaml_path, encoding="utf-8") as f:
-                yaml_cfg = yaml.safe_load(f) or {}
+        if config_yaml is not None or config_yaml_path.exists():
+            if config_yaml is not None:
+                yaml_cfg = copy.deepcopy(config_yaml)
+            else:
+                with open(config_yaml_path, encoding="utf-8") as f:
+                    yaml_cfg = yaml.safe_load(f) or {}
 
             # Managed scope: overlay administrator-pinned values so the gateway
             # honors them too. This loader builds its own dict instead of going

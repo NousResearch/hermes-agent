@@ -805,6 +805,7 @@ def write_runtime_status(
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
     served_profiles: Any = _UNSET,
+    effective_config: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
@@ -819,6 +820,8 @@ def write_runtime_status(
 
     if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state
+        if gateway_state in {"starting", "startup_failed"} and effective_config is _UNSET:
+            payload["effective_config"] = None
     if exit_reason is not _UNSET:
         payload["exit_reason"] = exit_reason
     if restart_requested is not _UNSET:
@@ -830,6 +833,8 @@ def write_runtime_status(
         # for a single-profile gateway. Lets `hermes status` show per-profile
         # coverage without a second probe.
         payload["served_profiles"] = list(served_profiles or [])
+    if effective_config is not _UNSET:
+        payload["effective_config"] = effective_config
 
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})

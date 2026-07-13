@@ -41,7 +41,7 @@ import threading
 import time
 import sqlite3
 from collections import OrderedDict
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Union
@@ -2340,66 +2340,34 @@ def _gateway_config_home() -> Path:
     return _hermes_home
 
 
+_startup_config_snapshot_override: ContextVar[Any | None] = ContextVar(
+    "gateway_startup_config_snapshot", default=None
+)
+
+
+def _load_gateway_config_snapshot():
+    """Load the exact config byte snapshot used by gateway runtime helpers."""
+    from gateway.config_attestation import load_profile_config_snapshot
+
+    return load_profile_config_snapshot(_gateway_config_home())
+
+
 def _load_gateway_config() -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error.
 
-    Uses the module-level ``_hermes_home`` (so tests that monkeypatch it
-    still see their fixture) and shares the mtime-keyed raw-yaml cache
-    from ``hermes_cli.config.read_raw_config`` when the paths match.
-
-    Managed scope is overlaid on the result (via the shared helper) so the
-    gateway honors administrator-pinned values — neither read_raw_config nor a
-    direct yaml.safe_load carries the managed merge on its own. Fail-open.
+    The snapshot loader owns reading, managed-scope overlay, and model-key
+    normalization so runtime values and startup provenance share one source.
+    During runner construction, every startup helper receives the same pinned
+    snapshot through a context-local override. Fail-open.
     """
-    config_home = _gateway_config_home()
-    config_path = config_home / 'config.yaml'
-    raw: dict = {}
-    used_canonical = False
+    snapshot = _startup_config_snapshot_override.get()
+    if snapshot is not None:
+        return snapshot.normalized
     try:
-        from hermes_cli.config import get_config_path, read_raw_config
-        # Fast path: if _hermes_home agrees with the canonical config
-        # location, reuse the shared cache. Otherwise fall through to a
-        # direct read (keeps test fixtures with a monkeypatched
-        # _hermes_home working).
-        if config_path == get_config_path():
-            raw = read_raw_config()
-            used_canonical = True
+        return _load_gateway_config_snapshot().normalized
     except Exception:
-        pass
-
-    if not used_canonical:
-        try:
-            if config_path.exists():
-                import yaml
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    raw = yaml.safe_load(f) or {}
-        except Exception:
-            logger.debug("Could not load gateway config from %s", config_path)
-            raw = {}
-
-    # Overlay managed scope. read_raw_config() returns the user's raw YAML
-    # WITHOUT the managed merge (that lives in load_config/_load_config_impl),
-    # so the overlay is required on both paths for the gateway to honor pinned
-    # values. Helper is fail-open and a no-op when no managed scope exists.
-    try:
-        from hermes_cli import managed_scope
-        raw = managed_scope.apply_managed_overlay(raw if isinstance(raw, dict) else {})
-    except Exception:
-        pass
-    if not isinstance(raw, dict):
+        logger.debug("Could not load gateway config", exc_info=True)
         return {}
-    # Canonicalize model-id aliases (model.name / model.model → model.default)
-    # and migrate stale root-level provider/base_url into the model section.
-    # The gateway bypasses load_config() (it reads raw YAML for speed), so the
-    # normalization that load_config() applies must be replayed here or the
-    # gateway would resolve an empty model for ``model: {name: <id>}`` configs
-    # while the CLI resolves it correctly. See issue #34500. Fail-open.
-    try:
-        from hermes_cli.config import _normalize_root_model_keys
-        raw = _normalize_root_model_keys(raw)
-    except Exception:
-        pass
-    return raw
 
 
 def _load_gateway_runtime_config() -> dict:
@@ -2413,7 +2381,13 @@ def _load_gateway_runtime_config() -> dict:
     Expansion failures are intentionally NOT swallowed — silently returning
     the unexpanded dict would mask the very bug this helper exists to fix.
     """
-    cfg = _load_gateway_config()
+    snapshot = _startup_config_snapshot_override.get()
+    if snapshot is not None:
+        return snapshot.effective
+    try:
+        return _load_gateway_config_snapshot().effective
+    except Exception:
+        cfg = _load_gateway_config()
     if not isinstance(cfg, dict) or not cfg:
         return {}
     from hermes_cli.config import _expand_env_vars
@@ -2831,7 +2805,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
-        self.config = config or load_gateway_config()
+        try:
+            startup_snapshot = _load_gateway_config_snapshot()
+        except Exception:
+            startup_snapshot = None
+            logger.warning("Could not capture primary startup config", exc_info=True)
+        if config is not None:
+            self.config = config
+        elif startup_snapshot is not None:
+            from gateway.config import _gateway_config_yaml_snapshot
+
+            with _gateway_config_yaml_snapshot(startup_snapshot.parsed):
+                self.config = load_gateway_config()
+        else:
+            self.config = load_gateway_config()
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            active_profile = get_active_profile_name() or "default"
+        except Exception:
+            active_profile = "default"
+        self._startup_config_profiles: dict[str, dict[str, Any]] = {}
+        self._startup_config_loaded_at: Optional[str] = None
+        if startup_snapshot is not None:
+            self._startup_config_profiles[active_profile] = startup_snapshot.attestation
+            self._startup_config_loaded_at = startup_snapshot.loaded_at
         # Mark the process as a profile multiplexer when configured. This flips
         # agent.secret_scope.get_secret() to fail-closed on any unscoped
         # credential read, so a missed migration crashes loudly instead of
@@ -2853,16 +2851,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
-        self._prefill_messages = self._load_prefill_messages()
-        self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
-        self._reasoning_config = self._load_reasoning_config()
-        self._service_tier = self._load_service_tier()
-        self._show_reasoning = self._load_show_reasoning()
-        self._busy_input_mode = self._load_busy_input_mode()
-        self._busy_text_mode = self._load_busy_text_mode()
-        self._restart_drain_timeout = self._load_restart_drain_timeout()
-        self._provider_routing = self._load_provider_routing()
-        self._fallback_model = self._load_fallback_model()
+        snapshot_token = _startup_config_snapshot_override.set(startup_snapshot)
+        try:
+            self._prefill_messages = self._load_prefill_messages()
+            self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
+            self._reasoning_config = self._load_reasoning_config()
+            self._service_tier = self._load_service_tier()
+            self._show_reasoning = self._load_show_reasoning()
+            self._busy_input_mode = self._load_busy_input_mode()
+            self._busy_text_mode = self._load_busy_text_mode()
+            self._restart_drain_timeout = self._load_restart_drain_timeout()
+            self._provider_routing = self._load_provider_routing()
+            self._fallback_model = self._load_fallback_model()
+        finally:
+            _startup_config_snapshot_override.reset(snapshot_token)
 
         # Wire process registry into session store for reset protection.
         # A background process older than the configured threshold (default 24h,
@@ -4544,17 +4546,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("goal continuation: active-state recheck failed: %s", exc)
             return False
 
-    def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
+    def _update_runtime_status(
+        self,
+        gateway_state: Optional[str] = None,
+        exit_reason: Optional[str] = None,
+        *,
+        publish_effective_config: bool = False,
+    ) -> None:
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(
+            status_fields: dict[str, Any] = dict(
                 gateway_state=gateway_state,
                 exit_reason=exit_reason,
                 restart_requested=self._restart_requested,
                 active_agents=self._active_work_count(),
             )
+            if publish_effective_config:
+                status_fields["effective_config"] = (
+                    self._build_startup_effective_config_receipt()
+                )
+            write_runtime_status(**status_fields)
         except Exception:
-            pass
+            logger.error(
+                "Unexpected failure updating gateway runtime status",
+                exc_info=True,
+            )
+
+    def _build_startup_effective_config_receipt(self) -> dict[str, Any]:
+        """Return a profile-complete, credential-free startup config receipt."""
+        from gateway.status import get_process_start_time
+        from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
+
+        multiplex = bool(getattr(self.config, "multiplex_profiles", False))
+        if multiplex:
+            expected_profiles = {
+                profile_name for profile_name, _ in profiles_to_serve(multiplex=True)
+            }
+        else:
+            expected_profiles = {get_active_profile_name() or "default"}
+        profiles = dict(self._startup_config_profiles)
+
+        return {
+            "schema": 1,
+            "complete": expected_profiles == set(profiles),
+            "loaded_at": self._startup_config_loaded_at,
+            "pid": os.getpid(),
+            "start_time": get_process_start_time(os.getpid()),
+            "profiles": profiles,
+        }
 
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json``.
@@ -5045,12 +5084,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _load_provider_routing() -> dict:
         """Load OpenRouter provider routing preferences from config.yaml."""
         try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return cfg.get("provider_routing", {}) or {}
+            cfg = _load_gateway_runtime_config()
+            return cfg.get("provider_routing", {}) or {}
         except Exception:
             pass
         return {}
@@ -5064,14 +5099,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         when both keys are present.
         """
         try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                fb = get_fallback_chain(cfg)
-                if fb:
-                    return fb
+            cfg = _load_gateway_config()
+            fb = get_fallback_chain(cfg)
+            if fb:
+                return fb
         except Exception:
             pass
         return None
@@ -6865,7 +6896,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(gateway_state="starting", exit_reason=None)
+            write_runtime_status(
+                gateway_state="starting",
+                exit_reason=None,
+                effective_config=None,
+            )
         except Exception:
             pass
 
@@ -6979,7 +7014,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             try:
                 from gateway.status import write_runtime_status
-                write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                write_runtime_status(
+                    gateway_state="startup_failed",
+                    exit_reason=reason,
+                    effective_config=None,
+                )
             except Exception:
                 pass
             self._request_clean_exit(reason)
@@ -7252,7 +7291,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.error("Gateway multiplexer config error: %s", reason)
             try:
                 from gateway.status import write_runtime_status
-                write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                write_runtime_status(
+                    gateway_state="startup_failed",
+                    exit_reason=reason,
+                    effective_config=None,
+                )
             except Exception:
                 pass
             self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
@@ -7268,7 +7311,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
                 try:
                     from gateway.status import write_runtime_status
-                    write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                    write_runtime_status(
+                        gateway_state="startup_failed",
+                        exit_reason=reason,
+                        effective_config=None,
+                    )
                 except Exception:
                     pass
                 self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
@@ -7324,7 +7371,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._wire_teams_pipeline_runtime()
 
         self._running = True
-        self._update_runtime_status("running")
+        self._update_runtime_status("running", publish_effective_config=True)
         
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
@@ -8627,11 +8674,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self, profile_name: str, profile_home: "Path", claimed: Dict[tuple, str]
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
-        from gateway.config import load_gateway_config
+        from gateway.config import _gateway_config_yaml_snapshot, load_gateway_config
+        from gateway.config_attestation import load_profile_config_snapshot
 
-        with _profile_runtime_scope(profile_home):
-            profile_cfg = load_gateway_config()
+        profile_path = Path(profile_home)
+        profile_snapshot = None
+        if (profile_path / "config.yaml").is_file():
+            profile_snapshot = load_profile_config_snapshot(profile_path)
+        with _profile_runtime_scope(profile_path):
+            if profile_snapshot is None:
+                # Preserve gateway.json and built-in defaults when this profile
+                # has no config.yaml. There is no config snapshot to attest.
+                profile_cfg = load_gateway_config()
+            else:
+                with _gateway_config_yaml_snapshot(profile_snapshot.parsed):
+                    profile_cfg = load_gateway_config()
             violation = _own_policy_open_startup_violation(profile_cfg)
+        if profile_snapshot is not None:
+            profiles = getattr(self, "_startup_config_profiles", None)
+            if profiles is None:
+                profiles = {}
+                self._startup_config_profiles = profiles
+            profiles[profile_name] = profile_snapshot.attestation
+            if getattr(self, "_startup_config_loaded_at", None) is None:
+                self._startup_config_loaded_at = profile_snapshot.loaded_at
         if violation:
             raise MultiplexConfigError(
                 f"Profile '{profile_name}' enables {violation}. "
@@ -20591,6 +20657,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         acquire_gateway_runtime_lock,
         get_running_pid,
         get_process_start_time,
+        is_gateway_runtime_lock_active,
         release_gateway_runtime_lock,
         remove_pid_file,
         terminate_pid,
@@ -20766,7 +20833,40 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if _stderr_level < logging.getLogger().level:
             logging.getLogger().setLevel(_stderr_level)
 
-    runner = GatewayRunner(config)
+    try:
+        runner = GatewayRunner(config)
+    except Exception:
+        logger.error("Gateway runner construction failed", exc_info=True)
+        failure_lock_acquired = False
+        try:
+            # We have not reached the normal runtime-lock acquisition yet.
+            # Claim it temporarily before mutating shared status: if another
+            # contender won startup, its lock makes this fail and its receipt
+            # must remain untouched.
+            if not is_gateway_runtime_lock_active():
+                failure_lock_acquired = acquire_gateway_runtime_lock()
+            if failure_lock_acquired:
+                from gateway.status import write_runtime_status
+
+                write_runtime_status(
+                    gateway_state="startup_failed",
+                    exit_reason="Gateway runner construction failed",
+                    effective_config=None,
+                )
+            else:
+                logger.info(
+                    "Not persisting constructor failure because another "
+                    "gateway owns the runtime lock"
+                )
+        except Exception:
+            logger.error(
+                "Could not persist gateway construction failure",
+                exc_info=True,
+            )
+        finally:
+            if failure_lock_acquired:
+                release_gateway_runtime_lock()
+        return False
     
     # Track whether an unexpected signal initiated the shutdown. When an
     # unexpected SIGTERM kills the gateway, we exit non-zero so service

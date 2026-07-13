@@ -9,8 +9,10 @@ model should learn to produce. See docs/finetune/hermes-finetune-design-spec.md
 §1.2 for the rationale behind turn-based granularity.
 
 Output format is Axolotl-compatible ShareGPT chat_template JSONL. Train/eval
-split is deterministic by session_id hash so all turns from the same session
-stay together.
+split is deterministic by root_session_id hash (falling back to session_id)
+so all turns from a session AND its compression/branch continuations stay on
+the same side of the split — continuations share verbatim content with their
+root, so splitting them apart would leak eval prompts into training.
 
 Usage:
     python format.py [--input PATH] [--output-dir PATH] [--eval-ratio 0.1]
@@ -99,10 +101,19 @@ def redact_secrets(text: str) -> str:
     return text
 
 
-def _session_hash_bucket(session_id: str, eval_ratio: float = 0.1) -> str:
-    """Deterministic train/eval split by session ID hash."""
-    h = int(hashlib.sha256(session_id.encode()).hexdigest(), 16)
+def _session_hash_bucket(split_key: str, eval_ratio: float = 0.1) -> str:
+    """Deterministic train/eval split by key hash.
+
+    Callers pass root_session_id (falling back to session_id) so a session
+    and its continuations can never straddle the split.
+    """
+    h = int(hashlib.sha256(split_key.encode()).hexdigest(), 16)
     return "eval" if (h % 1000) < (eval_ratio * 1000) else "train"
+
+
+def _split_key(session: Dict[str, Any]) -> str:
+    """Split key for a scored session: root_session_id, else session_id."""
+    return session.get("root_session_id") or session.get("session_id", "")
 
 
 def _canonicalize_system_prompt(content: str) -> str:
@@ -322,9 +333,10 @@ class TrainingFormatter:
 
         With turn-based extraction, each session may produce zero or many
         training records — one per assistant turn whose effective score
-        meets `min_turn_score`. Train/eval split is still keyed on
-        `session_id` so all turns from a single session land in the same
-        split (no context leakage).
+        meets `min_turn_score`. Train/eval split is keyed on
+        `root_session_id` (falling back to `session_id`) so all turns from
+        a session and its continuations land in the same split (no context
+        leakage across compression/branch lineages).
 
         Args:
             sessions: Scored sessions assigned to this cluster.
@@ -357,9 +369,7 @@ class TrainingFormatter:
                 continue
             sessions_with_data += 1
 
-            split = _session_hash_bucket(
-                session.get("session_id", ""), self.eval_ratio
-            )
+            split = _session_hash_bucket(_split_key(session), self.eval_ratio)
             if split == "eval":
                 eval_records.extend(examples)
             else:

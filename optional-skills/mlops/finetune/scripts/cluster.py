@@ -9,6 +9,8 @@ Usage:
     python cluster.py [--min-cluster-size 30] [--embedding-model all-MiniLM-L6-v2]
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import logging
@@ -17,7 +19,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
+# numpy is only needed on the real clustering path; the _general fallback
+# must work without any of the optional deps (numpy, sentence-transformers,
+# hdbscan), so the import failure is deferred to _get_embed_model.
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 from common import (
     SCORED_DIR, CLUSTERS_DIR, CLUSTER_STATE_PATH,
@@ -89,7 +97,6 @@ class DomainClusterer:
         self.min_cluster_size = cfg.get("min_cluster_size", 30)
         self.confidence_threshold = cfg.get("confidence_threshold", 0.6)
         self._embed_model = None
-        self._embeddings_cache: Dict[str, np.ndarray] = {}
 
     def _get_embed_model(self):
         """Lazy-load the sentence-transformers model.
@@ -104,6 +111,11 @@ class DomainClusterer:
         an active inference server.
         """
         if self._embed_model is None:
+            if np is None:
+                raise ImportError(
+                    "numpy is required for clustering. "
+                    "Install with: pip install numpy"
+                )
             try:
                 from sentence_transformers import SentenceTransformer
             except ImportError:
@@ -196,8 +208,28 @@ class DomainClusterer:
         a previous cluster ID is consumed by at most one new cluster, so two
         new clusters can never share an ID (which would silently drop one of
         them via key collision downstream).
+
+        If the embedding dimension changed since the previous run (a
+        different clustering.embedding_model), the previous centroids are
+        incomparable — warn and reset them instead of crashing on the
+        similarity math. Every cluster then gets a fresh ID.
         """
         prev_centroids = prev_state.get("centroids", {})
+
+        if centroids and prev_centroids:
+            new_dim = len(next(iter(centroids.values())))
+            prev_dim = len(next(iter(prev_centroids.values())))
+            if new_dim != prev_dim:
+                logger.warning(
+                    "Embedding dimension changed (%d -> %d) — "
+                    "clustering.embedding_model was likely switched "
+                    "(previous run used %r). Resetting previous cluster "
+                    "state: cluster IDs and adapter lineage will not carry "
+                    "over.",
+                    prev_dim, new_dim,
+                    prev_state.get("embedding_model", "unknown"),
+                )
+                prev_centroids = {}
 
         # All candidate (similarity, label, prev_id) pairs above threshold
         candidates = []
@@ -316,9 +348,24 @@ class DomainClusterer:
         # everything to the _general bucket instead of crashing. This lets
         # users run the rest of the pipeline (extract → score → train) on
         # the _general adapter without committing to the heavier embedding
-        # stack. Train and route still work; only domain discovery is skipped.
+        # stack. Train and route still work; only domain discovery is
+        # skipped. The try covers both _embed_sessions (numpy /
+        # sentence-transformers) and _run_hdbscan (hdbscan) — any of the
+        # three deps may be missing independently.
         try:
             embeddings, session_ids = self._embed_sessions(sessions)
+            if len(session_ids) == 0:
+                logger.warning("No embeddable sessions found.")
+                return {}
+
+            if len(embeddings) < self.min_cluster_size:
+                logger.info(
+                    "Only %d sessions — below min_cluster_size (%d). All go to _general.",
+                    len(embeddings), self.min_cluster_size,
+                )
+                labels = np.full(len(embeddings), -1)
+            else:
+                labels = self._run_hdbscan(embeddings)
         except ImportError as e:
             logger.warning(
                 "Clustering deps unavailable (%s). Routing all sessions to "
@@ -327,22 +374,9 @@ class DomainClusterer:
                 e,
             )
             return self._fallback_to_general(sessions)
-        if len(session_ids) == 0:
-            logger.warning("No embeddable sessions found.")
-            return {}
 
         # Build session lookup
         session_map = {s.get("session_id"): s for s in sessions}
-
-        # Cluster
-        if len(embeddings) < self.min_cluster_size:
-            logger.info(
-                "Only %d sessions — below min_cluster_size (%d). All go to _general.",
-                len(embeddings), self.min_cluster_size,
-            )
-            labels = np.full(len(embeddings), -1)
-        else:
-            labels = self._run_hdbscan(embeddings)
 
         centroids = self._compute_centroids(embeddings, labels)
 
@@ -418,7 +452,29 @@ class DomainClusterer:
                 cluster_sessions, cid, min_score=min_turn_score,
             )
 
+        self._truncate_stale_cluster_splits(
+            formatter, prev_state, set(assignments.values()),
+        )
+
         return state
+
+    def _truncate_stale_cluster_splits(
+        self, formatter, prev_state: Dict, active_ids: set,
+    ) -> None:
+        """Truncate train/eval splits of clusters that dissolved this run.
+
+        A cluster present in the previous state but absent from the new
+        assignments no longer exists; leaving its clusters/<cid>/train.jsonl
+        behind would let a later train run pick up stale data. Formatting an
+        empty session list reuses format.py's truncate-on-empty behavior.
+        """
+        for cid in set(prev_state.get("clusters", {})) - set(active_ids):
+            if (CLUSTERS_DIR / cid).exists():
+                logger.info(
+                    "Cluster %s dissolved — truncating its stale train/eval split.",
+                    cid,
+                )
+                formatter.format_for_cluster([], cid)
 
     def _fallback_to_general(self, sessions: List[Dict]) -> Dict[str, Any]:
         """
@@ -429,6 +485,10 @@ class DomainClusterer:
         formats the training data for the _general adapter only.
         """
         from format import TrainingFormatter
+
+        # Read the previous state BEFORE overwriting it so clusters that
+        # existed under the full pipeline get their stale splits truncated.
+        prev_state = load_json(CLUSTER_STATE_PATH, {})
 
         assignments = {s.get("session_id"): "_general" for s in sessions}
         min_turn_score = float(
@@ -458,9 +518,11 @@ class DomainClusterer:
         save_json(CLUSTER_STATE_PATH, state)
 
         # Format _general training data at the config training threshold
-        TrainingFormatter().format_for_cluster(
+        formatter = TrainingFormatter()
+        formatter.format_for_cluster(
             sessions, "_general", min_score=min_turn_score,
         )
+        self._truncate_stale_cluster_splits(formatter, prev_state, {"_general"})
 
         logger.info(
             "Fallback complete: %d sessions routed to _general (%d good turns)",

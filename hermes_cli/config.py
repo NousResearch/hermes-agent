@@ -2820,11 +2820,22 @@ DEFAULT_CONFIG = {
             "exclude_sources": [],
         },
         "scoring": {
+            # Legacy (sentiment-based) mode weights — read only when
+            # scoring.mode == "legacy".
             "weights": {
                 "conversation_signal": 0.3,
                 "turn_signal": 0.4,
                 "sentiment_modifier": 0.1,
                 "judge_score": 0.2,
+            },
+            # positive_signals mode weights (the default mode). Separate dict
+            # so legacy defaults can't bleed into the positive-signals math.
+            "weights_positive": {
+                "conversation_signal": 0.15,
+                "negative_turn_signals": 0.25,
+                "positive_turn_signals": 0.35,
+                "sentiment_modifier": 0.05,
+                "manual_override": 0.20,
             },
             "thresholds": {
                 "good": 0.7,
@@ -2847,7 +2858,6 @@ DEFAULT_CONFIG = {
         },
         "routing": {
             "enabled": False,
-            "providers": ["local", "llama-cpp", "custom"],
         },
         "retraining": {
             "data_growth_trigger": 0.2,
@@ -2855,7 +2865,6 @@ DEFAULT_CONFIG = {
         },
         "feedback": {
             "cli_keybindings": False,
-            "gateway_reactions": False,
         },
         # Auto-redeploy llama-server with newly trained adapters.
         # Off by default — requires user-specific paths to be set first.

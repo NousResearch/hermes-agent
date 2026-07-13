@@ -1,12 +1,16 @@
 """
 Regression tests for the finetune pipeline review fixes.
 
-Covers: import_external persistence, session-lineage merging (chronological +
-grandchildren + late children), watermark re-extraction, UTC timestamps,
-multipart-content scoring, scored-snapshot dedup, min_turn_score plumbing,
-bad-label exclusion, stale train/eval truncation, retro queue filtering and
-label precedence, scoring weight renormalization, cluster-ID collision
-handling, and secret redaction.
+Covers: import_external persistence, standalone session extraction (no
+lineage concatenation) with root_session_id stamping, delegate/archived
+exclusion, active-message filtering and insertion ordering, JSON-sentinel
+content decoding, watermark re-extraction, UTC timestamps, multipart-content
+scoring, scored-snapshot dedup, min_turn_score plumbing, bad-label exclusion,
+stale train/eval truncation (including dissolved clusters), retro queue
+filtering and label precedence, scoring weight renormalization and
+mode-weight isolation, cluster-ID collision handling, clustering dep
+fallbacks, embedding-dimension resets, Link-4 token hygiene, and secret
+redaction.
 
 All tests run against synthetic data (no real state.db).
 """
@@ -99,37 +103,55 @@ def pipeline_env(tmp_path, monkeypatch):
     return hermes_home
 
 
-def _make_db(db_path: Path):
-    """Create an empty mock state.db (schema mirrors tests/test_finetune.py)."""
+def _make_db(db_path: Path, legacy: bool = False):
+    """Create an empty mock state.db.
+
+    Default schema mirrors the current core schema (messages.active /
+    messages.compacted, sessions.archived). `legacy=True` builds a
+    pre-migration DB missing those columns — the extractor must tolerate it
+    because such a DB cannot contain soft-deleted or archived rows.
+    """
     conn = sqlite3.connect(str(db_path))
-    conn.execute("""
+    archived_col = "" if legacy else ", archived INTEGER NOT NULL DEFAULT 0"
+    active_cols = "" if legacy else (
+        ", active INTEGER NOT NULL DEFAULT 1"
+        ", compacted INTEGER NOT NULL DEFAULT 0"
+    )
+    conn.execute(f"""
         CREATE TABLE sessions (
             id TEXT PRIMARY KEY, source TEXT NOT NULL, user_id TEXT,
             model TEXT, model_config TEXT, system_prompt TEXT,
             parent_session_id TEXT, started_at REAL NOT NULL, ended_at REAL,
             end_reason TEXT, message_count INTEGER DEFAULT 0,
             tool_call_count INTEGER DEFAULT 0, input_tokens INTEGER DEFAULT 0,
-            output_tokens INTEGER DEFAULT 0, title TEXT
+            output_tokens INTEGER DEFAULT 0, title TEXT{archived_col}
         )
     """)
-    conn.execute("""
+    conn.execute(f"""
         CREATE TABLE messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
             tool_call_id TEXT, tool_calls TEXT, tool_name TEXT,
-            timestamp REAL NOT NULL, token_count INTEGER, finish_reason TEXT
+            timestamp REAL NOT NULL, token_count INTEGER,
+            finish_reason TEXT{active_cols}
         )
     """)
     conn.commit()
     return conn
 
 
-def _add_session(conn, sid, started_at, messages, parent=None, source="cli"):
+def _add_session(conn, sid, started_at, messages, parent=None, source="cli",
+                 model_config=None, archived=0):
     conn.execute(
-        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (sid, source, None, "test-model", None, None, parent,
-         started_at, started_at + 100, None, len(messages), 0, 10, 20, None),
+        "INSERT INTO sessions (id, source, model, model_config, "
+        "parent_session_id, started_at, ended_at, message_count, "
+        "tool_call_count, input_tokens, output_tokens) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (sid, source, "test-model", model_config, parent,
+         started_at, started_at + 100, len(messages), 0, 10, 20),
     )
+    if archived:
+        conn.execute("UPDATE sessions SET archived = 1 WHERE id = ?", (sid,))
     for i, (role, content) in enumerate(messages):
         conn.execute(
             "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?,?,?,?)",
@@ -217,32 +239,35 @@ class TestImportExternal:
 
 
 # ============================================================================
-# Finding 2: session lineage (chronological order, grandchildren, late child)
+# Lineage: standalone extraction + root_session_id (merge behavior removed)
 # ============================================================================
 
 class TestLineage:
-    def test_children_merge_chronologically_not_lexicographically(self, pipeline_env):
+    def test_sessions_extracted_standalone_never_concatenated(self, pipeline_env):
         conn = _make_db(extract.STATE_DB_PATH)
         _add_session(conn, "root", 1000, [("user", "start"), ("assistant", "first")])
-        # Lexicographic order (a-child, z-child) is the REVERSE of
-        # chronological order here.
-        _add_session(conn, "z-child", 2000,
-                     [("user", "second-q"), ("assistant", "second-a")], parent="root")
-        _add_session(conn, "a-child", 3000,
-                     [("user", "third-q"), ("assistant", "third-a")], parent="root")
+        # Compression children re-flush a summary + verbatim retained parent
+        # turns at creation — concatenating them onto the root duplicates
+        # content, so each session must come out as its own record.
+        _add_session(conn, "child", 2000,
+                     [("user", "summary + retained"), ("assistant", "cont-a")],
+                     parent="root")
         conn.close()
 
         extractor = extract.SessionExtractor(db_path=extract.STATE_DB_PATH)
         sessions = extractor.extract(full=True)
 
-        assert len(sessions) == 1
-        merged = sessions[0]
-        assert merged["session_id"] == "root"
-        contents = [t["content"] for t in merged["turns"]]
-        assert contents == ["start", "first", "second-q", "second-a",
-                            "third-q", "third-a"]
+        by_id = {s["session_id"]: s for s in sessions}
+        assert set(by_id) == {"root", "child"}
+        assert [t["content"] for t in by_id["root"]["turns"]] == ["start", "first"]
+        assert [t["content"] for t in by_id["child"]["turns"]] == [
+            "summary + retained", "cont-a"]
+        # Lineage is kept only as root_session_id
+        assert by_id["root"]["root_session_id"] == "root"
+        assert by_id["child"]["root_session_id"] == "root"
+        assert "merged_session_ids" not in by_id["root"]["metadata"]
 
-    def test_grandchildren_are_merged(self, pipeline_env):
+    def test_grandchild_root_session_id_walks_to_root(self, pipeline_env):
         conn = _make_db(extract.STATE_DB_PATH)
         _add_session(conn, "root", 1000, [("user", "gen0"), ("assistant", "a0")])
         _add_session(conn, "child", 2000, [("user", "gen1"), ("assistant", "a1")],
@@ -254,13 +279,12 @@ class TestLineage:
         extractor = extract.SessionExtractor(db_path=extract.STATE_DB_PATH)
         sessions = extractor.extract(full=True)
 
-        assert len(sessions) == 1
-        contents = [t["content"] for t in sessions[0]["turns"]]
-        # Grandchild messages must not vanish
-        assert "gen2" in contents and "a2" in contents
-        assert contents.index("gen1") < contents.index("gen2")
+        by_id = {s["session_id"]: s for s in sessions}
+        assert set(by_id) == {"root", "child", "grandchild"}
+        assert by_id["grandchild"]["root_session_id"] == "root"
+        assert by_id["child"]["root_session_id"] == "root"
 
-    def test_child_arriving_after_parent_extracted_is_not_lost(self, pipeline_env):
+    def test_late_child_extracted_incrementally_standalone(self, pipeline_env):
         conn = _make_db(extract.STATE_DB_PATH)
         _add_session(conn, "root", 1000, [("user", "orig"), ("assistant", "resp")])
         extractor = extract.SessionExtractor(db_path=extract.STATE_DB_PATH)
@@ -273,16 +297,140 @@ class TestLineage:
         conn.close()
 
         second = extractor.extract(full=False)
-        assert len(second) == 1
-        merged = second[0]
-        assert merged["session_id"] == "root"
-        contents = [t["content"] for t in merged["turns"]]
-        assert contents == ["orig", "resp", "late-q", "late-a"]
+        assert [s["session_id"] for s in second] == ["late-child"]
+        assert second[0]["root_session_id"] == "root"
+        assert [t["content"] for t in second[0]["turns"]] == ["late-q", "late-a"]
 
-        # Deduped load keeps the newest (merged) copy — exactly one record
+        # Both records survive the deduped load — nothing merged, nothing lost
         all_extracted = extractor.get_all_extracted()
-        assert len(all_extracted) == 1
-        assert len(all_extracted[0]["turns"]) == 4
+        assert {s["session_id"] for s in all_extracted} == {"root", "late-child"}
+
+    def test_delegate_sessions_excluded_by_default(self, pipeline_env):
+        conn = _make_db(extract.STATE_DB_PATH)
+        _add_session(conn, "root", 1000, [("user", "q"), ("assistant", "a")])
+        # Delegate subagent runs carry the _delegate_from marker (core v16+)
+        _add_session(conn, "delegate", 2000,
+                     [("user", "task from parent"), ("assistant", "sub-answer")],
+                     parent="root",
+                     model_config=json.dumps({"_delegate_from": "root"}))
+        # /branch children carry _branched_from and ARE real conversations
+        _add_session(conn, "branch", 3000,
+                     [("user", "branch-q"), ("assistant", "branch-a")],
+                     parent="root",
+                     model_config=json.dumps({"_branched_from": "root"}))
+        conn.close()
+
+        extractor = extract.SessionExtractor(db_path=extract.STATE_DB_PATH)
+        sessions = extractor.extract(full=True)
+        assert {s["session_id"] for s in sessions} == {"root", "branch"}
+
+        # Opt-in keeps delegates
+        extractor = extract.SessionExtractor(
+            db_path=extract.STATE_DB_PATH,
+            config={"min_turns": 2, "include_delegates": True},
+        )
+        sessions = extractor.extract(full=True)
+        assert {s["session_id"] for s in sessions} == {"root", "branch", "delegate"}
+
+    def test_archived_sessions_excluded(self, pipeline_env):
+        conn = _make_db(extract.STATE_DB_PATH)
+        _add_session(conn, "live", 1000, [("user", "q"), ("assistant", "a")])
+        _add_session(conn, "archived", 2000, [("user", "q2"), ("assistant", "a2")],
+                     archived=1)
+        conn.close()
+
+        extractor = extract.SessionExtractor(db_path=extract.STATE_DB_PATH)
+        sessions = extractor.extract(full=True)
+        assert [s["session_id"] for s in sessions] == ["live"]
+
+
+# ============================================================================
+# Active-message filtering, insertion ordering, sentinel content decoding
+# ============================================================================
+
+class TestMessageFidelity:
+    def test_inactive_messages_excluded(self, pipeline_env):
+        conn = _make_db(extract.STATE_DB_PATH)
+        _add_session(conn, "s", 1000, [("user", "keep-q"), ("assistant", "keep-a")])
+        # active=0, compacted=0 → rewound/retracted turn
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp, active, compacted) "
+            "VALUES ('s', 'assistant', 'rewound-away', 1005, 0, 0)")
+        # active=0, compacted=1 → pre-compaction original kept beside summary
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp, active, compacted) "
+            "VALUES ('s', 'user', 'pre-compaction-original', 1006, 0, 1)")
+        conn.commit()
+        conn.close()
+
+        extractor = extract.SessionExtractor(db_path=extract.STATE_DB_PATH)
+        sessions = extractor.extract(full=True)
+        contents = [t["content"] for t in sessions[0]["turns"]]
+        assert contents == ["keep-q", "keep-a"]
+
+    def test_messages_ordered_by_id_not_timestamp(self, pipeline_env):
+        conn = _make_db(extract.STATE_DB_PATH)
+        _add_session(conn, "s", 1000, [("user", "inserted-first"),
+                                       ("assistant", "inserted-second")])
+        # Clock regression: the earlier-inserted row gets a LATER timestamp.
+        conn.execute(
+            "UPDATE messages SET timestamp = 9999 WHERE content = 'inserted-first'")
+        conn.commit()
+        conn.close()
+
+        extractor = extract.SessionExtractor(db_path=extract.STATE_DB_PATH)
+        sessions = extractor.extract(full=True)
+        contents = [t["content"] for t in sessions[0]["turns"]]
+        assert contents == ["inserted-first", "inserted-second"]
+
+    def test_legacy_db_without_active_or_archived_columns(self, pipeline_env):
+        conn = _make_db(extract.STATE_DB_PATH, legacy=True)
+        _add_session(conn, "old", 1000, [("user", "q"), ("assistant", "a")])
+        conn.close()
+
+        extractor = extract.SessionExtractor(db_path=extract.STATE_DB_PATH)
+        sessions = extractor.extract(full=True)
+        assert [s["session_id"] for s in sessions] == ["old"]
+
+    def test_json_sentinel_content_decoded_to_parts(self, pipeline_env):
+        parts = [
+            {"type": "text", "text": "please look at this screenshot"},
+            {"type": "image_url",
+             "image_url": {"url": "data:image/png;base64,QkxPQg=="}},
+        ]
+        sentinel = "\x00json:" + json.dumps(parts)
+        conn = _make_db(extract.STATE_DB_PATH)
+        _add_session(conn, "mm", 1000,
+                     [("user", sentinel), ("assistant", "fix is in main.py")])
+        conn.close()
+
+        extractor = extract.SessionExtractor(db_path=extract.STATE_DB_PATH)
+        sessions = extractor.extract(full=True)
+        # Decoded back to a parts list, not the raw sentinel string
+        assert sessions[0]["turns"][0]["content"] == parts
+
+        # ...so downstream flattening drops the image blob from training data
+        scored = _scored_session("mm", sessions[0]["turns"],
+                                 turn_scores=[(1, 0.9)])
+        examples = format_mod.extract_training_turns(scored, min_turn_score=0.7)
+        dumped = json.dumps(examples)
+        assert "base64,QkxPQg" not in dumped
+        assert "please look at this screenshot" in dumped
+
+    def test_malformed_sentinel_kept_as_raw_string(self, pipeline_env):
+        raw = "\x00json:{not valid json"
+        assert extract._decode_content(raw) == raw
+        assert extract._decode_content("plain text") == "plain text"
+        assert extract._decode_content(None) is None
+
+    def test_since_malformed_date_friendly_error(self, pipeline_env, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["extract.py", "--since", "not-a-date"])
+        with pytest.raises(SystemExit) as exc:
+            extract.main()
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "--since" in err
+        assert "not-a-date" in err
 
 
 # ============================================================================
@@ -688,20 +836,42 @@ class TestFailurePatterns:
                 {"role": "user", "content": "check it"},
                 {"role": "assistant", "content": "ok", "tool_calls": [
                     {"function": {"name": "terminal", "arguments": "{}"}}]},
-                {"role": "tool", "content": "name", "tool_name": "terminal"},
+                {"role": "tool", "content": "main.py", "tool_name": "terminal"},
                 {"role": "user", "content": reply},
             ]
 
-        # 'name' inside 'rename' must NOT count as referencing the output
+        # 'main.py' inside 'domain.python' must NOT count as a reference
         embedded = score.positive_tool_success_chain(
             turns_with_user_reply(
-                "we should rename everything else here soon please and thanks"), 1)
+                "we should update the domain.python bindings elsewhere quite soon too"), 1)
         assert embedded == 0.9
         # A real standalone reference still upgrades to 1.0
         exact = score.positive_tool_success_chain(
             turns_with_user_reply(
-                "the name value looks correct to me after checking it twice"), 1)
+                "the main.py output looks correct to me after checking it twice"), 1)
         assert exact == 1.0
+
+    def test_link4_ignores_common_english_words(self, pipeline_env):
+        # Tool output made of ordinary words: reusing them in the reply must
+        # not saturate the chain at 1.0 (Link 3 still applies → 0.9).
+        turns = [
+            {"role": "user", "content": "check it"},
+            {"role": "assistant", "content": "ok", "tool_calls": [
+                {"function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool",
+             "content": "done with this step from that loop",
+             "tool_name": "terminal"},
+            {"role": "user",
+             "content": "fine, move on with this step from that loop again ok"},
+        ]
+        assert score.positive_tool_success_chain(turns, 1) == 0.9
+
+    def test_looks_like_identifier(self, pipeline_env):
+        for tok in ("main.py", "user_name", "some-flag", "v2", "CamelCase",
+                    "hermes_state", "abcdefgh"):
+            assert score._looks_like_identifier(tok), tok
+        for tok in ("this", "with", "from", "step", "loop", "done"):
+            assert not score._looks_like_identifier(tok), tok
 
 
 # ============================================================================
@@ -777,6 +947,201 @@ class TestSecretRedaction:
 # ============================================================================
 # Finding 12: recency decay handles aware and legacy-naive timestamps
 # ============================================================================
+
+class TestModeWeightIsolation:
+    """positive mode reads scoring.weights_positive; legacy reads scoring.weights."""
+
+    def test_positive_mode_ignores_legacy_weights_dict(self, pipeline_env):
+        # A legacy weights dict with colliding key names must not leak into
+        # positive-signals mode — it should keep its own (renormalized)
+        # defaults from weights_positive.
+        scorer = score.QualityScorer(config={
+            "mode": "positive_signals",
+            "weights": {"conversation_signal": 0.9, "sentiment_modifier": 0.9,
+                        "turn_signal": 0.9, "judge_score": 0.9},
+            "thresholds": {},
+        })
+        assert scorer.w_conv == pytest.approx(0.15 / 0.80)
+        assert scorer.w_negative == pytest.approx(0.25 / 0.80)
+        assert scorer.w_positive == pytest.approx(0.35 / 0.80)
+        assert scorer.w_sent == pytest.approx(0.05 / 0.80)
+
+    def test_positive_mode_reads_weights_positive(self, pipeline_env):
+        scorer = score.QualityScorer(config={
+            "mode": "positive_signals",
+            "weights_positive": {
+                "conversation_signal": 0.10,
+                "negative_turn_signals": 0.20,
+                "positive_turn_signals": 0.60,
+                "sentiment_modifier": 0.10,
+                "manual_override": 0.0,
+            },
+            "thresholds": {},
+        })
+        # Already sums to 1.0 — no renormalization needed
+        assert scorer.w_positive == pytest.approx(0.60)
+        assert scorer.w_conv == pytest.approx(0.10)
+
+    def test_legacy_mode_ignores_weights_positive(self, pipeline_env):
+        scorer = score.QualityScorer(config={
+            "mode": "legacy",
+            "weights_positive": {"conversation_signal": 0.99,
+                                 "sentiment_modifier": 0.99},
+            "weights": {},
+            "thresholds": {},
+        })
+        assert scorer.w_conv == 0.3
+        assert scorer.w_turn == 0.4
+        assert scorer.w_sent == 0.1
+        assert scorer.w_judge == 0.2
+
+
+# ============================================================================
+# positive_no_tool_response: affirmation checked before the length rule
+# ============================================================================
+
+class TestNoToolAffirmationOrder:
+    def _turns(self, followup):
+        return [
+            {"role": "user", "content": "explain the difference between the two"},
+            {"role": "assistant",
+             "content": "Here is a detailed comparison of the two approaches."},
+            {"role": "user", "content": followup},
+        ]
+
+    def test_long_explicit_affirmation_scores_high(self, pipeline_env):
+        long_affirmation = (
+            "perfect, thank you — that comparison covers the two approaches "
+            "and lays out when each one applies, which is what I needed for "
+            "the migration plan I am writing up for the rest of the team today"
+        )
+        assert len(long_affirmation.split()) >= 25
+        assert score.positive_no_tool_response(self._turns(long_affirmation), 1) == 0.9
+
+    def test_long_constraint_followup_still_ambiguous(self, pipeline_env):
+        long_constraints = (
+            "hmm, we also need to consider the case where the database is on "
+            "a separate host, the network is flaky, retries have a budget, "
+            "and the cache layer sits in front of both readers and writers"
+        )
+        assert len(long_constraints.split()) >= 25
+        assert score.positive_no_tool_response(self._turns(long_constraints), 1) == 0.4
+
+
+# ============================================================================
+# Train/eval split keyed on root_session_id (lineages never straddle)
+# ============================================================================
+
+class TestSplitKeying:
+    def test_split_key_prefers_root_session_id(self, pipeline_env):
+        assert format_mod._split_key({"session_id": "a"}) == "a"
+        assert format_mod._split_key(
+            {"session_id": "a", "root_session_id": "r"}) == "r"
+        # Imported records without lineage fall back cleanly
+        assert format_mod._split_key(
+            {"session_id": "a", "root_session_id": None}) == "a"
+
+    def test_lineage_members_never_straddle_split(self, pipeline_env):
+        root_id = "root-x"
+        # Pick a child whose OWN session_id hashes to the other bucket, so
+        # keying on session_id would provably split the lineage.
+        child_id = next(
+            f"child-{i}" for i in range(1000)
+            if format_mod._session_hash_bucket(f"child-{i}", 0.5)
+            != format_mod._session_hash_bucket(root_id, 0.5)
+        )
+        turns = [{"role": "user", "content": "Q"},
+                 {"role": "assistant", "content": "A"}]
+        root = _scored_session(root_id, turns, turn_scores=[(1, 0.9)])
+        root["root_session_id"] = root_id
+        child = _scored_session(child_id, turns, turn_scores=[(1, 0.9)])
+        child["root_session_id"] = root_id
+
+        formatter = format_mod.TrainingFormatter(eval_ratio=0.5)
+        counts = formatter.format_for_cluster([root, child], "_general")
+        # Both records land on the same side of the split
+        assert counts in ({"train": 2, "eval": 0}, {"train": 0, "eval": 2})
+
+
+# ============================================================================
+# Clustering: hdbscan-missing fallback, dimension reset, dissolved clusters
+# ============================================================================
+
+class TestClusteringFallbacks:
+    def _patch_cluster_paths(self, cluster, monkeypatch):
+        monkeypatch.setattr(cluster, "SCORED_DIR", common.SCORED_DIR)
+        monkeypatch.setattr(cluster, "CLUSTERS_DIR", common.CLUSTERS_DIR)
+        monkeypatch.setattr(cluster, "CLUSTER_STATE_PATH", common.CLUSTER_STATE_PATH)
+
+    def test_hdbscan_missing_falls_back_to_general(self, pipeline_env, monkeypatch):
+        cluster = pytest.importorskip("cluster")
+        np = pytest.importorskip("numpy")
+        self._patch_cluster_paths(cluster, monkeypatch)
+
+        turns = [{"role": "user", "content": "Q"},
+                 {"role": "assistant", "content": "A"}]
+        sessions = [_scored_session(f"s{i}", turns, turn_scores=[(1, 0.9)])
+                    for i in range(3)]
+
+        clusterer = cluster.DomainClusterer(config={"min_cluster_size": 2})
+        # Embedding deps present...
+        monkeypatch.setattr(
+            clusterer, "_embed_sessions",
+            lambda ss: (np.ones((len(ss), 4)),
+                        [s["session_id"] for s in ss]),
+        )
+
+        # ...but hdbscan is not installed
+        def _no_hdbscan(embeddings):
+            raise ImportError("No module named 'hdbscan'")
+        monkeypatch.setattr(clusterer, "_run_hdbscan", _no_hdbscan)
+
+        state = clusterer.cluster(sessions)
+        assert state["algorithm"] == "fallback-no-clustering"
+        assert set(state["assignments"].values()) == {"_general"}
+        train = common.CLUSTERS_DIR / "_general" / "train.jsonl"
+        assert train.exists() and train.read_text()
+
+    def test_changed_embedding_dim_resets_prev_state(self, pipeline_env, caplog):
+        import logging as _logging
+        cluster = pytest.importorskip("cluster")
+        np = pytest.importorskip("numpy")
+
+        clusterer = cluster.DomainClusterer(config={})
+        new_centroid = np.ones(8)
+        prev = {"centroids": {"c-old": [1.0, 0.0, 0.0, 0.0]},  # 4-dim
+                "embedding_model": "old-model"}
+        with caplog.at_level(_logging.WARNING, logger="hermes.finetune"):
+            mapping = clusterer._match_previous_clusters({0: new_centroid}, prev)
+        # No crash on the mismatched np.dot; fresh ID assigned
+        assert mapping[0] != "c-old"
+        assert any("dimension changed" in r.message for r in caplog.records)
+
+    def test_dissolved_cluster_split_truncated(self, pipeline_env, monkeypatch):
+        cluster = pytest.importorskip("cluster")
+        self._patch_cluster_paths(cluster, monkeypatch)
+
+        # A previously-known cluster left a populated split behind
+        stale_dir = common.CLUSTERS_DIR / "c-dead"
+        stale_dir.mkdir(parents=True)
+        (stale_dir / "train.jsonl").write_text(
+            '{"conversations": [{"from": "gpt", "value": "stale"}]}\n',
+            encoding="utf-8")
+        (stale_dir / "eval.jsonl").write_text("", encoding="utf-8")
+        common.save_json(common.CLUSTER_STATE_PATH, {
+            "clusters": {"c-dead": {"session_count": 5}, "_general": {}},
+        })
+
+        turns = [{"role": "user", "content": "Q"},
+                 {"role": "assistant", "content": "A"}]
+        good = _scored_session("g", turns, turn_scores=[(1, 0.9)])
+        state = cluster.DomainClusterer(config={})._fallback_to_general([good])
+
+        assert "c-dead" not in state["clusters"]
+        # The dissolved cluster's split can no longer be trained on
+        assert (stale_dir / "train.jsonl").read_text() == ""
+        assert (stale_dir / "eval.jsonl").read_text() == ""
+
 
 class TestRecencyDecay:
     def test_aware_and_naive_local_agree(self, pipeline_env):

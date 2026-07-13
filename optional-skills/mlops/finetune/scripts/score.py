@@ -260,6 +260,17 @@ def _token_in_text(token: str, text: str) -> bool:
     return re.search(pattern, text) is not None
 
 
+def _looks_like_identifier(token: str) -> bool:
+    """Whether a token looks like a path/identifier/value rather than a
+    common English word: contains a digit, '.', '/', '_', '-', an internal
+    capital (CamelCase/mixedCase), or is unusually long (>= 8 chars)."""
+    if len(token) >= 8:
+        return True
+    if any(c.isdigit() or c in "./_-" for c in token):
+        return True
+    return any(c.isupper() for c in token[1:])
+
+
 def _artifact_referenced(turn: Dict, artifact: str) -> bool:
     """Whether `artifact` (a string) appears in this turn's content or tool_calls."""
     content = content_to_text(turn.get("content"))
@@ -331,13 +342,20 @@ def positive_tool_success_chain(
         score = 0.9
 
     # Link 4: user referenced tool output (word-boundary match — 'name'
-    # must not count as referenced just because the user typed 'rename')
+    # must not count as referenced just because the user typed 'rename').
+    # Tokens must clear the identifier stoplist AND look identifier-like:
+    # common English words in tool output ('this', 'with', 'from') would
+    # otherwise saturate every conversational session at 1.0.
     artifacts = _extract_artifacts(turn)
     all_artifacts = artifacts["paths"] | artifacts["identifiers"] | artifacts["commands"]
     for r_name, r_content in results:
         if r_content:
             r_text = r_content if isinstance(r_content, str) else json.dumps(r_content)
             for token in re.findall(r'[\w./\-]{4,}', r_text)[:50]:
+                if token.lower() in _IDENTIFIER_STOPLIST:
+                    continue
+                if not _looks_like_identifier(token):
+                    continue
                 if _token_in_text(token, user_content):
                     return 1.0
     if any(_token_in_text(a, user_content) for a in all_artifacts):
@@ -666,17 +684,19 @@ def positive_no_tool_response(
     if any(p.search(next_content) for p in CORRECTION_PATTERNS):
         return 0.0
 
+    # Explicit affirmation — checked before the length rule so a long,
+    # explicit "perfect, thanks, that solved it because ..." scores 0.9
+    # instead of being misread as new constraints.
+    if any(p.search(next_content) for p in AFFIRMATION_PATTERNS):
+        return 0.9
+    if any(p.search(next_content) for p in CONCLUSION_PATTERNS):
+        return 0.9
+
     # Soft signal: user added new constraints (long, substantive follow-up)
     # — answer was likely incomplete but not wrong
     word_count = len(next_content.split())
     if word_count >= 25:
         return 0.4
-
-    # Explicit affirmation
-    if any(p.search(next_content) for p in AFFIRMATION_PATTERNS):
-        return 0.9
-    if any(p.search(next_content) for p in CONCLUSION_PATTERNS):
-        return 0.9
 
     # Implicit accept: short follow-up that moves on
     return 0.8
@@ -697,7 +717,6 @@ class QualityScorer:
 
     def __init__(self, config: dict = None):
         cfg = config or load_config().get("scoring", {})
-        self.weights = cfg.get("weights", {})
         self.thresholds = cfg.get("thresholds", {})
 
         # Two scoring modes:
@@ -709,8 +728,14 @@ class QualityScorer:
         #     Kept for backwards compatibility and casual chat data.
         self.scoring_mode = cfg.get("mode", "positive_signals")
 
+        # Each mode reads its own weights dict — scoring.weights_positive
+        # for positive_signals, scoring.weights for legacy. The two share
+        # key names (conversation_signal, sentiment_modifier), so letting
+        # legacy values feed the positive-signals math would silently skew
+        # the composite.
         if self.scoring_mode == "positive_signals":
-            # New weights from the positive-signals spec §"Updated Default Weights"
+            self.weights = cfg.get("weights_positive", {})
+            # Weights from the positive-signals spec §"Updated Default Weights"
             self.w_conv = self.weights.get("conversation_signal", 0.15)
             self.w_negative = self.weights.get("negative_turn_signals", 0.25)
             self.w_positive = self.weights.get("positive_turn_signals", 0.35)
@@ -722,6 +747,7 @@ class QualityScorer:
             self.w_judge = 0.0
         else:
             # Legacy weights
+            self.weights = cfg.get("weights", {})
             self.w_conv = self.weights.get("conversation_signal", 0.3)
             self.w_turn = self.weights.get("turn_signal", 0.4)
             self.w_sent = self.weights.get("sentiment_modifier", 0.1)

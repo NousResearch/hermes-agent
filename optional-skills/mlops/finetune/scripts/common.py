@@ -1,5 +1,6 @@
 """Shared constants, paths, and utilities for the finetune pipeline."""
 
+import contextlib
 import json
 import logging
 import os
@@ -73,7 +74,72 @@ def save_json(path: Path, data, indent=2):
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=indent, ensure_ascii=False, default=str),
                    encoding="utf-8")
-    tmp.rename(path)
+    # replace(), not rename(): rename raises FileExistsError on Windows when
+    # the target exists, which is every re-save of registry/state files.
+    tmp.replace(path)
+
+
+# Single coarse lock serializing every mutating pipeline operation (registry
+# writes, version allocation, server stop/start). Coarse on purpose: runs are
+# minutes-to-hours long and correctness beats concurrency here.
+LOCK_PATH = FINETUNE_DIR / "finetune.lock"
+
+
+@contextlib.contextmanager
+def pipeline_lock(timeout: float = 30.0, path: Path = None):
+    """Advisory inter-process lock guarding pipeline mutations.
+
+    POSIX uses flock (auto-released if the holder dies); Windows falls back
+    to msvcrt.locking on the same file. Raises TimeoutError if the lock is
+    still held after `timeout` seconds — callers should surface that as
+    "another finetune run is in progress" rather than proceeding.
+    """
+    lock_path = path or LOCK_PATH
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "a+", encoding="utf-8")
+    try:
+        _lock_acquire(fh, timeout)
+        try:
+            yield
+        finally:
+            _lock_release(fh)
+    finally:
+        fh.close()
+
+
+def _lock_acquire(fh, timeout: float):
+    import time
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Could not acquire {fh.name} after {timeout}s — "
+                    "another finetune operation appears to be running."
+                )
+            time.sleep(0.5)
+
+
+def _lock_release(fh):
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
 
 
 def append_jsonl(path: Path, records: list):
@@ -156,17 +222,32 @@ def content_to_text(content) -> str:
 def load_config() -> dict:
     """Load finetune config from ~/.hermes/config.yaml, falling back to defaults."""
     defaults = {
-        "enabled": True,
+        # Master gate — mirrors DEFAULT_CONFIG["finetune"]["enabled"] in core.
+        # The /finetune dispatcher refuses to run while this is false; running
+        # the scripts directly from a shell is an explicit enough opt-in.
+        "enabled": False,
         "extract": {
             "min_turns": 2,
             "exclude_sources": [],
         },
         "scoring": {
+            # Legacy (sentiment-based) mode weights. Only read when
+            # scoring.mode == "legacy".
             "weights": {
                 "conversation_signal": 0.3,
                 "turn_signal": 0.4,
                 "sentiment_modifier": 0.1,
                 "judge_score": 0.2,
+            },
+            # positive_signals mode weights (the default mode). Kept as a
+            # separate dict so legacy defaults can never bleed into the
+            # positive-signals math — the two modes share some key names.
+            "weights_positive": {
+                "conversation_signal": 0.15,
+                "negative_turn_signals": 0.25,
+                "positive_turn_signals": 0.35,
+                "sentiment_modifier": 0.05,
+                "manual_override": 0.20,
             },
             "thresholds": {
                 "good": 0.7,
@@ -194,16 +275,14 @@ def load_config() -> dict:
             "min_turn_score": 0.7,
         },
         "routing": {
-            "enabled": True,
-            "providers": ["local", "llama-cpp", "custom"],
+            "enabled": False,
         },
         "retraining": {
             "data_growth_trigger": 0.2,
             "schedule": "weekly",
         },
         "feedback": {
-            "cli_keybindings": True,
-            "gateway_reactions": True,
+            "cli_keybindings": False,
         },
         # Auto-redeploy: convert the active adapter to GGUF and restart
         # llama-server with it loaded after each promote. Off by default

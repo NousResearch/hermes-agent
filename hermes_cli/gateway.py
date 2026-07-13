@@ -333,6 +333,59 @@ def _append_unique_pid(
     pids.append(pid)
 
 
+def _scan_gateway_pids_windows_psutil(
+    pids: list[int],
+    exclude_pids: set[int],
+    *,
+    all_profiles: bool,
+    matches_gateway_runtime,
+    matches_current_profile,
+) -> None:
+    """Supplement wmic/CIM with psutil for cross-session gateways (#63743).
+
+    ``Get-CimInstance Win32_Process`` often returns an empty ``CommandLine``
+    for processes in another session (e.g. a Scheduled Task gateway running as
+    SYSTEM) when queried from a non-elevated user. psutil can still read their
+    argv — the same API ``_detect_venv_python_processes`` uses to block
+    ``hermes update``. Without this pass the update flow fails to pause the
+    gateway but still refuses with "Other Hermes processes are running".
+    """
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return
+
+    try:
+        proc_iter = psutil.process_iter(["pid", "cmdline"])
+    except Exception:
+        return
+
+    try:
+        for proc in proc_iter:
+            try:
+                info = proc.info
+            except Exception:
+                continue
+            pid = info.get("pid")
+            if pid is None:
+                continue
+            cmdline_parts = info.get("cmdline") or []
+            if not cmdline_parts:
+                try:
+                    cmdline_parts = list(proc.cmdline() or [])
+                except Exception:
+                    continue
+            if not cmdline_parts:
+                continue
+            command = " ".join(str(part) for part in cmdline_parts)
+            if matches_gateway_runtime(command) and (
+                all_profiles or matches_current_profile(command)
+            ):
+                _append_unique_pid(pids, int(pid), exclude_pids)
+    except Exception:
+        return
+
+
 def _scan_gateway_pids(
     exclude_pids: set[int],
     all_profiles: bool = False,
@@ -408,7 +461,6 @@ def _scan_gateway_pids(
 
             _no_window = {"creationflags": windows_hide_flags()}
             wmic_path = shutil.which("wmic")
-            used_fallback = False
             result = None
             if wmic_path is not None:
                 try:
@@ -433,46 +485,54 @@ def _scan_gateway_pids(
                 # Fallback: PowerShell Get-CimInstance, emit LIST-style output
                 # so the downstream parser below doesn't need to branch.
                 powershell = shutil.which("powershell") or shutil.which("pwsh")
-                if powershell is None:
-                    return []
-                ps_cmd = (
-                    "Get-CimInstance Win32_Process | "
-                    "ForEach-Object { "
-                    "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
-                    "  'ProcessId=' + $_.ProcessId; "
-                    "  '' "
-                    "}"
-                )
-                try:
-                    result = subprocess.run(
-                        [powershell, "-NoProfile", "-Command", ps_cmd],
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="ignore",
-                        timeout=15,
-                        **_no_window,
+                if powershell is not None:
+                    ps_cmd = (
+                        "Get-CimInstance Win32_Process | "
+                        "ForEach-Object { "
+                        "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
+                        "  'ProcessId=' + $_.ProcessId; "
+                        "  '' "
+                        "}"
                     )
-                except (OSError, subprocess.TimeoutExpired):
-                    return []
-                used_fallback = True
-            if result.returncode != 0 or result.stdout is None:
-                return []
-            current_cmd = ""
-            for line in result.stdout.split("\n"):
-                line = line.strip()
-                if line.startswith("CommandLine="):
-                    current_cmd = line[len("CommandLine=") :]
-                elif line.startswith("ProcessId="):
-                    pid_str = line[len("ProcessId=") :]
-                    if _matches_gateway_runtime(current_cmd) and (
-                        all_profiles or _matches_current_profile(current_cmd)
-                    ):
-                        try:
-                            _append_unique_pid(pids, int(pid_str), exclude_pids)
-                        except ValueError:
-                            pass
-                    current_cmd = ""
+                    try:
+                        result = subprocess.run(
+                            [powershell, "-NoProfile", "-Command", ps_cmd],
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="ignore",
+                            timeout=15,
+                            **_no_window,
+                        )
+                    except (OSError, subprocess.TimeoutExpired):
+                        result = None
+            if (
+                result is not None
+                and result.returncode == 0
+                and result.stdout is not None
+            ):
+                current_cmd = ""
+                for line in result.stdout.split("\n"):
+                    line = line.strip()
+                    if line.startswith("CommandLine="):
+                        current_cmd = line[len("CommandLine=") :]
+                    elif line.startswith("ProcessId="):
+                        pid_str = line[len("ProcessId=") :]
+                        if _matches_gateway_runtime(current_cmd) and (
+                            all_profiles or _matches_current_profile(current_cmd)
+                        ):
+                            try:
+                                _append_unique_pid(pids, int(pid_str), exclude_pids)
+                            except ValueError:
+                                pass
+                        current_cmd = ""
+            _scan_gateway_pids_windows_psutil(
+                pids,
+                exclude_pids,
+                all_profiles=all_profiles,
+                matches_gateway_runtime=_matches_gateway_runtime,
+                matches_current_profile=_matches_current_profile,
+            )
         else:
             # Try /proc first (works in Docker without procps installed),
             # fall back to ps -A eww.
@@ -538,7 +598,8 @@ def _scan_gateway_pids(
                     ):
                         _append_unique_pid(pids, pid, exclude_pids)
     except (OSError, subprocess.TimeoutExpired):
-        return []
+        if not pids:
+            return []
 
     # Windows-specific: collapse venv launcher stubs.  A venv-built
     # ``pythonw.exe`` in ``<venv>/Scripts/`` is a ~100 KB launcher exe

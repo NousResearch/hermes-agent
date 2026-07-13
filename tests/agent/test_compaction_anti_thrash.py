@@ -210,6 +210,70 @@ class TestFutilityGuard:
         assert cc.awaiting_real_usage_after_compression is False
         assert cc._ineffective_compression_count == 0
 
+    def test_fallback_streak_survives_ordinary_fitting_responses(self):
+        cc = _compressor(threshold_tokens=24_576)
+
+        cc.record_completed_compaction(used_fallback=True)
+        cc.update_from_response({"prompt_tokens": 20_000})
+        assert cc._fallback_compression_streak == 1
+
+        # Context regrows through ordinary successful turns before the next
+        # fallback boundary. Those turns reset real-usage effectiveness, not
+        # the independent summary-quality breaker.
+        cc.update_from_response({"prompt_tokens": 20_000})
+        cc.record_completed_compaction(used_fallback=True)
+        cc.update_from_response({"prompt_tokens": 20_000})
+
+        assert cc._fallback_compression_streak == 2
+        assert not cc.should_compress(33_564)
+
+    def test_usage_less_fallback_boundary_still_counts(self):
+        cc = _compressor(threshold_tokens=24_576)
+
+        cc.record_completed_compaction(used_fallback=True)
+        cc.awaiting_real_usage_after_compression = True
+        cc.update_from_response({})
+
+        assert cc._fallback_compression_streak == 1
+        assert cc._verify_compaction_cleared_threshold is False
+        assert cc.awaiting_real_usage_after_compression is False
+
+    def test_healthy_boundary_resets_only_fallback_streak(self):
+        cc = _compressor(threshold_tokens=24_576)
+        cc.record_completed_compaction(used_fallback=True)
+        cc.record_completed_compaction(used_fallback=False)
+
+        assert cc._fallback_compression_streak == 0
+        assert cc._verify_compaction_cleared_threshold is True
+
+    def test_model_switch_resets_and_persists_fallback_streak(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", source="cli")
+        cc = _compressor(threshold_tokens=24_576)
+        cc.bind_session_state(db, "s1")
+        cc.record_completed_compaction(used_fallback=True)
+
+        cc.update_model("next-model", 100_000)
+
+        assert cc._fallback_compression_streak == 0
+        assert db.get_compression_fallback_streak("s1") == 0
+
+    def test_same_runtime_context_recalibration_preserves_fallback_streak(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", source="cli")
+        cc = _compressor(threshold_tokens=24_576)
+        cc.bind_session_state(db, "s1")
+        cc.record_completed_compaction(used_fallback=True)
+
+        cc.update_model(cc.model, 64_000, provider=cc.provider)
+
+        assert cc._fallback_compression_streak == 1
+        assert db.get_compression_fallback_streak("s1") == 1
+
     def test_a_failed_pass_records_exactly_one_strike(self):
         """A compaction that leaves the real prompt over the threshold: one strike.
 

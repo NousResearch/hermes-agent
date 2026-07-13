@@ -821,6 +821,36 @@ class DingTalkAdapter(BasePlatformAdapter):
                 else MessageType.TEXT
             )
 
+        # File / audio / video messages don't get a typed attribute on
+        # ``ChatbotMessage`` — the dingtalk-stream SDK only knows about
+        # ``text`` / ``picture`` / ``richText`` explicitly, so any other
+        # ``msgtype`` lands the payload in ``message.extensions["content"]``.
+        # Without this branch a single PDF / DOCX / MP3 attachment yields
+        # an empty ``(text, media_urls)`` pair, the early-return at the
+        # caller drops the message, and the user is left staring at the
+        # 🤔 Thinking emoji forever because the platform handler already
+        # acknowledged the callback (#16964).
+        if not media_urls and msg_type_str in ("file", "audio", "video"):
+            extensions = getattr(message, "extensions", None) or {}
+            content_payload = extensions.get("content")
+            if isinstance(content_payload, dict):
+                download_code = (
+                    content_payload.get("downloadCode")
+                    or content_payload.get("download_code")
+                    or ""
+                )
+                if download_code:
+                    media_urls.append(download_code)
+                    if msg_type_str == "audio":
+                        media_types.append("audio")
+                        msg_type = MessageType.AUDIO
+                    elif msg_type_str == "video":
+                        media_types.append("video")
+                        msg_type = MessageType.VIDEO
+                    else:  # "file"
+                        media_types.append("application/octet-stream")
+                        msg_type = MessageType.DOCUMENT
+
         return msg_type, media_urls, media_types
 
     # -- Outbound messaging -------------------------------------------------
@@ -1322,6 +1352,23 @@ class DingTalkAdapter(BasePlatformAdapter):
                     for key in ("downloadCode", "pictureDownloadCode", "download_code"):
                         if item.get(key):
                             codes_to_resolve.append((item, key))
+
+        # 3. Extension bucket — file / audio / video messages.  These
+        # ``msgtype`` values aren't represented as typed attributes on
+        # ``ChatbotMessage`` (the SDK only knows ``text`` / ``picture`` /
+        # ``richText`` explicitly), so the payload sits at
+        # ``message.extensions["content"]``.  ``_extract_media`` reads the
+        # download code from there; resolve it to a URL in place so
+        # downstream document/audio/video handlers receive a fetchable
+        # URL rather than the opaque raw code (#16964).
+        msg_type_str = getattr(message, "message_type", "") or ""
+        if msg_type_str in ("file", "audio", "video"):
+            extensions = getattr(message, "extensions", None) or {}
+            content_payload = extensions.get("content")
+            if isinstance(content_payload, dict):
+                for key in ("downloadCode", "download_code"):
+                    if content_payload.get(key):
+                        codes_to_resolve.append((content_payload, key))
 
         if not codes_to_resolve:
             return

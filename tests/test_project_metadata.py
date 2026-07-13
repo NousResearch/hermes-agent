@@ -11,6 +11,12 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
+def _load_dependencies():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        return tomllib.load(handle)["project"]["dependencies"]
+
+
 def _load_package_data():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
@@ -99,6 +105,16 @@ def _exact_pins(specs):
         package = package.split("[", 1)[0].lower().replace("_", "-")
         pins[package] = version
     return pins
+
+
+def test_security_current_core_dependency_floors():
+    """Core/lazy pins must not regress below the advisory-fixed releases."""
+    from tools.lazy_deps import LAZY_DEPS
+
+    core = _exact_pins(_load_dependencies())
+    vision = _exact_pins(LAZY_DEPS["tool.vision"])
+    assert core.get("pillow") == "12.3.0"
+    assert vision.get("pillow") == "12.3.0"
 
 
 def test_pyproject_aiohttp_pins_match_lazy_slack_pin():

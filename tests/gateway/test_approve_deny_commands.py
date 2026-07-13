@@ -414,6 +414,10 @@ class TestBareTextNoLongerApproves:
 class TestBlockingApprovalE2E:
     """Test the full blocking flow: agent thread blocks → user approves → agent resumes."""
 
+    @pytest.fixture(autouse=True)
+    def _manual_approval_mode(self, monkeypatch):
+        monkeypatch.setattr("tools.approval._get_approval_mode", lambda: "manual")
+
     def setup_method(self):
         _clear_approval_state()
         os.environ.pop("HERMES_YOLO_MODE", None)
@@ -743,6 +747,10 @@ class TestCrossSessionApprovalIsolation:
     worker thread carrying session A's contextvar resolves to session A
     even when ``os.environ`` has been clobbered to session B.
     """
+
+    @pytest.fixture(autouse=True)
+    def _manual_approval_mode(self, monkeypatch):
+        monkeypatch.setattr("tools.approval._get_approval_mode", lambda: "manual")
 
     def setup_method(self):
         _clear_approval_state()

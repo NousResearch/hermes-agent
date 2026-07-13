@@ -863,6 +863,107 @@ class TestWebServerEndpoints:
         )
         assert resp.status_code == 401
 
+    # ── POST /api/chat/image-upload (browser clipboard/drop images) ─────
+
+    def test_chat_image_upload_writes_to_default_profile_images(self):
+        from hermes_constants import get_hermes_home
+
+        data_url = (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+            "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={"data_url": data_url, "filename": "../../clip.png"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        target = Path(data["path"])
+        assert data["ok"] is True
+        assert data["mime_type"] == "image/png"
+        assert target.parent == get_hermes_home() / "images"
+        assert target.name.startswith("dashboard_")
+        assert target.name.endswith("_clip.png")
+        assert target.is_file()
+        assert target.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+    def test_chat_image_upload_writes_to_requested_profile_images(self):
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        resp = self.client.post(
+            "/api/chat/image-upload?profile=worker",
+            json={
+                "data_url": "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=",
+                "filename": "drop.gif",
+            },
+        )
+
+        assert resp.status_code == 200
+        target = Path(resp.json()["path"])
+        assert target.parent == worker_home / "images"
+        assert target.is_file()
+        assert target.read_bytes().startswith(b"GIF89a")
+
+    def test_chat_image_upload_rejects_non_image_payload(self):
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={"data_url": "data:text/plain;base64,aGVsbG8="},
+        )
+
+        assert resp.status_code == 400
+        assert "image" in resp.json()["detail"].lower()
+
+    def test_chat_image_upload_rejects_spoofed_image_payload(self):
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={"data_url": "data:image/png;base64,aGVsbG8=", "filename": "fake.png"},
+        )
+
+        assert resp.status_code == 400
+        assert "unsupported image type" in resp.json()["detail"].lower()
+
+    def test_chat_image_upload_rejects_unknown_profile(self):
+        resp = self.client.post(
+            "/api/chat/image-upload?profile=missing-profile",
+            json={"data_url": "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA="},
+        )
+
+        assert resp.status_code == 404
+        assert "does not exist" in resp.json()["detail"]
+
+    def test_chat_image_upload_enforces_image_size_cap(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_CHAT_IMAGE_UPLOAD_MAX_BYTES", 4)
+
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={
+                "data_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAE=",
+                "filename": "large.png",
+            },
+        )
+
+        assert resp.status_code == 413
+        assert "too large" in resp.json()["detail"].lower()
+
+    def test_chat_image_upload_requires_auth(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={"data_url": "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA="},
+            headers={_SESSION_HEADER_NAME: "wrong-token"},
+        )
+
+        assert resp.status_code == 401
+
     # ── Dashboard font override ─────────────────────────────────────────
 
     def test_get_dashboard_font_defaults_to_theme(self):
@@ -3437,6 +3538,26 @@ class TestBuildSchemaFromConfig:
             assert entry["type"] == "select"
             assert "options" in entry
             assert "local" in entry["options"]
+
+    def test_approvals_mode_options_match_config_values(self):
+        """approvals.mode select options must match the values accepted by config.py.
+
+        Previously the dashboard showed ['ask', 'yolo', 'deny'] which are stale
+        names that don't correspond to any real config value. The correct values
+        are 'manual', 'smart', and 'off' (see hermes_cli/config.py).
+        'smart' was missing entirely, making it unreachable from the UI.
+        """
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        entry = CONFIG_SCHEMA["approvals.mode"]
+        assert entry["type"] == "select"
+        options = entry["options"]
+        assert "manual" in options, "'manual' missing from approvals.mode options"
+        assert "smart" in options, "'smart' missing from approvals.mode options"
+        assert "off" in options, "'off' missing from approvals.mode options"
+        # Stale names that were previously shown but don't match config values
+        assert "ask" not in options, "stale option 'ask' should not appear"
+        assert "yolo" not in options, "stale option 'yolo' should not appear"
+        assert "deny" not in options, "stale option 'deny' should not appear"
 
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config

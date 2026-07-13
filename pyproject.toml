@@ -67,7 +67,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://hermes-agent.nousresearch.com/docs/"
+Homepage = "https://hermes-agent.nousresearch.com/"
 Documentation = "https://hermes-agent.nousresearch.com/docs/"
 Repository = "https://github.com/NousResearch/hermes-agent"
 Issues = "https://github.com/NousResearch/hermes-agent/issues"

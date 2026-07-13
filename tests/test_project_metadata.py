@@ -131,7 +131,7 @@ def test_project_urls_publish_user_support_links():
     project = _load_project_metadata()
 
     assert project["urls"] == {
-        "Homepage": "https://hermes-agent.nousresearch.com/docs/",
+        "Homepage": "https://hermes-agent.nousresearch.com/",
         "Documentation": "https://hermes-agent.nousresearch.com/docs/",
         "Repository": "https://github.com/NousResearch/hermes-agent",
         "Issues": "https://github.com/NousResearch/hermes-agent/issues",

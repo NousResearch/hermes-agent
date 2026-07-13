@@ -1454,7 +1454,9 @@ class TestFetchDeepInfraModels:
 
         profile = get_provider_profile("deepinfra")
         assert profile is not None
-        monkeypatch.setattr(models, "_fetch_deepinfra_models", lambda: None)
+        monkeypatch.setattr(
+            models, "_fetch_deepinfra_models", lambda **kwargs: None
+        )
         monkeypatch.setattr(
             profile,
             "fetch_models",
@@ -1463,6 +1465,22 @@ class TestFetchDeepInfraModels:
         monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
 
         assert models.provider_model_ids("deepinfra") == []
+
+    def test_force_refresh_reaches_deepinfra_catalog(self, monkeypatch):
+        import hermes_cli.models as models
+
+        seen = []
+
+        def _fetch(*, force_refresh=False, **kwargs):
+            seen.append(force_refresh)
+            return ["vendor/chat"]
+
+        monkeypatch.setattr(models, "_fetch_deepinfra_models", _fetch)
+
+        assert models.provider_model_ids("deepinfra", force_refresh=True) == [
+            "vendor/chat"
+        ]
+        assert seen == [True]
 
     def test_excludes_non_chat_models(self, monkeypatch):
         monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")

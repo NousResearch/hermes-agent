@@ -2595,60 +2595,75 @@ def text_to_speech_tool(
 # Requirements check
 # ===========================================================================
 def check_tts_requirements() -> bool:
+    """Return whether the explicitly resolved TTS provider can run.
+
+    Availability must mirror :func:`text_to_speech_tool` dispatch. Unrelated
+    cloud credentials do not make the default Edge backend usable, and an
+    explicitly selected backend is checked on its own requirements.
     """
-    Check if at least one TTS provider is available.
-
-    Edge TTS needs no API key and is the default, so if the package
-    is installed, TTS is available. A user-declared command provider
-    also satisfies the requirement.
-
-    Returns:
-        bool: True if at least one provider can work.
-    """
-    # Any configured command provider counts as available.
-    if _has_any_command_tts_provider():
+    tts_config = _load_tts_config()
+    provider = _get_provider(tts_config)
+    command_config = _resolve_command_provider_config(provider, tts_config)
+    if command_config is not None:
         return True
-    try:
-        _import_edge_tts()
-        return True
-    except ImportError:
-        pass
-    try:
-        _import_elevenlabs()
-        if get_env_value("ELEVENLABS_API_KEY"):
-            return True
-    except ImportError:
-        pass
-    try:
-        _import_openai_client()
-        if _has_openai_audio_backend():
-            return True
-    except ImportError:
-        pass
-    if get_env_value("MINIMAX_API_KEY"):
-        return True
-    try:
-        from tools.xai_http import resolve_xai_http_credentials
 
-        if resolve_xai_http_credentials().get("api_key"):
+    if provider == "edge":
+        try:
+            _import_edge_tts()
             return True
+        except ImportError:
+            return _check_neutts_available()
+    if provider == "elevenlabs":
+        try:
+            _import_elevenlabs()
+        except ImportError:
+            return False
+        return bool(get_env_value("ELEVENLABS_API_KEY"))
+    if provider == "openai":
+        try:
+            _import_openai_client()
+        except ImportError:
+            return False
+        return _has_openai_audio_backend()
+    if provider == "deepinfra":
+        try:
+            _import_openai_client()
+        except ImportError:
+            return False
+        return bool(get_env_value("DEEPINFRA_API_KEY"))
+    if provider == "minimax":
+        return bool(get_env_value("MINIMAX_API_KEY"))
+    if provider == "xai":
+        try:
+            from tools.xai_http import resolve_xai_http_credentials
+
+            return bool(resolve_xai_http_credentials().get("api_key"))
+        except Exception:
+            return False
+    if provider == "gemini":
+        return bool(get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"))
+    if provider == "mistral":
+        try:
+            _import_mistral_client()
+        except ImportError:
+            return False
+        return bool(get_env_value("MISTRAL_API_KEY"))
+    if provider == "neutts":
+        return _check_neutts_available()
+    if provider == "kittentts":
+        return _check_kittentts_available()
+    if provider == "piper":
+        return _check_piper_available()
+
+    try:
+        from agent.tts_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        plugin = get_provider(provider)
+        return bool(plugin and plugin.is_available())
     except Exception:
-        pass
-    if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
-        return True
-    try:
-        _import_mistral_client()
-        if get_env_value("MISTRAL_API_KEY"):
-            return True
-    except ImportError:
-        pass
-    if _check_neutts_available():
-        return True
-    if _check_kittentts_available():
-        return True
-    if _check_piper_available():
-        return True
-    return False
+        return False
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:

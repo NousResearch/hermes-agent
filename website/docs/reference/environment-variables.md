@@ -305,7 +305,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TWILIO_PHONE_NUMBER` | Twilio phone number in E.164 format (shared with telephony skill) |
 | `SMS_WEBHOOK_URL` | Public URL for Twilio signature validation — must match the webhook URL in Twilio Console (required) |
 | `SMS_WEBHOOK_PORT` | Webhook listener port for inbound SMS (default: `8080`) |
-| `SMS_WEBHOOK_HOST` | Webhook bind address (default: `0.0.0.0`) |
+| `SMS_WEBHOOK_HOST` | Webhook bind address (default: `127.0.0.1`) |
 | `SMS_INSECURE_NO_SIGNATURE` | Set to `true` to disable Twilio signature validation (local dev only — not for production) |
 | `SMS_ALLOWED_USERS` | Comma-separated E.164 phone numbers allowed to chat |
 | `SMS_ALLOW_ALL_USERS` | Allow all SMS senders without an allowlist |
@@ -534,6 +534,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_ACCEPT_HOOKS` | Auto-approve any unseen shell hooks declared in `config.yaml` without a TTY prompt. Equivalent to `--accept-hooks` or `hooks_auto_accept: true`. |
 | `HERMES_IGNORE_USER_CONFIG` | Skip `~/.hermes/config.yaml` and use built-in defaults (credentials in `.env` still load). Equivalent to `--ignore-user-config`. |
 | `HERMES_IGNORE_RULES` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, memory, and preloaded skills. Equivalent to `--ignore-rules`. |
+| `HERMES_SAFE_MODE` | Troubleshooting mode: disable ALL customizations — skips plugin discovery, MCP server loading, and shell-hook registration. Set automatically by `--safe-mode` (which also sets the two flags above). |
 | `HERMES_TOOL_PROGRESS` | Deprecated compatibility variable for tool progress display. Prefer `display.tool_progress` in `config.yaml`. |
 | `HERMES_TOOL_PROGRESS_MODE` | Deprecated compatibility variable for tool progress mode. Prefer `display.tool_progress` in `config.yaml`. |
 | `HERMES_HUMAN_DELAY_MODE` | Response pacing: `off`/`natural`/`custom` |

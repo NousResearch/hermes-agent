@@ -259,6 +259,15 @@ class TestDetectProviderForModel:
         """Models belonging to the current provider should not trigger a switch."""
         assert detect_provider_for_model("gpt-5.3-codex", "openai-codex") is None
 
+    def test_nvidia_bare_glm_stays_on_nim_with_canonical_identifier(self):
+        assert detect_provider_for_model("glm-5.2", "nvidia") == (
+            "nvidia",
+            "z-ai/glm-5.2",
+        )
+
+    def test_nvidia_qualified_glm_stays_on_current_provider(self):
+        assert detect_provider_for_model("z-ai/glm-5.2", "nvidia") is None
+
     def test_short_alias_resolves_to_static_model(self):
         """Short aliases (e.g. sonnet) should resolve without network lookups."""
         with patch(

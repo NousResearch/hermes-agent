@@ -2004,6 +2004,14 @@ def detect_provider_for_model(
     if not name:
         return None
 
+    normalized_current = normalize_provider(current_provider)
+    if normalized_current == "nvidia":
+        from hermes_cli.model_normalize import normalize_model_for_provider
+
+        canonical = normalize_model_for_provider(name, normalized_current)
+        if canonical != name:
+            return normalized_current, canonical
+
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
         return static_match

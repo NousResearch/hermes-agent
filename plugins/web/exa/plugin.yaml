@@ -1,0 +1,7 @@
+name: web-exa
+version: 1.0.0
+description: "Exa web search and content extraction. Requires EXA_API_KEY — sign up at https://exa.ai."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - exa

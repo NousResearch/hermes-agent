@@ -27,6 +27,11 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
+# ponytail: helper for tool-search deferred-tool awareness in guidance gates.
+# Falls back to valid_tool_names when available_tool_names isn't set (pre-patch).
+def _r_available_tool_names(agent: Any) -> set:
+    return getattr(agent, "available_tool_names", None) or getattr(agent, "valid_tool_names", set())
+
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
@@ -218,11 +223,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
-    if "memory" in agent.valid_tool_names:
+    if "memory" in _r_available_tool_names(agent):
         tool_guidance.append(MEMORY_GUIDANCE)
-    if "session_search" in agent.valid_tool_names:
+    if "session_search" in _r_available_tool_names(agent):
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
-    if "skill_manage" in agent.valid_tool_names:
+    if "skill_manage" in _r_available_tool_names(agent):
         tool_guidance.append(SKILLS_GUIDANCE)
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
@@ -231,7 +236,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
     if _kanban_guidance:
         tool_guidance.append(_kanban_guidance)
-    elif _kanban_guidance is None and "kanban_show" in agent.valid_tool_names:
+    elif _kanban_guidance is None and "kanban_show" in _r_available_tool_names(agent):
         # Fallback for code paths that bypass agent_init (rare).
         tool_guidance.append(KANBAN_GUIDANCE)
     if tool_guidance:
@@ -246,11 +251,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # tool_guidance because the content is multi-paragraph. The guidance is
     # rendered for the host platform so Windows/Linux hosts don't see
     # macOS-only wording (Mac, Space, cmd+s).
-    if "computer_use" in agent.valid_tool_names:
+    if "computer_use" in _r_available_tool_names(agent):
         from agent.prompt_builder import computer_use_guidance
         stable_parts.append(computer_use_guidance())
 
-    nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
+    nous_subscription_prompt = _r.build_nous_subscription_prompt(_r_available_tool_names(agent))
     if nous_subscription_prompt:
         stable_parts.append(nous_subscription_prompt)
     # Tool-use enforcement: tells the model to actually call tools instead

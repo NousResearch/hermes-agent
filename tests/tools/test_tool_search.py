@@ -45,6 +45,8 @@ class TestConfigParsing:
         cfg = ToolSearchConfig.from_raw(None)
         assert cfg.enabled == "auto"
         assert cfg.threshold_pct == 10.0
+        assert cfg.auto_token_threshold == 8_000
+        assert cfg.defer_core_tools is False  # conservative default: MCP-only
 
     def test_bool_true_maps_to_auto(self):
         from tools.tool_search import ToolSearchConfig
@@ -84,22 +86,55 @@ class TestConfigParsing:
 
 
 # ---------------------------------------------------------------------------
-# Classification — the hard invariant: core tools NEVER defer.
+# Classification — the hard invariant: deferral is explicit and scoped.
 # ---------------------------------------------------------------------------
 
 
 class TestClassification:
-    def test_core_tools_never_defer(self):
-        """The critical invariant from the OpenClaw report."""
-        from tools.tool_search import is_deferrable_tool_name
-        # Sample of core tools from _HERMES_CORE_TOOLS.
-        for core_name in ["terminal", "read_file", "write_file", "patch",
-                          "search_files", "todo", "memory", "browser_navigate",
-                          "web_search", "session_search", "clarify",
-                          "execute_code", "delegate_task", "send_message"]:
-            assert not is_deferrable_tool_name(core_name), (
-                f"Core tool '{core_name}' must NEVER be deferrable"
+    def test_only_allowlisted_core_tools_defer(self):
+        """Core deferral is allowlist-based, never an all-core blanket."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        cfg = ToolSearchConfig.from_raw({"defer_core_tools": True})
+
+        for core_name in ["terminal", "patch", "memory", "browser_navigate",
+                          "session_search", "execute_code",
+                          "delegate_task"]:
+            assert is_deferrable_tool_name(core_name, config=cfg), (
+                f"Verbose core tool {core_name!r} should be eligible for deferral"
             )
+
+        for core_name in ["read_file", "write_file", "search_files", "todo",
+                          "web_search", "web_extract", "process", "clarify"]:
+            assert not is_deferrable_tool_name(core_name, config=cfg), (
+                f"Foundational core tool {core_name!r} should stay direct"
+            )
+
+    def test_core_deferral_can_be_disabled(self):
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        cfg = ToolSearchConfig.from_raw({"defer_core_tools": False})
+        assert not is_deferrable_tool_name("terminal", config=cfg)
+
+    def test_core_deferral_disabled_by_default(self):
+        """Conservative default: auto mode defers only MCP, not core tools."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        cfg = ToolSearchConfig.from_raw(None)  # default config
+        assert cfg.defer_core_tools is False
+        # Core tools should NOT be deferrable with default config
+        assert not is_deferrable_tool_name("terminal", config=cfg)
+        assert not is_deferrable_tool_name("memory", config=cfg)
+
+    def test_per_toolset_deferral_config(self):
+        """defer_toolsets config defers all tools in named toolsets."""
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({
+            "defer_toolsets": ["terminal", "browser"],
+        })
+        assert cfg.defer_toolsets == ("terminal", "browser")
+
+    def test_defer_toolsets_empty_by_default(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw(None)
+        assert cfg.defer_toolsets == ()
 
     def test_bridge_tools_never_defer(self):
         from tools.tool_search import is_deferrable_tool_name, BRIDGE_TOOL_NAMES
@@ -151,8 +186,12 @@ class TestThresholdGate:
 
     def test_auto_below_threshold_does_not_activate(self):
         from tools.tool_search import ToolSearchConfig, should_activate
-        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
-        # 5% of 200K = below 10% threshold
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "auto",
+            "threshold_pct": 10,
+            "auto_token_threshold": 50_000,
+        })
+        # 5% of 200K = below the uncapped 10% threshold.
         assert not should_activate(cfg, deferrable_tokens=10_000, context_length=200_000)
 
     def test_auto_at_or_above_threshold_activates(self):
@@ -165,8 +204,17 @@ class TestThresholdGate:
         """Fallback cutoff used when the active model is unknown."""
         from tools.tool_search import ToolSearchConfig, should_activate
         cfg = ToolSearchConfig.from_raw({"enabled": "auto"})
-        assert not should_activate(cfg, deferrable_tokens=10_000, context_length=0)
-        assert should_activate(cfg, deferrable_tokens=25_000, context_length=0)
+        assert not should_activate(cfg, deferrable_tokens=7_000, context_length=0)
+        assert should_activate(cfg, deferrable_tokens=8_000, context_length=0)
+
+    def test_auto_threshold_is_capped_by_token_threshold(self):
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "auto",
+            "threshold_pct": 10,
+            "auto_token_threshold": 8_000,
+        })
+        assert should_activate(cfg, deferrable_tokens=8_000, context_length=200_000)
 
     def test_token_estimate_proportional_to_schema_size(self):
         from tools.tool_search import estimate_tokens_from_schemas
@@ -241,14 +289,60 @@ class TestAssembly:
     def test_no_deferrable_returns_unchanged(self):
         """Pure-core toolset: pass-through, no bridge tools added."""
         from tools.tool_search import assemble_tool_defs, ToolSearchConfig
-        defs = [_td("terminal", "Run shell"), _td("read_file", "Read a file")]
+        defs = [_td("read_file", "Read a file"), _td("write_file", "Write a file")]
         result = assemble_tool_defs(
             defs,
             context_length=200_000,
             config=ToolSearchConfig.from_raw({"enabled": "on"}),
         )
         assert not result.activated
-        assert {t["function"]["name"] for t in result.tool_defs} == {"terminal", "read_file"}
+        assert {t["function"]["name"] for t in result.tool_defs} == {"read_file", "write_file"}
+
+    def test_verbose_core_tools_defer_when_gate_activates(self):
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        defs = [
+            _td("read_file", "Read a file"),
+            _td("terminal", "Run shell commands " * 200),
+            _td("memory", "Persistent memory " * 200),
+        ]
+        result = assemble_tool_defs(
+            defs,
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({
+                "enabled": "on",
+                "defer_core_tools": True,
+            }),
+        )
+        assert result.activated
+        names = {t["function"]["name"] for t in result.tool_defs}
+        assert "read_file" in names
+        assert "terminal" not in names
+        assert "memory" not in names
+        assert {"tool_search", "tool_describe", "tool_call"}.issubset(names)
+
+    def test_hot_tools_promotion_keeps_tool_direct(self):
+        """Hot-tools promotion: a deferred tool in the hot set stays direct."""
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        defs = [
+            _td("read_file", "Read a file"),
+            _td("terminal", "Run shell commands " * 200),
+            _td("memory", "Persistent memory " * 200),
+        ]
+        result = assemble_tool_defs(
+            defs,
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({
+                "enabled": "on",
+                "defer_core_tools": True,
+            }),
+            hot_tools=frozenset({"terminal"}),
+        )
+        assert result.activated
+        names = {t["function"]["name"] for t in result.tool_defs}
+        assert "read_file" in names
+        assert "terminal" in names  # hot — stays direct
+        assert "memory" not in names  # still deferred
+        assert {"tool_search", "tool_describe", "tool_call"}.issubset(names)
 
     def test_below_threshold_returns_unchanged(self):
         """Tiny deferrable surface: don't bother."""
@@ -296,11 +390,11 @@ class TestBridgeDispatch:
         assert "error" in json.loads(result)
 
     def test_tool_describe_rejects_non_deferrable(self):
-        """If the model asks to describe a core tool, refuse — it's already
+        """If the model asks to describe a direct tool, refuse — it's already
         in the visible list."""
         from tools.tool_search import dispatch_tool_describe
         result = dispatch_tool_describe(
-            {"name": "terminal"}, current_tool_defs=[_td("terminal", "Run shell")],
+            {"name": "read_file"}, current_tool_defs=[_td("read_file", "Read a file")],
         )
         assert "error" in json.loads(result)
 
@@ -372,45 +466,37 @@ class TestRegression_OpenClawCron84141:
     resulted in the agent receiving only ``sessions_send`` — the catalog
     builder silently dropped the requested core tool.
 
-    Our defense: core tools are NEVER deferred. This test exercises the
-    full assembly pipeline with a mixed core+MCP toolset and asserts that
-    every core tool survives.
+    Our defense: unknown tools and direct-core tools are never deferred or
+    dropped. This test exercises the full assembly pipeline and asserts that
+    the direct core substrate survives.
     """
 
-    def test_core_tool_survives_alongside_many_mcp_tools(self):
+    def test_direct_core_tool_survives_alongside_many_mcp_tools(self):
         from tools.tool_search import (
-            assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES,
+            assemble_tool_defs, ToolSearchConfig,
             classify_tools,
         )
-        # 1 core tool + 50 unknown/MCP-shaped tools (deferrable).
-        defs = [_td("terminal", "Run shell commands")]
-        # Pad with fake "deferrable" tools — without registry registration,
-        # classify_tools puts them in 'visible'. So instead, we just verify
-        # the core-tool side: terminal stays in visible regardless.
+        defs = [_td("read_file", "Read files")]
         visible, deferrable = classify_tools(defs)
         assert any(
-            (td.get("function") or {}).get("name") == "terminal"
+            (td.get("function") or {}).get("name") == "read_file"
             for td in visible
-        ), "Core tool 'terminal' was wrongly classified as deferrable"
+        ), "Direct core tool 'read_file' was wrongly classified as deferrable"
 
-        # Now force activation and check the resulting tool-defs list.
         result = assemble_tool_defs(
             defs,
             context_length=200_000,
             config=ToolSearchConfig.from_raw({"enabled": "on"}),
         )
         names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
-        # terminal must be present; bridges are only added if there are
-        # deferrable tools to put behind them.
-        assert "terminal" in names
+        assert "read_file" in names
 
-    def test_unwrap_rejects_core_tool_attempt(self):
-        """Even if the model tries to invoke a core tool through tool_call,
-        we reject the call and tell the model to use it directly."""
+    def test_unwrap_rejects_direct_core_tool_attempt(self):
+        """Direct core tools should still be called directly."""
         from tools.tool_search import resolve_underlying_call
         _, _, err = resolve_underlying_call({
-            "name": "terminal",
-            "arguments": {"command": "echo hi"},
+            "name": "read_file",
+            "arguments": {"path": "README.md"},
         })
         assert err is not None
         assert "not a deferrable" in err
@@ -533,6 +619,5 @@ class TestRegression_ToolsetScoping:
         )
         names = scoped_deferrable_names(defs)
         assert "mcp_helper_op" in names
-        # core tools are never deferrable
-        assert "terminal" not in names
+        assert "read_file" not in names
 

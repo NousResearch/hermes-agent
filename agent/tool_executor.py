@@ -263,6 +263,13 @@ def _tool_search_scoped_names(agent) -> frozenset:
     return names
 
 
+def _available_tool_names_for_dispatch(agent) -> list[str] | None:
+    names = getattr(agent, "available_tool_names", None)
+    if not names:
+        names = getattr(agent, "valid_tool_names", None)
+    return list(names) if names else None
+
+
 def _apply_tool_request_middleware_for_agent(
     agent,
     *,
@@ -1478,7 +1485,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     session_id=agent.session_id or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                    enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                    enabled_tools=_available_tool_names_for_dispatch(agent),
                     skip_pre_tool_call_hook=True,
                     skip_tool_request_middleware=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
@@ -1520,7 +1527,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     session_id=agent.session_id or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                    enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                    enabled_tools=_available_tool_names_for_dispatch(agent),
                     skip_pre_tool_call_hook=True,
                     skip_tool_request_middleware=True,
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),

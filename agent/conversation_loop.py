@@ -4456,10 +4456,47 @@ def run_conversation(
                 # Repair mismatched tool names before validating
                 for tc in assistant_message.tool_calls:
                     if tc.function.name not in agent.valid_tool_names:
+                        # ponytail: if the tool is deferred (in available_tool_names
+                        # but not valid_tool_names), transparently rewrite the
+                        # direct call into a tool_call bridge invocation so the
+                        # model doesn't get a "Unknown tool" error for tools it
+                        # legitimately knows by name but are currently deferred.
+                        # Invariant: tool_call bridge is always in valid_tool_names
+                        # when assembly activates (it's added by bridge_tool_schemas).
+                        _avail = getattr(agent, "available_tool_names", None)
+
+                        def _route_to_bridge(_tc, _target_name):
+                            """Rewrite a direct tool call into a tool_call bridge invocation."""
+                            _raw_args = _tc.function.arguments
+                            # Don't eagerly parse — let resolve_underlying_call
+                            # in the bridge handle malformed JSON gracefully.
+                            try:
+                                _inner = json.loads(_raw_args) if isinstance(_raw_args, str) else _raw_args
+                            except (json.JSONDecodeError, TypeError):
+                                _inner = _raw_args  # bridge will report bad JSON to model
+                            _tc.function.name = "tool_call"
+                            _tc.function.arguments = json.dumps({
+                                "name": _target_name,
+                                "arguments": _inner,
+                            })
+                            if not agent.quiet_mode:
+                                agent._vprint(f"{agent.log_prefix}🔧 Auto-routed deferred tool: '{_target_name}' -> tool_call bridge")
+
+                        # 1. Exact match in deferred set → bridge directly
+                        if _avail and tc.function.name in _avail:
+                            _route_to_bridge(tc, tc.function.name)
+                            continue
+                        # 2. Try repair — repair_tool_call checks available_tool_names
+                        #    (the superset) so it can resolve near-miss deferred tools
                         repaired = agent._repair_tool_call(tc.function.name)
                         if repaired:
-                            print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
-                            tc.function.name = repaired
+                            if repaired not in agent.valid_tool_names and _avail and repaired in _avail:
+                                # Repaired name is a deferred tool → bridge it
+                                _route_to_bridge(tc, repaired)
+                                continue
+                            elif repaired in agent.valid_tool_names:
+                                print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                                tc.function.name = repaired
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
                     if tc.function.name not in agent.valid_tool_names

@@ -306,7 +306,7 @@ def build_turn_context(
     # Track memory nudge trigger (turn-based, checked here).
     should_review_memory = False
     if (agent._memory_nudge_interval > 0
-            and "memory" in agent.valid_tool_names
+            and "memory" in (getattr(agent, "available_tool_names", None) or agent.valid_tool_names)
             and agent._memory_store):
         agent._turns_since_memory += 1
         if agent._turns_since_memory >= agent._memory_nudge_interval:

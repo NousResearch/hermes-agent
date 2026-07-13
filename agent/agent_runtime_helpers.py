@@ -2340,7 +2340,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 session_id=agent.session_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                enabled_tools=list(
+                    getattr(agent, "available_tool_names", None)
+                    or getattr(agent, "valid_tool_names", None)
+                    or []
+                ) or None,
                 skip_pre_tool_call_hook=True,
                 skip_tool_request_middleware=True,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
@@ -2391,20 +2395,19 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     if not tool_name:
         return None
 
+    # ponytail: include deferred tools in the candidate set for repair.
+    # But prefer valid (direct) matches first so a typo for a direct tool
+    # doesn't accidentally match a deferred tool with a higher fuzzy score.
+    _avail = getattr(agent, "available_tool_names", None) or set()
+    _valid = getattr(agent, "valid_tool_names", None) or set()
+
     # VolcEngine api/plan workaround (issue #33007): the endpoint's
     # protocol-translation layer occasionally leaks raw XML attribute
     # fragments into tool_use.name, e.g.
     #   `terminal" parameter="command" string="true`
-    #   `execute_code" parameter="code" string="true`
-    #   `session_search" parameter="session_id" string="true`
     # We trim at the first unambiguous XML/quote character so the rest
     # of the repair pipeline (lowercase / snake_case / fuzzy match)
     # can resolve the cleaned name to a real tool.
-    #
-    # Crucially we DO NOT split on whitespace: legitimate inputs like
-    # "write file" must keep flowing through ``_norm`` -> ``write_file``
-    # (covered by test_space_to_underscore in
-    # tests/run_agent/test_repair_tool_call_name.py).
     for _xml_sep in ('"', "'", "<", ">"):
         _idx = tool_name.find(_xml_sep)
         if _idx > 0:
@@ -2425,12 +2428,16 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
                 return s[: -len(suffix)].rstrip("_-")
         return None
 
-    # Cheap fast-paths first — these cover the common case.
+    # Cheap fast-paths first — check direct tools, then deferred.
     lowered = tool_name.lower()
-    if lowered in agent.valid_tool_names:
+    if lowered in _valid:
         return lowered
     normalized = _norm(tool_name)
-    if normalized in agent.valid_tool_names:
+    if normalized in _valid:
+        return normalized
+    if lowered in _avail:
+        return lowered
+    if normalized in _avail:
         return normalized
 
     # Build the full candidate set for class-like emissions.
@@ -2446,14 +2453,22 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
                 extra.add(_camel_snake(stripped))
         cands |= extra
 
+    # Check direct tools first, then deferred.
     for c in cands:
-        if c and c in agent.valid_tool_names:
+        if c and c in _valid:
+            return c
+    for c in cands:
+        if c and c in _avail:
             return c
 
-    # Fuzzy match as last resort.
-    matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
+    # Fuzzy match as last resort — prefer direct, then deferred.
+    matches = get_close_matches(lowered, _valid or _avail, n=1, cutoff=0.7)
     if matches:
         return matches[0]
+    if _avail:
+        matches = get_close_matches(lowered, _avail, n=1, cutoff=0.7)
+        if matches:
+            return matches[0]
 
     return None
 

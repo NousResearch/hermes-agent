@@ -276,6 +276,14 @@ def _clear_tool_defs_cache() -> None:
     _tool_defs_cache.clear()
 
 
+# ponytail: module-level hot-tools set, written when tool_call bridge
+# dispatches a deferred tool, read by get_tool_definitions → assemble_tool_defs.
+# Included in _tool_defs_cache key so promotion actually takes effect.
+# TODO: not gateway-safe — module-global shared across concurrent sessions.
+# For proper multi-session safety, move to agent-scoped state + cache key.
+_session_hot_tools: set = set()
+
+
 def get_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -323,6 +331,7 @@ def get_tool_definitions(
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
+            frozenset(_session_hot_tools),  # ponytail: hot-tools promotion
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -553,6 +562,7 @@ def _compute_tool_definitions(
                 filtered_tools,
                 context_length=context_length,
                 config=ts_cfg,
+                hot_tools=frozenset(_session_hot_tools),
             )
             if assembly.activated and not quiet_mode:
                 print(
@@ -1105,10 +1115,16 @@ def handle_function_call(
             return _ts_mod.dispatch_tool_search(function_args or {},
                                                 current_tool_defs=current_defs)
         if function_name == _ts_mod.TOOL_DESCRIBE_NAME:
+            _ts_cfg = _ts_mod.load_config()
             return _ts_mod.dispatch_tool_describe(function_args or {},
-                                                  current_tool_defs=current_defs)
+                                                  current_tool_defs=current_defs,
+                                                  config=_ts_cfg)
         if function_name == _ts_mod.TOOL_CALL_NAME:
-            underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
+            _ts_cfg = _ts_mod.load_config()
+            underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(
+                function_args or {},
+                config=_ts_cfg,
+            )
             if err or not underlying_name:
                 return json.dumps({"error": err or "tool_call could not be resolved"},
                                   ensure_ascii=False)
@@ -1118,7 +1134,10 @@ def handle_function_call(
             # additionally rejects any tool the session was not granted, so a
             # restricted session can never invoke an out-of-scope tool through
             # the bridge even if the catalog scoping above regressed.
-            _scoped_deferrable = _ts_mod.scoped_deferrable_names(current_defs)
+            _scoped_deferrable = _ts_mod.scoped_deferrable_names(
+                current_defs,
+                config=_ts_cfg,
+            )
             if underlying_name not in _scoped_deferrable:
                 return json.dumps({
                     "error": (
@@ -1126,6 +1145,10 @@ def handle_function_call(
                         "Use tool_search to find tools you can call."
                     ),
                 }, ensure_ascii=False)
+            # Hot-tools promotion: record this tool as hot so the next
+            # assembly re-inflates it into the direct array. Only grows.
+            global _session_hot_tools
+            _session_hot_tools.add(underlying_name)
             # Recurse with the underlying tool. All hooks fire against the
             # real tool name. The bridge is invisible to hooks by design.
             return handle_function_call(

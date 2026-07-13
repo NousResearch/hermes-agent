@@ -329,6 +329,54 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+def _clarify_button_style(label: str) -> Optional[str]:
+    """Return the Bot API semantic style implied by a choice prefix."""
+    if label.startswith("✅"):
+        return "success"
+    if label.startswith("❌"):
+        return "danger"
+    if label.startswith("✏️") or label.startswith("✏"):
+        return "primary"
+    return None
+
+
+_CLARIFY_BUTTON_TEXT_LIMIT = 64
+
+
+def _clarify_button(
+    label: str,
+    *,
+    callback_data: str,
+    style: Optional[str] = None,
+) -> Any:
+    """Build a clarify button with the best style transport PTB supports."""
+    kwargs: Dict[str, Any] = {"callback_data": callback_data}
+    if style is not None:
+        supports_style = hasattr(InlineKeyboardButton, "style")
+        supports_api_kwargs = False
+        try:
+            parameters = inspect.signature(InlineKeyboardButton).parameters
+            supports_style = supports_style or "style" in parameters
+            supports_api_kwargs = "api_kwargs" in parameters
+        except (TypeError, ValueError):
+            pass
+        if supports_style:
+            kwargs["style"] = style
+        elif supports_api_kwargs:
+            kwargs["api_kwargs"] = {"style": style}
+
+    try:
+        return InlineKeyboardButton(label, **kwargs)
+    except TypeError:
+        # Some wrappers expose an imprecise signature.  Retry without the
+        # optional style transport so clarify remains usable.
+        if "style" not in kwargs and "api_kwargs" not in kwargs:
+            raise
+        kwargs.pop("style", None)
+        kwargs.pop("api_kwargs", None)
+        return InlineKeyboardButton(label, **kwargs)
+
+
 _CHUNK_INDICATOR_ON_FENCE_RE = re.compile(
     r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$'
 )
@@ -1086,6 +1134,27 @@ class TelegramAdapter(BasePlatformAdapter):
             return isinstance(error, BadRequest)
         except ImportError:
             return False
+
+    @classmethod
+    def _is_unsupported_button_style_error(cls, error: Exception) -> bool:
+        """Return whether Bot API rejected an unknown button style field."""
+        if not cls._is_bad_request_error(error):
+            return False
+        message = str(error).casefold()
+        return bool(
+            re.search(
+                r"(?:"
+                r"\b(?:unknown|unsupported|unrecogni[sz]ed|unexpected)\b"
+                r"[^.\n]{0,24}\bstyle\b"
+                r"|\bstyle\b[^.\n]{0,24}"
+                r"(?:\b(?:unknown|unsupported|unrecogni[sz]ed|unexpected)\b"
+                r"|\bnot (?:supported|recognized|recognised|expected)\b)"
+                r"|\b(?:can't|cannot|could not) find\b[^.\n]{0,32}\bstyle\b"
+                r"|\bno such\b[^.\n]{0,24}\bstyle\b"
+                r")",
+                message,
+            )
+        )
 
     @classmethod
     def _should_retry_without_dm_topic_reply_anchor(
@@ -4707,53 +4776,81 @@ class TelegramAdapter(BasePlatformAdapter):
         "Other" button flips the entry into text-capture mode so the next
         message becomes the response.
 
-        Open-ended mode (``choices`` empty): renders the question as plain
-        text — no buttons.  The next message in the session is captured by
-        the gateway's text-intercept and resolves the clarify.
+        Open-ended mode (``choices`` empty): renders the question through the
+        standard Telegram MarkdownV2 pipeline with no buttons.  The next
+        message in the session is captured by the gateway's text-intercept and
+        resolves the clarify.
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
         try:
-            text = f"❓ {_html.escape(question)}"
+            text = f"❓ {question}"
             thread_id = self._metadata_thread_id(metadata)
 
             if choices:
-                # Render full option text in the message body so mobile
-                # users can read long choices that would be truncated in
-                # inline button labels.  Buttons keep short numeric labels
-                # (1, 2, …, Other) to avoid Telegram truncation.
+                # Render full option text in the message body so mobile users
+                # can still read choices whose button labels exceed Telegram's
+                # 64-character limit.
                 option_lines = "\n".join(
-                    f"{i + 1}. {_html.escape(str(c))}"
-                    for i, c in enumerate(choices)
+                    f"{i + 1}. {str(c)}" for i, c in enumerate(choices)
                 )
                 text += f"\n\n{option_lines}"
 
+            raw_text = text
+            formatted_text = self.format_message(raw_text)
+            use_markdown = utf16_len(formatted_text) <= self.MAX_MESSAGE_LENGTH
+            if use_markdown:
+                chunks = [formatted_text]
+            else:
+                # Escaping can make an otherwise valid card exceed Telegram's
+                # limit. Preserve the complete readable card as plain-text
+                # chunks instead of dropping everything after the first one.
+                chunks = self.truncate_message(
+                    raw_text,
+                    self.MAX_MESSAGE_LENGTH,
+                    len_fn=utf16_len,
+                )
+
             kwargs: Dict[str, Any] = {
                 "chat_id": normalize_telegram_chat_id(chat_id),
-                "text": text,
-                "parse_mode": ParseMode.HTML,
                 **self._link_preview_kwargs(),
             }
 
+            button_specs: list[tuple[str, str, Optional[str]]] = []
             if choices:
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
                 # short.
-                rows = []
-                for idx in range(len(choices)):
-                    rows.append([
-                        InlineKeyboardButton(
-                            str(idx + 1),
-                            callback_data=f"cl:{clarify_id}:{idx}",
-                        )
-                    ])
-                rows.append([
-                    InlineKeyboardButton(
-                        "✏️ Other (type answer)",
-                        callback_data=f"cl:{clarify_id}:other",
+                for idx, choice in enumerate(choices):
+                    choice_text = str(choice)
+                    label = (
+                        choice_text
+                        if choice_text and utf16_len(choice_text) <= _CLARIFY_BUTTON_TEXT_LIMIT
+                        else str(idx + 1)
                     )
-                ])
-                kwargs["reply_markup"] = InlineKeyboardMarkup(rows)
+                    button_specs.append((
+                        label,
+                        f"cl:{clarify_id}:{idx}",
+                        _clarify_button_style(choice_text),
+                    ))
+                button_specs.append((
+                    "✏️ Other (type answer)",
+                    f"cl:{clarify_id}:other",
+                    "primary",
+                ))
+                rows = [
+                    [
+                        _clarify_button(
+                            label,
+                            callback_data=callback_data,
+                            style=style,
+                        )
+                    ]
+                    for label, callback_data, style in button_specs
+                ]
+                styled_markup = InlineKeyboardMarkup(rows)
+            else:
+                styled_markup = None
 
             reply_to_id = self._reply_to_message_id_for_send(None, metadata)
             kwargs["reply_to_message_id"] = reply_to_id
@@ -4766,7 +4863,72 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             )
 
-            msg = await self._send_message_with_thread_fallback(**kwargs)
+            unstyled_markup = None
+            msg = None
+            for index, chunk in enumerate(chunks):
+                chunk_uses_markdown = use_markdown
+                chunk_uses_styles = bool(
+                    button_specs and index == len(chunks) - 1
+                )
+                while True:
+                    send_kwargs = dict(kwargs)
+                    send_kwargs["text"] = (
+                        chunk if chunk_uses_markdown or not use_markdown
+                        else _strip_mdv2(chunk)
+                    )
+                    if chunk_uses_markdown:
+                        send_kwargs["parse_mode"] = getattr(
+                            ParseMode, "MARKDOWN_V2", "MarkdownV2"
+                        )
+                    if button_specs and index == len(chunks) - 1:
+                        if chunk_uses_styles:
+                            send_kwargs["reply_markup"] = styled_markup
+                        else:
+                            if unstyled_markup is None:
+                                unstyled_markup = InlineKeyboardMarkup([
+                                    [
+                                        _clarify_button(
+                                            label,
+                                            callback_data=callback_data,
+                                        )
+                                    ]
+                                    for label, callback_data, _style in button_specs
+                                ])
+                            send_kwargs["reply_markup"] = unstyled_markup
+
+                    try:
+                        msg = await self._send_message_with_thread_fallback(
+                            **send_kwargs
+                        )
+                        break
+                    except Exception as send_error:
+                        if (
+                            chunk_uses_markdown
+                            and classify_send_error(send_error) == "bad_format"
+                        ):
+                            logger.warning(
+                                "[%s] Clarify MarkdownV2 parse failed; "
+                                "retrying as plain text: %s",
+                                self.name,
+                                send_error,
+                            )
+                            chunk_uses_markdown = False
+                            continue
+                        if (
+                            chunk_uses_styles
+                            and self._is_unsupported_button_style_error(send_error)
+                        ):
+                            logger.info(
+                                "[%s] Bot API rejected clarify button styles; "
+                                "retrying without styles",
+                                self.name,
+                            )
+                            chunk_uses_styles = False
+                            continue
+                        raise
+
+            if msg is None:
+                raise RuntimeError("Clarify card produced no message chunks")
             self._clarify_state[clarify_id] = session_key
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:

@@ -18537,6 +18537,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         result = fut.result(timeout=15)
                         send_ok = bool(getattr(result, "success", False))
                     except Exception as exc:
+                        fut.cancel()
                         logger.warning("Clarify send failed: %s", exc)
                         send_ok = False
 

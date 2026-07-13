@@ -39,6 +39,7 @@ def _ensure_telegram_mock():
     mod.error.NetworkError = type("NetworkError", (OSError,), {})
     mod.error.TimedOut = type("TimedOut", (OSError,), {})
     mod.error.BadRequest = type("BadRequest", (Exception,), {})
+    mod.error.Forbidden = type("Forbidden", (Exception,), {})
 
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, mod)
@@ -47,6 +48,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
+from plugins.platforms.telegram import adapter as telegram_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import PlatformConfig
 
@@ -97,11 +99,12 @@ class TestTelegramSendClarify:
 
         kwargs = adapter._bot.send_message.call_args[1]
         assert kwargs["chat_id"] == 12345
+        assert kwargs["parse_mode"] == telegram_adapter.ParseMode.MARKDOWN_V2
         assert "Which option?" in kwargs["text"]
         # Full option text rendered in the message body (not just buttons)
-        assert "1. alpha" in kwargs["text"]
-        assert "2. beta" in kwargs["text"]
-        assert "3. gamma" in kwargs["text"]
+        assert "1\\. alpha" in kwargs["text"]
+        assert "2\\. beta" in kwargs["text"]
+        assert "3\\. gamma" in kwargs["text"]
         # InlineKeyboardMarkup with N+1 buttons (3 choices + Other)
         markup = kwargs["reply_markup"]
         assert markup is not None
@@ -129,6 +132,7 @@ class TestTelegramSendClarify:
         kwargs = adapter._bot.send_message.call_args[1]
         # No reply_markup means no buttons — open-ended path
         assert "reply_markup" not in kwargs
+        assert kwargs["parse_mode"] == telegram_adapter.ParseMode.MARKDOWN_V2
         assert "What is your name?" in kwargs["text"]
         assert adapter._clarify_state["cid2"] == "sk2"
 
@@ -146,53 +150,581 @@ class TestTelegramSendClarify:
         assert result.success is False
 
     @pytest.mark.asyncio
-    async def test_long_choice_rendered_in_body_not_truncated(self):
-        """Long choice text appears in full in the message body;
-        button labels stay short numeric (1, 2, …)."""
+    async def test_choice_labels_use_full_text_with_compact_oversize_fallback(
+        self,
+        monkeypatch,
+    ):
+        """Readable choices label buttons directly unless the label is oversized."""
         adapter = _make_adapter()
         mock_msg = MagicMock()
         mock_msg.message_id = 102
         adapter._bot.send_message = AsyncMock(return_value=mock_msg)
 
-        long_choice = "x" * 200
+        buttons = []
+
+        class _RecordingButton:
+            def __init__(self, text, *, callback_data, style=None):
+                self.text = text
+                self.callback_data = callback_data
+                self.style = style
+                buttons.append(self)
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _RecordingButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", lambda rows: rows)
+
+        short_choice = "Use the existing configuration"
+        boundary_choice = "y" * 64
+        long_choice = "x" * 65
         result = await adapter.send_clarify(
             chat_id="12345",
             question="?",
-            choices=[long_choice],
+            choices=[short_choice, boundary_choice, long_choice, ""],
             clarify_id="cid4",
             session_key="sk4",
         )
         assert result.success is True
         kwargs = adapter._bot.send_message.call_args[1]
-        # The full long choice text appears in the message body
+        assert short_choice in kwargs["text"]
+        assert boundary_choice in kwargs["text"]
         assert long_choice in kwargs["text"]
-        # The button label should be short ("1"), not the long choice
-        # (we can't inspect mock button labels directly, but the send
-        # succeeded — old truncation code could raise on edge cases)
+        assert [button.text for button in buttons] == [
+            short_choice,
+            boundary_choice,
+            "3",
+            "4",
+            "✏️ Other (type answer)",
+        ]
 
     @pytest.mark.asyncio
-    async def test_html_escapes_question(self):
+    async def test_choice_label_limit_uses_utf16_units_for_astral_emoji(
+        self,
+        monkeypatch,
+    ):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 108
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        class _RecordingButton:
+            def __init__(self, text, *, callback_data, style=None):
+                self.text = text
+                self.callback_data = callback_data
+                self.style = style
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _RecordingButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", lambda rows: rows)
+
+        boundary_choice = "😀" * 32
+        over_limit_choice = f"{boundary_choice}a"
+        assert telegram_adapter.utf16_len(boundary_choice) == 64
+        assert telegram_adapter.utf16_len(over_limit_choice) == 65
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Choose an option",
+            choices=[boundary_choice, over_limit_choice],
+            clarify_id="cid-utf16-label",
+            session_key="sk-utf16-label",
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        buttons = [row[0] for row in kwargs["reply_markup"]]
+        assert [(button.text, button.callback_data) for button in buttons] == [
+            (boundary_choice, "cl:cid-utf16-label:0"),
+            ("2", "cl:cid-utf16-label:1"),
+            ("✏️ Other (type answer)", "cl:cid-utf16-label:other"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_choice_button_styles_use_native_style_when_supported(
+        self,
+        monkeypatch,
+    ):
         adapter = _make_adapter()
         mock_msg = MagicMock()
         mock_msg.message_id = 103
         adapter._bot.send_message = AsyncMock(return_value=mock_msg)
 
-        await adapter.send_clarify(
+        buttons = []
+
+        class _StyleAwareButton:
+            def __init__(self, text, *, callback_data, style=None):
+                self.text = text
+                self.callback_data = callback_data
+                self.style = style
+                buttons.append(self)
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _StyleAwareButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", lambda rows: rows)
+
+        choices = [
+            "✅ Apply the change",
+            "❌ Cancel the change",
+            "✏️ Revise the change",
+            "Keep reviewing",
+        ]
+        result = await adapter.send_clarify(
             chat_id="12345",
-            question="<script>alert(1)</script>",
-            choices=["x"],
-            clarify_id="cid5",
-            session_key="sk5",
+            question="Choose an action",
+            choices=choices,
+            clarify_id="cid-style",
+            session_key="sk-style",
         )
+
+        assert result.success is True
+        assert [(button.text, button.style) for button in buttons] == [
+            (choices[0], "success"),
+            (choices[1], "danger"),
+            (choices[2], "primary"),
+            (choices[3], None),
+            ("✏️ Other (type answer)", "primary"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_choice_button_styles_use_api_kwargs_without_native_style(
+        self,
+        monkeypatch,
+    ):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 104
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        buttons = []
+
+        class _ApiKwargsButton:
+            def __init__(self, text, *, callback_data, api_kwargs=None):
+                self.text = text
+                self.callback_data = callback_data
+                self.api_kwargs = api_kwargs
+                buttons.append(self)
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _ApiKwargsButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", lambda rows: rows)
+
+        choices = ["✅ Apply the change", "Keep reviewing"]
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Choose an action",
+            choices=choices,
+            clarify_id="cid-api-kwargs",
+            session_key="sk-api-kwargs",
+        )
+
+        assert result.success is True
+        assert [(button.text, button.api_kwargs) for button in buttons] == [
+            (choices[0], {"style": "success"}),
+            (choices[1], None),
+            ("✏️ Other (type answer)", {"style": "primary"}),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_style_rejection_retries_once_with_equivalent_unstyled_keyboard(
+        self,
+        monkeypatch,
+    ):
+        from telegram.error import BadRequest
+
+        adapter = _make_adapter()
+        attempts = []
+
+        class _ApiKwargsButton:
+            def __init__(self, text, *, callback_data, api_kwargs=None):
+                self.text = text
+                self.callback_data = callback_data
+                self.api_kwargs = api_kwargs
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _ApiKwargsButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", lambda rows: rows)
+
+        async def _send_message(**kwargs):
+            attempts.append(dict(kwargs))
+            if len(attempts) == 1:
+                raise BadRequest('unknown field "style"')
+            mock_msg = MagicMock()
+            mock_msg.message_id = 107
+            return mock_msg
+
+        adapter._bot.send_message = AsyncMock(side_effect=_send_message)
+        choices = ["✅ Apply the change", "Keep reviewing"]
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Choose an action",
+            choices=choices,
+            clarify_id="cid-style-fallback",
+            session_key="sk-style-fallback",
+            metadata={"thread_id": "321"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "107"
+        assert len(attempts) == 2
+        assert {
+            key: value for key, value in attempts[0].items() if key != "reply_markup"
+        } == {key: value for key, value in attempts[1].items() if key != "reply_markup"}
+        assert attempts[0]["message_thread_id"] == 321
+        assert attempts[1]["message_thread_id"] == 321
+
+        first_buttons = [row[0] for row in attempts[0]["reply_markup"]]
+        retry_buttons = [row[0] for row in attempts[1]["reply_markup"]]
+        expected_buttons = [
+            (choices[0], "cl:cid-style-fallback:0"),
+            (choices[1], "cl:cid-style-fallback:1"),
+            ("✏️ Other (type answer)", "cl:cid-style-fallback:other"),
+        ]
+        assert [
+            (button.text, button.callback_data) for button in first_buttons
+        ] == expected_buttons
+        assert [
+            (button.text, button.callback_data) for button in retry_buttons
+        ] == expected_buttons
+        assert [button.api_kwargs for button in first_buttons] == [
+            {"style": "success"},
+            None,
+            {"style": "primary"},
+        ]
+        assert all(button.api_kwargs is None for button in retry_buttons)
+        assert adapter._clarify_state["cid-style-fallback"] == "sk-style-fallback"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("error_name", "message"),
+        [
+            ("BadRequest", "chat not found"),
+            ("NetworkError", "temporary connection failure"),
+            ("Forbidden", "bot is not authorized"),
+        ],
+    )
+    async def test_unrelated_send_failures_do_not_retry(
+        self,
+        monkeypatch,
+        error_name,
+        message,
+    ):
+        from telegram import error as telegram_error
+
+        adapter = _make_adapter()
+
+        class _ApiKwargsButton:
+            def __init__(self, text, *, callback_data, api_kwargs=None):
+                self.text = text
+                self.callback_data = callback_data
+                self.api_kwargs = api_kwargs
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _ApiKwargsButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", lambda rows: rows)
+        error_type = getattr(telegram_error, error_name)
+        adapter._bot.send_message = AsyncMock(side_effect=error_type(message))
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Choose an action",
+            choices=["✅ Apply the change"],
+            clarify_id="cid-no-retry",
+            session_key="sk-no-retry",
+        )
+
+        assert result.success is False
+        assert message in result.error
+        adapter._bot.send_message.assert_awaited_once()
+        assert "cid-no-retry" not in adapter._clarify_state
+
+    @pytest.mark.asyncio
+    async def test_choice_button_styles_fall_back_without_style_support(
+        self,
+        monkeypatch,
+    ):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 105
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        buttons = []
+
+        class _LegacyButton:
+            def __init__(self, text, *, callback_data):
+                self.text = text
+                self.callback_data = callback_data
+                buttons.append(self)
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _LegacyButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", lambda rows: rows)
+
+        choice = "✅ Apply the change"
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Choose an action",
+            choices=[choice],
+            clarify_id="cid-legacy",
+            session_key="sk-legacy",
+        )
+
+        assert result.success is True
+        assert [button.text for button in buttons] == [
+            choice,
+            "✏️ Other (type answer)",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_complete_card_uses_standard_markdownv2_formatting(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 106
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        question = (
+            "**Choose carefully** and *review* `config.yaml` with ||preview||.\n\n"
+            "> Read the [guide](https://example.com/guide) first"
+        )
+        choices = [
+            "✅ **Apply** `safe_mode`",
+            "Keep [reviewing](https://example.com/review)",
+        ]
+        complete_card = f"❓ {question}\n\n" + "\n".join(
+            f"{index + 1}. {choice}" for index, choice in enumerate(choices)
+        )
+        expected_text = adapter.format_message(complete_card)
+
+        with patch.object(
+            adapter,
+            "format_message",
+            wraps=adapter.format_message,
+        ) as format_message:
+            result = await adapter.send_clarify(
+                chat_id="12345",
+                question=question,
+                choices=choices,
+                clarify_id="cid5",
+                session_key="sk5",
+            )
+
+        assert result.success is True
+        format_message.assert_called_once_with(complete_card)
         kwargs = adapter._bot.send_message.call_args[1]
-        # Must NOT contain raw <script> — html.escape should have neutralized
-        assert "<script>" not in kwargs["text"]
-        assert "&lt;script&gt;" in kwargs["text"]
+        assert kwargs["parse_mode"] == telegram_adapter.ParseMode.MARKDOWN_V2
+        assert kwargs["text"] == expected_text
+        assert "*Choose carefully*" in kwargs["text"]
+        assert "_review_" in kwargs["text"]
+        assert "`config.yaml`" in kwargs["text"]
+        assert "||preview||" in kwargs["text"]
+        assert "> Read the [guide](https://example.com/guide) first" in kwargs["text"]
+        assert "1\\. ✅ *Apply* `safe_mode`" in kwargs["text"]
+        assert "2\\. Keep [reviewing](https://example.com/review)" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_markdownv2_expansion_keeps_one_button_prompt_within_limit(
+        self,
+        monkeypatch,
+    ):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 109
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        class _RecordingButton:
+            def __init__(self, text, *, callback_data, style=None):
+                self.text = text
+                self.callback_data = callback_data
+                self.style = style
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _RecordingButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", lambda rows: rows)
+
+        question = "." * 2500
+        choices = ["Keep reviewing"]
+        complete_card = f"❓ {question}\n\n1. {choices[0]}"
+        formatted_card = adapter.format_message(complete_card)
+        assert telegram_adapter.utf16_len(complete_card) < adapter.MAX_MESSAGE_LENGTH
+        assert telegram_adapter.utf16_len(formatted_card) > adapter.MAX_MESSAGE_LENGTH
+
+        with patch.object(
+            adapter,
+            "truncate_message",
+            wraps=adapter.truncate_message,
+        ) as truncate_message:
+            result = await adapter.send_clarify(
+                chat_id="12345",
+                question=question,
+                choices=choices,
+                clarify_id="cid-expanded-card",
+                session_key="sk-expanded-card",
+            )
+
+        assert result.success is True
+        truncate_message.assert_called_once_with(
+            complete_card,
+            adapter.MAX_MESSAGE_LENGTH,
+            len_fn=telegram_adapter.utf16_len,
+        )
+        adapter._bot.send_message.assert_awaited_once()
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert telegram_adapter.utf16_len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert kwargs["text"] == complete_card
+        assert "parse_mode" not in kwargs
+        buttons = [row[0] for row in kwargs["reply_markup"]]
+        assert [(button.text, button.callback_data) for button in buttons] == [
+            (choices[0], "cl:cid-expanded-card:0"),
+            ("✏️ Other (type answer)", "cl:cid-expanded-card:other"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_oversized_raw_card_sends_every_plain_text_chunk_in_order(
+        self,
+        monkeypatch,
+    ):
+        adapter = _make_adapter()
+        sent = []
+
+        class _RecordingButton:
+            def __init__(self, text, *, callback_data, style=None):
+                self.text = text
+                self.callback_data = callback_data
+                self.style = style
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _RecordingButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", lambda rows: rows)
+
+        async def _send_message(**kwargs):
+            assert "cid-oversized-card" not in adapter._clarify_state
+            sent.append(dict(kwargs))
+            message = MagicMock()
+            message.message_id = 200 + len(sent)
+            return message
+
+        adapter._bot.send_message = AsyncMock(side_effect=_send_message)
+        long_choice = "A complete choice explanation " + "detail " * 900
+        choices = [long_choice, "Keep reviewing"]
+        complete_card = "❓ Choose an option\n\n" + "\n".join(
+            f"{index + 1}. {choice}" for index, choice in enumerate(choices)
+        )
+        expected_chunks = adapter.truncate_message(
+            complete_card,
+            adapter.MAX_MESSAGE_LENGTH,
+            len_fn=telegram_adapter.utf16_len,
+        )
+        assert len(expected_chunks) > 1
+
+        with patch.object(
+            adapter,
+            "truncate_message",
+            wraps=adapter.truncate_message,
+        ) as truncate_message:
+            result = await adapter.send_clarify(
+                chat_id="12345",
+                question="Choose an option",
+                choices=choices,
+                clarify_id="cid-oversized-card",
+                session_key="sk-oversized-card",
+                metadata={
+                    "thread_id": "321",
+                    "telegram_dm_topic_reply_fallback": True,
+                    "telegram_reply_to_message_id": "654",
+                },
+            )
+
+        assert result.success is True
+        assert result.message_id == str(200 + len(expected_chunks))
+        truncate_message.assert_called_once_with(
+            complete_card,
+            adapter.MAX_MESSAGE_LENGTH,
+            len_fn=telegram_adapter.utf16_len,
+        )
+        assert [attempt["text"] for attempt in sent] == expected_chunks
+        assert all("parse_mode" not in attempt for attempt in sent)
+        assert all(attempt["message_thread_id"] == 321 for attempt in sent)
+        assert all(attempt["reply_to_message_id"] == 654 for attempt in sent)
+        assert all("reply_markup" not in attempt for attempt in sent[:-1])
+        buttons = [row[0] for row in sent[-1]["reply_markup"]]
+        assert [(button.text, button.callback_data) for button in buttons] == [
+            ("1", "cl:cid-oversized-card:0"),
+            (choices[1], "cl:cid-oversized-card:1"),
+            ("✏️ Other (type answer)", "cl:cid-oversized-card:other"),
+        ]
+        assert long_choice in complete_card
+        assert "1. A complete choice explanation" in "".join(expected_chunks)
+        assert adapter._clarify_state["cid-oversized-card"] == "sk-oversized-card"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("first_error", ["markdown", "style"])
+    async def test_markdown_and_style_retries_compose_with_keyboard(
+        self,
+        monkeypatch,
+        first_error,
+    ):
+        from telegram.error import BadRequest
+
+        adapter = _make_adapter()
+        attempts = []
+
+        class _ApiKwargsButton:
+            def __init__(self, text, *, callback_data, api_kwargs=None):
+                self.text = text
+                self.callback_data = callback_data
+                self.api_kwargs = api_kwargs
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _ApiKwargsButton)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", lambda rows: rows)
+
+        errors = {
+            "markdown": BadRequest("can't parse entities"),
+            "style": BadRequest('unknown field "style"'),
+        }
+        error_order = [first_error, "style" if first_error == "markdown" else "markdown"]
+
+        async def _send_message(**kwargs):
+            attempts.append(dict(kwargs))
+            if len(attempts) <= len(error_order):
+                raise errors[error_order[len(attempts) - 1]]
+            message = MagicMock()
+            message.message_id = 210
+            return message
+
+        adapter._bot.send_message = AsyncMock(side_effect=_send_message)
+        choice = "✅ **Apply** the change"
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="**Choose** an action",
+            choices=[choice],
+            clarify_id=f"cid-{first_error}-first",
+            session_key=f"sk-{first_error}-first",
+            metadata={"thread_id": "321"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "210"
+        assert len(attempts) == 3
+        assert attempts[0]["parse_mode"] == telegram_adapter.ParseMode.MARKDOWN_V2
+        assert "parse_mode" not in attempts[-1]
+        assert attempts[-1]["text"] == telegram_adapter._strip_mdv2(
+            attempts[0]["text"]
+        )
+        assert all(attempt["message_thread_id"] == 321 for attempt in attempts)
+        expected_buttons = [
+            (choice, f"cl:cid-{first_error}-first:0"),
+            ("✏️ Other (type answer)", f"cl:cid-{first_error}-first:other"),
+        ]
+        for attempt in attempts:
+            buttons = [row[0] for row in attempt["reply_markup"]]
+            assert [
+                (button.text, button.callback_data) for button in buttons
+            ] == expected_buttons
+        first_styles = [
+            button.api_kwargs for row in attempts[0]["reply_markup"] for button in row
+        ]
+        final_styles = [
+            button.api_kwargs for row in attempts[-1]["reply_markup"] for button in row
+        ]
+        assert first_styles == [{"style": "success"}, {"style": "primary"}]
+        assert final_styles == [None, None]
 
 
 # ===========================================================================
 # Callback dispatch — _handle_callback_query routing for cl:* prefixes
 # ===========================================================================
+
 
 class TestTelegramClarifyCallback:
     """Verify clicking a button resolves the clarify primitive."""

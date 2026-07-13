@@ -2,13 +2,13 @@
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
 approval:
-  dangerous_header: "⚠️  危险命令： {description}"
+  dangerous_header: "⚠️ 危险命令：{description}"
   choose_long:     "      [o]仅此一次  |  [s]本次会话  |  [a]永久允许  |  [d]拒绝"
   choose_short:    "      [o]仅此一次  |  [s]本次会话  |  [d]拒绝"
-  prompt_long:     "      选择 [o/s/a/D]: "
-  prompt_short:    "      选择 [o/s/D]: "
+  prompt_long:     "      选择 [o/s/a/D]："
+  prompt_short:    "      选择 [o/s/D]："
   choose_smart_deny: "      [o]仅此一次  |  [d]拒绝"
-  prompt_smart_deny: "      选择 [o/D]: "
+  prompt_smart_deny: "      选择 [o/D]："
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ 超时 — 已拒绝命令"
@@ -31,8 +31,8 @@ gateway:
     error_prefix:           "错误：{error}"
     switched:               "已切换模型为 `{model}`"
     provider_label:         "提供方：{provider}"
-    context_label:          "上下文：{tokens} tokens"
-    max_output_label:       "最大输出：{tokens} tokens"
+    context_label:          "上下文：{tokens} Tokens"
+    max_output_label:       "最大输出：{tokens} Tokens"
     cost_label:             "费用：{cost}"
     capabilities_label:     "能力：{capabilities}"
     prompt_caching_enabled: "提示词缓存：已启用"
@@ -111,8 +111,8 @@ gateway:
     no_pending:            "没有待拒绝的命令。"
     denied_singular:       "❌ 命令已拒绝。"
     denied_plural:         "❌ 命令已拒绝（{count} 条命令）。"
-    denied_reason_singular: "❌ 命令已拒绝。 已将原因转达给代理: \"{reason}\""
-    denied_reason_plural:  "❌ 命令已拒绝（{count} 条命令）。 已将原因转达给代理: \"{reason}\""
+    denied_reason_singular: "❌ 命令已拒绝。已将原因转达给代理：\"{reason}\""
+    denied_reason_plural:  "❌ 命令已拒绝（{count} 条命令）。已将原因转达给代理：\"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast 仅适用于支持优先处理（Priority Processing）的 OpenAI 模型。"
@@ -164,7 +164,7 @@ gateway:
       blocked:             "被阻塞，需要处理"
       status_default:      "状态变化"
       status_joiner:       "，"
-      message:             "[kanban] 任务 {task_id} {status}。\n标题: {title}\n执行者: @{assignee}\n看板: {board}\n\n请检查结果或决定下一步动作。"
+      message:             "[kanban] 任务 {task_id} {status}。\n标题：{title}\n执行者：@{assignee}\n看板：{board}\n\n请检查结果或决定下一步动作。"
 
   personality:
     none_configured:       "`{path}/config.yaml` 中未配置人格设定"
@@ -201,7 +201,7 @@ gateway:
   reload_mcp:
     cancelled:             "🟡 已取消 /reload-mcp。MCP 工具未更改。"
     always_followup:       "ℹ️ 后续 `/reload-mcp` 调用将不再确认。可在 `config.yaml` 中将 `approvals.mcp_reload_confirm: true` 重新启用。"
-    confirm_prompt:        "⚠️ **确认 /reload-mcp**\n\n重新加载 MCP 服务器会为本会话重建工具集，并**使提供方提示词缓存失效** — 下一条消息将重新发送完整输入令牌。在长上下文或高推理模型上，这可能开销较大。\n\n请选择：\n• **批准一次** — 立即重新加载\n• **始终批准** — 立即重新加载并永久静默此提示\n• **取消** — 保持 MCP 工具不变\n\n_文本备用：回复 `/approve`、`/always` 或 `/cancel`。_"
+    confirm_prompt:        "⚠️ **确认 /reload-mcp**\n\n重新加载 MCP 服务器会为本会话重建工具集，并**使提供方提示词缓存失效** — 下一条消息将重新发送完整输入 Tokens。在长上下文或高推理模型上，这可能开销较大。\n\n请选择：\n• **批准一次** — 立即重新加载\n• **始终批准** — 立即重新加载并永久静默此提示\n• **取消** — 保持 MCP 工具不变\n\n_文本备用：回复 `/approve`、`/always` 或 `/cancel`。_"
     header:                "🔄 **MCP 服务器已重新加载**\n"
     reconnected:           "♻️ 已重新连接：{names}"
     added:                 "➕ 已添加：{names}"
@@ -235,14 +235,11 @@ gateway:
 
   resume:
     db_unavailable:        "会话数据库不可用。"
-    parse_error:           "⚠️ 无法解析 `/resume` 参数：{error}。
-如果标题包含空格，请用引号括起来，例如：`/resume \"Project A Plan\"`。"
-    matrix_no_named_sessions: "未找到此 Matrix 房间的已命名会话。
-使用 `/title My Session` 为当前房间会话命名，使用 `/resume --all` 列出所有 Matrix 会话，或使用 `/resume --cross-room <会话名称>` 明确跨房间恢复。"
+    parse_error:           "⚠️ 无法解析 `/resume` 参数：{error}。\n如果标题包含空格，请用引号括起来，例如：`/resume \"Project A Plan\"`。"
+    matrix_no_named_sessions: "未找到此 Matrix 房间的已命名会话。\n使用 `/title My Session` 为当前房间会话命名，使用 `/resume --all` 列出所有 Matrix 会话，或使用 `/resume --cross-room <会话名称>` 明确跨房间恢复。"
     matrix_blocked_no_origin: "⚠️ Matrix /resume 被阻止：此命名会话没有记录原始房间，因此 Hermes 默认不会在当前房间内恢复它。如果你确实想跨房间边界，请使用 `/resume --cross-room {name}`。"
     matrix_blocked_other_room: "⚠️ Matrix /resume 被阻止：该会话属于另一个 Matrix 房间 ({room})。如果你确实想在这里恢复它，请使用 `/resume --cross-room {name}`。"
-    matrix_cross_room_success: "⚠️ 跨房间恢复：已在 Matrix 房间 **{room}** 中恢复 **{title}**。
-此房间的后续消息将使用该对话记录，直到执行 `/reset` 或另一个 `/resume`。{msg_part}"
+    matrix_cross_room_success: "⚠️ 跨房间恢复：已在 Matrix 房间 **{room}** 中恢复 **{title}**。\n此房间的后续消息将使用该对话记录，直到执行 `/reset` 或另一个 `/resume`。{msg_part}"
     blocked_not_owner:     "⚠️ /resume 被阻止：'**{name}**' 属于其他用户或对话。你只能恢复来自当前对话的会话。"
     no_named_sessions:     "未找到已命名的会话。\n使用 `/title 我的会话` 为当前会话命名，然后用 `/resume 我的会话` 返回。"
     list_header:           "📋 **已命名会话**\n"
@@ -254,7 +251,7 @@ gateway:
     list_failed:           "无法列出会话：{error}"
     out_of_range:          "恢复索引 {index} 超出范围。\n请使用不带参数的 `/resume` 查看可用会话。"
     not_found:             "未找到匹配 '**{name}**' 的会话。\n使用不带参数的 `/resume` 查看可用会话。"
-    already_on:            "📌 已在会话 **{name}** 上。"
+    already_on:            "📌 当前已在会话 **{name}** 中。"
     switch_failed:         "切换会话失败。"
     resumed_one:           "↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。"
     resumed_many:          "↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。"
@@ -287,14 +284,14 @@ gateway:
     created:               "**创建时间：** {timestamp}"
     last_activity:         "**最近活动：** {timestamp}"
     model:                 "**模型：** `{model}`"
-    model_provider:        "**模型：** `{model}` ({provider})"
-    context:               "**上下文：** {used} / {total} ({pct}%)"
-    context_used:          "**上下文：** ~{used} Token"
-    tokens:                "**Token 数：** {tokens}"
+    model_provider:        "**模型：** `{model}` （{provider}）"
+    context:               "**上下文：** {used} / {total} （{pct}%）"
+    context_used:          "**上下文：** ~{used} Tokens"
+    tokens:                "**累计 API Tokens（每次调用重新发送）：** {tokens}"
     agent_running:         "**代理运行中：** {state}"
     state_yes:             "是 ⚡"
     state_no:              "否"
-    queued:                "**排队的后续：** {count}"
+    queued:                "**待处理的后续任务：** {count}"
     platforms:             "**已连接平台：** {platforms}"
 
   stop:
@@ -337,20 +334,20 @@ gateway:
 
   usage:
     rate_limits:              "⏱️ **速率限制：** {state}"
-    header_session:           "📊 **会话令牌使用情况**"
+    header_session:           "📊 **会话 Tokens 使用情况**"
     label_model:              "模型：`{model}`"
-    label_input_tokens:       "输入令牌：{count}"
-    label_cache_read:         "缓存读取令牌：{count}"
-    label_cache_write:        "缓存写入令牌：{count}"
-    label_output_tokens:      "输出令牌：{count}"
+    label_input_tokens:       "输入 Tokens：{count}"
+    label_cache_read:         "缓存读取 Tokens：{count}"
+    label_cache_write:        "缓存写入 Tokens：{count}"
+    label_output_tokens:      "输出 Tokens：{count}"
     label_total:              "总计：{count}"
     label_api_calls:          "API 调用次数：{count}"
     label_cost:               "费用：{prefix}${amount}"
     label_cost_included:      "费用：已包含"
     label_context:            "上下文：{used} / {total}（{pct}%）"
     label_compressions:       "压缩次数：{count}"
-    breakdown_header: "🧩 **上下文明细** _(估算)_"
-    breakdown_line: "• {label}：约 {count} ({pct}%)"
+    breakdown_header: "🧩 **上下文明细** _（估算）_"
+    breakdown_line: "• {label}：约 {count}（{pct}%）"
     breakdown_cat_system_prompt: "系统提示词"
     breakdown_cat_tool_definitions: "工具定义"
     breakdown_cat_rules: "规则"
@@ -361,7 +358,7 @@ gateway:
     breakdown_cat_conversation: "对话"
     header_session_info:      "📊 **会话信息**"
     label_messages:           "消息数：{count}"
-    label_estimated_context:  "估计上下文：~{count} 个令牌"
+    label_estimated_context:  "估计上下文：~{count} 个 Tokens"
     detailed_after_first:     "_（首次代理响应后可查看详细使用情况）_"
     no_data:                  "此会话暂无使用数据。"
 
@@ -379,7 +376,7 @@ gateway:
     save_failed:           "_（无法保存到配置：{error}）_"
 
   voice:
-    enabled_voice_only:    "语音模式已启用。\n当你发送语音消息时，我会用语音回复。\n使用 /voice tts 让所有消息都收到语音回复。"
+    enabled_voice_only:    "语音模式已启用。\n当你发送语音消息时，我会用语音回复。\n使用 /voice tts 对所有消息启用语音回复。"
     disabled_text:         "语音模式已禁用。仅文本回复。"
     tts_enabled:           "自动 TTS 已启用。\n所有回复都将包含一条语音消息。"
     status_mode:           "语音模式：{label}"
@@ -393,7 +390,7 @@ gateway:
     label_voice_only:      "开启（仅对语音消息进行语音回复）"
     label_all:             "TTS（对所有消息进行语音回复）"
     help:                  "{toggle}\n\n**/voice 用法**\n• `/voice on` — 当你发送语音消息时用语音回复\n• `/voice tts` — 对*每条*消息都用语音回复\n• `/voice off` — 恢复为纯文本回复\n• `/voice status` — 显示当前模式\n• `/voice`（无参数）— 在开启和关闭之间快速切换{channels}"
-    help_channels:         "\n\n**实时语音频道 (Discord)**\n• 先加入一个语音频道，然后 `/voice channel` — 我会加入、聆听并用语音回复\n• `/voice leave` — 断开语音频道"
+    help_channels:         "\n\n**实时语音频道（Discord）**\n• 先加入一个语音频道，然后 `/voice channel` — 我会加入、聆听并用语音回复\n• `/voice leave` — 断开语音频道"
 
   yolo:
     disabled:                   "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"

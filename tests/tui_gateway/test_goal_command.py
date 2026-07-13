@@ -34,7 +34,7 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def server(hermes_home):
+def server(hermes_home, monkeypatch):
     with patch.dict(
         "sys.modules",
         {
@@ -43,6 +43,21 @@ def server(hermes_home):
         },
     ):
         mod = importlib.import_module("tui_gateway.server")
+        # Pin config resolution to the isolated HERMES_HOME. Sibling test
+        # files (test_billing_rpc, test_delegation_session_lifecycle,
+        # test_gateway_owned_session_reap, ...) import tui_gateway.server at
+        # collection time — BEFORE the conftest env isolation runs — so the
+        # module-level ``_hermes_home = get_hermes_home()`` snapshot freezes
+        # the developer's real home. When any of them precede this file in
+        # the same process, ``importlib.import_module`` returns that cached
+        # module and ``_load_cfg()`` would read the REAL config.yaml (e.g. a
+        # local MoA preset) instead of the one ``_write_moa_config`` writes.
+        # Also reset the mtime-keyed config cache; monkeypatch restores the
+        # originals on teardown so nothing leaks to later tests either.
+        monkeypatch.setattr(mod, "_hermes_home", hermes_home)
+        monkeypatch.setattr(mod, "_cfg_cache", None)
+        monkeypatch.setattr(mod, "_cfg_mtime", None)
+        monkeypatch.setattr(mod, "_cfg_path", None)
         yield mod
         # Reset module-level session state without re-importing. importlib.reload
         # would re-register the module's atexit hooks (ThreadPoolExecutor

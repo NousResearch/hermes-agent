@@ -1,6 +1,7 @@
-"""Feishu Document Tool -- read document content via Feishu/Lark API.
+"""Feishu Document Tool -- read and create documents via Feishu/Lark API.
 
-Provides ``feishu_doc_read`` for reading document content as plain text.
+Provides ``feishu_doc_read`` for reading document content as plain text,
+and supports "create" action to create new documents.
 Uses the same lazy-import + BaseRequest pattern as feishu_comment.py.
 """
 
@@ -31,22 +32,38 @@ def get_client():
 # ---------------------------------------------------------------------------
 
 _RAW_CONTENT_URI = "/open-apis/docx/v1/documents/:document_id/raw_content"
+_CREATE_DOCUMENT_URI = "/open-apis/docx/v1/documents"
 
 FEISHU_DOC_READ_SCHEMA = {
     "name": "feishu_doc_read",
     "description": (
-        "Read the full content of a Feishu/Lark document as plain text. "
-        "Useful when you need more context beyond the quoted text in a comment."
+        "Read the full content of a Feishu/Lark document as plain text, "
+        "or create a new Feishu/Lark document. "
+        "Use action='read' (default) to read an existing document by doc_token. "
+        "Use action='create' to create a new document with a title and optional owner_open_id."
     ),
     "parameters": {
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["read", "create"],
+                "description": "Action to perform: 'read' (default) or 'create'.",
+            },
             "doc_token": {
                 "type": "string",
-                "description": "The document token (from the document URL or comment context).",
+                "description": "The document token (from the document URL or comment context). Required for action='read'.",
+            },
+            "title": {
+                "type": "string",
+                "description": "Title for the new document. Required for action='create'.",
+            },
+            "owner_open_id": {
+                "type": "string",
+                "description": "The open_id of the document owner. Optional for action='create'.",
             },
         },
-        "required": ["doc_token"],
+        "required": ["action"],
     },
 }
 
@@ -67,9 +84,10 @@ def _check_feishu():
 
 
 def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
+    action = args.get("action", "read").strip().lower()
     doc_token = args.get("doc_token", "").strip()
-    if not doc_token:
-        return tool_error("doc_token is required")
+    title = args.get("title", "").strip()
+    owner_open_id = args.get("owner_open_id", "").strip()
 
     client = get_client()
     if client is None:
@@ -82,43 +100,85 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
     except ImportError:
         return tool_error("lark_oapi not installed")
 
-    request = (
-        BaseRequest.builder()
-        .http_method(HttpMethod.GET)
-        .uri(_RAW_CONTENT_URI)
-        .token_types({AccessTokenType.TENANT})
-        .paths({"document_id": doc_token})
-        .build()
-    )
-
-    # Tool handlers run synchronously in a worker thread (no running event
-    # loop), so call the blocking lark client directly.
-    response = client.request(request)
-
-    code = getattr(response, "code", None)
-    if code != 0:
-        msg = getattr(response, "msg", "unknown error")
-        return tool_error(f"Failed to read document: code={code} msg={msg}")
-
-    raw = getattr(response, "raw", None)
-    if raw and hasattr(raw, "content"):
+    if action == "create":
+        if not title:
+            return tool_error("title is required for action='create'")
         try:
-            body = json.loads(raw.content)
-            content = body.get("data", {}).get("content", "")
+            from lark_oapi.api.docx.v1.model.create_document_request_body import (
+                CreateDocumentRequestBody,
+            )
+        except ImportError:
+            return tool_error("lark_oapi not installed")
+
+        body = (
+            CreateDocumentRequestBody.builder()
+            .title(title)
+            .build()
+        )
+        request = (
+            BaseRequest.builder()
+            .http_method(HttpMethod.POST)
+            .uri(_CREATE_DOCUMENT_URI)
+            .token_types({AccessTokenType.TENANT})
+            .request_body(body)
+            .build()
+        )
+        response = client.request(request)
+        code = getattr(response, "code", None)
+        if code != 0:
+            msg = getattr(response, "msg", "unknown error")
+            return tool_error(f"Failed to create document: code={code} msg={msg}")
+        data = getattr(response, "data", None)
+        if data and isinstance(data, dict):
+            doc = data.get("document", {})
+            doc_id = doc.get("document_id", "unknown")
+            return tool_result(
+                success=True,
+                content=f"Document created successfully. doc_token={doc_id}, title={title}",
+            )
+        return tool_result(success=True, content="Document created successfully.")
+
+    if action == "read":
+        if not doc_token:
+            return tool_error("doc_token is required for action='read'")
+
+        request = (
+            BaseRequest.builder()
+            .http_method(HttpMethod.GET)
+            .uri(_RAW_CONTENT_URI)
+            .token_types({AccessTokenType.TENANT})
+            .paths({"document_id": doc_token})
+            .build()
+        )
+
+        response = client.request(request)
+
+        code = getattr(response, "code", None)
+        if code != 0:
+            msg = getattr(response, "msg", "unknown error")
+            return tool_error(f"Failed to read document: code={code} msg={msg}")
+
+        raw = getattr(response, "raw", None)
+        if raw and hasattr(raw, "content"):
+            try:
+                body = json.loads(raw.content)
+                content = body.get("data", {}).get("content", "")
+                return tool_result(success=True, content=content)
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+        # Fallback: try response.data
+        data = getattr(response, "data", None)
+        if data:
+            if isinstance(data, dict):
+                content = data.get("content", "")
+            else:
+                content = getattr(data, "content", str(data))
             return tool_result(success=True, content=content)
-        except (json.JSONDecodeError, AttributeError):
-            pass
 
-    # Fallback: try response.data
-    data = getattr(response, "data", None)
-    if data:
-        if isinstance(data, dict):
-            content = data.get("content", "")
-        else:
-            content = getattr(data, "content", str(data))
-        return tool_result(success=True, content=content)
+        return tool_error("No content returned from document API")
 
-    return tool_error("No content returned from document API")
+    return tool_error(f"Unknown action: {action}. Use 'read' or 'create'.")
 
 
 # ---------------------------------------------------------------------------

@@ -1159,6 +1159,10 @@ class WeixinAdapter(BasePlatformAdapter):
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
 
+        # Exponential backoff state for self-healing on rate limits
+        self._backoff_until: float = 0.0   # unix timestamp; 0 = no backoff
+        self._backoff_level: int = 0        # 0=normal, 1+=backoff levels
+
         self._account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
         self._token = str(config.token or extra.get("token") or os.getenv("WEIXIN_TOKEN", "")).strip()
         self._base_url = str(extra.get("base_url") or os.getenv("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
@@ -1845,6 +1849,19 @@ class WeixinAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
+
+        # ── Self-healing: exponential backoff ──────────────────────────────────
+        # If we're in a backoff period, suppress sending to let iLink recover.
+        import time, asyncio as _asyncio
+        now = time.time()
+        if self._backoff_until and now < self._backoff_until:
+            logger.warning(
+                "[%s] send suppressed: in backoff (level=%d, %.0fs left)",
+                self.name, self._backoff_level, self._backoff_until - now,
+            )
+            return SendResult(success=False, error="rate limited (suppressed during backoff)")
+        # ─────────────────────────────────────────────────────────────────────
+
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
 
@@ -1898,9 +1915,25 @@ class WeixinAdapter(BasePlatformAdapter):
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)
+            # ── Self-healing: success → reset backoff ──────────────────────────
+            self._backoff_until = 0.0
+            self._backoff_level = 0
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
-            logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
+            # ── Self-healing: rate-limit error → apply exponential backoff ───
+            import time
+            err_str = str(exc).lower()
+            is_rate_limit = "rate limit" in err_str or "rate limited" in err_str or "-2" in str(exc)
+            if is_rate_limit:
+                self._backoff_level = min(self._backoff_level + 1, 8)
+                # Base delays: 8s, 16s, 32s, 64s, 128s, 256s, 512s, 1024s
+                delay = 8 * (2 ** (self._backoff_level - 1))
+                self._backoff_until = time.time() + delay
+                logger.warning(
+                    "[%s] iLink rate-limit detected → backoff level %d, delay %.0fs, until %s",
+                    self.name, self._backoff_level, delay,
+                    time.strftime("%H:%M:%S", time.localtime(self._backoff_until)),
+                )
             return SendResult(success=False, error=str(exc))
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:

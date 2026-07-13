@@ -1318,6 +1318,14 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
+                    # Shared streaming/non-streaming dispatch boundary: provider
+                    # preflights that must not leak past either path belong here
+                    # (#30809 — DeepSeek body-size before HTTP).
+                    from agent.chat_completion_helpers import (
+                        _deepseek_preflight_body_check,
+                    )
+
+                    _deepseek_preflight_body_check(agent, next_api_kwargs)
                     if agent.api_mode == "codex_responses":
                         next_api_kwargs = agent._get_transport().preflight_kwargs(
                             next_api_kwargs,

@@ -359,6 +359,56 @@ def direct_api_call(agent, api_kwargs: dict):
             agent._close_request_openai_client(request_client, reason="request_complete")
 
 
+# DeepSeek silently returns HTTP 400 on request bodies over ~880 KB.
+# Raise a descriptive payload-too-large error before we waste a round-trip
+# so conversation_loop can take FailoverReason.payload_too_large recovery.
+# (#30771, maintainer review on #30809)
+_DEEPSEEK_BODY_LIMIT_BYTES = 880_000
+
+
+class DeepSeekPayloadTooLargeError(Exception):
+    """Preflight body-size abort for api.deepseek.com.
+
+    Mimics HTTP 413 so ``classify_api_error`` maps to
+    ``FailoverReason.payload_too_large`` (``should_compress=True``) instead of
+    treating a bare ``ValueError`` as local non-retryable validation.
+    """
+
+    def __init__(self, message: str, *, body_bytes: int):
+        super().__init__(message)
+        self.status_code = 413
+        self.body_bytes = body_bytes
+
+
+def _deepseek_preflight_body_check(agent, api_kwargs: dict) -> None:
+    """Raise if the serialised body exceeds DeepSeek's ~880 KB limit.
+
+    Only runs when the configured base_url points at api.deepseek.com so
+    other providers are unaffected.
+
+    On exceed, raises ``DeepSeekPayloadTooLargeError`` (status_code=413,
+    message includes "payload too large") so the conversation loop routes
+    through the existing compression/retry contract rather than aborting as
+    a local validation error.
+    """
+    if not base_url_host_matches(getattr(agent, "base_url", "") or "", "api.deepseek.com"):
+        return
+    try:
+        body_bytes = len(json.dumps(api_kwargs, default=str, ensure_ascii=False).encode("utf-8"))
+    except Exception:
+        return  # serialisation failure — let the real call surface the error
+    if body_bytes >= _DEEPSEEK_BODY_LIMIT_BYTES:
+        raise DeepSeekPayloadTooLargeError(
+            (
+                f"Request entity too large: payload too large "
+                f"({body_bytes:,} bytes) exceeds DeepSeek's "
+                f"~{_DEEPSEEK_BODY_LIMIT_BYTES:,}-byte limit. "
+                "Compress the context with /compress or reduce max_tokens before retrying."
+            ),
+            body_bytes=body_bytes,
+        )
+
+
 def interruptible_api_call(agent, api_kwargs: dict):
     """
     Run the API call in a background thread so the main conversation loop
@@ -373,6 +423,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
     the main retry loop can try again with backoff / credential rotation /
     provider fallback.
     """
+    # Body-size preflight for DeepSeek (also run from streaming sibling and
+    # the shared conversation_loop dispatch so both paths stay covered).
+    _deepseek_preflight_body_check(agent, api_kwargs)
+
     # Cron and other non-interactive, nested-pool contexts must not spawn the
     # interrupt worker — it wedges before the socket opens on the 2nd+ call
     # (#62151). Run inline instead. See should_use_direct_api_call.
@@ -1964,6 +2018,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     """
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
+
+    # DeepSeek body-size preflight at the streaming entry so streamed sessions
+    # never hit the oversized HTTP round-trip (#30809 maintainer review).
+    # Note: outer conversation_loop._perform_api_call also runs this check so
+    # both streaming and non-streaming share one dispatch-boundary guard.
+    _deepseek_preflight_body_check(agent, api_kwargs)
 
     # Cron and other non-interactive, nested-pool contexts deadlock on the
     # spawned worker thread (#62151). They also have no stream consumer, so the

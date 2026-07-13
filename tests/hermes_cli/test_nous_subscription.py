@@ -312,7 +312,7 @@ def test_get_gateway_eligible_tools_paid_account_offers_skyvern(monkeypatch):
     assert "skyvern" not in already_managed
 
 
-def test_mixed_skyvern_config_is_classified_as_direct(monkeypatch):
+def test_mixed_skyvern_config_is_not_offered_for_managed_migration(monkeypatch):
     monkeypatch.setattr(
         ns,
         "get_nous_portal_account_info",
@@ -333,8 +333,28 @@ def test_mixed_skyvern_config_is_classified_as_direct(monkeypatch):
     )
 
     assert "skyvern" not in unconfigured
-    assert "skyvern" in has_direct
+    assert "skyvern" not in has_direct
     assert "skyvern" not in already_managed
+
+
+def test_direct_skyvern_config_is_not_offered(monkeypatch):
+    monkeypatch.setattr(
+        ns,
+        "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=True, paid=True),
+    )
+    monkeypatch.setattr(ns, "_get_gateway_direct_credentials", lambda: {})
+
+    eligible = ns.get_gateway_eligible_tools(
+        {
+            "model": {"provider": "nous"},
+            "mcp_servers": {
+                "skyvern": {"url": "https://api.skyvern.com/mcp/"},
+            },
+        }
+    )
+
+    assert all("skyvern" not in bucket for bucket in eligible)
 
 
 def test_get_gateway_eligible_tools_pool_without_skyvern_coverage_excludes_it(
@@ -517,6 +537,32 @@ def test_apply_gateway_defaults_preserves_direct_skyvern_mcp_config():
     assert config["mcp_servers"]["skyvern"] == direct_skyvern
 
 
+def test_managed_skyvern_under_custom_server_name_is_already_managed(monkeypatch):
+    monkeypatch.setattr(
+        ns,
+        "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=True, paid=True),
+    )
+    monkeypatch.setattr(ns, "_get_gateway_direct_credentials", lambda: {})
+    config = {
+        "model": {"provider": "nous"},
+        "mcp_servers": {
+            "skyvern-cloud": {"managed_gateway": "skyvern"},
+        },
+    }
+
+    unconfigured, has_direct, already_managed = ns.get_gateway_eligible_tools(config)
+    changed = ns.apply_gateway_defaults(config, ["skyvern"])
+
+    assert "skyvern" not in unconfigured
+    assert "skyvern" not in has_direct
+    assert "skyvern" in already_managed
+    assert changed == set()
+    assert config["mcp_servers"] == {
+        "skyvern-cloud": {"managed_gateway": "skyvern"},
+    }
+
+
 def test_get_gateway_eligible_tools_empty_when_not_entitled(monkeypatch):
     """A logged-in free user with no pool and no paid access gets nothing."""
     monkeypatch.setattr(
@@ -626,6 +672,30 @@ def test_prompt_enable_tool_gateway_leaves_skyvern_unchecked(monkeypatch):
     assert set(captured["pre_selected"]) == set(range(len(captured["items"]))) - {
         skyvern_index
     }
+
+
+def test_prompt_enable_tool_gateway_prints_missing_mcp_sdk_guidance(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        ns,
+        "get_gateway_eligible_tools",
+        lambda *args, **kwargs: (["skyvern"], [], []),
+    )
+    monkeypatch.setattr(
+        ns,
+        "get_nous_portal_account_info",
+        lambda **kw: _account(logged_in=True, paid=True),
+    )
+    monkeypatch.setattr(ns, "_mcp_sdk_available", lambda: False)
+    _capture_checklist(monkeypatch, selected_idx=[0])
+
+    changed = ns.prompt_enable_tool_gateway({"model": {"provider": "nous"}})
+
+    output = capsys.readouterr().out
+    assert changed == {"skyvern"}
+    assert 'pip install "hermes-agent[mcp]"' in output
+    assert "uv sync --extra mcp" in output
 
 
 def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):

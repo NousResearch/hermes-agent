@@ -59,6 +59,14 @@ def _skyvern_mcp_config(config: Dict[str, object]) -> Dict[str, object]:
     servers = config.get("mcp_servers")
     if not isinstance(servers, dict):
         return {}
+    for server_cfg in servers.values():
+        if (
+            isinstance(server_cfg, dict)
+            and not (server_cfg.get("url") or server_cfg.get("command"))
+            and str(server_cfg.get("managed_gateway") or "").strip().lower()
+            == "skyvern"
+        ):
+            return server_cfg
     skyvern_cfg = servers.get("skyvern")
     return skyvern_cfg if isinstance(skyvern_cfg, dict) else {}
 
@@ -73,12 +81,22 @@ def _is_managed_skyvern_mcp_config(config: Dict[str, object]) -> bool:
 
 
 def _has_direct_skyvern_mcp_config(config: Dict[str, object]) -> bool:
-    skyvern_cfg = _skyvern_mcp_config(config)
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return False
+    skyvern_cfg = servers.get("skyvern")
     return bool(
-        skyvern_cfg
-        and not _is_managed_skyvern_mcp_config(config)
+        isinstance(skyvern_cfg, dict)
         and (skyvern_cfg.get("url") or skyvern_cfg.get("command"))
     )
+
+
+def _mcp_sdk_available() -> bool:
+    try:
+        from tools.mcp_tool import _MCP_AVAILABLE
+    except ImportError:
+        return False
+    return _MCP_AVAILABLE
 
 
 @dataclass(frozen=True)
@@ -998,6 +1016,8 @@ def get_gateway_eligible_tools(
     has_direct: list[str] = []
     already_managed: list[str] = []
     for key in _ALL_GATEWAY_KEYS:
+        if key == "skyvern" and direct.get(key) and not opted_in.get(key):
+            continue
         # Only offer tools the user's entitlement actually covers. For a free
         # tool pool that means image but not video; paid users are covered for
         # everything.
@@ -1180,6 +1200,11 @@ def prompt_enable_tool_gateway(
         for key in sorted(changed):
             label = _GATEWAY_TOOL_LABELS.get(key, key)
             print(f"  ✓ {label}: enabled via {source_label}")
+        if "skyvern" in changed and not _mcp_sdk_available():
+            print(
+                '  ! Skyvern MCP requires the MCP SDK. Install it with '
+                '`pip install "hermes-agent[mcp]"` or `uv sync --extra mcp`.'
+            )
     return changed
 
 

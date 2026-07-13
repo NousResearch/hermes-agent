@@ -7,7 +7,6 @@ import asyncio
 import json
 import threading
 import time
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -381,14 +380,49 @@ class TestLoadMCPConfig:
         assert "Skipping managed MCP server 'skyvern'" in caplog.text
 
     def test_managed_skyvern_bearer_header_reaches_live_socket(self, monkeypatch):
-        received = {}
+        received = []
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
-                received["path"] = self.path
-                received["authorization"] = self.headers.get("Authorization")
-                self.send_response(204)
+                received.append(
+                    ("preflight", self.path, self.headers.get("Authorization"))
+                )
+                self.send_response(405)
+                self.send_header("Content-Length", "0")
                 self.end_headers()
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                request = json.loads(body)
+                method = request["method"]
+                received.append(
+                    (method, self.path, self.headers.get("Authorization"))
+                )
+                if "id" not in request:
+                    self.send_response(202)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+
+                if method == "initialize":
+                    result = {
+                        "protocolVersion": request["params"]["protocolVersion"],
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "test-server", "version": "1.0"},
+                    }
+                elif method == "tools/list":
+                    result = {"tools": []}
+                else:
+                    raise AssertionError(f"Unexpected MCP method: {method}")
+
+                response = json.dumps(
+                    {"jsonrpc": "2.0", "id": request["id"], "result": result}
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
 
             def log_message(self, format, *args):
                 pass
@@ -417,23 +451,31 @@ class TestLoadMCPConfig:
 
                 skyvern = _load_mcp_config()["skyvern"]
 
-            request = urllib.request.Request(
-                skyvern["url"],
-                headers=skyvern["headers"],
-            )
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with opener.open(request, timeout=2) as response:
-                assert response.status == 204
+            from tools.mcp_tool import MCPServerTask
+
+            async def exercise_production_client():
+                client = MCPServerTask("skyvern")
+                try:
+                    await client.start({**skyvern, "connect_timeout": 2})
+                    assert client.initialize_result is not None
+                    assert client._tools == []
+                finally:
+                    await client.shutdown()
+
+            asyncio.run(exercise_production_client())
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
 
         assert skyvern["url"] == f"{origin}/mcp/"
-        assert received == {
-            "path": "/mcp/",
-            "authorization": "Bearer socket-token",
+        assert {method for method, _, _ in received} >= {
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
         }
+        assert all(path == "/mcp/" for _, path, _ in received)
+        assert all(auth == "Bearer socket-token" for _, _, auth in received)
 
 
 class TestMCPStatus:

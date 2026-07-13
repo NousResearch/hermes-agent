@@ -14,6 +14,7 @@ from typing import Any, Dict
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
+from agent.text_tool_calls import parse_text_tool_calls
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
@@ -734,6 +735,12 @@ class ChatCompletionsTransport(ProviderTransport):
         # loop's refusal handler surfaces it clearly and stops. ``refusal`` is
         # ``None`` for normal responses, so this is a no-op in the common case.
         content = msg.content
+        if not tool_calls:
+            text_tool_calls = parse_text_tool_calls(content)
+            if text_tool_calls:
+                tool_calls = text_tool_calls
+                content = None
+                finish_reason = "tool_calls"
         refusal = getattr(msg, "refusal", None)
         if refusal is None and hasattr(msg, "model_extra"):
             _msg_extra = getattr(msg, "model_extra", None) or {}

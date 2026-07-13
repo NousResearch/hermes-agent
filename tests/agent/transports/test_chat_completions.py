@@ -898,6 +898,109 @@ class TestChatCompletionsNormalize:
         assert nr.tool_calls[0].name == "terminal"
         assert nr.tool_calls[0].id == "call_123"
 
+    def test_promotes_observed_qwen_text_tool_call_block(self, transport):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=(
+                        '<TOOLCALL>[{"name":"skill_view",'
+                        '"arguments":{"name":"stripe-vault"}}]</TOOLCALL>'
+                    ),
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content is None
+        assert nr.finish_reason == "tool_calls"
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].name == "skill_view"
+        assert nr.tool_calls[0].arguments == '{"name":"stripe-vault"}'
+        assert nr.tool_calls[0].id.startswith("text_call_")
+
+    def test_promotes_openai_shaped_text_tool_call(self, transport):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=(
+                        '<tool_call>{"id":"call_text_1","function":'
+                        '{"name":"terminal","arguments":"{\\"command\\":\\"pwd\\"}"}}'
+                        '</tool_call>'
+                    ),
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content is None
+        assert nr.finish_reason == "tool_calls"
+        assert [(call.id, call.name, call.arguments) for call in nr.tool_calls] == [
+            ("call_text_1", "terminal", '{"command":"pwd"}')
+        ]
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            'Example: <TOOLCALL>[{"name":"terminal","arguments":{}}]</TOOLCALL>',
+            '<TOOLCALL>not-json</TOOLCALL>',
+            '<TOOLCALL>[{"name":"bad name","arguments":{}}]</TOOLCALL>',
+            '<TOOLCALL>[{"name":"terminal","arguments":[]}]</TOOLCALL>',
+        ],
+    )
+    def test_does_not_execute_mixed_or_malformed_text_tool_calls(self, transport, content):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content == content
+        assert nr.finish_reason == "stop"
+        assert nr.tool_calls is None
+
+    def test_structured_tool_calls_take_precedence_over_text_protocol(self, transport):
+        tc = SimpleNamespace(
+            id="call_structured",
+            function=SimpleNamespace(name="terminal", arguments="{}"),
+        )
+        content = '<TOOLCALL>[{"name":"skill_view","arguments":{}}]</TOOLCALL>'
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=[tc],
+                    reasoning_content=None,
+                ),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content == content
+        assert [(call.id, call.name) for call in nr.tool_calls] == [
+            ("call_structured", "terminal")
+        ]
+
     def test_tool_call_extra_content_preserved(self, transport):
         """Gemini 3 thinking models attach extra_content with thought_signature
         on tool_calls.  Without this replay on the next turn, the API rejects

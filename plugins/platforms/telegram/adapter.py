@@ -3199,6 +3199,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
+            # Handle Telegram Bot API 10.1 Rich Messages (heading, formatted text, list, table)
+            # These messages have empty message.text and would otherwise be silently ignored.
+            self._app.add_handler(TelegramMessageHandler(
+                filters.ALL & ~filters.COMMAND & ~filters.TEXT & ~filters.PHOTO & ~filters.VIDEO & ~filters.AUDIO & ~filters.VOICE & ~filters.Document.ALL & ~filters.Sticker.ALL & ~filters.LOCATION & ~getattr(filters, "VENUE", filters.LOCATION),
+                self._handle_rich_message
+            ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             
@@ -7602,9 +7608,144 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
 
-    # ------------------------------------------------------------------
+    def _extract_rich_message_text(self, rich_message: dict) -> str:
+        """Extract text content from a Telegram Rich Message.
+
+        Telegram Bot API 10.1 Rich Messages contain structured blocks
+        (heading, formatted text, list, table, etc.). This method recursively
+        extracts the text content from all blocks and concatenates them with
+        newlines for readability.
+
+        Args:
+            rich_message: A dict with a 'blocks' key containing a list of block dicts.
+
+        Returns:
+            A string containing the extracted text, or empty string if no text found.
+        """
+        if not rich_message or not isinstance(rich_message, dict):
+            return ""
+
+        blocks = rich_message.get("blocks", [])
+        if not blocks:
+            return ""
+
+        lines = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+
+            block_type = block.get("type", "")
+
+            # Handle different block types
+            if block_type == "heading":
+                size = block.get("size", 1)
+                text = block.get("text", "")
+                # Add appropriate prefix based on heading size
+                prefix = "#" * min(size, 6)  # Markdown heading style
+                if text:
+                    lines.append(f"{prefix} {text}")
+
+            elif block_type in ("text", "formatted_text"):
+                text = block.get("text", "")
+                if text:
+                    lines.append(text)
+
+            elif block_type == "list":
+                items = block.get("items", [])
+                if isinstance(items, list):
+                    for item in items:
+                        if isinstance(item, dict):
+                            item_text = item.get("text", "")
+                            if item_text:
+                                lines.append(f"• {item_text}")
+                        elif isinstance(item, str):
+                            lines.append(f"• {item}")
+
+            elif block_type == "table":
+                rows = block.get("rows", [])
+                if isinstance(rows, list):
+                    for row in rows:
+                        if isinstance(row, dict):
+                            cells = row.get("cells", [])
+                            if isinstance(cells, list):
+                                cell_texts = []
+                                for cell in cells:
+                                    if isinstance(cell, dict):
+                                        cell_text = cell.get("text", "")
+                                        if cell_text:
+                                            cell_texts.append(cell_text)
+                                    elif isinstance(cell, str):
+                                        cell_texts.append(cell)
+                                if cell_texts:
+                                    lines.append(" | ".join(cell_texts))
+
+            # Handle nested blocks recursively
+            elif "blocks" in block:
+                nested_text = self._extract_rich_message_text(block)
+                if nested_text:
+                    lines.append(nested_text)
+
+        return "\n".join(lines)
+
+    async def _handle_rich_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming Telegram Bot API 10.1 Rich Messages.
+
+        Rich Messages (heading, formatted text, list, table) may contain
+        their content only in message.rich_message (python-telegram-bot 22.6+)
+        or message.api_kwargs["rich_message"] (older versions). These messages
+        have empty message.text and would otherwise be silently ignored.
+
+        This handler extracts the structured content and forwards it as a
+        text message to the agent.
+        """
+        msg = self._effective_update_message(update)
+        if not msg:
+            return
+
+        # Check for rich_message in python-telegram-bot 22.6+
+        rich_message = getattr(msg, "rich_message", None)
+
+        # Fallback to api_kwargs for older versions
+        if not rich_message:
+            api_kwargs = getattr(msg, "api_kwargs", {})
+            if isinstance(api_kwargs, dict):
+                rich_message = api_kwargs.get("rich_message")
+
+        if not rich_message:
+            return
+
+        # Extract text from structured blocks
+        text = self._extract_rich_message_text(rich_message)
+        if not text:
+            logger.debug("[Telegram] Rich Message with no extractable text, ignoring")
+            return
+
+        # Reuse the same authorization and processing logic as text messages
+        if not self._is_user_authorized_from_message(msg):
+            logger.warning(
+                "[Telegram] Blocked unauthorized user %s in chat %s",
+                getattr(getattr(msg, "from_user", None), "id", None),
+                getattr(getattr(msg, "chat", None), "id", None),
+            )
+            return
+
+        if not self._should_process_message(msg):
+            if self._should_observe_unmentioned_group_message(msg):
+                self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
+            return
+
+        await self._ensure_forum_commands(msg)
+
+        # Build a text event from the rich message content
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        event.text = self._clean_bot_trigger_text(text)
+        await self._cache_replied_media(msg, event)
+        event = self._apply_telegram_group_observe_attribution(event)
+        self._enqueue_text_event(event)
+
+    # ----------------------------------------------------------------------
     # Text message aggregation (handles Telegram client-side splits)
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text message batching.

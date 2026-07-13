@@ -21,6 +21,7 @@ from typing import Any
 RELEASE_SCHEMA = "muncho-writer-only-release.v1"
 UNIT_BUNDLE_SCHEMA = "muncho-writer-only-systemd-bundle.v2"
 RELEASE_MANIFEST_NAME = "release-manifest.json"
+MAX_RELEASE_MANIFEST_BYTES = 8 * 1024 * 1024
 INCOMPLETE_MARKER_NAME = ".release-build-incomplete"
 WRITER_MODULE = "gateway.canonical_writer_bootstrap"
 GATEWAY_MODULE = "gateway.canonical_writer_gateway_bootstrap"
@@ -522,6 +523,7 @@ __all__ = [
     "GATEWAY_MODULE",
     "GATEWAY_UNIT_NAME",
     "INCOMPLETE_MARKER_NAME",
+    "MAX_RELEASE_MANIFEST_BYTES",
     "RELEASE_MANIFEST_NAME",
     "RELEASE_SCHEMA",
     "ReleaseManifest",

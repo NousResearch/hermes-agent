@@ -93,6 +93,7 @@ from gateway.canonical_writer_release_contract import (
     DEFAULT_RELEASE_BASE,
     GATEWAY_MODULE,
     INCOMPLETE_MARKER_NAME,
+    MAX_RELEASE_MANIFEST_BYTES,
     RELEASE_MANIFEST_NAME,
     RELEASE_SCHEMA,
     WRITER_MODULE,
@@ -114,7 +115,6 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _MAX_ROOT_JSON_BYTES = 1024 * 1024
-_MAX_RELEASE_MANIFEST_BYTES = 8 * 1024 * 1024
 _MAX_CONFIG_BYTES = 2 * 1024 * 1024
 _ROOT_JSON_MODE = 0o400
 _RELEASE_MANIFEST_KEYS = frozenset({
@@ -392,7 +392,7 @@ def load_release_manifest(
     raw = _read_trusted_root_file(
         root / RELEASE_MANIFEST_NAME,
         allowed_modes=frozenset({0o400}),
-        maximum=_MAX_RELEASE_MANIFEST_BYTES,
+        maximum=MAX_RELEASE_MANIFEST_BYTES,
     )
     value = _decode_strict_json(raw, label="release manifest")
     release = _parse_release_manifest_mapping(value, expected_revision=revision)

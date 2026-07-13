@@ -392,6 +392,61 @@ def test_completed_release_reconstructs_manifest_after_publication(
         writer_release._validate_completed_release(spec)
 
 
+def test_completed_release_uses_the_shared_planner_manifest_bound(
+    tmp_path, monkeypatch
+):
+    spec, _manifest = _completed_release(tmp_path, monkeypatch)
+    observed: list[int] = []
+    read_stable_root_file = writer_release._read_stable_root_file
+
+    def capture_manifest_bound(path, *, maximum_bytes, exact_mode):
+        if path == spec.release_root / writer_release.RELEASE_MANIFEST_NAME:
+            observed.append(maximum_bytes)
+        return read_stable_root_file(
+            path,
+            maximum_bytes=maximum_bytes,
+            exact_mode=exact_mode,
+        )
+
+    monkeypatch.setattr(
+        writer_release,
+        "_read_stable_root_file",
+        capture_manifest_bound,
+    )
+
+    writer_release._validate_completed_release(spec)
+
+    assert observed == [writer_release.MAX_RELEASE_MANIFEST_BYTES]
+    assert writer_release.MAX_RELEASE_MANIFEST_BYTES > writer_release._MAX_RECEIPT_BYTES
+
+
+def test_manifest_bound_accepts_more_than_a_receipt_and_rejects_its_own_overflow(
+    tmp_path, monkeypatch
+):
+    _allow_local_owner(monkeypatch)
+    manifest = tmp_path / writer_release.RELEASE_MANIFEST_NAME
+    manifest.write_bytes(b"m" * (writer_release._MAX_RECEIPT_BYTES + 1))
+    manifest.chmod(writer_release._MANIFEST_MODE)
+
+    raw = writer_release._read_stable_root_file(
+        manifest,
+        maximum_bytes=writer_release.MAX_RELEASE_MANIFEST_BYTES,
+        exact_mode=writer_release._MANIFEST_MODE,
+    )
+
+    assert len(raw) == writer_release._MAX_RECEIPT_BYTES + 1
+    manifest.chmod(0o600)
+    with manifest.open("r+b") as handle:
+        handle.truncate(writer_release.MAX_RELEASE_MANIFEST_BYTES + 1)
+    manifest.chmod(writer_release._MANIFEST_MODE)
+    with pytest.raises(RuntimeError, match="evidence file is not exact"):
+        writer_release._read_stable_root_file(
+            manifest,
+            maximum_bytes=writer_release.MAX_RELEASE_MANIFEST_BYTES,
+            exact_mode=writer_release._MANIFEST_MODE,
+        )
+
+
 def _host_receipt(plan: dict[str, object], observed_at_unix: int) -> dict[str, object]:
     unsigned = {
         "schema": "muncho-full-canary-host-identity.v1",

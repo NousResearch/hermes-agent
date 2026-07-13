@@ -39,6 +39,7 @@ from gateway.canonical_writer_release_contract import (
     GATEWAY_MODULE,
     GATEWAY_UNIT_NAME,
     INCOMPLETE_MARKER_NAME,
+    MAX_RELEASE_MANIFEST_BYTES,
     RELEASE_MANIFEST_NAME,
     RELEASE_SCHEMA,
     TMPFILES_NAME,
@@ -824,6 +825,8 @@ def _seal_release_tree(root: Path) -> None:
 def _write_release_manifest(root: Path, manifest: ReleaseManifest) -> None:
     path = root / RELEASE_MANIFEST_NAME
     raw = _canonical_bytes(manifest.to_mapping()) + b"\n"
+    if len(raw) > MAX_RELEASE_MANIFEST_BYTES:
+        raise RuntimeError("release manifest exceeds its bound")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -2258,7 +2261,7 @@ def _validate_completed_release(spec: ReleaseBuildSpec) -> dict[str, Any]:
     manifest_path = spec.release_root / RELEASE_MANIFEST_NAME
     manifest_raw = _read_stable_root_file(
         manifest_path,
-        maximum_bytes=_MAX_RECEIPT_BYTES,
+        maximum_bytes=MAX_RELEASE_MANIFEST_BYTES,
         exact_mode=_MANIFEST_MODE,
     )
     manifest_value = _decode_canonical_mapping(

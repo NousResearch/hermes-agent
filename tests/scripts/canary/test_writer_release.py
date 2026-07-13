@@ -1025,6 +1025,27 @@ def test_tree_manifest_rejects_external_symlink_and_special_file(tmp_path):
         collect_tree_entries(root)
 
 
+def test_manifest_writer_counts_trailing_newline_before_creating_path(tmp_path):
+    root = tmp_path / "release"
+    root.mkdir()
+    empty_size = len(writer_release._canonical_bytes({"payload": ""}))
+    mapping = {
+        "payload": "x" * (writer_release.MAX_RELEASE_MANIFEST_BYTES - empty_size)
+    }
+    assert (
+        len(writer_release._canonical_bytes(mapping))
+        == writer_release.MAX_RELEASE_MANIFEST_BYTES
+    )
+
+    with pytest.raises(RuntimeError, match="manifest exceeds its bound"):
+        writer_release._write_release_manifest(
+            root,
+            SimpleNamespace(to_mapping=lambda: mapping),
+        )
+
+    assert not os.path.lexists(root / writer_release.RELEASE_MANIFEST_NAME)
+
+
 def test_installed_runtime_requires_copied_venv_and_no_dynamic_site_path(tmp_path):
     spec = _spec(tmp_path)
     managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"

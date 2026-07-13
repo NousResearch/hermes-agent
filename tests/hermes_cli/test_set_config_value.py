@@ -287,7 +287,9 @@ class TestStringTypedConfigValues:
         assert type(node) is type(expected)
 
     def test_unknown_keys_keep_existing_coercion(self, _isolated_hermes_home):
-        set_config_value("custom.enabled", "off")
+        # ``custom`` is not a known top-level key, so it now requires --force
+        # (schema validation, #34067); coercion behavior is unchanged.
+        set_config_value("custom.enabled", "off", force=True)
 
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
@@ -383,15 +385,33 @@ class TestSchemaValidation:
         # Nothing was written.
         assert "discord" not in _read_config(_isolated_hermes_home).split("gateway:")[-1] if "gateway:" in _read_config(_isolated_hermes_home) else True
 
-    def test_platforms_prefix_suggests_top_level(self, _isolated_hermes_home, capsys):
-        """``platforms.discord.foo`` should suggest ``discord.foo`` since
-        DEFAULT_CONFIG puts platform configs at the top level, not under
-        a ``platforms:`` namespace."""
+    def test_platforms_container_is_accepted(self, _isolated_hermes_home):
+        """``platforms.<name>.<field>`` is a valid current shape: gateway/
+        config.py resolves a top-level ``platforms`` map in addition to the
+        top-level platform blocks, so it must NOT be refused."""
+        set_config_value("platforms.discord.enabled", "true")
+        content = _read_config(_isolated_hermes_home)
+        assert "enabled: true" in content
+
+    def test_gateway_platforms_nested_is_accepted(self, _isolated_hermes_home):
+        """Docs configure platforms under ``gateway.platforms.<name>`` — the
+        canonical layout must validate as known."""
+        set_config_value("gateway.platforms.my_platform.extra.token", "abc")
+        content = _read_config(_isolated_hermes_home)
+        assert "token: abc" in content
+
+    def test_unknown_approvals_subkey_is_refused(self, _isolated_hermes_home, capsys):
+        """``approvals`` is a defined schema, so a typo'd sub-key must be
+        rejected rather than silently written."""
         with pytest.raises(SystemExit):
-            set_config_value("platforms.discord.gateway_restart_notification", "false")
-        out = capsys.readouterr().out
-        assert "Did you mean" in out
-        assert "discord.gateway_restart_notification" in out
+            set_config_value("approvals.notarealkey", "true")
+
+    def test_known_approvals_subkey_is_accepted(self, _isolated_hermes_home):
+        """Real ``approvals.*`` keys still validate."""
+        set_config_value("approvals.mode", "off")
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["approvals"]["mode"] == "off"
 
     def test_close_typo_suggests_correct_key(self, _isolated_hermes_home, capsys):
         """Typo'd top-level keys should get a fuzzy-match suggestion."""
@@ -452,6 +472,9 @@ class TestValidateConfigKey:
         "mcp_servers.foo.command",
         "providers.openrouter.api_key",
         "gateway.strict",
+        "platforms.discord.enabled",
+        "gateway.platforms.my_platform.extra.token",
+        "approvals.mode",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
@@ -460,7 +483,6 @@ class TestValidateConfigKey:
 
     @pytest.mark.parametrize("key,expected_in_suggestion", [
         ("gateway.discord.gateway_restart_notification", None),  # no close suggestion
-        ("platforms.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
         ("disco", "discord"),
         ("agent.max_turn", "agent.max_turns"),
     ])

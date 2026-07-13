@@ -1,7 +1,7 @@
 from gateway.heartbeat_status import format_long_running_heartbeat
 
 
-def test_rich_heartbeat_includes_iteration_todo_tool_preview_and_history():
+def test_rich_heartbeat_includes_iteration_todo_tool_and_latest_activity():
     text = format_long_running_heartbeat(
         29 * 60,
         {
@@ -36,10 +36,28 @@ def test_rich_heartbeat_includes_iteration_todo_tool_preview_and_history():
     assert "• todo: `Patch heartbeat bubble with richer live details` · 2m 5s" in text
     assert "• tool: `terminal` · 1m 30s" in text
     assert "• last:" not in text
-    assert "• doing:" in text
-    assert "    ▶ done · `search_files` · took 2s" in text
-    assert "    ▶ done · `read_file` · took 0s" in text
-    assert "    ▶ running · `pytest tests/gateway/test_heartbeat_status.py -q` · 1m 30s" in text
+    assert "• doing: running · `pytest tests/gateway/test_heartbeat_status.py -q` · 1m 30s" in text
+    assert "▶" not in text
+    assert "search_files" not in text
+    assert "read_file" not in text
+
+
+def test_heartbeat_renders_one_latest_completed_activity_line():
+    text = format_long_running_heartbeat(
+        123,
+        {
+            "recent_tool_activity": [
+                {"label": "patch", "duration": 1.0, "state": "done"},
+                {"label": "terminal", "duration": 0.0, "state": "done"},
+                {"label": "patch", "duration": 1.0, "state": "done"},
+                "ignored trailing activity",
+            ],
+        },
+    )
+
+    doing_lines = [line for line in text.splitlines() if line.startswith("• doing:")]
+    assert doing_lines == ["• doing: done · `patch` · took 1s"]
+    assert "▶" not in text
 
 
 def test_heartbeat_elapsed_seconds_use_human_units():

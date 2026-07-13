@@ -124,14 +124,13 @@ def format_long_running_heartbeat(
 
     history = activity.get("recent_tool_activity")
     if isinstance(history, list) and history:
-        lines.append("• doing:")
-        for item in history[-3:]:
-            if isinstance(item, dict):
-                lines.append(_code_line(
-                    f"    ▶ {_action_state(item)} · ",
-                    item.get("label") or item.get("name") or "tool",
-                    _action_duration_suffix(item),
-                ))
+        item = next((item for item in reversed(history) if isinstance(item, dict)), None)
+        if item is not None:
+            lines.append(_code_line(
+                f"• doing: {_action_state(item)} · ",
+                item.get("label") or item.get("name") or "tool",
+                _action_duration_suffix(item),
+            ))
 
     # Bound vertical and total size; this bubble edits every minute.
     lines = lines[:_MAX_LINES]

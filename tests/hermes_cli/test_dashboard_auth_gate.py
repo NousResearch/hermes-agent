@@ -164,7 +164,7 @@ def _stub_uvicorn_run(monkeypatch):
             self.should_exit = True
 
     monkeypatch.setattr(uvicorn, "Config", _FakeConfig)
-    monkeypatch.setattr(web_server, "load_config", lambda: {"dashboard": {}})
+    monkeypatch.setattr(web_server, "load_config_readonly", lambda: {"dashboard": {}})
     monkeypatch.setattr(uvicorn, "Server", lambda config: _FakeServer())
     return captured
 

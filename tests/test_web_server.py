@@ -76,7 +76,7 @@ def _stub_uvicorn(monkeypatch):
         captured["server"] = server
         return server
 
-    monkeypatch.setattr(web_server, "load_config", lambda: {"dashboard": {}})
+    monkeypatch.setattr(web_server, "load_config_readonly", lambda: {"dashboard": {}})
     monkeypatch.setattr(uvicorn, "Server", _server_factory)
     return captured
 
@@ -171,7 +171,7 @@ def test_start_server_can_enable_loopback_ws_ping_for_tunneled_deployments(monke
     captured = _stub_uvicorn(monkeypatch)
     monkeypatch.setattr(
         web_server,
-        "load_config",
+        "load_config_readonly",
         lambda: {
             "dashboard": {
                 "ws_ping_interval": 15,
@@ -190,7 +190,7 @@ def test_loopback_ws_ping_interval_implies_timeout(monkeypatch):
     captured = _stub_uvicorn(monkeypatch)
     monkeypatch.setattr(
         web_server,
-        "load_config",
+        "load_config_readonly",
         lambda: {"dashboard": {"ws_ping_interval": 15}},
     )
 
@@ -258,7 +258,7 @@ def test_start_server_uses_custom_shutdown_config(monkeypatch):
     captured = _stub_uvicorn(monkeypatch)
     monkeypatch.setattr(
         web_server,
-        "load_config",
+        "load_config_readonly",
         lambda: {
             "dashboard": {
                 "graceful_shutdown_timeout": 4,

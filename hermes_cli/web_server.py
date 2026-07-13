@@ -68,6 +68,7 @@ from hermes_cli.config import (
     get_hermes_home,
     get_process_hermes_home,
     load_config,
+    load_config_readonly,
     load_env,
     read_raw_config,
     save_config,
@@ -150,7 +151,11 @@ def _signal_name(signum: int) -> str:
 
 
 def _arm_dashboard_hard_exit_failsafe(signum: int, grace: float) -> None:
-    """Force dashboard exit if graceful shutdown stalls past the grace window."""
+    """Force dashboard exit if process teardown stalls past the grace window.
+
+    The timer deliberately remains armed after Uvicorn shutdown so it also
+    bounds slow atexit handlers and non-daemon worker threads (#58005).
+    """
 
     def _hard_exit() -> None:
         try:
@@ -19969,7 +19974,7 @@ def start_server(
     # half-open proxy/tunnel sockets are reaped. Non-loopback binds keep the
     # 20/20 default for public half-open detection.
     _is_loopback = host in ("127.0.0.1", "localhost", "::1")
-    _dashboard_config = load_config()
+    _dashboard_config = load_config_readonly()
     _ws_ping_interval, _ws_ping_timeout = _dashboard_ws_ping(
         _dashboard_config,
         is_loopback=_is_loopback,

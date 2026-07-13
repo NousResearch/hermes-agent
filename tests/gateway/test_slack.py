@@ -10,9 +10,12 @@ We mock the slack modules at import time to avoid collection errors.
 
 import asyncio
 import contextlib
+import importlib
+from importlib.machinery import PathFinder
 import os
 import sys
 import time
+from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
@@ -33,35 +36,55 @@ from gateway.platforms.base import (
 # ---------------------------------------------------------------------------
 
 
+def _load_installed_package(name):
+    """Load a real installed package even if another test left a module mock."""
+    if PathFinder.find_spec(name) is None:
+        return None
+
+    prefix = f"{name}."
+    displaced = {
+        module_name: sys.modules.pop(module_name)
+        for module_name in tuple(sys.modules)
+        if (module_name == name or module_name.startswith(prefix))
+        and not isinstance(sys.modules[module_name], ModuleType)
+    }
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        sys.modules.update(displaced)
+        return None
+
+
 def _ensure_slack_mock():
-    """Install mock slack modules so SlackAdapter can be imported."""
-    if "slack_bolt" in sys.modules and hasattr(sys.modules["slack_bolt"], "__file__"):
-        return  # Real library installed
+    """Install mocks only for Slack dependencies that are actually unavailable."""
+    if _load_installed_package("slack_bolt") is None:
+        slack_bolt = MagicMock()
+        slack_bolt.async_app.AsyncApp = MagicMock
+        slack_bolt.adapter.socket_mode.async_handler.AsyncSocketModeHandler = MagicMock
+        for name, mod in [
+            ("slack_bolt", slack_bolt),
+            ("slack_bolt.async_app", slack_bolt.async_app),
+            ("slack_bolt.adapter", slack_bolt.adapter),
+            ("slack_bolt.adapter.socket_mode", slack_bolt.adapter.socket_mode),
+            (
+                "slack_bolt.adapter.socket_mode.async_handler",
+                slack_bolt.adapter.socket_mode.async_handler,
+            ),
+        ]:
+            sys.modules.setdefault(name, mod)
 
-    slack_bolt = MagicMock()
-    slack_bolt.async_app.AsyncApp = MagicMock
-    slack_bolt.adapter.socket_mode.async_handler.AsyncSocketModeHandler = MagicMock
+    if _load_installed_package("slack_sdk") is None:
+        slack_sdk = MagicMock()
+        slack_sdk.web.async_client.AsyncWebClient = MagicMock
+        for name, mod in [
+            ("slack_sdk", slack_sdk),
+            ("slack_sdk.web", slack_sdk.web),
+            ("slack_sdk.web.async_client", slack_sdk.web.async_client),
+        ]:
+            sys.modules.setdefault(name, mod)
 
-    slack_sdk = MagicMock()
-    slack_sdk.web.async_client.AsyncWebClient = MagicMock
-
-    for name, mod in [
-        ("slack_bolt", slack_bolt),
-        ("slack_bolt.async_app", slack_bolt.async_app),
-        ("slack_bolt.adapter", slack_bolt.adapter),
-        ("slack_bolt.adapter.socket_mode", slack_bolt.adapter.socket_mode),
-        (
-            "slack_bolt.adapter.socket_mode.async_handler",
-            slack_bolt.adapter.socket_mode.async_handler,
-        ),
-        ("slack_sdk", slack_sdk),
-        ("slack_sdk.web", slack_sdk.web),
-        ("slack_sdk.web.async_client", slack_sdk.web.async_client),
-    ]:
-        sys.modules.setdefault(name, mod)
-
-    # aiohttp is imported alongside slack-bolt; mock it if missing
-    sys.modules.setdefault("aiohttp", MagicMock())
+    aiohttp_module = _load_installed_package("aiohttp") or MagicMock()
+    sys.modules.setdefault("aiohttp", aiohttp_module)
 
 
 _ensure_slack_mock()
@@ -72,6 +95,15 @@ import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+
+
+def test_slack_mock_bootstrap_preserves_installed_packages():
+    """Installed Slack dependencies must remain importable as real packages."""
+    for package in ("slack_sdk", "aiohttp"):
+        if PathFinder.find_spec(package) is not None:
+            assert isinstance(sys.modules[package], ModuleType)
+    if PathFinder.find_spec("slack_sdk") is not None:
+        assert isinstance(importlib.import_module("slack_sdk.errors"), ModuleType)
 
 
 async def _pending_for_fake_task():

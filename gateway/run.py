@@ -20220,8 +20220,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             async def _roll_progress_overflow_if_needed() -> bool:
                 """Start fresh editable progress bubbles before a bubble exceeds limit.
 
-                Returns True when it delivered/split the current buffer and the
-                caller should skip the normal send/edit path for this tick.
+                Returns True when it delivered/split the current buffer, or when
+                a transient edit failure left the buffer and message identity
+                intact for a later retry.  In either case the caller should skip
+                the normal send/edit path for this tick.
                 """
                 nonlocal progress_msg_id, progress_lines, can_edit
                 if not progress_lines or not can_edit:
@@ -20234,6 +20236,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if progress_msg_id is not None:
                     result = await _edit_progress_message(progress_msg_id, first_text)
                     if not result.success:
+                        if getattr(result, "retryable", False):
+                            logger.debug(
+                                "[%s] Transient overflow edit failure — keeping can_edit=True",
+                                adapter.name,
+                            )
+                            return True
                         can_edit = False
                         # Fall back to the existing non-edit behavior below.
                         return False

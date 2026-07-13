@@ -2349,6 +2349,43 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             if finalize:
                 await self.stop_typing(chat_id, metadata=metadata)
+            aiohttp_module = globals().get("aiohttp")
+            connection_error_type = getattr(
+                aiohttp_module, "ClientConnectionError", None
+            )
+            permanent_tls_error_types = tuple(
+                error_type
+                for error_type in (
+                    getattr(aiohttp_module, "ClientSSLError", None),
+                    getattr(aiohttp_module, "ServerFingerprintMismatch", None),
+                )
+                if isinstance(error_type, type)
+            )
+            is_permanent_tls_error = bool(permanent_tls_error_types) and isinstance(
+                e, permanent_tls_error_types
+            )
+            is_transient_transport_error = isinstance(e, TimeoutError) or (
+                isinstance(connection_error_type, type)
+                and isinstance(e, connection_error_type)
+                and not is_permanent_tls_error
+            )
+            if is_transient_transport_error:
+                # chat.update is idempotent: keep this message ID after a
+                # transport failure so a later edit can catch up. Treating the
+                # failure as permanent makes every later tool update a new post.
+                logger.error(
+                    "[Slack] transient chat.update failure on message %s in channel %s: %s",
+                    message_id,
+                    chat_id,
+                    e,
+                    exc_info=True,
+                )
+                return SendResult(
+                    success=False,
+                    error=str(e),
+                    retryable=True,
+                    error_kind="transient",
+                )
             logger.error(
                 "[Slack] Failed to edit message %s in channel %s: %s",
                 message_id,

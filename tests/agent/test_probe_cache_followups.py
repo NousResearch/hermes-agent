@@ -243,6 +243,61 @@ class TestLocalhostIPv4SiblingSites:
 
         assert mock_get.call_args[0][0].startswith("http://127.0.0.1:1234")
 
+    def test_fetch_endpoint_model_metadata_generic_probe_uses_ipv4(self):
+        """The generic (non-LM-Studio) /models fetch loop must also rewrite
+        localhost->127.0.0.1 before probing, like the LM Studio branch above."""
+        from agent import model_metadata
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        model_metadata._endpoint_model_metadata_cache.clear()
+        model_metadata._endpoint_model_metadata_cache_time.clear()
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {"data": []}
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("agent.model_metadata.requests.get", return_value=resp) as mock_get:
+            fetch_endpoint_model_metadata("http://localhost:8000/v1")
+
+        assert mock_get.call_args[0][0].startswith("http://127.0.0.1:8000")
+
+    def test_fetch_endpoint_model_metadata_llamacpp_props_followup_uses_ipv4(self):
+        """The llama.cpp /props context-length follow-up must also rewrite
+        localhost->127.0.0.1 before probing, not just the initial /models call."""
+        from agent import model_metadata
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        model_metadata._endpoint_model_metadata_cache.clear()
+        model_metadata._endpoint_model_metadata_cache_time.clear()
+
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.raise_for_status = MagicMock()
+        models_resp.json.return_value = {
+            "data": [{"id": "llama-3-8b", "owned_by": "llamacpp"}],
+        }
+
+        props_resp = MagicMock()
+        props_resp.ok = True
+        props_resp.json.return_value = {
+            "default_generation_settings": {"n_ctx": 32768},
+            "model_alias": "llama-3-8b",
+        }
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch(
+                 "agent.model_metadata.requests.get",
+                 side_effect=[models_resp, props_resp],
+             ) as mock_get:
+            result = fetch_endpoint_model_metadata("http://localhost:8000/v1")
+
+        assert mock_get.call_count == 2
+        props_call_url = mock_get.call_args_list[1][0][0]
+        assert props_call_url.startswith("http://127.0.0.1:8000")
+        assert result["llama-3-8b"]["context_length"] == 32768
+
 
 class TestContextCacheKeyNormalization:
     def test_trailing_slash_variants_share_one_entry(self, tmp_path, monkeypatch):

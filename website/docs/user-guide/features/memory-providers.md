@@ -613,6 +613,31 @@ Base URL precedence is `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:
 
 **Support:** [Discord](https://supermemory.link/discord) · [support@supermemory.com](mailto:support@supermemory.com)
 
+### Nexusyn
+
+Multi-agent memory engine with hybrid retrieval (vector + full-text + reranking), per-agent attribution, and project scoping. A server-side compile pipeline automatically distills raw memories into wiki articles, lessons, decisions and error reports — visible in the Nexusyn dashboard. Built for teams running several agents (Hermes, IDEs, CLIs) against one shared memory.
+
+| | |
+|---|---|
+| **Best for** | Multi-agent teams sharing one memory with per-agent attribution and project scoping |
+| **Requires** | `pip install hermes-nexusyn` + `hermes-nexusyn install` + [API token](https://app.nexusyn.ai) (cloud) or a self-hosted Nexusyn engine |
+| **Data storage** | Nexusyn Cloud or self-hosted |
+| **Cost** | Free tier; paid plans by monthly query volume / free (self-hosted) |
+
+**Tools (4):** `nexusyn_search` (hybrid search), `nexusyn_query` (grounded answer with sources), `nexusyn_remember` (persist a fact), `nexusyn_forget` (delete by id)
+
+**Architecture:** Prefetch runs a hybrid search on the user message in the background and injects a `[Nexusyn Memory]` block on the next turn. Turn persistence is configurable: `session` (default — one digest ingested at session end/compression), `turn` (every turn), or `off`. Built-in memory writes are mirrored. Ingested content is distilled server-side, so the plugin needs no client-side extraction. Recall with a project set returns that project's memories plus globals.
+
+**Setup:**
+```bash
+pip install hermes-nexusyn
+hermes-nexusyn install     # copies the plugin into $HERMES_HOME/plugins/nexusyn/
+hermes config set memory.provider nexusyn
+hermes memory setup        # or: echo "NEXUSYN_API_KEY=your-token" >> ~/.hermes/.env
+```
+
+**Config reference:** [nexusyn/hermes-nexusyn](https://github.com/nexusyn/hermes-nexusyn) (standalone plugin repo)
+
 ### Memori
 
 Structured long-term memory using Memori Cloud, with background completed-turn capture, tool-aware turn context, and explicit recall tools for facts, summaries, quota, signup, and feedback.
@@ -648,6 +673,7 @@ hermes memory setup
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud/Self-hosted | Free/Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
+| **Nexusyn** | Cloud/Self-hosted | Free/Paid | 4 | `hermes-nexusyn` | Per-agent attribution + project scoping + server-side distillation |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
 
 ## Profile Isolation

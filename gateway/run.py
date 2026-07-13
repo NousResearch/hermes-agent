@@ -6349,6 +6349,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         reply_anchor = self._reply_anchor_for_event(event)
         thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+        # #26024: tag the busy-ack with a structured marker so platform
+        # adapters can bypass response-caching (e.g. LINE postback cache)
+        # without string-matching operator-controlled template text. A
+        # localized / emoji-free template must still surface as a visible
+        # bubble rather than being swallowed into a pending-button cache.
+        thread_meta = dict(thread_meta or {})
+        thread_meta["busy_ack"] = True
         try:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,

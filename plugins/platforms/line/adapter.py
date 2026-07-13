@@ -1091,7 +1091,13 @@ class LineAdapter(BasePlatformAdapter):
         # System busy-acks (interrupting / queued / steered) bypass the
         # postback cache and route directly to LINE so they reach the user
         # as visible bubbles. Source: PR #18153.
-        if _is_system_bypass(content):
+        #
+        # #26024: prefer the structured `busy_ack` delivery marker over
+        # prefix matching. Busy-ack templates are operator-configurable
+        # (localized / emoji-free), so string-prefix detection alone can
+        # miss them and cache the ack instead of displaying it. The prefix
+        # check is kept as a fallback for callers that don't pass metadata.
+        if (metadata or {}).get("busy_ack") or _is_system_bypass(content):
             return await self._send_text_chunks(chat_id, content, force_push=False)
 
         # If the chat has a PENDING postback button outstanding, route the

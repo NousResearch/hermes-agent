@@ -53,6 +53,17 @@ class ReadOnlySourceBuild(_build):
             self.build_base = _temporary_build_dir("build")
         super().finalize_options()
 
+    def run(self) -> None:
+        # pyproject's static data-files table takes precedence over setup()
+        # keyword arguments. Merge directory-preserving skill trees only after
+        # configuration has loaded, immediately before wheel build/install.
+        existing = list(self.distribution.data_files or [])
+        self.distribution.data_files = existing + [
+            *_data_file_tree("skills"),
+            *_data_file_tree("optional-skills"),
+        ]
+        super().run()
+
 
 class ReadOnlySourceEggInfo(_egg_info):
     def finalize_options(self) -> None:
@@ -68,7 +79,11 @@ def _data_file_tree(root_name: str) -> list[tuple[str, list[str]]]:
     root = REPO_ROOT / root_name
     grouped: defaultdict[str, list[str]] = defaultdict(list)
     for path in sorted(root.rglob("*")):
-        if not path.is_file():
+        if (
+            not path.is_file()
+            or "__pycache__" in path.parts
+            or path.suffix in {".pyc", ".pyo"}
+        ):
             continue
         rel_path = path.relative_to(REPO_ROOT)
         grouped[str(rel_path.parent)].append(str(rel_path))
@@ -80,8 +95,4 @@ setup(
         "build": ReadOnlySourceBuild,
         "egg_info": ReadOnlySourceEggInfo,
     },
-    data_files=[
-        *_data_file_tree("skills"),
-        *_data_file_tree("optional-skills"),
-    ]
 )

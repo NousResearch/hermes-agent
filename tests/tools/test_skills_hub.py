@@ -1835,6 +1835,24 @@ class TestOptionalSkillSourceMetadata:
         assert meta.repo == "NousResearch/hermes-agent"
         assert meta.path == "optional-skills/finance/3-statement-model"
 
+    def test_scan_all_accepts_install_prefix_but_rejects_nested_support_skills(self, tmp_path):
+        optional_root = tmp_path / "venv" / "lib" / "site-packages" / "optional-skills"
+        real = optional_root / "research" / "real-skill"
+        nested = real / "references" / "archived-skill"
+        nested.mkdir(parents=True)
+        (real / "SKILL.md").write_text(
+            "---\nname: real-skill\ndescription: real\n---\n", encoding="utf-8"
+        )
+        (nested / "SKILL.md").write_text(
+            "---\nname: archived-skill\ndescription: nested\n---\n", encoding="utf-8"
+        )
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+
+        assert [meta.name for meta in src._scan_all()] == ["real-skill"]
+        assert src._find_skill_dir("archived-skill") is None
+
 
 class TestOptionalSkillSourceBinaryAssets:
     def test_fetch_preserves_binary_assets(self, tmp_path):

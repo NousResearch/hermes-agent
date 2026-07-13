@@ -1,7 +1,13 @@
 import ast
+import json
+import os
 import re
+import shutil
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
@@ -115,6 +121,106 @@ def test_manifest_includes_bundled_skills():
 
     assert "graft skills" in manifest
     assert "graft optional-skills" in manifest
+
+
+def test_built_wheel_contains_bundled_skill_files(tmp_path):
+    """An isolated wheel install must seed complete bundled skills.
+
+    Skills are runtime data, not an import package: install the real wheel into
+    a clean venv, call the real sync path away from the checkout, and prove the
+    GitHub credential helper reaches the active HERMES_HOME.
+    """
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is required to exercise the project's wheel build convention")
+    source_copy = tmp_path / "source"
+    shutil.copytree(
+        REPO_ROOT,
+        source_copy,
+        ignore=shutil.ignore_patterns(
+            ".git",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".venv",
+            "venv",
+            "__pycache__",
+            "*.egg-info",
+            "build",
+            "dist",
+        ),
+    )
+    wheel_dir = tmp_path / "wheel"
+    result = subprocess.run(
+        [uv, "build", "--wheel", "--out-dir", str(wheel_dir), str(source_copy)],
+        cwd=source_copy,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not (REPO_ROOT / "build").exists(), (
+        "wheel regression must not dirty the source tree"
+    )
+
+    wheels = list(wheel_dir.glob("*.whl"))
+    assert len(wheels) == 1
+    with ZipFile(wheels[0]) as archive:
+        wheel_skill_files = set()
+        for name in archive.namelist():
+            assert "__pycache__" not in Path(name).parts
+            assert Path(name).suffix not in {".pyc", ".pyo"}
+            assert not name.startswith("skills/"), (
+                "bundled skills must not be an import package"
+            )
+            if ".data/data/skills/" in name and not name.endswith("/"):
+                wheel_skill_files.add(name.split(".data/data/skills/", 1)[1])
+    source_skill_files = {
+        path.relative_to(REPO_ROOT / "skills").as_posix()
+        for path in (REPO_ROOT / "skills").rglob("*")
+        if path.is_file()
+        and "__pycache__" not in path.parts
+        and path.suffix not in {".pyc", ".pyo"}
+    }
+    assert wheel_skill_files == source_skill_files
+
+    venv = tmp_path / "venv"
+    subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
+    python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    install = subprocess.run(
+        [str(python), "-m", "pip", "install", str(wheels[0])],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert install.returncode == 0, install.stderr
+
+    hermes_home = tmp_path / "hermes-home"
+    probe = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "import json; from tools.skills_sync import _get_bundled_dir, sync_skills; "
+            "from tools.skills_hub import OptionalSkillSource; "
+            "result = sync_skills(quiet=True); optional = OptionalSkillSource()._scan_all(); "
+            "print(json.dumps({'bundled': str(_get_bundled_dir()), 'copied': len(result['copied']), "
+            "'optional_count': len(optional), 'optional_names': [item.name for item in optional]}))",
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "HERMES_HOME": str(hermes_home)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
+    observed = json.loads(probe.stdout)
+    assert "site-packages" not in observed["bundled"]
+    assert observed["copied"] > 0, observed
+    assert observed["optional_count"] > 0, observed
+    assert "3-statement-model" in observed["optional_names"]
+    assert (
+        hermes_home / "skills/github/github-auth/scripts/git-credential-token.py"
+    ).is_file()
 
 
 def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():

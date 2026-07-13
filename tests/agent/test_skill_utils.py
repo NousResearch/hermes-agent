@@ -239,6 +239,22 @@ def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     assert is_excluded_skill_path(scripts_skill / "SKILL.md") is False
 
 
+def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monkeypatch):
+    discovery_root = tmp_path / "site-packages" / "skills"
+    umbrella = discovery_root / "category" / "umbrella"
+    nested = umbrella / "references" / "archived" / "SKILL.md"
+    nested.parent.mkdir(parents=True)
+    (umbrella / "SKILL.md").write_text("---\nname: umbrella\n---\n", encoding="utf-8")
+    nested.write_text("---\nname: archived\n---\n", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    relative = nested.relative_to(discovery_root)
+    assert is_skill_support_path(relative, root=discovery_root) is True
+    assert is_excluded_skill_path(relative, root=discovery_root) is True
+
+
 # ── skill_matches_platform on Termux ──────────────────────────────────────
 
 

@@ -211,7 +211,13 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
         return skills
 
     for skill_md in bundled_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(skill_md):
+        # Exclusions apply inside the bundled tree. The install prefix itself
+        # may legitimately contain names such as ``venv`` or ``site-packages``;
+        # treating those parent components as skill content makes every wheel
+        # install discover zero bundled skills.
+        if is_excluded_skill_path(
+            skill_md.relative_to(bundled_dir), root=bundled_dir
+        ):
             continue
         skill_dir = skill_md.parent
         skill_name = _read_skill_name(skill_md, skill_dir.name)
@@ -287,7 +293,9 @@ def _optional_skill_index() -> Dict[str, Tuple[str, str, Path]]:
     if not optional_dir.exists():
         return index
     for skill_md in sorted(optional_dir.rglob("SKILL.md")):
-        if is_excluded_skill_path(skill_md):
+        if is_excluded_skill_path(
+            skill_md.relative_to(optional_dir), root=optional_dir
+        ):
             continue
         src = skill_md.parent
         try:

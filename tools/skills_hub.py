@@ -3266,7 +3266,9 @@ class OptionalSkillSource(SkillSource):
         if not self._optional_dir.is_dir():
             return None
         for skill_md in self._optional_dir.rglob("SKILL.md"):
-            if is_excluded_skill_path(skill_md):
+            if is_excluded_skill_path(
+                skill_md.relative_to(self._optional_dir), root=self._optional_dir
+            ):
                 continue
             if skill_md.parent.name == name:
                 return skill_md.parent
@@ -3279,7 +3281,9 @@ class OptionalSkillSource(SkillSource):
 
         results: List[SkillMeta] = []
         for skill_md in sorted(self._optional_dir.rglob("SKILL.md")):
-            if is_excluded_skill_path(skill_md):
+            if is_excluded_skill_path(
+                skill_md.relative_to(self._optional_dir), root=self._optional_dir
+            ):
                 continue
             parent = skill_md.parent
 

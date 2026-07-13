@@ -91,18 +91,55 @@ def parse_text_skill_invocation(message: str) -> dict[str, str] | None:
 
 
 def resolve_text_skill_invocation(message: str) -> tuple[str, str] | None:
-    """Resolve an explicit text skill invocation to ``(/cmd-key, args)``."""
-    parsed = parse_text_skill_invocation(message)
-    if not parsed:
+    """Resolve an explicit text skill invocation to ``(/cmd-key, args)``.
+
+    Text activations may use multi-word aliases (for example
+    ``skill project handoff summarize this``). Resolve the longest alias that
+    unambiguously prefixes the text after the activator, and return the
+    remaining suffix as the user instruction.
+    """
+    raw = str(message or "").strip()
+    if not raw:
         return None
-    alias = parsed.get("alias_normalized") or ""
-    if not alias:
+    parts = raw.split()
+    if not parts:
         return None
+    activator = _normalize_text_skill_alias(parts[0])
+    if activator not in _TEXT_SKILL_ACTIVATORS:
+        return None
+
+    remainder_parts = parts[1:]
+    remainder_normalized = _normalize_text_skill_alias(" ".join(remainder_parts))
+    if not remainder_normalized:
+        return None
+
+    matches: list[tuple[int, str, str]] = []
     for cmd_key, info in get_skill_commands().items():
         aliases = info.get("aliases_normalized") or []
-        if alias in aliases:
-            return cmd_key, parsed.get("user_instruction", "")
-    return None
+        for alias in aliases:
+            alias = _normalize_text_skill_alias(alias)
+            if not alias:
+                continue
+            if remainder_normalized == alias or remainder_normalized.startswith(f"{alias} "):
+                matches.append((len(alias.split()), cmd_key, alias))
+
+    if not matches:
+        return None
+
+    longest = max(length for length, _, _ in matches)
+    longest_matches = [(cmd_key, alias) for length, cmd_key, alias in matches if length == longest]
+    matched_cmds = {cmd_key for cmd_key, _ in longest_matches}
+    if len(matched_cmds) != 1:
+        logger.warning(
+            "Ambiguous text skill alias %r matched commands: %s",
+            " ".join(remainder_parts[:longest]),
+            sorted(matched_cmds),
+        )
+        return None
+
+    cmd_key, matched_alias = longest_matches[0]
+    instruction = " ".join(remainder_parts[len(matched_alias.split()):]).strip()
+    return cmd_key, instruction
 
 
 def _resolve_skill_commands_platform() -> Optional[str]:
@@ -404,6 +441,23 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     }
                 except Exception:
                     continue
+
+        alias_owners: dict[str, list[str]] = {}
+        for cmd_key, info in _skill_commands.items():
+            for alias in info.get("aliases_normalized") or []:
+                if alias:
+                    alias_owners.setdefault(alias, []).append(cmd_key)
+        for alias, owners in alias_owners.items():
+            if len(owners) > 1:
+                logger.warning(
+                    "Duplicate text skill alias %r declared by commands: %s",
+                    alias,
+                    sorted(owners),
+                )
+                for owner in owners:
+                    _skill_commands[owner].setdefault(
+                        "aliases_colliding_normalized", []
+                    ).append(alias)
     except Exception:
         pass
     return _skill_commands

@@ -40,6 +40,7 @@ import { latchChatActivation } from "@/lib/chat-activation";
 import { readChatPanelCollapsed, toggleChatPanelCollapsed } from "@/lib/chat-panel-collapsed";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
+import { normalizeLearnDeepLinkSeed } from "@/lib/learn-deeplink";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
@@ -1284,13 +1285,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (resumeParam) stickToBottomRef.current = true;
       // One-shot: a ?learn=<text> param (set by the Skills page "Learn a
       // skill" panel) is typed into the composer as a /learn command once the
-      // PTY is up. /learn resolves via command.dispatch → a normal agent turn,
-      // so this reuses the existing composer path — no special PTY protocol.
-      const learnSeed = searchParams.get("learn");
-      if (learnSeed) {
+      // PTY is up. /learn resolves via command.dispatch -> a normal agent turn,
+      // so this reuses the existing composer path. External deep links must be
+      // collapsed to one safe terminal line before we send them into the PTY.
+      const rawLearnSeed = searchParams.get("learn");
+      const learnSeed = normalizeLearnDeepLinkSeed(rawLearnSeed);
+      if (rawLearnSeed !== null) {
         const next = new URLSearchParams(searchParams);
         next.delete("learn");
         setSearchParams(next, { replace: true });
+      }
+      if (learnSeed) {
         const cmd = `/learn ${learnSeed}`.trim();
         // Delay so Ink's composer has mounted and grabbed focus before input.
         setTimeout(() => {

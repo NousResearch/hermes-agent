@@ -10885,10 +10885,12 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
     from tools.process_registry import process_registry
 
     turns = []
+    origins = []
     emitted = []
 
-    def _fake_run_prompt_submit(rid, sid, session, text):
+    def _fake_run_prompt_submit(rid, sid, session, text, *, origin):
         turns.append(text)
+        origins.append(origin)
         with session["history_lock"]:
             session["running"] = False
 
@@ -10923,6 +10925,7 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
         assert "READY on port 8000" in status_text
         assert "READY on port 9000" in status_text
         assert len(turns) == 3
+        assert origins == ["notification", "notification", "notification"]
     finally:
         server._sessions.pop("sid_watch_dedup", None)
         while not process_registry.completion_queue.empty():

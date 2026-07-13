@@ -134,6 +134,7 @@ export interface Msg {
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
+export type TurnOrigin = 'goal' | 'notification' | 'user'
 export type DetailsMode = 'hidden' | 'collapsed' | 'expanded'
 export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 
@@ -180,6 +181,7 @@ export interface SessionInfo {
   update_command?: string
   usage?: Usage
   version?: string
+  turn_origin?: TurnOrigin | null
 }
 
 export interface Usage {

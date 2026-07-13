@@ -1,7 +1,7 @@
 import type { BillingBlock, UsageModelData } from '@hermes/shared/billing'
 import type { HermesSkin } from '@hermes/shared/skin'
 
-import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.js'
+import type { SessionInfo, SlashCategory, SubagentStatus, TurnOrigin, Usage } from './types.js'
 
 /** The cross-surface skin contract (canonical shape in `@hermes/shared`).
  *  Includes the paired light_colors/dark_colors overlays from #20379. */
@@ -562,7 +562,7 @@ export type GatewayEvent =
   | { payload: SessionInfo; session_id?: string; type: 'session.info' }
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
   | { payload?: { kind?: string }; session_id?: string; type: 'reaction' }
-  | { payload?: undefined; session_id?: string; type: 'message.start' }
+  | { payload?: { turn_origin?: TurnOrigin }; session_id?: string; type: 'message.start' }
   | { payload?: { kind?: string; text?: string }; session_id?: string; type: 'status.update' }
   | {
       payload?: {
@@ -680,6 +680,7 @@ export type GatewayEvent =
         rendered?: string
         response_previewed?: boolean
         text?: string
+        turn_origin?: TurnOrigin
         usage?: Usage
       }
       session_id?: string

@@ -65,6 +65,13 @@ describe('applyRuntimeInfo credential warnings', () => {
   })
 })
 
+describe('applyRuntimeInfo turn origin', () => {
+  it('restores the active origin from reconnect session info', () => {
+    expect(applyRuntimeInfo({ turn_origin: 'notification' })).toMatchObject({ turnOrigin: 'notification' })
+    expect(applyRuntimeInfo({ turn_origin: null })).toMatchObject({ turnOrigin: null })
+  })
+})
+
 describe('isSessionGoneError', () => {
   it('is true for 404 / session-not-found, false otherwise', () => {
     expect(isSessionGoneError(new Error('Request failed 404'))).toBe(true)

@@ -222,12 +222,14 @@ def test_drain_fires_queued_prompt_and_claims_running(monkeypatch):
     fired = {}
     monkeypatch.setattr(
         server, "_run_prompt_submit",
-        lambda rid, sid, session, text: fired.update(rid=rid, sid=sid, text=text),
+        lambda rid, sid, session, text, *, origin: fired.update(
+            rid=rid, sid=sid, text=text, origin=origin
+        ),
     )
     session = _session(queued_prompt={"text": "go", "transport": "ws-9"})
 
     assert server._drain_queued_prompt("r1", "sid", session) is True
-    assert fired == {"rid": "r1", "sid": "sid", "text": "go"}
+    assert fired == {"rid": "r1", "sid": "sid", "text": "go", "origin": "user"}
     assert session["running"] is True
     assert session["queued_prompt"] is None
     assert session["transport"] == "ws-9"

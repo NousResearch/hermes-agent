@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 import { $backgroundResume } from '@/store/background-delegation'
 import { $compactionActive } from '@/store/compaction'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
-import { $activeSessionId, $turnStartedAt } from '@/store/session'
+import { $activeSessionId, $turnOrigin, $turnStartedAt } from '@/store/session'
 
 const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentPropsWithoutRef<'div'>> = ({
   children,
@@ -70,12 +70,19 @@ export const ResponseLoadingIndicator: FC = () => {
   const timerKey = useActiveTurnTimerKey()
   const elapsed = useElapsedSeconds(true, timerKey)
   const compacting = useStore($compactionActive)
+  const turnOrigin = useStore($turnOrigin)
 
   return (
     <StatusRow
       className="text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height)"
       data-slot="aui_response-loading"
-      label={compacting ? COMPACTION_LABEL : t.assistant.thread.loadingResponse}
+      label={
+        compacting
+          ? COMPACTION_LABEL
+          : turnOrigin === 'notification'
+            ? t.assistant.thread.processingBackgroundResult
+            : t.assistant.thread.loadingResponse
+      }
     >
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       {compacting && <CompactionHint />}
@@ -128,6 +135,8 @@ const STREAM_STALL_S = 2
 // so that per-token updates re-render only this leaf, not the whole
 // AssistantMessage subtree.
 export const StreamStallIndicator: FC = () => {
+  const { t } = useI18n()
+
   const activity = useAuiState(s => {
     let textLength = 0
 
@@ -145,6 +154,7 @@ export const StreamStallIndicator: FC = () => {
   const [stalled, setStalled] = useState(false)
   const compacting = useStore($compactionActive)
   const turnTimerKey = useActiveTurnTimerKey()
+  const turnOrigin = useStore($turnOrigin)
   // A pending clarify / approval / sudo / secret means the turn is paused on the
   // user, not working — so don't resurrect the "thinking" timer while they
   // decide (matches the pet's awaitingInput pose taking priority over busy).
@@ -168,7 +178,13 @@ export const StreamStallIndicator: FC = () => {
     <StatusRow
       className="mt-1.5"
       data-slot="aui_stream-stall"
-      label={compacting ? COMPACTION_LABEL : 'Hermes is thinking'}
+      label={
+        compacting
+          ? COMPACTION_LABEL
+          : turnOrigin === 'notification'
+            ? t.assistant.thread.processingBackgroundResult
+            : 'Hermes is thinking'
+      }
     >
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       {compacting && <CompactionHint />}

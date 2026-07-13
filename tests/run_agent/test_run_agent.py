@@ -792,6 +792,48 @@ class TestSessionJsonSnapshotOptIn:
             "Opt-in writer must produce session_{sid}.json under logs_dir"
         )
 
+    def test_snapshot_applies_clean_user_text_without_mutating_live_message(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        content = "[BACKGROUND COMPLETION CONTEXT]\nresult\nHuman question"
+        messages = [{"role": "user", "content": content}]
+        agent._persist_user_message_idx = 0
+        agent._persist_user_message_override = "Human question"
+
+        agent._save_session_log(messages)
+
+        snapshot = json.loads((tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8"))
+        assert snapshot["messages"][0]["content"] == "Human question"
+        assert "BACKGROUND COMPLETION CONTEXT" not in json.dumps(snapshot)
+        assert messages[0]["content"] == content
+
+    def test_snapshot_applies_clean_user_text_and_preserves_multimodal_media(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        content = [
+            {
+                "type": "text",
+                "text": "[BACKGROUND COMPLETION CONTEXT]\nresult\nHuman question",
+            },
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AAAA"},
+            },
+        ]
+        messages = [{"role": "user", "content": content}]
+        agent._persist_user_message_idx = 0
+        agent._persist_user_message_override = "Human question"
+
+        agent._save_session_log(messages)
+
+        snapshot = json.loads((tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8"))
+        persisted_parts = snapshot["messages"][0]["content"]
+        assert persisted_parts[0] == {"type": "text", "text": "Human question"}
+        assert persisted_parts[1] == content[1]
+        assert "BACKGROUND COMPLETION CONTEXT" not in json.dumps(snapshot)
+        assert messages[0]["content"] is content
+        assert content[0]["text"].startswith("[BACKGROUND COMPLETION CONTEXT]")
+
     def test_logs_dir_retained_for_request_dumps(self, agent):
         # logs_dir is kept unconditionally because
         # agent_runtime_helpers.dump_api_request_debug still writes

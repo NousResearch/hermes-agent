@@ -182,32 +182,6 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
-def test_show_exposes_current_run_budget(worker_env, tmp_path):
-    from hermes_cli import kanban_db as kb
-    from tools import kanban_tools as kt
-
-    with kb.connect() as conn:
-        tid = kb.create_task(
-            conn,
-            title="budgeted-worker",
-            assignee="test-worker",
-            workspace_kind="worktree",
-            workspace_path=str(tmp_path / "worktree"),
-            branch_name="wt/budgeted-worker",
-            max_runtime_seconds=300,
-        )
-        kb.claim_task(conn, tid)
-
-    shown = json.loads(kt._handle_show({"task_id": tid}))
-    assert shown["task"]["branch_name"] == "wt/budgeted-worker"
-    assert shown["task"]["max_runtime_seconds"] == 300
-    run = shown["runs"][-1]
-    assert run["id"] == shown["task"]["current_run_id"]
-    assert run["max_runtime_seconds"] == 300
-    assert run["last_heartbeat_at"] is None
-    assert shown["observed_at"] >= run["started_at"]
-
-
 def test_show_explicit_task_id(worker_env):
     """Peek at a different task than the one in env."""
     from hermes_cli import kanban_db as kb

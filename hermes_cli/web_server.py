@@ -15543,6 +15543,12 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # Keep-alive path: the PTY outlives this socket; reattach by token.
+    if resume is not None:
+        # When resuming a session, discard any existing keep-alive PTY so it
+        # is re-spawned with the new resume target. Without this the registry
+        # returns the stale PTY and the new argv/env is silently discarded,
+        # making every resume-after-the-first land on the original session.
+        await PTY_REGISTRY.close_if_exists(attach_token)
     try:
         session, _created = await PTY_REGISTRY.attach_or_spawn(
             attach_token, spawn=_spawn

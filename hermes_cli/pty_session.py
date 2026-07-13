@@ -165,6 +165,15 @@ class PtySessionRegistry:
         self._sessions[key] = session
         return session, True
 
+    async def close_if_exists(self, key: str) -> bool:
+        """Close and remove a session if present. Returns True if one was removed."""
+        s = self._sessions.get(key)
+        if s is not None:
+            await s.close()
+            self._sessions.pop(key, None)
+            return True
+        return False
+
     def detach(self, key: str, ws) -> None:
         s = self._sessions.get(key)
         if s is not None:

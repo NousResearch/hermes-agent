@@ -8,7 +8,7 @@ history, fires the memory-provider hook with ``rewound=True``, and
 returns ``{"type": "prefill", "message": <text>, "notice": ...}`` so
 the Ink client drops the message into the composer for editing.
 
-``/undo N`` backs up N user turns at once (default 1). See issue #21910.
+``/undo N`` backs up N half-turns at once (default 1). See issue #21910.
 """
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ def test_undo_returns_prefill_with_target_text(server, session_with_history):
     resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
     result = resp["result"]
     assert result["type"] == "prefill"
-    # Default /undo backs up one user turn — "question 3"
+    # Default /undo removes the assistant half-turn and prefills the surviving user tail.
     assert result["message"] == "question 3"
     assert "Undid" in result["notice"]
 
@@ -106,34 +106,32 @@ def test_undo_returns_prefill_with_target_text(server, session_with_history):
 def test_undo_truncates_in_memory_history(server, session_with_history, db):
     sid, session_key, s, agent = session_with_history
     _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
-    # After undoing to "question 3", active history should be 4 rows:
-    # user q1, asst a1, user q2, asst a2
-    assert len(s["history"]) == 4
+    # /undo 1 removes only the assistant half-turn a3, leaving q3 as editable tail.
+    assert len(s["history"]) == 5
     roles = [m["role"] for m in s["history"]]
-    assert roles == ["user", "assistant", "user", "assistant"]
+    assert roles == ["user", "assistant", "user", "assistant", "user"]
     # version bumped
     assert s["history_version"] == 1
 
 
 def test_undo_n_backs_up_multiple_turns(server, session_with_history, db):
-    """/undo 2 backs up two user turns to "question 2"."""
+    """/undo 2 backs up two half-turns, leaving the prior assistant tail."""
     sid, session_key, s, agent = session_with_history
     resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="2")
     result = resp["result"]
     assert result["type"] == "prefill"
-    assert result["message"] == "question 2"
-    assert "2 turns" in result["notice"]
-    # Active history truncated to user q1 + asst a1
-    assert len(s["history"]) == 2
-    assert [m["role"] for m in s["history"]] == ["user", "assistant"]
+    assert result["message"] == ""
+    assert "2 half-turn" in result["notice"]
+    assert len(s["history"]) == 4
+    assert [m["role"] for m in s["history"]] == ["user", "assistant", "user", "assistant"]
 
 
 def test_undo_n_clamps_to_oldest_turn(server, session_with_history, db):
-    """/undo with N larger than the number of user turns backs up to the oldest."""
+    """/undo with N larger than the half-turn count backs up to the oldest."""
     sid, session_key, s, agent = session_with_history
     resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="99")
     result = resp["result"]
-    assert result["message"] == "question 1"
+    assert result["message"] == ""
     assert len(s["history"]) == 0
 
 
@@ -150,9 +148,9 @@ def test_undo_soft_deletes_rows_in_db(server, session_with_history, db):
     # All rows still present
     all_rows = db.get_messages(session_key, include_inactive=True)
     assert len(all_rows) == 6
-    # 2 inactive (the "question 3" row + its trailing "answer 3").
+    # 1 inactive (the trailing assistant half-turn "answer 3").
     active = [r for r in all_rows if r["active"] == 1]
-    assert len(active) == 4
+    assert len(active) == 5
     # rewind_count bumped
     sess = db.get_session(session_key)
     assert sess["rewind_count"] == 1

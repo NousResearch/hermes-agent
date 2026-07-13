@@ -4976,24 +4976,38 @@ def test_session_undo_rejects_while_running():
         server._sessions.pop("sid", None)
 
 
-def test_session_undo_allowed_when_idle():
-    """Regression guard: when not running, /undo still works."""
+def test_session_undo_allowed_when_idle(tmp_path, monkeypatch):
+    """Regression guard: when not running, /undo backs up a half-turn.
+
+    Half-turn undo is DB-backed (reversible active-flags), so seed real rows
+    via SessionDB and assert the surviving in-memory history reflects the
+    deactivated tail.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "undo-idle.db")
+    session_key = "sid-undo-idle"
+    db.create_session(session_key, source="tui")
+    db.append_message(session_key, "user", "hi")
+    db.append_message(session_key, "assistant", "hello")
+    history = db.get_messages_as_conversation(session_key)
+    monkeypatch.setattr(server, "_db", db, raising=False)
     server._sessions["sid"] = _session(
         running=False,
-        history=[
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "hello"},
-        ],
+        session_key=session_key,
+        history=list(history),
     )
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.undo", "params": {"session_id": "sid"}}
         )
         assert resp.get("result"), f"got error: {resp.get('error')}"
-        assert resp["result"]["removed"] == 2
-        assert server._sessions["sid"]["history"] == []
+        # /undo 1 removes the trailing assistant half-turn, leaving the user tail.
+        assert resp["result"]["removed"] == 1
+        assert [m["role"] for m in server._sessions["sid"]["history"]] == ["user"]
     finally:
         server._sessions.pop("sid", None)
+        server._db = None
 
 
 def test_session_compress_rejects_while_running(monkeypatch):

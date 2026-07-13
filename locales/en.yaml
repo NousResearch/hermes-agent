@@ -337,8 +337,22 @@ gateway:
 
   undo:
     nothing:               "Nothing to undo."
-    removed:               "↩️ Undid {turns} turn(s) ({count} message(s)).\nBacked up to: \"{preview}\"\nCopy/edit the text above and send it to re-prompt from here."
+    removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
     invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+    now_at:                "↦ Now at — {who}: “{preview}”"
+    now_at_notext:         "↦ Now at — {who} (no text)."
+    now_empty:             "↦ Now at — start of the thread (no messages left)."
+    party:
+      user:                "your message"
+      assistant:           "my reply"
+      tool:                "a tool result"
+      message:             "the last message"
+
+  redo:
+    nothing:               "Nothing to redo."
+    restart_lost:          "Nothing to redo — redo history does not survive a restart."
+    restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
+    invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."
 
   update:
     platform_not_messaging:  "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."

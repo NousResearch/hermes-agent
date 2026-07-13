@@ -7884,18 +7884,127 @@ def _(rid, params: dict) -> dict:
         return _err(
             rid, 4009, "session busy — /interrupt the current turn before /undo"
         )
-    removed = 0
+    try:
+        n = int(params.get("n", params.get("count", 1)) or 1)
+    except (TypeError, ValueError):
+        return _err(rid, 4004, "undo: invalid count — use /undo or /undo N")
+    if n < 1:
+        n = 1
+    return _undo_session_core(rid, session, n)
+
+
+@method("session.redo")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    if session.get("running"):
+        return _err(
+            rid, 4009, "session busy — /interrupt the current turn before /redo"
+        )
+    try:
+        n = int(params.get("n", params.get("count", 1)) or 1)
+    except (TypeError, ValueError):
+        return _err(rid, 4004, "redo: invalid count — use /redo or /redo N")
+    return _redo_session_core(rid, session, n)
+
+
+def _reload_session_history_from_db(session: dict) -> list[dict]:
+    db = _get_db()
+    if db is None:
+        raise RuntimeError("session database unavailable")
+    active = db.get_messages_as_conversation(session["session_key"])
     with session["history_lock"]:
-        history = session.get("history", [])
-        while history and history[-1].get("role") in {"assistant", "tool"}:
-            history.pop()
-            removed += 1
-        if history and history[-1].get("role") == "user":
-            history.pop()
-            removed += 1
-        if removed:
-            session["history_version"] = int(session.get("history_version", 0)) + 1
-    return _ok(rid, {"removed": removed})
+        session["history"] = list(active)
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+    agent = session.get("agent")
+    if agent is not None:
+        mm = getattr(agent, "_memory_manager", None)
+        if mm is not None:
+            try:
+                mm.on_session_switch(
+                    session["session_key"],
+                    parent_session_id="",
+                    reset=False,
+                    rewound=True,
+                )
+            except Exception:
+                pass
+        if hasattr(agent, "_invalidate_system_prompt"):
+            try:
+                agent._invalidate_system_prompt()
+            except Exception:
+                pass
+        if hasattr(agent, "_last_flushed_db_idx"):
+            try:
+                agent._last_flushed_db_idx = len(active)
+            except Exception:
+                pass
+    return active
+
+
+def _undo_session_core(rid, session: dict, n: int) -> dict:
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5008)
+    try:
+        import hermes_undo
+
+        hermes_undo._session_db = db
+        result = hermes_undo.undo(session["session_key"], n)
+    except Exception as e:
+        return _err(rid, 5008, f"undo: {e}")
+    rewound_ids = list(result.get("rewound_ids") or [])
+    if not rewound_ids:
+        return _err(rid, 4018, "nothing to undo")
+    try:
+        _reload_session_history_from_db(session)
+    except Exception as e:
+        return _err(rid, 5008, f"undo: failed to reload history: {e}")
+    return _ok(
+        rid,
+        {
+            "rewound_ids": rewound_ids,
+            "removed": len(rewound_ids),
+            "prefill_text": result.get("prefill_text"),
+        },
+    )
+
+
+def _redo_session_core(rid, session: dict, n: int) -> dict:
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5008)
+    try:
+        import hermes_undo
+
+        hermes_undo._session_db = db
+        result = hermes_undo.redo(session["session_key"], n)
+    except Exception as e:
+        return _err(rid, 5008, f"redo: {e}")
+    reactivated = int(result.get("reactivated_count") or 0)
+    if reactivated <= 0:
+        return _ok(
+            rid,
+            {
+                "reactivated_count": 0,
+                "new_tail_id": None,
+                "prefill_text": None,
+                "message": result.get("message") or "nothing to redo",
+            },
+        )
+    try:
+        _reload_session_history_from_db(session)
+    except Exception as e:
+        return _err(rid, 5008, f"redo: failed to reload history: {e}")
+    return _ok(
+        rid,
+        {
+            "reactivated_count": reactivated,
+            "new_tail_id": result.get("new_tail_id"),
+            "prefill_text": None,
+        },
+    )
 
 
 @method("session.compress")
@@ -8509,6 +8618,12 @@ def _(rid, params: dict) -> dict:
     # A branch becomes real here: copy its parent's transcript into the row so it
     # resumes with full context (the agent won't persist the seed itself).
     _persist_branch_seed(session)
+    try:
+        from hermes_undo import on_user_message_appended
+
+        on_user_message_appended(session["session_key"])
+    except Exception as exc:
+        print(f"[tui_gateway] redo clear on user append failed: {exc}", file=sys.stderr)
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
@@ -12219,23 +12334,13 @@ def _(rid, params: dict) -> dict:
         )
 
     if name == "undo":
-        # /undo [N]: back up N user turns (default 1), soft-delete the
-        # truncated rows on disk, and prefill the composer with the text
-        # of the user message we backed up to so it can be edited and
-        # resubmitted. N=1 is the Claude-Code-style single-step undo;
-        # /undo 3 backs up three user turns at once. See issue #21910.
+        # /undo [N]: back up N half-turns via the shared undo core.
         if not session:
             return _err(rid, 4001, "no active session to undo")
         if session.get("running"):
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /undo"
             )
-        db = _get_db()
-        if db is None:
-            return _db_unavailable_error(rid, code=5008)
-        session_key = session.get("session_key", "")
-        if not session_key:
-            return _err(rid, 4001, "no session key for undo")
         # Parse the optional count argument (e.g. "/undo 3" → 3).
         n = 1
         arg_str = (arg or "").strip()
@@ -12246,77 +12351,46 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
         if n < 1:
             n = 1
-        try:
-            recents = db.list_recent_user_messages(session_key, limit=max(n, 10))
-        except Exception as e:
-            return _err(rid, 5008, f"undo: failed to load history: {e}")
-        if not recents:
-            return _err(rid, 4018, "no user messages to undo")
-        # recents[0] is the most-recent user turn; pick the Nth-from-last.
-        # If N exceeds the number of user turns, back up to the oldest.
-        target_idx = min(n - 1, len(recents) - 1)
-        target_id = recents[target_idx]["id"]
-        try:
-            result = db.rewind_to_message(session_key, target_id)
-        except ValueError as e:
-            return _err(rid, 4004, f"undo: {e}")
-        except Exception as e:
-            return _err(rid, 5008, f"undo: {e}")
-        # Reload the active-only transcript into the in-memory session
-        # history so subsequent turns see the truncated view.
-        try:
-            active = db.get_messages_as_conversation(session_key)
-        except Exception:
-            active = []
-        with session["history_lock"]:
-            session["history"] = list(active)
-            session["history_version"] = int(session.get("history_version", 0)) + 1
-        # Notify memory providers — same hook /branch fires, plus the
-        # rewound flag so providers caching per-turn document state
-        # know to invalidate. See #6672 + #21910.
-        agent = session.get("agent")
-        if agent is not None:
-            mm = getattr(agent, "_memory_manager", None)
-            if mm is not None:
-                try:
-                    mm.on_session_switch(
-                        session_key,
-                        parent_session_id="",
-                        reset=False,
-                        rewound=True,
-                    )
-                except Exception:
-                    pass
-            if hasattr(agent, "_invalidate_system_prompt"):
-                try:
-                    agent._invalidate_system_prompt()
-                except Exception:
-                    pass
-            if hasattr(agent, "_last_flushed_db_idx"):
-                try:
-                    agent._last_flushed_db_idx = len(active)
-                except Exception:
-                    pass
-        target_msg = result.get("target_message") or {}
-        target_text = target_msg.get("content") or ""
-        if isinstance(target_text, list):
-            parts = [
-                p.get("text", "") for p in target_text
-                if isinstance(p, dict) and p.get("type") == "text"
-            ]
-            target_text = "\n".join(t for t in parts if t)
-        if not isinstance(target_text, str):
-            target_text = ""
-        rewound_count = result.get("rewound_count", 0)
-        turns_undone = target_idx + 1
-        turn_word = "turn" if turns_undone == 1 else "turns"
+        result = _undo_session_core(rid, session, n)
+        if "error" in result:
+            return result
+        payload = result.get("result", {})
         notice = (
-            f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). "
+            f"↶ Undid {n} half-turn(s) ({len(payload.get('rewound_ids') or [])} message(s)). "
             "Edit and resubmit, or send a new message."
         )
         return _ok(
             rid,
-            {"type": "prefill", "message": target_text, "notice": notice},
+            {"type": "prefill", "message": payload.get("prefill_text") or "", "notice": notice},
+        )
+
+    if name == "redo":
+        if not session:
+            return _err(rid, 4001, "no active session to redo")
+        if session.get("running"):
+            return _err(
+                rid, 4009, "session busy — /interrupt the current turn before /redo"
+            )
+        n = 1
+        arg_str = (arg or "").strip()
+        if arg_str:
+            try:
+                n = int(arg_str.split()[0])
+            except (ValueError, IndexError):
+                return _err(rid, 4004, f"redo: invalid count {arg_str!r} — use /redo or /redo N")
+        result = _redo_session_core(rid, session, n)
+        if "error" in result:
+            return result
+        payload = result.get("result", {})
+        reactivated = int(payload.get("reactivated_count") or 0)
+        if reactivated <= 0:
+            return _ok(rid, {"type": "notice", "notice": payload.get("message") or "nothing to redo"})
+        return _ok(
+            rid,
+            {
+                "type": "notice",
+                "notice": f"↷ Redid {n} undo operation(s) ({reactivated} message(s) restored).",
+            },
         )
 
     if name in {"snapshot", "snap"}:

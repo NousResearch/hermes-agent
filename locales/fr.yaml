@@ -324,9 +324,23 @@ Future messages in this room will use that transcript until `/reset` or another 
     untitled_session:        "Session sans titre"
 
   undo:
-    nothing:               "Rien à annuler."
-    removed:               "↩️ {turns} tour(s) annulé(s) ({count} message(s)).\nSauvegardé dans : « {preview} »\nCopiez/modifiez le texte ci-dessus et envoyez-le pour relancer à partir d'ici."
-    invalid_count:         "Nombre invalide « {arg} » — utilisez /undo ou /undo N."
+    nothing:               "Nothing to undo."
+    removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
+    invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+    now_at:                "↦ Now at — {who}: “{preview}”"
+    now_at_notext:         "↦ Now at — {who} (no text)."
+    now_empty:             "↦ Now at — start of the thread (no messages left)."
+    party:
+      user:                "your message"
+      assistant:           "my reply"
+      tool:                "a tool result"
+      message:             "the last message"
+
+  redo:
+    nothing:               "Nothing to redo."
+    restart_lost:          "Nothing to redo — redo history does not survive a restart."
+    restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
+    invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."
 
   update:
     platform_not_messaging:  "✗ /update n'est disponible que depuis les plateformes de messagerie. Exécutez `hermes update` depuis le terminal."

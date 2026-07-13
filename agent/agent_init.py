@@ -1436,6 +1436,13 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # Model-authored GPT-5.6 effort control is deliberately agent-local and
+    # turn-scoped.  This initializes static operator policy plus empty runtime
+    # state; it never rewrites config or the cached system prompt.
+    from agent.adaptive_reasoning import configure_adaptive_reasoning
+
+    configure_adaptive_reasoning(agent, _agent_section)
+
     # Intent-ack continuation config: "auto" (default — codex_responses only,
     # the historical gate), true (all api_modes), false (never), or a list of
     # model-name substrings.  Resolved against the active api_mode/model in the

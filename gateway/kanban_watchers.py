@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agent.i18n import t
+from hermes_cli.kanban_planning_policy import auxiliary_planning_enabled
 
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
@@ -46,8 +47,15 @@ def _resolve_auto_decompose_settings(
         cfg = load_config()
     except Exception:
         return False, 3
-    kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    enabled = bool(kcfg.get("auto_decompose", True))
+    if not isinstance(cfg, dict):
+        return False, 3
+    kcfg = cfg.get("kanban", {})
+    if not isinstance(kcfg, dict):
+        kcfg = {}
+    enabled = (
+        auxiliary_planning_enabled(cfg)
+        and kcfg.get("auto_decompose") is True
+    )
     try:
         per_tick = int(kcfg.get("auto_decompose_per_tick", 3) or 3)
     except (TypeError, ValueError):
@@ -1114,7 +1122,7 @@ class GatewayKanbanWatchersMixin:
 
         # Auto-decompose: turn fresh triage tasks into ready workgraphs
         # before the dispatcher fans out workers. Gated by
-        # ``kanban.auto_decompose`` (default True). Capped by
+        # explicit ``kanban.auto_decompose: true`` (default False). Capped by
         # ``kanban.auto_decompose_per_tick`` (default 3) so a bulk-load
         # of triage tasks doesn't burst-spend the aux LLM in one tick;
         # remainder defers to subsequent ticks.

@@ -1202,6 +1202,16 @@ def run_conversation(
                     _original_api_kwargs = dict(api_kwargs)
                     _llm_middleware_trace = []
 
+                from agent.adaptive_reasoning import (
+                    preserve_verified_reasoning_payload,
+                )
+
+                api_kwargs = preserve_verified_reasoning_payload(
+                    agent,
+                    _original_api_kwargs,
+                    api_kwargs,
+                )
+
                 try:
                     from hermes_cli.plugins import (
                         has_hook,
@@ -1317,6 +1327,11 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
+                    next_api_kwargs = preserve_verified_reasoning_payload(
+                        agent,
+                        api_kwargs,
+                        next_api_kwargs,
+                    )
                     if agent.api_mode == "codex_responses":
                         next_api_kwargs = agent._get_transport().preflight_kwargs(
                             next_api_kwargs,

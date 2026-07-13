@@ -1018,6 +1018,15 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Empty preserves each provider's historical default. The exact
+        # GPT-5.6 Responses path mechanically applies a high baseline at API
+        # time without changing the default for any other model/provider.
+        "reasoning_effort": "",
+        "adaptive_reasoning": {
+            "enabled": True,
+            # Keep max closed until the exact production transport is proven.
+            "max_effort": "xhigh",
+        },
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
@@ -1694,12 +1703,10 @@ DEFAULT_CONFIG = {
             "timeout": 600,
             "extra_body": {},
         },
-        # Monitor — urgency/importance classifier used by the important-mail
-        # monitor catalog automation (cron/scripts/classify_items.py). Scores
-        # candidate items 0-10 against the user's criteria so only above-
-        # threshold items get delivered. "auto" = main chat model; override to
-        # a cheap fast model (e.g. openrouter google/gemini-3-flash-preview,
-        # haiku) since per-item scoring is high-volume and a small model is fine.
+        # Monitor — compatibility slot for the explicit legacy
+        # cron/scripts/classify_items.py helper. Built-in cron catalogs use the
+        # scheduled primary AIAgent to judge importance; they never route that
+        # semantic decision through this auxiliary slot.
         "monitor": {
             "provider": "auto",
             "model": "",
@@ -2384,7 +2391,8 @@ DEFAULT_CONFIG = {
         # this for a single invocation.
         "consolidate": False,
         # Also prune (archive) bundled built-in skills after the inactivity
-        # period, not just agent-created ones. ON by default. Built-ins are
+        # period, not just agent-created ones. OFF by default: capability
+        # removal must be an explicit operator choice. Built-ins are
         # normally restored on every `hermes update`, so pruning them only
         # sticks because a suppression list tells the re-seeder to leave them
         # archived. Hub-installed skills are NEVER pruned here — they have an
@@ -2393,7 +2401,7 @@ DEFAULT_CONFIG = {
         # long-unused built-in is archived only after archive_after_days of
         # genuine non-use (never a mass-prune on the first run). Set to false
         # to keep all bundled built-ins permanently.
-        "prune_builtins": True,
+        "prune_builtins": False,
         # Pre-run backup: before every real curator pass (dry-run is
         # skipped), snapshot ~/.hermes/skills/ into
         # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
@@ -2723,6 +2731,11 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Master opt-in for the legacy auxiliary Kanban planner surfaces:
+        # triage specification, task decomposition/assignment, and automatic
+        # profile descriptions. The main Hermes model owns those semantic
+        # decisions by default; deterministic Kanban execution remains active.
+        "auxiliary_planning_enabled": False,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.
@@ -2747,11 +2760,10 @@ DEFAULT_CONFIG = {
         # otherwise saturate one profile's local model / API quota /
         # browser pool while leaving other profiles idle.
         "max_in_progress_per_profile": None,
-        # When true, the kanban dispatcher auto-runs the decomposer on
-        # tasks that land in Triage (every dispatcher tick). When false,
-        # decomposition is manual via `hermes kanban decompose <id>` or
-        # the dashboard's Decompose button.
-        "auto_decompose": True,
+        # When true, and only while auxiliary_planning_enabled is also true,
+        # the dispatcher auto-runs the decomposer on Triage tasks. Disabled by
+        # default so background semantic planning is never enabled by omission.
+        "auto_decompose": False,
         # Max triage tasks to decompose per dispatcher tick. Prevents a
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.

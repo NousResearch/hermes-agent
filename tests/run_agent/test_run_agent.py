@@ -2962,6 +2962,81 @@ class TestConcurrentToolExecution:
             mock_todo.assert_called_once()
         assert "ok" in result
 
+    def test_invoke_tool_applies_turn_scoped_reasoning_to_later_calls(self, agent):
+        """The worker/invoke path applies only a successful todo directive."""
+        from agent.adaptive_reasoning import (
+            configure_adaptive_reasoning,
+            effective_reasoning_config,
+            reset_adaptive_reasoning_turn,
+        )
+
+        agent.api_mode = "codex_responses"
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        configure_adaptive_reasoning(agent, {"adaptive_reasoning": {"enabled": True}})
+        agent._current_turn_id = "turn-worker"
+        reset_adaptive_reasoning_turn(agent, "turn-worker")
+
+        result = agent._invoke_tool(
+            "todo",
+            {"todos": [], "reasoning": {"effort": "xhigh"}},
+            "task-1",
+        )
+
+        payload = json.loads(result)
+        assert payload["reasoning_control"]["status"] == "applied"
+        assert effective_reasoning_config(agent) == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
+
+    def test_invoke_tool_middleware_cannot_originate_reasoning(self, agent, monkeypatch):
+        """Plugin middleware is mechanical and cannot author model effort."""
+        from agent.adaptive_reasoning import (
+            configure_adaptive_reasoning,
+            effective_reasoning_config,
+            reset_adaptive_reasoning_turn,
+        )
+
+        agent.api_mode = "codex_responses"
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        configure_adaptive_reasoning(agent, {"adaptive_reasoning": {"enabled": True}})
+        agent._current_turn_id = "turn-middleware"
+        reset_adaptive_reasoning_turn(agent, "turn-middleware")
+
+        def request_middleware(**kwargs):
+            return {
+                "args": {
+                    **kwargs["args"],
+                    "reasoning": {"effort": "xhigh"},
+                },
+                "source": "cannot-author-effort",
+            }
+
+        manager = SimpleNamespace(
+            _middleware={"tool_request": [request_middleware], "tool_execution": []}
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_middleware",
+            lambda kind, **kwargs: (
+                [request_middleware(**kwargs)] if kind == "tool_request" else []
+            ),
+        )
+
+        result = agent._invoke_tool("todo", {"todos": []}, "task-1")
+
+        assert "reasoning_control" not in json.loads(result)
+        assert effective_reasoning_config(agent) == {
+            "enabled": True,
+            "effort": "high",
+        }
+
     def test_invoke_tool_agent_level_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
         """Agent-owned tool paths should close observer tool spans."""
         hook_calls = []
@@ -3094,6 +3169,112 @@ class TestConcurrentToolExecution:
         assert post_call[1]["tool_call_id"] == "todo-1"
         assert post_call[1]["result"] == '{"ok":true}'
         assert post_call[1]["status"] == "ok"
+
+    def test_sequential_todo_applies_turn_scoped_reasoning_to_later_calls(self, agent):
+        """The direct sequential path emits a receipt and updates the next call."""
+        from agent.adaptive_reasoning import (
+            configure_adaptive_reasoning,
+            effective_reasoning_config,
+            reset_adaptive_reasoning_turn,
+        )
+
+        agent.api_mode = "codex_responses"
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        configure_adaptive_reasoning(agent, {"adaptive_reasoning": {"enabled": True}})
+        agent._current_turn_id = "turn-sequential"
+        reset_adaptive_reasoning_turn(agent, "turn-sequential")
+        tool_call = _mock_tool_call(
+            name="todo",
+            arguments=json.dumps(
+                {"todos": [], "reasoning": {"effort": "xhigh"}}
+            ),
+            call_id="todo-reasoning",
+        )
+        messages = []
+
+        agent._execute_tool_calls_sequential(
+            _mock_assistant_msg(content="", tool_calls=[tool_call]),
+            messages,
+            "task-1",
+        )
+
+        payload = json.loads(messages[-1]["content"])
+        assert payload["reasoning_control"]["status"] == "applied"
+        assert effective_reasoning_config(agent) == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
+
+    def test_sequential_middleware_cannot_rewrite_model_reasoning(self, agent, monkeypatch):
+        """The receipt and state reflect raw model args, not plugin rewrites."""
+        from agent.adaptive_reasoning import (
+            configure_adaptive_reasoning,
+            effective_reasoning_config,
+            reset_adaptive_reasoning_turn,
+        )
+
+        agent.api_mode = "codex_responses"
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        configure_adaptive_reasoning(agent, {"adaptive_reasoning": {"enabled": True}})
+        agent._current_turn_id = "turn-model-provenance"
+        reset_adaptive_reasoning_turn(agent, "turn-model-provenance")
+
+        def request_middleware(**kwargs):
+            return {
+                "args": {**kwargs["args"], "reasoning": {"effort": "high"}},
+                "source": "request-rewrite",
+            }
+
+        def execution_middleware(**kwargs):
+            return kwargs["next_call"](
+                {**kwargs["args"], "reasoning": {"effort": "high"}}
+            )
+
+        manager = SimpleNamespace(
+            _middleware={
+                "tool_request": [request_middleware],
+                "tool_execution": [execution_middleware],
+            }
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_middleware",
+            lambda kind, **kwargs: (
+                [request_middleware(**kwargs)] if kind == "tool_request" else []
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *args, **kwargs: None,
+        )
+        tool_call = _mock_tool_call(
+            name="todo",
+            arguments=json.dumps(
+                {"todos": [], "reasoning": {"effort": "xhigh"}}
+            ),
+            call_id="todo-model-provenance",
+        )
+        messages = []
+
+        agent._execute_tool_calls_sequential(
+            _mock_assistant_msg(content="", tool_calls=[tool_call]),
+            messages,
+            "task-1",
+        )
+
+        payload = json.loads(messages[-1]["content"])
+        assert payload["reasoning_control"]["status"] == "applied"
+        assert payload["reasoning_control"]["effective"] == {"effort": "xhigh"}
+        assert effective_reasoning_config(agent) == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
 
     def test_sequential_agent_level_tool_execution_middleware_wraps_inline_dispatch(self, agent, monkeypatch):
         """Sequential built-in tool paths should expose the adaptive execution boundary."""

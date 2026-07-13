@@ -1044,16 +1044,20 @@ auxiliary:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # 空 = 中等（默认）。选项：none、minimal、low、medium、high、xhigh（最大）
+  reasoning_effort: ""   # 提供商默认值。选项：none、minimal、low、medium、high、xhigh、max
+  adaptive_reasoning:
+    enabled: true
+    max_effort: "xhigh"
 ```
 
-未设置时（默认），推理努力程度默认为"medium" —— 适合大多数任务的平衡级别。设置值会覆盖它 —— 更高的推理努力程度在复杂任务上提供更好的结果，但代价是更多 token 和延迟。
+未设置时，现有提供商保留其历史默认值（标准路径为 `medium`）。只有精确匹配的 GPT-5.6 Responses 路径使用模型门控的质量优先基线 `high`，不会改变其他模型的默认值。对于此路径，模型可以通过现有的 `todo` 工具为当前轮次中的后续调用请求更深的推理。Hermes 不在模型外部分类任务或选择推理等级；运行时代码只验证操作者设置的基线和上限。默认自适应上限是 `xhigh`，`max` 必须在生产后端验证并显式启用。自适应 Pro 模式在其精确端点契约完成 canary 验证之前不会传输。该请求在当前轮次结束时失效。
 
 您也可以在运行时使用 `/reasoning` 命令更改推理努力程度：
 
 ```
 /reasoning           # 显示当前努力程度和显示状态
 /reasoning high      # 将推理努力程度设为 high
+/reasoning max       # 活动后端支持时使用 max
 /reasoning none      # 禁用推理
 /reasoning show      # 在每次响应上方显示模型思考
 /reasoning hide      # 隐藏模型思考

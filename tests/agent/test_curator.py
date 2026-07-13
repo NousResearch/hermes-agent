@@ -413,11 +413,22 @@ def _disable_prune_builtins(curator_env, monkeypatch):
     monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: False)
 
 
-def test_prune_builtins_default_on(curator_env):
-    # Shipped default is ON: with no explicit config, built-ins are eligible.
+def test_prune_builtins_default_off(curator_env):
+    # Shipped default is OFF: built-ins require an explicit operator opt-in.
     c = curator_env["curator"]
-    # _load_config returns {} (fixture) → default True surfaces.
-    assert c.get_prune_builtins() is True
+    # _load_config returns {} (fixture) → fail-off default surfaces.
+    assert c.get_prune_builtins() is False
+
+
+@pytest.mark.parametrize("value", ["false", "true", 1, [], {}])
+def test_prune_builtins_requires_exact_boolean_true(
+    curator_env,
+    monkeypatch,
+    value,
+):
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"prune_builtins": value})
+    assert c.get_prune_builtins() is False
 
 
 def test_prune_builtins_off_excludes_bundled(curator_env, monkeypatch):

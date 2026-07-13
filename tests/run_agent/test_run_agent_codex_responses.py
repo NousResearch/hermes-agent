@@ -428,6 +428,54 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
         assert kwargs["reasoning"]["effort"] == effort, f"{effort} should pass through unchanged"
 
 
+def test_build_api_kwargs_uses_model_authored_effort_on_next_gpt56_call(monkeypatch):
+    """The real AIAgent API boundary reads turn state without rebuilding context."""
+    from agent.adaptive_reasoning import (
+        apply_model_reasoning_directive,
+        configure_adaptive_reasoning,
+        reset_adaptive_reasoning_turn,
+    )
+
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.6-sol",
+        provider="openai-codex",
+        api_mode="codex_responses",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+        reasoning_config={"enabled": True, "effort": "high"},
+    )
+    configure_adaptive_reasoning(
+        agent,
+        {"adaptive_reasoning": {"enabled": True, "max_effort": "xhigh"}},
+    )
+    agent._current_turn_id = "turn-adaptive"
+    reset_adaptive_reasoning_turn(agent, "turn-adaptive")
+    messages = [
+        {"role": "system", "content": "Stable instructions"},
+        {"role": "user", "content": "Solve this"},
+    ]
+
+    before = agent._build_api_kwargs(messages)
+    receipt = apply_model_reasoning_directive(
+        agent,
+        {"effort": "xhigh"},
+        originating_turn_id="turn-adaptive",
+    )
+    after = agent._build_api_kwargs(messages)
+
+    assert receipt["status"] == "applied"
+    assert before["reasoning"]["effort"] == "high"
+    assert after["reasoning"]["effort"] == "xhigh"
+    assert before["instructions"] == after["instructions"] == "Stable instructions"
+    assert before["tools"] == after["tools"]
+    assert before["prompt_cache_key"] == after["prompt_cache_key"]
+
+
 def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
     agent = _build_copilot_agent(monkeypatch)
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])

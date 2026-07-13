@@ -143,9 +143,10 @@ CATALOG: List[AutomationBlueprint] = [
         schedule_template="*/{interval_min} * * * *",
         prompt_template=(
             "Check the user's inbox for new messages since the last run. Surface "
-            "ONLY mail matching: {criteria}. Score candidates with the urgency "
-            "classifier and deliver only what clears the bar; if nothing does, "
-            "respond with [SILENT]. Requires a connected mail source; if none is "
+            "ONLY mail matching: {criteria}. Judge each candidate yourself using "
+            "the full task context; do not delegate importance or delivery "
+            "decisions to an auxiliary classifier. If nothing matches, respond "
+            "with exactly [SILENT]. Requires a connected mail source; if none is "
             "configured, explain how to connect one and stop."
         ),
         slots=[

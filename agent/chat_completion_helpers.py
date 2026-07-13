@@ -826,6 +826,9 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
     if agent.api_mode == "codex_responses":
         _ct = agent._get_transport()
+        from agent.adaptive_reasoning import effective_reasoning_config
+
+        effective_reasoning = effective_reasoning_config(agent)
         is_github_responses = (
             base_url_host_matches(agent.base_url, "models.github.ai")
             or base_url_host_matches(agent.base_url, "githubcopilot.com")
@@ -876,7 +879,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             model=agent.model,
             messages=_msgs_for_codex,
             tools=tools_for_api,
-            reasoning_config=agent.reasoning_config,
+            reasoning_config=effective_reasoning,
             session_id=getattr(agent, "session_id", None),
             max_tokens=agent.max_tokens,
             timeout=agent._resolved_api_call_timeout(),

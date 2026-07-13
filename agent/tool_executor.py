@@ -13,6 +13,7 @@ extracted functions reach back through the ``run_agent`` module via
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import json
 import logging
 import os
@@ -330,6 +331,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     """
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
+    # Capture before any worker is submitted. A late worker must never acquire
+    # authority from whatever turn happens to be current when it completes.
+    _originating_turn_id = str(getattr(agent, "_current_turn_id", "") or "")
 
     # Resolve the context-scaled tool-output budget once per turn (cheap, but
     # avoids rebuilding it per result inside the loop below).
@@ -415,6 +419,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        _model_reasoning_present = (
+            function_name == "todo" and "reasoning" in function_args
+        )
+        _model_reasoning_directive = (
+            copy.deepcopy(function_args.get("reasoning"))
+            if _model_reasoning_present
+            else None
+        )
+
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
             function_name=function_name,
@@ -422,6 +435,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             effective_task_id=effective_task_id,
             tool_call_id=getattr(tool_call, "id", "") or "",
         )
+        if function_name == "todo":
+            if _model_reasoning_present:
+                function_args["reasoning"] = copy.deepcopy(
+                    _model_reasoning_directive
+                )
+            else:
+                function_args.pop("reasoning", None)
 
         # ── Block evaluation (BEFORE checkpoint preflight) ───────────
         # We must know whether the tool will execute before touching
@@ -605,6 +625,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     pre_tool_block_checked=True,
                     skip_tool_request_middleware=True,
                     tool_request_middleware_trace=list(middleware_trace),
+                    originating_turn_id=_originating_turn_id,
                 )
             except KeyboardInterrupt:
                 try:
@@ -1021,6 +1042,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+    _originating_turn_id = str(getattr(agent, "_current_turn_id", "") or "")
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
@@ -1087,6 +1109,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        _model_reasoning_present = (
+            function_name == "todo" and "reasoning" in function_args
+        )
+        _model_reasoning_directive = (
+            copy.deepcopy(function_args.get("reasoning"))
+            if _model_reasoning_present
+            else None
+        )
+
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
             function_name=function_name,
@@ -1094,6 +1125,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             effective_task_id=effective_task_id,
             tool_call_id=getattr(tool_call, "id", "") or "",
         )
+        if function_name == "todo":
+            if _model_reasoning_present:
+                function_args["reasoning"] = copy.deepcopy(
+                    _model_reasoning_directive
+                )
+            else:
+                function_args.pop("reasoning", None)
 
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
@@ -1235,8 +1273,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             )
         elif function_name == "todo":
             def _execute(next_args: dict) -> Any:
+                from agent.adaptive_reasoning import attach_reasoning_receipt
                 from tools.todo_tool import todo_tool as _todo_tool
-                return _todo_tool(
+                result = _todo_tool(
                     todos=next_args.get("todos"),
                     merge=next_args.get("merge", False),
                     store=agent._todo_store,
@@ -1244,6 +1283,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     goal_outcome=next_args.get("goal_outcome"),
                     session_key=str(getattr(agent, "_gateway_session_key", None) or agent.session_id or ""),
                     user_id=str(getattr(agent, "user_id", None) or ""),
+                )
+                return attach_reasoning_receipt(
+                    agent,
+                    result,
+                    _model_reasoning_directive if _model_reasoning_present else None,
+                    originating_turn_id=_originating_turn_id,
                 )
             function_result, function_args = _run_agent_tool_execution_middleware(
                 agent,

@@ -736,10 +736,17 @@ agent:
   # Enable verbose logging
   verbose: false
   
-  # Reasoning effort level (OpenRouter and Nous Portal)
+  # Reasoning effort level
   # Controls how much "thinking" the model does before responding.
-  # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
-  reasoning_effort: "medium"
+  # Options: "max", "xhigh", "high", "medium", "low", "minimal", "none" (disable)
+  reasoning_effort: ""  # Provider default; exact GPT-5.6 Responses starts at high.
+
+  # GPT-5.6 Responses can author a deeper effort request for later calls in
+  # the same turn through the existing todo tool. Runtime code only validates
+  # this static operator policy; it does not classify the task or pick effort.
+  adaptive_reasoning:
+    enabled: true
+    max_effort: "xhigh"  # Keep max closed until your backend is verified.
   
   # Predefined personalities (use with /personality command)
   personalities:
@@ -963,13 +970,14 @@ platform_toolsets:
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
 #
-# Sampling (server-initiated LLM requests) — enabled by default.
-# Per-server config under the 'sampling' key:
+# Sampling (server-initiated LLM requests) is disabled by default. Grant model
+# access only to a trusted server by explicitly setting sampling.enabled: true
+# in that server's config:
 #   analysis:
 #     command: npx
 #     args: ["-y", "analysis-server"]
 #     sampling:
-#       enabled: true           # default: true
+#       enabled: true           # explicit per-server opt-in (default: false)
 #       model: "gemini-3-flash" # override model (optional)
 #       max_tokens_cap: 4096    # max tokens per request
 #       timeout: 30             # LLM call timeout (seconds)

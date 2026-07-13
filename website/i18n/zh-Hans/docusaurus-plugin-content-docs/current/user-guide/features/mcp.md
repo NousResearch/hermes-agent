@@ -455,14 +455,14 @@ mcp_servers:
 
 MCP 服务器可以通过 `sampling/createMessage` 协议向 Hermes 请求 LLM 推理。这允许 MCP 服务器代表自己请求 Hermes 生成文本——适用于需要 LLM 能力但没有自己模型访问权限的服务器。
 
-Sampling 对所有 MCP 服务器**默认启用**（当 MCP SDK 支持时）。可在 `sampling` 键下按服务器配置：
+Sampling **默认关闭**。只有在对应服务器的 `sampling` 配置中显式设置 `enabled: true`，该服务器才能访问模型：
 
 ```yaml
 mcp_servers:
   my_server:
     command: "my-mcp-server"
     sampling:
-      enabled: true            # 启用 sampling（默认：true）
+      enabled: true            # 按服务器显式启用（默认：false）
       model: "openai/gpt-4o"  # 覆盖 sampling 请求使用的模型（可选）
       max_tokens_cap: 4096     # 每次 sampling 响应的最大 token 数（默认：4096）
       timeout: 30              # 每次请求的超时时间，单位秒（默认：30）
@@ -474,7 +474,7 @@ mcp_servers:
 
 sampling 处理器包含滑动窗口速率限制器、按请求超时和工具循环深度限制，防止失控使用。每个服务器实例会跟踪指标（请求数、错误数、已用 token 数）。
 
-如需对特定服务器禁用 sampling：
+如需对特定服务器明确保持 sampling 关闭：
 
 ```yaml
 mcp_servers:

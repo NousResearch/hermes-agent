@@ -19,6 +19,10 @@ def profile_env(tmp_path, monkeypatch):
     """Set up an isolated HERMES_HOME with a default profile dir."""
     home = tmp_path / ".hermes"
     home.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n  auxiliary_planning_enabled: true\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     return home
@@ -110,6 +114,30 @@ def test_describer_writes_description_with_auto_true(profile_env, monkeypatch):
     meta = profiles_mod.read_profile_meta(profile_env)
     assert meta["description"] == "writes Python codebases"
     assert meta["description_auto"] is True
+
+
+def test_describer_default_policy_blocks_before_auxiliary_or_profile_write(
+    profile_env,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        describer.planning_policy,
+        "_load_config",
+        lambda: {"kanban": {}},
+    )
+    with patch(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        side_effect=AssertionError("auxiliary client must not be resolved"),
+    ), patch.object(
+        profiles_mod,
+        "write_profile_meta",
+        side_effect=AssertionError("profile semantic write must not run"),
+    ):
+        outcome = describer.describe_profile("myprof")
+
+    assert outcome.ok is False
+    assert "auxiliary planning is disabled" in outcome.reason.lower()
+    assert not (profile_env / "profile.yaml").exists()
 
 
 def test_describer_refuses_to_overwrite_user_authored(profile_env, monkeypatch):

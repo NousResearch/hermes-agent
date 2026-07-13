@@ -4858,8 +4858,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Load reasoning effort from config.yaml.
 
         Reads agent.reasoning_effort from config.yaml. Valid: "none",
-        "minimal", "low", "medium", "high", "xhigh". Returns None to use
-        default (medium).
+        "minimal", "low", "medium", "high", "xhigh", "max". Returns None to
+        use the provider default (medium on historical paths; the exact GPT-5.6
+        Responses path applies its model-gated high baseline at API time).
         """
         from hermes_constants import parse_reasoning_effort
         cfg = _load_gateway_runtime_config()
@@ -4871,6 +4872,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if effort and str(effort).strip() and result is None:
             logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
         return result
+
+    @staticmethod
+    def _refresh_adaptive_reasoning_policy(agent: Any, user_config: dict | None) -> None:
+        """Apply live adaptive policy without rebuilding cached prompt/tools."""
+        agent_section = {}
+        if isinstance(user_config, dict):
+            candidate = user_config.get("agent", {})
+            if isinstance(candidate, dict):
+                agent_section = candidate
+        from agent.adaptive_reasoning import refresh_adaptive_reasoning_policy
+
+        refresh_adaptive_reasoning_policy(agent, agent_section)
 
     @staticmethod
     def _parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
@@ -18773,6 +18786,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.notice_clear_callback = None
             agent.event_callback = _event_callback_sync
             agent.reasoning_config = reasoning_config
+            # The AIAgent is deliberately cache-stable, but operator policy is
+            # live per gateway turn. This only updates agent-local validation
+            # state; it does not rebuild system prompt, history, or tool schema.
+            self._refresh_adaptive_reasoning_policy(agent, user_config)
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
 

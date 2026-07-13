@@ -50,7 +50,7 @@ Example config::
         command: "npx"
         args: ["-y", "analysis-server"]
         sampling:                    # server-initiated LLM requests
-          enabled: true              # default: true
+          enabled: true              # explicit opt-in; default: false
           model: "gemini-3-flash"    # override model (optional)
           max_tokens_cap: 4096       # max tokens per request
           timeout: 30                # LLM call timeout (seconds)
@@ -102,6 +102,7 @@ import shutil
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from typing import Callable
 from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional
@@ -346,6 +347,23 @@ _RECYCLED_RECONNECT_TIMEOUT = 15.0
 # stops a misconfigured tiny interval from busy-looping the keepalive.
 _DEFAULT_KEEPALIVE_INTERVAL = 180  # seconds between liveness pings
 _MIN_KEEPALIVE_INTERVAL = 5        # clamp floor for configured intervals
+
+
+def _enabled_sampling_config(config: Any) -> Optional[Dict[str, Any]]:
+    """Return sampling config only after an exact per-server boolean opt-in.
+
+    Missing/malformed sections and truthy non-booleans fail off. Sampling gives
+    an MCP server model access, so schema ambiguity must never enable it or
+    prevent the rest of the server from starting.
+    """
+    if not isinstance(config, Mapping):
+        return None
+    sampling = config.get("sampling")
+    if not isinstance(sampling, Mapping):
+        return None
+    if sampling.get("enabled") is not True:
+        return None
+    return dict(sampling)
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
@@ -2616,8 +2634,8 @@ class MCPServerTask:
         self._max_lifetime_seconds = _get_lifecycle_seconds(config, "max_lifetime_seconds")
 
         # Set up sampling handler if enabled and SDK types are available
-        sampling_config = config.get("sampling", {})
-        if sampling_config.get("enabled", True) and _MCP_SAMPLING_TYPES:
+        sampling_config = _enabled_sampling_config(config)
+        if sampling_config is not None and _MCP_SAMPLING_TYPES:
             self._sampling = SamplingHandler(self.name, sampling_config)
         else:
             self._sampling = None

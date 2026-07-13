@@ -360,7 +360,25 @@ TODO_SCHEMA = {
                     "false (default): replace the entire list."
                 ),
                 "default": False
-            }
+            },
+            "reasoning": {
+                "type": "object",
+                "description": (
+                    "For exact GPT-5.6 on the verified OpenAI Codex Responses "
+                    "backend only: request reasoning depth for later model calls "
+                    "in this current turn. You decide the effort; "
+                    "the runtime only validates the operator's baseline/cap and returns "
+                    "a receipt. Use xhigh for unusually difficult work. max is accepted "
+                    "only when the runtime policy explicitly enables it."
+                ),
+                "properties": {
+                    "effort": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high", "xhigh", "max"],
+                    },
+                },
+                "required": ["effort"],
+                "additionalProperties": False,
             },
             "plan_approval": {
                 "type": "object",
@@ -389,6 +407,7 @@ TODO_SCHEMA = {
                 },
                 "required": ["status", "reason"],
             },
+        },
         "required": []
     }
 }

@@ -427,6 +427,10 @@ def load_cli_config() -> Dict[str, Any]:
             "system_prompt": "",
             "prefill_messages_file": "",
             "reasoning_effort": "",
+            "adaptive_reasoning": {
+                "enabled": True,
+                "max_effort": "xhigh",
+            },
             "service_tier": "",
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",

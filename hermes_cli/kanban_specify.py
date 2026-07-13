@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_planning_policy as planning_policy
 
 from utils import env_int
 
@@ -152,6 +153,13 @@ def specify_task(
     error, malformed response) — those surface via ``ok=False`` so the
     ``--all`` sweep can continue past individual failures.
     """
+    if not planning_policy.auxiliary_planning_enabled():
+        return SpecifyOutcome(
+            task_id,
+            False,
+            planning_policy.AUXILIARY_PLANNING_DISABLED_REASON,
+        )
+
     with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
     if task is None:

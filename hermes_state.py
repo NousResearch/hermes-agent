@@ -827,6 +827,37 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS strategy_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    timestamp REAL NOT NULL,
+    event_type TEXT NOT NULL,
+    tool_name TEXT,
+    strategy TEXT,
+    task_class TEXT,
+    result TEXT,
+    latency_ms REAL,
+    metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS strategy_registry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    state TEXT NOT NULL DEFAULT 'candidate',
+    score REAL NOT NULL DEFAULT 0.0,
+    strategy_type TEXT,
+    task_class TEXT,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    avg_latency_ms REAL,
+    config_json TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    promoted_at REAL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -835,6 +866,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
+CREATE INDEX IF NOT EXISTS idx_strategy_events_session ON strategy_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_strategy_events_strategy ON strategy_events(strategy, event_type);
+CREATE INDEX IF NOT EXISTS idx_strategy_registry_state ON strategy_registry(state);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -1748,6 +1782,227 @@ class SessionDB:
                 ),
             )
         self._execute_write(_do)
+
+    # Evidence-backed strategy promotion gates.  Kept as class attributes so
+    # tests and downstream deployments can tune them without schema changes.
+    PROMOTE_MIN_SAMPLES = 20
+    PROMOTE_MIN_SUCCESS_RATE = 0.80
+    PROMOTE_MAX_AVG_LATENCY_MS = 30_000.0
+
+    def record_strategy_event(
+        self,
+        session_id: str,
+        event_type: str,
+        *,
+        tool_name: Optional[str] = None,
+        strategy: Optional[str] = None,
+        task_class: Optional[str] = None,
+        result: Optional[str] = None,
+        latency_ms: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist a production strategy event without blocking execution."""
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO strategy_events (
+                       session_id, timestamp, event_type, tool_name, strategy,
+                       task_class, result, latency_ms, metadata_json
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    time.time(),
+                    event_type,
+                    tool_name,
+                    strategy,
+                    task_class,
+                    result,
+                    latency_ms,
+                    json.dumps(metadata, sort_keys=True) if metadata else None,
+                ),
+            )
+
+        try:
+            self._execute_write(_do)
+        except Exception:
+            logger.debug("strategy event write failed", exc_info=True)
+
+    def get_strategy_events(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        strategy: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return recent strategy events for inspection and verification."""
+        clauses: List[str] = []
+        params: List[Any] = []
+        for column, value in (
+            ("session_id", session_id),
+            ("event_type", event_type),
+            ("strategy", strategy),
+        ):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        where = " AND ".join(clauses) if clauses else "1 = 1"
+        params.append(max(1, int(limit)))
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM strategy_events WHERE {where} "
+                "ORDER BY timestamp DESC, id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def register_strategy(
+        self,
+        name: str,
+        *,
+        description: Optional[str] = None,
+        strategy_type: Optional[str] = None,
+        task_class: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Idempotently register a concrete runtime strategy as a candidate."""
+        now = time.time()
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO strategy_registry (
+                       name, description, state, strategy_type, task_class,
+                       config_json, created_at, updated_at
+                   ) VALUES (?, ?, 'candidate', ?, ?, ?, ?, ?)
+                   ON CONFLICT(name) DO UPDATE SET
+                       description = COALESCE(excluded.description, description),
+                       strategy_type = COALESCE(excluded.strategy_type, strategy_type),
+                       task_class = COALESCE(excluded.task_class, task_class),
+                       config_json = COALESCE(excluded.config_json, config_json),
+                       updated_at = excluded.updated_at""",
+                (
+                    name,
+                    description,
+                    strategy_type,
+                    task_class,
+                    json.dumps(config, sort_keys=True) if config else None,
+                    now,
+                    now,
+                ),
+            )
+            return dict(conn.execute(
+                "SELECT * FROM strategy_registry WHERE name = ?", (name,)
+            ).fetchone())
+
+        return self._execute_write(_do)
+
+    def get_strategy(self, name: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM strategy_registry WHERE name = ?", (name,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_strategies(self, *, state: Optional[str] = None) -> List[Dict[str, Any]]:
+        sql = "SELECT * FROM strategy_registry"
+        params: List[Any] = []
+        if state is not None:
+            sql += " WHERE state = ?"
+            params.append(state)
+        sql += " ORDER BY score DESC, name"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def recompute_strategy_score(self, name: str) -> Optional[Dict[str, Any]]:
+        """Score only production ``tool_call`` rows tagged for *name*."""
+        strategy = self.get_strategy(name)
+        if strategy is None:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT
+                       COUNT(*) AS sample_count,
+                       SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END) AS success_count,
+                       SUM(CASE WHEN result = 'failure' THEN 1 ELSE 0 END) AS failure_count,
+                       AVG(latency_ms) AS avg_latency_ms
+                   FROM strategy_events
+                   WHERE event_type = 'tool_call' AND strategy = ?""",
+                (name,),
+            ).fetchone()
+        sample_count = int(row["sample_count"] or 0)
+        success_count = int(row["success_count"] or 0)
+        failure_count = int(row["failure_count"] or 0)
+        average = row["avg_latency_ms"]
+        success_rate = success_count / sample_count if sample_count else 0.0
+        confidence = min(sample_count / self.PROMOTE_MIN_SAMPLES, 1.0)
+        score = round(success_rate * 0.8 + confidence * 0.2, 4)
+
+        def _do(conn):
+            conn.execute(
+                """UPDATE strategy_registry SET
+                       score = ?, sample_count = ?, success_count = ?,
+                       failure_count = ?, avg_latency_ms = ?, updated_at = ?
+                   WHERE name = ?""",
+                (
+                    score,
+                    sample_count,
+                    success_count,
+                    failure_count,
+                    average,
+                    time.time(),
+                    name,
+                ),
+            )
+
+        self._execute_write(_do)
+        return self.get_strategy(name)
+
+    def evaluate_promotion(self, name: str) -> Dict[str, Any]:
+        strategy = self.recompute_strategy_score(name)
+        if strategy is None:
+            return {"can_promote": False, "reason": "not found", "checks": {}}
+        if strategy["state"] != "candidate":
+            return {
+                "can_promote": False,
+                "reason": f"state is {strategy['state']!r}, not 'candidate'",
+                "checks": {},
+            }
+        samples = int(strategy["sample_count"] or 0)
+        successes = int(strategy["success_count"] or 0)
+        success_rate = successes / samples if samples else 0.0
+        average = strategy["avg_latency_ms"]
+        checks = {
+            "min_samples": samples >= self.PROMOTE_MIN_SAMPLES,
+            "success_rate": success_rate >= self.PROMOTE_MIN_SUCCESS_RATE,
+            "latency_ceiling": average is None or average <= self.PROMOTE_MAX_AVG_LATENCY_MS,
+        }
+        failed = [key for key, passed in checks.items() if not passed]
+        return {
+            "can_promote": not failed,
+            "reason": "all checks passed" if not failed else f"failed: {', '.join(failed)}",
+            "checks": checks,
+        }
+
+    def promote_strategy(self, name: str) -> Dict[str, Any]:
+        verdict = self.evaluate_promotion(name)
+        if not verdict["can_promote"]:
+            return verdict
+        now = time.time()
+
+        def _do(conn):
+            conn.execute(
+                """UPDATE strategy_registry
+                   SET state = 'promoted', promoted_at = ?, updated_at = ?
+                   WHERE name = ?""",
+                (now, now, name),
+            )
+
+        self._execute_write(_do)
+        verdict["strategy"] = self.get_strategy(name)
+        return verdict
+
+    def get_promoted_strategies(self) -> List[Dict[str, Any]]:
+        return self.list_strategies(state="promoted")
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
         """Create a new session record. Returns the session_id."""

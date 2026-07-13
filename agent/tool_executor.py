@@ -31,6 +31,10 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.source_routing_strategy import (
+    discard_first_tool_evidence,
+    record_first_tool_evidence,
+)
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -933,6 +937,18 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 response_preview = _preview_str[:agent.log_prefix_chars] + "..." if len(_preview_str) > agent.log_prefix_chars else _preview_str
                 print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
+        if not blocked:
+            if r is None and agent._interrupt_requested:
+                discard_first_tool_evidence(agent)
+            else:
+                record_first_tool_evidence(
+                    agent,
+                    tool_name=name,
+                    tool_args=args,
+                    duration_seconds=tool_duration,
+                    is_error=True if r is None else is_error,
+                )
+
         agent._current_tool = None
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
 
@@ -1618,6 +1634,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
+
+        if not _execution_blocked:
+            record_first_tool_evidence(
+                agent,
+                tool_name=function_name,
+                tool_args=function_args,
+                duration_seconds=tool_duration,
+                is_error=_is_error_result,
+            )
 
         agent._current_tool = None
         agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")

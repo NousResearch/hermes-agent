@@ -12193,6 +12193,14 @@ def _(rid, params: dict) -> dict:
         lower = arg.strip().lower()
         if not arg.strip() or lower == "status":
             return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+        if lower == "show":
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": f"{mgr.status_line()}\n{mgr.render_contract()}",
+                },
+            )
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
             out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"
@@ -12222,9 +12230,35 @@ def _(rid, params: dict) -> dict:
                 },
             )
 
+        # Keep the dashboard/TUI on the same completion-contract route as the
+        # CLI and messaging gateway.  Previously this surface persisted the
+        # entire multi-line contract as an unstructured goal, so the strict
+        # verification-aware judge prompt was never selected even though the
+        # dashboard advertised /goal support.
+        contract = None
+        goal_text = arg
+        if lower.startswith("draft"):
+            objective = arg[len("draft"):].strip()
+            if not objective:
+                return _err(rid, 4004, "usage: /goal draft <objective in plain language>")
+            try:
+                from hermes_cli.goals import draft_contract
+
+                contract = draft_contract(objective)
+            except Exception as exc:
+                logger.debug("TUI goal contract draft failed: %s", exc)
+                contract = None
+            goal_text = objective
+        else:
+            from hermes_cli.goals import parse_contract
+
+            headline, parsed = parse_contract(arg)
+            goal_text = headline or arg
+            contract = parsed if not parsed.is_empty() else None
+
         # Otherwise — treat the remaining text as the new goal.
         try:
-            state = mgr.set(arg)
+            state = mgr.set(goal_text, contract=contract)
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 
@@ -12233,6 +12267,10 @@ def _(rid, params: dict) -> dict:
             "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
             "Controls: /goal status · /goal pause · /goal resume · /goal clear"
         )
+        if state.has_contract():
+            notice = f"{notice}\nCompletion contract:\n{state.contract.render_block()}"
+        elif lower.startswith("draft"):
+            notice = f"{notice}\n(Couldn't draft a contract — running as a free-form goal.)"
         # Send the goal text as the kickoff prompt. The TUI client sees
         # {type: send, notice, message} → renders `notice` as a sys line,
         # then submits `message` as a user turn. The post-turn judge

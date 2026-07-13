@@ -122,6 +122,82 @@ def test_goal_set_returns_send_with_notice(server, session):
     assert mgr.state.status == "active"
 
 
+def test_goal_set_parses_completion_contract(server, session):
+    sid, session_key, _ = session
+    r = _call(
+        server,
+        "command.dispatch",
+        name="goal",
+        arg=(
+            "fix retry policy\n"
+            "verify: python3 -m unittest -v passes\n"
+            "constraints: modify only retry_policy.py\n"
+            "boundaries: this fixture repository only\n"
+            "stop when: tests cannot run after two attempts"
+        ),
+        session_id=sid,
+    )
+
+    result = r["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "fix retry policy"
+    assert "Completion contract:" in result["notice"]
+    assert "python3 -m unittest -v passes" in result["notice"]
+
+    from hermes_cli.goals import GoalManager
+
+    state = GoalManager(session_key).state
+    assert state is not None
+    assert state.goal == "fix retry policy"
+    assert state.contract is not None
+    assert state.contract.verification == "python3 -m unittest -v passes"
+    assert state.contract.constraints == "modify only retry_policy.py"
+    assert state.contract.boundaries == "this fixture repository only"
+
+
+def test_goal_show_renders_completion_contract(server, session):
+    sid, _, _ = session
+    _call(
+        server,
+        "command.dispatch",
+        name="goal",
+        arg="fix retry policy\nverify: tests pass",
+        session_id=sid,
+    )
+
+    r = _call(server, "command.dispatch", name="goal", arg="show", session_id=sid)
+
+    assert r["result"]["type"] == "exec"
+    assert "Verification: tests pass" in r["result"]["output"]
+
+
+def test_goal_draft_uses_drafted_contract(server, session, monkeypatch):
+    sid, session_key, _ = session
+    from hermes_cli.goals import GoalContract
+
+    monkeypatch.setattr(
+        "hermes_cli.goals.draft_contract",
+        lambda objective: GoalContract(
+            outcome=objective,
+            verification="the focused test passes",
+        ),
+    )
+
+    r = _call(
+        server,
+        "command.dispatch",
+        name="goal",
+        arg="draft fix the parser",
+        session_id=sid,
+    )
+
+    assert r["result"]["message"] == "fix the parser"
+    assert "the focused test passes" in r["result"]["notice"]
+    from hermes_cli.goals import GoalManager
+
+    assert GoalManager(session_key).state.contract.verification == "the focused test passes"
+
+
 def test_goal_pause_after_set(server, session):
     sid, session_key, _ = session
     _call(server, "command.dispatch", name="goal", arg="write a story", session_id=sid)

@@ -500,15 +500,109 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
-def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+def get_default_write_dir() -> Optional[Path]:
+    """Read ``skills.default_write_dir`` from config.yaml.
 
-    The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    Returns a validated absolute path if configured and the directory exists,
+    otherwise ``None`` (fall back to the local skills dir).
     """
-    dirs = [get_skills_dir()]
-    dirs.extend(get_external_skills_dirs())
-    return dirs
+    parsed = _load_raw_config()
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return None
+
+    raw = skills_cfg.get("default_write_dir")
+    if not raw or not isinstance(raw, str):
+        return None
+
+    expanded = os.path.expanduser(os.path.expandvars(raw.strip()))
+    p = Path(expanded)
+    if not p.is_absolute():
+        from hermes_constants import get_hermes_home
+        p = get_hermes_home() / p
+    try:
+        p = p.resolve()
+    except (OSError, RuntimeError) as exc:
+        logger.debug("default_write_dir could not be resolved: %s", exc)
+        return None
+
+    local_skills = get_skills_dir().resolve()
+    if p == local_skills:
+        return None  # same as default, no point overriding
+
+    if not p.is_dir():
+        logger.debug("default_write_dir does not exist, ignoring: %s", p)
+        return None
+
+    return p
+
+
+def get_skill_write_dir(local_skills_dir: Optional[Path] = None) -> Tuple[Optional[Path], Optional[str]]:
+    """Resolve the create target, failing when an explicit override is invalid."""
+    parsed = _load_raw_config()
+    skills_cfg = parsed.get("skills")
+    raw = skills_cfg.get("default_write_dir") if isinstance(skills_cfg, dict) else None
+    if not isinstance(raw, str) or not raw.strip():
+        return local_skills_dir or get_skills_dir(), None
+
+    expanded = os.path.expanduser(os.path.expandvars(raw.strip()))
+    path = Path(expanded)
+    if not path.is_absolute():
+        from hermes_constants import get_hermes_home
+        path = get_hermes_home() / path
+    try:
+        path = path.resolve()
+    except (OSError, RuntimeError) as exc:
+        return None, f"skills.default_write_dir could not be resolved: {exc}"
+
+    if not path.exists():
+        return None, (
+            f"skills.default_write_dir does not exist: {path}. "
+            "Create the directory or remove the setting before creating a skill."
+        )
+    if not path.is_dir():
+        return None, f"skills.default_write_dir is not a directory: {path}"
+    return path, None
+
+
+def get_readonly_external_skills_dirs() -> List[Path]:
+    """Return configured external roots excluding the writable default root."""
+    write_dir = get_default_write_dir()
+    return [root for root in get_external_skills_dirs() if root != write_dir]
+
+
+def get_all_skills_dirs() -> List[Path]:
+    """Return discoverable roots in local, default-write, external order.
+
+    Resolved paths are de-duplicated so a writable root also listed in
+    ``external_dirs`` retains writable ownership and is scanned only once.
+    """
+    roots = [get_skills_dir()]
+    write_dir = get_default_write_dir()
+    if write_dir is not None:
+        roots.append(write_dir)
+    roots.extend(get_readonly_external_skills_dirs())
+
+    result: List[Path] = []
+    seen: Set[Path] = set()
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            resolved = root.absolute()
+        if resolved not in seen:
+            seen.add(resolved)
+            result.append(root)
+    return result
+
+
+def get_curator_writable_skills_dirs() -> List[Path]:
+    """Return roots owned by the active profile for autonomous maintenance."""
+    roots = [get_skills_dir()]
+    write_dir = get_default_write_dir()
+    if write_dir is not None and write_dir.resolve() != roots[0].resolve():
+        roots.append(write_dir)
+    return roots
 
 
 def normalize_skill_lookup_name(identifier: str) -> str:
@@ -542,7 +636,7 @@ def normalize_skill_lookup_name(identifier: str) -> str:
 
     trusted_roots = [primary_root]
     try:
-        trusted_roots.extend(get_external_skills_dirs())
+        trusted_roots.extend(get_all_skills_dirs()[1:])
     except Exception:
         pass
 
@@ -586,14 +680,26 @@ def is_external_skill_path(path) -> bool:
     not each need to re-interpret the config.
     """
     candidate = _resolve_for_skill_ownership(path)
-    for root in get_external_skills_dirs():
+    matches: List[Tuple[int, bool]] = []
+    write_dir = get_default_write_dir()
+    if write_dir is not None:
+        try:
+            resolved_write_dir = _resolve_for_skill_ownership(write_dir)
+            candidate.relative_to(resolved_write_dir)
+            matches.append((len(resolved_write_dir.parts), True))
+        except ValueError:
+            pass
+    for root in get_readonly_external_skills_dirs():
         resolved_root = _resolve_for_skill_ownership(root)
         try:
             candidate.relative_to(resolved_root)
-            return True
+            matches.append((len(resolved_root.parts), False))
         except ValueError:
             continue
-    return False
+    if not matches:
+        return False
+    _, writable = max(matches, key=lambda match: (match[0], match[1]))
+    return not writable
 
 
 # ── Condition extraction ──────────────────────────────────────────────────

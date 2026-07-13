@@ -835,30 +835,33 @@ def _collect_gateway_skill_entries(
 
     skill_triples: list[tuple[str, str, str]] = []
     try:
+        from pathlib import Path as _P
         from agent.skill_commands import get_skill_commands
-        from tools.skills_tool import SKILLS_DIR
-        from agent.skill_utils import get_external_skills_dirs
-        _skills_dir = str(SKILLS_DIR.resolve())
-        _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
+        from tools.skills_tool import _skills_dir as _active_skills_dir
+        from agent.skill_utils import get_all_skills_dirs
+        active_skills_dir = _active_skills_dir().resolve()
+        hub_dir = (active_skills_dir / ".hub").resolve()
         # Build set of allowed directory prefixes: local skills dir + any
         # user-configured ``skills.external_dirs``. Ensure each prefix ends
         # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
         # Without this widening, external skills are visible in
         # ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
         # silently excluded from gateway slash menus (#8110).
-        _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
-        _allowed_prefixes.extend(
-            str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
-        )
+        allowed_roots = [active_skills_dir]
+        allowed_roots.extend(d.resolve() for d in get_all_skills_dirs()[1:])
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
             info = skill_cmds[cmd_key]
             skill_path = info.get("skill_md_path", "")
             if not skill_path:
                 continue
-            if not any(skill_path.startswith(prefix) for prefix in _allowed_prefixes):
+            resolved_skill_path = _P(skill_path).resolve()
+            if not any(
+                root == resolved_skill_path or root in resolved_skill_path.parents
+                for root in allowed_roots
+            ):
                 continue
-            if skill_path.startswith(_hub_dir):
+            if hub_dir == resolved_skill_path or hub_dir in resolved_skill_path.parents:
                 continue
             skill_name = info.get("name", "")
             if skill_name in _platform_disabled:
@@ -1016,17 +1019,17 @@ def discord_skill_commands_by_category(
 
     try:
         from agent.skill_commands import get_skill_commands
-        from agent.skill_utils import get_external_skills_dirs
-        from tools.skills_tool import SKILLS_DIR
+        from agent.skill_utils import get_all_skills_dirs
+        from tools.skills_tool import _skills_dir as _active_skills_dir
 
-        _skills_dir = SKILLS_DIR.resolve()
-        _hub_dir = (SKILLS_DIR / ".hub").resolve()
+        _skills_dir = _active_skills_dir().resolve()
+        _hub_dir = (_skills_dir / ".hub").resolve()
         # Build list of (resolved_root, is_local) tuples. Each external dir
         # becomes its own scan root for category derivation — a skill at
         # ``<external>/mlops/foo/SKILL.md`` is still categorized as "mlops".
         _scan_roots: list[_P] = [_skills_dir]
         try:
-            for ext in get_external_skills_dirs():
+            for ext in get_all_skills_dirs()[1:]:
                 try:
                     _scan_roots.append(_P(ext).resolve())
                 except Exception:

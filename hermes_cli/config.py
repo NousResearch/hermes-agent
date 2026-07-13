@@ -2311,10 +2311,10 @@ DEFAULT_CONFIG = {
         },
     },
 
-    # Skills — external skill directories for sharing skills across tools/agents.
-    # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
-    # always goes to ~/.hermes/skills/.
+    # Skills — discovery and write roots for sharing skills across tools/agents.
+    # Each path is expanded (~, ${VAR}) and resolved.
     "skills": {
+        "default_write_dir": "",
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id

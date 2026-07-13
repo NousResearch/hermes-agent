@@ -351,6 +351,22 @@ class TestScanSkillCommands:
         # The old buggy key should NOT exist
         assert "/jellyfin-+-jellystat-24h-summary" not in result
 
+    def test_default_write_dir_skill_is_a_slash_command(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        local = hermes_home / "skills"
+        shared = tmp_path / "shared-skills"
+        local.mkdir(parents=True)
+        shared.mkdir()
+        _make_skill(shared, "shared-command")
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  default_write_dir: {shared}\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        result = scan_skill_commands()
+
+        assert "/shared-command" in result
+
     def test_allspecial_name_skipped(self, tmp_path):
         """Skill with name consisting only of special chars is silently skipped."""
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

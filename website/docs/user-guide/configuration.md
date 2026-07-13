@@ -558,6 +558,25 @@ See [Code Execution](features/code-execution.md) and the [Terminal section of th
 
 ## Skill Settings
 
+### Default skill write directory
+
+By default, `skill_manage(action="create")` writes to the active profile's
+`skills/` directory. Set `skills.default_write_dir` to keep newly created
+skills in a shared vault or cross-agent library instead:
+
+```yaml
+skills:
+  default_write_dir: ~/.agents/skills
+```
+
+The directory must already exist. Relative paths resolve from the active
+`HERMES_HOME`, and `~` plus environment variables are expanded. The configured
+directory is automatically scanned for skills and participates in curator
+maintenance for skills created by the background self-improvement process.
+
+Other paths under `skills.external_dirs` remain discovery roots and are
+read-only to autonomous curator maintenance.
+
 Skills can declare their own configuration settings via their SKILL.md frontmatter. These are non-secret values (paths, preferences, domain settings) stored under the `skills.config` namespace in `config.yaml`.
 
 ```yaml

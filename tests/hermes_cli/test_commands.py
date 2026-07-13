@@ -1524,6 +1524,27 @@ class TestTelegramMenuCommands:
             "prefix-match sibling directories must not be admitted"
         )
 
+    def test_gateway_skill_menu_uses_live_profile_root(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        new_home = tmp_path / "new"
+        new_skills = new_home / "skills"
+        new_skills.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(new_home))
+        fake_cmds = {
+            "/new-profile-skill": {
+                "name": "new-profile-skill",
+                "description": "Live profile skill",
+                "skill_md_path": str(new_skills / "new-profile-skill" / "SKILL.md"),
+                "skill_dir": str(new_skills / "new-profile-skill"),
+            }
+        }
+
+        with patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds):
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        assert "new_profile_skill" in {name for name, _ in menu}
+
     def test_special_chars_in_skill_names_sanitized(self, tmp_path, monkeypatch):
         """Skills with +, /, or other special chars produce valid Telegram names."""
         from unittest.mock import patch

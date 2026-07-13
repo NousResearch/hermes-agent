@@ -11775,10 +11775,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 response = ""
 
-            # Auto voice reply: send TTS audio before the text response
+            # Auto voice reply: send TTS audio before the text response.
+            # Profiles can opt into voice replacing the text body entirely via
+            # voice.suppress_text_reply. This keeps companion-style bots from
+            # leaking visible transcripts when the model forgets to call TTS.
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
-                await self._send_voice_reply(event, response)
+                _voice_sent = await self._send_voice_reply(event, response)
+                if self._should_suppress_text_after_voice_reply(event):
+                    if _voice_sent:
+                        logger.info(
+                            "Suppressing text response after successful voice reply: platform=%s chat=%s",
+                            _platform_name, source.chat_id or "unknown",
+                        )
+                    else:
+                        logger.warning(
+                            "Suppressing text response because voice-only reply was requested but voice delivery failed: platform=%s chat=%s",
+                            _platform_name, source.chat_id or "unknown",
+                        )
+                    response = ""
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -12738,7 +12753,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Return whether inbound voice/STT transcripts should be echoed to chat."""
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
+    def _should_suppress_text_after_voice_reply(self, event: MessageEvent) -> bool:
+        """Return whether auto-TTS should replace the text response."""
+        try:
+            cfg = _load_gateway_config()
+            voice_cfg = cfg.get("voice") or {}
+            return bool(voice_cfg.get("suppress_text_reply", False))
+        except Exception as exc:
+            logger.debug("voice.suppress_text_reply check failed: %s", exc)
+            return False
+
+    async def _send_voice_reply(self, event: MessageEvent, text: str) -> bool:
         """Generate TTS audio and send as a voice message before the text reply."""
         import uuid as _uuid
         audio_path = None
@@ -12748,7 +12773,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
-                return
+                return False
 
             # Telegram's adapter only sends native voice bubbles for OGG/Opus.
             # Other platforms keep the existing MP3 default.
@@ -12772,7 +12797,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             actual_path = result.get("file_path", audio_path)
             if not result.get("success") or not os.path.isfile(actual_path):
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
-                return
+                return False
 
             adapter = self._adapter_for_source(event.source)
 
@@ -12783,6 +12808,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and hasattr(adapter, "is_in_voice_channel")
                     and adapter.is_in_voice_channel(guild_id)):
                 await adapter.play_in_voice_channel(guild_id, actual_path)
+                return True
             elif adapter and hasattr(adapter, "send_voice"):
                 reply_anchor = self._reply_anchor_for_event(event)
                 thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
@@ -12804,9 +12830,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "reply_to": reply_anchor,
                     "metadata": thread_meta,
                 }
-                await adapter.send_voice(**send_kwargs)
+                send_result = await adapter.send_voice(**send_kwargs)
+                return bool(getattr(send_result, "success", True))
+            return False
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
+            return False
         finally:
             for p in {audio_path, actual_path} - {None}:
                 try:

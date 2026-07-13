@@ -418,7 +418,7 @@ class TestSendVoiceReply:
         from gateway.config import Platform
 
         mock_adapter = AsyncMock()
-        mock_adapter.send_voice = AsyncMock()
+        mock_adapter.send_voice = AsyncMock(return_value=SimpleNamespace(success=True))
         event = _make_event()
         event.source.platform = Platform.TELEGRAM
         runner.adapters[event.source.platform] = mock_adapter
@@ -430,9 +430,10 @@ class TestSendVoiceReply:
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
-            await runner._send_voice_reply(event, "Hello world")
+            sent = await runner._send_voice_reply(event, "Hello world")
 
         mock_adapter.send_voice.assert_called_once()
+        assert sent is True
         assert mock_tts.call_args.kwargs["output_path"].endswith(".ogg")
         call_args = mock_adapter.send_voice.call_args
         assert call_args.kwargs.get("chat_id") == "123"
@@ -515,9 +516,10 @@ class TestSendVoiceReply:
              patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
              patch("os.path.isfile", return_value=False), \
              patch("os.makedirs"):
-            await runner._send_voice_reply(event, "Hello")
+            sent = await runner._send_voice_reply(event, "Hello")
 
         mock_adapter.send_voice.assert_not_called()
+        assert sent is False
 
     @pytest.mark.asyncio
     async def test_exception_caught(self, runner):
@@ -526,7 +528,38 @@ class TestSendVoiceReply:
              patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
              patch("os.makedirs"):
             # Should not raise
-            await runner._send_voice_reply(event, "Hello")
+            sent = await runner._send_voice_reply(event, "Hello")
+        assert sent is False
+
+    @pytest.mark.asyncio
+    async def test_send_voice_failure_reports_not_sent(self, runner):
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock(return_value=SimpleNamespace(success=False))
+        event = _make_event()
+        event.source.platform = Platform.TELEGRAM
+        runner.adapters[event.source.platform] = mock_adapter
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            sent = await runner._send_voice_reply(event, "Hello world")
+
+        assert sent is False
+
+    def test_suppress_text_after_voice_reply_reads_config(self, runner):
+        event = _make_event()
+
+        with patch("gateway.run._load_gateway_config", return_value={"voice": {"suppress_text_reply": True}}):
+            assert runner._should_suppress_text_after_voice_reply(event) is True
+
+        with patch("gateway.run._load_gateway_config", return_value={"voice": {"suppress_text_reply": False}}):
+            assert runner._should_suppress_text_after_voice_reply(event) is False
 
 
 # =====================================================================

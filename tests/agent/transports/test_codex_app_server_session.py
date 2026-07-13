@@ -549,7 +549,7 @@ class TestRunTurn:
         client.queue_notification(
             "turn/completed",
             threadId="thread-fake-001",
-            turn={"id": "turn-fake-002", "status": "completed", "error": None},
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         s.run_turn("second", turn_timeout=2.0)
 
@@ -615,7 +615,7 @@ class TestRunTurn:
         client.queue_notification(
             "turn/completed",
             threadId="thread-fake-001",
-            turn={"id": "turn-fake-002", "status": "completed", "error": None},
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         retried = s.run_turn("third", turn_timeout=2.0)
         assert retried.error is None
@@ -682,7 +682,7 @@ class TestRunTurn:
         client.queue_notification(
             "turn/completed",
             threadId="thread-fake-001",
-            turn={"id": "turn-fake-002", "status": "completed", "error": None},
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         second = s.run_turn("second", turn_timeout=2.0)
         assert second.error is None
@@ -744,7 +744,7 @@ class TestRunTurn:
         client.queue_notification(
             "turn/completed",
             threadId="thread-fake-001",
-            turn={"id": "turn-fake-002", "status": "completed", "error": None},
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         second = s.run_turn("second", turn_timeout=2.0)
         assert second.error is None
@@ -752,7 +752,7 @@ class TestRunTurn:
         client.queue_notification(
             "turn/completed",
             threadId="thread-fake-001",
-            turn={"id": "turn-fake-003", "status": "completed", "error": None},
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         third = s.run_turn("third", turn_timeout=2.0)
         assert third.error is None

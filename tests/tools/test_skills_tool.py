@@ -1464,3 +1464,40 @@ class TestSkillSearch:
         assert entry.toolset == "skills"
         assert entry.schema["name"] == "skill_search"
         assert "query" in entry.schema["parameters"]["required"]
+
+    def test_skill_search_exposed_on_default_hermes_cli_session(self):
+        """Regression: registering ``skill_search`` under the ``skills`` toolset
+        is not enough — the default interactive session resolves its schema
+        footprint from the ``hermes-cli`` platform bundle. If ``skill_search``
+        isn't wired into that composition, ``get_tool_definitions`` never sends
+        the schema to the model and the tool is silently unreachable by default.
+        """
+        from model_tools import get_tool_definitions, _clear_tool_defs_cache
+
+        _clear_tool_defs_cache()
+        tools = get_tool_definitions(enabled_toolsets=["hermes-cli"], quiet_mode=True)
+        names = {t.get("function", {}).get("name") for t in tools}
+
+        assert "skill_search" in names, (
+            "skill_search must be exposed on the default hermes-cli session path "
+            "(wire it into _HERMES_CORE_TOOLS in toolsets.py)"
+        )
+        # The exposed schema must be the real one the model can call.
+        schema = next(
+            t["function"] for t in tools
+            if t.get("function", {}).get("name") == "skill_search"
+        )
+        assert "query" in schema["parameters"]["required"]
+
+    def test_skill_search_travels_with_skills_list_on_default_path(self):
+        """Discovery-tool parity guard: any default session that can enumerate
+        skills (``skills_list``) must also be able to search them
+        (``skill_search``). This fails loudly if a future edit exposes one
+        without the other."""
+        from model_tools import get_tool_definitions, _clear_tool_defs_cache
+
+        _clear_tool_defs_cache()
+        tools = get_tool_definitions(enabled_toolsets=["hermes-cli"], quiet_mode=True)
+        names = {t.get("function", {}).get("name") for t in tools}
+
+        assert {"skills_list", "skill_view", "skill_search"} <= names

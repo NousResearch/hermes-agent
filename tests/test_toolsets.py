@@ -291,3 +291,45 @@ class TestResolveToolsetIncludeRegistry:
 
     def test_registry_only_toolset_static_view_is_empty(self):
         assert resolve_toolset("__definitely_not_a_real_toolset__", include_registry=False) == []
+
+
+class TestSkillSearchToolsetCoverage:
+    """``skill_search`` must resolve into every platform bundle that ships the
+    skill-discovery tools, so normal agents receive its schema by default.
+
+    See the sibling ``get_tool_definitions(enabled_toolsets=["hermes-cli"])``
+    regression in ``tests/tools/test_skills_tool.py`` for the end-to-end
+    (schema-resolution + check_fn) proof on the default session path.
+    """
+
+    def test_hermes_cli_toolset_includes_skill_search(self):
+        assert "skill_search" in resolve_toolset("hermes-cli")
+
+    def test_messaging_platforms_include_skill_search(self):
+        for platform in (
+            "hermes-cron",
+            "hermes-telegram",
+            "hermes-discord",
+            "hermes-whatsapp",
+            "hermes-slack",
+            "hermes-signal",
+            "hermes-api-server",
+            "hermes-acp",
+        ):
+            assert "skill_search" in resolve_toolset(platform), (
+                f"{platform} exposes skill discovery but is missing skill_search"
+            )
+
+    def test_standalone_skills_toolset_includes_skill_search(self):
+        assert "skill_search" in resolve_toolset("skills")
+
+    def test_skill_search_travels_with_skills_list_across_all_toolsets(self):
+        """Parity invariant: no toolset may expose ``skills_list`` without also
+        exposing ``skill_search``. Guards against a future toolset (or a new
+        platform bundle) enumerating skills while leaving search unreachable."""
+        for name in TOOLSETS:
+            resolved = set(resolve_toolset(name))
+            if "skills_list" in resolved:
+                assert "skill_search" in resolved, (
+                    f"toolset '{name}' exposes skills_list without skill_search"
+                )

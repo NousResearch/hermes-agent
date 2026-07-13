@@ -158,6 +158,7 @@ platforms:
 | `watch_all` | `false` | Set to `true` to receive **all** state changes (not recommended for most setups) |
 | `ignore_entities` | *(none)* | Always ignore these entities (applied before domain/entity filters) |
 | `cooldown_seconds` | `30` | Minimum seconds between events for the same entity |
+| `notifications` | `true` | Set to `false` to stop the agent's outbound responses from creating HA persistent notifications (useful when you interact via Telegram or another platform). Inbound event listening is unaffected. |
 
 :::tip
 Start with a focused set of domains — `climate`, `binary_sensor`, and `alarm_control_panel` cover the most useful automations. Add more as needed. Use `ignore_entities` to suppress noisy sensors like CPU temperature or uptime counters.
@@ -179,6 +180,8 @@ State changes are formatted as human-readable messages based on domain:
 ### Agent Responses
 
 Outbound messages from the agent are delivered as **Home Assistant persistent notifications** (via `persistent_notification.create`). These appear in the HA notification panel with the title "Hermes Agent".
+
+Set `notifications: false` in the platform's `extra` config to disable this — `send()` becomes a silent no-op (returning success) so the agent stays reachable via other platforms like Telegram without generating notification noise in HA. Inbound event listening is unaffected.
 
 ### Connection Management
 

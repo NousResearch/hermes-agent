@@ -518,6 +518,27 @@ class TestSendViaRestApi:
         assert call_args[1]["json"]["message"] == "Test notification"
         assert "Bearer tok" in call_args[1]["headers"]["Authorization"]
 
+    def test_notifications_enabled_by_default(self):
+        # Default config keeps outbound notifications on.
+        adapter = _make_adapter()
+        assert adapter._notifications_enabled is True
+
+    @pytest.mark.asyncio
+    async def test_send_silent_no_op_when_notifications_disabled(self):
+        # notifications=false -> send() returns success WITHOUT any HTTP POST.
+        adapter = _make_adapter(notifications=False)
+        assert adapter._notifications_enabled is False
+        mock_session = self._mock_aiohttp_session(200)
+
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
+            mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
+            mock_aiohttp.ClientTimeout = lambda total: total
+
+            result = await adapter.send("ha_events", "Test notification")
+
+        assert result.success is True
+        mock_session.post.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_send_http_error(self):
         adapter = _make_adapter()

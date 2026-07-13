@@ -86,6 +86,10 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._watch_all: bool = bool(extra.get("watch_all", False))
         self._cooldown_seconds: int = int(extra.get("cooldown_seconds", 30))
 
+        # Outbound notifications (persistent_notification.create). When false,
+        # send() becomes a silent no-op; inbound event listening is unaffected.
+        self._notifications_enabled: bool = bool(extra.get("notifications", True))
+
         # Cooldown tracking: entity_id -> last_event_timestamp
         self._last_event_time: Dict[str, float] = {}
 
@@ -131,6 +135,12 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._running = True
             logger.info("[%s] Connected to %s", self.name, self._hass_url)
+            if not self._notifications_enabled:
+                logger.info(
+                    "[%s] Outbound persistent notifications disabled "
+                    "(notifications=false in config)",
+                    self.name,
+                )
             return True
 
         except Exception as e:
@@ -395,6 +405,12 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         Uses the REST API instead of WebSocket to avoid a race condition
         with the event listener loop that reads from the same WS connection.
         """
+        # Honor the `notifications` config flag (default: true). When false,
+        # persistent_notification.create is skipped but inbound event listening
+        # continues unaffected — useful when interacting via another platform.
+        if not self._notifications_enabled:
+            logger.debug("[%s] notifications disabled — skip send()", self.name)
+            return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
         url = f"{self._hass_url}/api/services/persistent_notification/create"
         headers = {
             "Authorization": f"Bearer {self._hass_token}",

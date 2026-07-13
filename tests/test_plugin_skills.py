@@ -8,9 +8,6 @@ Covers:
 
 import json
 import logging
-import os
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -240,6 +237,23 @@ class TestSkillViewQualifiedName:
         result = json.loads(skill_view("nonexistent-plugin:some-skill"))
         assert result["success"] is False
         assert "not found" in result["error"].lower()
+
+    def test_category_qualified_local_skill_falls_through(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        local_skills = tmp_path / "local-skills"
+        skill_dir = local_skills / "productivity" / "ticktick"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: ticktick\ndescription: local categorized\n---\nTickTick body.\n"
+        )
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", local_skills)
+
+        result = json.loads(skill_view("productivity:ticktick"))
+
+        assert result["success"] is True
+        assert result["name"] == "ticktick"
+        assert "TickTick body." in result["content"]
 
     def test_stale_entry_self_heals(self, tmp_path):
         from tools.skills_tool import skill_view

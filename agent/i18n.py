@@ -25,13 +25,14 @@ Language resolution order:
     3. ``display.language`` from config.yaml
     4. ``"en"`` (baseline)
 
-Supported languages: en, zh, ja, de, es.  Unknown values fall back to en.
+Supported languages: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import sysconfig
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -39,17 +40,45 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_LANGUAGES: tuple[str, ...] = ("en", "zh", "ja", "de", "es")
+SUPPORTED_LANGUAGES: tuple[str, ...] = (
+    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
+    "af", "ko", "it", "ga", "pt", "ru", "hu",
+)
 DEFAULT_LANGUAGE = "en"
 
 # Accept a few natural aliases so users who type "chinese" / "zh-CN" / "jp"
 # get the right catalog instead of silently falling back to English.
 _LANGUAGE_ALIASES: dict[str, str] = {
     "english": "en", "en-us": "en", "en-gb": "en",
-    "chinese": "zh", "mandarin": "zh", "zh-cn": "zh", "zh-tw": "zh", "zh-hans": "zh", "zh-hant": "zh",
+    # Simplified Chinese — explicit codes route here; bare "chinese" / "mandarin"
+    # also default to Simplified since that's the larger user base.
+    "chinese": "zh", "mandarin": "zh", "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",
+    # Traditional Chinese — distinct catalog.  Cover Taiwan / Hong Kong / Macau
+    # locale tags plus the common "traditional" alias.
+    "traditional-chinese": "zh-hant", "traditional_chinese": "zh-hant",
+    "zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-mo": "zh-hant",
     "japanese": "ja", "jp": "ja", "ja-jp": "ja",
-    "german": "de", "deutsch": "de", "de-de": "de",
-    "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es",
+    "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
+    "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",
+    "french": "fr", "français": "fr", "france": "fr", "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
+    "ukrainian": "uk", "ukrainisch": "uk", "українська": "uk", "uk-ua": "uk", "ua": "uk",
+    "turkish": "tr", "türkçe": "tr", "tr-tr": "tr",
+    # Afrikaans — South African Dutch-derived language; "af-ZA" is the common BCP-47 tag.
+    "afrikaans": "af", "af-za": "af",
+    # Korean
+    "korean": "ko", "한국어": "ko", "ko-kr": "ko",
+    # Italian
+    "italian": "it", "italiano": "it", "it-it": "it", "it-ch": "it",
+    # Irish (Gaeilge) — ga is the BCP-47 code
+    "irish": "ga", "gaeilge": "ga", "ga-ie": "ga",
+    # Portuguese — bare "portuguese" routes to European Portuguese; pt-br
+    # is in the same family but rendered identically here (no separate br catalog).
+    "portuguese": "pt", "português": "pt", "portugues": "pt",
+    "pt-pt": "pt", "pt-br": "pt", "brazilian": "pt", "brasileiro": "pt",
+    # Russian
+    "russian": "ru", "русский": "ru", "ru-ru": "ru",
+    # Hungarian
+    "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
 }
 
 _catalog_cache: dict[str, dict[str, str]] = {}
@@ -59,11 +88,54 @@ _catalog_lock = threading.Lock()
 def _locales_dir() -> Path:
     """Return the directory containing locale YAML files.
 
-    Lives next to the repo root so both the bundled install and editable
-    checkouts find it without PYTHONPATH gymnastics.
+    Resolution order, first existing wins:
+
+    1. ``HERMES_BUNDLED_LOCALES`` env var -- set by the Nix wrapper (or any
+       sealed-packaging system) to point at the installed catalog directory.
+    2. ``<repo-root>/locales`` -- source checkouts and ``pip install -e .``,
+       where the working tree sits next to ``agent/``.
+    3. ``<sysconfig data|purelib|platlib>/locales`` -- pip wheel installs.
+       setuptools ``data-files`` extracts ``locales/*.yaml`` under the
+       interpreter's ``data`` scheme; the other schemes are checked as a
+       safety net for nonstandard layouts.
+
+    Falling through to the source-style path (even when missing) keeps
+    ``_load_catalog`` error messages informative -- it logs the path it
+    looked at -- rather than raising.
     """
-    # agent/i18n.py -> agent/ -> repo root
-    return Path(__file__).resolve().parent.parent / "locales"
+    override = os.getenv("HERMES_BUNDLED_LOCALES", "").strip()
+    if override:
+        candidate = Path(override)
+        if candidate.is_dir():
+            return candidate
+        logger.warning(
+            "HERMES_BUNDLED_LOCALES points to a non-directory path (%s); "
+            "falling back to bundled/source locale resolution",
+            override,
+        )
+
+    # agent/i18n.py -> agent/ -> repo root (source checkout, editable install)
+    source_dir = Path(__file__).resolve().parent.parent / "locales"
+    if source_dir.is_dir():
+        return source_dir
+
+    # pip wheel install: data-files lands under the interpreter data scheme.
+    # ``data`` (== sys.prefix in a venv) is where setuptools data-files extract
+    # and is checked first. ``purelib``/``platlib`` (site-packages) are a safety
+    # net for nonstandard layouts. NOTE: this does NOT cover ``pip install
+    # --user`` (user scheme, ~/.local/locales) or ``pip install --target`` --
+    # both are out of scope; see the plan header.
+    for scheme in ("data", "purelib", "platlib"):
+        raw = sysconfig.get_path(scheme)
+        if not raw:
+            continue
+        candidate = Path(raw) / "locales"
+        if candidate.is_dir():
+            return candidate
+
+    # Last resort: return the source-style path so _load_catalog's catalog-missing
+    # log (logger.debug "i18n catalog missing for %s at %s") stays informative.
+    return source_dir
 
 
 def _normalize_lang(value: Any) -> str:

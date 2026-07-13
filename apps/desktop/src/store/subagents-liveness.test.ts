@@ -105,4 +105,33 @@ describe('subagent liveness reconciliation', () => {
     expect($subagentsBySession.get().local).toBeUndefined()
     expect(idsFor('remote')).toEqual(['shared-id'])
   })
+
+  it('keeps unprofiled legacy ancestors without consulting another explicit profile', () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+
+    upsertSubagent('legacy', { goal: 'grandparent', status: 'running', subagent_id: 'grandparent', task_index: 0 })
+    upsertSubagent('legacy', {
+      goal: 'parent',
+      parent_id: 'grandparent',
+      status: 'running',
+      subagent_id: 'parent',
+      task_index: 0
+    })
+    upsertSubagent('legacy', {
+      goal: 'child',
+      parent_id: 'parent',
+      status: 'running',
+      subagent_id: 'child',
+      task_index: 0
+    })
+    spawn('other', 'parent', 'running', 'other')
+    reconcileActiveSubagents(
+      [snapshot(['child'], 'remote'), snapshot([], 'other')],
+      1_000 + SUBAGENT_LIVENESS_GRACE_MS + 1
+    )
+    nowSpy.mockRestore()
+
+    expect(idsFor('legacy')).toEqual(['grandparent', 'parent', 'child'])
+    expect($subagentsBySession.get().other).toBeUndefined()
+  })
 })

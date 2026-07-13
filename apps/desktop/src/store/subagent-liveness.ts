@@ -34,10 +34,17 @@ export function reconcileActiveSubagents(
 ): void {
   const current = $subagentsBySession.get()
   const itemsByProfile = new Map<string, Map<string, SubagentProgress>>()
+  const legacyItemsById = new Map<string, SubagentProgress>()
   const authoritativeProfiles = new Set<string>()
   const keepIdsByProfile = new Map<string, Set<string>>()
 
   for (const item of Object.values(current).flat()) {
+    if (!item.profile?.trim()) {
+      legacyItemsById.set(item.id, item)
+
+      continue
+    }
+
     const profile = normProfile(item.profile)
     const byId = itemsByProfile.get(profile) ?? new Map<string, SubagentProgress>()
 
@@ -62,22 +69,50 @@ export function reconcileActiveSubagents(
 
   // Preserve missing parents while an authoritative descendant is still live,
   // otherwise nested children would jump to the tree root during reconciliation.
+  // Legacy rows without a profile are a fail-open fallback, but rows assigned
+  // to a different explicit profile must never participate in this traversal.
+  const keepLegacyIds = new Set<string>()
+
   for (const [profile, keepIds] of keepIdsByProfile) {
     const byId = itemsByProfile.get(profile)
 
-    for (const activeId of keepIds) {
-      let parentId = byId?.get(activeId)?.parentId ?? null
-      const seen = new Set<string>()
+    for (const activeId of [...keepIds]) {
+      const pending = [byId?.get(activeId), legacyItemsById.get(activeId)].filter(
+        (item): item is SubagentProgress => item !== undefined
+      )
 
-      while (parentId && !seen.has(parentId)) {
-        seen.add(parentId)
-        keepIds.add(parentId)
-        parentId = byId?.get(parentId)?.parentId ?? null
+      const seen = new Set<SubagentProgress>()
+
+      while (pending.length > 0) {
+        const item = pending.pop()!
+
+        if (seen.has(item)) {
+          continue
+        }
+
+        seen.add(item)
+
+        if (!item.parentId) {
+          continue
+        }
+
+        const scopedParent = byId?.get(item.parentId)
+        const legacyParent = legacyItemsById.get(item.parentId)
+
+        if (scopedParent) {
+          keepIds.add(scopedParent.id)
+          pending.push(scopedParent)
+        }
+
+        if (legacyParent) {
+          keepLegacyIds.add(legacyParent.id)
+          pending.push(legacyParent)
+        }
       }
     }
   }
 
-  const keepIdsAnywhere = new Set<string>()
+  const keepIdsAnywhere = new Set(keepLegacyIds)
 
   for (const keepIds of keepIdsByProfile.values()) {
     keepIds.forEach(id => keepIdsAnywhere.add(id))

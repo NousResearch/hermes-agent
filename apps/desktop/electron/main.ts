@@ -65,6 +65,7 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
+import { resolvePickerDefaultPath } from './wsl-path-bridge'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -8037,7 +8038,10 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
 
   if (options?.defaultPath) {
     try {
-      resolvedDefaultPath = path.resolve(String(options.defaultPath))
+      // On a Windows host with a WSL backend the cwd may be a POSIX/WSL path;
+      // bridge it to a UNC/drive form the native dialog can actually open.
+      const bridged = IS_WINDOWS ? resolvePickerDefaultPath(String(options.defaultPath)) : String(options.defaultPath)
+      resolvedDefaultPath = bridged ? path.resolve(bridged) : undefined
     } catch {
       resolvedDefaultPath = undefined
     }

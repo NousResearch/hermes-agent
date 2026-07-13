@@ -2142,7 +2142,7 @@ class TestApprovalTimeoutIsNotConsent:
     SESSION_KEY = "test-no-consent-session"
 
     def setup_method(self):
-        """Reset module state and force tight gateway_timeout for fast tests."""
+        """Reset module state and force a tight approval timeout for fast tests."""
         from tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
@@ -2179,7 +2179,7 @@ class TestApprovalTimeoutIsNotConsent:
         from tools import approval as mod
         monkeypatch.setattr(
             mod, "_get_approval_config",
-            lambda: {"mode": "manual", "gateway_timeout": seconds, "timeout": seconds},
+            lambda: {"mode": "manual", "timeout": seconds},
         )
 
     def test_timeout_returns_approved_false_with_no_consent(self, monkeypatch):

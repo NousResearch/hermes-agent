@@ -1424,7 +1424,7 @@ DEFAULT_CONFIG = {
     # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
         # Set explicitly to pin a backend:
-        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local) | "supertonic" (local)
         "provider": "edge",
         "edge": {
             "voice": "en-US-AriaNeural",
@@ -1498,6 +1498,15 @@ DEFAULT_CONFIG = {
             "model": "",  # empty = first tts-tagged model from the live catalog
             "voice": "default",
             # "base_url": "",  # override DEEPINFRA_BASE_URL for TTS only
+        },
+        "supertonic": {
+            "voice": "M1",          # M1-M5 (male) / F1-F5 (female)
+            "lang": "en",           # 31 languages + na neutral
+            "speed": 1.0,             # 0.7-2.0 (higher = faster)
+            "total_steps": 8,         # 5-12 (higher = better quality, slower)
+            # "voice_style_path": "",   # Path to a custom voice style (Voice Builder)
+            # "max_chunk_length": 300,  # Override internal text chunking (minimum: 10)
+            # "silence_duration": 0.0,  # Silence inserted between chunks (seconds)
         },
     },
 

@@ -8,7 +8,10 @@ synthesis step is monkey-patched to avoid needing the ONNX wheel or the
 """
 
 import json
+import threading
+import time
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -126,6 +129,40 @@ class TestGenerateSupertonicTts:
         assert len(_StubSupertonicTTS.instances) == 1
         assert [c["text"] for c in _StubSupertonicTTS.synth_calls] == ["one", "two"]
 
+    def test_engine_initialization_and_synthesis_are_serialized(self, tmp_path, monkeypatch):
+        class RacingSupertonicTTS(_StubSupertonicTTS):
+            active = 0
+            max_active = 0
+            state_lock = threading.Lock()
+
+            def __init__(self, auto_download=False):
+                time.sleep(0.05)
+                super().__init__(auto_download=auto_download)
+
+            def synthesize(self, *args, **kwargs):
+                with self.state_lock:
+                    type(self).active += 1
+                    type(self).max_active = max(type(self).max_active, type(self).active)
+                time.sleep(0.05)
+                with self.state_lock:
+                    type(self).active -= 1
+                return super().synthesize(*args, **kwargs)
+
+        monkeypatch.setattr(tts_tool, "_import_supertonic", lambda: RacingSupertonicTTS)
+        barrier = threading.Barrier(2)
+
+        def generate(index):
+            barrier.wait()
+            tts_tool._generate_supertonic_tts(
+                str(index), str(tmp_path / f"{index}.wav"), {}
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(generate, range(2)))
+
+        assert len(_StubSupertonicTTS.instances) == 1
+        assert RacingSupertonicTTS.max_active == 1
+
     def test_defaults_applied_when_config_empty(self, tmp_path):
         result = tts_tool._generate_supertonic_tts("hi", str(tmp_path / "out.wav"), {})
         assert Path(result).exists()
@@ -178,6 +215,40 @@ class TestGenerateSupertonicTts:
         assert extra["max_chunk_length"] == 120
         assert extra["silence_duration"] == 0.25
 
+    def test_invalid_max_chunk_length_uses_engine_default(self, tmp_path):
+        config = {"supertonic": {"max_chunk_length": 0}}
+
+        tts_tool._generate_supertonic_tts("hi", str(tmp_path / "out.wav"), config)
+
+        assert "max_chunk_length" not in _StubSupertonicTTS.synth_calls[0]["extra"]
+
+    def test_returns_wav_path_when_ffmpeg_is_unavailable(self, tmp_path, monkeypatch):
+        requested = tmp_path / "out.mp3"
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda _name: None)
+
+        result = tts_tool._generate_supertonic_tts("hi", str(requested), {})
+
+        output = Path(result)
+        assert output == requested.with_suffix(".wav")
+        assert output.read_bytes().startswith(b"RIFF")
+        assert not requested.exists()
+
+    def test_ffmpeg_uses_windows_safe_subprocess_options(self, tmp_path, monkeypatch):
+        requested = tmp_path / "out.mp3"
+        run_kwargs = {}
+
+        def fake_run(command, **kwargs):
+            run_kwargs.update(kwargs)
+            Path(command[-1]).write_bytes(b"MP3")
+
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(tts_tool.subprocess, "run", fake_run)
+
+        tts_tool._generate_supertonic_tts("hi", str(requested), {})
+
+        assert run_kwargs["stdin"] is tts_tool.subprocess.DEVNULL
+        assert run_kwargs["creationflags"] == tts_tool.windows_hide_flags()
+
 
 # ---------------------------------------------------------------------------
 # text_to_speech_tool end-to-end (provider == "supertonic")
@@ -194,6 +265,32 @@ class TestTextToSpeechToolWithSupertonic:
         assert data["success"] is True, data
         assert data["provider"] == "supertonic"
         assert Path(data["file_path"]).exists()
+
+    def test_default_output_stays_wav_without_ffmpeg(self, tmp_path, monkeypatch):
+        cfg = {"provider": "supertonic", "supertonic": {"voice": "M1"}}
+        monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
+        monkeypatch.setattr(tts_tool, "DEFAULT_OUTPUT_DIR", str(tmp_path))
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda _name: None)
+
+        data = json.loads(text_to_speech_tool(text="hi"))
+        output = Path(data["file_path"])
+
+        assert output.suffix == ".wav"
+        assert output.read_bytes().startswith(b"RIFF")
+
+    def test_explicit_compressed_output_reports_wav_fallback_without_ffmpeg(
+        self, tmp_path, monkeypatch
+    ):
+        cfg = {"provider": "supertonic", "supertonic": {"voice": "M1"}}
+        monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
+        monkeypatch.setattr(tts_tool.shutil, "which", lambda _name: None)
+
+        data = json.loads(
+            text_to_speech_tool(text="hi", output_path=str(tmp_path / "clip.mp3"))
+        )
+
+        assert data["success"] is True
+        assert Path(data["file_path"]).suffix == ".wav"
 
     def test_missing_package_surfaces_error(self, tmp_path, monkeypatch):
         def raise_import():

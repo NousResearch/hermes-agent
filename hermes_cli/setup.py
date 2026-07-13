@@ -1316,7 +1316,6 @@ def _setup_tts_provider(config: dict):
     elif selected == "supertonic":
         # Check if already installed
         try:
-            import importlib.util
             already_installed = importlib.util.find_spec("supertonic") is not None
         except Exception:
             already_installed = False

@@ -20,6 +20,7 @@ Both are configured through a single backend selection. Providers are chosen via
 |----------|---------|--------|---------|-----------|
 | **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | 500 credits/mo |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ Free (self-hosted) |
+| **Local sxng-search wrapper** | — (local command) | ✔ | — | ✔ Free |
 | **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 queries/mo |
 | **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | ✔ Free |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | 1 000 searches/mo |
@@ -27,7 +28,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | Paid |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth login xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 
-Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
+Brave Search, DDGS, Local sxng-search, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. The sxng provider executes an already-installed local `sxng-search` command; it does not require an API key. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -251,6 +252,32 @@ With this config, Hermes uses SearXNG for all search queries and Firecrawl for U
 
 ---
 
+### Local sxng-search wrapper
+
+Use this backend when an `sxng-search` command is already installed locally and returns JSON results. It is search-only and requires no API key.
+
+Select **Local sxng-search wrapper** in `hermes tools`, or configure it directly:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backend: "sxng"
+  extract_backend: "firecrawl"  # optional; sxng itself cannot extract URLs
+  sxng:
+    command: "sxng-search"   # executable name or absolute path; no shell arguments
+    timeout: 45               # seconds; values are clamped to 1-300
+```
+
+Hermes invokes the configured executable without a shell as:
+
+```text
+sxng-search <query> --limit <N> --json
+```
+
+The command must be on `PATH` unless `web.sxng.command` is an executable path. Command and timeout are behavioral settings in `config.yaml`; they are not stored in `.env`.
+
+---
+
 ### Tavily
 
 AI-optimised search and extract with a generous free tier.
@@ -346,7 +373,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
+  backend: "searxng"   # firecrawl | searxng | sxng | brave-free | ddgs | tavily | exa | parallel | xai
 ```
 
 ### Per-capability configuration

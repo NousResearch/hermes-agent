@@ -1461,6 +1461,42 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     spinner.stop(cute_msg)
                 elif agent._should_emit_quiet_tool_messages():
                     agent._vprint(f"  {cute_msg}")
+        elif getattr(agent, "_client_tool_names", None) and function_name in agent._client_tool_names:
+            # Split-runtime: client/shell-supplied tools are relayed to the
+            # caller (tool_call.request → POST /v1/runs/{id}/tool_result)
+            # instead of dispatched on the host.  The executor emits the
+            # post-tool hook for this branch (agent_runtime_owns_post_tool_hook).
+            spinner = None
+            if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
+                face = random.choice(KawaiiSpinner.get_waiting_faces())
+                emoji = _get_tool_emoji(function_name)
+                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                preview = _build_tool_label(function_name, display_args) or function_name
+                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
+                spinner.start()
+            _clt_result = None
+            try:
+                from agent.agent_runtime_helpers import relay_client_tool
+                function_result = relay_client_tool(
+                    agent,
+                    function_name,
+                    function_args,
+                    getattr(tool_call, "id", "") or "",
+                )
+                _clt_result = function_result
+            except Exception as tool_error:
+                function_result = json.dumps(
+                    {"error": f"client tool '{function_name}' relay failed: {tool_error}"},
+                    ensure_ascii=False,
+                )
+                logger.error("relay_client_tool raised for %s: %s", function_name, tool_error, exc_info=True)
+            finally:
+                tool_duration = time.time() - tool_start_time
+                cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_clt_result)
+                if spinner:
+                    spinner.stop(cute_msg)
+                elif agent._should_emit_quiet_tool_messages():
+                    agent._vprint(f"  {cute_msg}")
         elif agent.quiet_mode:
             spinner = None
             if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():

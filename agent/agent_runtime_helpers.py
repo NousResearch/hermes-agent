@@ -27,6 +27,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -67,8 +68,40 @@ def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
         return True
     if getattr(agent, "_context_engine_tool_names", None) and function_name in agent._context_engine_tool_names:
         return True
+    if getattr(agent, "_client_tool_names", None) and function_name in agent._client_tool_names:
+        return True
     memory_manager = getattr(agent, "_memory_manager", None)
     return bool(memory_manager and memory_manager.has_tool(function_name))
+
+
+def relay_client_tool(agent: Any, function_name: str, function_args: dict,
+                      tool_call_id: Optional[str] = None) -> str:
+    """Split-runtime: suspend the agent thread and relay a client/shell-supplied
+    tool call to the caller, blocking until it POSTs the result (or timeout).
+
+    Returns the tool-result string handed back to the model.  Shared by both
+    the sequential and concurrent tool-execution paths (client tools are never
+    parallel-safe, so in practice this fires from the sequential path).
+    """
+    from tools import client_tool_gateway as _ctg
+
+    session_key = getattr(agent, "_client_tool_session_key", None) or ""
+    call_id = tool_call_id or f"clt_{uuid.uuid4().hex}"
+    _args = function_args if isinstance(function_args, dict) else {}
+    entry = _ctg.register(call_id, session_key, function_name, _args)
+    notify = _ctg.get_notify(session_key)
+    if notify is not None:
+        try:
+            notify(entry)
+        except Exception as _notify_err:
+            logger.debug("client tool notify error: %s", _notify_err)
+    relayed = _ctg.wait_for_result(call_id, _ctg.get_client_tool_timeout())
+    if relayed is None:
+        return json.dumps(
+            {"error": f"client tool '{function_name}' timed out (no result from shell)"},
+            ensure_ascii=False,
+        )
+    return relayed
 
 
 def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
@@ -2245,6 +2278,15 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         except Exception:
             pass
         return result
+
+    # Split-runtime: client/shell-supplied tools are executed by the caller,
+    # not the host.  Suspend + relay instead of dispatching (mirrors the
+    # sequential path's client-tool branch).  Client tools are never
+    # parallel-safe so this concurrent path is defensive; the relay lives in
+    # the shared helper.
+    _client_tool_names = getattr(agent, "_client_tool_names", None)
+    if _client_tool_names and function_name in _client_tool_names:
+        return relay_client_tool(agent, function_name, function_args, tool_call_id)
 
     if function_name == "todo":
         def _execute(next_args: dict) -> Any:

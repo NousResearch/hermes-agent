@@ -309,6 +309,28 @@ class TestAdapterInit:
         assert adapter._api_key == "sk-test"
         assert adapter._cors_origins == ("http://localhost:3000",)
 
+    def test_split_runtime_defaults_off(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        assert adapter._split_runtime is False
+        assert adapter._split_runtime_enabled() is False
+
+    def test_split_runtime_from_extra(self):
+        config = PlatformConfig(enabled=True, extra={"split_runtime": True})
+        adapter = APIServerAdapter(config)
+        assert adapter._split_runtime_enabled() is True
+
+    def test_split_runtime_from_env(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_SPLIT_RUNTIME", "true")
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        assert adapter._split_runtime_enabled() is True
+
+    def test_split_runtime_extra_string_is_coerced(self):
+        # Some config loaders hand back strings; "false" must not be truthy.
+        off = APIServerAdapter(PlatformConfig(enabled=True, extra={"split_runtime": "false"}))
+        on = APIServerAdapter(PlatformConfig(enabled=True, extra={"split_runtime": "true"}))
+        assert off._split_runtime_enabled() is False
+        assert on._split_runtime_enabled() is True
+
     def test_config_from_env(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_HOST", "10.0.0.1")
         monkeypatch.setenv("API_SERVER_PORT", "7777")
@@ -928,6 +950,7 @@ class TestCapabilitiesEndpoint:
             assert data["runtime"]["tool_execution"] == "server"
             assert data["runtime"]["split_runtime"] is False
             assert "API-server host" in data["runtime"]["description"]
+            assert data["features"]["client_tool_execution"] is False
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
@@ -935,6 +958,24 @@ class TestCapabilitiesEndpoint:
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertise_split_runtime_when_enabled(self):
+        adapter = APIServerAdapter(
+            PlatformConfig(enabled=True, extra={"split_runtime": True}),
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["runtime"]["split_runtime"] is True
+            assert data["runtime"]["tool_execution"] == "split"
+            assert data["features"]["client_tool_execution"] is True
+            assert data["endpoints"]["run_tool_result"] == {
+                "method": "POST",
+                "path": "/v1/runs/{run_id}/tool_result",
+            }
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):

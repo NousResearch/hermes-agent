@@ -640,6 +640,34 @@ group_sessions_per_user: true
 # key (``extra.key`` / API_SERVER_KEY).
 
 # ─────────────────────────────────────────────────────────────────────────────
+# API Server — split-runtime (client-executed tools)
+# ─────────────────────────────────────────────────────────────────────────────
+# By default every tool a run invokes executes on the API-server host.  Enable
+# split_runtime to let a client shell keep the Hermes agent as its "brain"
+# (server-side skills, memory and agent loop are untouched) while executing its
+# OWN tools locally — e.g. a phone client exposing on-device timers/intents, or
+# a terminal client that must run commands in the user's real workspace.
+#
+#   platforms:
+#     api_server:
+#       enabled: true
+#       extra:
+#         key: "your-api-server-secret"
+#         split_runtime: true          # or API_SERVER_SPLIT_RUNTIME=true
+#
+# Flow: the client POSTs /v1/runs with a ``tools`` array (JSON-Schema tool
+# defs).  Those tools are offered to the model but never run on the host: when
+# the model calls one, the run suspends, a ``tool_call.request`` event is
+# emitted on the run's SSE stream, and the client returns the result via
+# POST /v1/runs/{run_id}/tool_result — then the agent resumes.  Server-side
+# tools, approvals and clarify are unaffected and still execute on the host.
+#
+# Off by default.  With split_runtime false (or when a run carries no ``tools``
+# array) behaviour is exactly as before.  GET /v1/capabilities advertises the
+# active mode under ``runtime``.
+# split_runtime: false
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
 # ─────────────────────────────────────────────────────────────────────────────
 # Stream tokens to messaging platforms in real-time. The bot sends a message

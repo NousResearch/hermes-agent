@@ -5412,6 +5412,18 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     except Exception:
         logger.debug("Context-engine tool re-injection skipped", exc_info=True)
 
+    # Client/shell-supplied tools (split-runtime) — injected per-run onto
+    # agent.tools after construction; get_tool_definitions does not reproduce
+    # them, so a turn-boundary rebuild would strip them and the model would lose
+    # the ability to call them mid-conversation. Re-append them here (same
+    # dedup-aware _add as the other post-build families).
+    try:
+        for schema in (getattr(agent, "_client_tool_defs", None) or []):
+            if isinstance(schema, dict):
+                _add(schema)
+    except Exception:
+        logger.debug("Client-tool re-injection skipped", exc_info=True)
+
     return staged_engine_names
 
 

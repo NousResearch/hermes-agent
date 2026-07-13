@@ -1772,6 +1772,11 @@ browser:
   inactivity_timeout: 120        # Seconds before auto-closing idle sessions
   command_timeout: 30             # Timeout in seconds for browser commands (screenshot, navigate, etc.)
   record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
+  # Ignore TLS/SSL certificate errors (self-signed, expired, hostname mismatch).
+  # When true, agent-browser is invoked with --ignore-https-errors so internal
+  # services with self-signed certs (Proxmox, homelab dashboards) can be opened.
+  # Default false. Prefer proper certs in production.
+  ignore_https_errors: false
   # Optional CDP override — when set, Hermes attaches directly to your own
   # Chromium-family browser (via /browser connect) rather than starting a headless browser.
   cdp_url: ""

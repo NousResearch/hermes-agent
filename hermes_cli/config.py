@@ -1269,6 +1269,11 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        # Ignore TLS/SSL certificate errors (self-signed certs, expired, etc.).
+        # When true, agent-browser is invoked with --ignore-https-errors so
+        # internal services (Proxmox, homelab dashboards) with self-signed
+        # certs can be navigated. Default false for security.
+        "ignore_https_errors": False,
         # Browser engine for local mode.  Passed as ``--engine <value>`` to
         # agent-browser v0.25.3+.
         # "auto"       — use Chrome (default, don't pass --engine at all)

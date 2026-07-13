@@ -237,6 +237,8 @@ _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
+_cached_ignore_https_errors: Optional[bool] = None
+_ignore_https_errors_resolved = False
 
 
 def _sanitize_url_for_logs(value: object) -> str:
@@ -276,6 +278,32 @@ def _get_command_timeout() -> int:
     # is still ``None`` (see issue #14331).
     _cached_command_timeout = result
     _command_timeout_resolved = True
+    return result
+
+
+def _get_ignore_https_errors_config() -> bool:
+    """Return whether to ignore HTTPS certificate errors from config.yaml.
+
+    Reads ``config["browser"]["ignore_https_errors"]`` and falls back to
+    ``False`` if unset or unreadable. Result is cached after the first call
+    and cleared by ``cleanup_all_browsers()``.
+    """
+    global _cached_ignore_https_errors, _ignore_https_errors_resolved
+    if _ignore_https_errors_resolved and _cached_ignore_https_errors is not None:
+        return _cached_ignore_https_errors
+
+    result = False
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "ignore_https_errors")
+        if val is not None:
+            result = bool(val)
+    except Exception as e:
+        logger.debug("Could not read ignore_https_errors from config: %s", e)
+    # Cache before flipping resolved (same race discipline as timeout cache).
+    _cached_ignore_https_errors = result
+    _ignore_https_errors_resolved = True
     return result
 
 
@@ -2358,7 +2386,14 @@ def _run_browser_command(
     else:
         cmd_prefix = [browser_cmd]
 
-    cmd_parts = cmd_prefix + backend_args + [
+    extra_args: list[str] = []
+    if _get_ignore_https_errors_config():
+        # Global agent-browser flag; also settable via
+        # AGENT_BROWSER_IGNORE_HTTPS_ERRORS. Lets local Chromium open
+        # self-signed / internal HTTPS endpoints.
+        extra_args.append("--ignore-https-errors")
+
+    cmd_parts = cmd_prefix + backend_args + extra_args + [
         "--json",
         command
     ] + args
@@ -4380,6 +4415,7 @@ def cleanup_all_browsers() -> None:
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
+    global _cached_ignore_https_errors, _ignore_https_errors_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
     _cached_agent_browser = None
@@ -4389,6 +4425,8 @@ def cleanup_all_browsers() -> None:
     # reader never sees ``resolved=True`` with ``cache=None`` (#14331).
     _command_timeout_resolved = False
     _cached_command_timeout = None
+    _ignore_https_errors_resolved = False
+    _cached_ignore_https_errors = None
     _cached_chromium_installed = None
     global _chromium_autoinstall_attempted
     _chromium_autoinstall_attempted = False

@@ -17,6 +17,8 @@ def _reset_caches():
     bt._agent_browser_resolved = False
     bt._cached_command_timeout = None
     bt._command_timeout_resolved = False
+    bt._cached_ignore_https_errors = None
+    bt._ignore_https_errors_resolved = False
     # lru_cache for _discover_homebrew_node_dirs
     if hasattr(bt._discover_homebrew_node_dirs, "cache_clear"):
         bt._discover_homebrew_node_dirs.cache_clear()
@@ -114,6 +116,50 @@ class TestCommandTimeoutCache:
             _get_command_timeout()
             _get_command_timeout()
         mock_read.assert_called_once()
+
+
+class TestIgnoreHttpsErrorsConfig:
+    """Config reader + cache for browser.ignore_https_errors."""
+
+    def test_default_is_false(self):
+        from tools.browser_tool import _get_ignore_https_errors_config
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
+            assert _get_ignore_https_errors_config() is False
+
+    def test_default_matches_default_config(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+        from tools.browser_tool import _get_ignore_https_errors_config
+        assert DEFAULT_CONFIG["browser"]["ignore_https_errors"] is False
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
+            assert _get_ignore_https_errors_config() is False
+
+    def test_reads_true_from_config(self):
+        from tools.browser_tool import _get_ignore_https_errors_config
+        cfg = {"browser": {"ignore_https_errors": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_ignore_https_errors_config() is True
+
+    def test_reads_false_from_config(self):
+        from tools.browser_tool import _get_ignore_https_errors_config
+        cfg = {"browser": {"ignore_https_errors": False}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_ignore_https_errors_config() is False
+
+    def test_cached_after_first_call(self):
+        from tools.browser_tool import _get_ignore_https_errors_config
+        mock_read = MagicMock(return_value={"browser": {"ignore_https_errors": True}})
+        with patch("hermes_cli.config.read_raw_config", mock_read):
+            assert _get_ignore_https_errors_config() is True
+            assert _get_ignore_https_errors_config() is True
+        mock_read.assert_called_once()
+
+    def test_cache_cleared_by_cleanup(self):
+        import tools.browser_tool as bt
+        bt._cached_ignore_https_errors = True
+        bt._ignore_https_errors_resolved = True
+        bt.cleanup_all_browsers()
+        assert bt._ignore_https_errors_resolved is False
+        assert bt._cached_ignore_https_errors is None
 
 
 class TestSessionInactivityTimeout:

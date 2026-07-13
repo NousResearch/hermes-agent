@@ -365,6 +365,10 @@ browser:
   # Inactivity timeout in seconds - browser sessions are automatically closed
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
+  # Ignore TLS/SSL certificate errors (self-signed, expired, hostname mismatch).
+  # When true, agent-browser gets --ignore-https-errors so internal services
+  # with self-signed certs can be navigated. Default false.
+  # ignore_https_errors: false
 
 # =============================================================================
 # Tool Loop Guardrails

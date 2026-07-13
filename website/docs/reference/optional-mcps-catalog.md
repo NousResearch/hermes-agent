@@ -31,6 +31,7 @@ For the general MCP config shape (independent of the catalog), see the [MCP Conf
 |------|-----------|------|--------|-------------|
 | [**linear**](/docs/user-guide/mcps/optional/linear) | http | oauth | [https://linear.app/docs/mcp](https://linear.app/docs/mcp) | Find, create, and update Linear issues, projects, and comments. |
 | [**n8n**](/docs/user-guide/mcps/optional/n8n) | stdio | api_key | [https://github.com/CyberSamuraiX/hermes-n8n-mcp](https://github.com/CyberSamuraiX/hermes-n8n-mcp) | Manage and inspect n8n workflows from Hermes (stdio bridge, no public port). |
+| [**unreal-engine**](/docs/user-guide/mcps/optional/unreal-engine) | http | none | [https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor](https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor) | Drive the Unreal Engine 5.8 editor over its local MCP server. |
 
 ## Trust model
 

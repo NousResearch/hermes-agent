@@ -611,6 +611,7 @@ const sidebars: SidebarsConfig = {
               items: [
                 'user-guide/mcps/optional/linear',
                 'user-guide/mcps/optional/n8n',
+                'user-guide/mcps/optional/unreal-engine',
               ],
             },
           ],

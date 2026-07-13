@@ -244,6 +244,9 @@ def parse_manifest(path: Path) -> Dict[str, Any]:
     if not isinstance(env_list_raw, list):
         raise ManifestError(f"{path}: auth.env must be a list")
     env_list = [_validate_env_spec(e, path) for e in env_list_raw]
+    provider = auth_raw.get("provider")
+    if provider is not None and not isinstance(provider, str):
+        raise ManifestError(f"{path}: auth.provider must be a string")
 
     tools_raw = data.get("tools") or {}
     if not isinstance(tools_raw, dict):
@@ -284,6 +287,7 @@ def parse_manifest(path: Path) -> Dict[str, Any]:
         "auth": {
             "type": a_type,
             "env": env_list,
+            "provider": provider,
         },
         "tools": {"default_enabled": default_enabled},
         "install": install_raw,
@@ -446,10 +450,17 @@ def render_entry_page(entry: Dict[str, Any]) -> str:
         )
         lines.append("")
     elif auth["type"] == "oauth":
-        lines.append(
-            "OAuth is handled at first connection. For native MCP OAuth, "
-            "Hermes's MCP client triggers the browser flow on the first probe."
-        )
+        if auth.get("provider"):
+            provider = auth["provider"]
+            lines.append(
+                f"This MCP uses **{provider}** OAuth. If you have not already "
+                f"authenticated, run `hermes auth {provider}` before connecting."
+            )
+        else:
+            lines.append(
+                "OAuth is handled at first connection. For native MCP OAuth, "
+                "Hermes's MCP client triggers the browser flow on the first probe."
+            )
         lines.append("")
     else:
         lines.append("No credentials required.")

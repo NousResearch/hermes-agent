@@ -648,6 +648,38 @@ def scan_sessions(
                     # must never abort the scan itself.
                     pass
 
+        # Before saving the new checkpoint, compute the contributions of any
+        # sessions that were in the old checkpoint but are no longer present
+        # (they were pruned from SessionDB). Add those contributions to the
+        # durable pruned_contributions ledger stored in state.json so future
+        # scans can include them in lifetime totals.
+        # This fixes the prune regression described in issue #28661: max()
+        # alone prevents backward movement but loses post-prune increments.
+        prev_checkpoint = load_checkpoint()
+        prev_sessions = prev_checkpoint.get("sessions", {}) if isinstance(prev_checkpoint.get("sessions"), dict) else {}
+        pruned_sids = set(prev_sessions.keys()) - set(checkpoint_sessions.keys())
+        if pruned_sids:
+            pruned_state = load_state()
+            ledger = pruned_state.setdefault("pruned_contributions", {})
+            for sid in pruned_sids:
+                session_stats = prev_sessions.get(sid, {}).get("stats", {})
+                if not isinstance(session_stats, dict):
+                    continue
+                for key, val in session_stats.items():
+                    if not isinstance(val, (int, float)):
+                        continue
+                    if not key.startswith("total_") and not key.startswith("max_"):
+                        continue
+                    try:
+                        numeric_val = int(val)
+                    except (TypeError, ValueError):
+                        continue
+                    if key.startswith("total_"):
+                        ledger[key] = int(ledger.get(key, 0)) + numeric_val
+                    elif key.startswith("max_"):
+                        ledger[key] = max(int(ledger.get(key, 0)), numeric_val)
+            save_state(pruned_state)
+
         save_checkpoint({
             "schema_version": 1,
             "generated_at": int(time.time()),
@@ -792,9 +824,34 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
     skips persisting ``state.json`` unlocks — we don't want to record an
     "unlock time" based on half a scan that a later session might shift.
     """
-    aggregate = scan.get("aggregate", {})
+    aggregate = dict(scan.get("aggregate", {}))
     state = load_state() if not is_partial else {"unlocks": {}}
     unlocks = state.setdefault("unlocks", {})
+
+    # Merge durable pruned_contributions ledger into the current aggregate so
+    # lifetime totals include contributions from sessions that were pruned from
+    # SessionDB. Without this, scan_sessions() only sees live rows and
+    # total_* counters regress after a prune (issue #28661).
+    # max_* fields are also merged to restore the historical high-water mark
+    # even when the session that produced it was pruned.
+    if not is_partial:
+        ledger = state.get("pruned_contributions", {})
+        if isinstance(ledger, dict):
+            for key, ledger_val in ledger.items():
+                try:
+                    numeric_ledger = int(ledger_val or 0)
+                except (TypeError, ValueError):
+                    continue
+                current = aggregate.get(key, 0)
+                try:
+                    numeric_current = int(current or 0)
+                except (TypeError, ValueError):
+                    numeric_current = 0
+                if key.startswith("total_"):
+                    aggregate[key] = numeric_current + numeric_ledger
+                elif key.startswith("max_"):
+                    aggregate[key] = max(numeric_current, numeric_ledger)
+
     now = int(time.time())
     evaluated = []
     for definition in ACHIEVEMENTS:

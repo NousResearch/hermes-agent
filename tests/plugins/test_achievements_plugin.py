@@ -376,3 +376,63 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
         "partial scans must not record unlock timestamps — a later session "
         "could change whether the badge deserves to be unlocked yet"
     )
+
+
+def test_prune_then_new_activity_increases_lifetime_counter(plugin_api, tmp_path):
+    """Regression test for issue #28661 (prune-then-new-activity case).
+
+    Scenario:
+    1. Two sessions exist; scanner runs and records total_tool_calls=5000.
+    2. Session A is pruned from SessionDB (disappears from live rows).
+    3. Session B has new activity (+1 tool call); scanner runs again.
+    4. Lifetime total must be 5001, not 5000 (max() would freeze at 5000).
+
+    The fix uses a durable pruned_contributions ledger in state.json to
+    accumulate pruned session stats, then adds them to the current scan
+    aggregate so new live activity can advance beyond the pre-prune total.
+    """
+    # Step 1: Seed checkpoint with two sessions contributing 5000 tool calls.
+    session_a_stats = {"tool_call_count": 4000, "total_tool_calls": 4000}
+    session_b_stats = {"tool_call_count": 1000, "total_tool_calls": 1000}
+    plugin_api.save_checkpoint({
+        "schema_version": 1,
+        "generated_at": 1000,
+        "sessions": {
+            "session-A": {"fingerprint": {"last_active": 1}, "stats": session_a_stats},
+            "session-B": {"fingerprint": {"last_active": 2}, "stats": session_b_stats},
+        },
+    })
+
+    # Step 2: Simulate a scan where session-A is pruned (not present),
+    # and session-B has +1 new tool call (1001 total).
+    session_b_new_stats = {"tool_call_count": 1001, "total_tool_calls": 1001}
+    new_scan = {
+        "sessions": [{"session_id": "session-B", **session_b_new_stats}],
+        "aggregate": {"total_tool_calls": 1001, "session_count": 1},
+        "scan_meta": {"mode": "full", "sessions_total": 1},
+        "checkpoint_sessions": {"session-B": {"fingerprint": {"last_active": 3}, "stats": session_b_new_stats}},
+    }
+
+    # Save the new checkpoint (this triggers the pruned_contributions update).
+    pruned_state = plugin_api.load_state()
+    ledger = pruned_state.setdefault("pruned_contributions", {})
+    # Manually simulate what scan_sessions() does: session-A is pruned.
+    pruned_stats = session_a_stats
+    for key, val in pruned_stats.items():
+        if key.startswith("total_"):
+            try:
+                ledger[key] = int(ledger.get(key, 0)) + int(val or 0)
+            except (TypeError, ValueError):
+                pass
+    plugin_api.save_state(pruned_state)
+
+    # Step 3: compute_from_scan with the post-prune aggregate (only session-B).
+    result = plugin_api._compute_from_scan(new_scan, is_partial=False)
+
+    lifetime_total = result["aggregate"].get("total_tool_calls", 0)
+    assert lifetime_total == 5001, (
+        f"Expected lifetime total_tool_calls=5001 after prune + new activity, "
+        f"got {lifetime_total}. "
+        f"The pruned_contributions ledger must accumulate pruned session stats "
+        f"so post-prune increments are not lost."
+    )

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+from hermes_cli.subcommands._shared import add_accept_hooks_flag
+
 
 def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     """Attach the ``update`` subcommand to ``subparsers``."""
@@ -19,6 +21,7 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Update Hermes Agent to the latest version",
         description="Pull the latest changes from git and reinstall dependencies",
     )
+    add_accept_hooks_flag(update_parser)
     update_parser.add_argument(
         "--gateway",
         action="store_true",

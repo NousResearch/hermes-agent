@@ -6252,6 +6252,50 @@ def _atomic_replace_dir(src: str, dst: str) -> None:
         shutil.rmtree(backup, ignore_errors=True)
 
 
+def _prepare_update_hook_dispatch(args) -> None:
+    """Load only the plugin and shell-hook surfaces needed by ``post_update``.
+
+    Normal agent startup is intentionally excluded from ``hermes update``.
+    Updates do not need MCP/tool discovery or an agent session, but configured
+    update callbacks still need the same plugin discovery and consent-aware
+    shell-hook registration used by the normal CLI.
+    """
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+    except Exception:
+        logger.debug("plugin discovery failed before post_update hook", exc_info=True)
+
+    try:
+        from agent.shell_hooks import register_from_config
+        from hermes_cli.config import load_config
+
+        register_from_config(
+            load_config(),
+            accept_hooks=bool(getattr(args, "accept_hooks", False)),
+        )
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed before post_update hook",
+            exc_info=True,
+        )
+
+
+def _run_post_update_hooks(args, *, route: str) -> None:
+    """Emit the single successful-update event for one update route."""
+    _prepare_update_hook_dispatch(args)
+    try:
+        from hermes_cli.plugins import invoke_hook
+
+        invoke_hook("post_update", route=route)
+    except Exception:
+        # Hook failures must never turn a completed code/dependency update into
+        # a failed update. Individual callbacks are isolated by PluginManager;
+        # this guard also protects the dispatch boundary itself.
+        logger.debug("post_update hook dispatch failed", exc_info=True)
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -6448,14 +6492,8 @@ def _update_via_zip(args):
         _print_curator_recent_run_notice()
     except Exception as e:
         logger.debug("Curator recent-run notice failed: %s", e)
-    # Fire post_update hook so users can re-apply custom patches, run
-    # migrations, or restart services after the update.
-    try:
-        from hermes_cli.plugins import get_plugin_manager
-        get_plugin_manager().invoke_hook("post_update")
-    except Exception as e:
-        logger.debug("post_update hook failed: %s", e)
     _kill_stale_dashboard_processes()
+    _run_post_update_hooks(args, route="zip")
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -9438,6 +9476,7 @@ def _cmd_update_pip(args):
         sys.exit(1)
 
     print("✓ Update complete! Restart hermes to use the new version.")
+    _run_post_update_hooks(args, route="pip")
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -10316,13 +10355,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("FHS PATH guard check failed: %s", e)
 
-        # Fire post_update hook (see also the main update path above).
-        try:
-            from hermes_cli.plugins import get_plugin_manager
-            get_plugin_manager().invoke_hook("post_update")
-        except Exception as e:
-            logger.debug("post_update hook failed: %s", e)
-
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on supported platforms and on the
         # binary already being on PATH, so this is a no-op for users who
@@ -10377,6 +10409,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _exit_code_path.write_text("0")
             except OSError:
                 pass
+
+        # All route-specific update work is complete. Emit the lifecycle event
+        # before gateway restarts can terminate this updater process.
+        _run_post_update_hooks(args, route="git")
 
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every

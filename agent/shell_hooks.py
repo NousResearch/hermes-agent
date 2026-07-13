@@ -100,8 +100,13 @@ emitted by each built-in hook site.
     child_role      – role string of the child agent
     child_summary   – summary of the child's work
     child_status    – exit status string (e.g. "success", "error")
-    duration_ms     – wall-clock time of the child run in milliseconds
+    duration_ms     – wall-clock time of the child run
+
+``post_update`` (emitted after a successful ``hermes update``)::
+
+    route           – ``"git"``, ``"zip"``, or ``"pip"``
 """
+
 
 from __future__ import annotations
 

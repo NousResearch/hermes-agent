@@ -124,6 +124,14 @@ claude_bin="$(command -v claude 2>/dev/null || true)"
 [ -n "$relay_call_bin" ] && mark_ok "relay-call พบที่ ${relay_call_bin}" || mark_fail "relay-call ไม่พบ ให้รัน bash scripts/ai-relay/install-local.sh"
 [ -n "$relay_portal_bin" ] && mark_ok "relay-portal พบที่ ${relay_portal_bin}" || mark_fail "relay-portal ไม่พบ ให้รัน relay-setup ใหม่"
 [ -n "$gate_run_bin" ] && mark_ok "gate-run พบที่ ${gate_run_bin}" || mark_fail "gate-run ไม่พบ ให้รัน bash scripts/ai-relay/install-local.sh"
+expected_relay_call="${HOME}/.local/bin/relay-call"
+expected_relay_portal="${HOME}/.local/bin/relay-portal"
+if [ -n "$relay_call_bin" ] && [ "$relay_call_bin" != "$expected_relay_call" ]; then
+  mark_warn "PATH ตอนนี้เจอ relay-call ที่ ${relay_call_bin} ก่อน ${expected_relay_call} อาจเป็นตัวเก่าที่เรียก Claude/Codex/Grok local ให้รัน: export PATH=\"\$HOME/.local/bin:\$PATH\" && hash -r"
+fi
+if [ -n "$relay_portal_bin" ] && [ "$relay_portal_bin" != "$expected_relay_portal" ]; then
+  mark_warn "PATH ตอนนี้เจอ relay-portal ที่ ${relay_portal_bin} ก่อน ${expected_relay_portal} ให้เปิด Terminal/Cursor ใหม่หลังรัน relay-setup"
+fi
 echo
 
 echo "[2/4 สถานะ AI Portal token]"
@@ -137,10 +145,12 @@ if [ -n "${AI_PORTAL_CLAUDE_TOKEN:-}" ] || [ -n "${AI_RELAY_CLAUDE_TOKEN:-}" ] |
 else
   mark_fail "ยังไม่มี AI_PORTAL_CLAUDE_TOKEN ใน ~/.hermes/.env"
 fi
-if [ -n "${AI_PORTAL_CODEX_TOKEN:-}" ] || [ -n "${AI_RELAY_CODEX_TOKEN:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
+if [ -n "${AI_PORTAL_CODEX_TOKEN_01:-}" ] && [ -n "${AI_PORTAL_CODEX_TOKEN_02:-}" ]; then
+  mark_ok "พบ Codex Portal token แบบ cross-route 2 ID"
+elif [ -n "${AI_PORTAL_CODEX_TOKEN:-}" ] || [ -n "${AI_RELAY_CODEX_TOKEN:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
   mark_ok "พบ Codex Portal token"
 else
-  mark_fail "ยังไม่มี AI_PORTAL_CODEX_TOKEN ใน ~/.hermes/.env"
+  mark_fail "ยังไม่มี AI_PORTAL_CODEX_TOKEN_01/02 หรือ AI_PORTAL_CODEX_TOKEN ใน ~/.hermes/.env"
 fi
 if [ -n "${AI_PORTAL_GROK_TOKEN:-}" ] || [ -n "${AI_RELAY_GROK_TOKEN:-}" ] || [ -n "${GROK_API_KEY:-}" ]; then
   mark_ok "พบ Grok Portal token"

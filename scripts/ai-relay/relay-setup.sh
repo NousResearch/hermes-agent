@@ -65,13 +65,17 @@ cat <<MSG
 ══ เสร็จแล้ว ══ ขั้นต่อไป (ทำครั้งเดียว):
   1) วางไฟล์ token ที่แอดมินส่งให้:
        ~/.hermes/.env
-     ต้องมี AI_PORTAL_URL, AI_PORTAL_CLAUDE_TOKEN, AI_PORTAL_CODEX_TOKEN, AI_PORTAL_GROK_TOKEN
+     ต้องมี AI_PORTAL_URL, AI_PORTAL_CLAUDE_TOKEN, AI_PORTAL_CODEX_TOKEN_01,
+     AI_PORTAL_CODEX_TOKEN_02, AI_PORTAL_GROK_TOKEN
      หมายเหตุ: Claude/Codex/Grok ผ่าน AI Portal ไม่ต้อง login local
   2) ถ้าจะใช้ Gemini local ค่อยล็อกอินเพิ่ม:
        gemini auth login
-  3) เช็คว่าตอนนี้ตัวไหนพร้อมจริง:
+  3) เปิด Terminal/Cursor ใหม่ หรือรัน:
+       export PATH="\$HOME/.local/bin:\$PATH"
+       hash -r
+  4) เช็คว่าตอนนี้ตัวไหนพร้อมจริง:
        relay-doctor
-  4) ถามว่างานแบบนี้ควรใช้ AI ตัวไหน:
+  5) ถามว่างานแบบนี้ควรใช้ AI ตัวไหน:
        relay-suggest --task-type backend --cwd "$TARGET_DIR"
 
 คราวหน้าจะอัปเดต = รันคำสั่ง curl relay-setup.sh ซ้ำได้เลย

@@ -184,6 +184,46 @@ def test_low_confidence_action_inbox_keeps_note_in_inbox(tmp_path):
     assert summary["processed"][0]["path_after"] == "Inbox/unsure-note.md"
 
 
+def test_explicit_inbox_target_is_allowed(tmp_path):
+    vault = _make_vault(tmp_path)
+    note = vault / "Inbox" / "scratch-capture.md"
+    note.write_text("Keep this as a raw inbox capture for later sorting.\n", encoding="utf-8")
+
+    summary = triage.run_triage(
+        vault_path=vault,
+        classifier=lambda **_: {
+            "target": "Inbox",
+            "confidence": 0.93,
+            "reason": "raw capture should remain in inbox",
+            "needs_feedback": False,
+        },
+    )
+
+    staged = (
+        vault
+        / ".hermes"
+        / "note-capture"
+        / "staging"
+        / "vault"
+        / summary["processed"][0]["entry_id"]
+        / "Inbox"
+        / "scratch-capture.md"
+    )
+    assert staged.exists()
+    assert summary["processed"][0]["path_after"] == "Inbox/scratch-capture.md"
+
+    capture_event = json.loads(
+        (
+            vault
+            / ".hermes"
+            / "note-capture"
+            / "events"
+            / f"{summary['processed'][0]['entry_id']}.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert capture_event["routing"]["target"] == "Inbox"
+
+
 def test_feedback_status_includes_projection_summary(tmp_path):
     vault = _make_vault(tmp_path)
     note = vault / "Inbox" / "ops.md"

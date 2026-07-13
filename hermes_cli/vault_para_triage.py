@@ -445,6 +445,7 @@ def _normalize_target(target: str, *, vault_path: Path, config: dict[str, Any]) 
         return str(config.get("review_dir") or DEFAULT_REVIEW_DIR)
     first = target.split("/", 1)[0].lower()
     allowed_roots = {str(v).split("/", 1)[0].lower() for v in (config.get("para_roots") or {}).values()}
+    allowed_roots.add(str(config.get("inbox_dir") or "Inbox").split("/", 1)[0].lower())
     allowed_roots.add(str(config.get("review_dir") or DEFAULT_REVIEW_DIR).split("/", 1)[0].lower())
     if first not in allowed_roots:
         return str(config.get("review_dir") or DEFAULT_REVIEW_DIR)

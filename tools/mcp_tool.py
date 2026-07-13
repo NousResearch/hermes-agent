@@ -5345,9 +5345,14 @@ def refresh_agent_mcp_tools(
             t["function"]["name"]
             for t in (getattr(agent, "tools", None) or [])
         }
-        if new_names == current:
-            # No change → leave the live snapshot untouched (no churn), but
-            # record the generation so an in-flight older caller can't clobber.
+        trusted_snapshot_changed = (
+            isinstance(getattr(agent, "_trusted_tool_entries", None), dict)
+            and (getattr(agent, "tools", None) or []) != new_defs
+        )
+        if new_names == current and not trusted_snapshot_changed:
+            # No capability or trusted-schema change → leave the live snapshot
+            # untouched (no churn), but record the generation so an in-flight
+            # older caller can't clobber.
             agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
             return set()
         agent.tools = new_defs

@@ -1334,6 +1334,9 @@ def _build_child_agent(
     child_optional_kwargs: Dict[str, Any] = {}
     if isinstance(child_max_tokens, int):
         child_optional_kwargs["max_tokens"] = child_max_tokens
+    parent_disabled_toolsets = getattr(parent_agent, "disabled_toolsets", None)
+    if isinstance(parent_disabled_toolsets, (list, tuple, set)):
+        child_optional_kwargs["disabled_toolsets"] = list(parent_disabled_toolsets)
 
     child = AIAgent(
         base_url=effective_base_url,
@@ -1381,7 +1384,9 @@ def _build_child_agent(
         disable_research_mode_tool,
     )
     if mode == "research-analysis":
+        from tools.web_tools import CANONICAL_WEB_TOOL_ENTRIES
         setattr(child, "_trusted_tool_allowlist", RESEARCH_READ_ONLY_TOOLS)
+        setattr(child, "_trusted_tool_entries", dict(CANONICAL_WEB_TOOL_ENTRIES))
     if effective_role == "leaf":
         disable_research_mode_tool(child)
     apply_trusted_tool_allowlist(child)

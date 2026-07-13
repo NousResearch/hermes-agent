@@ -603,17 +603,19 @@ class ToolRegistry:
         }, ensure_ascii=False)
 
     def dispatch(self, name: str, args: dict, **kwargs) -> str | dict:
-        """Execute a tool handler by name.
-
-        * Async handlers are bridged automatically via ``_run_async()``.
-        * Handler results are normalized to a string or supported multimodal
-          envelope before leaving the registry.
-        * All exceptions are caught and returned as ``{"error": "..."}``
-          for consistent error format.
-        """
+        """Execute the currently registered tool handler by name."""
         entry = self.get_entry(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
+        return self.dispatch_entry(entry, args, **kwargs)
+
+    def dispatch_entry(self, entry: ToolEntry, args: dict, **kwargs) -> str | dict:
+        """Execute a specific immutable-by-reference registry entry.
+
+        Agent-local trusted routes use this to pin canonical implementations
+        instead of resolving through mutable process-global registry state.
+        """
+        name = entry.name
         try:
             if entry.is_async:
                 from model_tools import _run_async

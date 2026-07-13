@@ -91,10 +91,45 @@ def apply_trusted_tool_allowlist(agent: Any, tools: list | None = None) -> list:
     allowlist = getattr(agent, "_trusted_tool_allowlist", None)
     if not isinstance(allowlist, (set, frozenset)):
         return source
-    filtered = [
-        tool for tool in source
-        if tool.get("function", {}).get("name") in allowlist
-    ]
+    entries = getattr(agent, "_trusted_tool_entries", None)
+    filtered = []
+    if isinstance(entries, dict):
+        enabled_toolsets = getattr(agent, "enabled_toolsets", None)
+        disabled_toolsets = getattr(agent, "disabled_toolsets", None) or []
+        from toolsets import resolve_toolset
+        enabled_names = None
+        if enabled_toolsets is not None:
+            enabled_names = {
+                name
+                for toolset in enabled_toolsets
+                for name in resolve_toolset(toolset, include_registry=False)
+            }
+        disabled_names = {
+            name
+            for toolset in disabled_toolsets
+            for name in resolve_toolset(toolset, include_registry=False)
+        }
+        for name, entry in entries.items():
+            if name not in allowlist:
+                continue
+            if enabled_names is not None and name not in enabled_names:
+                continue
+            if name in disabled_names:
+                continue
+            try:
+                if entry.check_fn and not entry.check_fn():
+                    continue
+            except Exception:
+                continue
+            filtered.append({
+                "type": "function",
+                "function": deepcopy(entry.schema),
+            })
+    else:
+        filtered = [
+            tool for tool in source
+            if tool.get("function", {}).get("name") in allowlist
+        ]
     if tools is None:
         agent.tools = filtered
         agent.valid_tool_names = {

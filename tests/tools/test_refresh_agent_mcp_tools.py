@@ -91,9 +91,15 @@ def test_refresh_feature_off_keeps_exact_registry_snapshot(monkeypatch):
 
 
 def test_refresh_preserves_exact_trusted_tool_name_allowlist(monkeypatch):
+    from tools.web_tools import CANONICAL_WEB_TOOL_ENTRIES
+
+    for entry in CANONICAL_WEB_TOOL_ENTRIES.values():
+        monkeypatch.setattr(entry, "check_fn", lambda: True)
+
     agent = _agent(["web_search", "web_extract"])
     agent._mode_router_enabled = False
     agent._trusted_tool_allowlist = frozenset({"web_search", "web_extract"})
+    agent._trusted_tool_entries = dict(CANONICAL_WEB_TOOL_ENTRIES)
 
     import model_tools
     monkeypatch.setattr(
@@ -101,7 +107,6 @@ def test_refresh_preserves_exact_trusted_tool_name_allowlist(monkeypatch):
         "get_tool_definitions",
         lambda **kw: [
             _tool("web_search"),
-            _tool("web_extract"),
             _tool("plugin_web_write"),
             _tool("mcp_new_tool"),
             _tool("route_research_mode"),
@@ -114,6 +119,13 @@ def test_refresh_preserves_exact_trusted_tool_name_allowlist(monkeypatch):
     assert agent.valid_tool_names == {"web_search", "web_extract"}
     assert [tool["function"]["name"] for tool in agent.tools] == [
         "web_search", "web_extract",
+    ]
+    assert agent.tools == [
+        {
+            "type": "function",
+            "function": deepcopy(CANONICAL_WEB_TOOL_ENTRIES[name].schema),
+        }
+        for name in ("web_search", "web_extract")
     ]
 
 

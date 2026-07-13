@@ -11,6 +11,7 @@ import io
 import json
 import logging
 import re
+import threading
 import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -166,6 +167,57 @@ def test_flush_persist_override_replaces_api_local_multimodal_note(agent):
     db_write = agent._session_db.append_message.call_args.kwargs
     assert db_write["content"] == "Describe this screenshot\n[screenshot]"
     assert api_content[0]["text"] == "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"
+
+
+def test_direct_session_db_flushes_share_marker_claim(agent):
+    """A direct flush cannot interleave its marker check with `_persist_session`."""
+    class _BarrierDB:
+        def __init__(self):
+            self.rows = []
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.calls = 0
+            self._lock = threading.Lock()
+
+        def append_message(self, **kwargs):
+            with self._lock:
+                self.calls += 1
+                first = self.calls == 1
+            if first:
+                self.entered.set()
+                assert self.release.wait(timeout=5)
+            self.rows.append(kwargs["content"])
+
+    db = _BarrierDB()
+    agent._session_db = db
+    agent._session_db_created = True
+    agent.session_id = "session-123"
+    agent._last_flushed_db_idx = 0
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
+    agent._persist_user_message_idx = None
+    agent._persist_user_message_override = None
+    agent._persist_user_message_timestamp = None
+    agent._persist_disabled = False
+    agent._session_persist_lock = threading.RLock()
+    agent._session_json_enabled = False
+
+    message = {"role": "user", "content": "exactly once"}
+    normal = threading.Thread(target=lambda: agent._persist_session([message], []))
+    direct = threading.Thread(target=lambda: agent._flush_messages_to_session_db([message], []))
+    normal.start()
+    assert db.entered.wait(timeout=5)
+    direct.start()
+    # Direct flush is blocked by the agent-wide persistence lock until the
+    # normal writer stamps the message's durable marker.
+    assert db.calls == 1
+    db.release.set()
+    normal.join(timeout=5)
+    direct.join(timeout=5)
+
+    assert not normal.is_alive()
+    assert not direct.is_alive()
+    assert db.rows == ["exactly once"]
 
 
 @pytest.fixture()

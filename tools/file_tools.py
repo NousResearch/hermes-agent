@@ -889,6 +889,48 @@ def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
         for rp in resolved_paths:
             task_failures.pop(rp, None)
 
+
+# Synthetic tracker-key prefix for argument-validation failures (missing
+# path / old_string / patch content, or an unknown mode).  Namespaced with a
+# NUL byte so it can never collide with a real resolved file-system path.
+_ARG_FAILURE_PREFIX = "\x00arg:"
+
+
+def _patch_arg_error(task_id: str, key: str, message: str) -> str:
+    """Return an actionable arg-validation error, escalating on repeats.
+
+    A malformed patch call (no ``path``, missing ``old_string``/``new_string``,
+    empty ``patch`` body, or an unknown ``mode``) is a distinct loop failure
+    mode from a stale ``old_string``: the bare error ("path required") gives
+    the model nothing to change, so it re-sends the identical call — the
+    12-in-a-row ``{"error": "path required"}`` bursts seen in blocker reports.
+    Track these like content failures so a run of identical rejects escalates
+    into a break-the-loop hint instead of burning the turn.
+    """
+    count = _record_patch_failure(task_id, _ARG_FAILURE_PREFIX + key)
+    if count >= 3:
+        return tool_error(
+            message,
+            _hint=(
+                f"This is reject #{count} of the same malformed patch call. "
+                "Stop resending identical arguments — supply the missing or "
+                "corrected fields (or switch to write_file) before calling "
+                "patch again."
+            ),
+        )
+    return tool_error(message)
+
+
+def _reset_patch_arg_failures(task_id: str) -> None:
+    """Clear arg-validation failure counters once a call passes validation."""
+    with _patch_failure_lock:
+        task_failures = _patch_failure_tracker.get(task_id)
+        if not task_failures:
+            return
+        for key in [k for k in task_failures if k.startswith(_ARG_FAILURE_PREFIX)]:
+            task_failures.pop(key, None)
+
+
 # Per-task bounds for the containers inside each _read_tracker[task_id].
 # A CLI session uses one stable task_id for its lifetime; without these
 # caps, a 10k-read session would accumulate ~1.5MB of dict/set state that
@@ -1857,9 +1899,19 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 
             if mode == "replace":
                 if not path:
-                    return tool_error("path required")
+                    return _patch_arg_error(
+                        task_id, "replace:path",
+                        "path required: replace mode needs `path`, "
+                        "`old_string`, and `new_string`. Provide the file "
+                        "path to edit.",
+                    )
                 if old_string is None or new_string is None:
-                    return tool_error("old_string and new_string required")
+                    return _patch_arg_error(
+                        task_id, f"replace:old_new:{path}",
+                        "old_string and new_string required: replace mode "
+                        "needs both — the exact text to find and its "
+                        "replacement.",
+                    )
                 # Pass the resolved ABSOLUTE path to the shell layer so it
                 # operates on the exact file the tool layer resolved — the
                 # shell's own cwd may differ (worktree-cwd bug), and a relative
@@ -1869,11 +1921,24 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
-                    return tool_error("patch content required")
+                    return _patch_arg_error(
+                        task_id, "patch:content",
+                        "patch content required: patch mode needs the V4A "
+                        "`patch` text, or use replace mode with path/"
+                        "old_string/new_string.",
+                    )
                 result = file_ops.patch_v4a(patch)
             else:
-                return tool_error(f"Unknown mode: {mode}")
+                return _patch_arg_error(
+                    task_id, f"mode:{mode}",
+                    f"Unknown mode: {mode}. Use `replace` (path/old_string/"
+                    "new_string) or `patch` (V4A patch text).",
+                )
 
+            # A call that reached here passed arg validation — clear any
+            # accumulated malformed-call counters so the escalation window
+            # only ever counts *consecutive* bad calls.
+            _reset_patch_arg_failures(task_id)
             result_dict = result.to_dict()
             if stale_warnings:
                 result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)

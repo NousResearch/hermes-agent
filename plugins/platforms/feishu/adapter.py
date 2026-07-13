@@ -1441,6 +1441,11 @@ class FeishuAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.FEISHU)
 
+        # SDK callbacks arrive on Feishu-owned threads, which do not inherit
+        # the profile ContextVars active while this adapter was constructed.
+        # Retain the owning home so callback work can restore both home and
+        # credential scope before it touches config, rules, or agent runtime.
+        self._profile_home = Path(get_hermes_home())
         self._settings = self._load_settings(config.extra or {})
         self._apply_settings(self._settings)
         self._client: Optional[Any] = None
@@ -2678,14 +2683,47 @@ class FeishuAdapter(BasePlatformAdapter):
         return loop is not None and not bool(getattr(loop, "is_closed", lambda: False)())
 
     def _submit_on_loop(self, loop: Any, coro: Any) -> bool:
-        """Schedule background work on the adapter loop with shared failure logging."""
+        """Schedule SDK callback work under this adapter's profile context."""
+        import contextvars
+
         from agent.async_utils import safe_schedule_threadsafe
-        future = safe_schedule_threadsafe(
-            coro, loop,
-            logger=logger,
-            log_message="[Feishu] Failed to schedule background callback work",
-            log_level=logging.WARNING,
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            reset_secret_scope,
+            set_secret_scope,
         )
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        profile_home = Path(
+            getattr(self, "_profile_home", None) or get_hermes_home()
+        )
+
+        def _schedule_in_profile_context():
+            home_token = set_hermes_home_override(profile_home)
+            secret_token = set_secret_scope(
+                build_profile_secret_scope(profile_home)
+            )
+            try:
+                return safe_schedule_threadsafe(
+                    coro,
+                    loop,
+                    logger=logger,
+                    log_message=(
+                        "[Feishu] Failed to schedule background callback work"
+                    ),
+                    log_level=logging.WARNING,
+                )
+            finally:
+                reset_secret_scope(secret_token)
+                reset_hermes_home_override(home_token)
+
+        # asyncio.run_coroutine_threadsafe captures the caller's Context for
+        # the task it installs on ``loop``. Use a fresh copy so resetting the
+        # SDK thread after submission cannot mutate the task's profile scope.
+        future = contextvars.copy_context().run(_schedule_in_profile_context)
         if future is None:
             return False
         future.add_done_callback(self._log_background_failure)

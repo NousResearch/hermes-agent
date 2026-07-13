@@ -80,7 +80,18 @@ def compose_user_api_content(
         injections.append(plugin_user_context)
     if not injections:
         return None
-    return content + "\n\n" + "\n\n".join(injections)
+    # Keep ephemeral recalled context (memory prefetch + plugin injections)
+    # BEFORE the live user instruction so the user-authored request remains the
+    # final authority. Recalled memory is untrusted historical observation
+    # (see build_memory_context_block's system note); placing it LAST would put
+    # promptware-poisoned memory in the position a model weights as the
+    # operative trailing instruction. This is 0008's untrusted-recall ordering
+    # boundary. Because this helper is the single composition source — the
+    # prologue stamps its output as the api_content sidecar and the
+    # api_messages build replays that same sidecar — the memory-before-request
+    # order holds on every pass and the prompt-cache byte-stability invariant
+    # (turn N's bytes == turn N+1's replay) is preserved.
+    return "\n\n".join((*injections, content))
 
 
 def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:

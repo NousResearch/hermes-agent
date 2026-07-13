@@ -124,6 +124,12 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
 
     applied, failed = 0, []
     for rec in targets:
+        if subsystem == wa.MEMORY:
+            if wa.replay_pending(subsystem, rec["id"]):
+                applied += 1
+            else:
+                failed.append(f"{rec['id']}: replay failed; pending write retained")
+            continue
         ok, msg = _apply_one(subsystem, rec, memory_store)
         if ok:
             wa.discard_pending(subsystem, rec["id"])

@@ -482,19 +482,72 @@ def _coerce_request_messages(
     return [{"role": "user", "content": user_message}]
 
 
+_TRACE_REDACTED_MEMORY_TOOLS = {
+    "memory",
+    "fact_store",
+    "fact_feedback",
+    "hindsight_recall",
+    "honcho_search",
+    "mem0_search",
+    "supermemory_search",
+    "viking_search",
+    "retaindb_search",
+    "brv_query",
+}
+
+
+def _dict_tool_call_name(tool_call: Any) -> str:
+    if not isinstance(tool_call, dict):
+        return ""
+    function = tool_call.get("function")
+    if isinstance(function, dict):
+        return str(function.get("name") or tool_call.get("name") or "")
+    return str(tool_call.get("name") or "")
+
+
+def _redact_dict_tool_call(tool_call: Any) -> Any:
+    safe = _safe_value(tool_call, parse_json_strings=True)
+    name = _dict_tool_call_name(safe)
+    if name not in _TRACE_REDACTED_MEMORY_TOOLS or not isinstance(safe, dict):
+        return safe
+    function = safe.get("function")
+    arguments = function.get("arguments") if isinstance(function, dict) else safe.get("arguments")
+    redacted = _redacted_memory_payload(name, arguments)
+    safe["arguments"] = redacted
+    if isinstance(function, dict):
+        function["arguments"] = redacted
+    return safe
+
+
 def _serialize_messages(messages: Any) -> list[dict[str, Any]]:
     if not isinstance(messages, list):
         return []
+    memory_tool_call_ids = {
+        str(tool_call.get("id"))
+        for message in messages
+        if isinstance(message, dict)
+        for tool_call in (message.get("tool_calls") or [])
+        if isinstance(tool_call, dict)
+        and _dict_tool_call_name(tool_call) in _TRACE_REDACTED_MEMORY_TOOLS
+    }
     serialized = []
     for message in messages[-12:]:
         if not isinstance(message, dict):
             continue
         role = message.get("role")
+        redact_tool_result = role == "tool" and (
+            str(message.get("name") or "") in _TRACE_REDACTED_MEMORY_TOOLS
+            or str(message.get("tool_call_id") or "") in memory_tool_call_ids
+        )
         item = {
             "role": role,
-            "content": _safe_value(
-                message.get("content"),
-                parse_json_strings=(role == "tool"),
+            "content": (
+                {"memory_payload_redacted": True}
+                if redact_tool_result
+                else _safe_value(
+                    message.get("content"),
+                    parse_json_strings=(role == "tool"),
+                )
             ),
         }
         if role == "tool":
@@ -503,7 +556,10 @@ def _serialize_messages(messages: Any) -> list[dict[str, Any]]:
             if message.get("name"):
                 item["name"] = _safe_value(message.get("name"))
         if message.get("tool_calls"):
-            item["tool_calls"] = _safe_value(message.get("tool_calls"), parse_json_strings=True)
+            item["tool_calls"] = [
+                _redact_dict_tool_call(tool_call)
+                for tool_call in message.get("tool_calls")
+            ]
         serialized.append(item)
     return serialized
 
@@ -516,7 +572,11 @@ def _serialize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
         fn = getattr(tool_call, "function", None)
         name = getattr(fn, "name", None) if fn else None
         arguments = getattr(fn, "arguments", None) if fn else None
-        safe_arguments = _safe_value(arguments, parse_json_strings=False)
+        safe_arguments = (
+            _redacted_memory_payload(name, arguments)
+            if name in _TRACE_REDACTED_MEMORY_TOOLS
+            else _safe_value(arguments, parse_json_strings=False)
+        )
         serialized.append({
             "id": getattr(tool_call, "id", None),
             "type": getattr(tool_call, "type", None) or "function",
@@ -1039,6 +1099,156 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         _finish_trace(task_key, output=output)
 
 
+_MEMORY_RECALL_TOOLS = {
+    "hindsight_recall",
+    "honcho_search",
+    "mem0_search",
+    "supermemory_search",
+    "viking_search",
+    "retaindb_search",
+    "brv_query",
+}
+_FACT_RECALL_ACTIONS = {"search", "probe", "related", "reason", "contradict", "list"}
+_EMPTY_RECALL_MESSAGES = {
+    "no relevant context found.",
+    "no relevant memories found.",
+    "no memories found.",
+    "no results found.",
+}
+_MEMORY_RESULT_UNSET = object()
+
+
+def _memory_recall_outcome(result: Any) -> str:
+    parsed = _maybe_parse_json_string(result) if isinstance(result, str) else result
+    if isinstance(parsed, dict):
+        status = str(parsed.get("status") or "").strip().lower()
+        if status in {"error", "failed", "failure"}:
+            return "failure"
+        if parsed.get("error") or parsed.get("success") is False:
+            return "failure"
+        for key in ("count", "total", "total_count"):
+            if key in parsed and isinstance(parsed[key], (int, float)):
+                if parsed[key] <= 0:
+                    return "empty"
+                return "success"
+        for key in ("results", "facts", "memories", "items", "data"):
+            if key in parsed:
+                return "success" if bool(parsed[key]) else "empty"
+        if "result" in parsed:
+            value = parsed["result"]
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if not normalized or normalized in _EMPTY_RECALL_MESSAGES:
+                    return "empty"
+            return "success" if bool(value) else "empty"
+        return "success" if parsed else "empty"
+    if isinstance(parsed, (list, tuple, set)):
+        return "success" if parsed else "empty"
+    if isinstance(parsed, str):
+        normalized = parsed.strip().lower()
+        return "empty" if not normalized or normalized in _EMPTY_RECALL_MESSAGES else "success"
+    return "empty" if parsed is None else "success"
+
+
+def _memory_tool_metadata(
+    tool_name: str,
+    args: Any,
+    result: Any = _MEMORY_RESULT_UNSET,
+) -> Dict[str, Any]:
+    """Build content-free metadata tags for memory observations."""
+    payload = args if isinstance(args, dict) else {}
+    action = str(payload.get("action") or "")
+    metadata: Dict[str, Any] = {}
+    if tool_name == "memory":
+        metadata.update({
+            "memory_operation": "write",
+            "memory_store": "builtin",
+            "memory_action": action or "unknown",
+        })
+        if result is not None:
+            parsed = _maybe_parse_json_string(result) if isinstance(result, str) else result
+            if isinstance(parsed, dict) and (
+                parsed.get("error") or parsed.get("success") is False
+            ):
+                outcome = "rejected" if parsed.get("marker") else "failed"
+            elif isinstance(parsed, dict) and parsed.get("staged"):
+                outcome = "staged"
+            else:
+                outcome = "applied"
+            metadata["memory_outcome"] = outcome
+    elif tool_name in _MEMORY_RECALL_TOOLS or (
+        tool_name == "fact_store" and action in _FACT_RECALL_ACTIONS
+    ):
+        metadata.update({
+            "memory_operation": "recall",
+            "memory_store": "holographic" if tool_name == "fact_store" else tool_name.split("_", 1)[0],
+            "memory_action": action or "recall",
+        })
+        if result is not _MEMORY_RESULT_UNSET:
+            metadata["memory_recall_outcome"] = _memory_recall_outcome(result)
+    elif tool_name == "fact_store":
+        metadata.update({
+            "memory_operation": "write",
+            "memory_store": "holographic",
+            "memory_action": action or "unknown",
+        })
+        if result is not None:
+            parsed = _maybe_parse_json_string(result) if isinstance(result, str) else result
+            if isinstance(parsed, dict) and (
+                parsed.get("error") or parsed.get("success") is False
+            ):
+                outcome = "rejected" if parsed.get("marker") else "failed"
+            elif isinstance(parsed, dict) and parsed.get("staged"):
+                outcome = "staged"
+            else:
+                outcome = "applied"
+            metadata["memory_outcome"] = outcome
+    elif tool_name == "fact_feedback":
+        metadata.update({
+            "memory_operation": "feedback",
+            "memory_store": "holographic",
+            "memory_feedback": action or "unknown",
+        })
+        if result is not None:
+            parsed = _maybe_parse_json_string(result) if isinstance(result, str) else result
+            failed = isinstance(parsed, dict) and bool(parsed.get("error"))
+            metadata["memory_feedback_outcome"] = "failed" if failed else "recorded"
+    return metadata
+
+
+def _redact_memory_observation(tool_name: str) -> bool:
+    return tool_name in _TRACE_REDACTED_MEMORY_TOOLS
+
+
+def _redacted_memory_payload(tool_name: str, args: Any) -> Dict[str, Any]:
+    payload = args if isinstance(args, dict) else {}
+    return {
+        "memory_payload_redacted": True,
+        "memory_action": str(payload.get("action") or "recall"),
+        "memory_store": (
+            "builtin" if tool_name == "memory"
+            else "holographic" if tool_name in {"fact_store", "fact_feedback"}
+            else tool_name
+        ),
+    }
+
+
+def _metadata_args(tool_name: str, args: Any) -> Any:
+    """Keep fact/recall content out of observation metadata."""
+    if not isinstance(args, dict):
+        return args
+    if tool_name == "memory":
+        return {key: args[key] for key in ("action", "target") if key in args}
+    if tool_name == "fact_store":
+        allowed = {"action", "fact_id", "limit", "min_trust"}
+        return {key: args[key] for key in allowed if key in args}
+    if tool_name == "fact_feedback":
+        return {key: args[key] for key in ("action", "fact_id") if key in args}
+    if tool_name in _MEMORY_RECALL_TOOLS:
+        return {"memory_query_redacted": True}
+    return args
+
+
 def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = "",
                      session_id: str = "", tool_call_id: str = "",
                      turn_id: str = "", api_request_id: str = "", **_: Any) -> None:
@@ -1057,13 +1267,28 @@ def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = ""
         state = _TRACE_STATE.get(task_key)
         if state is None:
             return
+        if tool_call_id:
+            for tool_call in reversed(state.turn_tool_calls):
+                if tool_call.get("id") == tool_call_id:
+                    redacted = _redacted_memory_payload(tool_name, args)
+                    tool_call["arguments"] = redacted
+                    function = tool_call.get("function")
+                    if isinstance(function, dict):
+                        function["arguments"] = redacted
+                    break
+        metadata = {"tool_name": tool_name, "tool_call_id": tool_call_id}
+        metadata.update(_memory_tool_metadata(tool_name, args))
         observation = _start_child_observation(
             state,
             client=client,
             name=f"Tool: {tool_name}",
             as_type="tool",
-            input_value=_safe_value(args),
-            metadata={"tool_name": tool_name, "tool_call_id": tool_call_id},
+            input_value=(
+                _redacted_memory_payload(tool_name, args)
+                if _redact_memory_observation(tool_name)
+                else _safe_value(args)
+            ),
+            metadata=metadata,
         )
         if tool_call_id:
             state.tools[tool_call_id] = observation
@@ -1104,6 +1329,11 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
         result_value = result
     result_value = _normalize_payload(result_value, tool_name=tool_name, args=args)
     safe_result_value = _safe_value(result_value, parse_json_strings=True)
+    observation_result_value = (
+        _redacted_memory_payload(tool_name, args)
+        if _redact_memory_observation(tool_name)
+        else safe_result_value
+    )
 
     # Backfill so the generation's tool_call record carries the result alongside arguments.
     if tool_call_id:
@@ -1112,16 +1342,21 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
             if state is not None:
                 for tool_call in reversed(state.turn_tool_calls):
                     if tool_call.get("id") == tool_call_id:
-                        tool_call["output"] = safe_result_value
+                        tool_call["output"] = observation_result_value
                         function_payload = tool_call.get("function")
                         if isinstance(function_payload, dict):
-                            function_payload["output"] = safe_result_value
+                            function_payload["output"] = observation_result_value
                         break
 
+    metadata = {
+        "tool_name": tool_name,
+        "args": _safe_value(_metadata_args(tool_name, args), parse_json_strings=True),
+    }
+    metadata.update(_memory_tool_metadata(tool_name, args, result_value))
     _end_observation(
         observation,
-        output=safe_result_value,
-        metadata={"tool_name": tool_name, "args": _safe_value(args, parse_json_strings=True)},
+        output=observation_result_value,
+        metadata=metadata,
     )
 
 

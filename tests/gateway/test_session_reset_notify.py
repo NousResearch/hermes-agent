@@ -8,13 +8,18 @@ Verifies that:
 """
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 
 from gateway.config import (
     GatewayConfig,
     Platform,
+    PlatformConfig,
     SessionResetPolicy,
 )
+from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
@@ -36,6 +41,92 @@ def _make_store(policy=None, tmp_path=None):
         config.default_reset_policy = policy
     store = SessionStore(sessions_dir=tmp_path or "/tmp/test-sessions", config=config)
     return store
+
+
+def _make_runner_for_suspended_notice(tmp_path, policy):
+    from gateway.run import GatewayRunner
+
+    source = _make_source()
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token"),
+        },
+        default_reset_policy=policy,
+        sessions_dir=tmp_path / "sessions",
+    )
+    store = SessionStore(sessions_dir=config.sessions_dir, config=config)
+    store._db = None
+
+    original = store.get_or_create_session(source)
+    assert store.suspend_session(original.session_key)
+
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    adapter.stop_typing = AsyncMock()
+    adapter.supports_async_delivery = True
+    adapter._active_sessions = {}
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = config
+    runner.session_store = store
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._profile_adapters = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._session_db = None
+    runner._session_model_overrides = {}
+    runner._session_reasoning_overrides = {}
+    runner._pending_model_notes = {}
+    runner._last_resolved_model = {}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = None
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner._pending_native_image_paths_by_session = {}
+    runner._session_run_generation = {original.session_key: 1}
+    runner._show_reasoning = False
+    runner._should_send_voice_reply = lambda *args, **kwargs: False
+    runner._send_voice_reply = AsyncMock()
+    runner._reset_notice_session_info = lambda _source: ""
+    runner._deliver_platform_notice = AsyncMock()
+    runner._recover_telegram_topic_thread_id = lambda _source: None
+    runner._is_telegram_topic_lane = lambda _source: False
+    runner._record_telegram_topic_binding = lambda *args, **kwargs: None
+    runner._sync_telegram_topic_binding = lambda *args, **kwargs: None
+
+    async def _run_agent(**kwargs):
+        message = kwargs["message"]
+        return {
+            "final_response": "stubbed response",
+            "messages": [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": "stubbed response"},
+            ],
+            "history_offset": 0,
+            "api_calls": 0,
+            "last_prompt_tokens": 0,
+            "context_length": 1000,
+            "model": "test-model",
+            "tools": [],
+        }
+
+    runner._run_agent = AsyncMock(side_effect=_run_agent)
+    event = MessageEvent(text="hello", source=source, message_id="m1")
+    return runner, adapter, source, original.session_key, event
+
+
+async def _run_suspended_notice_case(tmp_path, policy):
+    runner, adapter, source, session_key, event = _make_runner_for_suspended_notice(
+        tmp_path,
+        policy,
+    )
+    result = await runner._handle_message_with_agent(
+        event,
+        source,
+        session_key,
+        1,
+    )
+    return adapter, result
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +294,47 @@ class TestResetPolicyNotify:
         assert restored.notify == original.notify
         assert restored.notify_exclude_platforms == original.notify_exclude_platforms
         assert restored.mode == original.mode
+
+
+# ---------------------------------------------------------------------------
+# GatewayRunner notification policy for suspended auto-resets
+# ---------------------------------------------------------------------------
+
+class TestGatewayRunnerSuspendedResetNotify:
+    @pytest.mark.asyncio
+    async def test_suspended_auto_reset_notifies_when_configured(self, tmp_path):
+        policy = SessionResetPolicy(mode="none", notify=True)
+
+        adapter, result = await _run_suspended_notice_case(tmp_path, policy)
+
+        assert result == "stubbed response"
+        adapter.send.assert_awaited_once()
+        args, kwargs = adapter.send.await_args
+        assert args[0] == "123"
+        assert "previous session was stopped or interrupted" in args[1]
+        assert kwargs.get("metadata") is None
+
+    @pytest.mark.asyncio
+    async def test_suspended_auto_reset_notify_false_does_not_send(self, tmp_path):
+        policy = SessionResetPolicy(mode="none", notify=False)
+
+        adapter, result = await _run_suspended_notice_case(tmp_path, policy)
+
+        assert result == "stubbed response"
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_suspended_auto_reset_excluded_platform_does_not_send(self, tmp_path):
+        policy = SessionResetPolicy(
+            mode="none",
+            notify=True,
+            notify_exclude_platforms=("telegram",),
+        )
+
+        adapter, result = await _run_suspended_notice_case(tmp_path, policy)
+
+        assert result == "stubbed response"
+        adapter.send.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

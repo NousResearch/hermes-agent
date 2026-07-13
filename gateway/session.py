@@ -15,6 +15,7 @@ import os
 import json
 import threading
 import uuid
+import weakref
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -983,14 +984,55 @@ class AsyncSessionStore:
         return _offloaded
 
 
+# Live SessionStore instances in this process, so out-of-band transcript
+# writers (gateway/mirror.py — cron delivery mirrors, send_message mirrors)
+# can refresh the in-memory routing entry they appended to.  Weak so test /
+# short-lived stores never pin themselves here.
+_LIVE_STORES: "weakref.WeakSet[SessionStore]" = weakref.WeakSet()
+
+
+def resolve_live_mirror_session(session_id: str) -> Optional[str]:
+    """Resolve the live session a mirror routed to *session_id* should target.
+
+    Called by ``gateway.mirror.mirror_to_session`` BEFORE it appends a mirror
+    message to state.db.  The mirror bypasses ``update_session``, so without
+    this the routing entry's ``updated_at`` stays at the last real turn; if
+    the mirror lands after an idle/daily reset boundary, the user's immediate
+    reply auto-resets into a fresh session and orphans the mirrored context.
+
+    Two cases per live store (see ``SessionStore.resolve_mirror_session``):
+    the routed entry is still live → refresh its ``updated_at`` and keep the
+    id; the background expiry watcher already finalized it (or the session
+    was ended in state.db) → return the post-reset session the user's next
+    reply will route to, so the mirror is appended there instead of into the
+    ended session.
+
+    Returns the session_id the mirror should append to, or None when no live
+    store routes to *session_id* (CLI/cron standalone — the caller keeps the
+    id it found itself).
+    """
+    resolved = None
+    for store in list(_LIVE_STORES):
+        try:
+            candidate = store.resolve_mirror_session(session_id)
+        except Exception as exc:
+            logger.debug(
+                "resolve_live_mirror_session failed for %s: %s", session_id, exc
+            )
+            continue
+        if candidate and resolved is None:
+            resolved = candidate
+    return resolved
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
-    
+
     Uses SQLite (via SessionDB) for session metadata and message transcripts.
     Falls back to legacy JSONL files if SQLite is unavailable.
     """
-    
+
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
                  has_active_processes_fn=None):
         self.sessions_dir = sessions_dir
@@ -1021,6 +1063,8 @@ class SessionStore:
             self._db = SessionDB()
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+
+        _LIVE_STORES.add(self)
     
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
@@ -2017,6 +2061,78 @@ class SessionStore:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 
         return entry
+
+    def touch_session_by_id(self, session_id: str) -> bool:
+        """Refresh ``updated_at`` for the entry currently routed to *session_id*.
+
+        A delivery mirror (cron ``attach_to_session`` brief, ``send_message``
+        echo) is real activity in the session's transcript, but it is written
+        straight to state.db without an inbound turn, so nothing bumps the
+        routing entry.  Bumping it here keeps ``_should_reset`` (and the
+        expiry watcher's ``_is_session_expired``) from treating the freshly
+        mirrored session as idle/stale and resetting away the mirrored
+        context on the user's next reply.
+
+        Returns True if an entry mapped to *session_id* was found and bumped.
+        Persists the routing index so the bump survives a gateway restart.
+        """
+        if not session_id:
+            return False
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = next(
+                (
+                    e for e in self._entries.values()
+                    if e.session_id == session_id
+                ),
+                None,
+            )
+            if entry is None:
+                return False
+            entry.updated_at = _now()
+            self._save()
+        return True
+
+    def resolve_mirror_session(self, session_id: str) -> Optional[str]:
+        """Return the session a delivery mirror routed to *session_id* should target.
+
+        Live entry: behave like ``touch_session_by_id`` (bump ``updated_at``
+        so the mirrored session isn't treated as idle/stale) and keep the id.
+
+        Finalized/ended entry: the background expiry watcher marked the entry
+        ``expiry_finalized`` — or the session was ended in state.db — before
+        the mirror arrived.  Appending there would strand the mirror: the
+        user's next reply routes through ``get_or_create_session``, which
+        self-heals away from the ended session (#54878) or applies the reset
+        policy, and the mirrored context is lost.  Instead run that same
+        routing transition NOW (``get_or_create_session(entry.origin)``) and
+        return the post-reset session id, so mirror and reply land together.
+
+        Returns None when this store has no entry routed to *session_id*.
+        """
+        if not session_id:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = next(
+                (
+                    e for e in self._entries.values()
+                    if e.session_id == session_id
+                ),
+                None,
+            )
+        if entry is None:
+            return None
+        if not entry.expiry_finalized and not self._is_session_ended_in_db(
+            session_id
+        ):
+            self.touch_session_by_id(session_id)
+            return session_id
+        if entry.origin is None:
+            # No routing source to rebuild from — keep the old id rather
+            # than dropping the mirror entirely.
+            return session_id
+        return self.get_or_create_session(entry.origin).session_id
 
     def update_session(
         self,

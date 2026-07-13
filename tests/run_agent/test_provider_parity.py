@@ -4,12 +4,12 @@ and handles responses properly for all supported providers.
 Ensures changes to one provider path don't silently break another.
 """
 
+import base64
 import json
-import os
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 from agent.codex_responses_adapter import _chat_content_to_responses_parts, _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
@@ -37,12 +37,32 @@ def _tool_defs(*names):
     ]
 
 
+def _fake_invoke_jwt() -> str:
+    def _part(payload):
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return (
+        f"{_part({'alg': 'none', 'typ': 'JWT'})}."
+        f"{_part({'scope': 'inference:invoke', 'exp': 4102444800})}.sig"
+    )
+
+
 class _FakeOpenAI:
     def __init__(self, **kw):
         self.api_key = kw.get("api_key", "test")
         self.base_url = kw.get("base_url", "http://test")
     def close(self):
         pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_auxiliary_provider_state():
+    from agent.auxiliary_client import _reset_aux_unhealthy_cache
+
+    _reset_aux_unhealthy_cache()
+    yield
+    _reset_aux_unhealthy_cache()
 
 
 def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1", model=None):
@@ -61,6 +81,8 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
     )
     if model:
         kwargs["model"] = model
+    elif provider == "nous":
+        kwargs["model"] = "gpt-5"
     base_url="https://openrouter.ai/api/v1",
     api_key="test-key",
     base_url="https://openrouter.ai/api/v1",
@@ -135,14 +157,57 @@ class TestBuildApiKwargsOpenRouter:
         assert "codex_reasoning_items" not in assistant_msg
         assert tool_call["id"] == "call_123"
         assert tool_call["function"]["name"] == "terminal"
-        assert tool_call["extra_content"] == {"thought_signature": "opaque"}
+        # extra_content (Gemini thought_signature) is stripped for non-Gemini
+        # targets — strict providers like Fireworks 400 on it. The agent here
+        # is not a Gemini model, so it must be dropped.
+        assert "extra_content" not in tool_call
+        assert "call_id" not in tool_call
+        assert "response_item_id" not in tool_call
+
+        # Original stored history must remain unchanged (only the outgoing copy
+        # is sanitized) — Codex/Responses replay relies on these fields.
+        assert messages[1]["tool_calls"][0]["call_id"] == "call_123"
+        assert messages[1]["tool_calls"][0]["response_item_id"] == "fc_123"
+        assert "codex_reasoning_items" in messages[1]
+        assert messages[1]["tool_calls"][0]["extra_content"] == {"thought_signature": "opaque"}
+
+    def test_keeps_extra_content_for_gemini_target(self, monkeypatch):
+        """Gemini-family targets must keep extra_content (thought_signature) —
+        Gemini 3 thinking models 400 without it replayed on the next turn.
+        """
+        agent = _make_agent(monkeypatch, "openrouter", model="google/gemini-3-pro-preview")
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "Checking now.",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "call_id": "call_123",
+                        "response_item_id": "fc_123",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{\"command\":\"pwd\"}"},
+                        "extra_content": {"google": {"thought_signature": "opaque"}},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_123", "content": "/tmp"},
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+        tool_call = kwargs["messages"][1]["tool_calls"][0]
+        assert tool_call["extra_content"] == {"google": {"thought_signature": "opaque"}}
+        # call_id/response_item_id still stripped regardless of model
         assert "call_id" not in tool_call
         assert "response_item_id" not in tool_call
 
         # Original stored history must remain unchanged for Responses replay mode.
         assert messages[1]["tool_calls"][0]["call_id"] == "call_123"
         assert messages[1]["tool_calls"][0]["response_item_id"] == "fc_123"
-        assert "codex_reasoning_items" in messages[1]
+        assert messages[1]["tool_calls"][0]["extra_content"] == {
+            "google": {"thought_signature": "opaque"}
+        }
 
     def test_gemini_native_passes_base_url_for_top_level_thinking_config(self, monkeypatch):
         agent = _make_agent(
@@ -190,6 +255,47 @@ class TestBuildApiKwargsOpenRouter:
         anthropic_agent = _make_agent(monkeypatch, "openrouter")
         anthropic_agent.api_mode = "anthropic_messages"
         assert anthropic_agent._should_sanitize_tool_calls() is True
+
+    def _api_msg_with_extra_content(self):
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call_1", "call_id": "call_1", "type": "function",
+                 "extra_content": {"google": {"thought_signature": "SIG_123"}},
+                 "function": {"name": "t", "arguments": "{}"}},
+            ],
+        }
+
+    def test_sanitize_tool_calls_strips_extra_content_for_strict_model(self, monkeypatch):
+        """Strict providers reject extra_content; strip it for non-Gemini models."""
+        agent = _make_agent(monkeypatch, "openrouter")
+        api_msg = self._api_msg_with_extra_content()
+        result = agent._sanitize_tool_calls_for_strict_api(
+            api_msg, model="accounts/fireworks/models/llama-v3p1-70b"
+        )
+        assert "extra_content" not in result["tool_calls"][0]
+        assert "call_id" not in result["tool_calls"][0]
+
+    def test_sanitize_tool_calls_strips_extra_content_when_model_none(self, monkeypatch):
+        """Default (no model) strips extra_content — safe for strict providers."""
+        agent = _make_agent(monkeypatch, "openrouter")
+        api_msg = self._api_msg_with_extra_content()
+        result = agent._sanitize_tool_calls_for_strict_api(api_msg)
+        assert "extra_content" not in result["tool_calls"][0]
+
+    def test_sanitize_tool_calls_keeps_extra_content_for_gemini(self, monkeypatch):
+        """Gemini thinking models 400 without the replayed thought_signature."""
+        agent = _make_agent(monkeypatch, "openrouter")
+        api_msg = self._api_msg_with_extra_content()
+        result = agent._sanitize_tool_calls_for_strict_api(
+            api_msg, model="google/gemini-3-pro-preview"
+        )
+        assert result["tool_calls"][0]["extra_content"] == {
+            "google": {"thought_signature": "SIG_123"}
+        }
+        # call_id/response_item_id still stripped regardless of model
+        assert "call_id" not in result["tool_calls"][0]
 
 
 class TestDeveloperRoleSwap:
@@ -252,8 +358,12 @@ class TestDeveloperRoleSwap:
         assert messages[0]["role"] == "system"
 
     def test_developer_role_via_nous_portal(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1")
-        agent.model = "gpt-5"
+        agent = _make_agent(
+            monkeypatch,
+            "nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+            model="gpt-5",
+        )
         messages = [
             {"role": "system", "content": "You are helpful."},
             {"role": "user", "content": "hi"},
@@ -307,51 +417,27 @@ class TestBuildApiKwargsKimiNoTemperatureOverride:
         assert "temperature" not in kwargs
 
 
-class TestBuildApiKwargsAIGateway:
-    def test_uses_chat_completions_format(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
-        messages = [{"role": "user", "content": "hi"}]
-        kwargs = agent._build_api_kwargs(messages)
-        assert "messages" in kwargs
-        assert "model" in kwargs
-        assert kwargs["messages"][-1]["content"] == "hi"
-
-    def test_no_responses_api_fields(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
-        messages = [{"role": "user", "content": "hi"}]
-        kwargs = agent._build_api_kwargs(messages)
-        assert "input" not in kwargs
-        assert "instructions" not in kwargs
-        assert "store" not in kwargs
-
-    def test_includes_reasoning_in_extra_body(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
-        messages = [{"role": "user", "content": "hi"}]
-        kwargs = agent._build_api_kwargs(messages)
-        extra = kwargs.get("extra_body", {})
-        assert "reasoning" in extra
-        assert extra["reasoning"]["enabled"] is True
-
-    def test_includes_tools(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
-        messages = [{"role": "user", "content": "hi"}]
-        kwargs = agent._build_api_kwargs(messages)
-        assert "tools" in kwargs
-        tool_names = [t["function"]["name"] for t in kwargs["tools"]]
-        assert "web_search" in tool_names
-
-
 class TestBuildApiKwargsNousPortal:
     def test_includes_nous_product_tags(self, monkeypatch):
         from agent.portal_tags import nous_portal_tags
-        agent = _make_agent(monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1")
+        agent = _make_agent(
+            monkeypatch,
+            "nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+            model="gpt-5",
+        )
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         extra = kwargs.get("extra_body", {})
         assert extra.get("tags") == nous_portal_tags()
 
     def test_uses_chat_completions_format(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1")
+        agent = _make_agent(
+            monkeypatch,
+            "nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+            model="gpt-5",
+        )
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "messages" in kwargs
@@ -945,7 +1031,11 @@ class TestAuxiliaryClientProviderPriority:
     def test_nous_when_no_openrouter(self, monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         from agent.auxiliary_client import get_text_auxiliary_client
-        with patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "nous-tok"}), \
+        nous_auth = {
+            "access_token": _fake_invoke_jwt(),
+            "scope": "inference:invoke",
+        }
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=nous_auth), \
              patch("agent.auxiliary_client.OpenAI") as mock, \
              patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None):
             client, model = get_text_auxiliary_client()

@@ -8,7 +8,6 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useState } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
-import { LARGE_PASTE } from '../config/limits.js'
 import type { ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
@@ -190,8 +189,12 @@ export function useComposerState({
       }
 
       const lineCount = cleanedText.split('\n').length
+      const pasteCollapseLines = getUiState().pasteCollapseLines
+      const pasteCollapseChars = getUiState().pasteCollapseChars
+      const linesHit = pasteCollapseLines > 0 && lineCount >= pasteCollapseLines
+      const charsHit = pasteCollapseChars > 0 && cleanedText.length >= pasteCollapseChars
 
-      if (cleanedText.length < LARGE_PASTE.chars && lineCount < LARGE_PASTE.lines) {
+      if (!linesHit && !charsHit) {
         return {
           cursor: cursor + cleanedText.length,
           value: value.slice(0, cursor) + cleanedText + value.slice(cursor)

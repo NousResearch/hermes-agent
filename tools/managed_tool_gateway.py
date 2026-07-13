@@ -72,15 +72,34 @@ def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
     return remaining <= max(0, int(skew_seconds))
 
 
-def read_nous_access_token() -> Optional[str]:
-    """Read a Nous Subscriber OAuth access token from auth store or env override."""
+def peek_nous_access_token() -> Optional[str]:
+    """Cheap probe for a Nous gateway token without triggering refresh.
+
+    Availability scans (`hermes tools`, banner/status paint, provider
+    `is_available()` checks) must stay off the synchronous OAuth refresh path.
+    This helper therefore only inspects the explicit env override and the
+    cached auth-store token, without checking expiry and without making any
+    network calls. Truthful refresh handling stays in request/session paths
+    that call :func:`read_nous_access_token`.
+    """
     explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
     if isinstance(explicit, str) and explicit.strip():
         return explicit.strip()
 
     nous_provider = _read_nous_provider_state() or {}
     access_token = nous_provider.get("access_token")
-    cached_token = access_token.strip() if isinstance(access_token, str) and access_token.strip() else None
+    if isinstance(access_token, str) and access_token.strip():
+        return access_token.strip()
+    return None
+
+
+def read_nous_access_token() -> Optional[str]:
+    """Read a Nous Subscriber OAuth access token from auth store or env override."""
+    explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    nous_provider = _read_nous_provider_state() or {}
+    cached_token = peek_nous_access_token()
 
     if cached_token and not _access_token_is_expiring(
         nous_provider.get("expires_at"),
@@ -159,9 +178,15 @@ def is_managed_tool_gateway_ready(
     gateway_builder: Optional[Callable[[str], str]] = None,
     token_reader: Optional[Callable[[], Optional[str]]] = None,
 ) -> bool:
-    """Return True when gateway URL and Nous access token are available."""
+    """Return True when gateway URL and a likely-usable Nous token are present.
+
+    Defaults to :func:`peek_nous_access_token` so read-only availability scans
+    avoid synchronous OAuth refresh. Callers that are about to make a real
+    gateway request should use :func:`resolve_managed_tool_gateway` (which
+    still defaults to the refresh-aware :func:`read_nous_access_token`).
+    """
     return resolve_managed_tool_gateway(
         vendor,
         gateway_builder=gateway_builder,
-        token_reader=token_reader,
+        token_reader=token_reader or peek_nous_access_token,
     ) is not None

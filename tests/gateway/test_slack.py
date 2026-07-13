@@ -2293,6 +2293,46 @@ class TestSendTyping:
         assert ("T_TWO", "D_SHARED", "171.000") in adapter._active_status_threads
 
     @pytest.mark.asyncio
+    async def test_stop_typing_without_team_uses_unique_thread_status(self, adapter):
+        """A stale channel fallback must not strand a uniquely tracked status."""
+        team_one, team_two = AsyncMock(), AsyncMock()
+        adapter._team_clients.update({"T_ONE": team_one, "T_TWO": team_two})
+        await adapter.send_typing(
+            "D_SHARED",
+            metadata={"thread_id": "171.000", "slack_team_id": "T_ONE"},
+        )
+        # Another workspace can overwrite this channel-only fallback map.
+        adapter._channel_team["D_SHARED"] = "T_TWO"
+
+        await adapter.stop_typing("D_SHARED", metadata={"thread_id": "171.000"})
+
+        assert team_one.assistant_threads_setStatus.call_args_list[-1] == call(
+            channel_id="D_SHARED", thread_ts="171.000", status=""
+        )
+        assert ("T_ONE", "D_SHARED", "171.000") not in adapter._active_status_threads
+        team_two.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_without_team_preserves_ambiguous_thread_statuses(
+        self, adapter
+    ):
+        """Without team metadata, matching workspace statuses must not be guessed."""
+        team_one, team_two = AsyncMock(), AsyncMock()
+        adapter._team_clients.update({"T_ONE": team_one, "T_TWO": team_two})
+        for team_id in ("T_ONE", "T_TWO"):
+            await adapter.send_typing(
+                "D_SHARED",
+                metadata={"thread_id": "171.000", "slack_team_id": team_id},
+            )
+
+        await adapter.stop_typing("D_SHARED", metadata={"thread_id": "171.000"})
+
+        assert ("T_ONE", "D_SHARED", "171.000") in adapter._active_status_threads
+        assert ("T_TWO", "D_SHARED", "171.000") in adapter._active_status_threads
+        assert team_one.assistant_threads_setStatus.call_count == 1
+        assert team_two.assistant_threads_setStatus.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_streaming_final_edit_uses_workspace_client_from_metadata(
         self, adapter
     ):

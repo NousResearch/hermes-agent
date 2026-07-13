@@ -8,7 +8,9 @@ Covers _handle_set_workspace_command on HermesCLI:
   - relative paths resolve against current TERMINAL_CWD
   - quoted paths (single + double) handled
   - same-dir is a no-op
-  - active terminal envs and cached file_ops have their .cwd synced
+  - local backend: os.chdir() called, full isdir/access validation
+  - non-local backend: isdir/access checks skipped
+  - current session's terminal env and file_ops have their .cwd synced
   - the command is registered with the expected aliases (cd, workspace, ...)
 
 We don't go through the full HermesCLI __init__ -- the command handler is
@@ -170,34 +172,95 @@ class TestSetWorkspaceValidation:
         assert "unchanged" in _printed(cprint2).lower()
 
 
+class TestSetWorkspaceLocalBackend:
+    """Local backend: os.chdir() called, full validation."""
+
+    def test_os_chdir_called_for_local_backend(self, bare_cli, two_dirs, monkeypatch):
+        a, _ = two_dirs
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.chdir(os.path.expanduser("~"))
+        with patch.object(cli_mod, "_cprint"):
+            bare_cli._handle_set_workspace_command(f"/set-workspace {a}")
+        assert os.getcwd() == os.path.realpath(str(a))
+
+    def test_chdir_failure_rejected(self, bare_cli, two_dirs, monkeypatch):
+        """If os.chdir() fails, the command should report the error and not
+        update TERMINAL_CWD."""
+        a, _ = two_dirs
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        before = os.environ["TERMINAL_CWD"]
+        with patch("os.chdir", side_effect=OSError("permission denied")):
+            with patch.object(cli_mod, "_cprint") as cprint:
+                bare_cli._handle_set_workspace_command(f"/set-workspace {a}")
+        out = _printed(cprint)
+        assert "Could not enter directory" in out
+        assert os.environ["TERMINAL_CWD"] == before
+
+
+class TestSetWorkspaceNonLocalBackend:
+    """Non-local backend: isdir/access checks skipped, no os.chdir()."""
+
+    def test_remote_skips_isdir_check(self, bare_cli, monkeypatch):
+        """A path that doesn't exist locally should be accepted for remote
+        backends (it lives on the remote host)."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        remote_path = "/home/remote-user/project"
+        with patch.object(cli_mod, "_cprint"):
+            bare_cli._handle_set_workspace_command(f"/set-workspace {remote_path}")
+        assert os.environ["TERMINAL_CWD"] == os.path.realpath(remote_path)
+
+    def test_remote_does_not_chdir(self, bare_cli, two_dirs, monkeypatch):
+        a, _ = two_dirs
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        original_cwd = os.getcwd()
+        with patch.object(cli_mod, "_cprint"):
+            bare_cli._handle_set_workspace_command(f"/set-workspace {a}")
+        assert os.getcwd() == original_cwd  # process cwd unchanged
+        assert os.environ["TERMINAL_CWD"] == os.path.realpath(str(a))
+
+
 class TestSetWorkspaceCacheSync:
-    def test_active_terminal_envs_synced(self, bare_cli, two_dirs, patched_caches):
+    def test_current_session_terminal_env_synced(self, bare_cli, two_dirs, patched_caches):
+        """Only the current session's 'default' env is synced."""
         tt, _ = patched_caches
         a, _ = two_dirs
 
         env = MagicMock()
         env.cwd = "/old"
-        tt._active_environments["task-1"] = env
+        tt._active_environments["default"] = env
+
+        # Also put an env under a different key — it must NOT be touched.
+        other_env = MagicMock()
+        other_env.cwd = "/other"
+        tt._active_environments["other-task"] = other_env
 
         with patch.object(cli_mod, "_cprint"):
             bare_cli._handle_set_workspace_command(f"/set-workspace {a}")
         assert env.cwd == os.path.realpath(str(a))
+        assert other_env.cwd == "/other"  # untouched
 
-    def test_file_ops_cache_synced(self, bare_cli, two_dirs, patched_caches):
+    def test_current_session_file_ops_synced(self, bare_cli, two_dirs, patched_caches):
+        """Only the current session's 'default' file_ops is synced."""
         _, ft = patched_caches
         a, _ = two_dirs
 
         fops = MagicMock()
         fops.cwd = "/old"
-        ft._file_ops_cache["task-1"] = fops
+        ft._file_ops_cache["default"] = fops
+
+        # Also put a file_ops under a different key — it must NOT be touched.
+        other_fops = MagicMock()
+        other_fops.cwd = "/other"
+        ft._file_ops_cache["other-task"] = other_fops
 
         with patch.object(cli_mod, "_cprint"):
             bare_cli._handle_set_workspace_command(f"/set-workspace {a}")
         assert fops.cwd == os.path.realpath(str(a))
+        assert other_fops.cwd == "/other"  # untouched
 
-    def test_env_sync_failure_does_not_abort_other_updates(self, bare_cli, two_dirs, patched_caches):
-        """A misbehaving remote backend that rejects cwd assignment must not
-        block the env-var update or the file_ops update."""
+    def test_env_sync_failure_does_not_abort_env_var_or_file_ops(self, bare_cli, two_dirs, patched_caches):
+        """A misbehaving terminal env that rejects cwd assignment must not
+        block the TERMINAL_CWD update or the file_ops update."""
         tt, ft = patched_caches
         a, _ = two_dirs
 
@@ -206,11 +269,11 @@ class TestSetWorkspaceCacheSync:
             lambda self: "/old",
             lambda self, value: (_ for _ in ()).throw(RuntimeError("nope")),
         )
-        tt._active_environments["bad"] = bad_env
+        tt._active_environments["default"] = bad_env
 
         good_fops = MagicMock()
         good_fops.cwd = "/old"
-        ft._file_ops_cache["fops"] = good_fops
+        ft._file_ops_cache["default"] = good_fops
 
         with patch.object(cli_mod, "_cprint"):
             bare_cli._handle_set_workspace_command(f"/set-workspace {a}")

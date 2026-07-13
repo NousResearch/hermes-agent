@@ -138,6 +138,58 @@ def test_board_list_recommends_persistent_workspace_for_configured_workdir(
     assert boards["disposable"]["default_workspace_kind"] == "scratch"
 
 
+def test_create_board_persists_project_directory(client, tmp_path):
+    """The dashboard board form should anchor future tasks to its project."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    response = client.post(
+        "/api/plugins/kanban/boards",
+        json={
+            "slug": "project-board",
+            "name": "Project Board",
+            "default_workdir": str(project_dir),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    board = response.json()["board"]
+    assert board["default_workdir"] == str(project_dir.resolve())
+    assert board["default_workspace_kind"] == "dir"
+    assert kb.read_board_metadata("project-board")["default_workdir"] == str(
+        project_dir.resolve()
+    )
+
+
+@pytest.mark.parametrize("path", ["relative/project", "~/missing-project"])
+def test_create_board_rejects_invalid_project_directory(client, path):
+    """A board must not persist a path that cannot anchor worker output."""
+    response = client.post(
+        "/api/plugins/kanban/boards",
+        json={"slug": "invalid-project", "default_workdir": path},
+    )
+
+    assert response.status_code == 400
+    assert "project directory" in response.json()["detail"].lower()
+
+
+def test_new_board_dialog_collects_project_directory():
+    """Board creation should expose the setting that controls safe task defaults."""
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "kanban"
+        / "dashboard"
+        / "dist"
+        / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'const [projectDirectory, setProjectDirectory] = useState("");' in bundle
+    assert "Project directory" in bundle
+    assert "Absolute path to the project folder" in bundle
+    assert "default_workdir: projectDirectory.trim() || undefined" in bundle
+
+
 def test_dashboard_workspace_picker_explains_persistence_contract():
     """Task creation must make scratch deletion visible without a hover."""
     bundle = (

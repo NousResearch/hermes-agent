@@ -395,6 +395,7 @@ class GoalState:
     max_turns: int = DEFAULT_MAX_TURNS
     created_at: float = 0.0
     last_turn_at: float = 0.0
+    updated_at: float = 0.0
     last_verdict: Optional[str] = None        # "done" | "blocked" | "continue" | "wait" | "skipped"
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
@@ -431,6 +432,9 @@ class GoalState:
         raw_subgoals = data.get("subgoals") or []
         ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
         floats = {k: float(data.get(k) or 0.0) for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")}
+        floats["updated_at"] = float(
+            data.get("updated_at", data.get("last_turn_at", data.get("created_at", 0.0))) or 0.0
+        )
         return cls(
             goal=data.get("goal", ""),
             status=data.get("status", "active"),
@@ -624,18 +628,20 @@ def load_goal(session_id: str) -> Optional[GoalState]:
         return None
 
 
-def save_goal(session_id: str, state: GoalState) -> None:
-    """Persist a goal to SessionDB. No-op if DB unavailable."""
+def save_goal(session_id: str, state: GoalState) -> bool:
+    """Persist a goal to SessionDB and report whether the write succeeded."""
     if not session_id:
-        return
+        return False
     db = _get_session_db()
     if db is None:
         _warn_dropped_write("GoalManager", "goal", session_id)
-        return
+        return False
     try:
         db.set_meta(_meta_key(session_id), state.to_json())
     except Exception as exc:
         logger.debug("GoalManager: set_meta failed: %s", exc)
+        return False
+    return True
 
 
 def clear_goal(session_id: str) -> None:
@@ -644,6 +650,7 @@ def clear_goal(session_id: str) -> None:
     if state is None:
         return
     state.status = "cleared"
+    state.updated_at = time.time()
     save_goal(session_id, state)
 
 
@@ -1062,24 +1069,52 @@ class GoalManager:
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
+        self._loaded_json = self._state.to_json() if self._state is not None else None
+        self._dirty_since: Optional[float] = None
 
     # --- introspection ------------------------------------------------
 
     @property
     def state(self) -> Optional[GoalState]:
+        return self.refresh()
+
+    def refresh(self) -> Optional[GoalState]:
+        """Reload state written by another manager without losing a failed local write."""
+        if (
+            self._dirty_since is None
+            and self._state is not None
+            and self._loaded_json is not None
+            and self._state.to_json() != self._loaded_json
+        ):
+            return self._state
+        persisted = load_goal(self.session_id)
+        if self._dirty_since is not None:
+            if persisted is not None and self._state is not None and persisted.to_json() == self._state.to_json():
+                self._dirty_since = None
+            elif persisted is not None and persisted.updated_at > self._dirty_since:
+                self._dirty_since = None
+            else:
+                return None if self._state is None or self._state.status == "cleared" else self._state
+        if persisted is None:
+            return self._state
+        self._state = None if persisted.status == "cleared" else persisted
+        self._loaded_json = self._state.to_json() if self._state is not None else None
         return self._state
 
     def is_active(self) -> bool:
+        self.refresh()
         return self._state is not None and self._state.status == "active"
 
     def has_goal(self) -> bool:
+        self.refresh()
         return self._state is not None and self._state.status in {"active", "paused"}
 
     def has_contract(self) -> bool:
+        self.refresh()
         return self._state is not None and self._state.has_contract()
 
     def status_line(self) -> str:
-        s = self._state
+        s = self.refresh()
         if s is None or s.status == "cleared":
             return "No active goal. Set one with /goal <text>."
         turns = f"{s.turns_used}/{s.max_turns} turns"
@@ -1107,11 +1142,18 @@ class GoalManager:
     # --- mutation -----------------------------------------------------
 
     def _save(self) -> Optional[GoalState]:
-        save_goal(self.session_id, self._state)
+        if self._state is None:
+            return None
+        self._state.updated_at = time.time()
+        saved = save_goal(self.session_id, self._state)
+        self._dirty_since = None if saved else self._state.updated_at
+        if saved:
+            self._loaded_json = self._state.to_json()
         return self._state
 
     def _require_goal(self) -> GoalState:
-        if self._state is None or not self.has_goal():
+        self.refresh()
+        if self._state is None or self._state.status not in {"active", "paused"}:
             raise RuntimeError("no active goal")
         return self._state
 
@@ -1142,12 +1184,14 @@ class GoalManager:
 
     def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
         """Attach or replace the completion contract on the active goal."""
+        self.refresh()
         if self._state is None:
             return None
         self._state.contract = contract or GoalContract()
         return self._save()
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
+        self.refresh()
         if not self._state:
             return None
         self._state.status = "paused"
@@ -1156,6 +1200,7 @@ class GoalManager:
         return self._save()
 
     def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
+        self.refresh()
         if not self._state:
             return None
         self._state.status = "active"
@@ -1166,13 +1211,17 @@ class GoalManager:
         return self._save()
 
     def clear(self) -> None:
+        self.refresh()
         if self._state is None:
             return
         self._state.status = "cleared"
         self._save()
         self._state = None
+        if self._dirty_since is None:
+            self._loaded_json = None
 
     def mark_done(self, reason: str) -> None:
+        self.refresh()
         if not self._state:
             return
         self._state.status = "done"
@@ -1218,6 +1267,7 @@ class GoalManager:
 
     def render_subgoals(self) -> str:
         """Public helper for the /subgoal slash command."""
+        self.refresh()
         if self._state is None:
             return "(no active goal)"
         return self._state.render_subgoals_block() or "(no subgoals — use /subgoal <text> to add criteria)"
@@ -1249,6 +1299,7 @@ class GoalManager:
 
     def render_gates(self) -> str:
         """Public helper for the /goal gate slash command."""
+        self.refresh()
         if self._state is None:
             return "(no active goal)"
         if not self._state.gates:
@@ -1442,7 +1493,7 @@ class GoalManager:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
         own continuations increment ``turns_used`` — both consume model budget."""
-        state = self._state
+        state = self.refresh()
         if state is None or state.status != "active":
             return _decision(state.status if state else None, False, None, "inactive", "no active goal", "")
 
@@ -1521,7 +1572,7 @@ class GoalManager:
         )
 
     def next_continuation_prompt(self) -> Optional[str]:
-        s = self._state
+        s = self.refresh()
         if not s or s.status != "active":
             return None
         # Contract first (it carries the verification surface); subgoals fold in as extra criteria.
@@ -1536,6 +1587,7 @@ class GoalManager:
 
     def render_contract(self) -> str:
         """Public helper for the /goal show + /goal draft slash commands."""
+        self.refresh()
         if self._state is None:
             return "(no active goal)"
         return self._state.contract.render_block() if self._state.has_contract() else (

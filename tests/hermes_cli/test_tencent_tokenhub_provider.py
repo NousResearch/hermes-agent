@@ -10,7 +10,6 @@ from hermes_cli.auth import (
     resolve_provider,
     get_api_key_provider_status,
     resolve_api_key_provider_credentials,
-    AuthError,
 )
 
 
@@ -19,7 +18,7 @@ _OTHER_PROVIDER_KEYS = (
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY",
     "GOOGLE_API_KEY", "GEMINI_API_KEY", "DASHSCOPE_API_KEY",
     "XAI_API_KEY", "KIMI_API_KEY", "KIMI_CN_API_KEY",
-    "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY", "AI_GATEWAY_API_KEY",
+    "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY", "HF_TOKEN", "GLM_API_KEY", "ZAI_API_KEY",
     "XIAOMI_API_KEY", "OPENROUTER_API_KEY", "COPILOT_GITHUB_TOKEN",
     "GH_TOKEN", "GITHUB_TOKEN", "ARCEEAI_API_KEY",
@@ -192,22 +191,22 @@ class TestTencentTokenhubCanonicalProvider:
 
 
 class TestTencentInOpenRouterAndNous:
-    """tencent/hy3-preview:free and tencent/hy3-preview should appear in OpenRouter and Nous curated lists."""
+    """tencent/hy3:free and tencent/hy3 should appear in OpenRouter and Nous curated lists."""
 
     def test_in_openrouter_fallback(self):
         from hermes_cli.models import OPENROUTER_MODELS
         ids = [mid for mid, _ in OPENROUTER_MODELS]
-        assert "tencent/hy3-preview:free" in ids
+        assert "tencent/hy3:free" in ids
 
     def test_paid_in_openrouter_fallback(self):
-        """tencent/hy3-preview (paid, no :free suffix) should also be in OpenRouter list."""
+        """tencent/hy3 (paid, no :free suffix) should also be in OpenRouter list."""
         from hermes_cli.models import OPENROUTER_MODELS
         ids = [mid for mid, _ in OPENROUTER_MODELS]
-        assert "tencent/hy3-preview" in ids
+        assert "tencent/hy3" in ids
 
     def test_in_nous_provider_models(self):
         from hermes_cli.models import _PROVIDER_MODELS
-        assert "tencent/hy3-preview" in _PROVIDER_MODELS["nous"]
+        assert "tencent/hy3" in _PROVIDER_MODELS["nous"]
 
 
 # =============================================================================
@@ -304,12 +303,20 @@ class TestTencentTokenhubURLMapping:
 
 
 class TestTencentTokenhubContextLength:
-    """hy3-preview context length is registered."""
+    """hy3-preview has a context-length entry registered.
 
-    def test_hy3_preview_context_length(self):
+    Asserting the relationship (registered + ≥ 4096) instead of a
+    specific value, per AGENTS.md "Don't write change-detector tests".
+    The previous version of this class pinned an exact integer that
+    broke whenever Tencent / OpenRouter bumped the published context
+    window (#22268).
+    """
+
+    def test_hy3_preview_has_registered_context_length(self):
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length("hy3-preview")
-        assert ctx == 256000
+        assert isinstance(ctx, int)
+        assert ctx >= 4096, f"hy3-preview context length looks unset/wrong: {ctx}"
 
 
 # =============================================================================
@@ -426,7 +433,7 @@ class TestTencentTokenhubCLIDispatch:
 
 
 class TestTencentTokenhubModelCatalogJSON:
-    """Verify tencent/hy3-preview:free and tencent/hy3-preview are present in the website model-catalog.json."""
+    """Verify tencent/hy3:free and tencent/hy3 are present in the website model-catalog.json."""
 
     def test_in_model_catalog_json(self):
         catalog_path = os.path.join(
@@ -450,8 +457,8 @@ class TestTencentTokenhubModelCatalogJSON:
             for provider_entry in providers:
                 for model in provider_entry.get("models", []):
                     all_ids.add(model.get("id", ""))
-        assert "tencent/hy3-preview:free" in all_ids
-        assert "tencent/hy3-preview" in all_ids
+        assert "tencent/hy3:free" in all_ids
+        assert "tencent/hy3" in all_ids
 
 
 # =============================================================================

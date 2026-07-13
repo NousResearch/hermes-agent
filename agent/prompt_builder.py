@@ -40,11 +40,17 @@ logger = logging.getLogger(__name__)
 #
 # Patterns live in ``tools/threat_patterns.py`` — the single source of truth
 # shared with the memory-tool scanner and the tool-result delimiter system.
-# This module just chooses how to react when a match is found (block-with-
-# placeholder; the actual content never reaches the system prompt).
+# This module just chooses how to react when a match is found. Command-shaped
+# exfiltration lines are replaced with a placeholder; other findings block the
+# whole file. In either case, matched content never reaches the system prompt.
 # ---------------------------------------------------------------------------
 
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
+
+
+_LINE_REDACTABLE_CONTEXT_FINDINGS = frozenset(
+    {"exfil_curl", "exfil_wget", "read_secrets"}
+)
 
 
 def _scan_context_content(content: str, filename: str) -> str:
@@ -55,10 +61,45 @@ def _scan_context_content(content: str, filename: str) -> str:
     Strict-scope patterns (SSH backdoor, persistence, exfil-URL) are NOT
     applied here — those are too aggressive for a context file in a
     cloned repo (security research, infra docs).  Content matching is
-    BLOCKED at this layer because the file would otherwise enter the
-    system prompt verbatim and the user has no chance to intervene.
+    BLOCKED at this layer because the file would otherwise enter the system
+    prompt verbatim and the user has no chance to intervene. Line-local
+    exfiltration commands are removed without discarding unrelated context;
+    all other findings keep the fail-closed whole-file behavior.
     """
     findings = _scan_for_threats(content, scope="context")
+    if findings and set(findings).issubset(_LINE_REDACTABLE_CONTEXT_FINDINGS):
+        sanitized_lines = []
+        redacted_findings = set()
+        for line in content.splitlines(keepends=True):
+            line_findings = _scan_for_threats(line, scope="context")
+            line_redactions = [
+                finding
+                for finding in line_findings
+                if finding in _LINE_REDACTABLE_CONTEXT_FINDINGS
+            ]
+            if not line_redactions:
+                sanitized_lines.append(line)
+                continue
+
+            line_ending = line[len(line.rstrip("\r\n")) :]
+            redacted_findings.update(line_redactions)
+            sanitized_lines.append(
+                "[BLOCKED LINE: potential prompt injection "
+                f"({', '.join(sorted(set(line_redactions)))})]"
+                f"{line_ending}"
+            )
+
+        sanitized_content = "".join(sanitized_lines)
+        if redacted_findings and not _scan_for_threats(
+            sanitized_content, scope="context"
+        ):
+            logger.warning(
+                "Context file %s had blocked lines removed: %s",
+                filename,
+                ", ".join(sorted(redacted_findings)),
+            )
+            return sanitized_content
+
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"

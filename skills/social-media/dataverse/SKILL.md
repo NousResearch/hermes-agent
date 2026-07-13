@@ -1,8 +1,8 @@
 ---
 name: dataverse
-description: Search X/Twitter and Reddit via the Macrocosmos Dataverse CLI (Bittensor Subnet 13). Supports real-time search and long-running Gravity data collection with Parquet export.
+description: X/Twitter and Reddit search and collection via Bittensor.
 version: 1.0.0
-author: Volodymyr Truba + Hermes Agent
+author: Volodymyr Truba (Arrmlet), Hermes Agent
 license: MIT
 platforms: [linux, macos]
 prerequisites:
@@ -11,172 +11,184 @@ prerequisites:
 metadata:
   hermes:
     tags: [x, twitter, reddit, social-media, bittensor, subnet13, dataverse, macrocosmos]
+    related_skills: [xurl]
     homepage: https://github.com/macrocosm-os/dataverse-cli
 ---
 
-# Dataverse — X/Twitter & Reddit Search via Bittensor SN13
+# Dataverse Skill
 
-Query real-time social media data from X/Twitter and Reddit through the decentralized Bittensor Subnet 13 network. No X API keys needed — just a free Macrocosmos API key.
+Search real-time X/Twitter and Reddit posts through the decentralized
+Bittensor Subnet 13 network with the `dv` CLI, and run Gravity collection
+tasks that gather data for up to 7 days and export Parquet datasets.
+Read-only — no posting, replying, or account actions, and no X or Reddit
+credentials needed; a single free Macrocosmos API key covers both platforms.
 
-## When to use this skill
+---
 
-- User wants to search X/Twitter or Reddit posts by keyword, username, hashtag
-- User wants to collect social data over time (Gravity tasks — up to 7 days)
-- User wants to export social datasets as Parquet files
-- User wants decentralized social data without per-platform API credentials
+## When to Use
 
-## Setup
+- User wants to search X/Twitter or Reddit posts by keyword, hashtag, or date range
+- User wants X posts from specific accounts (`-u` username filter)
+- User wants to look up a specific X post by URL
+- User wants to collect a topic over days and export it as a Parquet dataset
+- User wants social data without per-platform API credentials
 
-### 1. Install the CLI
+Don't use for: posting, replying, liking, reposting, DMs, or timeline/mention
+reads on the user's own account — that is the `xurl` skill.
+
+---
+
+## Prerequisites
+
+The `dv` binary and a free Macrocosmos API key.
 
 ```bash
-# Via Cargo (recommended)
+# Install via Cargo (Rust toolchain required)
 cargo install dataverse-cli
 
 # Or from source
 git clone https://github.com/macrocosm-os/dataverse-cli
-cd dataverse-cli
-cargo install --path .
+cd dataverse-cli && cargo install --path .
 ```
 
-### 2. Get a free API key
+Get a key at https://app.macrocosmos.ai/account?tab=api-keys, then either:
 
-Sign up at https://app.macrocosmos.ai/account?tab=api-keys
+- run `dv auth` interactively — stores the key with 0600 permissions in
+  `~/.config/dataverse/config.toml` (Linux) or
+  `~/Library/Application Support/dataverse/config.toml` (macOS), or
+- set the `MC_API` environment variable.
 
-### 3. Authenticate
+Never ask the user to paste the key into chat; `dv auth` and `MC_API` keep it
+out of session context. `--dry-run` output redacts the key.
+
+---
+
+## How to Run
+
+Run `dv` through the `terminal` tool. Always pass `-o json` when results will
+be parsed or post-processed — the default `table` format is for human display.
+Data goes to stdout; diagnostics and errors go to stderr.
 
 ```bash
-dv auth
+dv search x -k "bittensor" -o json
 ```
 
-This stores the key in `~/.config/dataverse/config.toml` (Linux) or `~/Library/Application Support/dataverse/config.toml` (macOS).
+---
 
-Alternatively, set the `MC_API` environment variable.
+## Quick Reference
 
-### 4. Verify
+```bash
+dv status                                 # verify key + connectivity
+dv auth                                   # interactive key setup
+
+dv search x -k "kw1,kw2" [--mode any|all] [-u user1,user2] \
+            [--from YYYY-MM-DD] [--to YYYY-MM-DD] [-l N] [-o json]
+dv search x --url "https://x.com/user/status/123"     # single post lookup
+dv search reddit -k "r/MachineLearning,LLM" [-l N] [-o json]
+
+dv gravity create -p <x|reddit> -t <topic> [-k keyword] [-n name] [--email addr]
+dv gravity status [task_id] [--crawlers]
+dv gravity build <crawler_id> [--max-rows N] [--email addr]
+dv gravity dataset <dataset_id>           # poll build; returns download URL
+dv gravity cancel <task_id>
+dv gravity cancel-dataset <dataset_id>
+```
+
+Global flags on every command: `-o table|json|csv` (default `table`),
+`--api-key <key>`, `--dry-run` (print the request without sending),
+`--timeout <seconds>` (default 120).
+
+Limits: ≤ 5 keywords, ≤ 5 usernames (X only), `-l` result limit 1–1000
+(default 100). Gravity `-t` topic is a `#hashtag` or `$cashtag` for X, or
+`r/subreddit` for Reddit.
+
+---
+
+## Procedure
+
+### 1. Verify setup
 
 ```bash
 dv status
 ```
 
-## Quick reference
+Exits 0 and reports the key as valid when ready. Otherwise walk the user
+through Prerequisites.
 
-### Search X/Twitter
-
-```bash
-# Basic keyword search
-dv search x -k "bittensor AI" --limit 20
-
-# Multiple keywords (AND mode)
-dv search x -k "machine learning" -k "open source" --mode all
-
-# By username
-dv search x -k "AI agents" -u NousResearch --limit 10
-
-# JSON output (best for agent processing)
-dv search x -k "hermes agent" -o json
-
-# CSV output
-dv search x -k "LLM benchmarks" -o csv --limit 100
-
-# With date range
-dv search x -k "bittensor" --start 2026-03-01 --end 2026-03-15
-```
-
-### Search Reddit
+### 2. Search
 
 ```bash
-# Search by subreddit
-dv search reddit -k "bittensor" --subreddit MachineLearning --limit 20
+# X: keywords AND-matched, filtered to accounts, custom window
+dv search x -k "bittensor,subnet 13" --mode all -u opentensor \
+  --from 2026-07-01 --to 2026-07-10 -o json
 
-# Multiple keywords
-dv search reddit -k "AI" -k "open source" --mode all -o json
-
-# Broad Reddit search
-dv search reddit -k "decentralized AI" --limit 50
+# Reddit: target a subreddit by passing "r/<name>" as a keyword
+dv search reddit -k "r/MachineLearning,decentralized AI" -l 50 -o json
 ```
 
-### Gravity — Long-running data collection
+Done when the output parses as a JSON array. An empty array usually means the
+default 24-hour window was too narrow — retry with an explicit `--from`.
 
-Gravity tasks run on Bittensor miners and collect data continuously for up to 7 days.
+### 3. Bulk collection (Gravity)
 
 ```bash
-# Create a collection task for X
-dv gravity create -p x -k "bittensor" -k "subnet"
-
-# Create a collection task for Reddit
-dv gravity create -p reddit -k "artificial intelligence" --subreddit MachineLearning
-
-# Check task status
-dv gravity status
-dv gravity status <task_id> --crawlers
-
-# Build a Parquet dataset from collected data (stops the crawler)
-dv gravity build <crawler_id>
-
-# Check dataset build progress and get download URL
-dv gravity dataset <dataset_id>
-
-# Cancel a task
-dv gravity cancel <task_id>
+dv gravity create -p x -t "#bittensor" -k "subnet" -n "tao-watch" -o json
+dv gravity status <task_id> --crawlers -o json     # note the crawler IDs
+dv gravity build <crawler_id> --max-rows 100000 -o json
+dv gravity dataset <dataset_id> -o json            # poll until a URL appears
 ```
 
-## Output format
+Tasks collect for up to 7 days. `build` stops the crawler and snapshots what
+was collected; `dataset` reports build progress and, when finished, Parquet
+download links. Done when `dataset` returns a download URL.
 
-Use `-o json` for structured output the agent can parse. Each search result contains:
+### 4. Parse results
 
-**X/Twitter results:**
-- `datetime` — post timestamp
-- `text` — post content
-- `uri` — link to the post
-- `user.username`, `user.display_name`, `user.followers_count`
-- `tweet.like_count`, `tweet.retweet_count`, `tweet.reply_count`, `tweet.view_count`
-- `tweet.hashtags`, `tweet.language`
+Every X row carries: `datetime`, `text`, `uri`, `user.username`,
+`user.display_name`, `user.followers_count`, `tweet.like_count`,
+`tweet.retweet_count`, `tweet.reply_count`, `tweet.view_count`,
+`tweet.hashtags`, `tweet.language`. Reddit rows carry `datetime`, `text`,
+`uri` plus a smaller metadata set — inspect one row before assuming a field
+exists.
 
-**Reddit results:**
-- `datetime` — post timestamp
-- `text` — post content
-- `uri` — link to the post
+---
 
-Reddit results return fewer fields than X. Run `dv search reddit -o json` to see the full current schema.
+## Pitfalls
 
-## Global flags
+- Date flags are `--from`/`--to`, and there is no `--subreddit` flag —
+  target subreddits with an `r/<name>` keyword (search) or `-t r/<name>`
+  (gravity create).
+- The default search window is the last 24 hours; "no results" often means
+  the window, not the query.
+- `--mode all` ANDs the keywords; the default `any` ORs them.
+- Username filtering is X-only; Reddit ignores `-u`.
+- `dv gravity build` stops the crawler — build only when collection should
+  finish.
+- Data is served by decentralized SN13 miners: coverage and freshness vary
+  between runs, and result counts are not deterministic.
+- Long queries can exceed the 120 s default; raise `--timeout` instead of
+  retrying in a loop.
 
-These work with any command:
+---
 
-| Flag | Description |
-|------|-------------|
-| `-o, --output <table\|json\|csv>` | Output format (default: table) |
-| `--api-key <key>` | Override API key for this call |
-| `--dry-run` | Preview the HTTP request without executing |
-| `--timeout <seconds>` | Request timeout (default: 120) |
+## Verification
 
-## Agent workflow
+- [ ] `dv status` exits 0 and reports a valid API key
+- [ ] `dv search x -k "test" -l 5 -o json` returns a parseable JSON array
+- [ ] `dv search x -k "test" --dry-run` prints the request without network I/O
 
-1. Confirm `dv` is installed: `dv status`
-2. Always use `-o json` when you need to process results programmatically
-3. For search: use `dv search x` or `dv search reddit` with keywords
-4. For large-scale collection: create a Gravity task, monitor it, then build the dataset
-5. Stdout is always clean data; diagnostics go to stderr
+---
 
-## Constraints
+## Comparison with xurl
 
-- Up to 5 keywords per search
-- Up to 5 usernames per X search (Reddit does not support username filtering)
-- Result limit: 1–1000 per search
-- Keyword mode: `any` (OR, default) or `all` (AND)
-- Gravity tasks run up to 7 days
-
-## Comparison with xitter skill
-
-| | dataverse | xitter |
-|---|-----------|--------|
-| **Reads X** | Yes (search) | Yes (search, timeline, mentions) |
-| **Writes to X** | No | Yes (post, reply, like, retweet) |
+| | dataverse | xurl |
+|---|-----------|------|
+| **Reads X** | Yes (keyword/user search, post lookup) | Yes (search, timelines, mentions, raw v2 API) |
+| **Writes to X** | No | Yes (post, reply, like, repost, DM, media) |
 | **Reddit** | Yes | No |
-| **Auth** | 1 free API key | 5 paid X API secrets |
+| **Auth** | One free Macrocosmos API key | X developer app + OAuth 2.0 PKCE |
 | **Data source** | Bittensor SN13 miners | Official X API |
-| **Bulk collection** | Yes (Gravity) | No |
-| **Export** | Parquet, JSON, CSV | JSON |
+| **Bulk collection** | Yes (Gravity → Parquet) | No |
 
-Use **dataverse** for search and data collection. Use **xitter** for posting and account actions.
+Use dataverse for cross-platform search and bulk datasets; use `xurl` for
+posting, account actions, and official-API reads.

@@ -3416,3 +3416,45 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     }
     assert resolved["api_key"] == "pooled-key"
     assert resolved["source"] == "pool:lmstudio-pool"
+
+
+# --- Anthropic config.yaml api_key tests (#9105) ---
+
+def _patch_anthropic_short_circuit(monkeypatch):
+    """Bypass everything before the provider-specific anthropic branch."""
+    monkeypatch.setattr(rp, "resolve_requested_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "_resolve_explicit_runtime", lambda **k: None)
+    # Force the pool path to yield nothing so we fall through to the
+    # anthropic-specific code block.
+    monkeypatch.setattr(rp, "load_pool", lambda *a: (_ for _ in ()).throw(Exception("no pool")))
+
+
+def test_anthropic_config_api_key_is_used(monkeypatch):
+    """Non-Azure branch: config.yaml model.api_key must be honoured."""
+    _patch_anthropic_short_circuit(monkeypatch)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "anthropic", "api_key": "***"})
+    resolved = rp.resolve_runtime_provider()
+    assert resolved["api_key"] == "***"
+    assert resolved["source"] == "config"
+
+
+def test_anthropic_config_api_key_falls_back_to_env(monkeypatch):
+    """When no config api_key, fall back to resolve_anthropic_token()."""
+    _patch_anthropic_short_circuit(monkeypatch)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "anthropic"})
+    monkeypatch.setattr("agent.anthropic_adapter.resolve_anthropic_token", lambda: "sk-ant-env")
+    resolved = rp.resolve_runtime_provider()
+    assert resolved["api_key"] == "sk-ant-env"
+    assert resolved["source"] == "env"
+
+
+def test_anthropic_config_api_key_no_cross_provider_leak(monkeypatch):
+    """A config api_key from a *different* provider must not leak in."""
+    _patch_anthropic_short_circuit(monkeypatch)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openrouter", "api_key": "sk-or-leak"})
+    monkeypatch.setattr("agent.anthropic_adapter.resolve_anthropic_token", lambda: "sk-ant-env")
+    resolved = rp.resolve_runtime_provider()
+    assert resolved["api_key"] == "sk-ant-env"
+    assert resolved["api_key"] != "sk-or-leak"

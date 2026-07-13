@@ -1866,9 +1866,9 @@ def resolve_runtime_provider(
 
     # Anthropic (native Messages API)
     if provider == "anthropic":
-        # Allow base URL override from config.yaml model.base_url, but only
-        # when the configured provider is anthropic — otherwise a non-Anthropic
-        # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
+        # Allow base URL / api_key overrides from config.yaml model.* — but
+        # only when the configured provider is anthropic, otherwise a
+        # non-Anthropic base_url or key would leak into Anthropic requests.
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
         if cfg_provider == "anthropic":
@@ -1894,6 +1894,7 @@ def resolve_runtime_provider(
             # Azure Foundry guide and read by most Hermes-compatible importers).
             # Matches the config.yaml examples in website/docs/guides/azure-foundry.md.
             token = ""
+            source = "env"
             for hint_key in ("key_env", "api_key_env"):
                 env_var = str(model_cfg.get(hint_key) or "").strip()
                 if env_var:
@@ -1904,6 +1905,8 @@ def resolve_runtime_provider(
             # setups that want to avoid env-var juggling).
             if not token:
                 token = str(model_cfg.get("api_key") or "").strip()
+                if token:
+                    source = "config"
             # Finally fall back to the historical fixed names.
             if not token:
                 token = (
@@ -1917,8 +1920,18 @@ def resolve_runtime_provider(
                     "config.yaml model section at a custom env var."
                 )
         else:
-            from agent.anthropic_adapter import resolve_anthropic_token
-            token = resolve_anthropic_token()
+            cfg_api_key = (
+                str(model_cfg.get("api_key") or "").strip()
+                if cfg_provider == "anthropic"
+                else ""
+            )
+            if cfg_api_key:
+                token = cfg_api_key
+                source = "config"
+            else:
+                from agent.anthropic_adapter import resolve_anthropic_token
+                token = resolve_anthropic_token()
+                source = "env"
             if not token:
                 raise AuthError(
                     "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
@@ -1929,7 +1942,7 @@ def resolve_runtime_provider(
             "api_mode": "anthropic_messages",
             "base_url": base_url,
             "api_key": token,
-            "source": "env",
+            "source": source,
             "requested_provider": requested_provider,
         }
 

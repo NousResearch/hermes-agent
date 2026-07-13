@@ -381,8 +381,10 @@ class TestV1Task:
         assert task["status"]["state"] == "TASK_STATE_COMPLETED"
         assert task["artifacts"][0]["parts"][0] == {"text": "the answer", "mediaType": "text/plain"}
         assert "kind" not in task
-        assert task["createdAt"]
-        assert task["lastModified"]
+        # A2A v1.0 Task proto (lf.a2a.v1.Task) has no createdAt/lastModified.
+        # Strict ProtoJSON parsers (a2a-sdk) reject unknown fields.
+        assert "createdAt" not in task
+        assert "lastModified" not in task
 
     def test_failed_task_has_message_no_artifacts(self):
         task = protocol.build_task("t2", "c2", protocol.STATE_FAILED, "went wrong")

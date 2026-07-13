@@ -507,7 +507,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_decompose` | `true` | Dispatcher auto-runs the decomposer every tick. |
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
-| `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
+| `default_assignee` | `""` | When set, the dispatcher assigns otherwise-unassigned `ready` tasks to this profile; when empty, it keeps skipping them. Separately, decomposer-created work with a missing or unknown profile uses this setting when valid, then falls back to the active default profile. |
 | `auto_subscribe_on_create` | `true` | When a worker calls `kanban_create` from inside a session with a persistent delivery channel (messaging gateway or TUI), the originating session is auto-subscribed to the new task's completion/block events. The dispatcher still drives the delivery — this only changes whether the caller's chat/key shows up in the notify-sub table. Set to `false` to require explicit `kanban_notify-subscribe` calls per task. |
 
 And the two auxiliary LLM slots:
@@ -688,6 +688,7 @@ All commands are also available as a slash command in the interactive CLI and in
 ```yaml
 kanban:
   max_in_progress: 2
+  max_in_progress_per_profile: 1
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```

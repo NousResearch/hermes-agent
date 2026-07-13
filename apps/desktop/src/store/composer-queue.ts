@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import type { ComposerAttachment } from './composer'
+import { parseSessionIdentityKey, profileSessionKey } from './session-identity'
 
 export interface QueuedPromptEntry {
   id: string
@@ -9,36 +10,192 @@ export interface QueuedPromptEntry {
   queuedAt: number
 }
 
-type QueueState = Record<string, QueuedPromptEntry[]>
+export type QueueState = Record<string, QueuedPromptEntry[]>
 
-const STORAGE_KEY = 'hermes.desktop.composerQueue.v1'
+const STORAGE_KEY = 'hermes.desktop.composerQueue.v2'
+const LEGACY_STORAGE_KEY = 'hermes.desktop.composerQueue.v1'
 
-const load = (): QueueState => {
-  if (typeof window === 'undefined') {
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+
+const ATTACHMENT_KINDS = new Set<ComposerAttachment['kind']>(['image', 'file', 'folder', 'terminal', 'url'])
+
+const isOptionalString = (value: unknown) => value === undefined || typeof value === 'string'
+
+const isComposerAttachment = (value: unknown): value is ComposerAttachment => {
+  if (!isRecord(value)) {
+    return false
+  }
+
+  return (
+    typeof value.id === 'string' &&
+    ATTACHMENT_KINDS.has(value.kind as ComposerAttachment['kind']) &&
+    typeof value.label === 'string' &&
+    isOptionalString(value.detail) &&
+    isOptionalString(value.refText) &&
+    isOptionalString(value.previewUrl) &&
+    isOptionalString(value.path) &&
+    isOptionalString(value.attachedSessionId) &&
+    (value.uploadState === undefined || value.uploadState === 'uploading' || value.uploadState === 'error')
+  )
+}
+
+const isQueuedPromptEntry = (value: unknown): value is QueuedPromptEntry =>
+  isRecord(value) &&
+  typeof value.id === 'string' &&
+  typeof value.text === 'string' &&
+  Array.isArray(value.attachments) &&
+  value.attachments.every(isComposerAttachment) &&
+  typeof value.queuedAt === 'number' &&
+  Number.isFinite(value.queuedAt)
+
+interface ParsedQueueState {
+  state: QueueState
+  usable: boolean
+}
+
+const parseV2State = (raw: string | null): ParsedQueueState => {
+  if (!raw) {
+    return { state: {}, usable: false }
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(raw)
+
+    if (!isRecord(parsed)) {
+      return { state: {}, usable: false }
+    }
+
+    const state: QueueState = {}
+
+    for (const [queueKey, bucket] of Object.entries(parsed)) {
+      const identity = parseSessionIdentityKey(queueKey)
+
+      if (!identity || profileSessionKey(identity.profile, identity.sessionId) !== queueKey || !Array.isArray(bucket)) {
+        continue
+      }
+
+      const validEntries = bucket.filter(isQueuedPromptEntry)
+
+      if (validEntries.length > 0) {
+        state[queueKey] = validEntries
+      }
+    }
+
+    return {
+      state,
+      usable: Object.keys(parsed).length === 0 || Object.keys(state).length > 0
+    }
+  } catch {
+    return { state: {}, usable: false }
+  }
+}
+
+const parseLegacyState = (raw: string | null): QueueState => {
+  if (!raw) {
     return {}
   }
 
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    const parsed = raw ? JSON.parse(raw) : null
+    const parsed: unknown = JSON.parse(raw)
 
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as QueueState) : {}
+    if (!isRecord(parsed)) {
+      return {}
+    }
+
+    const state: QueueState = {}
+
+    for (const [legacySessionId, bucket] of Object.entries(parsed)) {
+      const sessionId = legacySessionId.trim()
+
+      if (!sessionId || !Array.isArray(bucket)) {
+        continue
+      }
+
+      const validEntries = bucket.filter(isQueuedPromptEntry)
+
+      if (validEntries.length > 0) {
+        state[profileSessionKey('default', sessionId)] = validEntries
+      }
+    }
+
+    return state
   } catch {
     return {}
   }
 }
 
-const save = (state: QueueState) => {
+/** Load and, when needed, migrate persisted queues through an injected storage
+ * boundary. Exported for deterministic validation without module resets. */
+export const loadQueueState = (storage: Storage): QueueState => {
+  let v2: ParsedQueueState
+
+  try {
+    v2 = parseV2State(storage.getItem(STORAGE_KEY))
+  } catch {
+    v2 = { state: {}, usable: false }
+  }
+
+  if (v2.usable) {
+    return v2.state
+  }
+
+  let migrated: QueueState
+
+  try {
+    migrated = parseLegacyState(storage.getItem(LEGACY_STORAGE_KEY))
+  } catch {
+    return {}
+  }
+
+  if (Object.keys(migrated).length === 0) {
+    return {}
+  }
+
+  try {
+    storage.setItem(STORAGE_KEY, JSON.stringify(migrated))
+    storage.removeItem(LEGACY_STORAGE_KEY)
+  } catch {
+    // Keep v1 as the recovery source, but the migrated queue remains usable for
+    // this renderer lifetime.
+  }
+
+  return migrated
+}
+
+const browserStorage = (): Storage | null => {
   if (typeof window === 'undefined') {
+    return null
+  }
+
+  try {
+    return window.localStorage ?? null
+  } catch {
+    return null
+  }
+}
+
+const load = (): QueueState => {
+  const storage = browserStorage()
+
+  return storage ? loadQueueState(storage) : {}
+}
+
+const save = (state: QueueState) => {
+  const storage = browserStorage()
+
+  if (!storage) {
     return
   }
 
   try {
     if (Object.keys(state).length === 0) {
-      window.localStorage.removeItem(STORAGE_KEY)
+      storage.removeItem(STORAGE_KEY)
     } else {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+      storage.setItem(STORAGE_KEY, JSON.stringify(state))
     }
+
+    storage.removeItem(LEGACY_STORAGE_KEY)
   } catch {
     // best-effort: storage may be unavailable, queue still works in-memory
   }
@@ -46,45 +203,45 @@ const save = (state: QueueState) => {
 
 export const $queuedPromptsBySession = atom<QueueState>(load())
 
-const writeSession = (sid: string, queue: QueuedPromptEntry[]) => {
+const writeQueue = (queueKey: string, queue: QueuedPromptEntry[]) => {
   const current = $queuedPromptsBySession.get()
   const next = { ...current }
 
   if (queue.length === 0) {
-    delete next[sid]
+    delete next[queueKey]
   } else {
-    next[sid] = queue
+    next[queueKey] = queue
   }
 
   $queuedPromptsBySession.set(next)
   save(next)
 }
 
-const sidOf = (key: string | null | undefined): null | string => {
+const queueKeyOf = (key: string | null | undefined): null | string => {
   const trimmed = key?.trim()
 
   return trimmed ? trimmed : null
 }
 
-const queueFor = (sid: string) => $queuedPromptsBySession.get()[sid] ?? []
+const queueFor = (queueKey: string) => $queuedPromptsBySession.get()[queueKey] ?? []
 
 const nextId = () => `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
 
 export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEntry[] => {
-  const sid = sidOf(key)
+  const queueKey = queueKeyOf(key)
 
-  return sid ? queueFor(sid) : []
+  return queueKey ? queueFor(queueKey) : []
 }
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
   payload: { text: string; attachments: ComposerAttachment[] }
 ): null | QueuedPromptEntry => {
-  const sid = sidOf(key)
+  const queueKey = queueKeyOf(key)
 
-  if (!sid) {
+  if (!queueKey) {
     return null
   }
 
@@ -95,56 +252,56 @@ export const enqueueQueuedPrompt = (
     queuedAt: Date.now()
   }
 
-  writeSession(sid, [...queueFor(sid), entry])
+  writeQueue(queueKey, [...queueFor(queueKey), entry])
 
   return entry
 }
 
 export const dequeueQueuedPrompt = (key: string | null | undefined): null | QueuedPromptEntry => {
-  const sid = sidOf(key)
+  const queueKey = queueKeyOf(key)
 
-  if (!sid) {
+  if (!queueKey) {
     return null
   }
 
-  const [head, ...rest] = queueFor(sid)
+  const [head, ...rest] = queueFor(queueKey)
 
   if (!head) {
     return null
   }
 
-  writeSession(sid, rest)
+  writeQueue(queueKey, rest)
 
   return head
 }
 
 export const removeQueuedPrompt = (key: string | null | undefined, id: string): boolean => {
-  const sid = sidOf(key)
+  const queueKey = queueKeyOf(key)
 
-  if (!sid) {
+  if (!queueKey) {
     return false
   }
 
-  const queue = queueFor(sid)
+  const queue = queueFor(queueKey)
   const next = queue.filter(e => e.id !== id)
 
   if (next.length === queue.length) {
     return false
   }
 
-  writeSession(sid, next)
+  writeQueue(queueKey, next)
 
   return true
 }
 
 export const promoteQueuedPrompt = (key: string | null | undefined, id: string): boolean => {
-  const sid = sidOf(key)
+  const queueKey = queueKeyOf(key)
 
-  if (!sid) {
+  if (!queueKey) {
     return false
   }
 
-  const queue = queueFor(sid)
+  const queue = queueFor(queueKey)
   const index = queue.findIndex(e => e.id === id)
 
   if (index <= 0) {
@@ -152,7 +309,7 @@ export const promoteQueuedPrompt = (key: string | null | undefined, id: string):
   }
 
   const entry = queue[index]!
-  writeSession(sid, [entry, ...queue.slice(0, index), ...queue.slice(index + 1)])
+  writeQueue(queueKey, [entry, ...queue.slice(0, index), ...queue.slice(index + 1)])
 
   return true
 }
@@ -162,13 +319,13 @@ export const updateQueuedPrompt = (
   id: string,
   update: { text: string; attachments?: ComposerAttachment[] }
 ): boolean => {
-  const sid = sidOf(key)
+  const queueKey = queueKeyOf(key)
 
-  if (!sid) {
+  if (!queueKey) {
     return false
   }
 
-  const queue = queueFor(sid)
+  const queue = queueFor(queueKey)
   let changed = false
 
   const next = queue.map(entry => {
@@ -191,7 +348,7 @@ export const updateQueuedPrompt = (
     return false
   }
 
-  writeSession(sid, next)
+  writeQueue(queueKey, next)
 
   return true
 }
@@ -200,25 +357,24 @@ export const updateQueuedPromptText = (key: string | null | undefined, id: strin
   updateQueuedPrompt(key, id, { text })
 
 export const clearQueuedPrompts = (key: string | null | undefined) => {
-  const sid = sidOf(key)
+  const queueKey = queueKeyOf(key)
 
-  if (!sid || !(sid in $queuedPromptsBySession.get())) {
+  if (!queueKey || !(queueKey in $queuedPromptsBySession.get())) {
     return
   }
 
-  writeSession(sid, [])
+  writeQueue(queueKey, [])
 }
 
 /**
- * Move pending entries from a dead session key onto a live one, preserving FIFO
- * (existing target entries first, migrated entries appended). A backend bounce /
- * resume can mint a fresh runtime session id for the *same* conversation; the
- * entries enqueued under the old id would otherwise be stranded under a key
- * nothing reads anymore. No-op unless both keys resolve and differ.
+ * Move pending entries from one opaque queue key onto another, preserving FIFO
+ * (existing target entries first, migrated entries appended). The caller owns
+ * the identity/provenance proof for whether two keys describe one conversation.
+ * No-op unless both keys resolve and differ.
  */
 export const migrateQueuedPrompts = (fromKey: string | null | undefined, toKey: string | null | undefined): boolean => {
-  const from = sidOf(fromKey)
-  const to = sidOf(toKey)
+  const from = queueKeyOf(fromKey)
+  const to = queueKeyOf(toKey)
 
   if (!from || !to || from === to) {
     return false

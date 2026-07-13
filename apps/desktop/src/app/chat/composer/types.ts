@@ -38,6 +38,7 @@ export interface ChatBarProps {
   maxRecordingSeconds?: number
   state: ChatBarState
   gateway?: HermesGateway | null
+  queueRuntimeSessionKey?: string | null
   queueSessionKey?: string | null
   sessionId?: string | null
   cwd?: string | null

@@ -33,7 +33,7 @@ import type { ComposerAttachment } from '@/store/composer'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $gatewaySwapTarget } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget } from '@/store/profile'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -65,6 +65,7 @@ import { ChatSwapOverlay } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
 import { requestComposerInsert, requestComposerInsertRefs } from './composer/focus'
 import { droppedFileInlineRefs, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
+import { composerQueueKeys } from './composer/queue-scope'
 import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
@@ -294,6 +295,7 @@ export function ChatView({
   const location = useLocation()
   const { t } = useI18n()
   const activeSessionId = useStore($activeSessionId)
+  const activeProfile = useStore($activeGatewayProfile)
   const awaitingResponse = useStore($awaitingResponse)
   const busy = useStore($busy)
   const contextSuggestions = useStore($contextSuggestions)
@@ -318,6 +320,7 @@ export function ChatView({
   const messagesEmpty = useStore($messagesEmpty)
   const lastVisibleIsUser = useStore($lastVisibleMessageIsUser)
   const selectedSessionId = useStore($selectedStoredSessionId)
+  const queueKeys = composerQueueKeys(activeProfile, selectedSessionId, activeSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const routedSessionId = routeSessionId(location.pathname)
   const isRoutedSessionView = Boolean(routedSessionId)
@@ -543,7 +546,8 @@ export function ChatView({
               onSteer={onSteer}
               onSubmit={onSubmit}
               onTranscribeAudio={onTranscribeAudio}
-              queueSessionKey={selectedSessionId}
+              queueRuntimeSessionKey={queueKeys.queueRuntimeSessionKey}
+              queueSessionKey={queueKeys.queueSessionKey}
               sessionId={activeSessionId}
               state={chatBarState}
             />

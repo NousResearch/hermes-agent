@@ -19,10 +19,10 @@ import {
 import { notify } from '@/store/notifications'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
+import { type ComposerQueueScope, queueScopeMigration } from '../queue-scope'
 import type { ChatBarProps } from '../types'
 
 interface UseComposerQueueArgs {
-  activeQueueSessionKey: string | null
   attachments: ComposerAttachment[]
   busy: boolean
   clearDraft: () => void
@@ -32,7 +32,7 @@ interface UseComposerQueueArgs {
   onCancel: ChatBarProps['onCancel']
   onSubmit: ChatBarProps['onSubmit']
   queueEditRef: RefObject<QueueEditState | null>
-  queueSessionKey: ChatBarProps['queueSessionKey']
+  queueScope: ComposerQueueScope | null
   sessionId: string | null | undefined
 }
 
@@ -46,7 +46,6 @@ interface UseComposerQueueArgs {
  * without a back-reference. Behaviour-identical to the inline original.
  */
 export function useComposerQueue({
-  activeQueueSessionKey,
   attachments,
   busy,
   clearDraft,
@@ -56,10 +55,11 @@ export function useComposerQueue({
   onCancel,
   onSubmit,
   queueEditRef,
-  queueSessionKey,
+  queueScope,
   sessionId
 }: UseComposerQueueArgs) {
   const { t } = useI18n()
+  const activeQueueSessionKey = queueScope?.key ?? null
 
   // Per-session slice (edge): re-renders only when THIS session's queue changes,
   // not on cross-session queue churn (the plain atom's map ref changes on every
@@ -79,7 +79,7 @@ export function useComposerQueue({
 
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
 
-  const prevQueueKeyRef = useRef(activeQueueSessionKey)
+  const previousQueueScopeRef = useRef(queueScope)
   const drainingQueueRef = useRef(false)
   const drainFailuresRef = useRef(new Map<string, number>())
 
@@ -291,20 +291,17 @@ export function useComposerQueue({
       .catch(onFail)
   }, [activeQueueSessionKey, busy, pickDrainHead, queuedPrompts, runDrain, t])
 
-  // Re-key on a runtime session-id change. A stable stored id (queueSessionKey)
-  // never churns, so a change there is a real session switch and must NOT
-  // migrate; only the runtime-derived key (queueSessionKey falsy → key is
-  // sessionId) churns on a backend bounce/resume of the same conversation.
+  // Re-key only when this exact runtime conversation gains its first durable
+  // stored identity. Runtime rotations and session/profile switches are not
+  // proof of continuity and must never move queued prompts.
   useEffect(() => {
-    const prev = prevQueueKeyRef.current
-    prevQueueKeyRef.current = activeQueueSessionKey
+    const migration = queueScopeMigration(previousQueueScopeRef.current, queueScope)
+    previousQueueScopeRef.current = queueScope
 
-    if (queueSessionKey || !prev || !activeQueueSessionKey || prev === activeQueueSessionKey) {
-      return
+    if (migration) {
+      migrateQueuedPrompts(migration.fromKey, migration.toKey)
     }
-
-    migrateQueuedPrompts(prev, activeQueueSessionKey)
-  }, [activeQueueSessionKey, queueSessionKey])
+  }, [queueScope])
 
   // Queued turns flow whenever the session is idle — on the busy→false settle
   // edge, on mount/reconnect, and after a re-key — so a swallowed edge can't

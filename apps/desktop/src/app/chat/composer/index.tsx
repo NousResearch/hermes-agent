@@ -1,6 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useEffect, useRef } from 'react'
+import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef } from 'react'
 
 import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
@@ -43,6 +43,7 @@ import { useComposerVoice } from './hooks/use-composer-voice'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { QueuePanel } from './queue-panel'
+import { resolveComposerQueueScope } from './queue-scope'
 import {
   composerPlainText,
   deleteChipBeforeCaret,
@@ -66,6 +67,7 @@ export function ChatBar({
   focusKey,
   gateway,
   maxRecordingSeconds = 120,
+  queueRuntimeSessionKey,
   queueSessionKey,
   sessionId,
   state,
@@ -90,11 +92,21 @@ export function ChatBar({
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore($activeSessionAwaitingInput)
-  const activeQueueSessionKey = queueSessionKey || sessionId || null
+
+  const activeQueueScope = useMemo(
+    () =>
+      resolveComposerQueueScope({
+        queueRuntimeSessionKey: queueRuntimeSessionKey ?? null,
+        queueSessionKey: queueSessionKey ?? null
+      }),
+    [queueRuntimeSessionKey, queueSessionKey]
+  )
+
+  const activeQueueSessionKey = activeQueueScope?.key ?? null
 
   // Status items (subagents, background processes) are keyed by the RUNTIME
-  // session id — gateway events and process.list both speak that id. Only the
-  // queue uses the stored-session fallback key (prompts can queue pre-resume).
+  // session id — gateway events and process.list both speak that id. Queue
+  // identity arrives separately as canonical profile/session tuple keys.
   const statusSessionId = sessionId ?? null
 
   // Coarse edge: re-renders ChatBar only when the stack shows/hides, NOT on
@@ -172,7 +184,6 @@ export function ChatBar({
     sendQueuedNow,
     stepQueuedEdit
   } = useComposerQueue({
-    activeQueueSessionKey,
     attachments,
     busy,
     clearDraft,
@@ -182,7 +193,7 @@ export function ChatBar({
     onCancel,
     onSubmit,
     queueEditRef,
-    queueSessionKey,
+    queueScope: activeQueueScope,
     sessionId
   })
 

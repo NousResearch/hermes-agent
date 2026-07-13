@@ -477,6 +477,23 @@ class TestShellFileOpsHelpers:
         # Non-drive paths are untouched.
         assert file_ops._escape_shell_arg("/tmp/foo") == "'/tmp/foo'"
 
+    def test_escape_shell_arg_normalizes_mixed_msys_paths(self, monkeypatch, file_ops):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        mixed = r"/c/Users/Alexander\Documents\NewTEST\readme.txt"
+        assert file_ops._escape_shell_arg(mixed) == (
+            "'/c/Users/Alexander/Documents/NewTEST/readme.txt'"
+        )
+
+    def test_escape_shell_arg_rewrites_forward_slash_native_paths(self, monkeypatch, file_ops):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert file_ops._escape_shell_arg(
+            "C:/Users/alice/notes.txt"
+        ) == "'/c/Users/alice/notes.txt'"
+
     def test_read_file_uses_bash_safe_windows_paths(self, mock_env, monkeypatch):
         import tools.environments.local as local_mod
 

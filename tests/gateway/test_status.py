@@ -460,6 +460,75 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid()
         assert payload["start_time"] == 2000
 
+    def test_write_runtime_status_does_not_rebind_stale_platform_receipt(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": 99999,
+                    "start_time": 1000,
+                    "kind": "hermes-gateway",
+                    "gateway_state": "running",
+                    "platforms": {
+                        "telegram": {
+                            "state": "connected",
+                            "runtime": {
+                                "credential_source": "profile_env",
+                                "authenticated": True,
+                                "bot_id": "123456",
+                                "bot_username": "old_bot",
+                                "transport_mode": "polling",
+                                "transport_ready": True,
+                                "verified_at": "2026-07-13T12:34:56+00:00",
+                            },
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(gateway_state="starting")
+
+        payload = status.read_runtime_status()
+        assert payload is not None
+        assert payload["pid"] == os.getpid()
+        assert payload["platforms"] == {}
+
+    def test_process_restart_preserves_valid_durable_desired_state(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": 99999,
+                    "start_time": 1000,
+                    "kind": "hermes-gateway",
+                    "desired_state": "running",
+                    "gateway_state": "startup_failed",
+                    "exit_reason": "old failure",
+                    "platforms": {"telegram": {"state": "fatal"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status.write_runtime_status(gateway_state="starting")
+
+        payload = status.read_runtime_status()
+        assert payload is not None
+        assert payload["desired_state"] == "running"
+        assert payload["gateway_state"] == "starting"
+        assert payload["exit_reason"] is None
+        assert payload["platforms"] == {}
+
     def test_runtime_status_running_pid_rejects_stale_record_for_supervisor_pid(self, monkeypatch):
         """Regression: stale profile runtime state must not mark s6 supervisors live.
 
@@ -640,6 +709,94 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["state"] == "fatal"
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
+
+    def test_write_runtime_status_sanitizes_platform_runtime_receipt(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        verified_at = "2026-07-13T12:34:56+00:00"
+
+        status.write_runtime_status(
+            platform="telegram",
+            platform_runtime={
+                "credential_source": "onepassword",
+                "authenticated": True,
+                "bot_id": "123456",
+                "bot_username": None,
+                "transport_mode": "polling",
+                "transport_ready": False,
+                "verified_at": verified_at,
+                "token": "must-not-persist",
+                "webhook_url": "https://secret.example/telegram",
+                "raw_error": "must-not-persist",
+                "future_field": "must-not-persist",
+            },
+        )
+
+        payload = status.read_runtime_status()
+        assert payload is not None
+        assert payload["platforms"]["telegram"]["runtime"] == {
+            "credential_source": "onepassword",
+            "authenticated": True,
+            "bot_id": "123456",
+            "bot_username": None,
+            "transport_mode": "polling",
+            "transport_ready": False,
+            "verified_at": verified_at,
+        }
+        serialized = json.dumps(payload)
+        assert "must-not-persist" not in serialized
+        assert payload["pid"] == os.getpid()
+        assert "start_time" in payload
+
+    def test_write_runtime_status_clears_platform_runtime_receipt(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.write_runtime_status(
+            platform="telegram",
+            platform_runtime={
+                "credential_source": "profile_env",
+                "authenticated": True,
+                "bot_id": "123456",
+                "bot_username": "fleet_bot",
+                "transport_mode": "webhook",
+                "transport_ready": True,
+                "verified_at": "2026-07-13T12:34:56+00:00",
+            },
+        )
+
+        status.write_runtime_status(platform="telegram", platform_runtime=None)
+
+        payload = status.read_runtime_status()
+        assert payload is not None
+        assert "runtime" not in payload["platforms"]["telegram"]
+
+    def test_multiplexed_status_never_persists_ambiguous_platform_runtime(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        runtime = {
+            "credential_source": "profile_env",
+            "authenticated": True,
+            "bot_id": "123456",
+            "bot_username": "fleet_bot",
+            "transport_mode": "polling",
+            "transport_ready": True,
+            "verified_at": "2026-07-13T12:34:56+00:00",
+        }
+        status.write_runtime_status(
+            platform="telegram",
+            platform_runtime=runtime,
+        )
+
+        status.write_runtime_status(served_profiles=["default", "coder"])
+        status.write_runtime_status(
+            platform="telegram",
+            platform_runtime=runtime,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload is not None
+        assert "runtime" not in payload["platforms"]["telegram"]
 
     def test_write_runtime_status_explicit_none_clears_stale_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

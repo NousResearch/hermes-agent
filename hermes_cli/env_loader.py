@@ -29,6 +29,11 @@ _WARNED_KEYS: set[str] = set()
 # the .env case and they don't know Bitwarden is wired up).
 _SECRET_SOURCES: dict[str, str] = {}
 
+# Runtime provenance is profile-scoped even though the legacy UI lookup above
+# remains process-global.  A composite key retains independent attribution for
+# profiles that use the same conventional environment-variable name.
+_SECRET_SOURCES_BY_HOME: dict[tuple[str, str], str] = {}
+
 # HERMES_HOME paths we've already pulled external secrets for during this
 # process.  ``load_hermes_dotenv()`` is called at module-import time from
 # several hot modules (cli.py, hermes_cli/main.py, run_agent.py,
@@ -39,17 +44,100 @@ _SECRET_SOURCES: dict[str, str] = {}
 _APPLIED_HOMES: set[str] = set()
 
 
-def get_secret_source(env_var: str) -> str | None:
+def classify_effective_credential_source(
+    *,
+    effective_value: str | None,
+    managed_value: str | None = None,
+    external_source: str | None = None,
+    profile_value: str | None = None,
+) -> str:
+    """Classify an effective credential without returning the credential.
+
+    Inputs are values already resolved by the caller.  Keeping this helper pure
+    makes the precedence contract independently testable while ensuring its
+    only output is a fixed, non-secret source label.
+    """
+    if not effective_value:
+        return "missing"
+    if managed_value is not None and managed_value == effective_value:
+        return "managed_env"
+    if external_source:
+        if external_source in {"bitwarden", "onepassword"}:
+            return external_source
+        return "unknown"
+    if profile_value is not None and profile_value == effective_value:
+        return "profile_env"
+    return "process_env"
+
+
+def get_effective_credential_source(
+    env_var: str,
+    *,
+    effective_value: str | None,
+    hermes_home: str | os.PathLike | None = None,
+) -> str:
+    """Resolve credential-source metadata for the active runtime value.
+
+    The resolver reads only source metadata and compares candidate values in
+    memory.  It never returns, logs, hashes, or persists a credential value.
+    """
+    if hermes_home is None:
+        from hermes_constants import get_hermes_home
+
+        home_path = get_hermes_home()
+    else:
+        home_path = Path(hermes_home)
+
+    managed_value: str | None = None
+    try:
+        from hermes_cli import managed_scope
+
+        managed_value = managed_scope.load_managed_env().get(env_var)
+    except Exception:  # noqa: BLE001 — diagnostics must never block startup
+        pass
+
+    profile_value: str | None = None
+    try:
+        from dotenv import dotenv_values
+
+        try:
+            parsed = dotenv_values(home_path / ".env", encoding="utf-8")
+        except UnicodeDecodeError:
+            parsed = dotenv_values(home_path / ".env", encoding="latin-1")
+        value = parsed.get(env_var)
+        if isinstance(value, str):
+            profile_value = value
+    except (OSError, UnicodeError, ValueError):
+        pass
+
+    return classify_effective_credential_source(
+        effective_value=effective_value,
+        managed_value=managed_value,
+        external_source=get_secret_source(env_var, hermes_home=home_path),
+        profile_value=profile_value,
+    )
+
+
+def get_secret_source(
+    env_var: str,
+    *,
+    hermes_home: str | os.PathLike | None = None,
+) -> str | None:
     """Return the label of the secret source that supplied ``env_var``, if any.
 
     Returns ``"bitwarden"`` for keys pulled from Bitwarden Secrets Manager
     during the current process's ``load_hermes_dotenv()`` call.  Returns
     ``None`` for keys that came from ``.env``, the shell environment, or
-    aren't tracked.  The returned label is metadata only: credential-pool
+    aren't tracked.  When ``hermes_home`` is supplied, provenance from another
+    profile is ignored.  The returned label is metadata only: credential-pool
     persistence may store it to explain the origin of a borrowed secret, but
     must never treat it as authorization to persist the raw value.
     """
-    return _SECRET_SOURCES.get(env_var)
+    source = _SECRET_SOURCES.get(env_var)
+    if hermes_home is None or source is None:
+        return source
+    home_key = str(Path(hermes_home).resolve())
+    return _SECRET_SOURCES_BY_HOME.get((home_key, env_var))
 
 
 def reset_secret_source_cache() -> None:
@@ -330,6 +418,13 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         return
     _APPLIED_HOMES.add(home_key)
 
+    # A forced refresh rebuilds this home's provenance from the new apply
+    # report.  Clearing first ensures a removed/disabled source cannot leave a
+    # stale runtime attribution behind while preserving other profiles.
+    stale_keys = [key for key in _SECRET_SOURCES_BY_HOME if key[0] == home_key]
+    for key in stale_keys:
+        del _SECRET_SOURCES_BY_HOME[key]
+
     try:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
@@ -358,6 +453,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # no hint the value came from a vault rather than .env.
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
+            _SECRET_SOURCES_BY_HOME[(home_key, name)] = applied.source
 
     for src in report.sources:
         if src.applied:

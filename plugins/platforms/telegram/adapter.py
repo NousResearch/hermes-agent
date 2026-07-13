@@ -678,9 +678,56 @@ class TelegramAdapter(BasePlatformAdapter):
         # blow the gateway's connect timeout (#46298).
         self._post_connect_task: Optional[asyncio.Task] = None
 
-    def _mark_connected(self) -> None:
+    def _telegram_runtime_receipt(self, *, transport_ready: bool) -> dict[str, Any]:
+        """Build the fixed, secret-free Telegram runtime receipt."""
+        bot = getattr(self, "_bot", None)
+        raw_bot_id = getattr(bot, "id", None)
+        bot_id = str(raw_bot_id) if isinstance(raw_bot_id, (int, str)) else ""
+        raw_username = getattr(bot, "username", None)
+        bot_username = raw_username if isinstance(raw_username, str) else None
+        try:
+            from hermes_cli.env_loader import get_effective_credential_source
+
+            credential_source = get_effective_credential_source(
+                "TELEGRAM_BOT_TOKEN",
+                effective_value=getattr(self.config, "token", None),
+            )
+        except Exception:  # noqa: BLE001 — receipt metadata must not block connect
+            credential_source = "unknown"
+
+        return {
+            "credential_source": credential_source,
+            "authenticated": bool(bot_id),
+            "bot_id": bot_id,
+            "bot_username": bot_username,
+            "transport_mode": (
+                "webhook" if getattr(self, "_webhook_mode", False) else "polling"
+            ),
+            "transport_ready": bool(transport_ready),
+            "verified_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _publish_telegram_runtime_receipt(
+        self,
+        *,
+        context: str,
+        transport_ready: bool,
+    ) -> None:
+        """Persist a current readiness transition without exposing secrets."""
+        self._write_runtime_status_safe(
+            context,
+            platform_runtime=self._telegram_runtime_receipt(
+                transport_ready=transport_ready,
+            ),
+        )
+
+    def _mark_telegram_connected(self, *, transport_ready: bool = True) -> None:
         self._drop_delayed_deliveries = False
-        super()._mark_connected()
+        super()._mark_connected(
+            platform_runtime=self._telegram_runtime_receipt(
+                transport_ready=transport_ready,
+            ),
+        )
 
     def _mark_disconnected(self) -> None:
         self._drop_delayed_deliveries = True
@@ -1953,6 +2000,10 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
         self._send_path_degraded = True
+        self._publish_telegram_runtime_receipt(
+            context="polling-degraded",
+            transport_ready=False,
+        )
         logger.warning(
             "[%s] Telegram polling degraded (%s); gateway stays alive and will retry. Error: %s",
             self.name, reason, error,
@@ -2051,6 +2102,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._polling_network_error_count += 1
         self._send_path_degraded = True
+        self._publish_telegram_runtime_receipt(
+            context="polling-network-degraded",
+            transport_ready=False,
+        )
         attempt = self._polling_network_error_count
 
         if attempt > MAX_NETWORK_RETRIES:
@@ -2142,6 +2197,10 @@ class TelegramAdapter(BasePlatformAdapter):
             # (or forever, if the probe is never scheduled), blocking the send
             # path even though the bot has fully recovered. See #35205.
             self._send_path_degraded = False
+            self._publish_telegram_runtime_receipt(
+                context="polling-network-recovered",
+                transport_ready=True,
+            )
             # start_polling() returning is necessary but not sufficient:
             # PTB's Updater can be left in a state where `running` is True
             # but the underlying long-poll task is wedged on a stale httpx
@@ -2372,6 +2431,10 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
             self._send_path_degraded = False
+            self._publish_telegram_runtime_receipt(
+                context="polling-probe-ready",
+                transport_ready=True,
+            )
         except Exception as probe_err:
             logger.warning(
                 "[%s] Polling heartbeat probe failed %ds after reconnect: %s",
@@ -2463,6 +2526,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # retry attempt instead of returning silently, and only escalate to
         # fatal after all retries are exhausted.
         self._polling_conflict_count += 1
+        self._publish_telegram_runtime_receipt(
+            context="polling-conflict",
+            transport_ready=False,
+        )
 
         MAX_CONFLICT_RETRIES = 5
         # Delay grows with each attempt: 15s, 25s, 35s, 45s, 55s.
@@ -2533,6 +2600,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
                 )
                 self._polling_conflict_count = 0  # reset counter on success
+                self._publish_telegram_runtime_receipt(
+                    context="polling-conflict-recovered",
+                    transport_ready=True,
+                )
                 return
             except Exception as retry_err:
                 logger.warning(
@@ -3266,6 +3337,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # Decide between webhook and polling mode
             webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
 
+            self._webhook_mode = False
+            transport_ready = True
             if webhook_url:
                 # ── Webhook mode ─────────────────────────────────────
                 # Telegram pushes updates to our HTTP endpoint.  This
@@ -3358,6 +3431,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     drop_pending_updates=not is_reconnect,
                     error_callback=_polling_error_callback,
                 )
+                transport_ready = bool(polling_started)
                 if not polling_started:
                     logger.warning(
                         "[%s] Connected in degraded Telegram mode: gateway is alive, "
@@ -3365,7 +3439,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         self.name,
                     )
             
-            self._mark_connected()
+            self._mark_telegram_connected(transport_ready=transport_ready)
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
 

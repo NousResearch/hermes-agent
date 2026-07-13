@@ -24,9 +24,11 @@ from hermes_cli import env_loader  # noqa: E402
 def _reset_sources():
     """Each test starts with a clean source map and applied-home guard."""
     env_loader._SECRET_SOURCES.clear()
+    env_loader._SECRET_SOURCES_BY_HOME.clear()
     env_loader.reset_secret_source_cache()
     yield
     env_loader._SECRET_SOURCES.clear()
+    env_loader._SECRET_SOURCES_BY_HOME.clear()
     env_loader.reset_secret_source_cache()
 
 
@@ -219,6 +221,95 @@ def test_apply_external_secret_sources_records_onepassword_origin(tmp_path, monk
         env_loader.format_secret_source_suffix("ANTHROPIC_API_KEY")
         == " (from 1Password)"
     )
+
+
+def test_external_provenance_is_independent_per_home_and_refreshes(
+    tmp_path,
+    monkeypatch,
+):
+    """Real loader path keeps two profiles independent and removes stale data."""
+    bitwarden_home = tmp_path / "bitwarden-profile"
+    onepassword_home = tmp_path / "onepassword-profile"
+    bitwarden_home.mkdir()
+    onepassword_home.mkdir()
+    (bitwarden_home / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8",
+    )
+    (onepassword_home / "config.yaml").write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      TELEGRAM_BOT_TOKEN: 'op://Private/Telegram/credential'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.managed_scope.load_managed_env",
+        lambda: {},
+    )
+
+    import agent.secret_sources.bitwarden as bw_module
+    import agent.secret_sources.onepassword as op_module
+    from agent.secret_sources import registry as reg_module
+
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(
+        bw_module,
+        "fetch_bitwarden_secrets",
+        lambda **_kw: ({"TELEGRAM_BOT_TOKEN": "bitwarden-token"}, []),
+    )
+    monkeypatch.setattr(op_module, "find_op", lambda *_a, **_kw: Path("/fake/op"))
+    monkeypatch.setattr(
+        op_module,
+        "fetch_onepassword_secrets",
+        lambda **_kw: ({"TELEGRAM_BOT_TOKEN": "onepassword-token"}, []),
+    )
+    reg_module._reset_registry_for_tests()
+
+    env_loader._apply_external_secret_sources(bitwarden_home)
+    env_loader._apply_external_secret_sources(onepassword_home)
+
+    assert env_loader.get_secret_source(
+        "TELEGRAM_BOT_TOKEN",
+        hermes_home=bitwarden_home,
+    ) == "bitwarden"
+    assert env_loader.get_secret_source(
+        "TELEGRAM_BOT_TOKEN",
+        hermes_home=onepassword_home,
+    ) == "onepassword"
+    assert env_loader.get_effective_credential_source(
+        "TELEGRAM_BOT_TOKEN",
+        effective_value="bitwarden-token",
+        hermes_home=bitwarden_home,
+    ) == "bitwarden"
+    assert env_loader.get_effective_credential_source(
+        "TELEGRAM_BOT_TOKEN",
+        effective_value="onepassword-token",
+        hermes_home=onepassword_home,
+    ) == "onepassword"
+
+    (bitwarden_home / "config.yaml").write_text(
+        "secrets:\n  bitwarden:\n    enabled: false\n",
+        encoding="utf-8",
+    )
+    env_loader.reset_secret_source_cache()
+    env_loader._apply_external_secret_sources(bitwarden_home)
+
+    assert env_loader.get_secret_source(
+        "TELEGRAM_BOT_TOKEN",
+        hermes_home=bitwarden_home,
+    ) is None
+    assert env_loader.get_secret_source(
+        "TELEGRAM_BOT_TOKEN",
+        hermes_home=onepassword_home,
+    ) == "onepassword"
 
 
 def test_apply_external_secret_sources_survives_non_dict_section(tmp_path, monkeypatch):

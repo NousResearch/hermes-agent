@@ -66,3 +66,23 @@ async def test_exec_approval_prompt_truncates_long_command_in_content():
     assert "... [truncated]" in sent["content"]
     assert "long generated shell command" in sent["content"]
     assert len(sent["embed"].description) > len(sent["content"])
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_uses_core_id_and_force_redacts_prompt():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+    secret = "sk-proj-" + "D" * 40
+
+    result = await adapter.send_exec_approval(
+        chat_id="555",
+        command=f"echo {secret}",
+        session_key="discord:555",
+        description=f"reason {secret}",
+        metadata={"approval_id": "approval-from-core"},
+    )
+
+    assert result.success is True
+    assert secret not in sent["content"]
+    assert secret not in sent["embed"].description
+    assert sent["view"].approval_id == "approval-from-core"

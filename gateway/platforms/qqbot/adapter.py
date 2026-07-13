@@ -260,6 +260,9 @@ class QQAdapter(BasePlatformAdapter):
         # box; callers can override with set_interaction_callback(None) or
         # register a custom handler.
         self._interaction_callback = self._default_interaction_dispatch
+        # Hermes approval_id → session key. Button payloads carry only the
+        # stable identity so a delayed click cannot consume another FIFO item.
+        self._approval_state: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -1118,7 +1121,7 @@ class QQAdapter(BasePlatformAdapter):
     ) -> None:
         """Route ``INTERACTION_CREATE`` button clicks to the right subsystem.
 
-        - ``approve:<session_key>:<decision>`` →
+        - ``approve:<approval_id>:<decision>`` →
           :func:`tools.approval.resolve_gateway_approval`
           (unblocks the agent thread waiting on a dangerous-command approval).
         - ``update_prompt:<answer>`` →
@@ -1137,7 +1140,14 @@ class QQAdapter(BasePlatformAdapter):
 
         approval = parse_approval_button_data(button_data)
         if approval is not None:
-            session_key, decision = approval
+            approval_id, decision = approval
+            session_key = self._approval_state.get(approval_id)
+            if not session_key:
+                logger.info(
+                    "[%s] Approval %s is already resolved, expired, or unknown",
+                    self._log_tag, approval_id,
+                )
+                return
             choice = self._APPROVAL_BUTTON_TO_CHOICE.get(decision)
             if choice is None:
                 logger.warning(
@@ -1156,11 +1166,16 @@ class QQAdapter(BasePlatformAdapter):
                 # Import lazily to keep the adapter importable in tests that
                 # don't exercise the approval subsystem.
                 from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(session_key, choice)
+                count = resolve_gateway_approval(
+                    session_key,
+                    choice,
+                    approval_id=approval_id,
+                )
+                self._approval_state.pop(approval_id, None)
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s "
-                    "(choice=%s, operator=%s)",
-                    self._log_tag, count, session_key, choice,
+                    "(approval_id=%s, choice=%s, operator=%s)",
+                    self._log_tag, count, session_key, approval_id, choice,
                     event.operator_openid,
                 )
             except Exception as exc:
@@ -2648,7 +2663,7 @@ class QQAdapter(BasePlatformAdapter):
         return await self.send_with_keyboard(
             chat_id,
             build_approval_text(req),
-            build_approval_keyboard(req.session_key),
+            build_approval_keyboard(req.approval_id or req.session_key),
             reply_to=reply_to,
         )
 
@@ -2676,7 +2691,11 @@ class QQAdapter(BasePlatformAdapter):
         :func:`tools.approval.resolve_gateway_approval` — dispatched by the
         adapter's interaction callback (:meth:`_default_interaction_dispatch`).
         """
-        del metadata  # QQ doesn't have thread_id / DM targeting overrides.
+        from agent.redact import redact_sensitive_text
+
+        approval_id = str((metadata or {}).get("approval_id") or uuid.uuid4().hex)
+        command = redact_sensitive_text(command, force=True)
+        description = redact_sensitive_text(description, force=True)
 
         # Use the reply-to message for passive-message context when we have one.
         # QQ requires a msg_id on outbound messages to a user we've never
@@ -2686,13 +2705,17 @@ class QQAdapter(BasePlatformAdapter):
         req = ApprovalRequest(
             session_key=session_key,
             title="Execute this command?",
+            approval_id=approval_id,
             description=description,
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
         )
-        return await self.send_approval_request(
+        result = await self.send_approval_request(
             chat_id, req, reply_to=msg_id,
         )
+        if result.success:
+            self._approval_state[approval_id] = session_key
+        return result
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # matches gateway's default gateway_timeout
 

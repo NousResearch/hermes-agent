@@ -11,7 +11,13 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
-from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
+from agent.credential_pool import (
+    CredentialPool,
+    PooledCredential,
+    credential_pool_matches_provider,
+    get_custom_provider_pool_key,
+    load_pool,
+)
 from agent.secret_scope import get_secret as _get_secret
 from hermes_cli.auth import (
     AuthError,
@@ -1794,7 +1800,19 @@ def resolve_runtime_provider(
                 if not pool_api_key or not _agent_key_is_usable(nous_state, min_ttl):
                     logger.debug("Nous pool entry agent_key still unavailable, falling through to runtime resolution")
                     pool_api_key = ""
-        if entry is not None and pool_api_key:
+        if (
+            entry is not None
+            and pool_api_key
+            and credential_pool_matches_provider(
+                pool,
+                provider,
+                base_url=(
+                    getattr(entry, "runtime_base_url", None)
+                    or getattr(entry, "base_url", None)
+                    or ""
+                ),
+            )
+        ):
             return _resolve_runtime_from_pool_entry(
                 provider=provider,
                 entry=entry,
@@ -2052,6 +2070,20 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
+        # An explicitly selected API-key provider is authoritative. Returning
+        # a runtime with an empty key defers failure until the first request and
+        # can make a later fallback look like a silent provider switch. Fail at
+        # resolution so callers surface the missing credential (or consult only
+        # an explicitly configured fallback chain). LM Studio's no-auth path
+        # supplies a non-empty placeholder in the credential resolver above.
+        if not has_usable_secret(creds.get("api_key")):
+            env_names = ", ".join(pconfig.api_key_env_vars)
+            hint = f" Set {env_names}." if env_names else ""
+            raise AuthError(
+                f"No usable credentials found for provider '{provider}'.{hint}",
+                provider=provider,
+                code="missing_api_key",
+            )
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic

@@ -2,6 +2,7 @@
 
 import ast
 import os
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -55,6 +56,11 @@ class TestApprovalModeParsing:
 
 
 class TestSmartApproval:
+    def test_smart_is_the_default_approval_mode(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["approvals"]["mode"] == "smart"
+
     def test_smart_approval_uses_call_llm(self):
         response = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
@@ -67,6 +73,35 @@ class TestSmartApproval:
         assert mock_call.call_args.kwargs["task"] == "approval"
         assert mock_call.call_args.kwargs["temperature"] == 0
         assert mock_call.call_args.kwargs["max_tokens"] == 16
+
+    def test_smart_approval_does_not_allowlist_the_pattern_for_session(self, monkeypatch):
+        session_key = "test-smart-per-command"
+        command = "python -c \"print('hello')\""
+        dangerous, pattern_key, _ = detect_dangerous_command(command)
+        assert dangerous is True
+
+        monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setattr(
+            approval_module,
+            "_get_approval_config",
+            lambda: {"mode": "smart"},
+        )
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_smart_approve", lambda *_: "approve")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+        approval_module.clear_session(session_key)
+        approval_module._permanent_approved.clear()
+
+        result = approval_module.check_all_command_guards(command, "local")
+
+        assert result["approved"] is True
+        assert result["smart_approved"] is True
+        assert is_approved(session_key, pattern_key) is False
 
 
 class TestDetectDangerousRm:
@@ -81,6 +116,53 @@ class TestDetectDangerousRm:
         assert is_dangerous is True
         assert key is not None
         assert "delete" in desc.lower()
+
+    def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
+        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+            for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
+                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
+                    False,
+                    None,
+                    None,
+                )
+
+    def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
+        real_temp = tmp_path / "real-temp"
+        real_temp.mkdir()
+        linked_temp = tmp_path / "linked-temp"
+        linked_temp.symlink_to(real_temp, target_is_directory=True)
+        basename = "hermes-verify-example.py"
+
+        with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
+            assert detect_dangerous_command(f"rm -f {linked_temp / basename}")[0] is True
+            assert detect_dangerous_command(f"rm -f {real_temp / basename}") == (
+                False,
+                None,
+                None,
+            )
+
+    def test_verification_cleanup_exemption_rejects_broader_deletions(self):
+        commands = (
+            "rm -rf /tmp/hermes-verify-example.py",
+            "rm -f /tmp/hermes-verify-example.py /tmp/other.py",
+            "rm -f /tmp/nested/hermes-verify-example.py",
+            "rm -f /tmp/nested/../hermes-verify-example.py",
+            "rm -f /tmp/./hermes-verify-example.py",
+            "rm -f /tmp//hermes-verify-example.py",
+            "rm -f /tmp/a/../../tmp/hermes-verify-example.py",
+            "rm -f /var/tmp/hermes-verify-example.py",
+            "rm -f /tmp/unrelated.py",
+            "rm -f /tmp/hermes-verify-*",
+            "rm -f /tmp/hermes-verify-$(touch>/tmp/pwned).py",
+            "rm -f /tmp/hermes-ad-hoc-`touch>/tmp/pwned`.py",
+            "rm -f /tmp/hermes-verify-example.py; touch /tmp/pwned",
+        )
+        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+            for command in commands:
+                is_dangerous, key, desc = detect_dangerous_command(command)
+                assert is_dangerous is True, command
+                assert key is not None, command
+                assert "delete" in desc.lower(), command
 
 
 class TestWindowsShellDestructiveCommands:
@@ -2140,10 +2222,12 @@ class TestApprovalTimeoutIsNotConsent:
         assert "rephrase" in msg.lower()
         assert "different command" in msg.lower()
 
-    def test_explicit_deny_carries_same_no_consent_shape(self):
+    def test_explicit_deny_carries_same_no_consent_shape(self, monkeypatch):
         """An explicit /deny must produce the same shape as timeout —
         the agent should treat both identically."""
         from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=60)
 
         notified = []
         mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))

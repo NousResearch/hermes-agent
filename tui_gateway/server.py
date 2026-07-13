@@ -2035,15 +2035,26 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
         _pending[rid] = (sid, ev)
         payload["request_id"] = rid
         _pending_prompt_payloads[rid] = (event, dict(payload))
+    answered = False
+    answer = ""
+    answer_present = False
     try:
         _emit(event, sid, payload)
-        ev.wait(timeout=timeout)
+        answered = ev.wait(timeout=timeout)
     finally:
         with _prompt_lock:
             _pending.pop(rid, None)
             _pending_prompt_payloads.pop(rid, None)
-    with _prompt_lock:
-        return _answers.pop(rid, "")
+            answer_present = rid in _answers
+            answer = _answers.pop(rid, "")
+
+    if not answered and not answer_present and event in {"secret.request", "sudo.request"}:
+        _emit(
+            f"{event.removesuffix('.request')}.expire",
+            sid,
+            {"request_id": rid},
+        )
+    return answer
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -10182,11 +10193,13 @@ def _(rid, params: dict) -> dict:
 # ── Methods: respond ─────────────────────────────────────────────────
 
 
-def _respond(rid, params, key):
+def _respond(rid, params, key, *, allow_expired=False):
     r = params.get("request_id", "")
     with _prompt_lock:
         entry = _pending.get(r)
         if not entry:
+            if allow_expired and r:
+                return _ok(rid, {"status": "expired"})
             return _err(rid, 4009, f"no pending {key} request")
         _, ev = entry
         _answers[r] = params.get(key, "")
@@ -10207,12 +10220,12 @@ def _(rid, params: dict) -> dict:
 
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "password")
+    return _respond(rid, params, "password", allow_expired=True)
 
 
 @method("secret.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "value")
+    return _respond(rid, params, "value", allow_expired=True)
 
 
 @method("approval.respond")
@@ -10939,6 +10952,25 @@ def _is_repo_junk(root: str) -> bool:
     return real == home or real == hermes_home or real.startswith(hermes_home + os.sep)
 
 
+def _is_session_cwd_junk(cwd: str) -> bool:
+    """A non-git cwd that should stay in flat Recents rather than auto-group.
+
+    Unlike discovered git roots, an explicitly selected descendant of
+    HERMES_HOME may be an intentional prose/data workspace. The pre-Projects
+    desktop surfaced every such cwd, so exclude only the two broad defaults
+    that would create catch-all projects.
+    """
+    if not cwd:
+        return True
+
+    from hermes_constants import get_hermes_home
+
+    real = os.path.normcase(os.path.realpath(cwd))
+    home = os.path.normcase(os.path.realpath(os.path.expanduser("~")))
+    hermes_home = os.path.normcase(os.path.realpath(str(get_hermes_home())))
+    return real == home or real == hermes_home
+
+
 def _discover_repos_payload(db, *, conn=None, backfill: bool = True) -> list[dict]:
     """Merge filesystem-scanned repos (cached) with session-derived repo roots.
 
@@ -11140,6 +11172,7 @@ def _build_project_tree(
         preview_limit=preview_limit,
         hydrate=hydrate,
         is_junk_root=_is_repo_junk,
+        is_junk_cwd=_is_session_cwd_junk,
     )
     return tree, active_id
 
@@ -11886,6 +11919,52 @@ def _(rid, params: dict) -> dict:
         pass
 
     try:
+        from agent.skill_bundles import (
+            build_bundle_invocation_message,
+            get_skill_bundles,
+            resolve_bundle_command_key,
+        )
+
+        from hermes_cli.commands import resolve_command
+
+        bundle_key = (
+            resolve_bundle_command_key(name)
+            if resolve_command(name) is None
+            else None
+        )
+    except Exception:
+        bundle_key = None
+
+    if bundle_key is not None:
+        try:
+            bundle_result = build_bundle_invocation_message(
+                bundle_key,
+                arg,
+                task_id=session.get("session_key", "") if session else "",
+                platform=_resolve_session_platform(),
+            )
+        except Exception as exc:
+            return _err(rid, 4018, f"bundle dispatch failed: {exc}")
+
+        if not bundle_result:
+            return _err(rid, 4018, f"failed to load bundle: {bundle_key}")
+
+        msg, loaded_names, missing = bundle_result
+        bundle_info = get_skill_bundles().get(bundle_key, {})
+        bundle_name = bundle_info.get("name", bundle_key.lstrip("/"))
+        notice = f"⚡ Loading bundle: {bundle_name} ({len(loaded_names)} skills)"
+        if missing:
+            notice += f"\nSkipped missing skills: {', '.join(missing)}"
+        return _ok(
+            rid,
+            {
+                "type": "send",
+                "message": msg,
+                "notice": notice,
+            },
+        )
+
+    try:
         from agent.skill_commands import (
             scan_skill_commands,
             build_skill_invocation_message,
@@ -12296,7 +12375,7 @@ def _(rid, params: dict) -> dict:
         except Exception as exc:
             return _err(rid, 5009, f"compress failed: {exc}")
 
-    return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
+    return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
 
 
 # ── Methods: paste ────────────────────────────────────────────────────
@@ -13088,10 +13167,11 @@ def _(rid, params: dict) -> dict:
     if not cmd:
         return _err(rid, 4004, "empty command")
 
-    # Skill slash commands and _pending_input commands must NOT go through the
-    # slash worker — see _PENDING_INPUT_COMMANDS definition above. Plugin
-    # commands must also avoid the worker, but unlike skills/pending-input they
-    # still return normal slash.exec output so the TUI keeps the pager path.
+    # Skill and bundle slash commands plus _pending_input commands must NOT go
+    # through the slash worker — see _PENDING_INPUT_COMMANDS definition above.
+    # Plugin commands must also avoid the worker, but unlike skills and
+    # pending-input commands they still return normal slash.exec output so the
+    # TUI keeps the pager path.
     _cmd_text = cmd.lstrip("/") if cmd.startswith("/") else cmd
     _cmd_parts = _cmd_text.split(maxsplit=1)
     _cmd_base = (_cmd_parts[0] if _cmd_parts else "").lower()
@@ -13118,6 +13198,27 @@ def _(rid, params: dict) -> dict:
                 4018,
                 "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore",
             )
+
+    try:
+        from agent.skill_bundles import resolve_bundle_command_key
+        from hermes_cli.commands import resolve_command
+
+        _bundle_key = (
+            resolve_bundle_command_key(_cmd_base)
+            if resolve_command(_cmd_base) is None
+            else None
+        )
+        if _bundle_key is not None:
+            return _methods["command.dispatch"](
+                rid,
+                {
+                    "name": _bundle_key.lstrip("/"),
+                    "arg": _cmd_arg,
+                    "session_id": params.get("session_id", ""),
+                },
+            )
+    except Exception:
+        pass
 
     try:
         from agent.skill_commands import get_skill_commands

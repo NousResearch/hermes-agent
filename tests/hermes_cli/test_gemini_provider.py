@@ -375,6 +375,15 @@ class TestGoogleModelProbing:
         assert not _is_google_gemini_base_url(
             "https://generativelanguage.googleapis.com/v1beta/openai"
         )
+        assert not _is_google_gemini_base_url(
+            "https://generativelanguage.googleapis.com/v1beta/openai/models"
+        )
+        assert not _is_google_gemini_base_url(
+            "http://generativelanguage.googleapis.com/v1beta"
+        )
+        assert not _is_google_gemini_base_url(
+            "ftp://generativelanguage.googleapis.com/v1beta"
+        )
 
     def test_probe_native_google_uses_query_key_without_authorization(self):
         from hermes_cli.models import probe_api_models
@@ -403,6 +412,25 @@ class TestGoogleModelProbing:
         assert request.get_header("Authorization") is None
         assert result["models"] == ["gemini-2.5-flash", "gemini-2.5-pro"]
         assert result["used_fallback"] is False
+
+    def test_native_google_rejects_malformed_models_payload(self):
+        from hermes_cli.models import probe_api_models
+
+        response = MagicMock()
+        response.__enter__ = MagicMock(return_value=response)
+        response.__exit__ = MagicMock(return_value=False)
+        response.read.return_value = b'{"models": {"unexpected": "shape"}}'
+
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=response,
+        ):
+            result = probe_api_models(
+                "test-key",
+                "https://generativelanguage.googleapis.com/v1beta",
+            )
+
+        assert result["models"] is None
 
     def test_probe_google_openai_compat_stays_on_generic_path(self):
         from hermes_cli.models import probe_api_models

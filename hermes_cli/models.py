@@ -2959,9 +2959,16 @@ def _is_google_gemini_base_url(base_url: Optional[str]) -> bool:
         parsed = urllib.parse.urlsplit(normalized)
     except ValueError:
         return False
+    if parsed.scheme.lower() != "https":
+        return False
     if (parsed.hostname or "").lower().rstrip(".") != "generativelanguage.googleapis.com":
         return False
-    return not parsed.path.rstrip("/").lower().endswith("/openai")
+    path_segments = {
+        segment.lower()
+        for segment in parsed.path.split("/")
+        if segment
+    }
+    return "openai" not in path_segments
 
 
 def _fetch_google_models(
@@ -2982,7 +2989,9 @@ def _fetch_google_models(
             payload = json.loads(response.read().decode())
     except Exception:
         return None
-    models = payload.get("models", []) if isinstance(payload, dict) else []
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return None
     return [
         str(model["name"]).split("/")[-1]
         for model in models

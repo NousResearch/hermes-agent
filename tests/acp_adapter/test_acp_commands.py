@@ -102,6 +102,7 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
                 "command": None,
                 "args": [],
             },
+            resolve_effective_max_tokens=lambda _runtime, _model_cfg: None,
         ),
     )
 

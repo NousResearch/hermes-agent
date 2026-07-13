@@ -335,3 +335,62 @@ class TestBuildWebUIRetryAndStaleFallback:
         assert "Web UI build failed" in out
         assert "vite ENOMEM" in out
         assert "Run manually" in out
+
+class TestNpmCiCleansNodeModules:
+    """When ``npm ci`` fails, ``node_modules`` must be removed before the
+    ``npm install`` fallback runs (issue #34312)."""
+
+    def test_ci_failure_removes_node_modules_before_install(self, tmp_path):
+        web_dir = tmp_path / "web"
+        web_dir.mkdir()
+        (web_dir / "package.json").write_text("{}")
+        (web_dir / "package-lock.json").write_text("{}")
+        nm = web_dir / "node_modules"
+        nm.mkdir()
+        (nm / ".package-lock.json").write_text("{}")  # stale marker
+
+        Subprocess = __import__("subprocess")
+        ci_fail = Subprocess.CompletedProcess([], 1, stdout="", stderr="ERESOLVE")
+        install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        calls = []
+        node_modules_existed_at_install = None
+        def mock_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[1] == "ci":
+                return ci_fail
+            # Record whether node_modules exists when install is called
+            if cmd[1] == "install":
+                nonlocal node_modules_existed_at_install
+                node_modules_existed_at_install = nm.exists()
+            return install_ok
+
+        with patch("hermes_cli.main.subprocess.run", side_effect=mock_run):
+            _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        assert calls[0][1] == "ci"
+        assert calls[1][1] == "install"
+        # node_modules was removed between ci failure and install
+        assert not nm.exists()
+        # Cleanup happened before the install command
+        assert node_modules_existed_at_install is False, (
+            "node_modules should not exist when install is called; "
+            "this verifies cleanup occurred before the fallback"
+        )
+
+    def test_ci_success_does_not_remove_node_modules(self, tmp_path):
+        web_dir = tmp_path / "web"
+        web_dir.mkdir()
+        (web_dir / "package.json").write_text("{}")
+        (web_dir / "package-lock.json").write_text("{}")
+        nm = web_dir / "node_modules"
+        nm.mkdir()
+
+        Subprocess = __import__("subprocess")
+        ci_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with patch("hermes_cli.main.subprocess.run", return_value=ci_ok):
+            _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        assert nm.exists()  # not touched on success
+

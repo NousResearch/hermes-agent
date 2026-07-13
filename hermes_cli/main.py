@@ -4853,6 +4853,16 @@ def _run_npm_install_deterministic(
         )
         if ci_result.returncode == 0:
             return ci_result
+        # ``npm ci`` failed — it may have partially mutated node_modules
+        # (e.g. downloaded some tarballs before hitting a checksum mismatch
+        # or a transient network error).  Left in place, the half-installed
+        # tree causes the subsequent ``npm install`` fallback to trip over
+        # missing or mismatched packages (issue #34312).  Remove it so the
+        # fallback starts from a clean slate — ``npm ci`` itself would have
+        # done the same thing had it succeeded.
+        nm_dir = cwd / "node_modules"
+        if nm_dir.exists():
+            shutil.rmtree(nm_dir)
         # Fall through to `npm install` — lockfile may be out of sync on a
         # WIP fork/branch, or `npm ci` may not be available on very old npm.
     install_cmd = [npm, "install", *extra_args]

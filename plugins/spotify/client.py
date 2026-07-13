@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict, Iterable, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
@@ -36,6 +36,22 @@ class SpotifyAPIError(SpotifyError):
         self.status_code = status_code
         self.response_body = response_body
         self.path = None
+
+
+# Spotify's Development Mode caps each /search response at 10 items. Keep the
+# public search limit intact by fetching the requested total in capped pages.
+SPOTIFY_DEVELOPMENT_MODE_SEARCH_PAGE_CAP = 10
+
+
+def _spotify_paging_url(url: Optional[str], *, limit: int, offset: int) -> Optional[str]:
+    """Rewrite Spotify paging metadata to describe the aggregated response."""
+    if not url:
+        return None
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["limit"] = str(limit)
+    query["offset"] = str(offset)
+    return urlunparse(parsed._replace(query=urlencode(query)))
 
 
 class SpotifyClient:
@@ -202,19 +218,85 @@ class SpotifyClient:
         *,
         query: str,
         search_types: list[str],
-        limit: int = 10,
+        limit: int = SPOTIFY_DEVELOPMENT_MODE_SEARCH_PAGE_CAP,
         offset: int = 0,
         market: Optional[str] = None,
         include_external: Optional[str] = None,
     ) -> Any:
-        return self.request("GET", "/search", params={
-            "q": query,
-            "type": ",".join(search_types),
-            "limit": limit,
-            "offset": offset,
-            "market": market,
-            "include_external": include_external,
-        })
+        requested_limit = max(1, limit)
+        requested_offset = max(0, offset)
+        remaining = requested_limit
+        page_offset = requested_offset
+        aggregated: Optional[Dict[str, Any]] = None
+
+        while remaining:
+            page_limit = min(SPOTIFY_DEVELOPMENT_MODE_SEARCH_PAGE_CAP, remaining)
+            payload = self.request("GET", "/search", params={
+                "q": query,
+                "type": ",".join(search_types),
+                "limit": page_limit,
+                "offset": page_offset,
+                "market": market,
+                "include_external": include_external,
+            })
+            if not isinstance(payload, dict):
+                return payload
+
+            if aggregated is None:
+                aggregated = dict(payload)
+            page_item_count = 0
+            has_more = False
+            for key, page_result in payload.items():
+                if not isinstance(page_result, dict) or not isinstance(page_result.get("items"), list):
+                    continue
+                page_items = page_result["items"]
+                page_item_count += len(page_items)
+                if key not in aggregated or not isinstance(aggregated[key], dict):
+                    aggregated[key] = dict(page_result)
+                result = aggregated[key]
+                if page_offset != requested_offset:
+                    result["items"] = list(result.get("items") or []) + page_items
+                    result.update({key: value for key, value in page_result.items() if key != "items"})
+                result["items"] = result["items"][:requested_limit]
+                result["limit"] = requested_limit
+                result["offset"] = requested_offset
+                total = result.get("total")
+                has_more = has_more or not isinstance(total, int) or page_offset + len(page_items) < total
+
+            remaining -= page_limit
+            page_offset += page_limit
+            if page_item_count == 0 or not has_more:
+                break
+
+        for result in (aggregated or {}).values():
+            if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+                continue
+            template = result.get("href") or result.get("next") or result.get("previous")
+            returned_count = len(result["items"])
+            total = result.get("total")
+            result["href"] = _spotify_paging_url(
+                template, limit=requested_limit, offset=requested_offset
+            )
+            result["next"] = (
+                _spotify_paging_url(
+                    template,
+                    limit=requested_limit,
+                    offset=requested_offset + returned_count,
+                )
+                if isinstance(total, int) and requested_offset + returned_count < total
+                else None
+            )
+            result["previous"] = (
+                _spotify_paging_url(
+                    template,
+                    limit=requested_limit,
+                    offset=max(0, requested_offset - requested_limit),
+                )
+                if requested_offset > 0
+                else None
+            )
+
+        return aggregated or {}
 
     def get_my_playlists(self, *, limit: int = 20, offset: int = 0) -> Any:
         return self.request("GET", "/me/playlists", params={"limit": limit, "offset": offset})

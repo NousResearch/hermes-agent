@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearClarifyRequest } from './clarify'
 import {
   $petOverlayActive,
+  anchoredOverlayBounds,
   initPetOverlayBridge,
+  overlayWindowSize,
+  overlayWindowTargetSize,
   parsePetOverlayControl,
   popInPet,
   popOutPet,
@@ -180,5 +183,70 @@ describe('pet overlay action-center state bridge', () => {
 
     expect(pushState).toHaveBeenCalled()
     expect(pushState.mock.calls.at(-1)?.[0].actionCenter.items).toHaveLength(2)
+  })
+})
+
+describe('pet overlay window geometry', () => {
+  const compact = overlayWindowSize(192, 208, 0.33)
+  const currentBounds = { height: compact.height, width: compact.width, x: 100, y: 200 }
+
+  it('grows beyond compact bounds for a wide, tall measured action panel and collapses exactly', () => {
+    const expanded = overlayWindowTargetSize(192, 208, 0.33, { height: 480, width: 321 })
+    const collapsed = overlayWindowTargetSize(192, 208, 0.33, { height: 0, width: 0 })
+
+    expect(expanded.width).toBeGreaterThan(compact.width)
+    expect(expanded.height).toBeGreaterThan(compact.height)
+    expect(expanded.width).toBeGreaterThan(321)
+    expect(expanded.height).toBeGreaterThan(480)
+    expect(collapsed).toEqual(compact)
+  })
+
+  it('keeps the pet feet bottom-center anchor exact through repeated expand/collapse cycles', () => {
+    const expandedSize = overlayWindowTargetSize(192, 208, 0.33, { height: 480, width: 321 })
+    const originalCenter = currentBounds.x + currentBounds.width / 2
+    const originalBottom = currentBounds.y + currentBounds.height
+    let bounds = currentBounds
+
+    for (let index = 0; index < 10; index += 1) {
+      bounds = anchoredOverlayBounds({ currentBounds: bounds, paddingBottom: 24, targetSize: expandedSize })
+      expect(bounds.x + bounds.width / 2).toBe(originalCenter)
+      expect(bounds.y + bounds.height).toBe(originalBottom)
+
+      bounds = anchoredOverlayBounds({ currentBounds: bounds, paddingBottom: 24, targetSize: compact })
+      expect(bounds).toEqual(currentBounds)
+    }
+  })
+
+  it('sanitizes invalid measurements and dimensions to a safe compact integer size', () => {
+    const target = overlayWindowTargetSize(Number.NaN, -100, Number.POSITIVE_INFINITY, {
+      height: Number.NEGATIVE_INFINITY,
+      width: -320
+    })
+
+    expect(target).toEqual({ height: 300, width: 240 })
+    expect(Number.isInteger(target.width)).toBe(true)
+    expect(Number.isInteger(target.height)).toBe(true)
+  })
+
+  it('preserves the existing wheel cursor/ratio anchor formula', () => {
+    const targetSize = { height: 360, width: 300 }
+    const wheelAnchor = { clientX: 60, clientY: 80, ratio: 1.5 }
+
+    expect(anchoredOverlayBounds({ currentBounds, paddingBottom: 24, targetSize, wheelAnchor })).toEqual({
+      height: targetSize.height,
+      width: targetSize.width,
+      x: Math.round(
+        currentBounds.x +
+          wheelAnchor.clientX -
+          (wheelAnchor.clientX - currentBounds.width / 2) * wheelAnchor.ratio -
+          targetSize.width / 2
+      ),
+      y: Math.round(
+        currentBounds.y +
+          wheelAnchor.clientY -
+          (wheelAnchor.clientY - (currentBounds.height - 24)) * wheelAnchor.ratio -
+          (targetSize.height - 24)
+      )
+    })
   })
 })

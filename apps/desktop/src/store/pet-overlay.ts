@@ -119,12 +119,7 @@ export function parsePetOverlayControl(value: unknown): PetOverlayControl | null
     return null
   }
 
-  if (
-    value.type === 'pop-in' ||
-    value.type === 'ready' ||
-    value.type === 'open-app' ||
-    value.type === 'toggle-app'
-  ) {
+  if (value.type === 'pop-in' || value.type === 'ready' || value.type === 'open-app' || value.type === 'toggle-app') {
     return { type: value.type }
   }
 
@@ -288,6 +283,34 @@ const OVERLAY_PAD_X = 100
 const OVERLAY_PAD_Y = 200
 const OVERLAY_MIN_W = 240
 const OVERLAY_MIN_H = 300
+const OVERLAY_CONTENT_ROOM_X = 32
+const OVERLAY_CONTENT_ROOM_TOP = 16
+const OVERLAY_CONTENT_ROOM_BOTTOM = 24
+
+export interface PetOverlaySize {
+  width: number
+  height: number
+}
+
+export interface PetOverlayMeasuredContent {
+  width: number
+  height: number
+}
+
+export interface PetOverlayWheelAnchor {
+  clientX: number
+  clientY: number
+  ratio: number
+}
+
+interface AnchoredOverlayBoundsInput {
+  currentBounds: PetOverlayBounds
+  targetSize: PetOverlaySize
+  paddingBottom: number
+  wheelAnchor?: PetOverlayWheelAnchor | null
+}
+
+const finiteNonNegative = (value: number): number => (Number.isFinite(value) && value > 0 ? value : 0)
 
 /**
  * Window bounds (width/height) that fully contain the pet at a given scale, plus
@@ -295,10 +318,79 @@ const OVERLAY_MIN_H = 300
  * for both the initial pop-out size and the live wheel-to-scale resize, so the
  * sprite is never cropped by the window edge no matter how big it's scaled.
  */
-export function overlayWindowSize(frameW: number, frameH: number, scale: number): { width: number; height: number } {
+export function overlayWindowSize(frameW: number, frameH: number, scale: number): PetOverlaySize {
+  const safeFrameW = finiteNonNegative(frameW)
+  const safeFrameH = finiteNonNegative(frameH)
+  const safeScale = finiteNonNegative(scale)
+
   return {
-    width: Math.max(OVERLAY_MIN_W, Math.round(frameW * scale + OVERLAY_PAD_X)),
-    height: Math.max(OVERLAY_MIN_H, Math.round(frameH * scale + OVERLAY_PAD_Y))
+    width: Math.max(OVERLAY_MIN_W, Math.round(safeFrameW * safeScale + OVERLAY_PAD_X)),
+    height: Math.max(OVERLAY_MIN_H, Math.round(safeFrameH * safeScale + OVERLAY_PAD_Y))
+  }
+}
+
+/**
+ * Window size for the live overlay. The compact pet geometry remains the floor;
+ * an observed action-center/bubble/sprite stack can only grow it. Invalid DOM
+ * measurements are treated as absent so a broken observer can never collapse
+ * the native window below its safe compact dimensions.
+ */
+export function overlayWindowTargetSize(
+  frameW: number,
+  frameH: number,
+  scale: number,
+  measuredContent?: PetOverlayMeasuredContent | null
+): PetOverlaySize {
+  const compact = overlayWindowSize(frameW, frameH, scale)
+  const measuredWidth = finiteNonNegative(measuredContent?.width ?? 0)
+  const measuredHeight = finiteNonNegative(measuredContent?.height ?? 0)
+  let width = Math.max(compact.width, Math.round(measuredWidth + OVERLAY_CONTENT_ROOM_X))
+
+  // Match compact-width parity so integer screen bounds can preserve the
+  // center exactly in both directions (odd/even width changes otherwise force
+  // a half-pixel choice and accumulate a one-pixel expand/collapse drift).
+  if ((width - compact.width) % 2 !== 0) {
+    width += 1
+  }
+
+  return {
+    width,
+    height: Math.max(
+      compact.height,
+      Math.round(measuredHeight + OVERLAY_CONTENT_ROOM_TOP + OVERLAY_CONTENT_ROOM_BOTTOM)
+    )
+  }
+}
+
+/**
+ * Resize about a stable screen-space anchor. Ordinary content/scale changes pin
+ * the window's bottom-center (the pet's feet). Alt+wheel supplies the historical
+ * cursor/ratio anchor formula verbatim so the pixel under the cursor stays put.
+ */
+export function anchoredOverlayBounds({
+  currentBounds,
+  targetSize,
+  paddingBottom,
+  wheelAnchor
+}: AnchoredOverlayBoundsInput): PetOverlayBounds {
+  if (!wheelAnchor) {
+    return {
+      height: targetSize.height,
+      width: targetSize.width,
+      x: Math.round(currentBounds.x + currentBounds.width / 2 - targetSize.width / 2),
+      y: Math.round(currentBounds.y + currentBounds.height - targetSize.height)
+    }
+  }
+
+  const { clientX: ax, clientY: ay, ratio } = wheelAnchor
+
+  return {
+    height: targetSize.height,
+    width: targetSize.width,
+    x: Math.round(currentBounds.x + ax - (ax - currentBounds.width / 2) * ratio - targetSize.width / 2),
+    y: Math.round(
+      currentBounds.y + ay - (ay - (currentBounds.height - paddingBottom)) * ratio - (targetSize.height - paddingBottom)
+    )
   }
 }
 

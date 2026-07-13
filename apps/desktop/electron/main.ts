@@ -65,7 +65,6 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
-import { resolvePickerDefaultPath } from './wsl-path-bridge'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -96,6 +95,7 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { clampPetOverlayBounds } from './pet-overlay-geometry'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -128,6 +128,7 @@ import {
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+import { resolvePickerDefaultPath } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -7095,6 +7096,57 @@ function createNewSessionWindow() {
 // it. Control flows back (pop-in, composer submit) via hermes:pet-overlay:control.
 let petOverlayWindow = null
 
+function petOverlayBoundsEqual(left, right) {
+  return left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height
+}
+
+function persistActualPetOverlayBounds(bounds) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('hermes:pet-overlay:control', { bounds, type: 'bounds' })
+  }
+}
+
+function applyPetOverlayBounds(bounds, { persist = false } = {}) {
+  if (!petOverlayWindow || petOverlayWindow.isDestroyed()) {
+    return null
+  }
+
+  const win = petOverlayWindow
+  const actual = clampPetOverlayBounds(bounds, screen.getAllDisplays())
+  const current = win.getBounds()
+  const changed = !petOverlayBoundsEqual(current, actual)
+
+  if (changed) {
+    const resizing = actual.width !== current.width || actual.height !== current.height
+
+    if (resizing && !win.isResizable()) {
+      win.setResizable(true)
+    }
+
+    try {
+      win.setBounds(actual)
+    } finally {
+      if (resizing) {
+        win.setResizable(false)
+      }
+    }
+  }
+
+  const applied = win.getBounds()
+
+  if (persist && changed) {
+    persistActualPetOverlayBounds(applied)
+  }
+
+  return applied
+}
+
+function reclampPetOverlayToDisplays() {
+  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
+    applyPetOverlayBounds(petOverlayWindow.getBounds(), { persist: true })
+  }
+}
+
 function petOverlayUrl() {
   if (DEV_SERVER) {
     return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/?win=overlay#/`
@@ -7199,24 +7251,19 @@ function spawnPetOverlayWindow(bounds) {
 }
 
 function openPetOverlay(bounds) {
+  const clampedBounds = clampPetOverlayBounds(bounds, screen.getAllDisplays())
+
   if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
-    if (bounds) {
-      petOverlayWindow.setBounds({
-        x: Math.round(bounds.x),
-        y: Math.round(bounds.y),
-        width: Math.max(80, Math.round(bounds.width)),
-        height: Math.max(80, Math.round(bounds.height))
-      })
-    }
+    const actualBounds = applyPetOverlayBounds(clampedBounds) ?? clampedBounds
 
     petOverlayWindow.showInactive()
 
-    return petOverlayWindow
+    return { bounds: actualBounds, window: petOverlayWindow }
   }
 
-  petOverlayWindow = spawnPetOverlayWindow(bounds)
+  petOverlayWindow = spawnPetOverlayWindow(clampedBounds)
 
-  return petOverlayWindow
+  return { bounds: petOverlayWindow.getBounds(), window: petOverlayWindow }
 }
 
 function closePetOverlay() {
@@ -7479,9 +7526,9 @@ ipcMain.handle('hermes:pet-overlay:open', async (_event, request) => {
     // Fall back to raw bounds if the window geometry is unavailable.
   }
 
-  openPetOverlay(screenBounds)
+  const opened = openPetOverlay(screenBounds)
 
-  return { ok: true, bounds: screenBounds }
+  return { ok: true, bounds: opened.bounds }
 })
 ipcMain.handle('hermes:pet-overlay:close', async () => {
   closePetOverlay()
@@ -7494,26 +7541,14 @@ ipcMain.handle('hermes:pet-overlay:close', async () => {
 // The window is created non-resizable (no stray edge-drag on the transparent
 // frameless panel), which on Windows/Linux also blocks programmatic setBounds
 // sizing — so briefly flip resizable on whenever the size actually changes.
-ipcMain.on('hermes:pet-overlay:set-bounds', (_event, bounds) => {
+ipcMain.handle('hermes:pet-overlay:set-bounds', async (_event, bounds) => {
   if (!petOverlayWindow || petOverlayWindow.isDestroyed() || !bounds) {
-    return
+    return { ok: false }
   }
 
-  const win = petOverlayWindow
-  const width = Math.max(80, Math.round(bounds.width))
-  const height = Math.max(80, Math.round(bounds.height))
-  const [curW, curH] = win.getSize()
-  const resizing = width !== curW || height !== curH
+  const actual = applyPetOverlayBounds(bounds)
 
-  if (resizing && !win.isResizable()) {
-    win.setResizable(true)
-  }
-
-  win.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width, height })
-
-  if (resizing) {
-    win.setResizable(false)
-  }
+  return actual ? { ok: true, bounds: actual } : { ok: false }
 })
 // Click-through: the overlay window is a full rectangle but only the pet pixels
 // should be interactive. The renderer toggles this as the cursor enters/leaves
@@ -9086,6 +9121,8 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
+  screen.on('display-removed', reclampPetOverlayToDisplays)
+  screen.on('display-metrics-changed', reclampPetOverlayToDisplays)
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.

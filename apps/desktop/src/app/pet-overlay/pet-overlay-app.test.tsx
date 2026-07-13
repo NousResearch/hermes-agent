@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { en } from '@/i18n/en'
 import { setPetInfo } from '@/store/pet'
 import type { PetActionCenterState } from '@/store/pet-action-center'
@@ -32,9 +33,38 @@ const composerPlaceholder = en.pet.composerPlaceholder
 const ac = en.pet.actionCenter
 
 let controlMock: ReturnType<typeof vi.fn>
+let setBoundsMock: ReturnType<typeof vi.fn>
 let setFocusableMock: ReturnType<typeof vi.fn>
 let setIgnoreMouseMock: ReturnType<typeof vi.fn>
 let stateListener: ((payload: PetOverlayStatePayload) => void) | undefined
+let windowBounds = { height: 300, width: 240, x: 100, y: 200 }
+
+const initialResizeObserver = globalThis.ResizeObserver
+
+class FakeResizeObserver {
+  static instances: FakeResizeObserver[] = []
+
+  readonly disconnect = vi.fn()
+  readonly observe = vi.fn<(target: Element) => void>()
+  readonly unobserve = vi.fn<(target: Element) => void>()
+
+  constructor(private readonly callback: ResizeObserverCallback) {
+    FakeResizeObserver.instances.push(this)
+  }
+
+  emit(width: number, height: number): void {
+    const target = this.observe.mock.calls[0]?.[0]
+
+    if (!target) {
+      throw new Error('ResizeObserver target not observed')
+    }
+
+    this.callback(
+      [{ contentRect: { height, width }, target } as ResizeObserverEntry],
+      this as unknown as ResizeObserver
+    )
+  }
+}
 
 function makeActionCenterState(): PetActionCenterState {
   return {
@@ -121,6 +151,11 @@ function pushState(payload = makePayload()) {
 
 function installDesktopMock() {
   controlMock = vi.fn()
+  setBoundsMock = vi.fn(async bounds => {
+    windowBounds = bounds
+
+    return { bounds, ok: true }
+  })
   setFocusableMock = vi.fn()
   setIgnoreMouseMock = vi.fn()
   stateListener = undefined
@@ -139,7 +174,7 @@ function installDesktopMock() {
       }),
       open: vi.fn().mockResolvedValue({ ok: true }),
       pushState: vi.fn(),
-      setBounds: vi.fn(),
+      setBounds: setBoundsMock,
       setFocusable: setFocusableMock,
       setIgnoreMouse: setIgnoreMouseMock
     }
@@ -148,15 +183,23 @@ function installDesktopMock() {
 
 beforeEach(() => {
   vi.useFakeTimers()
+  FakeResizeObserver.instances = []
+  globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver
   installDesktopMock()
   setPetInfo({ enabled: true, spritesheetBase64: 'data:image/png;base64,AA==' })
-  Object.defineProperty(window, 'outerHeight', { configurable: true, value: 300 })
-  Object.defineProperty(window, 'outerWidth', { configurable: true, value: 240 })
+  windowBounds = { height: 300, width: 240, x: 100, y: 200 }
+  Object.defineProperties(window, {
+    outerHeight: { configurable: true, get: () => windowBounds.height },
+    outerWidth: { configurable: true, get: () => windowBounds.width },
+    screenX: { configurable: true, get: () => windowBounds.x },
+    screenY: { configurable: true, get: () => windowBounds.y }
+  })
 })
 
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
+  globalThis.ResizeObserver = initialResizeObserver
   setPetInfo({ enabled: false })
 
   if (initialHermesDesktop) {
@@ -293,5 +336,83 @@ describe('PetOverlayApp action-center integration', () => {
     expect(document.activeElement).toBe(dialog)
     expect(setFocusableMock).toHaveBeenCalledWith(true)
     expect(setFocusableMock.mock.calls.some(([focusable]) => focusable === false)).toBe(false)
+  })
+
+  it('measures the expanded action center, grows without cropping, then collapses at the same feet anchor', async () => {
+    render(<PetOverlayApp />)
+    pushState()
+    const observer = FakeResizeObserver.instances[0]!
+    const originalCenter = windowBounds.x + windowBounds.width / 2
+    const originalBottom = windowBounds.y + windowBounds.height
+
+    observer.emit(180, 200)
+    expect(setBoundsMock).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
+    await act(async () => observer.emit(340, 500))
+
+    const expanded = setBoundsMock.mock.calls.at(-1)?.[0]
+    expect(expanded.width).toBeGreaterThan(340)
+    expect(expanded.height).toBeGreaterThan(500)
+    expect(expanded.x + expanded.width / 2).toBe(originalCenter)
+    expect(expanded.y + expanded.height).toBe(originalBottom)
+
+    fireEvent.click(screen.getByRole('button', { name: ac.close }))
+    await act(async () => observer.emit(180, 200))
+
+    const collapsed = setBoundsMock.mock.calls.at(-1)?.[0]
+    expect(collapsed).toEqual({ height: 300, width: 240, x: 100, y: 200 })
+    expect(collapsed.x + collapsed.width / 2).toBe(originalCenter)
+    expect(collapsed.y + collapsed.height).toBe(originalBottom)
+  })
+
+  it('ignores repeated identical measurements and disconnects the observer on unmount', async () => {
+    const view = render(<PetOverlayApp />)
+    pushState()
+    const observer = FakeResizeObserver.instances[0]!
+
+    await act(async () => observer.emit(340, 500))
+    const callCount = setBoundsMock.mock.calls.length
+    await act(async () => observer.emit(340, 500))
+
+    expect(setBoundsMock).toHaveBeenCalledTimes(callCount)
+    view.unmount()
+    expect(observer.disconnect).toHaveBeenCalledTimes(1)
+  })
+
+  it('persists the actual clamped bounds returned by the main process', async () => {
+    const actual = { height: 420, width: 360, x: 0, y: 0 }
+
+    setBoundsMock.mockImplementationOnce(async () => {
+      windowBounds = actual
+
+      return { bounds: actual, ok: true }
+    })
+    render(<PetOverlayApp />)
+    pushState()
+
+    await act(async () => FakeResizeObserver.instances[0]!.emit(340, 500))
+
+    expect(controlMock).toHaveBeenCalledWith({ bounds: actual, type: 'bounds' })
+  })
+
+  it('falls back to compact geometry when ResizeObserver is unavailable', () => {
+    // @ts-expect-error feature-detection contract: older Chromium may omit it.
+    delete globalThis.ResizeObserver
+
+    expect(() => render(<PetOverlayApp />)).not.toThrow()
+    pushState()
+    expect(setBoundsMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps the existing Alt+wheel cursor ratio anchor while resizing', async () => {
+    render(<PetOverlayApp />)
+    pushState()
+    setBoundsMock.mockClear()
+
+    const onScale = vi.mocked(usePetZoomGesture).mock.calls.at(-1)?.[1]
+    await act(async () => onScale?.(0.5, { clientX: 60, clientY: 80, ratio: 1.5 }))
+
+    expect(setBoundsMock).toHaveBeenCalledWith({ height: 304, width: 240, x: 130, y: 294 })
   })
 })

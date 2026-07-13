@@ -9,7 +9,12 @@ import { useI18n } from '@/i18n'
 import { Mail } from '@/lib/icons'
 import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
 import type { PetActionCenterState } from '@/store/pet-action-center'
-import { overlayWindowSize } from '@/store/pet-overlay'
+import {
+  anchoredOverlayBounds,
+  overlayWindowTargetSize,
+  type PetOverlayBounds,
+  type PetOverlayMeasuredContent
+} from '@/store/pet-overlay'
 import { setAwaitingResponse, setBusy } from '@/store/session'
 
 import { PetActionCenter } from './pet-action-center'
@@ -80,6 +85,7 @@ export function PetOverlayApp() {
   const [composerOpen, setComposerOpen] = useState(false)
   const [actionCenterOpen, setActionCenterOpen] = useState(false)
   const [actionCenterState, setActionCenterState] = useState<PetActionCenterState>(EMPTY_ACTION_CENTER_STATE)
+  const [measuredContent, setMeasuredContent] = useState<PetOverlayMeasuredContent | null>(null)
   const [draft, setDraft] = useState('')
   // Mirrored from the main renderer: a finish landed while you were away.
   const [unread, setUnread] = useState(false)
@@ -96,6 +102,7 @@ export function PetOverlayApp() {
   const keyboardInteractiveRef = useRef(false)
   const actionCenterOpenRef = useRef(false)
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const boundsRequestRef = useRef(0)
 
   const setIgnore = (ignore: boolean) => {
     if (ignoreRef.current !== ignore) {
@@ -223,6 +230,34 @@ export function PetOverlayApp() {
     }
   }, [composerOpen, actionCenterOpen])
 
+  // Observe the complete interactive stack (ActionCenter + Bubble + Sprite),
+  // not the compact sprite alone. ResizeObserver is optional: older/limited
+  // Chromium builds safely remain at compact geometry.
+  useEffect(() => {
+    const target = petRef.current
+    const ResizeObserverCtor = globalThis.ResizeObserver
+
+    if (!target || typeof ResizeObserverCtor !== 'function') {
+      setMeasuredContent(null)
+
+      return
+    }
+
+    const observer = new ResizeObserverCtor(entries => {
+      const rect = entries[0]?.contentRect
+      const width = Number.isFinite(rect?.width) && (rect?.width ?? 0) > 0 ? Math.round(rect!.width) : 0
+      const height = Number.isFinite(rect?.height) && (rect?.height ?? 0) > 0 ? Math.round(rect!.height) : 0
+
+      setMeasuredContent(current =>
+        current?.width === width && current.height === height ? current : { height, width }
+      )
+    })
+
+    observer.observe(target)
+
+    return () => observer.disconnect()
+  }, [info.enabled, info.spritesheetBase64])
+
   const onPetPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) {
       return
@@ -251,12 +286,14 @@ export function PetOverlayApp() {
       drag.moved = true
     }
 
-    window.hermesDesktop?.petOverlay?.setBounds({
-      height: drag.height,
-      width: drag.width,
-      x: e.screenX - drag.offX,
-      y: e.screenY - drag.offY
-    })
+    void window.hermesDesktop?.petOverlay
+      ?.setBounds({
+        height: drag.height,
+        width: drag.width,
+        x: e.screenX - drag.offX,
+        y: e.screenY - drag.offY
+      })
+      .catch(() => undefined)
   }
 
   const onPetPointerUp = (e: React.PointerEvent) => {
@@ -276,10 +313,23 @@ export function PetOverlayApp() {
 
       // Remember the spot on the desktop (screen coords) so the pet reopens here
       // next time / after a restart.
-      window.hermesDesktop?.petOverlay?.control({
-        bounds: { height: drag.height, width: drag.width, x: e.screenX - drag.offX, y: e.screenY - drag.offY },
-        type: 'bounds'
-      })
+      const requestedBounds = {
+        height: drag.height,
+        width: drag.width,
+        x: e.screenX - drag.offX,
+        y: e.screenY - drag.offY
+      }
+
+      const requestId = ++boundsRequestRef.current
+
+      void window.hermesDesktop?.petOverlay
+        ?.setBounds(requestedBounds)
+        .then(result => {
+          if (requestId === boundsRequestRef.current && result.ok && result.bounds) {
+            window.hermesDesktop?.petOverlay?.control({ bounds: result.bounds, type: 'bounds' })
+          }
+        })
+        .catch(() => undefined)
 
       return
     }
@@ -353,27 +403,29 @@ export function PetOverlayApp() {
 
   usePetZoomGesture(petRef, onScale, Boolean(info.enabled && info.spritesheetBase64))
 
-  // Grow/shrink the OS overlay window to fit the pet at its current scale so the
-  // sprite is never cropped — covers both the wheel gesture here and a scale
-  // changed from the app's settings slider (pushed in as a state update). With a
-  // wheel anchor we zoom toward the cursor (keep the pixel under it fixed);
-  // otherwise we anchor the bottom-center (the pet's feet stay planted). New
-  // bounds are persisted so the pet reopens at the right size.
+  // One resize pipeline owns scale and content measurement. The compact pet
+  // size is the floor; an open action center can only grow it, so a scale push
+  // can never race the observer and shrink around live content.
   useEffect(() => {
     if (!info.enabled || !info.spritesheetBase64) {
       return
     }
 
-    const { width, height } = overlayWindowSize(
+    const targetSize = overlayWindowTargetSize(
       info.frameW ?? DEFAULT_FRAME_W,
       info.frameH ?? DEFAULT_FRAME_H,
-      info.scale ?? DEFAULT_SCALE
+      info.scale ?? DEFAULT_SCALE,
+      measuredContent
     )
 
-    const curW = window.outerWidth
-    const curH = window.outerHeight
+    const currentBounds: PetOverlayBounds = {
+      height: window.outerHeight,
+      width: window.outerWidth,
+      x: window.screenX,
+      y: window.screenY
+    }
 
-    if (width === curW && height === curH) {
+    if (targetSize.width === currentBounds.width && targetSize.height === currentBounds.height) {
       zoomAnchorRef.current = null
 
       return
@@ -382,23 +434,29 @@ export function PetOverlayApp() {
     const anchor = zoomAnchorRef.current
     zoomAnchorRef.current = null
 
-    // The sprite scales about its bottom-center, at window-local (curW/2,
-    // curH - paddingBottom). Hold the anchor pixel fixed on screen as it scales;
-    // with no wheel anchor we pin the bottom-center itself (ratio 1 ⇒ no shift).
-    const ratio = anchor?.ratio ?? 1
-    const ax = anchor?.clientX ?? curW / 2
-    const ay = anchor?.clientY ?? curH - PET_PADDING_BOTTOM
+    const bounds = anchoredOverlayBounds({
+      currentBounds,
+      paddingBottom: PET_PADDING_BOTTOM,
+      targetSize,
+      wheelAnchor: anchor
+    })
 
-    const bounds = {
-      height,
-      width,
-      x: Math.round(window.screenX + ax - (ax - curW / 2) * ratio - width / 2),
-      y: Math.round(window.screenY + ay - (ay - (curH - PET_PADDING_BOTTOM)) * ratio - (height - PET_PADDING_BOTTOM))
+    const requestId = ++boundsRequestRef.current
+    const api = window.hermesDesktop?.petOverlay
+
+    if (!api) {
+      return
     }
 
-    window.hermesDesktop?.petOverlay?.setBounds(bounds)
-    window.hermesDesktop?.petOverlay?.control({ bounds, type: 'bounds' })
-  }, [info.enabled, info.spritesheetBase64, info.scale, info.frameW, info.frameH])
+    void api
+      .setBounds(bounds)
+      .then(result => {
+        if (requestId === boundsRequestRef.current && result.ok && result.bounds) {
+          api.control({ bounds: result.bounds, type: 'bounds' })
+        }
+      })
+      .catch(() => undefined)
+  }, [info.enabled, info.spritesheetBase64, info.scale, info.frameW, info.frameH, measuredContent])
 
   if (!info.enabled || !info.spritesheetBase64) {
     return null

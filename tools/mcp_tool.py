@@ -2603,6 +2603,50 @@ class MCPServerTask:
             self.name, self, self._config
         )
 
+    async def _run_transport_with_connect_timeout(
+        self,
+        transport_factory: Callable[[], Coroutine[Any, Any, Any]],
+        connect_timeout: float,
+    ) -> Any:
+        """Run a long-lived transport with a bounded session setup phase.
+
+        Bound only the interval before the transport publishes ``self.session``;
+        the transport itself intentionally remains alive until reconnect or
+        shutdown. Keeping it in one owning task also preserves anyio's
+        same-task cleanup requirement.
+        """
+        transport_task = asyncio.create_task(transport_factory())
+        deadline = asyncio.get_running_loop().time() + max(float(connect_timeout), 0.01)
+        try:
+            while self.session is None and not transport_task.done():
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    transport_task.cancel()
+                    try:
+                        await transport_task
+                    except asyncio.CancelledError:
+                        pass
+                    raise TimeoutError(
+                        f"MCP server '{self.name}' transport timed out before "
+                        f"publishing a session ({connect_timeout}s)"
+                    )
+                # ``asyncio.wait`` yields to the transport task without relying
+                # on ``asyncio.sleep`` (which several lifecycle tests patch).
+                await asyncio.wait(
+                    {transport_task},
+                    timeout=min(0.05, remaining),
+                )
+
+            return await transport_task
+        except asyncio.CancelledError:
+            if not transport_task.done():
+                transport_task.cancel()
+                try:
+                    await transport_task
+                except asyncio.CancelledError:
+                    pass
+            raise
+
     async def run(self, config: dict):
         """Long-lived coroutine: connect, discover tools, wait, disconnect.
 
@@ -2689,9 +2733,15 @@ class MCPServerTask:
         while True:
             try:
                 if self._is_http():
-                    lifecycle_reason = await self._run_http(config)
+                    lifecycle_reason = await self._run_transport_with_connect_timeout(
+                        lambda: self._run_http(config),
+                        config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT),
+                    )
                 else:
-                    lifecycle_reason = await self._run_stdio(config)
+                    lifecycle_reason = await self._run_transport_with_connect_timeout(
+                        lambda: self._run_stdio(config),
+                        config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT),
+                    )
                 # Transport returned cleanly. Two cases:
                 #  - _shutdown_event was set: exit the run loop entirely.
                 #  - _reconnect_event was set (auth recovery): loop back and

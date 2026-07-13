@@ -55,3 +55,46 @@ async def test_wait_for_lifecycle_event_shutdown_wins_when_both_set():
     task._reconnect_event.set()
     reason = await task._wait_for_lifecycle_event()
     assert reason == "shutdown"
+
+
+@pytest.mark.asyncio
+async def test_transport_connect_attempt_times_out_before_session_is_published():
+    """A wedged OAuth reconnect must not block the server task forever.
+
+    A production OAuth failure left ``_run_http`` stuck inside the SDK transport
+    before it published ``server.session``. Without an outer setup watchdog,
+    the retry loop never reached attempt 2 and reconnect signals could not be
+    serviced until the gateway restarted.
+    """
+    from tools.mcp_tool import MCPServerTask
+
+    task = MCPServerTask("oauth")
+    blocker = asyncio.Event()
+
+    async def _wedged_transport():
+        await blocker.wait()
+
+    with pytest.raises(TimeoutError, match="timed out before publishing a session"):
+        await task._run_transport_with_connect_timeout(
+            _wedged_transport,
+            connect_timeout=0.01,
+        )
+
+
+@pytest.mark.asyncio
+async def test_transport_connect_watchdog_preserves_lifecycle_result():
+    """The setup watchdog must stay transparent after session publication."""
+    from tools.mcp_tool import MCPServerTask
+
+    task = MCPServerTask("test")
+
+    async def _published_transport():
+        task.session = object()
+        return "recycle"
+
+    reason = await task._run_transport_with_connect_timeout(
+        _published_transport,
+        connect_timeout=0.1,
+    )
+
+    assert reason == "recycle"

@@ -324,9 +324,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     untitled_session:        "Cím nélküli munkamenet"
 
   undo:
-    nothing:               "Nincs mit visszavonni."
-    removed:               "↩️ {turns} fordulat visszavonva ({count} üzenet).\nBiztonsági mentés ide: \"{preview}\"\nMásold/szerkeszd a fenti szöveget, és küldd el, hogy innen újra kérdezz."
-    invalid_count:         "Érvénytelen szám \"{arg}\" — használd a /undo vagy /undo N parancsot."
+    nothing:               "Nothing to undo."
+    removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
+    invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+
+  redo:
+    nothing:               "Nothing to redo."
+    restart_lost:          "Nothing to redo — redo history does not survive a restart."
+    restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
+    invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."
 
   update:
     platform_not_messaging:  "✗ A /update csak üzenetküldő platformokról érhető el. Futtasd a `hermes update` parancsot a terminálból."

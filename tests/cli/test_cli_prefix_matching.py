@@ -138,7 +138,14 @@ class TestSlashCommandPrefixMatching:
         assert "Ambiguous" not in printed
 
     def test_tied_shortest_matches_still_ambiguous(self):
-        """/re matches /reset and /retry (both 6 chars) — no unique shortest, stays ambiguous."""
+        """/re matches many unrelated commands — no single base, stays ambiguous.
+
+        Regression guard (undo/redo half-turn branch): adding /redo made it the
+        unique *shortest* /re* command (5 chars). The old "unique shortest match"
+        heuristic then silently resolved /re → /redo, swallowing the ambiguity.
+        /redo/reset/retry are unrelated siblings (none is a prefix of the others),
+        so the prefix must stay ambiguous rather than fire redo on a bare /re.
+        """
         cli_obj = _make_cli()
         printed = []
         import cli as cli_mod
@@ -146,6 +153,19 @@ class TestSlashCommandPrefixMatching:
             cli_obj.process_command("/re")
         combined = " ".join(printed)
         assert "Ambiguous" in combined or "Did you mean" in combined
+
+    def test_shortest_builtin_wins_only_when_prefix_of_siblings(self):
+        """/sta → /status: shortest IS a prefix of /statusbar, so it resolves.
+
+        Companion to the /re ambiguity guard: when the shortest built-in match is
+        itself a prefix of every other built-in match (the others are extensions of
+        one base command), resolve to that base instead of reporting ambiguity.
+        """
+        cli_obj = _make_cli()
+        with patch.object(cli_obj, "_show_session_status") as mock_status:
+            result = cli_obj.process_command("/sta")
+        assert result is True
+        mock_status.assert_called_once_with()
 
     def test_exact_typed_name_dispatches_over_longer_match(self):
         """/help typed with /help-extra skill installed → exact match wins."""

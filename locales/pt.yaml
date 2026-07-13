@@ -324,9 +324,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     untitled_session:        "Sessão sem título"
 
   undo:
-    nothing:               "Nada para anular."
-    removed:               "↩️ {turns} turno(s) anulado(s) ({count} mensagem(ns)).\nGuardado em: \"{preview}\"\nCopia/edita o texto acima e envia-o para voltar a perguntar a partir daqui."
-    invalid_count:         "Contagem inválida \"{arg}\" — usa /undo ou /undo N."
+    nothing:               "Nothing to undo."
+    removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
+    invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+
+  redo:
+    nothing:               "Nothing to redo."
+    restart_lost:          "Nothing to redo — redo history does not survive a restart."
+    restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
+    invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."
 
   update:
     platform_not_messaging:  "✗ /update só está disponível em plataformas de mensagens. Executa `hermes update` a partir do terminal."

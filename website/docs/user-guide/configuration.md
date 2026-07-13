@@ -1759,6 +1759,17 @@ web:
 
 **Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=*** on the server to disable auth).
 
+**Firecrawl scrape cache age:** Set `web.firecrawl.scrape_max_age_ms` to a
+positive millisecond value to let Firecrawl reuse cached scrape results within
+that age window:
+
+```yaml
+web:
+  extract_backend: "firecrawl"
+  firecrawl:
+    scrape_max_age_ms: 604800000  # 7 days
+```
+
 **Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
 
 **Exa:** Set `EXA_API_KEY` in `~/.hermes/.env`. Supports `category` filtering (`company`, `research paper`, `news`, `people`, `personal site`, `pdf`) and domain/date filters.

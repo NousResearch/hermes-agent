@@ -496,3 +496,85 @@ class TestErrorResponseShapes:
         assert isinstance(result, dict)
         assert result.get("success") is False
         assert "error" in result
+
+
+    def test_firecrawl_extract_passes_configured_scrape_max_age(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+        from plugins.web.firecrawl import provider as firecrawl_provider
+        from tools import web_tools
+
+        captured: Dict[str, Any] = {}
+
+        class FakeFirecrawlClient:
+            def scrape(self, **kwargs: Any) -> Dict[str, Any]:
+                captured.update(kwargs)
+                return {
+                    "markdown": "cached content",
+                    "metadata": {
+                        "title": "Cached",
+                        "sourceURL": kwargs["url"],
+                    },
+                }
+
+        monkeypatch.setattr(
+            web_tools,
+            "_load_web_config",
+            lambda: {"firecrawl": {"scrape_max_age_ms": 604800000}},
+        )
+        monkeypatch.setattr(
+            firecrawl_provider,
+            "_get_firecrawl_client",
+            lambda: FakeFirecrawlClient(),
+        )
+        monkeypatch.setattr(firecrawl_provider, "check_website_access", lambda url: None)
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+
+        p = get_provider("firecrawl")
+        assert p is not None
+
+        result = asyncio.run(p.extract(["https://example.com"], format="markdown"))
+
+        assert captured["url"] == "https://example.com"
+        assert captured["formats"] == ["markdown"]
+        assert captured["max_age"] == 604800000
+
+
+    def test_firecrawl_extract_omits_invalid_scrape_max_age(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+        from plugins.web.firecrawl import provider as firecrawl_provider
+        from tools import web_tools
+
+        captured: Dict[str, Any] = {}
+
+        class FakeFirecrawlClient:
+            def scrape(self, **kwargs: Any) -> Dict[str, Any]:
+                captured.update(kwargs)
+                return {"markdown": "content", "metadata": {"sourceURL": kwargs["url"]}}
+
+        monkeypatch.setattr(
+            web_tools,
+            "_load_web_config",
+            lambda: {"firecrawl": {"scrape_max_age_ms": "not-an-int"}},
+        )
+        monkeypatch.setattr(
+            firecrawl_provider,
+            "_get_firecrawl_client",
+            lambda: FakeFirecrawlClient(),
+        )
+        monkeypatch.setattr(firecrawl_provider, "check_website_access", lambda url: None)
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+
+        p = get_provider("firecrawl")
+        assert p is not None
+
+        asyncio.run(p.extract(["https://example.com"], format="markdown"))
+
+        assert "max_age" not in captured

@@ -2710,6 +2710,13 @@ def main():
 
     if args.compare:
         print(f"\nRunning comparison: {args.compare}...")
+        # Inherit the primary config's workload parameters (suites, etc.) so
+        # the comparison runs the same scenarios as the baseline.  Without this
+        # copy, run_single() defaults missing suites to ["a"] and silently
+        # compares the wrong pair of suites.
+        compare_parameters = dict(config.parameters)
+        compare_parameters["profile"] = args.profile
+        compare_parameters["embedding_model"] = args.embedding
         config2 = BenchmarkConfig(
             backend_name=args.compare,
             profile=args.profile,
@@ -2718,7 +2725,7 @@ def main():
             judge_model=args.judge_model,
             output_path=args.output_dir,
             seeds=args.seeds,
-            parameters={"profile": args.profile, "embedding_model": args.embedding},
+            parameters=compare_parameters,
         )
         agg2, runs2 = run_benchmark(config2)
         print_results(agg2, config2, runs2)

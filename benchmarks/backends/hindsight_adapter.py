@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import queue
 import threading
+import uuid
 from typing import Any, Optional
 
 from benchmarks.capabilities import BackendCapabilities
@@ -131,7 +132,18 @@ class HindsightBenchmarkAdapter(BenchmarkableStore):
         }
 
     def reset(self) -> None:
-        pass
+        """Rotate to a fresh bank so scenarios cannot see prior data.
+
+        store() and recall() both use self._bank_id, so a no-op reset()
+        would let facts from one scenario leak into the next.  We rotate
+        to a unique bank name instead of deleting the old one (Hindsight
+        may not expose a delete API in all deployments).
+        """
+        self._bank_id = f"benchmark-bank-{uuid.uuid4().hex[:8]}"
+        # Drop the cached worker so the next call creates a fresh client
+        # bound to the new bank.
+        if self._worker is not None:
+            self._worker = None
 
 
 BACKEND_CLASS = HindsightBenchmarkAdapter

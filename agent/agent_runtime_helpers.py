@@ -1787,7 +1787,12 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     # ── Determine api_mode if not provided ──
     if not api_mode:
-        api_mode = determine_api_mode(new_provider, base_url)
+        if new_provider in {"opencode-zen", "opencode-go"}:
+            from hermes_cli.models import opencode_model_api_mode
+
+            api_mode = opencode_model_api_mode(new_provider, new_model)
+        else:
+            api_mode = determine_api_mode(new_provider, base_url)
 
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
     # /v1 into the anthropic_messages client, which would cause the SDK to

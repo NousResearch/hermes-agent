@@ -7,6 +7,7 @@ Shares credentials with the optional telephony skill — same env vars:
   - TWILIO_ACCOUNT_SID
   - TWILIO_AUTH_TOKEN
   - TWILIO_PHONE_NUMBER  (E.164 from-number, e.g. +15551234567)
+  - TWILIO_MESSAGING_SERVICE_SID  (optional outbound Messaging Service)
 
 Gateway-specific env vars:
   - SMS_WEBHOOK_PORT     (default 8080)
@@ -24,6 +25,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import urllib.parse
 from typing import Any, Dict, Optional
 
@@ -45,6 +47,15 @@ DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _TWILIO_WEBHOOK_MAX_BODY_BYTES = 65_536  # 64 KiB — Twilio payloads are small
 
 
+def _add_twilio_sender_field(form_data: Any, from_number: str) -> None:
+    """Add the mutually exclusive Twilio outbound sender field."""
+    messaging_service_sid = os.getenv("TWILIO_MESSAGING_SERVICE_SID", "").strip()
+    if messaging_service_sid:
+        form_data.add_field("MessagingServiceSid", messaging_service_sid)
+    else:
+        form_data.add_field("From", from_number)
+
+
 def check_sms_requirements() -> bool:
     """Check if SMS adapter dependencies are available."""
     try:
@@ -59,7 +70,8 @@ class SmsAdapter(BasePlatformAdapter):
     Twilio SMS <-> Hermes gateway adapter.
 
     Each inbound phone number gets its own Hermes session (multi-tenant).
-    Replies are always sent from the configured TWILIO_PHONE_NUMBER.
+    Replies use TWILIO_MESSAGING_SERVICE_SID when configured, otherwise they
+    are sent from TWILIO_PHONE_NUMBER.
     """
 
     MAX_MESSAGE_LENGTH = MAX_SMS_LENGTH
@@ -179,7 +191,7 @@ class SmsAdapter(BasePlatformAdapter):
         try:
             for chunk in chunks:
                 form_data = aiohttp.FormData()
-                form_data.add_field("From", self._from_number)
+                _add_twilio_sender_field(form_data, self._from_number)
                 form_data.add_field("To", chat_id)
                 form_data.add_field("Body", chunk)
 
@@ -464,7 +476,7 @@ async def _standalone_send(
         headers = {"Authorization": f"Basic {encoded}"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             form_data = aiohttp.FormData()
-            form_data.add_field("From", from_number)
+            _add_twilio_sender_field(form_data, from_number)
             form_data.add_field("To", chat_id)
             form_data.add_field("Body", message)
             async with session.post(url, data=form_data, headers=headers, **_req_kw) as resp:

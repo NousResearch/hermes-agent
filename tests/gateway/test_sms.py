@@ -128,6 +128,99 @@ class TestSmsEchoPrevention:
             assert adapter._from_number == "+15550001111"
 
 
+class TestSmsOutboundSender:
+    @staticmethod
+    def _mock_session():
+        response = MagicMock(status=200)
+        response.json = AsyncMock(return_value={"sid": "SM123"})
+
+        response_context = MagicMock()
+        response_context.__aenter__ = AsyncMock(return_value=response)
+        response_context.__aexit__ = AsyncMock(return_value=None)
+
+        session = MagicMock()
+        session.post.return_value = response_context
+        return session
+
+    @staticmethod
+    def _form_fields(session):
+        form_data = session.post.call_args.kwargs["data"]
+        return {field[0]["name"]: field[2] for field in form_data._fields}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("messaging_service_sid", "expected_sender"),
+        [
+            (None, {"From": "+15550001111"}),
+            ("  MG123  ", {"MessagingServiceSid": "MG123"}),
+        ],
+    )
+    async def test_adapter_send_uses_configured_sender(
+        self, messaging_service_sid, expected_sender
+    ):
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+        }
+        if messaging_service_sid is not None:
+            env["TWILIO_MESSAGING_SERVICE_SID"] = messaging_service_sid
+
+        session = self._mock_session()
+        with patch.dict(os.environ, env, clear=True):
+            adapter = SmsAdapter(PlatformConfig(enabled=True, api_key="tok"))
+            adapter._http_session = session
+            result = await adapter.send("+15550009999", "Hello")
+
+        assert result.success is True
+        fields = self._form_fields(session)
+        assert fields == {**expected_sender, "To": "+15550009999", "Body": "Hello"}
+        assert ("From" in fields) != ("MessagingServiceSid" in fields)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("messaging_service_sid", "expected_sender"),
+        [
+            (None, {"From": "+15550001111"}),
+            ("MG123", {"MessagingServiceSid": "MG123"}),
+        ],
+    )
+    async def test_standalone_send_uses_configured_sender(
+        self, messaging_service_sid, expected_sender
+    ):
+        from plugins.platforms.sms.adapter import _standalone_send
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+        }
+        if messaging_service_sid is not None:
+            env["TWILIO_MESSAGING_SERVICE_SID"] = messaging_service_sid
+
+        session = self._mock_session()
+        session_context = MagicMock()
+        session_context.__aenter__ = AsyncMock(return_value=session)
+        session_context.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("aiohttp.ClientSession", return_value=session_context),
+        ):
+            result = await _standalone_send(
+                PlatformConfig(enabled=True, api_key="tok"),
+                "+15550009999",
+                "Hello",
+            )
+
+        assert result["success"] is True
+        fields = self._form_fields(session)
+        assert fields == {**expected_sender, "To": "+15550009999", "Body": "Hello"}
+        assert ("From" in fields) != ("MessagingServiceSid" in fields)
+
+
 # ── Requirements check ─────────────────────────────────────────────
 
 class TestSmsRequirements:

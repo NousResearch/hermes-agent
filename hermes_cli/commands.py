@@ -165,6 +165,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("on", "off", "status")),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration"),
+    CommandDef("approvals", "Show or set the persistent dangerous-command approval mode",
+               "Configuration", args_hint="[manual|smart|off]",
+               subcommands=("manual", "smart", "off")),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide|full|clamp] [--global]",
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp", "--global")),
@@ -1187,10 +1190,15 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     /init clamps /version off the native list and breaks Telegram parity.
 #   - version: low-frequency info command; reachable as /hermes version on
 #     Slack. Demoted when /context claimed a native slot (context is a
-#     recurring inspection surface; version is a one-off lookup).
+#     recurring inspection surface; version is a one-off lookup); the demotion
+#     also absorbs the native slot /approvals now consumes at the 50-cap.
 #   - diff: git working-tree diff; reached via /hermes diff on Slack so it
 #     doesn't displace an existing native slash at the 50-command cap.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff"})
+#   - update: low-frequency self-update maintenance command; reached via
+#     /hermes update on Slack. Demoted to free the native slot /approvals now
+#     claims — without this entry /approvals tips the registry past the 50-cap
+#     and silently clamps /update off, breaking Telegram parity.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

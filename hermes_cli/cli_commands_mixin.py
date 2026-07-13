@@ -2778,6 +2778,16 @@ class CLICommandsMixin:
         except Exception:
             pass
 
+    def _handle_approvals_command(self, cmd_original: str) -> None:
+        """Show or persist the profile-wide dangerous-command approval mode."""
+        from cli import _cprint
+        from hermes_cli.approval_mode import run_approval_mode_command
+
+        parts = (cmd_original or "").strip().split(None, 1)
+        requested = parts[1] if len(parts) > 1 else None
+        result = run_approval_mode_command(requested)
+        _cprint(f"  {result.message}")
+
     def _handle_footer_command(self, cmd_original: str) -> None:
         """Toggle or inspect ``display.runtime_footer.enabled`` from the CLI.
 

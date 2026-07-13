@@ -433,7 +433,10 @@ class SessionManager:
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
-        provider = getattr(state.agent, "provider", None)
+        # Prefer the original requested provider identity over the resolved
+        # runtime class so that session restore can re-resolve the named
+        # provider (and its key_env / transport headers) correctly (#13489).
+        provider = getattr(state.agent, "_requested_provider", None) or getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
         if isinstance(provider, str) and provider.strip():
@@ -654,6 +657,15 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
+        # Preserve the original requested provider identity so that ACP
+        # persistence (``_persist``) can write the durable logical name
+        # (e.g. ``custom:session-gateway``) rather than the resolved runtime
+        # class (``custom``). Without this, session restore calls
+        # ``resolve_runtime_provider(requested="custom")`` which cannot find
+        # the named provider entry, its ``key_env``, or its transport headers,
+        # and falls through to bare custom credential resolution — which
+        # typically picks up stale/incorrect credentials from ``.env`` (#13489).
+        agent._requested_provider = requested_provider or config_provider
         # Codex app-server sessions are spawned lazily on the first turn. Stamp
         # the ACP workspace onto the agent so the Codex runtime starts from the
         # editor/session cwd instead of the Hermes daemon's process cwd.

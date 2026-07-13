@@ -15,6 +15,8 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.redact import redact_credential_url
+
 from hermes_cli.config import (
     cfg_get,
     load_config,
@@ -32,14 +34,10 @@ logger = logging.getLogger(__name__)
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-_SENSITIVE_QS_RE = re.compile(
-    r"(?i)([?&](?:[^&#=]*(?<![A-Za-z])(?:key|token|secret|password|apikey|access_token)(?![A-Za-z])[^&#=]*)=)([^&#]+)"
-)
-
 
 def _redact_url(url: Any) -> str:
     """Mask sensitive-looking query parameter values in a URL."""
-    return _SENSITIVE_QS_RE.sub(r"\1***", str(url))
+    return redact_credential_url(str(url))
 
 
 _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
@@ -832,7 +830,7 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             print()
             print(color("    mcp_servers:", Colors.DIM))
             print(color(f"      {name}:", Colors.DIM))
-            print(color(f"        url: {url}", Colors.DIM))
+            print(color(f"        url: {_redact_url(url)}", Colors.DIM))
             print(color("        auth: oauth", Colors.DIM))
             print(color("        oauth:", Colors.DIM))
             print(color("          client_id: \"<your-oauth-client-id>\"", Colors.DIM))

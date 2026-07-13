@@ -123,13 +123,13 @@ class TestMcpList:
 
     def test_list_redacts_sensitive_url_query_values(self, tmp_path, capsys):
         _seed_config(tmp_path, {
-            "remote": {"url": "https://a.b?key=supersecret"},
+            "remote": {"url": "https://a.b?code=supersecret"},
         })
         from hermes_cli.mcp_config import cmd_mcp_list
 
         cmd_mcp_list()
         out = capsys.readouterr().out
-        assert "key=***" in out
+        assert "code=***" in out
         assert "supersecret" not in out
 
     def test_redact_url_preserves_fragments(self):
@@ -527,7 +527,7 @@ class TestMcpTest:
 
     def test_test_redacts_sensitive_url_query_values(self, tmp_path, capsys, monkeypatch):
         _seed_config(tmp_path, {
-            "ink": {"url": "https://example.test/mcp?access_token=supersecret&x=1"},
+            "ink": {"url": "https://example.test/mcp?x-amz-signature=supersecret&x=1"},
         })
 
         def mock_probe(name, config, **kw):
@@ -540,7 +540,7 @@ class TestMcpTest:
 
         cmd_mcp_test(_make_args(name="ink"))
         out = capsys.readouterr().out
-        assert "access_token=***" in out
+        assert "x-amz-signature=***" in out
         assert "supersecret" not in out
 
     def test_test_handles_non_string_url_values(self, tmp_path, capsys, monkeypatch):
@@ -940,7 +940,10 @@ class TestMcpLogin:
         """
         _seed_config(tmp_path, {
             "googledrive": {
-                "url": "https://drivemcp.googleapis.com/mcp/v1",
+                "url": (
+                    "https://drivemcp.googleapis.com/mcp/v1?"
+                    "signature=oauth-secret&region=us"
+                ),
                 "auth": "oauth",
             },
         })
@@ -960,6 +963,8 @@ class TestMcpLogin:
         assert "no OAuth token was obtained" in out
         assert "Authenticated" not in out
         assert "client_id" in out
+        assert "signature=***" in out
+        assert "oauth-secret" not in out
 
     def test_login_genuine_success_with_token(self, tmp_path, capsys, monkeypatch):
         """Probe lists tools AND a token exists → report real success."""

@@ -204,6 +204,7 @@ class CodexAppServerSession:
         cwd: Optional[str] = None,
         codex_bin: str = "codex",
         codex_home: Optional[str] = None,
+        extra_skill_roots: Optional[list[str]] = None,
         permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
@@ -213,6 +214,14 @@ class CodexAppServerSession:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
         self._codex_home = codex_home
+        self._extra_skill_roots = [
+            os.path.realpath(os.path.expanduser(root))
+            for root in (extra_skill_roots or [])
+            if root
+        ]
+        self._skill_fingerprints: Optional[dict[str, tuple[int, int]]] = None
+        self._skill_roots_registered = not self._extra_skill_roots
+        self._turn_started_once = False
         self._permission_profile = (
             permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
                 os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"),
@@ -237,11 +246,33 @@ class CodexAppServerSession:
 
     # ---------- lifecycle ----------
 
+    def _register_extra_skill_roots(self) -> bool:
+        """Best-effort registration that remains retryable for this thread."""
+        if self._skill_roots_registered:
+            return True
+        if not self._extra_skill_roots or self._client is None:
+            return False
+        try:
+            self._client.request(
+                "skills/extraRoots/set",
+                {"extraRoots": self._extra_skill_roots},
+                timeout=15,
+            )
+        except (CodexAppServerError, TimeoutError):
+            logger.warning(
+                "codex app-server could not register Hermes skill roots",
+                exc_info=True,
+            )
+            return False
+        self._skill_roots_registered = True
+        return True
+
     def ensure_started(self) -> str:
         """Spawn the subprocess, do the initialize handshake, and start a
-        thread. Returns the codex thread id. Idempotent — repeated calls
-        return the same thread id."""
+        thread. Returns the codex thread id. Repeated calls reuse the thread and
+        retry any skill-root registration that previously failed."""
         if self._thread_id is not None:
+            self._register_extra_skill_roots()
             return self._thread_id
         if self._client is None:
             self._client = self._client_factory(
@@ -289,6 +320,7 @@ class CodexAppServerSession:
                 ),
             )
         self._thread_id = thread_id
+        self._register_extra_skill_roots()
         logger.info(
             "codex app-server thread started: id=%s profile=%s cwd=%s",
             self._thread_id[:8],
@@ -363,6 +395,85 @@ class CodexAppServerSession:
 
     # ---------- per-turn ----------
 
+    def _reload_changed_skills(
+        self,
+    ) -> tuple[list[dict[str, str]], Optional[dict[str, tuple[int, int]]]]:
+        """Reload Codex's catalog and return Hermes skills changed since the
+        previous turn.
+
+        Codex injects the available-skills catalog when a thread's first turn
+        starts, but ``skills/list(forceReload=True)`` alone does not update that
+        already-running thread. Changed skills are therefore returned as native
+        ``SkillUserInput`` items for the next ``turn/start`` request.
+        """
+        if (
+            not self._extra_skill_roots
+            or self._client is None
+            or not self._skill_roots_registered
+        ):
+            return [], None
+
+        try:
+            response = self._client.request(
+                "skills/list",
+                {"cwds": [self._cwd], "forceReload": True},
+                timeout=30,
+            )
+        except (CodexAppServerError, TimeoutError):
+            logger.warning(
+                "codex app-server could not reload Hermes skills",
+                exc_info=True,
+            )
+            return [], None
+
+        current: dict[str, tuple[int, int]] = {}
+        metadata: dict[str, dict[str, str]] = {}
+        for entry in response.get("data") or []:
+            if not isinstance(entry, dict):
+                continue
+            for skill in entry.get("skills") or []:
+                if not isinstance(skill, dict) or skill.get("enabled") is False:
+                    continue
+                name = skill.get("name")
+                path = skill.get("path")
+                if not isinstance(name, str) or not isinstance(path, str):
+                    continue
+                real_path = os.path.realpath(path)
+                try:
+                    belongs_to_hermes = any(
+                        os.path.commonpath((real_path, root)) == root
+                        for root in self._extra_skill_roots
+                    )
+                except ValueError:
+                    belongs_to_hermes = False
+                if not belongs_to_hermes:
+                    continue
+                try:
+                    stat = os.stat(real_path)
+                except OSError:
+                    continue
+                current[real_path] = (stat.st_mtime_ns, stat.st_size)
+                metadata[real_path] = {
+                    "type": "skill",
+                    "name": name,
+                    "path": real_path,
+                }
+
+        changed: list[dict[str, str]] = []
+        if self._skill_fingerprints is not None:
+            changed = [
+                metadata[path]
+                for path, fingerprint in current.items()
+                if self._skill_fingerprints.get(path) != fingerprint
+            ]
+        elif self._turn_started_once:
+            # The thread already accepted a turn without a committed baseline:
+            # either root registration recovered late or the initial reload
+            # failed. Attach the full root once so no skill is silently absorbed
+            # into the first successful snapshot.
+            changed = list(metadata.values())
+        return changed, current
+
     def run_turn(
         self,
         user_input: Any,
@@ -400,19 +511,24 @@ class CodexAppServerSession:
         assert self._client is not None and self._thread_id is not None
         result.thread_id = self._thread_id
 
+        changed_skills, skill_fingerprints = self._reload_changed_skills()
+
         self._interrupt_event.clear()
         projector = CodexEventProjector()
 
         user_input_text = _coerce_turn_input_text(user_input)
 
-        # Send turn/start with the user input. Text-only for now (codex
-        # supports rich content but Hermes' text path is the common case).
+        # Send turn/start with the user input. Any Hermes skill created or
+        # modified since the previous turn is attached once through Codex's
+        # native SkillUserInput path so the running thread receives it without
+        # being restarted.
         try:
             ts = self._client.request(
                 "turn/start",
                 {
                     "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input_text}],
+                    "input": changed_skills
+                    + [{"type": "text", "text": user_input_text}],
                 },
                 timeout=10,
             )
@@ -442,6 +558,13 @@ class CodexAppServerSession:
             )
             result.should_retire = True
             return result
+
+        # Native skill inputs belong to the persistent thread only after
+        # turn/start accepts them. Keep the previous snapshot on request errors
+        # so the same changed skill is attached again on the next attempt.
+        if skill_fingerprints is not None:
+            self._skill_fingerprints = skill_fingerprints
+        self._turn_started_once = True
 
         result.turn_id = (ts.get("turn") or {}).get("id")
         deadline = time.monotonic() + turn_timeout

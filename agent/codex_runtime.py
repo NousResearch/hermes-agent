@@ -22,6 +22,8 @@ import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 
@@ -391,6 +393,7 @@ def run_codex_app_server_turn(
 
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            extra_skill_roots=[str(get_hermes_home() / "skills")],
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,

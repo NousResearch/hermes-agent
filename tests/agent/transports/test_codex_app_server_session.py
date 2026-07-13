@@ -7,9 +7,10 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
+import sys
 import time
-from unittest.mock import patch
 from typing import Any, Optional
+from unittest.mock import patch
 
 import pytest
 
@@ -195,6 +196,366 @@ class TestRunTurn:
                    for m in r.projected_messages)
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
+
+    def test_extra_skill_roots_are_set_and_force_reloaded_before_turn_start(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        s = make_session(client, extra_skill_roots=["/tmp/hermes-skills"])
+
+        s.run_turn("hi", turn_timeout=2.0)
+
+        methods = [method for method, _ in client.requests]
+        assert methods.index("thread/start") < methods.index("skills/extraRoots/set")
+        assert methods.index("skills/extraRoots/set") < methods.index("skills/list")
+        assert methods.index("skills/list") < methods.index("turn/start")
+        assert ("skills/extraRoots/set", {"extraRoots": ["/tmp/hermes-skills"]}) in client.requests
+        assert (
+            "skills/list",
+            {"cwds": ["/tmp"], "forceReload": True},
+        ) in client.requests
+
+    def test_changed_hermes_skill_is_attached_to_the_next_turn(self, tmp_path):
+        skill_path = tmp_path / "skills" / "testing" / "bridge" / "SKILL.md"
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("initial", encoding="utf-8")
+
+        client = FakeClient()
+        original_request = client.request
+
+        def request(method, params=None, timeout=10.0):
+            if method == "skills/list":
+                return {
+                    "data": [
+                        {
+                            "cwd": "/tmp",
+                            "errors": [],
+                            "skills": [
+                                {
+                                    "name": "bridge",
+                                    "path": str(skill_path),
+                                    "enabled": True,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            return original_request(method, params, timeout)
+
+        client.request = request
+        s = make_session(client, extra_skill_roots=[str(tmp_path / "skills")])
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        s.run_turn("first", turn_timeout=2.0)
+
+        skill_path.write_text("changed content", encoding="utf-8")
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-002", "status": "completed", "error": None},
+        )
+        s.run_turn("second", turn_timeout=2.0)
+
+        turn_starts = [params for method, params in client.requests if method == "turn/start"]
+        assert turn_starts[0]["input"] == [{"type": "text", "text": "first"}]
+        assert turn_starts[1]["input"] == [
+            {"type": "skill", "name": "bridge", "path": str(skill_path)},
+            {"type": "text", "text": "second"},
+        ]
+
+    def test_changed_hermes_skill_is_retried_after_turn_start_rejection(
+        self, tmp_path
+    ):
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        skill_path = tmp_path / "skills" / "testing" / "bridge" / "SKILL.md"
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("initial", encoding="utf-8")
+
+        client = FakeClient()
+        original_request = client.request
+        reject_next_turn = [False]
+
+        def request(method, params=None, timeout=10.0):
+            if method == "skills/list":
+                return {
+                    "data": [
+                        {
+                            "cwd": "/tmp",
+                            "errors": [],
+                            "skills": [
+                                {
+                                    "name": "bridge",
+                                    "path": str(skill_path),
+                                    "enabled": True,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            if method == "turn/start" and reject_next_turn[0]:
+                reject_next_turn[0] = False
+                client.requests.append((method, params or {}))
+                raise CodexAppServerError(code=-32600, message="rejected")
+            return original_request(method, params, timeout)
+
+        client.request = request
+        s = make_session(client, extra_skill_roots=[str(tmp_path / "skills")])
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        s.run_turn("first", turn_timeout=2.0)
+
+        skill_path.write_text("changed content", encoding="utf-8")
+        reject_next_turn[0] = True
+        rejected = s.run_turn("second", turn_timeout=2.0)
+        assert rejected.error is not None
+        assert rejected.should_retire is False
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-002", "status": "completed", "error": None},
+        )
+        retried = s.run_turn("third", turn_timeout=2.0)
+        assert retried.error is None
+
+        turn_starts = [
+            params for method, params in client.requests if method == "turn/start"
+        ]
+        expected_skill = {
+            "type": "skill",
+            "name": "bridge",
+            "path": str(skill_path),
+        }
+        assert turn_starts[1]["input"][0] == expected_skill
+        assert turn_starts[2]["input"][0] == expected_skill
+
+    def test_extra_skill_roots_registration_retries_on_the_next_turn(self, tmp_path):
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        skill_path = tmp_path / "skills" / "testing" / "bridge" / "SKILL.md"
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("content", encoding="utf-8")
+
+        client = FakeClient()
+        original_request = client.request
+        registration_attempts = [0]
+
+        def request(method, params=None, timeout=10.0):
+            if method == "skills/extraRoots/set":
+                client.requests.append((method, params or {}))
+                registration_attempts[0] += 1
+                if registration_attempts[0] == 1:
+                    raise CodexAppServerError(code=-32603, message="temporary failure")
+                return {}
+            if method == "skills/list":
+                client.requests.append((method, params or {}))
+                return {
+                    "data": [
+                        {
+                            "cwd": "/tmp",
+                            "errors": [],
+                            "skills": [
+                                {
+                                    "name": "bridge",
+                                    "path": str(skill_path),
+                                    "enabled": True,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            return original_request(method, params, timeout)
+
+        client.request = request
+        s = make_session(client, extra_skill_roots=[str(tmp_path / "skills")])
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        first = s.run_turn("first", turn_timeout=2.0)
+        assert first.error is None
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-002", "status": "completed", "error": None},
+        )
+        second = s.run_turn("second", turn_timeout=2.0)
+        assert second.error is None
+        assert registration_attempts[0] == 2
+
+        turn_starts = [
+            params for method, params in client.requests if method == "turn/start"
+        ]
+        assert turn_starts[0]["input"] == [{"type": "text", "text": "first"}]
+        assert turn_starts[1]["input"] == [
+            {"type": "skill", "name": "bridge", "path": str(skill_path)},
+            {"type": "text", "text": "second"},
+        ]
+
+    def test_initial_skill_reload_failure_preserves_missing_baseline(self, tmp_path):
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        root = tmp_path / "skills"
+        root.mkdir()
+        skill_path = root / "testing" / "bridge" / "SKILL.md"
+
+        client = FakeClient()
+        original_request = client.request
+        reload_attempts = [0]
+
+        def request(method, params=None, timeout=10.0):
+            if method == "skills/list":
+                client.requests.append((method, params or {}))
+                reload_attempts[0] += 1
+                if reload_attempts[0] == 1:
+                    raise CodexAppServerError(
+                        code=-32603, message="temporary reload failure"
+                    )
+                skills = []
+                if skill_path.exists():
+                    skills.append(
+                        {
+                            "name": "bridge",
+                            "path": str(skill_path),
+                            "enabled": True,
+                        }
+                    )
+                return {"data": [{"cwd": "/tmp", "errors": [], "skills": skills}]}
+            return original_request(method, params, timeout)
+
+        client.request = request
+        s = make_session(client, extra_skill_roots=[str(root)])
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        first = s.run_turn("first", turn_timeout=2.0)
+        assert first.error is None
+
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("content", encoding="utf-8")
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-002", "status": "completed", "error": None},
+        )
+        second = s.run_turn("second", turn_timeout=2.0)
+        assert second.error is None
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-003", "status": "completed", "error": None},
+        )
+        third = s.run_turn("third", turn_timeout=2.0)
+        assert third.error is None
+
+        turn_starts = [
+            params for method, params in client.requests if method == "turn/start"
+        ]
+        assert turn_starts[0]["input"] == [{"type": "text", "text": "first"}]
+        assert turn_starts[1]["input"] == [
+            {"type": "skill", "name": "bridge", "path": str(skill_path)},
+            {"type": "text", "text": "second"},
+        ]
+        assert turn_starts[2]["input"] == [{"type": "text", "text": "third"}]
+
+    def test_skill_path_outside_extra_root_is_ignored(self, tmp_path):
+        root = tmp_path / "skills"
+        root.mkdir()
+        outside = tmp_path / "outside" / "SKILL.md"
+        outside.parent.mkdir()
+        outside.write_text("outside", encoding="utf-8")
+
+        client = FakeClient()
+        original_request = client.request
+
+        def request(method, params=None, timeout=10.0):
+            if method == "skills/list":
+                return {
+                    "data": [
+                        {
+                            "cwd": "/tmp",
+                            "errors": [],
+                            "skills": [
+                                {
+                                    "name": "outside",
+                                    "path": str(outside),
+                                    "enabled": True,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            return original_request(method, params, timeout)
+
+        client.request = request
+        s = make_session(client, extra_skill_roots=[str(root)])
+        s.ensure_started()
+
+        changed, fingerprints = s._reload_changed_skills()
+        assert changed == []
+        assert fingerprints == {}
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Symlinks require elevated privileges on Windows",
+    )
+    def test_symlinked_skill_escaping_extra_root_is_ignored(self, tmp_path):
+        root = tmp_path / "skills"
+        symlink_path = root / "testing" / "bridge" / "SKILL.md"
+        symlink_path.parent.mkdir(parents=True)
+        outside = tmp_path / "outside" / "SKILL.md"
+        outside.parent.mkdir()
+        outside.write_text("outside", encoding="utf-8")
+        symlink_path.symlink_to(outside)
+
+        client = FakeClient()
+        original_request = client.request
+
+        def request(method, params=None, timeout=10.0):
+            if method == "skills/list":
+                return {
+                    "data": [
+                        {
+                            "cwd": "/tmp",
+                            "errors": [],
+                            "skills": [
+                                {
+                                    "name": "bridge",
+                                    "path": str(symlink_path),
+                                    "enabled": True,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            return original_request(method, params, timeout)
+
+        client.request = request
+        s = make_session(client, extra_skill_roots=[str(root)])
+        s.ensure_started()
+
+        changed, fingerprints = s._reload_changed_skills()
+        assert changed == []
+        assert fingerprints == {}
 
     def test_token_usage_notification_is_captured(self):
         client = FakeClient()

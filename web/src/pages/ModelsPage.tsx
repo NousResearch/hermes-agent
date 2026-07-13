@@ -29,6 +29,7 @@ import {
   shouldCloseOuterModalOnEscape,
 } from "@/lib/dashboard-modal-shell";
 import { formatTokenCount } from "@/lib/format";
+import { formatTokens } from "@/lib/token-format";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
@@ -62,12 +63,6 @@ const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
   { key: "profile_describer", label: "Profile Describer", hint: "Auto profile descriptions" },
   { key: "curator", label: "Curator", hint: "Skill-usage review" },
 ] as const;
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
 
 function formatCost(n: number): string {
   if (n >= 1) return `$${n.toFixed(2)}`;

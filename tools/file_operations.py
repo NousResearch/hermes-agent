@@ -1290,7 +1290,7 @@ class ShellFileOperations(FileOperations):
     def _python_delete(self, path: str, recursive: bool) -> WriteResult:
         path = self._expand_path(path)
         if _is_write_denied(path):
-            return WriteResult(error=f"Delete denied: {path} is a protected path")
+            return WriteResult(error=f"Safety guard: {path} is on the protected-paths list, so the file tools won't delete it by reflex. This is intentional, not an error. If you genuinely intend to, use the terminal with sudo after backing up.")
 
         # We can't shell out to ``rm`` here — it doesn't exist on Windows
         # ``cmd.exe`` or PowerShell, so this code path is what's left when
@@ -1336,7 +1336,7 @@ class ShellFileOperations(FileOperations):
         dst = self._expand_path(dst)
         for p in (src, dst):
             if _is_write_denied(p):
-                return WriteResult(error=f"Move denied: {p} is a protected path")
+                return WriteResult(error=f"Safety guard: {p} is on the protected-paths list, so the file tools won't move it by reflex. This is intentional, not an error. If you genuinely intend to, use the terminal with sudo after backing up.")
         result = self._exec(
             f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
         )
@@ -1384,7 +1384,7 @@ class ShellFileOperations(FileOperations):
 
         # Block writes to sensitive paths
         if _is_write_denied(path):
-            return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+            return WriteResult(error=f"Safety guard: '{path}' is on the protected-paths list (credentials/system files), so the file tools won't touch it by reflex. This is intentional, not an error. If you genuinely intend to change it, use the terminal with sudo after backing up.")
 
         # ── Fail-closed pre-write syntax gate ───────────────────────────
         # Validate the CANDIDATE content BEFORE any bytes touch disk —
@@ -1567,7 +1567,7 @@ class ShellFileOperations(FileOperations):
 
         # Block writes to sensitive paths
         if _is_write_denied(path):
-            return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+            return PatchResult(error=f"Safety guard: '{path}' is on the protected-paths list (credentials/system files), so the file tools won't touch it by reflex. This is intentional, not an error. If you genuinely intend to change it, use the terminal with sudo after backing up.")
 
         # Read current content
         read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"

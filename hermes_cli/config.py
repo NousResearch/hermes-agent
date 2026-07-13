@@ -1159,6 +1159,39 @@ DEFAULT_CONFIG = {
         "image_input_mode": "auto",
         "disabled_toolsets": [],
     },
+
+    "advisor": {
+        # Evidence-based final audit gate. Disabled by default; when enabled it
+        # audits actionful turns after the Commander drafts the final answer.
+        "enabled": False,
+        "mode": "observe",        # off | observe | final_gate | full (v0: full = final_gate)
+        "provider": "auto",
+        "model": "",
+        "base_url": "",
+        "api_key": "",
+        "max_calls_per_turn": 2,
+        "max_repair_iterations": 1,
+        "max_input_chars": 64000,
+        "timeout_seconds": 90,
+        "max_output_tokens": 1200,
+        "failure_policy": "fail_open",  # fail_open | fail_closed
+        "extra_body": {},
+        "phases": {
+            "plan": "off",
+            "delegation": "off",
+            "exception": "off",
+            "final": "actionful_only",
+        },
+        "block_on": [
+            "secret_exposure",
+            "irreversible_unapproved_action",
+            "critical_false_claim",
+            "user_constraint_violation",
+        ],
+        "receipt": {
+            "persist": True,
+        },
+    },
     
     "terminal": {
         "backend": "local",
@@ -5214,7 +5247,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
+    "advisor", "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",
 }
 

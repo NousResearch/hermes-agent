@@ -156,6 +156,30 @@ def finalize_turn(
         )
     )
 
+    _advisor_receipt = None
+    if final_response and not interrupted:
+        try:
+            from agent.advisor import run_final_advisor_gate
+
+            _advisor_decision = run_final_advisor_gate(
+                agent,
+                messages=messages,
+                final_response=final_response,
+                api_call_count=api_call_count,
+                original_user_message=original_user_message,
+                turn_exit_reason=_turn_exit_reason,
+            )
+            if _advisor_decision.receipt is not None:
+                _advisor_receipt = _advisor_decision.receipt
+            if _advisor_decision.response_changed:
+                final_response = _advisor_decision.final_response
+            if _advisor_decision.turn_exit_reason:
+                _turn_exit_reason = _advisor_decision.turn_exit_reason
+            if _advisor_decision.blocked:
+                completed = False
+        except Exception as _advisor_err:
+            logger.warning("Advisor final audit failed open: %s", _advisor_err, exc_info=True)
+
     # Post-loop cleanup must never lose the response.  Trajectory save,
     # resource teardown, and session persistence all touch fallible
     # surfaces — file I/O / JSON serialization (_save_trajectory), remote
@@ -458,6 +482,8 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    if _advisor_receipt is not None:
+        result["advisor"] = _advisor_receipt
     # Surface any post-loop cleanup failures so the caller can distinguish a
     # clean turn from one whose trajectory/session/resource teardown raised
     # (the response is still returned either way — #8049).

@@ -1348,6 +1348,8 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+    _advisor_cfg = _agent_cfg.get("advisor", {}) if isinstance(_agent_cfg, dict) else {}
+    agent._advisor_config = _advisor_cfg if isinstance(_advisor_cfg, dict) else {}
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

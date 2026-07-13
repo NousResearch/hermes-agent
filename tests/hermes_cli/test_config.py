@@ -117,6 +117,11 @@ class TestLoadConfigDefaults:
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
+            assert config["advisor"]["enabled"] is False
+            assert config["advisor"]["mode"] == "observe"
+            assert config["advisor"]["max_calls_per_turn"] == 2
+            assert config["advisor"]["failure_policy"] == "fail_open"
+            assert config["advisor"]["receipt"]["persist"] is True
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

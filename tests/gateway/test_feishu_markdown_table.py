@@ -7,12 +7,16 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+
+
+_feishu_mod = load_plugin_adapter("feishu")
+FeishuAdapter = _feishu_mod.FeishuAdapter
+
 
 class TestFeishuMarkdownTablePayload(unittest.TestCase):
     def _adapter(self):
         from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
         return FeishuAdapter(PlatformConfig())
 
     def _interactive_card(self, content: str):
@@ -254,8 +258,6 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_interactive_send_failure_falls_back_to_plain_text(self):
         from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
         adapter = FeishuAdapter(PlatformConfig())
         adapter._client = SimpleNamespace()
         response = SimpleNamespace(
@@ -283,8 +285,6 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_interactive_response_failure_falls_back_to_text(self):
         from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
         adapter = FeishuAdapter(PlatformConfig())
         adapter._client = SimpleNamespace()
         interactive_rejected = SimpleNamespace(success=lambda: False, msg="card rejected")
@@ -314,17 +314,12 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_splits_more_than_five_tables_into_multiple_interactive_cards(self):
+    def test_over_limit_tables_fall_back_to_single_text_message(self):
         from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
         adapter = FeishuAdapter(PlatformConfig())
         adapter._client = SimpleNamespace()
-        responses = [
-            SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_card_1")),
-            SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_card_2")),
-        ]
-        adapter._feishu_send_with_retry = AsyncMock(side_effect=responses)
+        response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_text"))
+        adapter._feishu_send_with_retry = AsyncMock(return_value=response)
         content = "\n\n".join(
             f"Table {index}\n\n| A | B |\n| --- | --- |\n| {index} | ok |"
             for index in range(1, 7)
@@ -333,25 +328,24 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
         result = asyncio.run(adapter.send(chat_id="oc_chat", content=content, reply_to="om_user_message"))
 
         self.assertTrue(result.success)
-        self.assertEqual(result.message_id, "om_card_2")
+        self.assertEqual(result.message_id, "om_text")
         self.assertEqual(
             [(call.kwargs["msg_type"], call.kwargs["reply_to"]) for call in adapter._feishu_send_with_retry.call_args_list],
-            [("interactive", "om_user_message"), ("interactive", None)],
+            [("text", "om_user_message")],
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_interactive_reply_rejection_retries_as_top_level_card_before_text(self):
+    def test_interactive_reply_rejection_falls_back_to_text_reply(self):
         from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._client = SimpleNamespace()
-        interactive_rejected = SimpleNamespace(success=lambda: False, code=230001, msg="unsupported reply card")
-        top_level_response = SimpleNamespace(
+        interactive_rejected = SimpleNamespace(success=lambda: False, code=230011, msg="reply target missing")
+        text_response = SimpleNamespace(
             success=lambda: True,
-            data=SimpleNamespace(message_id="om_top_level_card"),
+            data=SimpleNamespace(message_id="om_text_reply"),
         )
-        adapter._feishu_send_with_retry = AsyncMock(side_effect=[interactive_rejected, top_level_response])
+        adapter._feishu_send_with_retry = AsyncMock(side_effect=[interactive_rejected, text_response])
 
         result = asyncio.run(
             adapter.send(
@@ -362,54 +356,23 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
         )
 
         self.assertTrue(result.success)
-        self.assertEqual(result.message_id, "om_top_level_card")
+        self.assertEqual(result.message_id, "om_text_reply")
         self.assertEqual(
             [(call.kwargs["msg_type"], call.kwargs["reply_to"]) for call in adapter._feishu_send_with_retry.call_args_list],
-            [("interactive", "om_user_message"), ("interactive", None)],
+            [("interactive", "om_user_message"), ("text", "om_user_message")],
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_thread_opt_out_allows_interactive_reply_top_level_fallback(self):
+    def test_interactive_reply_exception_falls_back_to_text_reply(self):
         from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig(extra={"reply_in_thread": False}))
-        adapter._client = SimpleNamespace()
-        interactive_rejected = SimpleNamespace(success=lambda: False, code=230001, msg="unsupported reply card")
-        top_level_response = SimpleNamespace(
-            success=lambda: True,
-            data=SimpleNamespace(message_id="om_top_level_card"),
-        )
-        adapter._feishu_send_with_retry = AsyncMock(side_effect=[interactive_rejected, top_level_response])
-
-        result = asyncio.run(
-            adapter.send(
-                chat_id="oc_chat",
-                content="| A | B |\n| --- | --- |\n| 1 | 2 |",
-                reply_to="om_user_message",
-                metadata={"thread_id": "omt_thread", "reply_to_message_id": "om_parent"},
-            )
-        )
-
-        self.assertTrue(result.success)
-        self.assertEqual(result.message_id, "om_top_level_card")
-        self.assertEqual(
-            [(call.kwargs["msg_type"], call.kwargs["reply_to"]) for call in adapter._feishu_send_with_retry.call_args_list],
-            [("interactive", "om_user_message"), ("interactive", None)],
-        )
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_interactive_reply_exception_retries_as_top_level_card_before_text(self):
-        from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._client = SimpleNamespace()
-        top_level_response = SimpleNamespace(
+        text_response = SimpleNamespace(
             success=lambda: True,
-            data=SimpleNamespace(message_id="om_top_level_after_exception"),
+            data=SimpleNamespace(message_id="om_text_after_exception"),
         )
-        adapter._feishu_send_with_retry = AsyncMock(side_effect=[RuntimeError("reply rejected"), top_level_response])
+        adapter._feishu_send_with_retry = AsyncMock(side_effect=[RuntimeError("reply rejected"), text_response])
 
         result = asyncio.run(
             adapter.send(
@@ -420,16 +383,62 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
         )
 
         self.assertTrue(result.success)
-        self.assertEqual(result.message_id, "om_top_level_after_exception")
+        self.assertEqual(result.message_id, "om_text_after_exception")
         self.assertEqual(
             [(call.kwargs["msg_type"], call.kwargs["reply_to"]) for call in adapter._feishu_send_with_retry.call_args_list],
-            [("interactive", "om_user_message"), ("interactive", None)],
+            [("interactive", "om_user_message"), ("text", "om_user_message")],
         )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_interactive_fallback_failure_returns_send_result(self):
+        from gateway.config import PlatformConfig
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace()
+        adapter._feishu_send_with_retry = AsyncMock(
+            side_effect=[RuntimeError("interactive rejected"), RuntimeError("text rejected")]
+        )
+
+        result = asyncio.run(
+            adapter.send(
+                chat_id="oc_chat",
+                content="| A | B |\n| --- | --- |\n| 1 | 2 |",
+                reply_to="om_user_message",
+            )
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("text rejected", result.error)
+        self.assertEqual(
+            [(call.kwargs["msg_type"], call.kwargs["reply_to"]) for call in adapter._feishu_send_with_retry.call_args_list],
+            [("interactive", "om_user_message"), ("text", "om_user_message")],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_retry_does_not_turn_failed_interactive_reply_into_top_level_card(self):
+        from gateway.config import PlatformConfig
+
+        adapter = FeishuAdapter(PlatformConfig())
+        rejected = SimpleNamespace(success=lambda: False, code=230011, msg="reply target missing")
+        adapter._send_raw_message = AsyncMock(return_value=rejected)
+
+        response = asyncio.run(
+            adapter._feishu_send_with_retry(
+                chat_id="oc_chat",
+                msg_type="interactive",
+                payload="{}",
+                reply_to="om_user_message",
+                metadata=None,
+            )
+        )
+
+        self.assertIs(response, rejected)
+        adapter._send_raw_message.assert_awaited_once()
+        self.assertEqual(adapter._send_raw_message.call_args.kwargs["reply_to"], "om_user_message")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_reply_in_thread_false_ignores_thread_metadata_fallback(self):
         from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig(extra={"reply_in_thread": False}))
         message_api = SimpleNamespace(
@@ -455,7 +464,6 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_does_not_attempt_interactive_update_for_table_content(self):
         from gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -472,7 +480,7 @@ class TestFeishuMarkdownTableSendEdit(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+        with patch.object(adapter, "_run_blocking", side_effect=_direct):
             result = asyncio.run(
                 adapter.edit_message(
                     chat_id="oc_chat",

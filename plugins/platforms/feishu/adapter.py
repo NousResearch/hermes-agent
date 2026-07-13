@@ -143,7 +143,22 @@ from gateway.platforms.base import (
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
-from utils import atomic_json_write, env_float, env_int
+try:
+    from utils import atomic_json_write, env_float, env_int
+except ImportError:  # Compatibility with the PR base before these helpers landed.
+    from utils import atomic_json_write
+
+    def env_int(key: str, default: int = 0) -> int:
+        try:
+            return int(os.getenv(key, "").strip() or default)
+        except ValueError:
+            return default
+
+    def env_float(key: str, default: float = 0.0) -> float:
+        try:
+            return float(os.getenv(key, "").strip() or default)
+        except ValueError:
+            return default
 
 logger = logging.getLogger(__name__)
 
@@ -943,76 +958,6 @@ def _build_markdown_table_card_payload(content: str) -> Optional[str]:
     if card is None:
         return None
     return json.dumps(card, ensure_ascii=False)
-
-
-def _split_markdown_table_card_chunks(content: str) -> List[str]:
-    """Split Markdown into chunks that fit Feishu's per-card table-count limit."""
-    lines = content.splitlines()
-    chunks: List[str] = []
-    current: List[str] = []
-    table_count = 0
-    code_fence = ""
-    index = 0
-
-    def _flush() -> None:
-        nonlocal current, table_count
-        segment = "\n".join(current).strip()
-        if segment:
-            chunks.append(segment)
-        current = []
-        table_count = 0
-
-    while index < len(lines):
-        line = lines[index]
-        next_fence = _is_markdown_table_code_fence(line, code_fence)
-        if code_fence or next_fence:
-            code_fence = next_fence
-            current.append(line)
-            index += 1
-            continue
-
-        if _is_indented_markdown_code_line(line):
-            current.append(line)
-            index += 1
-            continue
-
-        if index + 1 < len(lines):
-            alignments = _parse_markdown_table_separator(lines[index + 1])
-            header_cells = _split_markdown_table_row(line)
-            if alignments and _has_markdown_table_delimiter(line) and len(header_cells) == len(alignments):
-                if table_count >= _FEISHU_CARD_TABLE_MAX_TABLES:
-                    _flush()
-                table_count += 1
-                current.append(line)
-                current.append(lines[index + 1])
-                index += 2
-                while index < len(lines):
-                    row_line = lines[index]
-                    if not row_line.strip() or not _has_markdown_table_delimiter(row_line):
-                        break
-                    current.append(row_line)
-                    index += 1
-                continue
-
-        current.append(line)
-        index += 1
-
-    _flush()
-    return chunks
-
-
-def _build_markdown_table_card_payloads(content: str) -> List[str]:
-    payload = _build_markdown_table_card_payload(content)
-    if payload is not None:
-        return [payload]
-
-    payloads: List[str] = []
-    for chunk in _split_markdown_table_card_chunks(content):
-        chunk_payload = _build_markdown_table_card_payload(chunk)
-        if chunk_payload is None:
-            return []
-        payloads.append(chunk_payload)
-    return payloads
 
 
 def _contains_markdown_table(content: str) -> bool:
@@ -2306,84 +2251,6 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
-        table_card_payloads = _build_markdown_table_card_payloads(formatted) if _contains_markdown_table(formatted) else []
-        if table_card_payloads:
-            last_response = None
-            active_reply_to = reply_to
-            try:
-                for payload in table_card_payloads:
-                    msg_type = "interactive"
-                    try:
-                        response = await self._feishu_send_with_retry(
-                            chat_id=chat_id,
-                            msg_type=msg_type,
-                            payload=payload,
-                            reply_to=active_reply_to,
-                            metadata=metadata,
-                        )
-                    except Exception as exc:
-                        if self._can_retry_reply_as_top_level(active_reply_to, metadata):
-                            logger.warning(
-                                "[Feishu] Interactive card reply failed; retrying as a top-level card before plain text fallback: %s",
-                                exc,
-                            )
-                            response = await self._feishu_send_with_retry(
-                                chat_id=chat_id,
-                                msg_type=msg_type,
-                                payload=payload,
-                                reply_to=None,
-                                metadata=metadata,
-                            )
-                        else:
-                            raise
-                    if (
-                        not self._response_succeeded(response)
-                        and self._can_retry_reply_as_top_level(active_reply_to, metadata)
-                    ):
-                        code = getattr(response, "code", "unknown")
-                        msg = getattr(response, "msg", "")
-                        logger.warning(
-                            "[Feishu] Interactive card reply was rejected (code=%s msg=%s); retrying as a top-level card before plain text fallback",
-                            code,
-                            msg,
-                        )
-                        response = await self._feishu_send_with_retry(
-                            chat_id=chat_id,
-                            msg_type=msg_type,
-                            payload=payload,
-                            reply_to=None,
-                            metadata=metadata,
-                        )
-                    if not self._response_succeeded(response):
-                        code = getattr(response, "code", "unknown")
-                        msg = getattr(response, "msg", "")
-                        logger.warning(
-                            "[Feishu] Interactive card send was rejected (code=%s msg=%s); falling back to plain text",
-                            code,
-                            msg,
-                        )
-                        text_response = await self._feishu_send_with_retry(
-                            chat_id=chat_id,
-                            msg_type="text",
-                            payload=json.dumps({"text": _strip_markdown_to_plain_text(formatted)}, ensure_ascii=False),
-                            reply_to=reply_to,
-                            metadata=metadata,
-                        )
-                        return self._finalize_send_result(text_response, "send failed")
-                    last_response = response
-                    active_reply_to = None
-                return self._finalize_send_result(last_response, "send failed")
-            except Exception as exc:
-                logger.warning("[Feishu] Interactive card send failed; falling back to plain text: %s", exc)
-                text_response = await self._feishu_send_with_retry(
-                    chat_id=chat_id,
-                    msg_type="text",
-                    payload=json.dumps({"text": _strip_markdown_to_plain_text(formatted)}, ensure_ascii=False),
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
-                return self._finalize_send_result(text_response, "send failed")
-
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
@@ -2400,28 +2267,15 @@ class FeishuAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     if msg_type == "interactive":
-                        if self._can_retry_reply_as_top_level(reply_to, metadata):
-                            logger.warning(
-                                "[Feishu] Interactive card reply failed; retrying as a top-level card before plain text fallback: %s",
-                                exc,
-                            )
-                            response = await self._feishu_send_with_retry(
-                                chat_id=chat_id,
-                                msg_type=msg_type,
-                                payload=payload,
-                                reply_to=None,
-                                metadata=metadata,
-                            )
-                        else:
-                            logger.warning("[Feishu] Interactive card send failed; falling back to plain text: %s", exc)
-                            msg_type = "text"
-                            response = await self._feishu_send_with_retry(
-                                chat_id=chat_id,
-                                msg_type=msg_type,
-                                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                                reply_to=reply_to,
-                                metadata=metadata,
-                            )
+                        logger.warning("[Feishu] Interactive card send failed; falling back to plain text: %s", exc)
+                        msg_type = "text"
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=msg_type,
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
                     elif msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
                     else:
@@ -2437,35 +2291,19 @@ class FeishuAdapter(BasePlatformAdapter):
                 if msg_type == "interactive" and not self._response_succeeded(response):
                     code = getattr(response, "code", "unknown")
                     msg = getattr(response, "msg", "")
-                    if self._can_retry_reply_as_top_level(reply_to, metadata):
-                        logger.warning(
-                            "[Feishu] Interactive card reply was rejected (code=%s msg=%s); retrying as a top-level card before plain text fallback",
-                            code,
-                            msg,
-                        )
-                        response = await self._feishu_send_with_retry(
-                            chat_id=chat_id,
-                            msg_type=msg_type,
-                            payload=payload,
-                            reply_to=None,
-                            metadata=metadata,
-                        )
-                    if msg_type == "interactive" and not self._response_succeeded(response):
-                        code = getattr(response, "code", "unknown")
-                        msg = getattr(response, "msg", "")
-                        logger.warning(
-                            "[Feishu] Interactive card send was rejected (code=%s msg=%s); falling back to plain text",
-                            code,
-                            msg,
-                        )
-                        msg_type = "text"
-                        response = await self._feishu_send_with_retry(
-                            chat_id=chat_id,
-                            msg_type=msg_type,
-                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                            reply_to=reply_to,
-                            metadata=metadata,
-                        )
+                    logger.warning(
+                        "[Feishu] Interactive card send was rejected (code=%s msg=%s); falling back to plain text",
+                        code,
+                        msg,
+                    )
+                    msg_type = "text"
+                    response = await self._feishu_send_with_retry(
+                        chat_id=chat_id,
+                        msg_type=msg_type,
+                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
@@ -5412,7 +5250,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 # fall back to posting a new message directly to the chat.
                 if active_reply_to and not self._response_succeeded(response):
                     code = getattr(response, "code", None)
-                    if code in _FEISHU_REPLY_FALLBACK_CODES:
+                    if code in _FEISHU_REPLY_FALLBACK_CODES and msg_type != "interactive":
                         if self._has_effective_reply_thread(metadata):
                             logger.warning(
                                 "[Feishu] Reply to %s failed in thread %s (code %s — message withdrawn/missing); "

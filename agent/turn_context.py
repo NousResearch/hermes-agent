@@ -173,6 +173,16 @@ def build_turn_context(
     # Restore the primary runtime if the previous turn activated fallback.
     agent._restore_primary_runtime()
 
+    # Select runtime strategies once at the turn boundary. This does not
+    # mutate the model, tool schema, or prompt during an in-flight turn.
+    try:
+        from agent.source_routing_strategy import select_for_turn
+
+        select_for_turn(agent, user_message)
+    except Exception:
+        agent._active_strategy = None
+        agent._active_strategy_evidence_pending = False
+
     # Between-turns MCP refresh: an MCP server that finished connecting since
     # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold
     # connect, missing the bounded startup wait) lands in THIS turn's tool

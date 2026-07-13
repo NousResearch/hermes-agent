@@ -1294,6 +1294,31 @@ def init_agent(
     
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db
+    agent._active_strategy = None
+    agent._active_strategy_task_class = None
+    agent._active_strategy_metadata = {}
+    agent._active_strategy_evidence_pending = False
+    agent._active_strategy_tool_index = 0
+    # Register concrete strategies and load promoted guidance only at agent
+    # construction. The resulting prompt remains stable for the full session.
+    try:
+        from agent.source_routing_strategy import (
+            compose_strategy_prompt,
+            evaluate_source_routing_promotion,
+            register_source_routing_strategy,
+            strategy_startup_guidance,
+        )
+
+        register_source_routing_strategy(agent._session_db)
+        evaluate_source_routing_promotion(agent._session_db)
+        _strategy_guidance = strategy_startup_guidance(agent._session_db)
+        agent.ephemeral_system_prompt = compose_strategy_prompt(
+            agent.ephemeral_system_prompt,
+            _strategy_guidance,
+        )
+    except Exception:
+        # Strategy telemetry is optional and must not make startup brittle.
+        pass
     agent._parent_session_id = parent_session_id
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()

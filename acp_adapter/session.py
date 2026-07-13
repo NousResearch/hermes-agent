@@ -596,6 +596,7 @@ class SessionManager:
 
         from run_agent import AIAgent
         from hermes_cli.config import load_config
+        from hermes_cli.fallback_config import get_fallback_chain
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         config = load_config()
@@ -625,6 +626,10 @@ class SessionManager:
             "session_db": self._get_db(),
             "model": model or default_model,
         }
+
+        # Same merge/de-dup semantics as CLI and gateway: modern
+        # ``fallback_providers`` first, then legacy ``fallback_model``.
+        kwargs["fallback_model"] = get_fallback_chain(config)
 
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)

@@ -326,8 +326,9 @@ class TestConvertMessagesToConverse:
         from agent.bedrock_adapter import convert_messages_to_converse
         messages = [{"role": "user", "content": ""}]
         system, msgs = convert_messages_to_converse(messages)
-        # Empty string should get a space placeholder
-        assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
+        # Empty string must get a NON-WHITESPACE placeholder (Bedrock rejects
+        # blank text blocks; a bare space is whitespace and also rejected).
+        assert msgs[0]["content"][0]["text"].strip() != ""
 
     def test_image_data_url_converted(self):
         from agent.bedrock_adapter import convert_messages_to_converse
@@ -1305,22 +1306,34 @@ class TestIsAnthropicBedrockModel:
 
 
 class TestEmptyTextBlockFix:
-    """Test that empty text blocks are replaced with space placeholders."""
+    """Empty/blank text is replaced with a NON-WHITESPACE placeholder.
 
-    def test_none_content_gets_space(self):
+    Bedrock's Converse API rejects any text content block whose text is blank
+    with "text content blocks must contain non-whitespace text". A single space
+    is whitespace and is ALSO rejected, so the placeholder must contain a
+    non-whitespace character. Regression guard for the whitespace-only ("")
+    placeholder that broke every call in a compacted (assistant-first) session.
+    """
+
+    def test_none_content_gets_nonwhitespace(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse(None)
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"].strip() != ""
 
-    def test_empty_string_gets_space(self):
+    def test_empty_string_gets_nonwhitespace(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("")
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"].strip() != ""
 
-    def test_whitespace_only_gets_space(self):
+    def test_whitespace_only_gets_nonwhitespace(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("   ")
-        assert blocks[0]["text"] == " "
+        assert blocks[0]["text"].strip() != ""
+
+    def test_whitespace_only_text_part_gets_nonwhitespace(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([{"type": "text", "text": "   "}])
+        assert blocks[0]["text"].strip() != ""
 
     def test_real_text_preserved(self):
         from agent.bedrock_adapter import _convert_content_to_converse
@@ -1328,8 +1341,94 @@ class TestEmptyTextBlockFix:
         assert blocks[0]["text"] == "Hello"
 
 
-# ---------------------------------------------------------------------------
-# Stale-connection detection and per-region client invalidation
+class TestConverseNoBlankTextBlocks:
+    """End-to-end invariant: NO message emitted by the converter may contain a
+    blank (empty or whitespace-only) text block — Bedrock rejects the whole
+    request if even one is present. Regression guard for issue where a
+    compacted session beginning with an assistant turn got a whitespace-only
+    synthetic first user message.
+    """
+
+    @staticmethod
+    def _assert_no_blank_text(msgs):
+        for m in msgs:
+            for blk in m.get("content", []):
+                if "text" in blk:
+                    assert blk["text"].strip() != "", (
+                        f"blank text block in {m['role']} message: {blk!r}"
+                    )
+                if "toolResult" in blk:
+                    for ib in blk["toolResult"].get("content", []):
+                        if "text" in ib:
+                            assert ib["text"].strip() != "", (
+                                f"blank text block in toolResult: {ib!r}"
+                            )
+
+    def test_assistant_first_history_no_blank_first_user(self):
+        """A compacted session that begins with an assistant message must get a
+        NON-whitespace synthetic first user turn (not " ")."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "assistant", "content": "Resuming from a compacted summary."},
+            {"role": "user", "content": "continue"},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        assert msgs[0]["role"] == "user"
+        assert msgs[0]["content"][0]["text"].strip() != ""
+        self._assert_no_blank_text(msgs)
+
+    def test_assistant_last_history_no_blank_last_user(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello"},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        assert msgs[-1]["role"] == "user"
+        assert msgs[-1]["content"][0]["text"].strip() != ""
+        self._assert_no_blank_text(msgs)
+
+    def test_assistant_tool_call_only_no_blank_block(self):
+        """An assistant turn that is pure tool_calls (empty content) must not
+        emit a blank text block alongside the toolUse."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "Read the file"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": '{"path": "x"}'},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "file contents"},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        self._assert_no_blank_text(msgs)
+
+    def test_empty_tool_result_no_blank_block(self):
+        """A tool that returns empty/whitespace output must not emit a blank
+        toolResult text block."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "Run it"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "   "},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        self._assert_no_blank_text(msgs)
+
+
 # ---------------------------------------------------------------------------
 
 class TestInvalidateRuntimeClient:

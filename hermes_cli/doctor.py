@@ -8,6 +8,8 @@ import os
 import sys
 import subprocess
 import shutil
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -54,6 +56,60 @@ _PROVIDER_ENV_HINTS = (
     "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY",
 )
+
+_LARGE_WAL_THRESHOLD_BYTES = 50 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class _WalCheckpointRepairResult:
+    before_size: int
+    after_size: int
+    passive_result: tuple | None
+    truncate_result: tuple | None
+    retained_large_wal: bool
+
+
+def _wal_file_size(wal_path: Path) -> int:
+    return wal_path.stat().st_size if wal_path.exists() else 0
+
+
+def _format_wal_checkpoint_result(result: tuple | None) -> str:
+    if result is None:
+        return "n/a"
+    if len(result) >= 3:
+        return f"busy={result[0]}, log={result[1]}, checkpointed={result[2]}"
+    return str(result)
+
+
+def _checkpoint_oversized_state_wal(
+    state_db_path: Path,
+    wal_path: Path,
+    *,
+    threshold_bytes: int = _LARGE_WAL_THRESHOLD_BYTES,
+) -> _WalCheckpointRepairResult:
+    """Run doctor's oversized-WAL repair and report the resulting file state."""
+    before_size = _wal_file_size(wal_path)
+    passive_result = None
+    truncate_result = None
+    conn = sqlite3.connect(str(state_db_path))
+    try:
+        from hermes_state import _apply_macos_checkpoint_barrier
+
+        _apply_macos_checkpoint_barrier(conn)
+        passive_result = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        after_size = _wal_file_size(wal_path)
+        if after_size > threshold_bytes:
+            truncate_result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            after_size = _wal_file_size(wal_path)
+    finally:
+        conn.close()
+    return _WalCheckpointRepairResult(
+        before_size=before_size,
+        after_size=after_size,
+        passive_result=passive_result,
+        truncate_result=truncate_result,
+        retained_large_wal=after_size > threshold_bytes,
+    )
 
 
 from hermes_constants import is_termux as _is_termux
@@ -1227,7 +1283,6 @@ def run_doctor(args):
     state_db_path = hermes_home / "state.db"
     if state_db_path.exists():
         try:
-            import sqlite3
             conn = sqlite3.connect(str(state_db_path))
             cursor = conn.execute("SELECT COUNT(*) FROM sessions")
             count = cursor.fetchone()[0]
@@ -1329,34 +1384,37 @@ def run_doctor(args):
     if wal_path.exists():
         try:
             wal_size = wal_path.stat().st_size
-            if wal_size > 50 * 1024 * 1024:  # 50 MB
+            if wal_size > _LARGE_WAL_THRESHOLD_BYTES:
                 check_warn(
                     f"WAL file is large ({wal_size // (1024*1024)} MB)",
                     "(may indicate missed checkpoints)"
                 )
                 if should_fix:
-                    import sqlite3
-                    conn = sqlite3.connect(str(state_db_path))
-                    try:
-                        # PASSIVE copies checkpointable frames without blocking
-                        # active readers/writers, but it does not guarantee the
-                        # WAL file is truncated.  If the file remains above the
-                        # warning threshold, fall back to TRUNCATE so --fix does
-                        # what it says for long-lived gateway processes.
-                        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                        new_size = wal_path.stat().st_size if wal_path.exists() else 0
-                        if new_size > 50 * 1024 * 1024:
-                            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                            new_size = wal_path.stat().st_size if wal_path.exists() else 0
-                    finally:
-                        conn.close()
-                    if new_size <= 50 * 1024 * 1024:
-                        check_ok(f"WAL checkpoint performed ({wal_size // 1024}K → {new_size // 1024}K)")
+                    # PASSIVE copies checkpointable frames without blocking
+                    # active readers/writers, but it does not guarantee the
+                    # WAL file is truncated. If the file remains above the
+                    # warning threshold, fall back to TRUNCATE so --fix does
+                    # what it says for long-lived gateway processes.
+                    repair = _checkpoint_oversized_state_wal(
+                        state_db_path,
+                        wal_path,
+                        threshold_bytes=_LARGE_WAL_THRESHOLD_BYTES,
+                    )
+                    if not repair.retained_large_wal:
+                        check_ok(
+                            f"WAL checkpoint performed "
+                            f"({repair.before_size // 1024}K → {repair.after_size // 1024}K)"
+                        )
                         fixed_count += 1
                     else:
                         check_warn(
-                            f"WAL checkpoint attempted but file remains large ({new_size // (1024*1024)} MB)",
-                            "(active database readers may be preventing truncation)"
+                            f"WAL checkpoint attempted but file remains large "
+                            f"({repair.after_size // (1024*1024)} MB)",
+                            (
+                                f"(PASSIVE: {_format_wal_checkpoint_result(repair.passive_result)}; "
+                                f"TRUNCATE: {_format_wal_checkpoint_result(repair.truncate_result)}; "
+                                "active database readers may be preventing truncation)"
+                            ),
                         )
                         issues.append("Large WAL file remains after checkpoint attempt")
                 else:

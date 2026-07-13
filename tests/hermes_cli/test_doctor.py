@@ -51,6 +51,131 @@ class TestProviderEnvDetection:
         assert not _has_provider_env_config(content)
 
 
+class _FakeCheckpointCursor:
+    def __init__(self, row):
+        self._row = row
+
+    def fetchone(self):
+        return self._row
+
+
+class _FakeCheckpointConnection:
+    def __init__(
+        self,
+        wal_path,
+        *,
+        passive_row=(0, 12, 12),
+        truncate_row=(0, 0, 0),
+        shrink_on_truncate_to=None,
+    ):
+        self.wal_path = wal_path
+        self.passive_row = passive_row
+        self.truncate_row = truncate_row
+        self.shrink_on_truncate_to = shrink_on_truncate_to
+        self.executed = []
+        self.closed = False
+
+    def execute(self, sql, params=()):
+        self.executed.append(sql)
+        if "wal_checkpoint(TRUNCATE)" in sql:
+            if self.shrink_on_truncate_to is not None:
+                self.wal_path.write_bytes(b"x" * self.shrink_on_truncate_to)
+            return _FakeCheckpointCursor(self.truncate_row)
+        if "wal_checkpoint(PASSIVE)" in sql:
+            return _FakeCheckpointCursor(self.passive_row)
+        return _FakeCheckpointCursor(None)
+
+    def close(self):
+        self.closed = True
+
+
+class TestDoctorLargeWalRepair:
+    def test_falls_back_to_truncate_when_passive_retains_large_wal(
+        self, monkeypatch, tmp_path
+    ):
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "linux")
+        db_path = tmp_path / "state.db"
+        wal_path = tmp_path / "state.db-wal"
+        db_path.write_bytes(b"db")
+        wal_path.write_bytes(b"x" * 12)
+        conn = _FakeCheckpointConnection(wal_path, shrink_on_truncate_to=4)
+        monkeypatch.setattr(doctor_mod.sqlite3, "connect", lambda path: conn)
+
+        result = doctor_mod._checkpoint_oversized_state_wal(
+            db_path,
+            wal_path,
+            threshold_bytes=10,
+        )
+
+        assert conn.executed == [
+            "PRAGMA wal_checkpoint(PASSIVE)",
+            "PRAGMA wal_checkpoint(TRUNCATE)",
+        ]
+        assert result.before_size == 12
+        assert result.after_size == 4
+        assert result.retained_large_wal is False
+        assert conn.closed is True
+
+    def test_reports_retained_large_wal_size_and_checkpoint_results(
+        self, monkeypatch, tmp_path
+    ):
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "linux")
+        db_path = tmp_path / "state.db"
+        wal_path = tmp_path / "state.db-wal"
+        db_path.write_bytes(b"db")
+        wal_path.write_bytes(b"x" * 12)
+        conn = _FakeCheckpointConnection(
+            wal_path,
+            passive_row=(0, 20, 10),
+            truncate_row=(1, 20, 10),
+        )
+        monkeypatch.setattr(doctor_mod.sqlite3, "connect", lambda path: conn)
+
+        result = doctor_mod._checkpoint_oversized_state_wal(
+            db_path,
+            wal_path,
+            threshold_bytes=10,
+        )
+
+        assert result.before_size == 12
+        assert result.after_size == 12
+        assert result.passive_result == (0, 20, 10)
+        assert result.truncate_result == (1, 20, 10)
+        assert result.retained_large_wal is True
+        assert doctor_mod._format_wal_checkpoint_result(result.truncate_result) == (
+            "busy=1, log=20, checkpointed=10"
+        )
+
+    def test_darwin_barrier_runs_before_passive_checkpoint(
+        self, monkeypatch, tmp_path
+    ):
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+        db_path = tmp_path / "state.db"
+        wal_path = tmp_path / "state.db-wal"
+        db_path.write_bytes(b"db")
+        wal_path.write_bytes(b"x" * 12)
+        conn = _FakeCheckpointConnection(wal_path, shrink_on_truncate_to=4)
+        monkeypatch.setattr(doctor_mod.sqlite3, "connect", lambda path: conn)
+
+        doctor_mod._checkpoint_oversized_state_wal(
+            db_path,
+            wal_path,
+            threshold_bytes=10,
+        )
+
+        assert conn.executed == [
+            "PRAGMA checkpoint_fullfsync=1",
+            "PRAGMA wal_checkpoint(PASSIVE)",
+            "PRAGMA wal_checkpoint(TRUNCATE)",
+        ]
+
+
 class TestDoctorToolAvailabilitySummary:
     def test_missing_api_key_summary_ignores_disabled_toolsets(self, monkeypatch):
         unavailable = [

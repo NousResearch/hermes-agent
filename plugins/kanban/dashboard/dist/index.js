@@ -1093,6 +1093,7 @@
           taskId: selectedTaskId,
           boardSlug: board,
           onClose: function () { setSelectedTaskId(null); },
+          onOpenTask: setSelectedTaskId,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -3222,6 +3223,10 @@
           onDeleteAttachment: handleDeleteAttachment,
           uploadBusy: uploadBusy,
           uploadErr: uploadErr,
+          onOpenTask: function (taskId) {
+            props.onClose();
+            if (props.onOpenTask) props.onOpenTask(taskId);
+          },
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -3358,6 +3363,7 @@
     const events = props.data.events || [];
     const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
+    const childResults = props.data.child_results || [];
 
     return h("div", { className: "hermes-kanban-drawer-body" },
       h("div", { className: "hermes-kanban-drawer-title" },
@@ -3429,9 +3435,9 @@
         onRemoveChild: props.onRemoveChild,
       }),
       (function () {
-        var finalResult = t.final_result || t.result || t.latest_summary || null;
+        var finalResult = t.result || t.latest_summary || null;
         var isDone = t.status === "done";
-        var isParent = (t.link_counts && t.link_counts.children > 0);
+        var isParent = links.children.length > 0;
         if (finalResult) {
           var label = t.result
             ? tx(i18n, "result", "Result")
@@ -3446,7 +3452,7 @@
             h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
             h("div", { className: "hermes-kanban-done-no-result hermes-kanban-done-parent-note" },
               tx(i18n, "doneParentNote",
-                "This card is an orchestrator / parent task. The substantive results are in the child cards listed in Dependencies below."),
+                "This card is an orchestrator / parent task. Review the child results section for the substantive work."),
             ),
           );
         }
@@ -3461,6 +3467,29 @@
         }
         return null;
       })(),
+      childResults.length > 0 ? h("div", { className: "hermes-kanban-section" },
+        h("div", { className: "hermes-kanban-section-head" },
+          `${tx(i18n, "childResults", "Child Results")} (${childResults.length})`),
+        childResults.map(function (child) {
+          var childResult = child.result || child.latest_summary || null;
+          return h("div", { key: child.id, className: "hermes-kanban-comment" },
+            h("div", { className: "hermes-kanban-comment-head" },
+              h("span", { className: "hermes-kanban-comment-author" },
+                `${child.id} · ${child.title || tx(i18n, "untitled", "(untitled)")}`),
+              h(Badge, { variant: "outline" }, child.status),
+              h("button", {
+                type: "button",
+                className: "hermes-kanban-diag-action-btn",
+                onClick: function () { if (props.onOpenTask) props.onOpenTask(child.id); },
+              }, tx(i18n, "open", "Open")),
+            ),
+            childResult
+              ? h(MarkdownBlock, { source: childResult, enabled: props.renderMarkdown })
+              : h("div", { className: "text-xs text-muted-foreground" },
+                  tx(i18n, "noChildResult", "No result recorded yet.")),
+          );
+        }),
+      ) : null,
       h(AttachmentsSection, {
         attachments: attachments,
         boardSlug: props.boardSlug,

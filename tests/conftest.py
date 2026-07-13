@@ -365,10 +365,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
     cron_jobs = sys.modules.get("cron.jobs")
     if cron_jobs is not None:
         cron_dir = fake_hermes_home / "cron"
-        monkeypatch.setattr(cron_jobs, "HERMES_DIR", fake_hermes_home)
-        monkeypatch.setattr(cron_jobs, "CRON_DIR", cron_dir)
-        monkeypatch.setattr(cron_jobs, "JOBS_FILE", cron_dir / "jobs.json")
-        monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", cron_dir / "output")
+        monkeypatch.setattr(cron_jobs, "HERMES_DIR", fake_hermes_home, raising=False)
+        monkeypatch.setattr(cron_jobs, "CRON_DIR", cron_dir, raising=False)
+        monkeypatch.setattr(cron_jobs, "JOBS_FILE", cron_dir / "jobs.json", raising=False)
+        monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", cron_dir / "output", raising=False)
 
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.

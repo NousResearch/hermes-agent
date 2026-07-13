@@ -1398,7 +1398,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
 
     Checks:
       1. active_provider in auth.json matches
-      2. model.provider in config.yaml matches
+      2. model.provider or a configured fallback provider matches
       3. Provider-specific env vars are set (e.g. ANTHROPIC_API_KEY)
 
     This is used to gate auto-discovery of external credentials (e.g.
@@ -1417,13 +1417,20 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     except Exception:
         pass
 
-    # 2. Check config.yaml model.provider
+    # 2. Check config.yaml primary and fallback providers. A fallback is an
+    # explicit user choice too, and may need borrowed credentials seeded
+    # before the primary provider fails.
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
         model_cfg = cfg.get("model")
         if isinstance(model_cfg, dict):
             cfg_provider = (model_cfg.get("provider") or "").strip().lower()
+            if cfg_provider == normalized:
+                return True
+        from hermes_cli.fallback_config import get_fallback_chain
+        for fallback_cfg in get_fallback_chain(cfg):
+            cfg_provider = (fallback_cfg.get("provider") or "").strip().lower()
             if cfg_provider == normalized:
                 return True
     except Exception:

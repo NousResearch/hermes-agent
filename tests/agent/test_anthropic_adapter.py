@@ -30,14 +30,17 @@ from agent.transports import get_transport
 
 
 @pytest.fixture(autouse=True)
-def _no_real_keychain_writes():
-    """Hard guard: ``_write_claude_code_credentials`` now mirrors into the real
-    macOS Keychain. Tests here exercise the FILE path with patched ``Path.home``
-    and must never mutate the developer's live "Claude Code-credentials" entry.
-    Keychain behavior is covered hermetically in test_anthropic_keychain.py."""
-    with patch(
-        "agent.anthropic_adapter._write_claude_code_credentials_to_keychain",
-        return_value=False,
+def _no_real_keychain_access():
+    """Keep this file hermetic; Keychain behavior has dedicated tests."""
+    with (
+        patch(
+            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+            return_value=None,
+        ),
+        patch(
+            "agent.anthropic_adapter._write_claude_code_credentials_to_keychain",
+            return_value=False,
+        ),
     ):
         yield
 
@@ -238,13 +241,6 @@ class TestBuildAnthropicClient:
 
 
 class TestReadClaudeCodeCredentials:
-    @pytest.fixture(autouse=True)
-    def no_keychain(self, monkeypatch):
-        monkeypatch.setattr(
-            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
-            lambda: None,
-        )
-
     def test_reads_valid_credentials(self, tmp_path, monkeypatch):
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
@@ -1337,6 +1333,17 @@ class TestBuildAnthropicKwargs:
             tools=None,
             max_tokens=4096,
             reasoning_config={"enabled": True, "effort": "max"},
+        )
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["output_config"] == {"effort": "max"}
+
+    def test_reasoning_config_maps_ultra_to_max_for_fable_fallback(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-fable-5",
+            messages=[{"role": "user", "content": "maximum reasoning please"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "ultra"},
         )
         assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert kwargs["output_config"] == {"effort": "max"}

@@ -75,6 +75,24 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("reasoning", {}).get("effort") == "high"
 
+    @pytest.mark.parametrize("requested", ["max", "ultra"])
+    def test_gpt_5_6_sol_maps_maximum_reasoning(self, transport, requested):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol", messages=messages, tools=[],
+            reasoning_config={"enabled": True, "effort": requested},
+            is_codex_backend=True,
+        )
+        assert kw.get("reasoning") == {"effort": "max", "summary": "auto"}
+
+    @pytest.mark.parametrize("requested", ["max", "ultra"])
+    def test_legacy_responses_model_clamps_maximum_reasoning(self, transport, requested):
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=[{"role": "user", "content": "Hi"}], tools=[],
+            reasoning_config={"enabled": True, "effort": requested},
+        )
+        assert kw.get("reasoning", {}).get("effort") == "xhigh"
+
     def test_reasoning_disabled(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

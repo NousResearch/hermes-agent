@@ -162,8 +162,15 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
-        _effort_clamp = {"minimal": "low"}
-        reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
+        # ``ultra`` is Hermes's user-facing alias for the largest supported
+        # effort. The Responses API spells that value ``max`` on GPT-5.6;
+        # older Responses models top out at Hermes's existing ``xhigh``.
+        if reasoning_effort == "minimal":
+            reasoning_effort = "low"
+        elif reasoning_effort == "ultra":
+            reasoning_effort = "max"
+        if reasoning_effort == "max" and "gpt-5.6" not in str(model).lower():
+            reasoning_effort = "xhigh"
 
         response_tools = _responses_tools(tools)
 

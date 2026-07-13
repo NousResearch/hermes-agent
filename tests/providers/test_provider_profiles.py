@@ -312,9 +312,8 @@ class TestOpenRouterProfile:
         """effort set + reasoning enabled → top-level verbosity == effort,
         and NO reasoning field in extra_body.
 
-        Covers the full real config range produced by
-        ``hermes_constants.parse_reasoning_effort`` —
-        ``VALID_REASONING_EFFORTS = (minimal, low, medium, high, xhigh)``.
+        Covers the direct passthrough range. The global config also accepts
+        ``max`` and ``ultra``; those contracts are covered separately below.
         """
         p = get_provider_profile("openrouter")
         model = "anthropic/claude-fable-5"
@@ -342,10 +341,10 @@ class TestOpenRouterProfile:
 
     def test_mandatory_anthropic_verbosity_is_value_agnostic_passthrough(self):
         """The mapping passes the effort value through verbatim — it must NOT
-        clamp or whitelist. ``xhigh`` is a real config value; ``max`` is not
-        producible by ``parse_reasoning_effort`` today but OpenRouter accepts it
-        for Claude (live-proven in #43432), so a forward value must survive
-        rather than be silently dropped. The OpenAI SDK type only literals
+        clamp or whitelist. ``xhigh`` and ``max`` are real config values, and
+        OpenRouter accepts ``max`` for Claude (live-proven in #43432), so a
+        forward value must survive rather than be silently dropped. The
+        OpenAI SDK type only literals
         ``low|medium|high`` but it's a TypedDict (no runtime validation), so the
         extended scale reaches the wire untouched."""
         p = get_provider_profile("openrouter")
@@ -356,6 +355,31 @@ class TestOpenRouterProfile:
                 model="anthropic/claude-fable-5",
             )
             assert tl["verbosity"] == effort
+
+    def test_fable_ultra_alias_maps_to_openrouter_max(self):
+        p = get_provider_profile("openrouter")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "ultra"},
+            supports_reasoning=True,
+            model="anthropic/claude-fable-5",
+        )
+        assert "reasoning" not in eb
+        assert tl["verbosity"] == "max"
+
+    def test_non_anthropic_ultra_alias_maps_to_openrouter_xhigh(self):
+        """OpenRouter reasoning.effort tops out at xhigh; ultra is a local
+        strongest-available alias and must never escape onto the wire."""
+        p = get_provider_profile("openrouter")
+        for model in ("openai/gpt-5.6-sol", "deepseek/deepseek-chat"):
+            cfg = {"enabled": True, "effort": "ultra"}
+            eb, tl = p.build_api_kwargs_extras(
+                reasoning_config=cfg,
+                supports_reasoning=True,
+                model=model,
+            )
+            assert eb["reasoning"] == {"enabled": True, "effort": "xhigh"}
+            assert "verbosity" not in tl
+            assert cfg["effort"] == "ultra"  # caller-owned config is immutable
 
     def test_mandatory_anthropic_no_verbosity_when_effort_absent(self):
         """No effort / none / disabled → no verbosity emitted, so the model

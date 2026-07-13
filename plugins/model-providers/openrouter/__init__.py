@@ -120,6 +120,15 @@ class OpenRouterProfile(ProviderProfile):
         top_level: dict[str, Any] = {}
         extra_headers: dict[str, Any] = {}
         if supports_reasoning:
+            cfg = dict(reasoning_config) if reasoning_config is not None else None
+            mandatory_anthropic = _anthropic_reasoning_is_mandatory(model)
+            if cfg is not None and cfg.get("effort") == "ultra":
+                # ``ultra`` is Hermes' strongest-available alias, not an
+                # OpenRouter wire value. Anthropic adaptive models use the
+                # top-level verbosity scale (max); the unified reasoning
+                # contract tops out at xhigh for other providers.
+                cfg["effort"] = "max" if mandatory_anthropic else "xhigh"
+
             # Reasoning-mandatory Anthropic models (Claude 4.6+ / fable /
             # future named models) use *adaptive* thinking: the model decides
             # how much to think, and OpenRouter ignores ``reasoning.effort`` for
@@ -146,16 +155,16 @@ class OpenRouterProfile(ProviderProfile):
             # ``agent.reasoning_effort``) onto ``verbosity`` so the knob the user
             # already sets keeps working for these models. We still send NO
             # ``reasoning`` field, preserving the #42991 400 fix.
-            if _anthropic_reasoning_is_mandatory(model):
-                cfg = reasoning_config or {}
+            if mandatory_anthropic:
+                cfg = cfg or {}
                 effort = cfg.get("effort")
                 # Only emit when effort is actually requested and reasoning
                 # isn't explicitly disabled. Otherwise omit ``verbosity`` so the
                 # model keeps its own adaptive default (``high``).
                 if cfg.get("enabled", True) is not False and effort and effort != "none":
                     top_level["verbosity"] = effort
-            elif reasoning_config is not None:
-                extra_body["reasoning"] = dict(reasoning_config)
+            elif cfg is not None:
+                extra_body["reasoning"] = cfg
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 

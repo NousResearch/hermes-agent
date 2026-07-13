@@ -52,6 +52,53 @@ def test_returns_true_when_config_provider_matches(tmp_path, monkeypatch):
     assert is_provider_explicitly_configured("anthropic") is True
 
 
+def test_returns_true_when_fallback_provider_matches(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_config(tmp_path, {
+        "model": {"provider": "openai-codex", "default": "gpt-5.6-sol"},
+        "fallback_providers": [
+            {"provider": "anthropic", "model": "claude-fable-5"},
+            {"provider": "openrouter", "model": "deepseek/deepseek-v4-flash"},
+        ],
+    })
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("anthropic") is True
+
+
+def test_returns_true_when_single_fallback_mapping_matches(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_config(tmp_path, {
+        "model": {"provider": "openai-codex", "default": "gpt-5.6-sol"},
+        "fallback_providers": {"provider": "anthropic", "model": "claude-fable-5"},
+    })
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("anthropic") is True
+
+
+def test_returns_false_for_incomplete_fallback_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_config(tmp_path, {
+        "model": {"provider": "openai-codex", "default": "gpt-5.6-sol"},
+        "fallback_providers": [{"provider": "anthropic"}],
+    })
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("anthropic") is False
+
+
+def test_returns_true_when_legacy_fallback_provider_matches(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_config(tmp_path, {
+        "model": {"provider": "openai-codex", "default": "gpt-5.6-sol"},
+        "fallback_model": {"provider": "anthropic", "model": "claude-fable-5"},
+    })
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("anthropic") is True
+
+
 def test_returns_false_when_config_provider_is_different(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_config(tmp_path, {"model": {"provider": "kimi-coding", "default": "kimi-k2"}})

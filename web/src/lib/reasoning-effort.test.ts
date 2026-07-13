@@ -14,7 +14,7 @@ describe("normalizeEffort", () => {
   });
 
   it("passes through every valid effort level", () => {
-    for (const level of ["none", "minimal", "low", "medium", "high", "xhigh"]) {
+    for (const level of ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]) {
       expect(normalizeEffort(level)).toBe(level);
     }
   });
@@ -22,11 +22,12 @@ describe("normalizeEffort", () => {
   it("is case- and whitespace-insensitive", () => {
     expect(normalizeEffort("HIGH")).toBe("high");
     expect(normalizeEffort("  XHigh  ")).toBe("xhigh");
+    expect(normalizeEffort("  Ultra  ")).toBe("ultra");
   });
 
   it("falls back to medium for unknown values", () => {
     expect(normalizeEffort("turbo")).toBe("medium");
-    expect(normalizeEffort("max")).toBe("medium"); // 'max' is a label, not a value
+    expect(normalizeEffort("ultra-high")).toBe("medium");
     expect(normalizeEffort(42)).toBe("medium");
   });
 });
@@ -41,7 +42,7 @@ describe("EFFORT_OPTIONS", () => {
   it("covers the real reasoning levels plus thinking-off", () => {
     // Invariant against hermes_constants.VALID_REASONING_EFFORTS + 'none'.
     const values = new Set(EFFORT_OPTIONS.map((o) => o.value));
-    for (const level of ["none", "minimal", "low", "medium", "high", "xhigh"]) {
+    for (const level of ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]) {
       expect(values.has(level)).toBe(true);
     }
   });

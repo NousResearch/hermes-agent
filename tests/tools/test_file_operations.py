@@ -762,11 +762,47 @@ class TestShellFileOpsWriteDenied:
         result = file_ops.write_file("~/.ssh/authorized_keys", "evil key")
         assert result.error is not None
         assert "denied" in result.error.lower()
+        assert "protected system/credential file" in result.error
 
     def test_patch_replace_denied_path(self, file_ops):
         result = file_ops.patch_replace("~/.ssh/authorized_keys", "old", "new")
         assert result.error is not None
         assert "denied" in result.error.lower()
+        assert "protected system/credential file" in result.error
+
+    def test_write_file_outside_safe_root_names_allowed_root(
+        self, file_ops, tmp_path, monkeypatch
+    ):
+        safe_root = tmp_path / "safe"
+        outside = tmp_path / "outside" / "note.txt"
+        safe_root.mkdir()
+        outside.parent.mkdir()
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        result = file_ops.write_file(str(outside), "content")
+
+        assert result.error is not None
+        assert "outside the allowed write roots" in result.error
+        assert f"HERMES_WRITE_SAFE_ROOT={safe_root}" in result.error
+        assert "protected system/credential file" not in result.error
+
+    def test_patch_replace_outside_safe_root_names_allowed_root(
+        self, file_ops, tmp_path, monkeypatch
+    ):
+        safe_root = tmp_path / "safe"
+        outside = tmp_path / "outside" / "note.txt"
+        safe_root.mkdir()
+        outside.parent.mkdir()
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        result = file_ops.patch_replace(str(outside), "old", "new")
+
+        assert result.error is not None
+        assert "outside the allowed write roots" in result.error
+        assert f"HERMES_WRITE_SAFE_ROOT={safe_root}" in result.error
+        assert "protected system/credential file" not in result.error
 
     def test_delete_file_denied_path(self, file_ops):
         result = file_ops.delete_file("~/.ssh/authorized_keys")

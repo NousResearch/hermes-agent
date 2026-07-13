@@ -95,16 +95,16 @@ def get_safe_write_roots() -> set[str]:
     return roots
 
 
-def is_write_denied(path: str) -> bool:
-    """Return True if path is blocked by the write denylist or safe root."""
+def get_write_denied_reason(path: str) -> Optional[str]:
+    """Return the write-denial reason for *path*, or None when allowed."""
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
     if resolved in build_write_denied_paths(home):
-        return True
+        return "protected"
     for prefix in build_write_denied_prefixes(home):
         if resolved.startswith(prefix):
-            return True
+            return "protected"
 
     mcp_tokens_dir_name = "mcp-tokens"
 
@@ -121,13 +121,13 @@ def is_write_denied(path: str) -> bool:
         try:
             mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
             if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):
-                return True
+                return "protected"
         except Exception:
             pass
         try:
             pairing_real = os.path.realpath(os.path.join(base_real, "pairing"))
             if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
-                return True
+                return "protected"
         except Exception:
             pass
 
@@ -139,9 +139,29 @@ def is_write_denied(path: str) -> bool:
                 allowed = True
                 break
         if not allowed:
-            return True
+            return "outside_safe_root"
 
-    return False
+    return None
+
+
+def get_write_denied_error(path: str, action: str = "Write") -> Optional[str]:
+    """Return a user-facing write-denial error for *path*, if denied."""
+    reason = get_write_denied_reason(path)
+    if reason is None:
+        return None
+    if reason == "outside_safe_root":
+        raw_roots = os.getenv("HERMES_WRITE_SAFE_ROOT", "").strip()
+        root_detail = f" (HERMES_WRITE_SAFE_ROOT={raw_roots})" if raw_roots else ""
+        return (
+            f"{action} denied: '{path}' is outside the allowed write roots"
+            f"{root_detail}."
+        )
+    return f"{action} denied: '{path}' is a protected system/credential file."
+
+
+def is_write_denied(path: str) -> bool:
+    """Return True if path is blocked by the write denylist or safe root."""
+    return get_write_denied_reason(path) is not None
 
 
 # Common secret-bearing project-local environment file basenames.

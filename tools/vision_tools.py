@@ -37,7 +37,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Dict, Optional
+from typing import Any, Awaitable, Dict, Optional, Tuple
 from urllib.parse import urlparse
 import httpx
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
@@ -745,6 +745,46 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
 
 
+def _apply_embed_caps(
+    image_path: Path,
+    image_data_url: str,
+    mime_type: Optional[str] = None,
+) -> Tuple[str, Optional[str]]:
+    """Enforce the proactive embed caps on a data URL bound for history.
+
+    Every image embedded into conversation history is re-sent on every
+    subsequent turn, so an oversized payload permanently wedges the session
+    (Anthropic rejects >5 MB or >8000 px per side with a non-retryable 400)
+    or OOMs local vision models during prefill.  Resize DOWN to the embed
+    target (4 MB / 7900 px) whenever the payload exceeds either limit.
+
+    Returns ``(data_url, None)`` — the input unmodified when already under
+    both caps, else the resized encoding — or ``(data_url, error)`` when even
+    resizing cannot get under the 20 MB hard ceiling; callers surface
+    ``error`` through their own error convention and must not embed.
+    """
+    over_bytes = len(image_data_url) > _EMBED_TARGET_BYTES
+    over_dims = _image_exceeds_dimension(image_path, _EMBED_MAX_DIMENSION)
+    if not over_bytes and not over_dims:
+        return image_data_url, None
+
+    image_data_url = _resize_image_for_vision(
+        image_path, mime_type=mime_type,
+        max_base64_bytes=_EMBED_TARGET_BYTES,
+        max_dimension=_EMBED_MAX_DIMENSION,
+    )
+    if len(image_data_url) > _MAX_BASE64_BYTES:
+        return image_data_url, (
+            f"Image too large for vision API: base64 payload is "
+            f"{len(image_data_url) / (1024 * 1024):.1f} MB "
+            f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) "
+            f"even after resizing. Install Pillow "
+            f"(`pip install Pillow`) for better auto-resize, "
+            f"or compress the image manually."
+        )
+    return image_data_url, None
+
+
 # ---------------------------------------------------------------------------
 # Native fast path: short-circuit the auxiliary LLM when the active main model
 # supports native vision. Instead of asking a separate LLM to describe the
@@ -1007,38 +1047,14 @@ async def _vision_analyze_native(
             temp_image_path, mime_type=detected_mime_type,
         )
 
-        # Proactive embed cap: this image gets baked into conversation
-        # history and re-sent on every subsequent turn.  Anthropic rejects
-        # any single base64 image over 5 MB OR over 8000px per side with a
-        # 400, and because history is immutable, an oversized embed
-        # permanently wedges the session — retries can't clear bytes (or
-        # pixels) that are already in the request.  Resize DOWN to the embed
-        # target (4 MB / 7900px, headroom under both ceilings) whenever the
-        # payload exceeds either limit, not just at the 20 MB hard ceiling.
-        _over_bytes = len(image_data_url) > _EMBED_TARGET_BYTES
-        _over_dims = await _run_encode_on_cpu_executor(
-            _image_exceeds_dimension, temp_image_path, _EMBED_MAX_DIMENSION,
+        # Proactive embed cap — see _apply_embed_caps for why (oversized
+        # embeds wedge the session or OOM local models).
+        image_data_url, _embed_err = await _run_encode_on_cpu_executor(
+            _apply_embed_caps,
+            temp_image_path, image_data_url, mime_type=detected_mime_type,
         )
-        if _over_bytes or _over_dims:
-            image_data_url = await _run_encode_on_cpu_executor(
-                _resize_image_for_vision,
-                temp_image_path, mime_type=detected_mime_type,
-                max_base64_bytes=_EMBED_TARGET_BYTES,
-                max_dimension=_EMBED_MAX_DIMENSION,
-            )
-            # If even resizing can't get under the absolute hard ceiling,
-            # there's nothing more we can do — reject rather than embed a
-            # session-wedging payload.
-            if len(image_data_url) > _MAX_BASE64_BYTES:
-                return tool_error(
-                    f"Image too large for vision API: base64 payload is "
-                    f"{len(image_data_url) / (1024 * 1024):.1f} MB "
-                    f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) "
-                    f"even after resizing. Install Pillow "
-                    f"(`pip install Pillow`) for better auto-resize, "
-                    f"or compress the image manually.",
-                    success=False,
-                )
+        if _embed_err:
+            return tool_error(_embed_err, success=False)
 
         return _build_native_vision_tool_result(
             image_url=image_url,

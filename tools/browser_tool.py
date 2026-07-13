@@ -4067,15 +4067,32 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # an auxiliary vision LLM. The model inspects the pixels on its next
         # turn — no aux call, no information loss. Consistent with vision_analyze.
         from tools.vision_tools import (
+            _apply_embed_caps,
             _build_native_vision_tool_result,
             _should_use_native_vision_fast_path,
         )
 
         if _should_use_native_vision_fast_path():
+            # Proactive embed caps (4 MB / 7900 px): this screenshot gets
+            # baked into conversation history and re-sent every turn. A
+            # full-page capture can be arbitrarily tall — uncapped embeds
+            # wedge Anthropic sessions with non-retryable 400s and OOM
+            # local vision models during prefill. The aux path below is
+            # unaffected: it sends the full-resolution image once, outside
+            # history, and already has its own reactive resize-and-retry.
+            embed_data_url, _embed_err = _apply_embed_caps(
+                screenshot_path, data_url, mime_type="image/png",
+            )
+            if _embed_err:
+                return json.dumps({
+                    "success": False,
+                    "error": _embed_err,
+                    "screenshot_path": str(screenshot_path),
+                }, ensure_ascii=False)
             native_result = _build_native_vision_tool_result(
                 image_url=str(screenshot_path),
                 question=question,
-                image_data_url=data_url,
+                image_data_url=embed_data_url,
                 image_size_bytes=len(_screenshot_bytes),
             )
             meta = native_result.setdefault("meta", {})

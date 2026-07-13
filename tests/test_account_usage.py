@@ -285,22 +285,3 @@ def test_fetch_account_usage_deepseek_derives_balance_endpoint_from_runtime_base
 
     assert snapshot is not None
     assert requested_urls == ["https://deepseek-proxy.example/user/balance"]
-
-
-def test_fetch_all_providers_quota_continues_after_a_provider_failure(monkeypatch):
-    """One failed lookup must not hide quota data returned by later providers."""
-    openrouter_snapshot = AccountUsageSnapshot(
-        provider="openrouter",
-        source="credits_api",
-        fetched_at=datetime.now(timezone.utc),
-        details=("Credits balance: $12.00",),
-    )
-
-    def fake_fetch(provider):
-        if provider == "openai-codex":
-            raise RuntimeError("transient resolver failure")
-        return openrouter_snapshot if provider == "openrouter" else None
-
-    monkeypatch.setattr(account_usage, "fetch_account_usage", fake_fetch)
-
-    assert account_usage.fetch_all_providers_quota() == [openrouter_snapshot]

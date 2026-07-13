@@ -54,6 +54,8 @@ class ProviderProfile:
     base_url: str = ""
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
+    api_key_header: str = ""  # HTTP header name for the API key; empty = "Authorization" (Bearer scheme)
+    api_key_scheme: str = ""  # Auth scheme prefix; empty = "Bearer" (e.g. "" for api-key header, "Bearer" for Authorization)
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
 
     # ── Vision support ────────────────────────────────────────
@@ -200,7 +202,12 @@ class ProviderProfile:
 
         req = urllib.request.Request(url)
         if api_key:
-            req.add_header("Authorization", f"Bearer {api_key}")
+            _key_header = self.api_key_header or "Authorization"
+            _key_scheme = self.api_key_scheme or "Bearer"
+            if _key_header == "Authorization":
+                req.add_header(_key_header, f"{_key_scheme} {api_key}")
+            else:
+                req.add_header(_key_header, api_key)
         req.add_header("Accept", "application/json")
         # Some providers (e.g. OpenCode Zen) sit behind a WAF that blocks
         # the default ``Python-urllib/<ver>`` User-Agent.  Set a generic

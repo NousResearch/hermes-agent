@@ -16,6 +16,8 @@ azure_foundry = ProviderProfile(
     env_vars=("AZURE_FOUNDRY_API_KEY", "AZURE_FOUNDRY_BASE_URL"),
     base_url="",  # per-resource; user provides at setup
     auth_type="api_key",
+    api_key_header="api-key",
+    api_key_scheme="",  # plain key, no Bearer prefix
 )
 
 register_provider(azure_foundry)

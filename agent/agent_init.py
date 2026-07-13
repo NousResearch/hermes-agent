@@ -960,6 +960,22 @@ def init_agent(
                         client_kwargs["default_headers"] = dict(_ph.default_headers)
                 except Exception:
                     pass
+
+            # ── Custom API key header (e.g. Azure APIM expects "api-key" instead of
+            #    "Authorization: Bearer").  When the profile declares a non-default
+            #    api_key_header, inject it as a default_headers entry so the OpenAI
+            #    SDK sends both the conventional Authorization: Bearer (from its
+            #    own auth machinery) and the provider-specific header.  Azure APIM
+            #    and similar gateways pick up the header they recognise.
+            try:
+                from providers import get_provider_profile as _gpf
+                _ph = _gpf(agent.provider)
+                if _ph and _ph.api_key_header and api_key:
+                    _custom_headers = dict(client_kwargs.get("default_headers", {}))
+                    _custom_headers[_ph.api_key_header] = api_key
+                    client_kwargs["default_headers"] = _custom_headers
+            except Exception:
+                pass
         else:
             # No explicit creds — use the centralized provider router
             from agent.auxiliary_client import resolve_provider_client

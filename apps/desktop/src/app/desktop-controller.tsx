@@ -20,6 +20,7 @@ import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChat
 import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
+import { enqueueQueuedPrompt } from '../store/composer-queue'
 import { setCronFocusJobId } from '../store/cron'
 import { gatewayForProfile } from '../store/gateway'
 import {
@@ -862,6 +863,7 @@ export function DesktopController() {
 
     const actionCenter = createPetActionCenterActions({
       ensureProfile: ensureGatewayProfile,
+      enqueuePrompt: enqueueQueuedPrompt,
       gatewayForProfile,
       resumeSession: (profile, storedSessionId) => resumeSessionRef.current(storedSessionId, false, profile)
     })

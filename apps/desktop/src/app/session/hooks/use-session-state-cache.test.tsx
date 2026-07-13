@@ -3,6 +3,7 @@ import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { $petLiveSessions, resetPetLiveSessions } from '@/store/pet-live-session'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $currentFastMode,
@@ -222,6 +223,7 @@ describe('useSessionStateCache — profile identity', () => {
     $activeGatewayProfile.set('default')
     $messages.set([])
     $workingSessions.set([])
+    resetPetLiveSessions()
   })
 
   it('stores the same runtime and stored ids independently across profiles', () => {
@@ -254,6 +256,50 @@ describe('useSessionStateCache — profile identity', () => {
     expect(
       [...cache.sessionStateByRuntimeIdRef.current.values()].map(state => state.messages[0]?.id).sort()
     ).toEqual(['default-message', 'work-message'])
+  })
+
+  it('syncs canonical cache updates into safe live snapshots and re-homes exact active idle on profile/session switch', () => {
+    let cache!: Cache
+    $activeGatewayProfile.set('default')
+    const { rerender } = render(<ViewHarness activeSessionId="default-runtime" onReady={c => (cache = c)} />)
+
+    act(() => {
+      cache.updateSessionState(
+        'default-runtime',
+        current => ({ ...current, busy: true, awaitingResponse: true, turnStartedAt: 10 }),
+        'default-stored',
+        'default'
+      )
+      cache.updateSessionState(
+        'work-runtime',
+        current => ({ ...current, busy: false, awaitingResponse: false, turnStartedAt: null }),
+        'work-stored',
+        'work'
+      )
+    })
+
+    expect($petLiveSessions.get()).toEqual([
+      expect.objectContaining({ profile: 'default', runtimeSessionId: 'default-runtime', busy: true })
+    ])
+
+    act(() => {
+      $activeGatewayProfile.set('work')
+      rerender(<ViewHarness activeSessionId="work-runtime" onReady={c => (cache = c)} />)
+    })
+
+    expect($petLiveSessions.get()).toEqual([
+      expect.objectContaining({
+        profile: 'default',
+        runtimeSessionId: 'default-runtime',
+        busy: true
+      }),
+      expect.objectContaining({
+        profile: 'work',
+        runtimeSessionId: 'work-runtime',
+        busy: false,
+        storedSessionId: 'work-stored'
+      })
+    ])
   })
 
   it('publishes only the matching active profile when runtime ids collide', () => {

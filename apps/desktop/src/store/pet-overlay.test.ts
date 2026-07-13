@@ -64,7 +64,7 @@ afterEach(() => {
 })
 
 describe('pet overlay control boundary', () => {
-  it('parses typed action-center intents without trusting route identity fields', () => {
+  it('parses exact typed action-center intents and rejects injected route identity fields', () => {
     expect(
       parsePetOverlayControl({
         type: 'action-center-approval',
@@ -75,7 +75,7 @@ describe('pet overlay control boundary', () => {
         sessionId: 'wrong',
         route: '/session/wrong'
       })
-    ).toEqual({ type: 'action-center-approval', itemId: 'item-1', choice: 'deny', reason: 'unsafe' })
+    ).toBeNull()
     expect(parsePetOverlayControl({ type: 'action-center-clarify', itemId: 'item-2', answer: 'Blue' })).toEqual({
       type: 'action-center-clarify',
       itemId: 'item-2',
@@ -89,6 +89,29 @@ describe('pet overlay control boundary', () => {
       type: 'action-center-open-session',
       itemId: 'item-4'
     })
+    expect(parsePetOverlayControl({ type: 'action-center-submit', itemId: 'item-5', text: ' hello ' })).toEqual({
+      type: 'action-center-submit',
+      itemId: 'item-5',
+      text: ' hello '
+    })
+    expect(parsePetOverlayControl({ type: 'action-center-steer', itemId: 'item-6', text: ' nudge ' })).toEqual({
+      type: 'action-center-steer',
+      itemId: 'item-6',
+      text: ' nudge '
+    })
+    expect(parsePetOverlayControl({ type: 'action-center-queue', itemId: 'item-7', text: ' later ' })).toEqual({
+      type: 'action-center-queue',
+      itemId: 'item-7',
+      text: ' later '
+    })
+    expect(parsePetOverlayControl({ type: 'action-center-stop', itemId: 'item-8' })).toEqual({
+      type: 'action-center-stop',
+      itemId: 'item-8'
+    })
+    expect(parsePetOverlayControl({ type: 'action-center-acknowledge', itemId: 'item-9' })).toEqual({
+      type: 'action-center-acknowledge',
+      itemId: 'item-9'
+    })
   })
 
   it.each([
@@ -98,7 +121,13 @@ describe('pet overlay control boundary', () => {
     { type: 'action-center-approval', itemId: 'item', choice: 'root' },
     { type: 'action-center-approval', itemId: 'item', choice: 'approve-once', reason: 'not-for-approve' },
     { type: 'action-center-clarify', itemId: 42, answer: 'Blue' },
-    { type: 'action-center-open-session', itemId: null }
+    { type: 'action-center-open-session', itemId: null },
+    { type: 'action-center-submit', itemId: 'item', text: 42 },
+    { type: 'action-center-steer', itemId: '', text: 'nudge' },
+    { type: 'action-center-queue', itemId: 'item' },
+    { type: 'action-center-stop', itemId: 'item', text: 'extra' },
+    { type: 'action-center-acknowledge', itemId: 'item', profile: 'work' },
+    { type: 'action-center-submit', itemId: 'item', text: 'hello', sessionId: 'runtime' }
   ])('ignores malformed payload %j', payload => {
     expect(parsePetOverlayControl(payload)).toBeNull()
   })
@@ -111,6 +140,7 @@ describe('pet overlay control boundary', () => {
 
     onControl?.({ type: 'action-center-select', itemId: '' })
     onControl?.({ type: 'action-center-select', itemId: 'item-1', profile: 'wrong' })
+    onControl?.({ type: 'action-center-select', itemId: 'item-1' })
 
     expect(handler).toHaveBeenCalledTimes(1)
     expect(handler).toHaveBeenCalledWith({ type: 'action-center-select', itemId: 'item-1' })

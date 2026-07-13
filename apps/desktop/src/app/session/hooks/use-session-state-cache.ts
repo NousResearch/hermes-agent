@@ -5,6 +5,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { reconcilePetLiveSessionFocus, syncPetLiveSessionState } from '@/store/pet-live-session'
 import { $activeGatewayProfile } from '@/store/profile'
 import { normalizeProfileKey } from '@/store/profile-key'
 import {
@@ -109,6 +110,29 @@ export function useSessionStateCache({
   useEffect(() => {
     selectedStoredSessionIdRef.current = selectedStoredSessionId
   }, [selectedStoredSessionId])
+
+  useEffect(() => {
+    const profile = normalizeProfileKey(activeGatewayProfile)
+
+    const cachedState = activeSessionId
+      ? getProfileSessionValue(sessionStateByRuntimeIdRef.current, profile, activeSessionId)
+      : undefined
+
+    reconcilePetLiveSessionFocus(
+      activeSessionId ? { profile, runtimeSessionId: activeSessionId } : null,
+      cachedState && activeSessionId
+        ? {
+            profile,
+            runtimeSessionId: activeSessionId,
+            storedSessionId: cachedState.storedSessionId,
+            busy: cachedState.busy,
+            needsInput: cachedState.needsInput,
+            awaitingResponse: cachedState.awaitingResponse,
+            turnStartedAt: cachedState.turnStartedAt
+          }
+        : null
+    )
+  }, [activeGatewayProfile, activeSessionId])
 
   const ensureSessionState = useCallback((
     sessionId: string,
@@ -283,6 +307,21 @@ export function useSessionStateCache({
       const previous = ensureSessionState(sessionId, storedSessionId, profileKey)
       const next = { ...updater({ ...previous, messages: previous.messages }), profile: profileKey }
       setProfileSessionValue(sessionStateByRuntimeIdRef.current, profileKey, sessionId, next)
+
+      syncPetLiveSessionState(
+        {
+          profile: profileKey,
+          runtimeSessionId: sessionId,
+          storedSessionId: next.storedSessionId,
+          busy: next.busy,
+          needsInput: next.needsInput,
+          awaitingResponse: next.awaitingResponse,
+          turnStartedAt: next.turnStartedAt
+        },
+        activeSessionIdRef.current
+          ? { profile: activeGatewayProfileRef.current, runtimeSessionId: activeSessionIdRef.current }
+          : null
+      )
 
       if (previous.storedSessionId !== next.storedSessionId || !next.busy) {
         setSessionWorking(profileKey, previous.storedSessionId, false)

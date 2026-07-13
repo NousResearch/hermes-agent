@@ -50,6 +50,7 @@ describe('pet action center main-renderer actions', () => {
     resumeSession.mockClear()
     dependencies = {
       ensureProfile,
+      enqueuePrompt: vi.fn(),
       gatewayForProfile: profile => gateways.get(profile) ?? null,
       resumeSession
     }

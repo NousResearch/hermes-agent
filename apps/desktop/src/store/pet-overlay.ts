@@ -64,6 +64,11 @@ export type PetActionCenterControl =
     }
   | { type: 'action-center-clarify'; itemId: string; answer: string }
   | { type: 'action-center-open-session'; itemId: string }
+  | { type: 'action-center-submit'; itemId: string; text: string }
+  | { type: 'action-center-steer'; itemId: string; text: string }
+  | { type: 'action-center-queue'; itemId: string; text: string }
+  | { type: 'action-center-stop'; itemId: string }
+  | { type: 'action-center-acknowledge'; itemId: string }
 
 export type PetOverlayControl =
   | { type: 'pop-in' }
@@ -87,7 +92,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function controlItemId(value: unknown): string | null {
-  return typeof value === 'string' && value.length > 0 ? value : null
+  return typeof value === 'string' && value.trim().length > 0 ? value : null
+}
+
+function hasExactOwnKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value)
+
+  return actual.length === keys.length && keys.every(key => Object.prototype.hasOwnProperty.call(value, key))
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -138,16 +149,33 @@ export function parsePetOverlayControl(value: unknown): PetOverlayControl | null
         : null
 
     case 'action-center-select':
-    case 'action-center-open-session': {
+
+    case 'action-center-open-session':
+
+    case 'action-center-stop':
+    case 'action-center-acknowledge': {
       const itemId = controlItemId(value.itemId)
 
-      return itemId ? { type: value.type, itemId } : null
+      return itemId && hasExactOwnKeys(value, ['type', 'itemId']) ? { type: value.type, itemId } : null
     }
 
     case 'action-center-clarify': {
       const itemId = controlItemId(value.itemId)
 
-      return itemId && typeof value.answer === 'string' ? { type: value.type, itemId, answer: value.answer } : null
+      return itemId && typeof value.answer === 'string' && hasExactOwnKeys(value, ['type', 'itemId', 'answer'])
+        ? { type: value.type, itemId, answer: value.answer }
+        : null
+    }
+
+    case 'action-center-submit':
+
+    case 'action-center-steer':
+    case 'action-center-queue': {
+      const itemId = controlItemId(value.itemId)
+
+      return itemId && typeof value.text === 'string' && hasExactOwnKeys(value, ['type', 'itemId', 'text'])
+        ? { type: value.type, itemId, text: value.text }
+        : null
     }
 
     case 'action-center-approval': {
@@ -155,6 +183,15 @@ export function parsePetOverlayControl(value: unknown): PetOverlayControl | null
       const choice = value.choice
 
       if (!itemId || !isApprovalChoice(choice)) {
+        return null
+      }
+
+      if (
+        !hasExactOwnKeys(
+          value,
+          value.reason === undefined ? ['type', 'itemId', 'choice'] : ['type', 'itemId', 'choice', 'reason']
+        )
+      ) {
         return null
       }
 
@@ -181,7 +218,12 @@ function isPetActionCenterControl(control: PetOverlayControl): control is PetAct
     control.type === 'action-center-select' ||
     control.type === 'action-center-approval' ||
     control.type === 'action-center-clarify' ||
-    control.type === 'action-center-open-session'
+    control.type === 'action-center-open-session' ||
+    control.type === 'action-center-submit' ||
+    control.type === 'action-center-steer' ||
+    control.type === 'action-center-queue' ||
+    control.type === 'action-center-stop' ||
+    control.type === 'action-center-acknowledge'
   )
 }
 

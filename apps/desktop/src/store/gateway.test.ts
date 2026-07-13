@@ -8,6 +8,7 @@ const { createdGateways, MockGateway } = vi.hoisted(() => {
 
   class MockGateway {
     connectionState: ConnectionState = 'closed'
+    stateCallbacks = new Set<(state: ConnectionState) => void>()
 
     constructor() {
       createdGateways.push(this)
@@ -15,18 +16,30 @@ const { createdGateways, MockGateway } = vi.hoisted(() => {
 
     close(): void {
       this.connectionState = 'closed'
+      this.emitState('closed')
     }
 
     async connect(): Promise<void> {
       this.connectionState = 'open'
+      this.emitState('open')
     }
 
     onEvent(_callback: (event: GatewayEvent) => void): () => void {
       return () => {}
     }
 
-    onState(_callback: (state: ConnectionState) => void): () => void {
-      return () => {}
+    onState(callback: (state: ConnectionState) => void): () => void {
+      this.stateCallbacks.add(callback)
+
+      return () => void this.stateCallbacks.delete(callback)
+    }
+
+    emitState(state: ConnectionState): void {
+      this.connectionState = state
+
+      for (const callback of this.stateCallbacks) {
+        callback(state)
+      }
     }
   }
 
@@ -37,12 +50,15 @@ vi.mock('@/hermes', () => ({ HermesGateway: MockGateway }))
 
 import {
   $gateway,
+  $gatewayStatesByProfile,
   activeGateway,
   closeSecondaryGateways,
   ensureGatewayForProfile,
   gatewayForProfile,
+  reportPrimaryGatewayState,
   setPrimaryGateway
 } from './gateway'
+import { $gatewayState } from './session'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
@@ -88,5 +104,37 @@ describe('gatewayForProfile', () => {
   it('does not create a connection for an unknown profile', () => {
     expect(gatewayForProfile('missing')).toBeNull()
     expect(createdGateways).toHaveLength(0)
+  })
+
+  it('tracks primary and secondary connection state independently by normalized profile', async () => {
+    const primary = new MockGateway()
+    primary.connectionState = 'connecting'
+    setPrimaryGateway(primary as never, ' default ')
+    reportPrimaryGatewayState('connecting')
+
+    await ensureGatewayForProfile(' work ')
+    const secondary = gatewayForProfile('work') as unknown as InstanceType<typeof MockGateway>
+
+    expect($gatewayStatesByProfile.get()).toEqual({ default: 'connecting', work: 'open' })
+
+    secondary.emitState('error')
+    reportPrimaryGatewayState('open')
+
+    expect($gatewayStatesByProfile.get()).toEqual({ default: 'open', work: 'error' })
+  })
+
+  it('does not let background state transitions contaminate the primary profile entry', async () => {
+    const primary = new MockGateway()
+    primary.connectionState = 'open'
+    setPrimaryGateway(primary as never, 'default')
+    reportPrimaryGatewayState('open')
+
+    await ensureGatewayForProfile('work')
+    const secondary = gatewayForProfile('work') as unknown as InstanceType<typeof MockGateway>
+    await ensureGatewayForProfile('default')
+    secondary.emitState('closed')
+
+    expect($gatewayStatesByProfile.get()).toEqual(expect.objectContaining({ default: 'open', work: 'closed' }))
+    expect($gatewayState.get()).toBe('open')
   })
 })

@@ -25,6 +25,35 @@ const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionSt
 // the instance threaded down through props.
 export const $gateway = atom<HermesGateway | null>(null)
 
+/** Serializable per-profile transport truth for background-safe projections.
+ * Gateway instances and sockets stay in the private registry; consumers see
+ * only the latest normalized connection state. */
+export const $gatewayStatesByProfile = atom<Record<string, ConnectionState>>({})
+
+function setProfileGatewayState(profile: string, state: ConnectionState): void {
+  const key = normKey(profile)
+  const current = $gatewayStatesByProfile.get()
+
+  if (current[key] === state) {
+    return
+  }
+
+  $gatewayStatesByProfile.set({ ...current, [key]: state })
+}
+
+function removeProfileGatewayState(profile: string): void {
+  const key = normKey(profile)
+  const current = $gatewayStatesByProfile.get()
+
+  if (!(key in current)) {
+    return
+  }
+
+  const next = { ...current }
+  delete next[key]
+  $gatewayStatesByProfile.set(next)
+}
+
 interface RegistryConfig {
   onEvent: (event: GatewayEvent) => void
 }
@@ -40,8 +69,21 @@ let primaryGateway: HermesGateway | null = null
 let primaryProfile = 'default'
 
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
+  const previousProfile = primaryProfile
+  const nextProfile = normKey(profile)
+
+  if (previousProfile !== nextProfile) {
+    removeProfileGatewayState(previousProfile)
+  }
+
   primaryGateway = gateway
-  primaryProfile = normKey(profile)
+  primaryProfile = nextProfile
+
+  if (gateway) {
+    setProfileGatewayState(primaryProfile, gateway.connectionState)
+  } else {
+    removeProfileGatewayState(primaryProfile)
+  }
 }
 
 // ── Secondary (pool) backends ──────────────────────────────────────────────
@@ -87,6 +129,8 @@ export function gatewayForProfile(profile: string): HermesGateway | null {
 // composer reflect the active profile's socket without a background reconnect
 // flipping the foreground enabled/disabled state.
 function reportGatewayState(profile: string, state: ConnectionState): void {
+  setProfileGatewayState(profile, state)
+
   if (normKey(profile) === activeKey) {
     setGatewayState(state)
   }
@@ -185,6 +229,7 @@ function createSecondary(profile: string): Secondary {
   })
 
   secondaries.set(profile, entry)
+  setProfileGatewayState(profile, gateway.connectionState)
 
   return entry
 }
@@ -281,6 +326,7 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
     entry.offState()
     entry.gateway.close()
     secondaries.delete(key)
+    removeProfileGatewayState(key)
   }
 }
 
@@ -291,6 +337,7 @@ export function closeSecondaryGateways(): void {
     entry.offEvent()
     entry.offState()
     entry.gateway.close()
+    removeProfileGatewayState(entry.profile)
   }
 
   secondaries.clear()

@@ -4,7 +4,14 @@ import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import {
+  isGatewayTimeoutError,
+  isSessionBusyError,
+  isSessionNotFoundError
+} from '@/lib/session-errors'
 import type { ComposerAttachment } from '@/store/composer'
+
+export { isGatewayTimeoutError, isSessionBusyError, isSessionNotFoundError }
 
 export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
@@ -46,24 +53,6 @@ export function inlineErrorMessage(error: unknown, fallback: string): string {
   return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw).replace(/^Error:\s*/, '').trim()
 }
 
-export function isSessionNotFoundError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-
-  return /session not found/i.test(message)
-}
-
-// Gateway JSON-RPC calls reject with "request timed out: <method>" when the
-// backend event loop is starved (e.g. a poller spin or a heavy async-injected
-// turn). For prompt.submit this is indistinguishable from a dead runtime
-// session on the client side — recovery must treat it like one (#55578):
-// resume the SELECTED stored session and retry, instead of surfacing an error
-// that leads to a null activeSessionId and a silently minted new session.
-export function isGatewayTimeoutError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-
-  return /request timed out/i.test(message)
-}
-
 // The gateway refuses prompt.submit while a turn is running (4009 "session
 // busy"). It's a transient concurrency guard, never a user-facing error: a
 // submit racing the settle edge (or a rewind interrupting mid-turn) just waits
@@ -71,10 +60,6 @@ export function isGatewayTimeoutError(error: unknown): boolean {
 // turn still surfaces eventually.
 export const SESSION_BUSY_RETRY_TIMEOUT_MS = 6_000
 export const SESSION_BUSY_RETRY_INTERVAL_MS = 150
-
-export function isSessionBusyError(error: unknown): boolean {
-  return /session busy/i.test(error instanceof Error ? error.message : String(error))
-}
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 

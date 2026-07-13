@@ -114,7 +114,13 @@ export function petProfile(): string {
  * (or returns to the window). No persistence — it's a glance hint, not state.
  */
 export const $petUnread = atom(false)
-export const markPetUnread = () => $petUnread.set(true)
+
+export const markPetUnread = () => {
+  if (!$petUnread.get()) {
+    $petUnread.set(true)
+  }
+}
+
 export const clearPetUnread = () => $petUnread.set(false)
 
 /** Steady activity flags (toolRunning / reasoning) set + cleared by the stream. */

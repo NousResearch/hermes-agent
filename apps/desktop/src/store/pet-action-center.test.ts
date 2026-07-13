@@ -1,15 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { clearClarifyRequest, setClarifyRequest } from './clarify'
+import { $queuedPromptsBySession, enqueueQueuedPrompt } from './composer-queue'
+import { $gatewayStatesByProfile } from './gateway'
 import {
   $petActionCenter,
   clearPetActionCenterActionStatus,
   selectPetActionCenterItem,
   setPetActionCenterActionStatus
 } from './pet-action-center'
-import { $profiles } from './profile'
+import {
+  completePetLiveSession,
+  resetPetLiveSessions,
+  setPetLiveSessionActivity,
+  syncPetLiveSessionState
+} from './pet-live-session'
+import { $activeGatewayProfile, $profiles } from './profile'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from './prompts'
-import { $sessions } from './session'
+import { $activeSessionId, $sessions } from './session'
+import { profileSessionKey } from './session-identity'
 
 describe('pet action center projection', () => {
   beforeEach(() => {
@@ -17,6 +26,11 @@ describe('pet action center projection', () => {
     clearClarifyRequest()
     $profiles.set([])
     $sessions.set([])
+    $activeGatewayProfile.set('default')
+    $activeSessionId.set(null)
+    $gatewayStatesByProfile.set({})
+    $queuedPromptsBySession.set({})
+    resetPetLiveSessions()
     clearPetActionCenterActionStatus()
     vi.useFakeTimers()
   })
@@ -26,6 +40,11 @@ describe('pet action center projection', () => {
     clearClarifyRequest()
     $profiles.set([])
     $sessions.set([])
+    $activeGatewayProfile.set('default')
+    $activeSessionId.set(null)
+    $gatewayStatesByProfile.set({})
+    $queuedPromptsBySession.set({})
+    resetPetLiveSessions()
     clearPetActionCenterActionStatus()
     vi.useRealTimers()
   })
@@ -275,5 +294,219 @@ describe('pet action center projection', () => {
       status: 'error'
     })
     expect(JSON.parse(JSON.stringify($petActionCenter.get())).action).toEqual($petActionCenter.get().action)
+  })
+
+  it('projects exact-profile live statuses, queue counts, labels, connection state, and allowed actions', () => {
+    $profiles.set([
+      { has_env: true, is_default: true, model: null, name: 'default', path: '/default', provider: null, skill_count: 0 },
+      { has_env: true, is_default: false, model: null, name: 'work', path: '/work', provider: null, skill_count: 0 }
+    ])
+    $sessions.set([
+      { id: 'stored', profile: 'default', title: 'Default title' },
+      { id: 'stored', profile: 'work', title: 'Work title' }
+    ] as never)
+    $gatewayStatesByProfile.set({ default: 'open', work: 'error' })
+    $activeGatewayProfile.set('default')
+    $activeSessionId.set('runtime')
+    syncPetLiveSessionState(
+      {
+        profile: 'default',
+        runtimeSessionId: 'runtime',
+        storedSessionId: 'stored',
+        busy: false,
+        needsInput: false,
+        awaitingResponse: false,
+        turnStartedAt: null
+      },
+      { profile: 'default', runtimeSessionId: 'runtime' }
+    )
+    syncPetLiveSessionState(
+      {
+        profile: 'work',
+        runtimeSessionId: 'runtime',
+        storedSessionId: 'stored',
+        busy: true,
+        needsInput: false,
+        awaitingResponse: true,
+        turnStartedAt: 50
+      },
+      { profile: 'default', runtimeSessionId: 'runtime' }
+    )
+    enqueueQueuedPrompt(profileSessionKey('work', 'stored'), { attachments: [], text: 'PRIVATE QUEUED TEXT' })
+
+    const defaultItem = $petActionCenter.get().items.find(item => item.profile === 'default')
+    const workItem = $petActionCenter.get().items.find(item => item.profile === 'work')
+
+    expect(defaultItem).toEqual(
+      expect.objectContaining({
+        allowedActions: ['send', 'open-in-app'],
+        connectionState: 'open',
+        kind: 'live-turn',
+        queuedCount: 0,
+        sessionTitle: 'Default title',
+        status: 'idle'
+      })
+    )
+    expect(workItem).toEqual(
+      expect.objectContaining({
+        allowedActions: ['queue', 'open-in-app'],
+        connectionState: 'error',
+        kind: 'live-turn',
+        queuedCount: 1,
+        sessionTitle: 'Work title',
+        status: 'working',
+        turnStartedAt: 50
+      })
+    )
+    expect(defaultItem?.id).not.toBe(workItem?.id)
+    expect(JSON.stringify($petActionCenter.get())).not.toContain('PRIVATE QUEUED TEXT')
+  })
+
+  it('keeps local queue available for disconnected working and reviewing turns but not waiting turns', () => {
+    $sessions.set([{ id: 'stored', profile: 'work', title: 'Work title' }] as never)
+    $gatewayStatesByProfile.set({ work: 'connecting' })
+    syncPetLiveSessionState(
+      {
+        profile: 'work',
+        runtimeSessionId: 'working',
+        storedSessionId: 'stored',
+        busy: true,
+        needsInput: false,
+        awaitingResponse: true,
+        turnStartedAt: 10
+      },
+      null
+    )
+    syncPetLiveSessionState(
+      {
+        profile: 'work',
+        runtimeSessionId: 'reviewing',
+        storedSessionId: 'stored',
+        busy: true,
+        needsInput: false,
+        awaitingResponse: true,
+        turnStartedAt: 20
+      },
+      null
+    )
+    setPetLiveSessionActivity('work', 'reviewing', 'reasoning')
+    syncPetLiveSessionState(
+      {
+        profile: 'work',
+        runtimeSessionId: 'waiting',
+        storedSessionId: 'stored',
+        busy: true,
+        needsInput: true,
+        awaitingResponse: true,
+        turnStartedAt: 30
+      },
+      null
+    )
+
+    const liveItems = $petActionCenter.get().items.filter(item => item.kind === 'live-turn')
+
+    expect(liveItems.find(item => item.sessionId === 'working')?.allowedActions).toEqual([
+      'queue',
+      'open-in-app'
+    ])
+    expect(liveItems.find(item => item.sessionId === 'reviewing')?.allowedActions).toEqual([
+      'queue',
+      'open-in-app'
+    ])
+    expect(liveItems.find(item => item.sessionId === 'waiting')?.allowedActions).toEqual(['open-in-app'])
+
+    $gatewayStatesByProfile.set({})
+
+    expect(
+      $petActionCenter.get().items.find(item => item.kind === 'live-turn' && item.sessionId === 'working')
+        ?.allowedActions
+    ).toEqual(['queue', 'open-in-app'])
+  })
+
+  it('suppresses a duplicate standalone live row for blocking prompts and attaches only safe live metadata', () => {
+    $gatewayStatesByProfile.set({ work: 'open' })
+    syncPetLiveSessionState(
+      {
+        profile: 'work',
+        runtimeSessionId: 'runtime',
+        storedSessionId: 'stored',
+        busy: true,
+        needsInput: true,
+        awaitingResponse: true,
+        turnStartedAt: 10
+      },
+      null
+    )
+    setApprovalRequest({
+      command: 'npm test',
+      description: 'Run tests',
+      profile: 'work',
+      sessionId: 'runtime',
+      storedSessionId: 'stored'
+    })
+
+    expect($petActionCenter.get().items).toHaveLength(1)
+    expect($petActionCenter.get().items[0]).toEqual(
+      expect.objectContaining({
+        kind: 'approval',
+        liveStatus: expect.objectContaining({ connectionState: 'open', status: 'waiting' })
+      })
+    )
+
+    const serialized = JSON.stringify($petActionCenter.get())
+    expect(serialized).not.toContain('messages')
+    expect(serialized).not.toContain('args')
+    expect(serialized).not.toContain('output')
+    expect(serialized).not.toContain('reasoningText')
+  })
+
+  it('counts working as actionable but not attention, while waiting and outcomes require attention', () => {
+    $gatewayStatesByProfile.set({ default: 'open' })
+    syncPetLiveSessionState(
+      {
+        profile: 'default',
+        runtimeSessionId: 'working',
+        storedSessionId: null,
+        busy: true,
+        needsInput: false,
+        awaitingResponse: true,
+        turnStartedAt: 10
+      },
+      null
+    )
+
+    expect($petActionCenter.get()).toEqual(
+      expect.objectContaining({ actionableCount: 1, attentionCount: 0, blockingCount: 0 })
+    )
+
+    syncPetLiveSessionState(
+      {
+        profile: 'default',
+        runtimeSessionId: 'waiting',
+        storedSessionId: null,
+        busy: true,
+        needsInput: true,
+        awaitingResponse: true,
+        turnStartedAt: 20
+      },
+      null
+    )
+    syncPetLiveSessionState(
+      {
+        profile: 'default',
+        runtimeSessionId: 'done',
+        storedSessionId: null,
+        busy: true,
+        needsInput: false,
+        awaitingResponse: true,
+        turnStartedAt: 30
+      },
+      null
+    )
+    completePetLiveSession('default', 'done', 'done')
+
+    expect($petActionCenter.get()).toEqual(
+      expect.objectContaining({ actionableCount: 2, attentionCount: 2, blockingCount: 1 })
+    )
   })
 })

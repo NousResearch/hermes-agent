@@ -21,6 +21,12 @@ import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
+import {
+  beginPetLiveSession,
+  clearPetLiveSessionActivity,
+  completePetLiveSession,
+  setPetLiveSessionActivity
+} from '@/store/pet-live-session'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
@@ -275,6 +281,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         flushQueuedDeltas(profile, sessionId)
+        beginPetLiveSession(profile, sessionId)
         clearSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
         compactedTurnRef.current.delete(eventSessionKey!)
@@ -313,6 +320,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'reasoning.delta') {
         if (sessionId) {
+          setPetLiveSessionActivity(profile, sessionId, 'reasoning')
           appendReasoningDelta(profile, sessionId, coerceThinkingText(payload?.text))
         }
 
@@ -321,6 +329,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'reasoning.available') {
         if (sessionId) {
+          setPetLiveSessionActivity(profile, sessionId, 'reasoning')
           appendReasoningDelta(profile, sessionId, coerceThinkingText(payload?.text), true)
         }
 
@@ -333,6 +342,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // the mixture-of-agents process is visible. Reuses the reasoning
         // disclosure rather than introducing a parallel surface.
         if (sessionId) {
+          setPetLiveSessionActivity(profile, sessionId, 'reasoning')
           const label = coerceGatewayText(payload?.label) || 'reference'
           const idx = typeof payload?.index === 'number' ? payload.index : undefined
           const cnt = typeof payload?.count === 'number' ? payload.count : undefined
@@ -347,6 +357,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'moa.aggregating') {
         // Status transition only; the aggregator's reply arrives via the normal
         // message stream. No reasoning/transcript mutation here.
+        if (sessionId) {
+          setPetLiveSessionActivity(profile, sessionId, 'reasoning')
+        }
+
         if (isActiveEvent) {
           setPetActivity({ reasoning: true })
         }
@@ -354,6 +368,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (!sessionId) {
           return
         }
+
+        // Publish the exact terminal outcome before transcript/cache completion.
+        // The later terminal cache sync keeps this outcome until explicit ack.
+        completePetLiveSession(profile, sessionId, 'done')
 
         // Turn ended — drop any blocking prompt still open for THIS session
         // (e.g. interrupted, or the approval already resolved). Scoped to the
@@ -384,12 +402,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           // mirrors each activity change. The jump runs ~2 loops, then settles.
           flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
 
-          // Light up the pet's mail icon if the user wasn't looking when the turn
-          // finished — a glanceable "new message" hint on the popped-out overlay.
-          // Cleared when they open the app via the mail icon or refocus the window.
-          if (typeof document !== 'undefined' && !document.hasFocus()) {
-            markPetUnread()
-          }
+        }
+
+        // Completion attention is global, not foreground-only: a background
+        // profile finishing while Hermes is unfocused must light the same pet.
+        if (typeof document !== 'undefined' && !document.hasFocus()) {
+          markPetUnread()
         }
 
         if (payload?.usage) {
@@ -415,6 +433,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         flushQueuedDeltas(profile, sessionId)
+        setPetLiveSessionActivity(profile, sessionId, 'tool', typeof payload?.name === 'string' ? payload.name : null)
         upsertToolCall(profile, sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
 
         if (isActiveEvent) {
@@ -423,6 +442,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'tool.complete') {
         if (sessionId) {
           flushQueuedDeltas(profile, sessionId)
+          clearPetLiveSessionActivity(
+            profile,
+            sessionId,
+            'tool',
+            typeof payload?.name === 'string' ? payload.name : null
+          )
           upsertToolCall(profile, sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
 
           if (isActiveEvent) {
@@ -646,6 +671,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
+
+        if (sessionId) {
+          completePetLiveSession(profile, sessionId, 'failed')
+
+          if (typeof document !== 'undefined' && !document.hasFocus()) {
+            markPetUnread()
+          }
+        }
 
         // A turn that errors out has also ended — drop any open blocking prompt
         // for this session so an approval/sudo/secret overlay can't linger past

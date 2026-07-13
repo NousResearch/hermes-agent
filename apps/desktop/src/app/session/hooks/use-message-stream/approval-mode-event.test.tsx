@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
+import { $petUnread } from '@/store/pet'
+import { $petLiveSessions, resetPetLiveSessions } from '@/store/pet-live-session'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $currentModel, setCurrentModel } from '@/store/session'
 import { getProfileSessionValue, setProfileSessionValue } from '@/store/session-identity'
@@ -62,11 +64,15 @@ describe('live session.info approval mode reconciliation', () => {
     $approvalModes.set({})
     $activeGatewayProfile.set('work')
     setCurrentModel('foreground-model')
+    resetPetLiveSessions()
+    $petUnread.set(false)
   })
 
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    resetPetLiveSessions()
+    $petUnread.set(false)
   })
 
   it('reconciles an active-session event under its source gateway profile', async () => {
@@ -162,5 +168,56 @@ describe('live session.info approval mode reconciliation', () => {
 
     expect(getProfileSessionValue(cachedStates!, 'default', ACTIVE_SID)?.busy).toBe(true)
     expect(getProfileSessionValue(cachedStates!, 'work', ACTIVE_SID)?.busy).toBe(false)
+  })
+
+  it('projects only bounded direct activity metadata and clears matching tool activity', async () => {
+    await mountStream()
+
+    act(() => {
+      handleEvent!({
+        payload: { args: { token: 'secret' }, name: `  ${'x'.repeat(500)}  `, output: 'private output' },
+        profile: 'work',
+        session_id: ACTIVE_SID,
+        type: 'tool.start'
+      })
+    })
+
+    expect($petLiveSessions.get()).toEqual([
+      expect.objectContaining({ activityKind: 'tool', activityName: 'x'.repeat(120), profile: 'work' })
+    ])
+    expect(JSON.stringify($petLiveSessions.get())).not.toContain('secret')
+    expect(JSON.stringify($petLiveSessions.get())).not.toContain('private output')
+
+    act(() => {
+      handleEvent!({
+        payload: { name: `  ${'x'.repeat(500)}  ` },
+        profile: 'work',
+        session_id: ACTIVE_SID,
+        type: 'tool.complete'
+      })
+    })
+
+    expect($petLiveSessions.get()[0]).toEqual(expect.objectContaining({ activityKind: null, activityName: null }))
+  })
+
+  it('marks background completion and errors as exact outcomes and global unread without profile contamination', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    await mountStream()
+
+    act(() => {
+      handleEvent!({ payload: { text: 'private reasoning' }, profile: 'default', session_id: ACTIVE_SID, type: 'reasoning.delta' })
+      handleEvent!({ payload: { text: 'done' }, profile: 'default', session_id: ACTIVE_SID, type: 'message.complete' })
+      handleEvent!({ payload: { message: 'internal failure detail' }, profile: 'work', session_id: ACTIVE_SID, type: 'error' })
+    })
+
+    expect($petLiveSessions.get()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ profile: 'default', runtimeSessionId: ACTIVE_SID, outcome: 'done' }),
+        expect.objectContaining({ profile: 'work', runtimeSessionId: ACTIVE_SID, outcome: 'failed' })
+      ])
+    )
+    expect(JSON.stringify($petLiveSessions.get())).not.toContain('private reasoning')
+    expect(JSON.stringify($petLiveSessions.get())).not.toContain('internal failure detail')
+    expect($petUnread.get()).toBe(true)
   })
 })

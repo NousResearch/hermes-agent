@@ -8,18 +8,21 @@ import {
   selectPetActionCenterItem,
   setPetActionCenterActionStatus
 } from './pet-action-center'
+import {
+  handlePetLiveTurnControl,
+  isPetLiveTurnControl,
+  type PetLiveTurnActionDependencies,
+  type PetLiveTurnGateway
+} from './pet-live-turn-actions'
 import type { PetActionCenterControl } from './pet-overlay'
 import { normalizeProfileKey } from './profile'
 import { promptIdentityKey, type StoredPromptRequest } from './prompt-identity'
 import { $approvalRequests, type ApprovalRequest, clearApprovalRequest } from './prompts'
 import { $cronSessions, $messagingSessions, $sessions } from './session'
 
-export interface PetActionCenterGateway {
-  readonly connectionState: string
-  request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>
-}
+export interface PetActionCenterGateway extends PetLiveTurnGateway {}
 
-export interface PetActionCenterActionDependencies {
+export interface PetActionCenterActionDependencies extends PetLiveTurnActionDependencies {
   ensureProfile: (profile: string) => Promise<void>
   gatewayForProfile: (profile: string) => PetActionCenterGateway | null
   resumeSession: (profile: string, storedSessionId: string) => Promise<boolean> | boolean
@@ -350,6 +353,12 @@ export function createPetActionCenterActions(
   return {
     async handle(control) {
       if (control.type !== 'action-center-select' && $petActionCenter.get().action?.status === 'submitting') {
+        return
+      }
+
+      if (isPetLiveTurnControl(control)) {
+        await handlePetLiveTurnControl(control, dependencies)
+
         return
       }
 

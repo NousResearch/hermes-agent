@@ -23,6 +23,7 @@ By default the network test is SKIPPED so the suite runs offline.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import socket
@@ -32,12 +33,19 @@ import tempfile
 import textwrap
 import time
 import unittest
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent  # optional-skills/.. → hermes-agent root
+
+# Google-provided keys for testing. ALWAYS pass siteverify; tokens are
+# accepted regardless of hostname. Use these when running the offline suite
+# or when probing without a real key pair.
+GOOGLE_TEST_SITEKEY = "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"
+GOOGLE_TEST_SECRET = "6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe"
 
 
 def _get_free_port() -> int:
@@ -263,7 +271,89 @@ class CaptchaRelayPipelineTests(unittest.TestCase):
 # Entry point                                                                 #
 # --------------------------------------------------------------------------- #
 
-def main() -> int:
+def _run_probe(sitekey: str, secret: str, token: str) -> int:
+    """Submit a synthetic token to Google siteverify and return an exit code.
+
+    Exit codes:
+        0  PASS — Google accepted the token for this sitekey; the skill
+           should work as long as the target's verify endpoint agrees.
+        1  FAIL — Google rejected the token; the sitekey is likely
+           hostname-restricted and won't accept a tunnel-origin token.
+        2  INCONCLUSIVE — network or other error; retry after checking
+           connectivity.
+    """
+    body = urllib.parse.urlencode({"secret": secret, "response": token}).encode()
+    req = urllib.request.Request(
+        "https://www.google.com/recaptcha/api/siteverify",
+        data=body,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            payload = json.loads(r.read().decode())
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        print(f"INCONCLUSIVE: probe failed ({e!r}). Check connectivity.", file=sys.stderr)
+        return 2
+
+    if payload.get("success"):
+        host = payload.get("hostname")
+        print(f"PASS: Google accepted a synthetic token for sitekey "
+              f"{sitekey[:12]}... (hostname={host!r}).")
+        print("      A trycloudflare.com tunnel should verify against this sitekey.")
+        return 0
+
+    errs = payload.get("error-codes") or []
+    print(f"FAIL: Google rejected the token for sitekey {sitekey[:12]}...")
+    print(f"      hostname={payload.get('hostname')!r}  errors={errs!r}")
+    print("      Most likely: sitekey is Enterprise + hostname-restricted,")
+    print("      so a tunnel-origin token won't verify against the target.")
+    print("      Workarounds: solve in the target-origin browser session,")
+    print("      or fall back to a paid captcha-solving service.")
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Captcha relay pipeline tests + pre-flight siteverify probe.",
+    )
+    parser.add_argument(
+        "--sitekey", default=None,
+        help="Run a pre-flight probe against this sitekey instead of the "
+             "offline test suite. Use this before committing to the relay "
+             "against a real target.",
+    )
+    parser.add_argument(
+        "--secret", default=None,
+        help="Server-side secret matching --sitekey. Required for a meaningful "
+             "probe against a real sitekey. Falls back to the Google test "
+             "secret if omitted (only useful with the Google test sitekey).",
+    )
+    parser.add_argument(
+        "--token", default="preflight-probe-token",
+        help="Synthetic token to submit. Default is fine for the pre-flight probe.",
+    )
+    parser.add_argument(
+        "--include-network", action="store_true",
+        help="Also run the live Google siteverify test against the Google "
+             "test keys (uses real network). Only meaningful when running the "
+             "offline suite (i.e. without --sitekey).",
+    )
+    args = parser.parse_args(argv)
+
+    # Probe mode takes precedence over the suite.
+    if args.sitekey is not None or args.secret is not None:
+        sitekey = args.sitekey or GOOGLE_TEST_SITEKEY
+        secret = args.secret or GOOGLE_TEST_SECRET
+        if args.sitekey and not args.secret:
+            print("WARN: --sitekey given without --secret; using the Google "
+                  "test secret. This only probes the Google test sitekey pair.",
+                  file=sys.stderr)
+        return _run_probe(sitekey, secret, args.token)
+
+    # Otherwise, run the unittest suite. Honor --include-network.
+    if args.include_network:
+        os.environ["INCLUDE_NETWORK"] = "1"
+
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromTestCase(CaptchaRelayPipelineTests)
     runner = unittest.TextTestRunner(verbosity=2)

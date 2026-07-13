@@ -65,13 +65,14 @@ python3 scripts/test_relay_pipeline.py --sitekey YOUR_SITEKEY [--secret YOUR_SEC
 ```
 
 What it does:
-1. Spawns the relay server on a random local port
-2. Mints a synthetic reCAPTCHA-shaped token (length and prefix mirror real tokens)
-3. Calls `https://www.google.com/recaptcha/api/siteverify` against the target's sitekey
-4. If the target's siteverify responds with `success: true` and `hostname` matching the tunnel-origin (e.g. `<random>.trycloudflare.com`), the probe **PASSES** — this skill will work.
-5. If the target rejects the token (returns `success: false` or `hostname` mismatch), the probe **FAILS** with a clear diagnosis — the skill will not work and you should either solve inside the target-origin browser or fall back to a paid service.
+1. Submits a synthetic reCAPTCHA-shaped token to Google's public `siteverify` endpoint (`https://www.google.com/recaptcha/api/siteverify`) using the supplied sitekey + secret.
+2. Prints `PASS` (exit 0) if Google accepts the token for that sitekey pair, or `FAIL` (exit 1) with the `error-codes` from Google if it rejects.
+3. `PASS` means a real token from a trycloudflare tunnel origin should also verify against the target's siteverify (this is the common non-Enterprise case).
+4. `FAIL` most often means the sitekey is Enterprise + hostname-restricted, and the skill will not work as-is. Solve in the target-origin browser, or fall back to a paid captcha-solving service.
 
-The probe is non-destructive: it does **not** call the real target's verify endpoint (which it cannot know without your `--secret`), it just shows what Google's public verify endpoint returns. Use that signal to decide whether to proceed.
+If you run the script with no flags, it runs the offline unittest suite (4 tests, ~1s) instead of a probe. Add `--include-network` to also exercise the live `siteverify` round-trip against the Google test keys.
+
+The probe is non-destructive: it submits a synthetic token you provide (or the default `preflight-probe-token`) and reports what Google says. It never calls the target's verify endpoint (it can't, without your site's secret). Use the exit code (`$?`) to decide whether to proceed.
 
 ## When to Use
 

@@ -333,7 +333,7 @@ _ETH_CALL_DATA_MAX_HEX_CHARS = 20_480
 
 
 def redact_rpc_url(url: str) -> str:
-    """Strip credentials / query tokens from RPC URLs before printing."""
+    """Return scheme://[***@]host[:port] only — drop userinfo, path, query, fragment."""
     try:
         parts = urllib.parse.urlsplit(url)
     except Exception:
@@ -343,7 +343,8 @@ def redact_rpc_url(url: str) -> str:
         host = f"{host}:{parts.port}"
     if parts.username or parts.password:
         host = f"***@{host}"
-    return urllib.parse.urlunsplit((parts.scheme, host, parts.path, "", ""))
+    # Origin-only: never echo path (provider key routes), query, or fragment.
+    return urllib.parse.urlunsplit((parts.scheme, host, "", "", ""))
 
 
 # ---------------------------------------------------------------------------

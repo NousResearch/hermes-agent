@@ -31,13 +31,15 @@ def evm():
     return mod
 
 
-def test_redact_rpc_url_strips_query_and_userinfo(evm):
+def test_redact_rpc_url_strips_query_userinfo_and_path(evm):
     redacted = evm.redact_rpc_url(
-        "https://user:secret@rpc.example.com/v1?apikey=abc123"
+        "https://user:secret@rpc.example.com/v1/xyz?apikey=abc123#frag"
     )
+    assert redacted == "https://***@rpc.example.com"
     assert "secret" not in redacted
     assert "abc123" not in redacted
-    assert "rpc.example.com" in redacted
+    assert "/v1" not in redacted
+    assert "frag" not in redacted
 
 
 def test_rpc_rejects_disallowed_method(evm, capsys):

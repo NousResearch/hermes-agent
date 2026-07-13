@@ -290,15 +290,16 @@ def _get_ignore_https_errors_config() -> bool:
     """
     global _cached_ignore_https_errors, _ignore_https_errors_resolved
     if _ignore_https_errors_resolved and _cached_ignore_https_errors is not None:
-        return _cached_ignore_https_errors
+        return bool(_cached_ignore_https_errors)
 
     result = False
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
         val = cfg_get(cfg, "browser", "ignore_https_errors")
-        if val is not None:
-            result = bool(val)
+        # Use is_truthy_value so string "false"/"0"/"no" stay false
+        # (bool("false") is True — common YAML/env footgun).
+        result = is_truthy_value(val, default=False)
     except Exception as e:
         logger.debug("Could not read ignore_https_errors from config: %s", e)
     # Cache before flipping resolved (same race discipline as timeout cache).
@@ -2388,9 +2389,9 @@ def _run_browser_command(
 
     extra_args: list[str] = []
     if _get_ignore_https_errors_config():
-        # Global agent-browser flag; also settable via
-        # AGENT_BROWSER_IGNORE_HTTPS_ERRORS. Lets local Chromium open
-        # self-signed / internal HTTPS endpoints.
+        # Global agent-browser flag (also exists as env
+        # AGENT_BROWSER_IGNORE_HTTPS_ERRORS outside Hermes). Lets local
+        # Chromium open self-signed / internal HTTPS endpoints.
         extra_args.append("--ignore-https-errors")
 
     cmd_parts = cmd_prefix + backend_args + extra_args + [

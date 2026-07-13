@@ -145,6 +145,19 @@ class TestIgnoreHttpsErrorsConfig:
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _get_ignore_https_errors_config() is False
 
+    def test_string_false_stays_false(self):
+        """bool('false') is True — must use is_truthy_value."""
+        from tools.browser_tool import _get_ignore_https_errors_config
+        cfg = {"browser": {"ignore_https_errors": "false"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_ignore_https_errors_config() is False
+
+    def test_string_true_is_true(self):
+        from tools.browser_tool import _get_ignore_https_errors_config
+        cfg = {"browser": {"ignore_https_errors": "true"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_ignore_https_errors_config() is True
+
     def test_cached_after_first_call(self):
         from tools.browser_tool import _get_ignore_https_errors_config
         mock_read = MagicMock(return_value={"browser": {"ignore_https_errors": True}})

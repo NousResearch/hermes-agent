@@ -1776,6 +1776,7 @@ browser:
   # When true, agent-browser is invoked with --ignore-https-errors so internal
   # services with self-signed certs (Proxmox, homelab dashboards) can be opened.
   # Default false. Prefer proper certs in production.
+  # For LAN/self-signed targets you typically also need allow_private_urls: true.
   ignore_https_errors: false
   # Optional CDP override — when set, Hermes attaches directly to your own
   # Chromium-family browser (via /browser connect) rather than starting a headless browser.

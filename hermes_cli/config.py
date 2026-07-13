@@ -2694,6 +2694,12 @@ DEFAULT_CONFIG = {
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.
         "output_retention": 50,
+        # Fail-closed spend guard (#44585): when an UNPINNED job's global
+        # inference config has drifted from the snapshot taken at job creation
+        # (provider and/or model changed), skip the run and make NO paid call.
+        # Default True (safe). Set false to let unpinned jobs always run on the
+        # CURRENT global default, re-snapshotting each run — no drift skips.
+        "drift_guard_enabled": True,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

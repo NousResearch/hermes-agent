@@ -153,6 +153,31 @@ class TestProviderDriftGuard:
         assert error is None
         assert agent_constructed is True
 
+    def test_e_guard_disabled_via_config_runs_despite_drift(self, tmp_path):
+        """(e) cron.drift_guard_enabled=false → unpinned drift runs, no skip.
+
+        The guard is opt-out: when an operator sets cron.drift_guard_enabled
+        to false in config.yaml, an unpinned job whose snapshot != current
+        provider must STILL run on the current default (the paid call IS made),
+        re-snapshotting each run, instead of failing closed. Default behavior
+        (guard on) is covered by test_b above.
+        """
+        import yaml
+
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"cron": {"drift_guard_enabled": False}}),
+            encoding="utf-8",
+        )
+        job = _base_job(provider_snapshot="openrouter")
+        success, output, final_response, error, agent_constructed = \
+            _run_with_current_provider(job, "nous", tmp_path)
+
+        # Guard disabled → job runs on the current provider, paid call made.
+        assert agent_constructed is True
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+
 
 class TestCreateJobSnapshot:
     """create_job captures provider_snapshot for unpinned agent jobs only."""

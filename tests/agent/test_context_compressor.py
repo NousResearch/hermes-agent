@@ -3439,3 +3439,145 @@ class TestDoubleCompactionSummaryRole:
             "summary of earlier turns" in (m.get("content") or "")
             for m in result
         )
+
+
+class TestResolveOutputReservation:
+    """#43547: the compressor's output-token reservation must match what the
+    wire path sends (providers.get_provider_profile().get_max_tokens(model)),
+    so threshold math sees the same effective input budget the provider does.
+
+    These exercise the REAL provider registry (the thing under test); only the
+    context-length HTTP probe is mocked, matching the rest of this suite.
+    """
+
+    def test_none_custom_returns_provider_default(self):
+        from agent.context_compressor import _resolve_output_reservation
+        # custom profile default_max_tokens=65536
+        assert _resolve_output_reservation(None, "custom") == 65536
+
+    def test_none_registered_alias_returns_provider_default(self):
+        from agent.context_compressor import _resolve_output_reservation
+        # "vllm"/"local"/"ollama" are aliases of the custom profile
+        assert _resolve_output_reservation(None, "vllm") == 65536
+        assert _resolve_output_reservation(None, "local") == 65536
+
+    def test_explicit_wins_over_provider_default(self):
+        from agent.context_compressor import _resolve_output_reservation
+        assert _resolve_output_reservation(8192, "custom") == 8192
+
+    def test_none_nvidia_returns_nvidia_default(self):
+        from agent.context_compressor import _resolve_output_reservation
+        assert _resolve_output_reservation(None, "nvidia") == 16384
+
+    def test_unknown_provider_returns_none(self):
+        from agent.context_compressor import _resolve_output_reservation
+        assert _resolve_output_reservation(None, "unknown-provider-xyz") is None
+
+    def test_per_model_override_honored(self):
+        from agent.context_compressor import _resolve_output_reservation
+        # opencode-go caps mimo-v2.5-pro at 131072 via get_max_tokens() override
+        assert _resolve_output_reservation(
+            None, "opencode-go", model="mimo-v2.5-pro"
+        ) == 131072
+
+    def test_user_slug_forms_return_none(self):
+        """vllm-5090 / custom:vllm-5090 do NOT resolve to a registered profile
+        → None (wire's legacy path also sends no default → agree)."""
+        from agent.context_compressor import _resolve_output_reservation
+        assert _resolve_output_reservation(None, "vllm-5090") is None
+        assert _resolve_output_reservation(None, "custom:vllm-5090") is None
+
+
+class TestOutputReservationConstruction:
+    """#43547: constructor must resolve the provider default when max_tokens is
+    unset, and record whether the reservation was user-explicit."""
+
+    def test_custom_implicit_reserves_provider_default(self):
+        with patch("agent.context_compressor.get_model_context_length",
+                   return_value=200_000):
+            comp = ContextCompressor(
+                model="Qwen3.6-27B", provider="custom",
+                max_tokens=None, threshold_percent=0.50, quiet_mode=True,
+            )
+        assert comp.max_tokens == 65536
+        # effective_window = 200000 - 65536 = 134464; threshold = 50% of that
+        assert comp.threshold_tokens <= 200_000 - 65536
+
+    def test_explicit_max_tokens_marks_explicit(self):
+        with patch("agent.context_compressor.get_model_context_length",
+                   return_value=200_000):
+            comp = ContextCompressor(
+                model="Qwen3.6-27B", provider="custom",
+                max_tokens=8192, threshold_percent=0.50, quiet_mode=True,
+            )
+        assert comp.max_tokens == 8192
+        assert comp._max_tokens_is_explicit is True
+
+    def test_unknown_provider_no_reservation(self):
+        with patch("agent.context_compressor.get_model_context_length",
+                   return_value=200_000):
+            comp = ContextCompressor(
+                model="m", provider="unknown-provider-xyz",
+                max_tokens=None, threshold_percent=0.50, quiet_mode=True,
+            )
+        assert comp.max_tokens is None
+        assert comp._max_tokens_is_explicit is False
+
+
+class TestOutputReservationProviderSwitch:
+    """#43547: update_model() must re-resolve the reservation on a provider
+    change when it was auto-derived — but preserve an explicit user value."""
+
+    def _comp(self, provider, max_tokens):
+        with patch("agent.context_compressor.get_model_context_length",
+                   return_value=200_000):
+            return ContextCompressor(
+                model="Qwen3.6-27B", provider=provider,
+                max_tokens=max_tokens, threshold_percent=0.50, quiet_mode=True,
+            )
+
+    def test_switch_flips_implicit_reservation(self):
+        """custom(65536) -> nvidia(16384): reservation must follow the new
+        provider, not stay stuck at the old one."""
+        comp = self._comp("custom", None)
+        assert comp.max_tokens == 65536
+        comp.update_model("Qwen3.6-27B", context_length=200_000, provider="nvidia")
+        assert comp.max_tokens == 16384
+
+    def test_switch_preserves_explicit_reservation(self):
+        """Explicit user max_tokens survives a provider switch unchanged."""
+        comp = self._comp("custom", 8192)
+        comp.update_model("Qwen3.6-27B", context_length=200_000, provider="nvidia")
+        assert comp.max_tokens == 8192
+
+    def test_restore_primary_is_a_switch(self):
+        """primary(custom,65536) -> fallback(nvidia,16384) -> restore(custom):
+        must return to 65536, not stay stuck at the fallback's 16384.
+        (rev1 missed this site: agent_runtime_helpers.py:1202.)"""
+        comp = self._comp("custom", None)
+        comp.update_model("Qwen3.6-27B", context_length=200_000, provider="nvidia")
+        assert comp.max_tokens == 16384
+        comp.update_model("Qwen3.6-27B", context_length=200_000, provider="custom")
+        assert comp.max_tokens == 65536
+
+    def test_same_provider_ctx_change_keeps_reservation(self):
+        """Ctx-only update (same provider) must NOT touch the reservation —
+        guards the 4 non-switch call sites (LM Studio, ctx-probe, 1M downgrade)."""
+        comp = self._comp("custom", None)
+        assert comp.max_tokens == 65536
+        comp.update_model("Qwen3.6-27B", context_length=32_000, provider="custom")
+        assert comp.max_tokens == 65536
+
+    def test_switch_to_unknown_provider_drops_to_no_reservation(self):
+        comp = self._comp("custom", None)
+        comp.update_model("m", context_length=200_000, provider="unknown-xyz")
+        assert comp.max_tokens is None
+
+    def test_old_instance_without_flag_survives_switch(self):
+        """A compressor constructed before _max_tokens_is_explicit existed
+        (unpickled/legacy) must not AttributeError on provider switch."""
+        comp = self._comp("custom", None)
+        del comp._max_tokens_is_explicit
+        # Should treat missing flag as "not explicit" and re-resolve, no crash.
+        comp.update_model("Qwen3.6-27B", context_length=200_000, provider="nvidia")
+        assert comp.max_tokens == 16384

@@ -28,6 +28,7 @@ fixture deterministically produces 2 children; with the lock, exactly 1.
 
 from __future__ import annotations
 
+import inspect
 import os
 import threading
 import time
@@ -253,9 +254,12 @@ def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypa
     agent_a = _build_agent_with_db(db, parent_sid)
     agent_a._compression_lock_ttl_seconds = 1.0
     agent_a._compression_lock_refresh_interval = 0.25
+    compression_started = threading.Event()
+    release_compression = threading.Event()
 
     def _slow_compress(*_a, **_kw):
-        time.sleep(2.0)
+        compression_started.set()
+        assert release_compression.wait(timeout=10)
         return [
             {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
             {"role": "user", "content": "tail"},
@@ -269,15 +273,16 @@ def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypa
 
     t_a = threading.Thread(target=run, args=(agent_a,), name="refresh_owner")
     t_a.start()
-    deadline = time.time() + 2.0
-    while db.get_compression_lock_holder(parent_sid) is None and time.time() < deadline:
-        time.sleep(0.05)
-    assert db.get_compression_lock_holder(parent_sid) is not None
-    time.sleep(1.2)
-    assert db.try_acquire_compression_lock(
-        parent_sid, "refresh_probe", ttl_seconds=1.0
-    ) is False, "live owner lease expired and was reclaimable before compression finished"
-    t_a.join(timeout=10)
+    try:
+        assert compression_started.wait(timeout=10), "compression never acquired its lock"
+        assert db.get_compression_lock_holder(parent_sid) is not None
+        time.sleep(1.2)
+        assert db.try_acquire_compression_lock(
+            parent_sid, "refresh_probe", ttl_seconds=1.0
+        ) is False, "live owner lease expired and was reclaimable before compression finished"
+    finally:
+        release_compression.set()
+        t_a.join(timeout=10)
 
     assert not t_a.is_alive()
     assert _count_children(db, parent_sid) == 1
@@ -379,116 +384,210 @@ def test_typeerror_fallback_exception_stops_lock_refresher(tmp_path: Path, monke
     assert db.try_acquire_compression_lock(parent_sid, "probe", ttl_seconds=1.0) is True
 
 
-class _NoLockSubsystemDB:
-    """Wraps a real SessionDB but simulates a pre-#34351 version skew.
+def _make_legacy_session_db_class() -> type:
+    """Model the class retained in ``sys.modules`` before the lock API existed.
 
-    A long-lived process can hold ``hermes_state.SessionDB`` bound to the
-    OLD class in memory (no compression-lock methods) while a lazily
-    re-imported ``conversation_compression.py`` calls the NEW lock code.
-    ``try_acquire_compression_lock`` then raises ``AttributeError`` — which
-    is NOT a ``sqlite3.Error``, so the method's own fail-open guard never
-    runs.  Before the fix the exception propagated to the outer agent loop,
-    which printed the error and retried; compression never succeeded, the
-    token count never dropped, and the loop re-triggered compaction forever.
+    During the real version-skew incident, a re-imported compression module
+    imports the same still-loaded ``hermes_state`` module, whose ``SessionDB``
+    class is old. The test replaces that module attribute with this lockless
+    class and forwards all persistence operations to a current real database.
     """
+    source_path = inspect.getfile(SessionDB)
+    namespace = {"__name__": "hermes_state"}
+    source = '''
+class SessionDB:
+    def __init__(self, real_db):
+        self._real = real_db
+
+    def __getattribute__(self, name):
+        if name in {"_real", "__class__"}:
+            return object.__getattribute__(self, name)
+        return getattr(object.__getattribute__(self, "_real"), name)
+'''
+    exec(compile(source, source_path, "exec"), namespace)
+    return namespace["SessionDB"]
+
+
+class _NominalSessionDBImpostor:
+    """A proxy that spoofs names but lacks the real SessionDB source contract."""
 
     def __init__(self, real_db: SessionDB) -> None:
         self._real = real_db
 
-    def try_acquire_compression_lock(self, *_a, **_k):  # noqa: D401
-        raise AttributeError(
-            "'SessionDB' object has no attribute 'try_acquire_compression_lock'"
-        )
-
-    def get_compression_lock_holder(self, *_a, **_k):
-        raise AttributeError("'SessionDB' object has no attribute 'get_compression_lock_holder'")
-
-    def release_compression_lock(self, *_a, **_k):
-        raise AttributeError("'SessionDB' object has no attribute 'release_compression_lock'")
+    def create_session(self, *args, **kwargs):
+        return self._real.create_session(*args, **kwargs)
 
     def __getattr__(self, name):
-        # Everything else (create_session, append, rotation helpers) goes to
-        # the real db so the post-lock compression + rotation path runs.
+        if name == "try_acquire_compression_lock":
+            raise AttributeError(name)
+        return getattr(self._real, name)
+
+
+_NominalSessionDBImpostor.__module__ = "hermes_state"
+_NominalSessionDBImpostor.__name__ = "SessionDB"
+
+
+class _BrokenLockLookupDB:
+    """A present lock API whose instance lookup fails unexpectedly."""
+
+    def __init__(self, real_db: SessionDB, error: Exception) -> None:
+        self._real = real_db
+        self._error = error
+
+    def try_acquire_compression_lock(self, *_args, **_kwargs):
+        raise AssertionError("the broken lookup must not resolve to a callable")
+
+    def __getattribute__(self, name):
+        if name == "try_acquire_compression_lock":
+            raise object.__getattribute__(self, "_error")
+        if name in {"_real", "_error", "__class__"}:
+            return object.__getattribute__(self, name)
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+
+class _NonCallableLockAPI:
+    """A present lock API descriptor that resolves to a non-callable value."""
+
+    def __init__(self, real_db: SessionDB) -> None:
+        self._real = real_db
+
+    try_acquire_compression_lock = None
+
+    def __getattr__(self, name):
         return getattr(self._real, name)
 
 
 def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path, monkeypatch) -> None:
-    """Version skew (no lock methods) must fail OPEN, not raise into the loop.
+    """A truly old in-memory SessionDB class must still make progress.
 
-    Reproduces the "API call #47/#48/#49 ... has no attribute
-    try_acquire_compression_lock" infinite-compaction spin: when the lock
-    subsystem is absent, ``_compress_context`` must skip locking and proceed
-    with compression (so the loop makes progress and terminates) instead of
-    letting the ``AttributeError`` escape to the retry loop.
+    A module reload can update ``conversation_compression`` while the cached
+    ``hermes_state.SessionDB`` class remains pre-lock. The compatibility path is
+    only valid for that exact class identity, not a proxy that merely uses the
+    same name.
     """
     db = SessionDB(db_path=tmp_path / "state.db")
     parent_sid = "SKEW_TEST_SESSION"
     db.create_session(parent_sid, source="discord")
 
     agent = _build_agent_with_db(db, parent_sid)
-    # Swap in the lock-less wrapper AFTER construction (the agent already
-    # holds a normal db reference; we only break the lock methods).
-    agent._session_db = _NoLockSubsystemDB(db)
-    monkeypatch.setattr(
-        "agent.conversation_compression._CompressionLockLeaseRefresher",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            AssertionError("lock refresher should not start on fail-open lock skew")
-        ),
-    )
+    legacy_type = _make_legacy_session_db_class()
+    import hermes_state
 
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    real_session_db_type = hermes_state.SessionDB
+    monkeypatch.setattr(hermes_state, "SessionDB", legacy_type)
+    try:
+        # The same module now exposes its genuinely old SessionDB class; its
+        # instance forwards persistence/rotation operations to a real database.
+        agent._session_db = legacy_type(db)
+        monkeypatch.setattr(
+            "agent.conversation_compression._CompressionLockLeaseRefresher",
+            lambda *_a, **_k: (_ for _ in ()).throw(
+                AssertionError("lock refresher should not start on fail-open lock skew")
+            ),
+        )
+        messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+        compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+    finally:
+        monkeypatch.setattr(hermes_state, "SessionDB", real_session_db_type)
 
-    # MUST NOT raise AttributeError. Before the fix this raised and the
-    # outer loop would retry forever.
-    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    # Compression actually ran (proceeded past the broken lock) and made
-    # progress, so the auto-compress loop would terminate.
-    agent.context_compressor.compress.assert_called_once()
+    assert agent.context_compressor.compress.call_count == 1
     assert len(compressed) < len(messages), (
         "Compression made no progress despite failing open — loop would still spin."
     )
-    # Session rotated (compression succeeded end-to-end).
     assert agent.session_id != parent_sid
 
 
-class _ErroringLockSubsystemDB:
-    """Wraps a real SessionDB but simulates a PRESENT lock subsystem that
-    genuinely errors on acquire (e.g. a transient DB failure) — as opposed to
-    the version-skew AttributeError/TypeError in ``_NoLockSubsystemDB`` /
-    ``_KwargSkewLockDB`` above. Here the method exists and ran; something
-    just went wrong, so this must NOT be treated as safe to skip locking for.
-    """
+def test_nominal_sessiondb_impostor_fails_closed(tmp_path: Path) -> None:
+    """A name/module-spoofing proxy is not the legacy SessionDB compatibility case."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "NOMINAL_SESSIONDB_IMPOSTOR_TEST"
+    db.create_session(parent_sid, source="discord")
 
-    def __init__(self, real_db: SessionDB) -> None:
-        self._real = real_db
+    agent = _build_agent_with_db(db, parent_sid)
+    agent._session_db = _NominalSessionDBImpostor(db)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
-    def try_acquire_compression_lock(self, *_a, **_k):
-        raise RuntimeError("simulated lock-table corruption")
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
 
-    def __getattr__(self, name):
-        return getattr(self._real, name)
+    assert compressed is messages or compressed == messages
+    assert agent.session_id == parent_sid
+    assert _count_children(db, parent_sid) == 0
+    agent.context_compressor.compress.assert_not_called()
 
 
-def test_lock_acquire_generic_error_fails_closed_skips_compression(tmp_path: Path) -> None:
-    """A present-but-erroring lock subsystem must fail CLOSED, not open.
+def test_noncallable_lock_api_fails_closed(tmp_path: Path) -> None:
+    """A present but non-callable lock API is not legacy version skew."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "NONCALLABLE_LOCK_API_TEST"
+    db.create_session(parent_sid, source="discord")
 
-    Unlike the version-skew AttributeError/TypeError case (known-safe to skip
-    locking for — the method doesn't exist or predates the ``ttl_seconds=``
-    kwarg), a generic exception means the lock subsystem exists and ran but
-    something genuinely went wrong. Failing open there risks a second
-    concurrent compressor forking the session — the exact bug this file
-    guards against. ``_compress_context`` must instead skip compression this
-    cycle and return messages unchanged, same as the "another path is
-    compressing" skip path.
+    agent = _build_agent_with_db(db, parent_sid)
+    agent._session_db = _NonCallableLockAPI(db)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert compressed is messages or compressed == messages
+    assert agent.session_id == parent_sid
+    assert _count_children(db, parent_sid) == 0
+    agent.context_compressor.compress.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("simulated lock lookup failure"),
+        AttributeError("simulated lock lookup attribute error"),
+        TypeError("simulated lock lookup type error"),
+    ],
+)
+def test_nonmissing_lock_lookup_errors_fail_closed(
+    tmp_path: Path, error: Exception
+) -> None:
+    """Only AttributeError for an absent API may use the compatibility path."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "BROKEN_LOCK_LOOKUP_TEST"
+    db.create_session(parent_sid, source="discord")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    agent._session_db = _BrokenLockLookupDB(db, error)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert compressed is messages or compressed == messages
+    assert agent.session_id == parent_sid
+    assert _count_children(db, parent_sid) == 0
+    agent.context_compressor.compress.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("simulated lock-table corruption"),
+        AttributeError("simulated internal lock attribute error"),
+        TypeError("simulated internal lock type error"),
+    ],
+)
+def test_real_lock_api_internal_errors_fail_closed_skips_compression(
+    tmp_path: Path, monkeypatch, error: Exception
+) -> None:
+    """Errors after a real lock API resolves must preserve session lineage.
+
+    ``AttributeError`` only means version skew while resolving the method. This
+    test injects failures beneath the real ``SessionDB.try_acquire...`` body,
+    proving that an internal AttributeError or TypeError cannot take the
+    structural-absence compatibility path.
     """
     db = SessionDB(db_path=tmp_path / "state.db")
     parent_sid = "ERRORING_LOCK_TEST"
     db.create_session(parent_sid, source="discord")
 
-    agent = _build_agent_with_db(db, parent_sid)
-    agent._session_db = _ErroringLockSubsystemDB(db)
+    def _fail_lock_write(_fn):
+        raise error
 
+    monkeypatch.setattr(db, "_execute_write", _fail_lock_write)
+    agent = _build_agent_with_db(db, parent_sid)
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
     compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
@@ -496,67 +595,33 @@ def test_lock_acquire_generic_error_fails_closed_skips_compression(tmp_path: Pat
     # Skipped: messages returned verbatim, no rotation, compressor never ran.
     assert compressed is messages or compressed == messages
     assert agent.session_id == parent_sid
+    assert _count_children(db, parent_sid) == 0
     agent.context_compressor.compress.assert_not_called()
 
 
-class _KwargSkewLockDB:
-    """Simulates the ``ttl_seconds`` kwarg-skew case: a stale SessionDB
-    instance whose ``try_acquire_compression_lock`` predates the
-    ``ttl_seconds=`` kwarg added at the call site, so passing it raises
-    TypeError for the unexpected keyword. This is the same version-skew class
-    as ``_NoLockSubsystemDB``'s AttributeError above and must also fail OPEN.
-    """
-
-    def __init__(self, real_db: SessionDB) -> None:
-        self._real = real_db
-
-    def try_acquire_compression_lock(self, session_id, holder):  # no ttl_seconds
-        raise TypeError(
-            "try_acquire_compression_lock() got an unexpected keyword argument 'ttl_seconds'"
-        )
-
-    def get_compression_lock_holder(self, *_a, **_k):
-        raise TypeError("get_compression_lock_holder() takes no keyword arguments")
-
-    def release_compression_lock(self, *_a, **_k):
-        raise TypeError("release_compression_lock() takes no keyword arguments")
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
-
-
-def test_kwarg_skew_typeerror_fails_open_not_closed(tmp_path: Path, monkeypatch) -> None:
-    """TypeError from a stale ttl_seconds-less signature must fail OPEN too.
-
-    Same version-skew class as the AttributeError case above: the
-    ``ttl_seconds=`` kwarg was added to the call site after the original
-    fail-open fix, so a stale SessionDB instance now raises TypeError instead
-    of AttributeError. Both must proceed with compression rather than spin
-    the outer retry loop.
-    """
+def test_post_acquire_error_releases_owned_lock(tmp_path: Path, monkeypatch) -> None:
+    """A failure after acquisition commits must not strand the holder lease."""
     db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "KWARG_SKEW_TEST"
+    parent_sid = "POST_ACQUIRE_ERROR_TEST"
     db.create_session(parent_sid, source="discord")
 
-    agent = _build_agent_with_db(db, parent_sid)
-    agent._session_db = _KwargSkewLockDB(db)
-    monkeypatch.setattr(
-        "agent.conversation_compression._CompressionLockLeaseRefresher",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            AssertionError("lock refresher should not start on fail-open lock skew")
-        ),
-    )
+    original_acquire = db.try_acquire_compression_lock
 
+    def _acquire_then_raise(session_id, holder, ttl_seconds=300.0):
+        assert original_acquire(session_id, holder, ttl_seconds=ttl_seconds) is True
+        raise RuntimeError("simulated post-acquire failure")
+
+    monkeypatch.setattr(db, "try_acquire_compression_lock", _acquire_then_raise)
+    agent = _build_agent_with_db(db, parent_sid)
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
-    # MUST NOT raise TypeError. Fails open just like the AttributeError case.
     compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
 
-    agent.context_compressor.compress.assert_called_once()
-    assert len(compressed) < len(messages), (
-        "Compression made no progress despite failing open — loop would still spin."
-    )
-    assert agent.session_id != parent_sid
+    assert compressed is messages or compressed == messages
+    assert agent.session_id == parent_sid
+    assert _count_children(db, parent_sid) == 0
+    assert db.get_compression_lock_holder(parent_sid) is None
+    agent.context_compressor.compress.assert_not_called()
 
 
 def test_review_fork_disables_compression_to_prevent_stale_parent_fork(tmp_path: Path) -> None:

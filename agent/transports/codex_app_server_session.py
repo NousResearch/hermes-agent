@@ -24,6 +24,7 @@ call is synchronous and behaves like AIAgent's existing chat_completions loop.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -84,6 +85,10 @@ class TurnResult:
     # of riding a CPU-spinning or auth-broken process. Mirrors openclaw
     # beta.8's "retire timed-out app-server clients" fix.
     should_retire: bool = False
+
+
+class _ClarifyCancellationFailed(RuntimeError):
+    """The Hermes prompt worker survived or rejected cancellation."""
 
 
 # Markers we accept as terminal even when codex never emits turn/completed.
@@ -257,7 +262,7 @@ class CodexAppServerSession:
             tuple[str, str, str], dict[str, Any]
         ] = {}
         self._request_user_input_responses: dict[
-            tuple[str, str, str], tuple[str, Any]
+            tuple[str, str, str], tuple[str, str, Any]
         ] = {}
         self._interrupt_event = threading.Event()
         # Pending file-change items, keyed by item id. Populated on
@@ -714,6 +719,12 @@ class CodexAppServerSession:
                             )
                 try:
                     self._handle_server_request(sreq, deadline=deadline)
+                except _ClarifyCancellationFailed as exc:
+                    self._issue_interrupt(result.turn_id)
+                    result.error = str(exc)
+                    result.interrupted = True
+                    result.should_retire = True
+                    break
                 except RuntimeError as exc:
                     # The subprocess can exit after the liveness check above but
                     # before the JSON-RPC reply reaches stdin. Retire the broken
@@ -1166,6 +1177,10 @@ class CodexAppServerSession:
         if (
             not isinstance(item_id, str)
             or not item_id.strip()
+            or not isinstance(thread_id, str)
+            or not thread_id.strip()
+            or not isinstance(turn_id, str)
+            or not turn_id.strip()
             or thread_id != self._thread_id
             or turn_id != self._active_turn_id
             or not self._active_turn_id
@@ -1178,15 +1193,6 @@ class CodexAppServerSession:
             return
 
         request_key = (thread_id, turn_id, item_id)
-        cached = self._request_user_input_responses.get(request_key)
-        if cached is not None:
-            response_kind, payload = cached
-            if response_kind == "error":
-                code, message = payload
-                self._client.respond_error(rid, code=code, message=message)
-            else:
-                self._client.respond(rid, payload)
-            return
 
         questions = params.get("questions")
         if not isinstance(questions, list) or not questions:
@@ -1286,6 +1292,26 @@ class CodexAppServerSession:
                 choices = rendered_choices or None
             prepared.append((question_id, prompt, choices, canonical_choices))
 
+        request_fingerprint = json.dumps(
+            questions, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        cached = self._request_user_input_responses.get(request_key)
+        if cached is not None:
+            cached_fingerprint, response_kind, payload = cached
+            if cached_fingerprint != request_fingerprint:
+                self._client.respond_error(
+                    rid,
+                    code=-32602,
+                    message="Conflicting duplicate request_user_input payload",
+                )
+                return
+            if response_kind == "error":
+                code, message = payload
+                self._client.respond_error(rid, code=code, message=message)
+            else:
+                self._client.respond(rid, payload)
+            return
+
         answers: dict[str, dict[str, list[str]]] = {}
         try:
             for question_id, prompt, choices, canonical_choices in prepared:
@@ -1318,11 +1344,15 @@ class CodexAppServerSession:
                         ),
                     }[outcome_kind]
                     self._request_user_input_responses[request_key] = (
-                        "error", error
+                        request_fingerprint,
+                        "error",
+                        error,
                     )
                     self._client.respond_error(
                         rid, code=error[0], message=error[1]
                     )
+                    if outcome_kind == "cancel_failed":
+                        raise _ClarifyCancellationFailed(error[1])
                     return
                 if answer is None:
                     answer_values: list[str] = []
@@ -1334,15 +1364,25 @@ class CodexAppServerSession:
                     )
                     answer_values = [canonical]
                 answers[question_id] = {"answers": answer_values}
+        except _ClarifyCancellationFailed:
+            raise
         except Exception:
             logger.exception("clarify_callback raised on request_user_input")
             error = (-32603, "Hermes user-input UI failed")
-            self._request_user_input_responses[request_key] = ("error", error)
+            self._request_user_input_responses[request_key] = (
+                request_fingerprint,
+                "error",
+                error,
+            )
             self._client.respond_error(rid, code=error[0], message=error[1])
             return
 
         response = {"answers": answers}
-        self._request_user_input_responses[request_key] = ("result", response)
+        self._request_user_input_responses[request_key] = (
+            request_fingerprint,
+            "result",
+            response,
+        )
         self._client.respond(rid, response)
 
     def _handle_server_request(

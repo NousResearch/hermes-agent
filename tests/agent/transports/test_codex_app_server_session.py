@@ -433,6 +433,100 @@ class TestLifecycle:
         assert seen == [("What should I remember?", None)]
         assert client.responses == [("input-1", expected), ("input-2", expected)]
 
+    def test_duplicate_request_user_input_revalidates_secret_payload(self):
+        client = FakeClient()
+        base_params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "itemId": "item-input-1",
+            "questions": [{
+                "id": "note",
+                "question": "What should I remember?",
+                "options": None,
+                "isSecret": False,
+            }],
+        }
+        secret_params = {
+            **base_params,
+            "questions": [{
+                **base_params["questions"][0],
+                "isSecret": True,
+            }],
+        }
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-1", **base_params
+        )
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-2", **secret_params
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        seen = []
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question) or "safe",
+        )
+
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == ["What should I remember?"]
+        assert client.responses == [(
+            "input-1", {"answers": {"note": {"answers": ["safe"]}}}
+        )]
+        assert client.error_responses == [(
+            "input-2", -32602, "Secret input is not supported by the Hermes UI"
+        )]
+
+    def test_duplicate_request_user_input_rejects_changed_valid_payload(self):
+        client = FakeClient()
+        base_params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "itemId": "item-input-1",
+            "questions": [{
+                "id": "note",
+                "question": "What should I remember?",
+                "options": None,
+                "isSecret": False,
+            }],
+        }
+        changed_params = {
+            **base_params,
+            "questions": [{
+                **base_params["questions"][0],
+                "question": "What should I forget?",
+            }],
+        }
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-1", **base_params
+        )
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-2", **changed_params
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        seen = []
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question) or "safe",
+        )
+
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == ["What should I remember?"]
+        assert client.responses == [(
+            "input-1", {"answers": {"note": {"answers": ["safe"]}}}
+        )]
+        assert client.error_responses == [(
+            "input-2", -32602, "Conflicting duplicate request_user_input payload"
+        )]
+
     def test_duplicate_request_user_input_replays_callback_failure_without_reprompt(self):
         client = FakeClient()
         seen = []
@@ -683,6 +777,52 @@ class TestLifecycle:
         if cancel_mode == "deadline":
             assert result.should_retire is True
             assert "turn timed out after 0.1s" in result.error
+
+    def test_noncooperative_clarify_cancellation_retires_session(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "question": "Which target should I use?",
+                "options": None,
+                "isSecret": False,
+            }],
+        )
+        entered = threading.Event()
+        release = threading.Event()
+
+        def clarify_callback(question, choices):
+            entered.set()
+            release.wait(timeout=1.0)
+            return "late answer"
+
+        s = make_session(
+            client,
+            clarify_callback=clarify_callback,
+            clarify_cancel_callback=lambda: None,
+        )
+
+        def interrupt_after_prompt():
+            assert entered.wait(timeout=0.5)
+            s.request_interrupt()
+
+        threading.Thread(target=interrupt_after_prompt, daemon=True).start()
+        try:
+            result = s.run_turn("ask me", turn_timeout=1.0)
+        finally:
+            release.set()
+
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert result.error == "Hermes user-input UI failed to cancel"
+        assert client.error_responses == [(
+            "input-1", -32603, "Hermes user-input UI failed to cancel"
+        )]
 
     def test_dynamic_tool_server_request_is_dispatched_to_hermes(self):
         client = FakeClient()

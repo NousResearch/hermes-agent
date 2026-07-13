@@ -155,6 +155,88 @@ class TestBlockingGatewayApproval:
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
 
+    # Regression tests for #64001: when a client posts a specific approval_id
+    # (the card the user actually clicked), resolve_gateway_approval must
+    # target that exact entry instead of always popping the oldest FIFO entry.
+    # Without approval_id plumbing the wrong command gets resolved and the
+    # user approves/denies something they may never have seen.
+    def test_resolve_by_approval_id_targets_matching_entry(self):
+        from tools.approval import (
+            resolve_gateway_approval,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-approval-id"
+        e1 = _ApprovalEntry({"command": "first"}, approval_id="card-A")
+        e2 = _ApprovalEntry({"command": "second"}, approval_id="card-B")
+        e3 = _ApprovalEntry({"command": "third"}, approval_id="card-C")
+        _gateway_queues[session_key] = [e1, e2, e3]
+
+        # Click the middle card, not the oldest one.
+        count = resolve_gateway_approval(session_key, "deny", approval_id="card-B")
+
+        assert count == 1
+        assert e1.event.is_set() is False
+        assert e2.event.is_set() is True
+        assert e2.result == "deny"
+        assert e3.event.is_set() is False
+        # The matching entry is removed; siblings stay in queue order.
+        assert [e.approval_id for e in _gateway_queues[session_key]] == ["card-A", "card-C"]
+
+    def test_resolve_by_unknown_approval_id_falls_back_to_fifo(self):
+        """An unknown approval_id preserves current FIFO behavior."""
+        from tools.approval import (
+            resolve_gateway_approval,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-unknown-id"
+        e1 = _ApprovalEntry({"command": "first"}, approval_id="card-A")
+        e2 = _ApprovalEntry({"command": "second"}, approval_id="card-B")
+        _gateway_queues[session_key] = [e1, e2]
+
+        count = resolve_gateway_approval(session_key, "once", approval_id="card-DOES-NOT-EXIST")
+
+        assert count == 1
+        assert e1.event.is_set() is True
+        assert e1.result == "once"
+        assert e2.event.is_set() is False
+
+    def test_resolve_all_overrides_approval_id(self):
+        """resolve_all=True still drains the whole queue, ignoring approval_id."""
+        from tools.approval import (
+            resolve_gateway_approval,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-resolve-all-id"
+        e1 = _ApprovalEntry({"command": "first"}, approval_id="card-A")
+        e2 = _ApprovalEntry({"command": "second"}, approval_id="card-B")
+        _gateway_queues[session_key] = [e1, e2]
+
+        count = resolve_gateway_approval(
+            session_key, "session", resolve_all=True, approval_id="card-A"
+        )
+
+        assert count == 2
+        assert all(e.event.is_set() for e in (e1, e2))
+        assert all(e.result == "session" for e in (e1, e2))
+        assert session_key not in _gateway_queues
+
+    def test_approval_entry_without_id_keeps_fifo_behavior(self):
+        """Entries queued without an approval_id resolve FIFO when called without id."""
+        from tools.approval import (
+            resolve_gateway_approval,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-no-id"
+        e1 = _ApprovalEntry({"command": "first"})  # no approval_id
+        e2 = _ApprovalEntry({"command": "second"})  # no approval_id
+        _gateway_queues[session_key] = [e1, e2]
+
+        count = resolve_gateway_approval(session_key, "once")
+
+        assert count == 1
+        assert e1.event.is_set() is True
+        assert e2.event.is_set() is False
+
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""
         from tools.approval import (

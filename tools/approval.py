@@ -746,12 +746,17 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result")
+    __slots__ = ("event", "data", "result", "approval_id")
 
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, approval_id: Optional[str] = None):
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
+        # Optional client-supplied identifier for the card that queued this
+        # entry. Adapters (webui, whatsapp_cloud, etc.) post the id of the
+        # clicked card so resolve_gateway_approval can target that exact
+        # entry instead of always popping the head of the queue (#64001).
+        self.approval_id: Optional[str] = approval_id
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
@@ -784,13 +789,18 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
-                             resolve_all: bool = False) -> int:
+                             resolve_all: bool = False,
+                             approval_id: Optional[str] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
     When *resolve_all* is True every pending approval in the session is
-    resolved at once (``/approve all``).  Otherwise only the oldest one
-    is resolved (FIFO).
+    resolved at once (``/approve all``).  When *approval_id* is supplied
+    and matches an entry currently in the queue, only that entry is
+    resolved (the id is the one the client posted for the card the user
+    clicked — see #64001).  When *approval_id* is None or does not match
+    any entry, the oldest pending approval is resolved (FIFO) so callers
+    that don't (yet) post an id keep their current behavior.
 
     Returns the number of approvals resolved (0 means nothing was pending).
     """
@@ -801,6 +811,17 @@ def resolve_gateway_approval(session_key: str, choice: str,
         if resolve_all:
             targets = list(queue)
             queue.clear()
+        elif approval_id is not None:
+            # Match by id first; fall back to FIFO when the id is unknown
+            # so the resolver is robust to clients posting stale ids.
+            idx = next(
+                (i for i, entry in enumerate(queue) if entry.approval_id == approval_id),
+                None,
+            )
+            if idx is None:
+                targets = [queue.pop(0)]
+            else:
+                targets = [queue.pop(idx)]
         else:
             targets = [queue.pop(0)]
         if not queue:

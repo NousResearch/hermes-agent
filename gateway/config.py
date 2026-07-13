@@ -1336,9 +1336,17 @@ def load_gateway_config() -> GatewayConfig:
             # apply_yaml_config_fn hook (plugins/platforms/whatsapp/adapter.py).
             # #41112 / #3823.
 
-            # Signal settings → env vars (env vars take precedence)
+            # Signal behavior settings live in config.yaml; connection credentials
+            # remain compatible with the existing environment-variable bridge.
             signal_cfg = yaml_cfg.get("signal", {})
             if isinstance(signal_cfg, dict):
+                if "notify_self" in signal_cfg:
+                    _, signal_extra = _ensure_platform_extra_dict(
+                        platforms_data, Platform.SIGNAL.value
+                    )
+                    signal_extra["notify_self"] = _coerce_bool(
+                        signal_cfg["notify_self"], False
+                    )
                 if "require_mention" in signal_cfg and not os.getenv("SIGNAL_REQUIRE_MENTION"):
                     os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
 

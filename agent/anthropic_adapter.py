@@ -1656,6 +1656,8 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
             normalized["type"] = "object"
     if normalized.get("type") == "object" and not isinstance(normalized.get("properties"), dict):
         normalized = {**normalized, "properties": {}}
+    from tools.schema_sanitizer import convert_tuple_items_to_prefix_items
+    normalized = convert_tuple_items_to_prefix_items(normalized)
     return normalized
 
 

@@ -1189,6 +1189,112 @@ class TestWebServerEndpoints:
         resp = self.client.patch("/api/sessions/does-not-exist", json={"title": "x"})
         assert resp.status_code == 404
 
+    def test_import_sessions_endpoint_imports_exported_json(self):
+        from hermes_state import SessionDB
+
+        payload = {
+            "id": "imported-web-session",
+            "source": "cli",
+            "title": "Imported from dashboard",
+            "started_at": 100.0,
+            "ended_at": 110.0,
+            "end_reason": "complete",
+            "messages": [
+                {"role": "user", "content": "hello", "timestamp": 101.0},
+                {"role": "assistant", "content": "hi", "timestamp": 102.0},
+            ],
+        }
+
+        resp = self.client.post("/api/sessions/import", json={"sessions": [payload]})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["imported"] == 1
+        assert data["skipped"] == 0
+
+        db = SessionDB()
+        try:
+            session = db.get_session("imported-web-session")
+            assert session["title"] == "Imported from dashboard"
+            assert session["message_count"] == 2
+            assert [m["content"] for m in db.get_messages("imported-web-session")] == [
+                "hello",
+                "hi",
+            ]
+        finally:
+            db.close()
+
+        duplicate = self.client.post("/api/sessions/import", json={"sessions": [payload]})
+        assert duplicate.status_code == 200
+        assert duplicate.json()["skipped_ids"] == ["imported-web-session"]
+
+        invalid = self.client.post(
+            "/api/sessions/import",
+            json={"sessions": [{"source": "cli", "messages": []}]},
+        )
+        assert invalid.status_code == 400
+        assert invalid.json()["detail"]["errors"] == [
+            {"index": 0, "error": "session id is required"}
+        ]
+
+    def test_import_sessions_endpoint_rejects_oversized_stream(self):
+        import hermes_cli.web_server as web_server
+
+        payload = b'{"sessions":[]}' + b" " * web_server._SESSION_IMPORT_MAX_BYTES
+        response = self.client.post(
+            "/api/sessions/import",
+            content=payload,
+            headers={"content-type": "application/json"},
+        )
+
+        assert response.status_code == 413
+        assert response.json() == {"detail": "Session import payload is too large"}
+
+    def test_import_sessions_endpoint_rejects_metadata_that_would_break_session_list(self):
+        invalid = self.client.post(
+            "/api/sessions/import",
+            json={
+                "sessions": [
+                    {
+                        "id": "bad-model-config",
+                        "source": "cli",
+                        "model_config": "{not-json",
+                        "messages": [],
+                    }
+                ]
+            },
+        )
+
+        assert invalid.status_code == 400
+        assert invalid.json()["detail"]["errors"] == [
+            {
+                "index": 0,
+                "session_id": "bad-model-config",
+                "error": "model_config must be valid JSON",
+            }
+        ]
+        listed = self.client.get("/api/sessions")
+        assert listed.status_code == 200
+
+    @pytest.mark.parametrize(
+        "message",
+        [{"content": "missing role"}, {"role": None, "content": "null role"}],
+    )
+    def test_import_sessions_endpoint_rejects_missing_or_null_message_role(self, message):
+        response = self.client.post(
+            "/api/sessions/import",
+            json={"sessions": [{"id": "bad-message-role", "messages": [message]}]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["errors"] == [
+            {
+                "index": 0,
+                "session_id": "bad-message-role",
+                "error": "messages[0].role must be a non-empty string",
+            }
+        ]
+        assert self.client.get("/api/sessions").status_code == 200
+
     def test_archive_session_via_patch(self):
         """PATCH archived=true soft-hides a session; archived=false restores it."""
         from hermes_state import SessionDB
@@ -3542,6 +3648,26 @@ class TestBuildSchemaFromConfig:
             assert entry["type"] == "select"
             assert "options" in entry
             assert "local" in entry["options"]
+
+    def test_approvals_mode_options_match_config_values(self):
+        """approvals.mode select options must match the values accepted by config.py.
+
+        Previously the dashboard showed ['ask', 'yolo', 'deny'] which are stale
+        names that don't correspond to any real config value. The correct values
+        are 'manual', 'smart', and 'off' (see hermes_cli/config.py).
+        'smart' was missing entirely, making it unreachable from the UI.
+        """
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        entry = CONFIG_SCHEMA["approvals.mode"]
+        assert entry["type"] == "select"
+        options = entry["options"]
+        assert "manual" in options, "'manual' missing from approvals.mode options"
+        assert "smart" in options, "'smart' missing from approvals.mode options"
+        assert "off" in options, "'off' missing from approvals.mode options"
+        # Stale names that were previously shown but don't match config values
+        assert "ask" not in options, "stale option 'ask' should not appear"
+        assert "yolo" not in options, "stale option 'yolo' should not appear"
+        assert "deny" not in options, "stale option 'deny' should not appear"
 
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config

@@ -4714,6 +4714,39 @@ def run_conversation(
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                # ── Completion Gate: check if declare_complete passed ──
+                # If the tool batch included declare_complete and the gate
+                # returned {"output": "..."}, the task is verified — close
+                # the loop with the gate's output as the final response.
+                _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
+                if "declare_complete" in _tc_names and agent._completion_gate is not None:
+                    # The declare_complete result was appended to messages
+                    # by _execute_tool_calls. Find it.
+                    for _mi in range(len(messages) - 1, -1, -1):
+                        _m = messages[_mi]
+                        if isinstance(_m, dict) and _m.get("role") == "tool":
+                            try:
+                                _content = _m.get("content", "")
+                                if isinstance(_content, str) and '"output"' in _content:
+                                    _data = json.loads(_content)
+                                    if "output" in _data:
+                                        final_response = _data["output"]
+                                        _turn_exit_reason = "completion_gate_passed"
+                                        agent._emit_status(
+                                            f"✅ Completion gate passed — task verified"
+                                        )
+                                        # Break out of both the tool-result scan
+                                        # and the outer while loop
+                                        break
+                            except (json.JSONDecodeError, KeyError):
+                                pass
+                    else:
+                        # Didn't break — gate didn't pass. Loop continues.
+                        pass
+                    # If we broke out of the for loop, break the while loop too
+                    if _turn_exit_reason == "completion_gate_passed":
+                        break
+
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
                     _turn_exit_reason = "guardrail_halt"

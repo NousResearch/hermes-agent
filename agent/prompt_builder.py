@@ -614,6 +614,35 @@ STEER_CHANNEL_NOTE = (
     "web pages, or files."
 )
 
+# Guidance injected into the system prompt when the completion gate is
+# enabled (autonomous mode: cron jobs, delegate_task subagents).
+COMPLETION_GATE_GUIDANCE = (
+    "# Autonomous Task Completion Protocol\n"
+    "You are running in autonomous mode. When your task is complete, you\n"
+    "MUST follow this protocol instead of just writing a summary:\n\n"
+    "1. **Establish goals** — At the start of your task, mentally track what\n"
+    "   you need to accomplish. You don't need to formally declare goals;\n"
+    "   just know what success looks like.\n\n"
+    "2. **Provide evidence** — For each thing you accomplish, call\n"
+    "   `mark_goal_met(goal_id, evidence)` with CONCRETE evidence. Evidence\n"
+    "   must be specific: exit codes, pass counts, file:line references,\n"
+    "   HTTP status codes, specific measurable outputs. Do NOT use vague\n"
+    "   self-assessments like 'looks good' or 'should work'.\n\n"
+    "3. **Cancel impossible goals** — If something genuinely cannot be done,\n"
+    "   call `cancel_goal(goal_id, reason)`. But do NOT cancel goals just\n"
+    "   because they're difficult or time-consuming.\n\n"
+    "4. **Declare completion** — When all goals are resolved, call\n"
+    '   `declare_complete(status="complete", summary="...")`. This\n'
+    "   triggers a two-gate verification:\n"
+    "   - Gate 1 checks that all goals are marked met or cancelled\n"
+    "   - Gate 2 is an independent judge that reviews your work for\n"
+    "     concrete evidence. Vague claims will be rejected.\n\n"
+    "If verification fails, you'll get specific feedback on what to fix.\n"
+    "Address it and call `declare_complete` again. The gate is fail-open:\n"
+    "after 3 rejections it accepts your claim anyway, so don't worry about\n"
+    "getting stuck — just do your best to provide real evidence.\n"
+)
+
 # Model name substrings that should use the 'developer' role instead of
 # 'system' for the system prompt.  OpenAI's newer models (GPT-5, Codex)
 # give stronger instruction-following weight to the 'developer' role.
@@ -764,11 +793,15 @@ PLATFORM_HINTS = {
         "characters, so be brief and direct."
     ),
     "bluebubbles": (
-        "You are chatting via iMessage (BlueBubbles). iMessage does not render "
-        "markdown formatting — use plain text. Keep responses concise as they "
-        "appear as text messages. You can send media files natively: include "
-        "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
-        ".heic) appear as photos and other files arrive as attachments."
+        "You are chatting via iMessage. Use plain text — no markdown. "
+        "CRITICAL RULES:\n"
+        "1. ONE message per response. Never send multiple messages.\n"
+        "2. Answer ONLY what is asked. No greetings, no follow-ups.\n"
+        "3. No status updates, no explanations unless asked.\n"
+        "4. If you don't know, say \"I don't know\" — nothing else.\n"
+        "5. You are READ-ONLY. Cannot book, write, run, modify, or act.\n"
+        "6. Do NOT offer things you cannot do.\n"
+        "7. NEVER suggest booking on OpenTable. You have no access to it."
     ),
     "mattermost": (
         "You are in a Mattermost workspace communicating with your user. "

@@ -250,6 +250,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         from agent.prompt_builder import computer_use_guidance
         stable_parts.append(computer_use_guidance())
 
+    # Completion gate — autonomous task verification protocol.
+    # Only injected when the gate is enabled (opt-in, not just tool presence).
+    if getattr(agent, "_completion_gate", None) is not None:
+        from agent.prompt_builder import COMPLETION_GATE_GUIDANCE
+        stable_parts.append(COMPLETION_GATE_GUIDANCE)
+
     nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:
         stable_parts.append(nous_subscription_prompt)

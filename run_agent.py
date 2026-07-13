@@ -486,6 +486,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        enable_completion_gate: bool = False,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -563,6 +564,13 @@ class AIAgent:
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
         )
+
+        # Completion gate — opt-in autonomous task verification
+        self.enable_completion_gate = enable_completion_gate
+        self._completion_gate = None
+        if enable_completion_gate:
+            from agent.completion_gate import CompletionGate
+            self._completion_gate = CompletionGate()
 
     def _get_session_db_for_recall(self):
         """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.

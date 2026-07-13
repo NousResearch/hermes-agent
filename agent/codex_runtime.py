@@ -25,6 +25,39 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _patch_openai_sdk_for_codex_backend() -> None:
+    """Patch openai SDK's parse_response to tolerate response.output=None.
+
+    The chatgpt.com/backend-api/codex backend streams output items via
+    response.output_item.done events but leaves response.output=None in the
+    response.completed event. The SDK's parse_response iterates response.output
+    directly, causing TypeError: 'NoneType' object is not iterable. Guard with
+    `or []` so the loop is a no-op and the streamed items survive via the
+    collected_output_items backfill path in run_codex_stream.
+    """
+    try:
+        import openai.lib._parsing._responses as _pr
+        original_fn = _pr.parse_response
+
+        def _patched_parse_response(*, text_format, input_tools, response):
+            if response is not None and response.output is None:
+                response.output = []
+            return original_fn(
+                text_format=text_format,
+                input_tools=input_tools,
+                response=response,
+            )
+
+        if not getattr(original_fn, "_codex_backend_patched", False):
+            _patched_parse_response._codex_backend_patched = True
+            _pr.parse_response = _patched_parse_response
+    except Exception:
+        pass  # Never let patch failure break the import
+
+
+_patch_openai_sdk_for_codex_backend()
+
+
 def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
     """Map a Codex app-server ``item/started`` notification to a Hermes
     tool-progress event ``(tool_name, preview, args)``.

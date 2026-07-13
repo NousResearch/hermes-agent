@@ -1084,6 +1084,35 @@ main conversation's message-role alternation stays intact.
 
 ---
 
+## Completion Gate (autonomous task verification)
+
+Cron jobs and delegate_task subagents use a two-gate completion
+verification system adapted from Reina's s18 pattern
+(https://github.com/7-e1even/learn-agent/blob/main/s18_completion_gate/README.md).
+
+- **Gate 1 (Goal Contract):** `declare_complete` is a tool call, not a
+  text response. All active goals must be marked met (`mark_goal_met`)
+  or cancelled (`cancel_goal`) before the declare succeeds.
+- **Gate 2 (Independent Judge):** A separate, temperature-0 model call
+  reviews a compressed execution trace (~400 chars, ~22x smaller than
+  the full transcript) and verifies that concrete evidence supports
+  the completion claim. Vague self-assessments ("looks good") are
+  rejected.
+- **Fail-open:** Judge failures, verifyRounds cap (3), cancel_goal
+  escape hatch, and max_iterations outer guard all prevent infinite
+  loops. A gate, not a prison.
+- **Opt-in per agent:** `AIAgent(enable_completion_gate=True)`. On by
+  default for cron jobs (`cron/scheduler.py`) and subagents
+  (`tools/delegate_tool.py`). Interactive chat is unaffected.
+
+Key files: `agent/completion_gate.py`, `tools/completion_gate.py`.
+Gate loop integration: `agent/conversation_loop.py` (checks
+`declare_complete` result after tool execution).
+System prompt: `COMPLETION_GATE_GUIDANCE` in `agent/prompt_builder.py`
+injected conditionally via `agent/system_prompt.py`.
+
+---
+
 ## Kanban (multi-agent work queue)
 
 Durable SQLite-backed board that lets multiple profiles / workers

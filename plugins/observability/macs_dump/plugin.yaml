@@ -1,0 +1,19 @@
+name: macs_dump
+version: 0.1.0
+description: >
+  MACS Decision-Chain Dump — SLIP-style conditional capture of the full agent
+  decision chain (input, system prompt, full LLM response, tool sequence,
+  subagent tree) at the instant a trigger fires. CICS DUMP/SLIP, for agents.
+  Read-only observer hooks, zero core changes, fail-open.
+author: DeepArchi (Kuang Mi)
+requires_env: []
+hooks:
+  - on_session_start
+  - on_session_end
+  - pre_api_request
+  - post_api_request
+  - api_request_error
+  - pre_tool_call
+  - post_tool_call
+  - subagent_start
+  - subagent_stop

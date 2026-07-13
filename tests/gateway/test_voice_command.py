@@ -159,6 +159,16 @@ class TestHandleVoiceCommand:
         assert loaded == {"telegram:456": "all"}
 
     @pytest.mark.asyncio
+    async def test_persistence_loaded_with_utf8_bom(self, runner):
+        # Windows PowerShell 5.1 writers (Set-Content -Encoding UTF8) prefix a
+        # BOM; loading must tolerate it instead of silently dropping all modes.
+        runner._VOICE_MODE_PATH.write_bytes(
+            b"\xef\xbb\xbf" + json.dumps({"telegram:456": "all"}).encode("utf-8")
+        )
+        loaded = runner._load_voice_modes()
+        assert loaded == {"telegram:456": "all"}
+
+    @pytest.mark.asyncio
     async def test_persistence_saved_for_off(self, runner):
         event = _make_event("/voice off")
         await runner._handle_voice_command(event)
@@ -380,8 +390,9 @@ class TestAutoVoiceReply:
     def test_empty_response_skipped(self, runner):
         assert self._call(runner, "all", MessageType.TEXT, response="") is False
 
-    def test_dedup_skips_when_agent_called_tts(self, runner):
-        messages = [{
+    @staticmethod
+    def _tts_messages():
+        return [{
             "role": "assistant",
             "tool_calls": [{
                 "id": "call_1",
@@ -389,7 +400,40 @@ class TestAutoVoiceReply:
                 "function": {"name": "text_to_speech", "arguments": "{}"},
             }],
         }]
-        assert self._call(runner, "all", MessageType.TEXT, agent_messages=messages) is False
+
+    def test_dedup_skips_when_agent_called_tts(self, runner, tmp_path):
+        audio = tmp_path / "tts_output.ogg"
+        audio.write_bytes(b"OggS")
+        response = f"[[audio_as_voice]]\nMEDIA:{audio}"
+        assert self._call(
+            runner, "all", MessageType.TEXT,
+            agent_messages=self._tts_messages(), response=response,
+        ) is False
+
+    def test_no_dedup_when_agent_tts_media_missing(self, runner, tmp_path):
+        """A TTS call whose MEDIA path doesn't exist (failed or hallucinated)
+        never reached the user — the runner must regenerate the voice reply."""
+        response = f"Some transcript\nMEDIA:{tmp_path / 'gone.ogg'}"
+        assert self._call(
+            runner, "all", MessageType.TEXT,
+            agent_messages=self._tts_messages(), response=response,
+        ) is True
+
+    def test_no_dedup_when_agent_tts_left_no_media(self, runner):
+        """TTS tool call without any MEDIA directive in the final response."""
+        assert self._call(
+            runner, "all", MessageType.TEXT,
+            agent_messages=self._tts_messages(), response="just prose",
+        ) is True
+
+    def test_media_directives_only_strips_prose(self, runner):
+        response = "mm baby here you go\n[[audio_as_voice]]\nMEDIA:C:\\x\\a.ogg\ncall me"
+        assert runner._media_directives_only(response) == (
+            "[[audio_as_voice]]\nMEDIA:C:\\x\\a.ogg"
+        )
+
+    def test_media_directives_only_empty_for_pure_prose(self, runner):
+        assert runner._media_directives_only("no directives here") == ""
 
     def test_no_dedup_for_other_tools(self, runner):
         messages = [{
@@ -2841,14 +2885,28 @@ class TestVoiceTTSPlayback:
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.TEXT, response="") is False
 
-    def test_agent_tts_tool_dedup(self):
-        """Agent already called text_to_speech tool: runner skips."""
+    def test_agent_tts_tool_dedup(self, tmp_path):
+        """Agent called text_to_speech this turn with deliverable media: runner skips."""
+        from gateway.platforms.base import MessageType
+        runner = self._make_runner()
+        audio = tmp_path / "tts.ogg"
+        audio.write_bytes(b"OggS")
+        agent_msgs = [{"role": "assistant", "tool_calls": [
+            {"id": "1", "type": "function", "function": {"name": "text_to_speech", "arguments": "{}"}}
+        ]}]
+        assert self._call_should_reply(
+            runner, "all", MessageType.TEXT, response=f"MEDIA:{audio}", agent_msgs=agent_msgs,
+        ) is False
+
+    def test_agent_tts_without_media_regenerates(self):
+        """Agent called text_to_speech but the response carries no real media:
+        the voice never reached the user, so the runner fires."""
         from gateway.platforms.base import MessageType
         runner = self._make_runner()
         agent_msgs = [{"role": "assistant", "tool_calls": [
             {"id": "1", "type": "function", "function": {"name": "text_to_speech", "arguments": "{}"}}
         ]}]
-        assert self._call_should_reply(runner, "all", MessageType.TEXT, agent_msgs=agent_msgs) is False
+        assert self._call_should_reply(runner, "all", MessageType.TEXT, agent_msgs=agent_msgs) is True
 
     # -- Streaming ON (already_sent=True) --
 
@@ -2876,15 +2934,18 @@ class TestVoiceTTSPlayback:
         runner = self._make_runner()
         assert self._call_should_reply(runner, "all", MessageType.VOICE, response="", already_sent=True) is False
 
-    def test_streaming_on_agent_tts_dedup(self):
-        """Streaming ON + agent called TTS: runner skips (dedup still works)."""
+    def test_streaming_on_agent_tts_dedup(self, tmp_path):
+        """Streaming ON + agent called TTS with deliverable media: runner skips."""
         from gateway.platforms.base import MessageType
         runner = self._make_runner()
+        audio = tmp_path / "tts.ogg"
+        audio.write_bytes(b"OggS")
         agent_msgs = [{"role": "assistant", "tool_calls": [
             {"id": "1", "type": "function", "function": {"name": "text_to_speech", "arguments": "{}"}}
         ]}]
         assert self._call_should_reply(
-            runner, "all", MessageType.VOICE, agent_msgs=agent_msgs, already_sent=True,
+            runner, "all", MessageType.VOICE, response=f"MEDIA:{audio}",
+            agent_msgs=agent_msgs, already_sent=True,
         ) is False
 
 

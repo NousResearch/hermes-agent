@@ -3177,8 +3177,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _load_voice_modes(self) -> Dict[str, str]:
         try:
-            data = json.loads(self._VOICE_MODE_PATH.read_text())
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            # utf-8-sig: external writers (e.g. Windows PowerShell 5.1
+            # Set-Content -Encoding UTF8) may prefix a BOM, which plain
+            # json.loads rejects.
+            data = json.loads(self._VOICE_MODE_PATH.read_text(encoding="utf-8-sig"))
+        except FileNotFoundError:
+            return {}
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(
+                "Failed to load voice modes from %s (%s) — treating all chats "
+                "as voice mode off until the file is fixed or /voice is re-run.",
+                self._VOICE_MODE_PATH, e,
+            )
             return {}
 
         if not isinstance(data, dict):
@@ -3199,6 +3209,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 continue
             result[key] = mode
+        if result:
+            logger.info(
+                "Loaded %d persisted voice mode entr%s: %s",
+                len(result), "y" if len(result) == 1 else "ies",
+                ", ".join(f"{k}={v}" for k, v in sorted(result.items())),
+            )
         return result
 
     def _save_voice_modes(self) -> None:
@@ -11780,7 +11796,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # voice.suppress_text_reply. This keeps companion-style bots from
             # leaking visible transcripts when the model forgets to call TTS.
             _already_sent = bool(agent_result.get("already_sent"))
-            if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
+            # Dedup must only see THIS turn's messages: agent_messages includes
+            # the full session history, and a text_to_speech call from an older
+            # turn would otherwise suppress the mechanical voice reply forever.
+            _turn_offset = agent_result.get("history_offset", len(history))
+            _turn_messages = (
+                agent_messages[_turn_offset:]
+                if len(agent_messages) > _turn_offset else []
+            )
+            if self._should_send_voice_reply(event, response, _turn_messages, already_sent=_already_sent):
                 _voice_sent = await self._send_voice_reply(event, response)
                 if self._should_suppress_text_after_voice_reply(event):
                     if _voice_sent:
@@ -11794,6 +11818,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _platform_name, source.chat_id or "unknown",
                         )
                     response = ""
+            elif (
+                response
+                and not response.startswith("Error:")
+                and self._voice_reply_requested(event)
+                and self._should_suppress_text_after_voice_reply(event)
+                and not (event.message_type == MessageType.VOICE and not _already_sent)
+            ):
+                # The agent delivered TTS media itself this turn (the dedup
+                # above), but a voice-only chat must still never show prose:
+                # keep only the media directive lines for the adapter to
+                # upload and drop any visible transcript around them.
+                _media_only = self._media_directives_only(response)
+                if _media_only != response:
+                    logger.info(
+                        "Voice-only chat: stripping %d chars of visible text around agent media directives: platform=%s chat=%s",
+                        len(response) - len(_media_only),
+                        _platform_name, source.chat_id or "unknown",
+                    )
+                    response = _media_only
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -12704,10 +12747,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> bool:
         """Decide whether the runner should send a TTS voice reply.
 
+        ``agent_messages`` must be the CURRENT turn's messages only (slice by
+        ``history_offset``) — a text_to_speech call persisted in an earlier
+        turn's history must not suppress voice replies for the rest of the
+        session.
+
         Returns False when:
         - voice_mode is off for this chat
         - response is empty or an error
-        - agent already called text_to_speech tool (dedup)
+        - agent called text_to_speech this turn AND the response references a
+          media file that actually exists (dedup). A TTS tool call whose MEDIA
+          path is missing or hallucinated never reached the user, so the
+          runner must regenerate instead of deferring to it.
         - voice input and base adapter auto-TTS already handled it (skip_double)
           UNLESS streaming already consumed the response (already_sent=True),
           in which case the base adapter won't have text for auto-TTS so the
@@ -12716,18 +12767,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not response or response.startswith("Error:"):
             return False
 
-        chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
-        is_voice_input = (event.message_type == MessageType.VOICE)
-
-        should = (
-            (voice_mode == "all")
-            or (voice_mode == "voice_only" and is_voice_input)
-        )
-        if not should:
+        if not self._voice_reply_requested(event):
             return False
 
-        # Dedup: agent already called TTS tool
+        is_voice_input = (event.message_type == MessageType.VOICE)
+
+        # Dedup: agent already called TTS tool this turn and its output is
+        # actually deliverable.
         has_agent_tts = any(
             msg.get("role") == "assistant"
             and any(
@@ -12736,7 +12782,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             for msg in agent_messages
         )
-        if has_agent_tts:
+        if has_agent_tts and self._response_references_existing_media(response):
             return False
 
         # Dedup: base adapter auto-TTS already handles voice input
@@ -12748,6 +12794,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
         return True
+
+    def _voice_reply_requested(self, event: MessageEvent) -> bool:
+        """Return whether this chat's /voice mode asks for a voice reply."""
+        voice_mode = self._voice_mode.get(
+            self._voice_key(event.source.platform, event.source.chat_id), "off"
+        )
+        return (
+            voice_mode == "all"
+            or (voice_mode == "voice_only" and event.message_type == MessageType.VOICE)
+        )
+
+    @staticmethod
+    def _iter_media_directive_paths(text: str):
+        """Yield the path portion of each ``MEDIA:<path>`` line in *text*."""
+        for line in (text or "").splitlines():
+            stripped = line.strip()
+            if stripped[:6].upper() == "MEDIA:":
+                path = stripped[6:].strip().strip('"')
+                if path:
+                    yield path
+
+    def _response_references_existing_media(self, response: str) -> bool:
+        """Return True if any MEDIA directive in *response* points to a real file."""
+        return any(
+            os.path.isfile(path)
+            for path in self._iter_media_directive_paths(response)
+        )
+
+    @staticmethod
+    def _media_directives_only(response: str) -> str:
+        """Reduce *response* to its delivery directive lines (MEDIA/[[...]])."""
+        kept = []
+        for line in (response or "").splitlines():
+            stripped = line.strip()
+            if stripped[:6].upper() == "MEDIA:" or (
+                stripped.startswith("[[") and stripped.endswith("]]")
+            ):
+                kept.append(stripped)
+        return "\n".join(kept)
 
     def _should_echo_stt_transcripts(self) -> bool:
         """Return whether inbound voice/STT transcripts should be echoed to chat."""
@@ -12770,8 +12855,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         actual_path = None
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from gateway.platforms.base import _strip_media_directives
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            # Strip MEDIA:/[[audio_as_voice]] directives first — models
+            # sometimes emit (even hallucinate) them in the final text, and
+            # they must never be read aloud as file paths.
+            tts_text = _strip_markdown_for_tts(_strip_media_directives(text)[:4000])
             if not tts_text:
                 return False
 

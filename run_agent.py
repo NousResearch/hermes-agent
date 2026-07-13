@@ -1764,7 +1764,11 @@ class AIAgent:
         from agent.agent_runtime_helpers import repair_message_sequence
         return repair_message_sequence(self, messages)
 
-    def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _flush_messages_to_session_db(
+        self,
+        messages: List[Dict],
+        conversation_history: Optional[List[Dict]] = None,
+    ):
         """Serialize direct and turn-boundary session flushes per agent."""
         persist_lock = getattr(self, "_session_persist_lock", None)
         if persist_lock is None:
@@ -1775,7 +1779,7 @@ class AIAgent:
     def _flush_messages_to_session_db_unlocked(
         self,
         messages: List[Dict],
-        conversation_history: List[Dict] = None,
+        conversation_history: Optional[List[Dict]] = None,
     ):
         """Persist any un-flushed messages to the SQLite session store.
 

@@ -12226,9 +12226,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # duplicate-prone intermediate snapshot to terminal-close persistence.
         if self.conversation_history is getattr(agent, "_session_messages", None):
             self.conversation_history = list(self.conversation_history)
-        staged_user_message = {"role": "user", "content": message}
-        agent._pending_cli_user_message = staged_user_message
-        self.conversation_history.append(staged_user_message)
+        # The prior turn's override applies only to its own user dict. Clear it
+        # before exposing the next staged input to close persistence; otherwise
+        # a shutdown before the worker prologue can write old API-local text as
+        # this new user message (#63766).
+        persist_lock = getattr(agent, "_session_persist_lock", None)
+
+        def _stage_user_message() -> None:
+            agent._persist_user_message_idx = None
+            agent._persist_user_message_override = None
+            agent._persist_user_message_timestamp = None
+            staged_user_message = {"role": "user", "content": message}
+            agent._pending_cli_user_message = staged_user_message
+            self.conversation_history.append(staged_user_message)
+
+        if persist_lock is None:
+            _stage_user_message()
+        else:
+            with persist_lock:
+                _stage_user_message()
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)

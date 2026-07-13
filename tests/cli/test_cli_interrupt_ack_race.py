@@ -26,6 +26,7 @@ from __future__ import annotations
 import importlib
 import queue
 import sys
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -231,3 +232,133 @@ def test_chat_persists_clean_input_when_a_queued_note_changes_api_message():
     assert agent.captured is not None
     assert agent.captured["user_message"] == "[MODEL SWITCH NOTE]\n\nclean prompt"
     assert agent.captured["persist_user_message"] == "clean prompt"
+
+
+def test_chat_clears_previous_turn_persistence_override_before_staging():
+    """A close before the next worker starts cannot reuse a stale override."""
+    cli = _make_cli()
+
+    class _StagingAgent(_StubAgent):
+        def __init__(self, session_id):
+            super().__init__(session_id, turn_seconds=0)
+            self.staged_override = None
+            self.staged_message = None
+            self._session_messages = []
+            self._persist_user_message_idx = 7
+            self._persist_user_message_override = "previous clean prompt"
+            self._persist_user_message_timestamp = 123.0
+
+        def run_conversation(self, **kwargs):
+            self.staged_override = self._persist_user_message_override
+            self.staged_message = self._pending_cli_user_message
+            return {
+                "final_response": "done",
+                "messages": [{"role": "assistant", "content": "done"}],
+                "api_calls": 1,
+                "completed": True,
+                "partial": True,
+                "response_previewed": True,
+            }
+
+    agent = _StagingAgent(cli.session_id)
+    cli.agent = agent
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        cli.chat("new prompt")
+
+    assert agent.staged_override is None
+    assert agent._persist_user_message_idx is None
+    assert agent._persist_user_message_timestamp is None
+    assert agent.staged_message == {"role": "user", "content": "new prompt"}
+
+
+def test_chat_close_does_not_persist_previous_turn_override(tmp_path, monkeypatch):
+    """A close after input staging writes the new prompt, not old API-only text."""
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    cli = _make_cli()
+    session_id = cli.session_id
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id=session_id, source="cli")
+    prefix = [
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    for message in prefix:
+        db.append_message(
+            session_id=session_id,
+            role=message["role"],
+            content=message["content"],
+        )
+
+    agent = object.__new__(AIAgent)
+    agent._session_db = db
+    agent._session_db_created = True
+    agent.session_id = session_id
+    agent.platform = "cli"
+    agent.model = "test-model"
+    agent._session_messages = []
+    agent._last_flushed_db_idx = 0
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
+    agent._persist_disabled = False
+    agent._cached_system_prompt = "test system prompt"
+    agent._session_init_model_config = None
+    agent._parent_session_id = None
+    agent._session_json_enabled = False
+    agent._pending_cli_user_message = None
+    agent._session_persist_lock = threading.RLock()
+    agent._persist_user_message_idx = len(prefix)
+    agent._persist_user_message_override = "previous clean prompt"
+    agent._persist_user_message_timestamp = 123.0
+    agent._active_children = []
+    agent._interrupt_requested = False
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _block_run(**_kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return {
+            "final_response": "done",
+            "messages": prefix + [{"role": "assistant", "content": "done"}],
+            "api_calls": 1,
+            "completed": True,
+            "partial": True,
+            "response_previewed": True,
+        }
+
+    agent.run_conversation = _block_run
+    cli.agent = agent
+    cli.conversation_history = list(prefix)
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        chat_thread = threading.Thread(target=lambda: cli.chat("new prompt"))
+        chat_thread.start()
+        assert entered.wait(timeout=5)
+        cli._persist_active_session_before_close()
+        release.set()
+        chat_thread.join(timeout=10)
+
+    assert not chat_thread.is_alive()
+    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
+        "old prompt",
+        "old answer",
+        "new prompt",
+    ]

@@ -3475,12 +3475,22 @@ def run_conversation(
                         # Error is purely about the output cap being too large.
                         # Cap output to the available space and retry without
                         # touching context_length or triggering compression.
-                        safe_out = max(1, available_out - 64)  # small safety margin
+                        #
+                        # The server's error reports available_tokens for the
+                        # *previous* request.  Between retries the agent appends
+                        # tool results and error text, so the real input token
+                        # count grows.  Deriving safe_out from the error's
+                        # available_tokens would keep reusing a stale budget and
+                        # every retry would still exceed the ceiling by 1+ tokens.
+                        # Compute safe_out from the *current* message token estimate
+                        # so the cap tracks the growing input (#55546).
+                        _current_input = estimate_messages_tokens_rough(messages)
+                        safe_out = max(1, old_ctx - _current_input - 64)  # small safety margin
                         agent._ephemeral_max_output_tokens = safe_out
                         agent._buffer_vprint(
                             f"⚠️  Output cap too large for current prompt — "
                             f"retrying with max_tokens={safe_out:,} "
-                            f"(available_tokens={available_out:,}; context_length unchanged at {old_ctx:,})"
+                            f"(current_input={_current_input:,}; context_length unchanged at {old_ctx:,})"
                         )
                         # Still count against compression_attempts so we don't
                         # loop forever if the error keeps recurring.

@@ -1238,6 +1238,13 @@ display:
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.
+  #
+  # VISIBILITY ONLY — independent of agent.reasoning_effort. Hiding reasoning
+  # never disables the model's internal thinking; you can run high effort and
+  # still receive only the final answer. On Gemini/Vertex this maps directly
+  # onto thinking_config: reasoning_effort -> thinking_level (or budget) and
+  # show_reasoning -> include_thoughts, so hidden thought summaries are never
+  # returned by the API at all (not just filtered client-side).
   #   true:  Show the reasoning box
   #   false: Hide reasoning (default)
   show_reasoning: false

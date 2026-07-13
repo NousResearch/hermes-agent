@@ -31,6 +31,10 @@ class NousProfile(ProviderProfile):
         if supports_reasoning:
             if reasoning_config is not None:
                 rc = dict(reasoning_config)
+                # include_thoughts is Hermes-internal reasoning VISIBILITY
+                # (consumed by Gemini/Vertex thinking_config); it is not part
+                # of the OpenRouter-style reasoning schema this endpoint takes.
+                rc.pop("include_thoughts", None)
                 if rc.get("enabled") is False:
                     pass  # Nous omits reasoning when disabled
                 else:

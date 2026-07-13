@@ -1997,7 +1997,14 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         )
         if not _is_lmstudio_summary and agent._supports_reasoning_extra_body():
             if agent.reasoning_config is not None:
-                summary_extra_body["reasoning"] = agent.reasoning_config
+                # Drop the Hermes-internal include_thoughts visibility key —
+                # it belongs to Gemini/Vertex thinking_config, not the
+                # OpenRouter-style reasoning object this endpoint receives.
+                summary_extra_body["reasoning"] = {
+                    k: v
+                    for k, v in agent.reasoning_config.items()
+                    if k != "include_thoughts"
+                }
             else:
                 summary_extra_body["reasoning"] = {
                     "enabled": True,

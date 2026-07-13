@@ -3994,6 +3994,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # shared chokepoint in hermes_constants (Closes #21256).
         from hermes_constants import resolve_reasoning_config
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
+        # Reasoning visibility rides alongside effort: Gemini/Vertex map
+        # include_thoughts onto thinking_config so hidden reasoning is never
+        # returned in content. Effort itself is untouched — /reasoning hide
+        # does NOT disable model thinking.
+        if self.reasoning_config is not None:
+            self.reasoning_config = {
+                **self.reasoning_config,
+                "include_thoughts": bool(self.show_reasoning),
+            }
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )

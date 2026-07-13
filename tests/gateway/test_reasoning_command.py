@@ -105,7 +105,8 @@ class TestReasoningCommand:
 
         assert "**Effort:** `none (disabled)`" in result
         assert "**Display:** on ✓" in result
-        assert runner._reasoning_config == {"enabled": False}
+        # include_thoughts mirrors the resolved display state (on here).
+        assert runner._reasoning_config == {"enabled": False, "include_thoughts": True}
         assert runner._show_reasoning is True
 
     @pytest.mark.asyncio
@@ -225,7 +226,13 @@ class TestReasoningCommand:
         session_key = runner._session_key_for_source(source)
         runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "xhigh"}
 
-        assert runner._resolve_session_reasoning_config(source=source) == {"enabled": True, "effort": "xhigh"}
+        # Session override wins for effort; include_thoughts carries the
+        # resolved reasoning VISIBILITY (display off in this runner).
+        assert runner._resolve_session_reasoning_config(source=source) == {
+            "enabled": True,
+            "effort": "xhigh",
+            "include_thoughts": False,
+        }
 
     def test_run_agent_reloads_reasoning_config_per_message(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
@@ -274,7 +281,11 @@ class TestReasoningCommand:
 
         assert result["final_response"] == "ok"
         assert _CapturingAgent.last_init is not None
-        assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "low"}
+        assert _CapturingAgent.last_init["reasoning_config"] == {
+            "enabled": True,
+            "effort": "low",
+            "include_thoughts": False,
+        }
 
     def test_run_agent_prefers_session_reasoning_override(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
@@ -324,7 +335,11 @@ class TestReasoningCommand:
 
         assert result["final_response"] == "ok"
         assert _CapturingAgent.last_init is not None
-        assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}
+        assert _CapturingAgent.last_init["reasoning_config"] == {
+            "enabled": True,
+            "effort": "high",
+            "include_thoughts": False,
+        }
 
     def test_run_agent_includes_enabled_mcp_servers_in_gateway_toolsets(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
@@ -434,6 +449,136 @@ class TestReasoningCommand:
         assert result["final_response"] == "ok"
         assert _CapturingAgent.last_init is not None
         assert "homeassistant" in set(_CapturingAgent.last_init["enabled_toolsets"])
+
+
+class TestReasoningVisibilityResolution:
+    """Reasoning effort vs. visibility separation at the gateway boundary.
+
+    include_thoughts (resolved from display.show_reasoning, per-platform
+    overrides, and /reasoning show|hide) rides on the reasoning config so
+    Gemini/Vertex can suppress thought summaries at the REQUEST — effort is
+    never touched by visibility changes.
+    """
+
+    def _home(self, tmp_path, monkeypatch, yaml_body: str):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(yaml_body, encoding="utf-8")
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        return hermes_home
+
+    def test_platform_overrides_beat_global_for_weixin_and_discord(self, tmp_path, monkeypatch):
+        self._home(
+            tmp_path, monkeypatch,
+            "agent:\n  reasoning_effort: medium\n"
+            "display:\n"
+            "  show_reasoning: true\n"
+            "  platforms:\n"
+            "    weixin:\n      show_reasoning: false\n"
+            "    discord:\n      show_reasoning: false\n",
+        )
+        runner = _make_runner()
+        runner._show_reasoning = True
+
+        for platform in (Platform.WEIXIN, Platform.DISCORD):
+            source = _make_event(platform=platform).source
+            resolved = runner._resolve_session_reasoning_config(source=source)
+            assert resolved == {
+                "enabled": True,
+                "effort": "medium",
+                "include_thoughts": False,
+            }, platform
+
+        # A platform WITHOUT an override follows the global display flag.
+        telegram = _make_event(platform=Platform.TELEGRAM).source
+        assert runner._resolve_session_reasoning_config(source=telegram)[
+            "include_thoughts"
+        ] is True
+
+    def test_platform_override_can_reenable_over_global_off(self, tmp_path, monkeypatch):
+        self._home(
+            tmp_path, monkeypatch,
+            "agent:\n  reasoning_effort: high\n"
+            "display:\n"
+            "  show_reasoning: false\n"
+            "  platforms:\n"
+            "    discord:\n      show_reasoning: true\n",
+        )
+        runner = _make_runner()
+        discord = _make_event(platform=Platform.DISCORD).source
+        weixin = _make_event(platform=Platform.WEIXIN).source
+        assert runner._resolve_session_reasoning_config(source=discord) == {
+            "enabled": True,
+            "effort": "high",
+            "include_thoughts": True,
+        }
+        assert runner._resolve_session_reasoning_config(source=weixin)[
+            "include_thoughts"
+        ] is False
+
+    @pytest.mark.asyncio
+    async def test_reasoning_hide_changes_visibility_not_effort(self, tmp_path, monkeypatch):
+        home = self._home(
+            tmp_path, monkeypatch,
+            "agent:\n  reasoning_effort: medium\n"
+            "display:\n  show_reasoning: true\n",
+        )
+        runner = _make_runner()
+        runner._show_reasoning = True
+        event = _make_event("/reasoning hide", platform=Platform.WEIXIN)
+
+        await runner._handle_reasoning_command(event)
+
+        saved = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+        # Visibility persisted per-platform; effort untouched.
+        assert saved["display"]["platforms"]["weixin"]["show_reasoning"] is False
+        assert saved["agent"]["reasoning_effort"] == "medium"
+
+        resolved = runner._resolve_session_reasoning_config(source=event.source)
+        assert resolved == {
+            "enabled": True,
+            "effort": "medium",
+            "include_thoughts": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_reasoning_show_reenables_visibility(self, tmp_path, monkeypatch):
+        self._home(
+            tmp_path, monkeypatch,
+            "agent:\n  reasoning_effort: high\n"
+            "display:\n  show_reasoning: false\n",
+        )
+        runner = _make_runner()
+        event = _make_event("/reasoning show", platform=Platform.DISCORD)
+
+        await runner._handle_reasoning_command(event)
+
+        resolved = runner._resolve_session_reasoning_config(source=event.source)
+        assert resolved == {
+            "enabled": True,
+            "effort": "high",
+            "include_thoughts": True,
+        }
+
+    def test_session_override_dict_not_mutated_by_resolution(self, tmp_path, monkeypatch):
+        self._home(tmp_path, monkeypatch, "agent:\n  reasoning_effort: low\n")
+        runner = _make_runner()
+        source = _make_event().source
+        session_key = runner._session_key_for_source(source)
+        override = {"enabled": True, "effort": "xhigh"}
+        runner._session_reasoning_overrides[session_key] = override
+
+        runner._resolve_session_reasoning_config(source=source)
+
+        assert override == {"enabled": True, "effort": "xhigh"}
+
+    def test_no_reasoning_config_stays_none(self, tmp_path, monkeypatch):
+        """No effort configured → no thinking_config at all (Gemini's default
+        is include_thoughts=false, so nothing leaks) — unchanged behavior."""
+        self._home(tmp_path, monkeypatch, "display:\n  show_reasoning: true\n")
+        runner = _make_runner()
+        source = _make_event().source
+        assert runner._resolve_session_reasoning_config(source=source) is None
 
 
 class TestLoadShowReasoningCoercion:

@@ -1364,6 +1364,54 @@ There is no `hermes config set` support for `reasoning_overrides` keys — edit 
 4. Provider default
 
 The override applies automatically everywhere: CLI startup, messaging gateway, Desktop/TUI, cron jobs, `/model` mid-session switches, and fallback model activation.
+### Reasoning effort vs. reasoning visibility
+
+These are **independent** controls:
+
+| Control | What it does | What it never does |
+|---------|--------------|--------------------|
+| `agent.reasoning_effort` (or `/reasoning <level>`) | How deeply the model thinks | Show or hide anything |
+| `display.show_reasoning` (or `/reasoning show\|hide`) | Whether thought summaries are returned and displayed | Change how the model thinks |
+
+`/reasoning hide` does **not** disable model reasoning — the model keeps
+thinking at the configured effort; you just receive only the final answer.
+In the messaging gateway, `/reasoning show|hide` persists a per-platform
+override (`display.platforms.<platform>.show_reasoning`), which takes
+precedence over the global `display.show_reasoning` for that platform.
+
+**How Gemini / Vertex map these controls.** Both Google surfaces receive a
+`thinking_config` built from the two knobs separately:
+
+```json
+{
+  "google": {
+    "thinking_config": {
+      "thinking_level": "low",      // from agent.reasoning_effort
+      "include_thoughts": false     // from resolved show_reasoning
+    }
+  }
+}
+```
+
+So with display off, thought summaries are suppressed **at the API** — they
+are never returned, not merely filtered client-side — while internal
+thinking continues at the requested level. When display is on, Hermes also
+sets `thought_tag_marker` so the OpenAI-compat endpoints return summaries
+wrapped in `<think>` tags; Hermes extracts them into the reasoning box and
+strips them from the answer, so reasoning is shown exactly once.
+
+Model-specific notes:
+
+- **Gemini 3.x Pro** accepts only `low`/`high` thinking levels; Hermes clamps
+  `minimal|low|medium` → `low` and `high|xhigh|max|ultra` → `high`.
+- **Gemini 3 Flash** additionally accepts `medium`.
+- **Gemini 2.5** uses thinking budgets instead of levels; Hermes only toggles
+  `include_thoughts` and leaves the budget at the model default.
+- **Gemini 3 models cannot disable thinking** — `/reasoning none` hides
+  thought summaries, but the model still reasons internally (Google-side
+  behavior).
+- Thought signatures on tool calls are unrelated to visibility and are always
+  preserved and replayed, as Gemini requires.
 
 ## Tool-Use Enforcement
 

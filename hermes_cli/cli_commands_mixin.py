@@ -2510,6 +2510,24 @@ class CLICommandsMixin:
         else:
             _cprint("  Failed to save timestamps setting to config.yaml")
 
+    def _sync_reasoning_visibility(self):
+        """Propagate show_reasoning into reasoning_config.include_thoughts.
+
+        Effort and visibility are independent: include_thoughts only tells
+        Gemini/Vertex whether to RETURN thought summaries (thinking_config),
+        never how hard to think. Updating the live agent too means
+        /reasoning show|hide takes effect on the very next request without
+        re-initializing the agent.
+        """
+        if self.reasoning_config is None:
+            return
+        self.reasoning_config = {
+            **self.reasoning_config,
+            "include_thoughts": bool(self.show_reasoning),
+        }
+        if self.agent:
+            self.agent.reasoning_config = self.reasoning_config
+
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.
 
@@ -2556,6 +2574,7 @@ class CLICommandsMixin:
         # Display toggle
         if arg in {"show", "on"}:
             self.show_reasoning = True
+            self._sync_reasoning_visibility()
             if self.agent:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", True)
@@ -2564,10 +2583,12 @@ class CLICommandsMixin:
             return
         if arg in {"hide", "off"}:
             self.show_reasoning = False
+            self._sync_reasoning_visibility()
             if self.agent:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", False)
             _cprint(f"  {_ACCENT}✓ Reasoning display: OFF (saved){_RST}")
+            _cprint(f"  {_DIM}  Model reasoning stays ON at the current effort — only the display is hidden.{_RST}")
             return
 
         # Full / clamped recap toggle
@@ -2595,6 +2616,7 @@ class CLICommandsMixin:
             return
 
         self.reasoning_config = parsed
+        self._sync_reasoning_visibility()
         self.agent = None  # Force agent re-init with new reasoning config
 
         if explicit_global and save_config_value("agent.reasoning_effort", arg):

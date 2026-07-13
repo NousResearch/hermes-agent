@@ -58,7 +58,17 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if effort == "none":
         return {"includeThoughts": False}
 
-    thinking_config: Dict[str, Any] = {"includeThoughts": True}
+    # Visibility is independent of effort: ``include_thoughts`` only controls
+    # whether Gemini RETURNS thought summaries, never whether it thinks.
+    # The gateway/CLI resolve display.show_reasoning (incl. per-platform
+    # overrides and /reasoning show|hide) into this key before the request is
+    # built. Absent key = legacy behavior (summaries requested) so callers
+    # that don't resolve visibility keep working unchanged.
+    include_thoughts = reasoning_config.get("include_thoughts")
+    if not isinstance(include_thoughts, bool):
+        include_thoughts = True
+
+    thinking_config: Dict[str, Any] = {"includeThoughts": include_thoughts}
 
     # Gemini 2.5 accepts thinkingBudget; don't guess a budget from Hermes'
     # coarse effort levels. ``includeThoughts`` alone is enough to surface
@@ -86,6 +96,34 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
             )
 
     return thinking_config
+
+
+def _gemini_thought_tag_marker(raw_thinking_config: dict | None) -> str | None:
+    """Return the ``extra_body.google.thought_tag_marker`` value for a request.
+
+    Google's OpenAI-compat surface (Vertex and generativelanguage /openai)
+    returns thought summaries as PLAIN TEXT inside ``message.content`` when
+    ``include_thoughts`` is on — with no delimiter at all unless
+    ``thought_tag_marker`` is set ("If not specified, no tags will be
+    returned around the model's thoughts", Vertex OpenAI-compat docs).
+    Untagged summaries are indistinguishable from the final answer, so they
+    leaked to users verbatim (#gemini-reasoning-leak).
+
+    Emitting the marker makes the compat layer wrap summaries in
+    ``<think>…</think>`` — the exact tag every downstream stage already
+    understands: ``extract_reasoning`` captures it into ``msg["reasoning"]``,
+    ``strip_think_blocks`` removes it at the storage boundary, and the
+    stream consumer suppresses it live. The endpoint also strips the tags
+    from replayed context itself, so history stays clean.
+
+    Only meaningful when thoughts are requested; the native REST path marks
+    thought parts structurally (``part.thought``) and needs no marker.
+    """
+    if not isinstance(raw_thinking_config, dict):
+        return None
+    if raw_thinking_config.get("includeThoughts") is not True:
+        return None
+    return "think"
 
 
 def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
@@ -491,6 +529,9 @@ class ChatCompletionsTransport(ProviderTransport):
                     openai_compat_extra = extra_body.get("extra_body", {})
                     google_extra = openai_compat_extra.get("google", {})
                     google_extra["thinking_config"] = thinking_config
+                    _tag_marker = _gemini_thought_tag_marker(raw_thinking_config)
+                    if _tag_marker:
+                        google_extra["thought_tag_marker"] = _tag_marker
                     openai_compat_extra["google"] = google_extra
                     extra_body["extra_body"] = openai_compat_extra
             elif raw_thinking_config:

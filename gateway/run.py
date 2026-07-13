@@ -5229,6 +5229,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 value_tokens.append(token)
         return " ".join(value_tokens).strip().lower(), persist_global
 
+    def _resolve_reasoning_visibility(self, source: Optional[SessionSource] = None) -> bool:
+        """Effective show_reasoning for *source*'s platform, resolved per turn.
+
+        Mirrors the response-side display gate (per-platform
+        display.platforms.<plat>.show_reasoning override, Mattermost
+        platform-only opt-in, global display.show_reasoning fallback) so the
+        REQUEST already encodes visibility: Gemini/Vertex map it onto
+        ``thinking_config.include_thoughts`` and never return thought
+        summaries the display layer would have to hide. Reads config.yaml
+        each call so ``/reasoning show|hide`` (which persists the platform
+        override without evicting cached agents) takes effect on the very
+        next turn.
+        """
+        default = bool(getattr(self, "_show_reasoning", False))
+        if source is None:
+            return default
+        try:
+            return _resolve_gateway_display_bool(
+                _load_gateway_config(),
+                _platform_config_key(source.platform),
+                "show_reasoning",
+                default=default,
+                platform=source.platform,
+                require_platform_override_for={Platform.MATTERMOST},
+            )
+        except Exception:
+            return False if source.platform == Platform.MATTERMOST else default
+
     def _resolve_session_reasoning_config(
         self,
         *,
@@ -5244,6 +5272,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         *effective* model (session ``/model`` override included) so
         per-model overrides track what the session actually runs — when
         empty, the config's ``model.default`` is used.
+
+        The returned config also carries ``include_thoughts`` — the resolved
+        reasoning VISIBILITY for this platform. Effort (how hard the model
+        thinks) and visibility (whether thought summaries are returned/shown)
+        are independent controls; see _resolve_reasoning_visibility.
         """
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
@@ -5254,8 +5287,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
         if resolved_session_key and resolved_session_key in overrides:
-            return overrides[resolved_session_key]
-        return self._load_reasoning_config(model)
+            config = overrides[resolved_session_key]
+        else:
+            config = self._load_reasoning_config(model)
+        if config is None:
+            return None
+        # Copy before annotating — the session-override dict must not
+        # accumulate turn-scoped visibility state.
+        return {**config, "include_thoughts": self._resolve_reasoning_visibility(source)}
 
     def _set_session_reasoning_override(
         self,

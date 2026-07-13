@@ -1168,13 +1168,13 @@ class ProcessRegistry:
         Skips completion events the agent already consumed via wait/log or
         observed inline via poll() (see ``_drain_should_skip``).
 
-        Async-delegation events carry a conversation payload, so draining one
-        into the wrong session is a cross-chat leak (#58684, #55578). Two
-        filter modes, strongest wins:
+        Every notification event becomes a synthetic conversation turn, so
+        draining even an ordinary process completion into the wrong session is
+        a cross-chat context leak. Two filter modes, strongest wins:
 
         - ``owns_event(evt) -> bool``: positive-proof ownership callback.
-          When provided, an async-delegation event is consumed ONLY if the
-          callback returns True; everything else is re-queued for its owner.
+          When provided, an event is consumed ONLY if the callback returns
+          True; everything else is re-queued for its owner.
           The TUI passes its compression-chain-aware ownership check here so
           a post-compression session still claims its own pre-compression
           dispatches.
@@ -1194,23 +1194,25 @@ class ProcessRegistry:
             _evt_sid = evt.get("session_id", "")
             if evt.get("type") == "completion" and self._drain_should_skip(_evt_sid):
                 continue
-            # Filter async-delegation events so they are not delivered to the
-            # wrong session/thread (#58684). Positive-proof callback beats
-            # bare key equality when the caller can provide one.
-            if evt.get("type") == "async_delegation":
-                if owns_event is not None:
-                    try:
-                        owned = bool(owns_event(evt))
-                    except Exception:
-                        owned = False  # fail closed — never leak on a broken check
-                    if not owned:
-                        requeue.append(evt)
-                        continue
-                elif session_key:
-                    evt_session_key = evt.get("session_key", "") or ""
-                    if evt_session_key != session_key:
-                        requeue.append(evt)
-                        continue
+            # Filter ALL notification events, not only async delegations.
+            # Process completions and watch matches are also injected as
+            # synthetic user turns; letting whichever chat drains this global
+            # queue first consume them can replace that chat's active task with
+            # another project's background work. Positive-proof ownership beats
+            # bare key equality when the caller can provide it.
+            if owns_event is not None:
+                try:
+                    owned = bool(owns_event(evt))
+                except Exception:
+                    owned = False  # fail closed — never leak on a broken check
+                if not owned:
+                    requeue.append(evt)
+                    continue
+            elif session_key:
+                evt_session_key = evt.get("session_key", "") or ""
+                if evt_session_key != session_key:
+                    requeue.append(evt)
+                    continue
             text = format_process_notification(evt)
             if text:
                 results.append((evt, text))

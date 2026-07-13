@@ -8638,9 +8638,9 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     minus its orphan-adoption fallback. An event owns-matches when its
     ``origin_ui_session_id`` is this live session, or its ``session_key``
     (raw or resolved through the compression chain) matches this session's
-    key/lineage. Used as a fail-closed gate for async-delegation payloads:
-    "not provably elsewhere" is NOT good enough to inject a conversation
-    payload into this chat (#55578).
+    key/lineage. Used as a fail-closed gate for every notification payload:
+    "not provably elsewhere" is NOT good enough to inject a synthetic
+    conversation turn into this chat (#55578).
     """
     if session.get("_finalized"):
         return False
@@ -8735,26 +8735,23 @@ def _notification_poller_loop(
             time.sleep(0.1)
             continue
 
-        # Fail closed for async-delegation results (#55578): these carry a
-        # conversation payload, and injecting one into any chat other than the
-        # one that commissioned it is a hard cross-session leak. The
+        # Fail closed for every notification result (#55578): process
+        # completions and watch matches also become synthetic conversation
+        # turns, so injecting any of them into a chat other than the one that
+        # commissioned it is a hard cross-session context leak. The
         # belongs-elsewhere check above already re-queued events owned by
-        # another LIVE session; what reaches here is either ours or an
-        # orphan whose owner is gone. Orphaned delegation payloads are
-        # DROPPED, not adopted — the subagent's summary is already persisted
-        # in the delegation records/output store, so nothing is lost, whereas
-        # a wrong-chat injection is unrecoverable. Non-delegation events
-        # (background process completions etc.) keep the historical
-        # adopt-orphans behavior.
-        if evt.get("type") == "async_delegation" and not _session_owns_notification_event(
-            sid, session, evt
-        ):
+        # another LIVE session; what reaches here is either ours or an orphan
+        # whose owner is gone. Orphaned events are DROPPED from auto-injection,
+        # not adopted. Delegation results remain in the delegation records;
+        # process output remains in the process registry/status terminal. A
+        # missed notification is recoverable, while a wrong-chat injection is
+        # not.
+        if not _session_owns_notification_event(sid, session, evt):
             logger.warning(
-                "async-delegation completion %s has no live owner "
+                "notification %s has no live owner "
                 "(origin=%r key=%r); dropping from injection instead of "
-                "delivering to session %s (#55578 fail-closed; result "
-                "remains in the delegation records)",
-                evt.get("delegation_id", "?"),
+                "delivering to session %s (#55578 fail-closed)",
+                evt.get("delegation_id") or evt.get("session_id", "?"),
                 str(evt.get("origin_ui_session_id") or ""),
                 str(evt.get("session_key") or ""),
                 sid,
@@ -8825,13 +8822,10 @@ def _notification_poller_loop(
         if _notification_event_belongs_elsewhere(sid, session, evt):
             deferred.append(evt)
             continue
-        # Same fail-closed rule as the live loop: an orphaned async-delegation
-        # payload is never adopted by a foreign session — defer it (a later
-        # resume of the owner's lineage can still claim it) rather than
-        # injecting another chat's conversation here (#55578).
-        if evt.get("type") == "async_delegation" and not _session_owns_notification_event(
-            sid, session, evt
-        ):
+        # Same fail-closed rule as the live loop: an orphaned notification is
+        # never adopted by a foreign session. Defer it rather than injecting
+        # another chat's synthetic turn during shutdown (#55578).
+        if not _session_owns_notification_event(sid, session, evt):
             deferred.append(evt)
             continue
         _evt_sid = evt.get("session_id", "")

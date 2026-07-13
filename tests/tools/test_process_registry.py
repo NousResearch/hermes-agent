@@ -1404,6 +1404,80 @@ def test_drain_notifications_filters_async_delegation_by_session_key():
             process_registry.completion_queue.get_nowait()
 
 
+def test_drain_notifications_filters_process_completions_by_session_key():
+    """A terminal completion must only become a turn in its owning session.
+
+    Regression for the cross-project context switch where a frontend chat
+    drained a model-router review process completion from the process-global
+    queue. The old filter only covered async_delegation events.
+    """
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    try:
+        process_registry.completion_queue.put({
+            "type": "completion",
+            "session_id": "proc_session_a",
+            "session_key": "desktop-session-a",
+            "command": "review project A",
+            "exit_code": 0,
+            "output": "A done",
+        })
+        process_registry.completion_queue.put({
+            "type": "completion",
+            "session_id": "proc_session_b",
+            "session_key": "desktop-session-b",
+            "command": "build project B",
+            "exit_code": 0,
+            "output": "B done",
+        })
+
+        results_a = process_registry.drain_notifications(
+            session_key="desktop-session-a"
+        )
+        assert [r[0]["session_id"] for r in results_a] == ["proc_session_a"]
+        assert "A done" in results_a[0][1]
+
+        results_b = process_registry.drain_notifications(
+            session_key="desktop-session-b"
+        )
+        assert [r[0]["session_id"] for r in results_b] == ["proc_session_b"]
+        assert "B done" in results_b[0][1]
+        assert process_registry.completion_queue.empty()
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_drain_notifications_ownership_callback_filters_process_completion():
+    """The desktop's chain-aware callback must gate terminal completions too."""
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    try:
+        process_registry.completion_queue.put({
+            "type": "completion",
+            "session_id": "proc_foreign",
+            "session_key": "foreign-key",
+            "command": "foreign review",
+            "exit_code": 1,
+            "output": "failed",
+        })
+        results = process_registry.drain_notifications(
+            session_key="current-key",
+            owns_event=lambda e: e.get("session_key") == "current-key",
+        )
+        assert results == []
+        assert process_registry.completion_queue.get_nowait()["session_id"] == "proc_foreign"
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
 def test_drain_notifications_no_filter_passes_all_async_delegation():
     """Without a session_key filter, all async-delegation events are consumed.
 

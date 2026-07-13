@@ -21,7 +21,7 @@ import {
 import type { ChatBarState } from './types'
 
 const PILL = cn(
-  'h-(--composer-control-size) max-w-40 shrink-0 gap-1 rounded-md px-2 text-xs font-normal',
+  'h-(--composer-control-size) max-w-40 shrink-0 gap-1 overflow-hidden rounded-md px-2 text-xs font-normal whitespace-nowrap',
   'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
 )
 
@@ -54,7 +54,7 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
+        <span className="min-w-0 truncate whitespace-nowrap">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}

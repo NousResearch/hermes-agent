@@ -380,6 +380,7 @@ def test_sequential_blocked_call_skips_persist_and_subdir_hints():
     assert messages[0]["tool_call_id"] == "c-block-persist"
     assert "repeated_exact_failure_block" in messages[0]["content"]
     assert "[subdir hint]" not in messages[0]["content"]
+    assert messages[0].get("effect_disposition") == "none"
 
 
 def test_concurrent_blocked_call_skips_persist_and_subdir_hints():
@@ -420,6 +421,8 @@ def test_concurrent_blocked_call_skips_persist_and_subdir_hints():
     assert "repeated_exact_failure_block" in messages[0]["content"]
     assert "[subdir hint]" not in messages[0]["content"]
     assert "[subdir hint]" in messages[1]["content"]
+    assert messages[0].get("effect_disposition") == "none"
+    assert "effect_disposition" not in messages[1]
 
 
 def test_sequential_blocked_call_is_not_logged_as_tool_error(caplog):

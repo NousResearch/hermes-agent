@@ -1669,7 +1669,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
-        tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
+        # Match concurrent path: intentional blocks mark disposition none so
+        # session/replay treat them as non-executed synthetic results.
+        tool_message = make_tool_result_message(
+            function_name,
+            _tool_content,
+            tool_call.id,
+            effect_disposition="none" if _execution_blocked else None,
+        )
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if (

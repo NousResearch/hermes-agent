@@ -96,31 +96,25 @@ def test_evaluate_rejects_duplicate_fixture_identifiers(collection, field):
         evaluate(fixture)
 
 
-def test_current_prefetch_baseline_exposes_precision_problem():
+def test_precision_gated_prefetch_meets_offline_recall_contract():
     report = evaluate(load_fixture(FIXTURE))
     metrics = report["metrics"]
 
-    # RED-capable baseline: current prefetch injects all fake results regardless
-    # of configured similarity and still injects profile data when the fixture's
-    # prefetch_include_profile setting is false.
     assert report["exact_false_positive_modes"] == {
-        "low_similarity_result_injected": True,
-        "profile_injected_when_disabled": True,
+        "low_similarity_result_injected": False,
+        "profile_injected_when_disabled": False,
     }
     assert "precision_at_5" not in metrics
-    assert metrics["precision_at_returned_up_to_5"] < 1.0
-    assert metrics["recall_at_5"] == 1.0
-    assert metrics["injection_rate_on_null_queries"] > 0.0
-    assert metrics["mean_false_positives_per_null_query"] > 0.0
-    assert metrics["relevance_false_positive_rate"] > metrics["transient_contamination_rate"]
-    assert metrics["durable_irrelevant_selections"] > 0
-    assert metrics["transient_contamination_rate"] > 0.0
-    assert metrics["required_durable_recall"] == 1.0
-
-    contaminated_classes = metrics["transient_contamination_by_class"]
-    assert {"kanban_task", "pull_request_status", "test_run", "project_status", "full_session"}.issubset(
-        contaminated_classes
-    )
+    assert metrics["precision_at_returned_up_to_5"] >= 0.95
+    assert metrics["injection_rate_on_null_queries"] <= 0.05
+    assert metrics["mean_false_positives_per_null_query"] == 0.0
+    assert metrics["relevance_false_positive_rate"] <= 0.05
+    assert metrics["durable_irrelevant_selections"] == 0
+    assert metrics["transient_contamination_rate"] == 0.0
+    assert metrics["transient_contamination_by_class"] == {}
+    # Profile recall is explicitly disabled by this fixture, so the three
+    # profile-only cases trade recall for no unsolicited profile injection.
+    assert metrics["required_durable_recall"] >= 0.7
 
 
 def test_selected_ids_are_traced_without_content_substring_matching():
@@ -131,7 +125,7 @@ def test_selected_ids_are_traced_without_content_substring_matching():
     report = evaluate(fixture)
     identity_case = next(case for case in report["cases"] if case["id"] == "identity-02")
 
-    assert identity_case["selected_ids"] == ["identity_style", "status_worker"]
+    assert identity_case["selected_ids"] == ["identity_style"]
 
 
 def test_selected_ids_match_items_emitted_by_formatter_policy(monkeypatch):
@@ -150,6 +144,7 @@ def test_selected_ids_match_items_emitted_by_formatter_policy(monkeypatch):
     provider._active = True
     provider._auto_recall = True
     provider._max_recall_results = 5
+    provider._prefetch_include_profile = True
     provider._profile_frequency = 50
     provider._client = FixtureClient(cases, documents)  # type: ignore[assignment]
     provider.on_turn_start(1, cases[0]["query"])
@@ -185,6 +180,7 @@ def test_empty_prefetch_discards_partial_selection_trace_and_next_call_is_clean(
     provider._active = True
     provider._auto_recall = True
     provider._max_recall_results = 5
+    provider._prefetch_include_profile = True
     provider._profile_frequency = 50
     client = FixtureClient(cases, documents)
     provider._client = client  # type: ignore[assignment]

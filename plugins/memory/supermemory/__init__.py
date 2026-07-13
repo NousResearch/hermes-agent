@@ -14,6 +14,7 @@ import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -24,10 +25,36 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_CONTAINER_TAG = "hermes"
 _DEFAULT_MAX_RECALL_RESULTS = 10
+_DEFAULT_RECALL_MIN_SIMILARITY = 0.76
+_DEFAULT_PREFETCH_INCLUDE_PROFILE = False
+_DEFAULT_PREFETCH_MAX_CHARS = 6000
 _DEFAULT_PROFILE_FREQUENCY = 50
 _DEFAULT_CAPTURE_MODE = "all"
 _DEFAULT_SEARCH_MODE = "hybrid"
 _VALID_SEARCH_MODES = ("hybrid", "memories", "documents")
+_TRANSIENT_RECALL_TYPES = {
+    "conversation_turn",
+    "full_session",
+    "kanban_task",
+    "project_status",
+    "pull_request_status",
+    "smoke_test",
+    "test_run",
+}
+_TRANSIENT_RECALL_RE = re.compile(
+    r"(?:"
+    r"\b(?:kanban\s+)?task\s+t_[a-z0-9_-]+\b|"
+    r"\b(?:current\s+)?pull request\b[^.\n]*(?:merged|approval|branch\s+was\s+deleted)|"
+    r"\b(?:latest|yesterday(?:'s)?)\s+test run\b|"
+    r"\b(?:browser\s+)?test\s+(?:failed|passed)\b|"
+    r"\bphase\s+\w+\s+is\s+in\s+progress\b|"
+    r"\bthe\s+worker\s+is\s+currently\b|"
+    r"\bwill\s+report\s+later\b|"
+    r"\bfull session transcript\b|"
+    r"\btemporary smoke marker\b"
+    r")",
+    re.IGNORECASE,
+)
 _DEFAULT_API_TIMEOUT = 5.0
 _MIN_CAPTURE_LENGTH = 10
 _MAX_ENTITY_CONTEXT_LENGTH = 1500
@@ -60,6 +87,8 @@ def _default_config() -> dict:
         "auto_recall": True,
         "auto_capture": True,
         "max_recall_results": _DEFAULT_MAX_RECALL_RESULTS,
+        "recall_min_similarity": _DEFAULT_RECALL_MIN_SIMILARITY,
+        "prefetch_include_profile": _DEFAULT_PREFETCH_INCLUDE_PROFILE,
         "profile_frequency": _DEFAULT_PROFILE_FREQUENCY,
         "capture_mode": _DEFAULT_CAPTURE_MODE,
         "search_mode": _DEFAULT_SEARCH_MODE,
@@ -130,6 +159,16 @@ def _load_supermemory_config(hermes_home: str) -> dict:
         config["max_recall_results"] = max(1, min(20, int(config.get("max_recall_results", _DEFAULT_MAX_RECALL_RESULTS))))
     except Exception:
         config["max_recall_results"] = _DEFAULT_MAX_RECALL_RESULTS
+    try:
+        recall_min_similarity = float(config.get("recall_min_similarity", _DEFAULT_RECALL_MIN_SIMILARITY))
+        if not 0.0 <= recall_min_similarity <= 1.0:
+            raise ValueError("similarity must be between zero and one")
+        config["recall_min_similarity"] = recall_min_similarity
+    except Exception:
+        config["recall_min_similarity"] = _DEFAULT_RECALL_MIN_SIMILARITY
+    config["prefetch_include_profile"] = _as_bool(
+        config.get("prefetch_include_profile"), _DEFAULT_PREFETCH_INCLUDE_PROFILE
+    )
     try:
         config["profile_frequency"] = max(1, min(500, int(config.get("profile_frequency", _DEFAULT_PROFILE_FREQUENCY))))
     except Exception:
@@ -202,41 +241,82 @@ def _format_relative_time(iso_timestamp: str) -> str:
         return ""
 
 
+def _recall_dedup_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+
+def _is_duplicate_recall(key: str, seen: set[str]) -> bool:
+    return key in seen or any(SequenceMatcher(None, key, previous).ratio() >= 0.92 for previous in seen)
+
+
+def _is_transient_recall(text: Any, metadata: Any = None) -> bool:
+    if isinstance(metadata, dict):
+        for field in ("type", "source", "category", "kind", "document_type"):
+            value = str(metadata.get(field) or "").strip().lower().replace("-", "_")
+            if value in _TRANSIENT_RECALL_TYPES:
+                return True
+    return bool(_TRANSIENT_RECALL_RE.search(str(text or "")))
+
+
 def _deduplicate_recall(static_facts: list, dynamic_facts: list, search_results: list) -> tuple[list, list, list]:
     seen = set()
     out_static, out_dynamic, out_search = [], [], []
     for fact in static_facts or []:
-        if fact and fact not in seen:
-            seen.add(fact)
+        key = _recall_dedup_key(fact)
+        if key and not _is_duplicate_recall(key, seen):
+            seen.add(key)
             out_static.append(fact)
     for fact in dynamic_facts or []:
-        if fact and fact not in seen:
-            seen.add(fact)
+        key = _recall_dedup_key(fact)
+        if key and not _is_duplicate_recall(key, seen):
+            seen.add(key)
             out_dynamic.append(fact)
     for item in search_results or []:
         memory = item.get("memory", "")
-        if memory and memory not in seen:
-            seen.add(memory)
+        key = _recall_dedup_key(memory)
+        if key and not _is_duplicate_recall(key, seen):
+            seen.add(key)
             out_search.append(item)
     return out_static, out_dynamic, out_search
 
 
-def _format_prefetch_context(static_facts: list, dynamic_facts: list, search_results: list, max_results: int) -> str:
+def _format_prefetch_context(
+    static_facts: list,
+    dynamic_facts: list,
+    search_results: list,
+    max_results: int,
+    max_chars: int = _DEFAULT_PREFETCH_MAX_CHARS,
+) -> str:
     statics, dynamics, search = _deduplicate_recall(static_facts, dynamic_facts, search_results)
-    statics = statics[:max_results]
-    dynamics = dynamics[:max_results]
-    search = search[:max_results]
-    if not statics and not dynamics and not search:
+    candidates = (
+        [("static", item) for item in statics]
+        + [("dynamic", item) for item in dynamics]
+        + [("search", item) for item in search]
+    )
+    selected = candidates[:max(0, max_results)]
+    if not selected:
         return ""
 
-    sections = []
-    if statics:
-        sections.append("## User Profile (Persistent)\n" + "\n".join(f"- {item}" for item in statics))
-    if dynamics:
-        sections.append("## Recent Context\n" + "\n".join(f"- {item}" for item in dynamics))
-    if search:
+    intro = (
+        "The following is background context from long-term memory. Use it silently when relevant. "
+        "Do not force memories into the conversation."
+    )
+
+    def render(items: list[tuple[str, Any]], *, trace: bool) -> str:
+        grouped = {
+            "static": [item for kind, item in items if kind == "static"],
+            "dynamic": [item for kind, item in items if kind == "dynamic"],
+            "search": [item for kind, item in items if kind == "search"],
+        }
+        sections = []
+        if grouped["static"]:
+            lines = [f"- {item}" if trace else "- " + str(item) for item in grouped["static"]]
+            sections.append("## User Profile (Persistent)\n" + "\n".join(lines))
+        if grouped["dynamic"]:
+            lines = [f"- {item}" if trace else "- " + str(item) for item in grouped["dynamic"]]
+            sections.append("## Recent Context\n" + "\n".join(lines))
         lines = []
-        for item in search:
+        for item in grouped["search"]:
             memory = item.get("memory", "")
             if not memory:
                 continue
@@ -252,18 +332,21 @@ def _format_prefetch_context(static_facts: list, dynamic_facts: list, search_res
                 except Exception:
                     pass
             prefix = " ".join(prefix_bits)
-            lines.append(f"- {prefix} {memory}".strip())
+            if trace:
+                lines.append(f"- {prefix} {memory}".strip())
+            else:
+                lines.append(("- " + prefix + " " + str(memory)).strip())
         if lines:
             sections.append("## Relevant Memories\n" + "\n".join(lines))
-    if not sections:
-        return ""
+        if not sections:
+            return ""
+        body = "\n\n".join(sections)
+        return f"<supermemory-context>\n{intro}\n\n{body}\n</supermemory-context>"
 
-    intro = (
-        "The following is background context from long-term memory. Use it silently when relevant. "
-        "Do not force memories into the conversation."
-    )
-    body = "\n\n".join(sections)
-    return f"<supermemory-context>\n{intro}\n\n{body}\n</supermemory-context>"
+    max_chars = max(1, int(max_chars))
+    while selected and len(render(selected, trace=False)) > max_chars:
+        selected.pop()
+    return render(selected, trace=True) if selected else ""
 
 
 def _clean_text_for_capture(text: str) -> str:
@@ -375,6 +458,7 @@ class _SupermemoryClient:
                         "memory": getattr(item, "memory", ""),
                         "updated_at": getattr(item, "updated_at", None) or getattr(item, "updatedAt", None),
                         "similarity": getattr(item, "similarity", None),
+                        "metadata": getattr(item, "metadata", None),
                     })
         return {"static": static, "dynamic": dynamic, "search_results": search_results}
 
@@ -544,6 +628,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._auto_recall = True
         self._auto_capture = True
         self._max_recall_results = _DEFAULT_MAX_RECALL_RESULTS
+        self._recall_min_similarity = _DEFAULT_RECALL_MIN_SIMILARITY
+        self._prefetch_include_profile = _DEFAULT_PREFETCH_INCLUDE_PROFILE
         self._profile_frequency = _DEFAULT_PROFILE_FREQUENCY
         self._capture_mode = _DEFAULT_CAPTURE_MODE
         self._search_mode = _DEFAULT_SEARCH_MODE
@@ -659,6 +745,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._auto_recall = self._config["auto_recall"]
         self._auto_capture = self._config["auto_capture"]
         self._max_recall_results = self._config["max_recall_results"]
+        self._recall_min_similarity = self._config["recall_min_similarity"]
+        self._prefetch_include_profile = self._config["prefetch_include_profile"]
         self._profile_frequency = self._config["profile_frequency"]
         self._capture_mode = self._config["capture_mode"]
         self._search_mode = self._config["search_mode"]
@@ -716,11 +804,32 @@ class SupermemoryMemoryProvider(MemoryProvider):
             return ""
         try:
             profile = self._client.get_profile(query=query[:200])
-            include_profile = self._turn_count <= 1 or (self._turn_count % self._profile_frequency == 0)
+            include_profile = self._prefetch_include_profile and (
+                self._turn_count <= 1 or (self._turn_count % self._profile_frequency == 0)
+            )
+            static_facts = [
+                fact for fact in (profile.get("static") or [])
+                if not _is_transient_recall(fact)
+            ] if include_profile else []
+            dynamic_facts = [
+                fact for fact in (profile.get("dynamic") or [])
+                if not _is_transient_recall(fact)
+            ] if include_profile else []
+            search_results = []
+            for item in profile.get("search_results") or []:
+                memory = item.get("memory", "")
+                if _is_transient_recall(memory, item.get("metadata")):
+                    continue
+                try:
+                    similarity = float(item.get("similarity"))
+                except (TypeError, ValueError):
+                    continue
+                if similarity >= self._recall_min_similarity:
+                    search_results.append(item)
             context = _format_prefetch_context(
-                static_facts=profile["static"] if include_profile else [],
-                dynamic_facts=profile["dynamic"] if include_profile else [],
-                search_results=profile["search_results"],
+                static_facts=static_facts,
+                dynamic_facts=dynamic_facts,
+                search_results=search_results,
                 max_results=self._max_recall_results,
             )
             return context

@@ -191,6 +191,10 @@ def _supports_vision_override(
          value ``"custom"`` and/or the user-declared name under
          ``model.provider``; both are tried. For ``custom:<name>`` syntax,
          the stripped ``<name>`` is also tried as a provider key.)
+      2b. ``custom_providers`` (legacy list form) ``.models.<model>``
+
+    Under (2) and (2b), the per-model capability key may be written as
+    either ``supports_vision`` or the shorter ``vision`` alias; both work.
 
     Returns None when no override is set, so the caller falls through to
     models.dev. Returns False explicitly only when the user wrote a
@@ -226,7 +230,9 @@ def _supports_vision_override(
         models_cfg: Dict[str, Any] = models_raw if isinstance(models_raw, dict) else {}
         per_model_raw = models_cfg.get(model)
         per_model: Dict[str, Any] = per_model_raw if isinstance(per_model_raw, dict) else {}
-        coerced = _coerce_capability_bool(per_model.get("supports_vision"))
+        coerced = _coerce_capability_bool(
+            per_model.get("supports_vision", per_model.get("vision"))
+        )
         if coerced is not None:
             return coerced
 
@@ -254,7 +260,9 @@ def _supports_vision_override(
             models_cfg = models_raw if isinstance(models_raw, dict) else {}
             per_model_raw = models_cfg.get(model)
             per_model = per_model_raw if isinstance(per_model_raw, dict) else {}
-            coerced = _coerce_capability_bool(per_model.get("supports_vision"))
+            coerced = _coerce_capability_bool(
+                per_model.get("supports_vision", per_model.get("vision"))
+            )
             if coerced is not None:
                 return coerced
 

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from gateway.platforms.base import SendResult
 from gateway.telegram_topology import (
     operator_target_for_command,
+    restrict_toolsets_for_source,
     topic_contract_for_source,
     validate_telegram_topology,
 )
@@ -27,6 +28,7 @@ def valid_topology() -> dict:
                 "title": "☀️ Брифінги",
                 "thread_id": "2657",
                 "contract": "BRIEFING MODE: concise daily status only.",
+                "toolsets": ["clarify", "file", "terminal", "todo"],
             },
             "alerts": {"title": "🔔 Алерти", "thread_id": "2661"},
             "input": {"title": "🎙 Вхід", "thread_id": "2664"},
@@ -67,6 +69,37 @@ class TelegramC2TopologyTests(unittest.TestCase):
             topo.topic("briefings").contract,
             "BRIEFING MODE: concise daily status only.",
         )
+        self.assertEqual(
+            topo.topic("briefings").toolsets,
+            ("clarify", "file", "terminal", "todo"),
+        )
+
+    def test_topic_toolsets_intersect_with_platform_allowlist(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            write_topology(home, valid_topology())
+            self.assertEqual(
+                restrict_toolsets_for_source(
+                    source("2657"),
+                    ["browser", "clarify", "file", "terminal", "todo"],
+                    home=home,
+                ),
+                ["clarify", "file", "terminal", "todo"],
+            )
+
+    def test_operator_and_unknown_topics_keep_platform_toolsets(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            write_topology(home, valid_topology())
+            configured = ["browser", "file", "terminal"]
+            self.assertEqual(
+                restrict_toolsets_for_source(source("2654"), configured, home=home),
+                configured,
+            )
+            self.assertEqual(
+                restrict_toolsets_for_source(source("9999"), configured, home=home),
+                configured,
+            )
 
     def test_topic_contract_matches_exact_telegram_chat_and_thread(self):
         with tempfile.TemporaryDirectory() as d:

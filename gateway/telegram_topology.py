@@ -27,6 +27,7 @@ class TelegramTopic:
     chat_id: str
     thread_id: str
     contract: Optional[str] = None
+    toolsets: Optional[tuple[str, ...]] = None
 
 
 @dataclass(frozen=True)
@@ -99,12 +100,22 @@ def validate_telegram_topology(data: dict[str, Any]) -> TelegramTopology:
         if not title:
             raise ValueError(f"topics.{key}.title is required")
         contract = str(raw.get("contract", "")).strip() or None
+        raw_toolsets = raw.get("toolsets")
+        toolsets: Optional[tuple[str, ...]] = None
+        if raw_toolsets is not None:
+            if not isinstance(raw_toolsets, list) or not raw_toolsets:
+                raise ValueError(f"topics.{key}.toolsets must be a non-empty list")
+            cleaned = tuple(dict.fromkeys(str(item).strip() for item in raw_toolsets))
+            if any(not item for item in cleaned):
+                raise ValueError(f"topics.{key}.toolsets entries must be non-empty")
+            toolsets = cleaned
         topics[key] = TelegramTopic(
             key=key,
             title=title,
             chat_id=chat_id,
             thread_id=thread_id,
             contract=contract,
+            toolsets=toolsets,
         )
 
     return TelegramTopology(
@@ -174,3 +185,29 @@ def topic_contract_for_source(source: Any, home: Optional[Path] = None) -> Optio
         if topic.thread_id == thread_id:
             return topic.contract
     return None
+
+
+def restrict_toolsets_for_source(
+    source: Any,
+    enabled_toolsets: list[str],
+    home: Optional[Path] = None,
+) -> list[str]:
+    """Intersect platform tools with an exact Telegram topic allowlist."""
+    topology = load_telegram_topology(home)
+    if topology is None:
+        return list(enabled_toolsets)
+    platform = getattr(source, "platform", None)
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value).lower() != "telegram":
+        return list(enabled_toolsets)
+    if str(getattr(source, "chat_id", "")).strip() != topology.chat_id:
+        return list(enabled_toolsets)
+    thread_id = str(getattr(source, "thread_id", "") or "").strip()
+    for topic in topology.topics.values():
+        if topic.thread_id != thread_id:
+            continue
+        if topic.toolsets is None:
+            return list(enabled_toolsets)
+        allowed = set(topic.toolsets)
+        return [name for name in enabled_toolsets if name in allowed]
+    return list(enabled_toolsets)

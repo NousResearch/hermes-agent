@@ -23,7 +23,14 @@ def valid_topology() -> dict:
         "platform": "telegram",
         "chat_id": CHAT_ID,
         "topics": {
-            "operator": {"title": "💬 Оператор", "thread_id": "2654"},
+            "operator": {
+                "title": "💬 Оператор",
+                "thread_id": "2654",
+                "toolsets": [
+                    "clarify", "computer_use", "cronjob", "delegation", "file",
+                    "memory", "session_search", "skills", "terminal", "todo", "web",
+                ],
+            },
             "briefings": {
                 "title": "☀️ Брифінги",
                 "thread_id": "2657",
@@ -87,14 +94,21 @@ class TelegramC2TopologyTests(unittest.TestCase):
                 ["clarify", "file", "terminal", "todo"],
             )
 
-    def test_operator_and_unknown_topics_keep_platform_toolsets(self):
+    def test_operator_uses_coordinator_allowlist_and_unknown_keeps_platform_toolsets(self):
         with tempfile.TemporaryDirectory() as d:
             home = Path(d)
             write_topology(home, valid_topology())
-            configured = ["browser", "file", "terminal"]
+            configured = [
+                "browser", "clarify", "computer_use", "cronjob", "delegation",
+                "file", "image_gen", "memory", "session_search", "skills",
+                "terminal", "todo", "tts", "vision", "web",
+            ]
             self.assertEqual(
                 restrict_toolsets_for_source(source("2654"), configured, home=home),
-                configured,
+                [
+                    "clarify", "computer_use", "cronjob", "delegation", "file",
+                    "memory", "session_search", "skills", "terminal", "todo", "web",
+                ],
             )
             self.assertEqual(
                 restrict_toolsets_for_source(source("9999"), configured, home=home),

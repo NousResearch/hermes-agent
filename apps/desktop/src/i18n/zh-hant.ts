@@ -483,6 +483,12 @@ export const zhHant = defineLocale({
         },
         piper: {
           voice: 'Piper 語音'
+        },
+        supertonic: {
+          voice: 'Supertonic 語音',
+          lang: 'Supertonic 語言',
+          speed: 'Supertonic 語速',
+          totalSteps: 'Supertonic 品質步數'
         }
       },
       memory: {
@@ -557,6 +563,14 @@ export const zhHant = defineLocale({
       },
       voice: {
         autoTts: '自動朗讀助手回覆。'
+      },
+      tts: {
+        supertonic: {
+          voice: '內建語音風格，M1–M5 或 F1–F5。',
+          lang: '用於 Supertonic 合成的口語語言代碼。',
+          speed: '語速範圍為 0.7 到 2.0。',
+          totalSteps: '品質與速度的權衡範圍為 5 到 12 步。'
+        }
       },
       stt: {
         enabled: '啟用本機或提供方支援的語音轉寫。',

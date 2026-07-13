@@ -2255,6 +2255,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 # Module-level cache for the Supertonic TTS engine instance. The ~400MB model
 # is global (not voice-specific), so one instance is reused for the process.
 _supertonic_tts_cache: Dict[str, Any] = {}
+_supertonic_tts_lock = threading.Lock()
 
 
 def _check_supertonic_available() -> bool:
@@ -2306,53 +2307,63 @@ def _generate_supertonic_tts(text: str, output_path: str, tts_config: Dict[str, 
     # so we stay compatible with the installed engine version.
     extra: Dict[str, Any] = {}
     if "max_chunk_length" in st_config:
-        extra["max_chunk_length"] = int(st_config["max_chunk_length"])
+        try:
+            max_chunk_length = int(st_config["max_chunk_length"])
+        except (TypeError, ValueError):
+            max_chunk_length = 0
+        if max_chunk_length >= 10:
+            extra["max_chunk_length"] = max_chunk_length
     if "silence_duration" in st_config:
         extra["silence_duration"] = float(st_config["silence_duration"])
-
-    # The model is global; cache a single engine instance per process.
-    cache_key = "supertonic"
-    global _supertonic_tts_cache
-    if cache_key not in _supertonic_tts_cache:
-        logger.info("[Supertonic] Loading engine (downloads ~400MB model on first use)...")
-        _supertonic_tts_cache[cache_key] = TTS(auto_download=True)
-        logger.info("[Supertonic] Engine loaded")
-    engine = _supertonic_tts_cache[cache_key]
-
-    if voice_style_path:
-        style = engine.get_voice_style_from_path(str(Path(voice_style_path).expanduser()))
-    else:
-        style = engine.get_voice_style(voice_name=voice)
-
-    wav, _ = engine.synthesize(
-        text=text,
-        voice_style=style,
-        lang=lang,
-        total_steps=total_steps,
-        speed=speed,
-        **extra,
-    )
 
     # Supertonic outputs WAV. Caller handles downstream MP3/Opus conversion.
     wav_path = output_path
     if not output_path.endswith(".wav"):
         wav_path = output_path.rsplit(".", 1)[0] + ".wav"
 
-    engine.save_audio(wav, wav_path)
+    # The model and its ONNX sessions are process-global and not thread-safe.
+    cache_key = "supertonic"
+    global _supertonic_tts_cache
+    with _supertonic_tts_lock:
+        if cache_key not in _supertonic_tts_cache:
+            logger.info("[Supertonic] Loading engine (downloads ~400MB model on first use)...")
+            _supertonic_tts_cache[cache_key] = TTS(auto_download=True)
+            logger.info("[Supertonic] Engine loaded")
+        engine = _supertonic_tts_cache[cache_key]
+
+        if voice_style_path:
+            style = engine.get_voice_style_from_path(str(Path(voice_style_path).expanduser()))
+        else:
+            style = engine.get_voice_style(voice_name=voice)
+
+        wav, _ = engine.synthesize(
+            text=text,
+            voice_style=style,
+            lang=lang,
+            total_steps=total_steps,
+            speed=speed,
+            **extra,
+        )
+        engine.save_audio(wav, wav_path)
 
     # Convert to desired format if caller requested mp3/ogg
     if wav_path != output_path:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30)
+            subprocess.run(
+                conv_cmd,
+                check=True,
+                timeout=30,
+                stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
+            )
             try:
                 os.remove(wav_path)
             except OSError:
                 pass
         else:
-            # No ffmpeg — keep WAV and return that path
-            os.rename(wav_path, output_path)
+            return wav_path
 
     return output_path
 
@@ -2509,6 +2520,8 @@ def text_to_speech_tool(
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
+        elif provider == "supertonic":
+            file_path = out_dir / f"tts_{timestamp}.wav"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
         elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
@@ -2649,7 +2662,7 @@ def text_to_speech_tool(
                              "pip install \"supertonic>=1.3.1,<2\"",
                 }, ensure_ascii=False)
             logger.info("Generating speech with Supertonic (local)...")
-            _generate_supertonic_tts(text, file_str, tts_config)
+            file_str = _generate_supertonic_tts(text, file_str, tts_config)
 
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback

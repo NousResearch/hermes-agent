@@ -37,6 +37,35 @@ def test_supertonic_setup_uses_shared_post_setup(monkeypatch):
     assert config["tts"]["provider"] == "supertonic"
 
 
+def test_supertonic_integration_preserves_existing_provider_probe(monkeypatch):
+    installs = []
+    config = {}
+
+    monkeypatch.setattr(setup, "managed_nous_tools_enabled", lambda: False)
+    monkeypatch.setattr(
+        setup,
+        "get_nous_subscription_features",
+        lambda _config: SimpleNamespace(nous_auth_present=False),
+    )
+    monkeypatch.setattr(
+        setup,
+        "prompt_choice",
+        lambda question, choices, default=0: (
+            next(i for i, choice in enumerate(choices) if choice.startswith("KittenTTS "))
+            if question == "Select TTS provider:"
+            else default
+        ),
+    )
+    monkeypatch.setattr(setup.importlib.util, "find_spec", lambda _name: object())
+    monkeypatch.setattr(setup, "_install_kittentts_deps", lambda: installs.append(True) or True)
+    monkeypatch.setattr(setup, "save_config", lambda _config: None)
+
+    setup.setup_tts(config)
+
+    assert installs == []
+    assert config["tts"]["provider"] == "kittentts"
+
+
 @pytest.mark.parametrize(
     ("installed", "expected"),
     [

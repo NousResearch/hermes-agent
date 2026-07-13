@@ -2230,7 +2230,7 @@ DEFAULT_CONFIG = {
             "speed": 1.0,           # 0.7–2.0 (higher = faster)
             "total_steps": 8,       # 5–12 (higher = better quality, slower)
             # "voice_style_path": "",   # Path to a custom voice style (Voice Builder)
-            # "max_chunk_length": 0,    # Override internal text chunking
+            # "max_chunk_length": 300,  # Override internal text chunking (minimum: 10)
             # "silence_duration": 0.0,  # Silence inserted between chunks (seconds)
         },
     },

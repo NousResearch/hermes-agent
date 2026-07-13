@@ -594,6 +594,12 @@ export const zh: Translations = {
         },
         piper: {
           voice: 'Piper 语音'
+        },
+        supertonic: {
+          voice: 'Supertonic 语音',
+          lang: 'Supertonic 语言',
+          speed: 'Supertonic 语速',
+          totalSteps: 'Supertonic 质量步数'
         }
       },
       memory: {
@@ -668,6 +674,14 @@ export const zh: Translations = {
       },
       voice: {
         autoTts: '自动朗读助手回复。'
+      },
+      tts: {
+        supertonic: {
+          voice: '内置语音风格，M1–M5 或 F1–F5。',
+          lang: '用于 Supertonic 合成的口语语言代码。',
+          speed: '语速范围为 0.7 到 2.0。',
+          totalSteps: '质量与速度的权衡范围为 5 到 12 步。'
+        }
       },
       stt: {
         enabled: '启用本地或提供方支持的语音转写。',

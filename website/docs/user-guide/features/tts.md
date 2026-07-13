@@ -102,7 +102,7 @@ tts:
     speed: 1.0                                  # 0.7 - 2.0 (higher = faster)
     total_steps: 8                              # 5 - 12 (higher = better quality, slower)
     # voice_style_path: ''                      # custom voice style from the Supertonic Voice Builder
-    # max_chunk_length: 0                        # override internal text chunking
+    # max_chunk_length: 300                      # override internal text chunking (minimum: 10)
     # silence_duration: 0.0                      # silence between chunks (seconds)
 ```
 

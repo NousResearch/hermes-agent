@@ -113,7 +113,10 @@ fi
 
 expected_version="${HERMES_SHORTCUT_EXPECTED_VERSION:-}"
 if [ -z "$expected_version" ] && command -v curl >/dev/null 2>&1; then
-  expected_version="$(curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/team-shortcuts/VERSION 2>/dev/null | tr -d '[:space:]' || true)"
+  # ใช้ GitHub Contents API แทน raw URL เพื่อไม่อ่านรุ่นเก่าจาก CDN cache หลังเพิ่งอัปเดต
+  expected_version="$(curl -fsSL -H 'Accept: application/vnd.github.raw+json' \
+    'https://api.github.com/repos/rattanasak-ops/hermes-agent/contents/team-shortcuts/VERSION?ref=main' \
+    2>/dev/null | tr -d '[:space:]' || true)"
 fi
 installed_version=""
 if [ -f "$INSTALLED_VERSION" ]; then

@@ -26,15 +26,16 @@ curl -fsSL https://raw.githubusercontent.com/rattanasak-ops/hermes-agent/main/te
 
 คำสั่งเดิมนี้ติดตั้งทั้ง Shortcut + AI Relay + เพิ่ม `~/.local/bin` ให้ zsh/bash แล้ว
 
-หลังติดตั้ง พนักงานต้องล็อกอินเฉพาะ AI ที่ได้รับมอบหมายหนึ่งครั้ง เพราะบัญชีเป็นของแต่ละคนและทำแทนกันไม่ได้:
+หลังติดตั้ง พนักงานต้องรับไฟล์สิทธิ์ AI Portal ส่วนตัวจากแอดมินหนึ่งครั้งต่อเครื่อง
+(ห้ามส่ง Token ในห้องแชทรวม) แล้วตั้งสิทธิ์ไฟล์:
 
 ```bash
-codex login
-grok login --oauth
-gemini auth login
+chmod 600 ~/.hermes/.env
+relay-doctor
 ```
 
-Claude Code ให้ล็อกอินตามหน้าจอโปรแกรม จากนั้นปิด-เปิดโปรแกรม AI ใหม่ 1 รอบ แล้วลองพิมพ์ `Use New Chat`
+Claude/Opus, Codex และ Grok จะวิ่งผ่าน AI Portal จึงไม่ต้องล็อกอินแยกแต่ละโปรแกรม
+จากนั้นปิด-เปิดโปรแกรม AI ใหม่ 1 รอบ แล้วลองพิมพ์ `Use New Chat`
 
 ## วิธีตรวจเครื่องพนักงาน
 

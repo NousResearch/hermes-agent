@@ -41,7 +41,7 @@ def test_distribution_has_traceable_version_and_required_runtime_tools():
     installer = (TEAM / "install-shortcuts.sh").read_text(encoding="utf-8")
     checker = (TEAM / "check-shortcuts.sh").read_text(encoding="utf-8")
 
-    assert version == "2026.07.13-4"
+    assert version == "2026.07.13-5"
     assert "INSTALLED_VERSION" in installer
     assert "ไม่พบตัวตรวจสุขภาพ Hook" in installer
     assert "registry_vs_skill" in checker
@@ -56,7 +56,9 @@ def test_github_installer_sets_up_shortcuts_relay_and_shell_path():
     assert 'bash "$RELAY_DIR/scripts/ai-relay/install-local.sh"' in installer
     assert 'ensure_local_bin_path "$HOME/.zshrc"' in installer
     assert 'ensure_local_bin_path "$HOME/.bashrc"' in installer
-    assert "codex login" in installer
+    assert "AI Portal" in installer
+    assert "codex login" not in installer
+    assert "grok login" not in installer
     assert "relay-status --probe" in installer
 
 

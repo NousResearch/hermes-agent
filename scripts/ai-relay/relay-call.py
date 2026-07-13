@@ -340,19 +340,18 @@ def resolve_codex_bin():
     fb = Path.home()/".codex"/"bin"/"codex"
     return str(fb) if fb.exists() else "codex"
 
-def prefer_portal_adapters(adapters):
-    # Employee machines should use AI Portal by default. Old per-project
-    # adapters.yaml files may still call local claude/grok/codex and then fail
-    # with "Not logged in". Allow local CLI only when explicitly requested.
+def prefer_portal_adapters(adapters: dict) -> dict:
+    """บังคับ Claude/Codex/Grok ผ่าน AI Portal เว้นแต่ผู้ดูแลตั้งใจเปิด local CLI."""
     if os.environ.get("AI_RELAY_ALLOW_LOCAL_CLI") == "1":
         return adapters
+    upgraded = dict(adapters)
     for tool in ("opus", "codex", "grok"):
-        spec = adapters.get(tool) or {}
-        cmd = spec.get("cmd") or []
+        spec = upgraded.get(tool) or {}
+        cmd = list(spec.get("cmd") or [])
         bin_name = Path(str(cmd[0])).name if cmd else ""
         if bin_name in {"claude", "codex", "grok"}:
-            adapters[tool] = dict(DEFAULT_ADAPTERS[tool])
-    return adapters
+            upgraded[tool] = dict(DEFAULT_ADAPTERS[tool])
+    return upgraded
 
 def relay_now(action, tool="", task="", phase=""):
     sh = SCRIPT_DIR/"relay-now.sh"
@@ -434,6 +433,10 @@ def prepare_adapter_for_role(tool: str, spec: dict, role: str) -> dict:
     if role != "review":
         return prepared
     cmd = prepared["cmd"]
+    # AI Portal อ่านและตอบข้อความเท่านั้น ไม่มีเครื่องมือเขียนไฟล์
+    # ห้ามเติม flag ของ CLI ผู้ขาย เพราะ relay-portal ไม่รู้จัก flag เหล่านั้น
+    if cmd and Path(str(cmd[0])).name == "relay-portal":
+        return prepared
     if tool == "codex":
         if "--sandbox" in cmd:
             pos = cmd.index("--sandbox")
@@ -887,7 +890,10 @@ def main():
             active_prompt = compact_review_prompt(prompt)
             relay_now("set", tool, a.task_id, "กำลังตรวจซ้ำด้วยใบงานย่อ")
 
-        if st == "ok" and tool == "codex" and a.role == "review":
+        if (
+            st == "ok" and tool == "codex" and a.role == "review"
+            and Path(str((active_spec.get("cmd") or [""])[0])).name == "codex"
+        ):
             final_output = extract_codex_final_output(out)
             if final_output.strip():
                 out = final_output
@@ -909,8 +915,16 @@ def main():
                 "role":a.role,"review_rounds_used":review_rounds,
                 "timeout_retries":timeout_retry,"tried":tried}, 0)
 
-        # ไม่ ok → จดความพยายามลง ledger ก่อน (relay-report จะได้เห็นครั้งที่พัง/ชนโควต้าด้วย) แล้วค่อยตัดสินว่าสลับหรือหยุด
-        attempt_row(tool, st, rotated_from)
+        # ไม่ ok → เก็บ output ดิบตอนพังไว้วินิจฉัย (เคสจริง: auth ปลอม 4 ครั้งแต่ไม่มีหลักฐานให้ดูย้อน)
+        # แล้วจดความพยายามลง ledger (relay-report จะได้เห็นครั้งที่พัง/ชนโควต้าด้วย) ค่อยตัดสินว่าสลับหรือหยุด
+        fail_ref = ""
+        try:
+            ffile = cfg_dir(cwd)/f"fail-{re.sub(r'[^A-Za-z0-9]', '_', a.task_id)}-{tool}.txt"
+            ffile.write_text(redact(f"status={st} exit={code}\n--- stdout (ท้าย 4000) ---\n{out[-4000:]}\n--- stderr (ท้าย 4000) ---\n{err[-4000:]}"), encoding="utf-8")
+            fail_ref = str(ffile)
+        except Exception:
+            pass  # เก็บหลักฐานไม่ได้ ไม่ควรทำให้ตัวสายพานพัง
+        attempt_row(tool, st, rotated_from, fail_ref)
         if st in ("quota", "crash", "timeout"):
             # timeout = ค้าง/หมดเวลา · นับเป็นพังเข้า cooldown + สลับตัวถัดไปเหมือน crash
             record_fail(cwd, tool, cd_cfg, time.time())  # พังซ้ำครบเกณฑ์ = พักตัวนี้ชั่วคราว
@@ -921,14 +935,15 @@ def main():
             if is_brain and tool != chain[-1]:
                 rotated_from = tool
                 continue
-            auth_hint = (
+            relay_now("clear")
+            active_bin = Path(str((active_spec.get("cmd") or [""])[0])).name
+            hint = (
                 "ให้แอดมินตรวจ AI Portal token ใน ~/.hermes/.env"
-                if Path(str((adapters[tool].get("cmd") or [""])[0])).name == "relay-portal"
+                if active_bin == "relay-portal"
                 else f"ล็อกอินใหม่: {tool} login"
             )
-            relay_now("clear")
             emit({"status":"auth","tool":tool,"reason_human":REASON["auth"],
-                "hint":auth_hint,"tried":tried,"ledger_written":True}, 20)
+                "hint":hint,"tried":tried,"ledger_written":True}, 20)
         if st == "not_found":
             rotated_from = tool
             continue   # ไม่มีตัวนี้ → ลองตัวถัดไป

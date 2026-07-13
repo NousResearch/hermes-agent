@@ -16,25 +16,15 @@ relay-doctor
 ```
 
 - `install-local.sh` = ติดตั้งคำสั่ง relay (`relay-call` `gate-run` `relay-report` `relay-doctor` ฯลฯ) เข้า `~/.local/bin`
-- `relay-doctor` = ตรวจว่าเครื่องพร้อมไหมแบบไม่เปิดหน้า login ซ้ำ
-- `relay-doctor --probe` = ตรวจ login จริงหลังจากตั้งใจ login แล้วเท่านั้น
+- `relay-doctor` = ตรวจว่าเครื่องพร้อมไหมแบบไม่เปิดหน้า login ซ้ำ และไม่พิมพ์ Token
 - ถ้า shell หา `relay-doctor` ไม่เจอ → เพิ่ม `~/.local/bin` เข้า PATH ก่อน
 
-### ตั้งค่า AI Portal token (แอดมินส่งให้รายคน)
+### รับสิทธิ์ AI Portal (พนักงานทำครั้งเดียวต่อเครื่อง)
 
-สร้างไฟล์ `~/.hermes/.env` แล้ววางค่าที่แอดมินส่งให้เท่านั้น:
-
-```bash
-AI_PORTAL_URL=http://103.142.150.185:3012
-AI_PORTAL_CLAUDE_TOKEN=...
-AI_PORTAL_CODEX_TOKEN=...
-AI_PORTAL_GROK_TOKEN=...
-```
-
-- **Claude/Opus**: ใช้ AI Portal ไม่ต้อง login Claude Code local
-- **Codex**: ใช้ AI Portal ไม่ต้อง `codex login`
-- **Grok**: ใช้ AI Portal ไม่ต้อง `grok login --oauth`
-- **Gemini**: ถ้าแอดมินยังไม่เปิด token ผ่าน Portal และต้องใช้ local ค่อย `gemini auth login`
+- แอดมินออกไฟล์ `~/.hermes/.env` ส่วนตัวให้แต่ละคน (ห้ามส่ง Token ในแชทกลุ่ม)
+- พนักงานรัน `chmod 600 ~/.hermes/.env` แล้วปิด-เปิดโปรแกรม AI ใหม่
+- **Claude/Opus, Codex, Grok** ใช้ผ่าน AI Portal จึงไม่ต้องล็อกอิน CLI แยก
+- **Gemini** เป็นตัวเสริมแบบ local เท่านั้น จึงค่อยล็อกอินเมื่อได้รับมอบหมาย
 
 ---
 
@@ -57,7 +47,7 @@ Use AI Relay (ฉบับพนักงาน · สมองหลัก = Op
 [คนเขียนโค้ด] คุณเลือกตามงาน แล้วเรียก:
   relay-call --tool <coder> --task-id <P#-I#> --prompt-file <brief> --cwd <repo>
 - Codex = หลังบ้าน/logic ยาก/ความปลอดภัย · Grok = เร็ว/งานซ้ำเยอะ · Gemini = ไฟล์เยอะ · Ollama = สำรองฟรีในเครื่อง
-- อ่านแค่ช่อง status ที่มันคืน: ok=ไปตรวจ · not_found=ตัวนี้ยังไม่ติดตั้ง เสนอสลับ · auth=แจ้งแอดมินตรวจ token Portal · quota=มันสลับให้แล้ว · limit_exceeded=หยุด รายงาน
+- อ่านแค่ช่อง status ที่มันคืน: ok=ไปตรวจ · not_found=ตัวนี้ยังไม่ติดตั้ง เสนอสลับ · auth=แจ้งแอดมินตรวจ Token ของ AI Portal · quota=มันสลับให้แล้ว · limit_exceeded=หยุด รายงาน
 
 [คนตรวจ] ต้องคนละค่ายกับคนเขียนเสมอ (Codex เขียน → Grok ตรวจ · Grok เขียน → Codex ตรวจ)
 

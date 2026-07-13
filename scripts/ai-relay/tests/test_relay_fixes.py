@@ -745,8 +745,9 @@ def test_canonical_issue_id_prevents_retry_suffix_from_resetting_counter():
 
 
 def test_codex_review_adapter_is_read_only_json_and_no_silence_cut():
+    local_codex = {"cmd": ["codex", "exec", "--sandbox", "workspace-write", "prompt"]}
     prepared = relay_call.prepare_adapter_for_role(
-        "codex", relay_call.DEFAULT_ADAPTERS["codex"], "review"
+        "codex", local_codex, "review"
     )
     sandbox_pos = prepared["cmd"].index("--sandbox")
     assert prepared["cmd"][sandbox_pos + 1] == "read-only"
@@ -755,8 +756,9 @@ def test_codex_review_adapter_is_read_only_json_and_no_silence_cut():
 
 
 def test_grok_review_adapter_removes_write_approval_and_uses_plan_mode():
+    local_grok = {"cmd": ["grok", "-p", "prompt", "--always-approve"]}
     prepared = relay_call.prepare_adapter_for_role(
-        "grok", relay_call.DEFAULT_ADAPTERS["grok"], "review"
+        "grok", local_grok, "review"
     )
     assert "--always-approve" not in prepared["cmd"]
     mode_pos = prepared["cmd"].index("--permission-mode")
@@ -775,11 +777,36 @@ def test_gemini_review_adapter_replaces_yolo_with_plan_mode():
 
 
 def test_opus_review_adapter_uses_claude_plan_permission_mode():
+    local_opus = {"cmd": ["claude", "--permission-mode", "default", "-p", "prompt"]}
     prepared = relay_call.prepare_adapter_for_role(
-        "opus", relay_call.DEFAULT_ADAPTERS["opus"], "review"
+        "opus", local_opus, "review"
     )
     mode_pos = prepared["cmd"].index("--permission-mode")
     assert prepared["cmd"][mode_pos + 1] == "plan"
+
+
+def test_portal_is_default_and_review_does_not_add_vendor_cli_flags():
+    assert relay_call.DEFAULT_ADAPTERS["codex"]["cmd"][0] == "relay-portal"
+    assert relay_call.DEFAULT_ADAPTERS["grok"]["cmd"][0] == "relay-portal"
+    assert relay_call.DEFAULT_ADAPTERS["opus"]["cmd"][0] == "relay-portal"
+    prepared = relay_call.prepare_adapter_for_role(
+        "codex", relay_call.DEFAULT_ADAPTERS["codex"], "review"
+    )
+    assert prepared == relay_call.DEFAULT_ADAPTERS["codex"]
+    assert "--sandbox" not in prepared["cmd"]
+
+
+def test_local_vendor_adapters_are_upgraded_to_portal_unless_explicitly_allowed(monkeypatch):
+    adapters = {
+        "codex": {"cmd": ["/usr/local/bin/codex", "exec", "prompt"]},
+        "grok": {"cmd": ["grok", "-p", "prompt"]},
+        "opus": {"cmd": ["claude", "-p", "prompt"], "brain": True},
+    }
+    upgraded = relay_call.prefer_portal_adapters(adapters)
+    assert all(upgraded[name]["cmd"][0] == "relay-portal" for name in adapters)
+
+    monkeypatch.setenv("AI_RELAY_ALLOW_LOCAL_CLI", "1")
+    assert relay_call.prefer_portal_adapters(adapters) == adapters
 
 
 def test_extract_codex_final_output_ignores_progress_events():
@@ -838,7 +865,7 @@ _PLAN_WITH_TASKS = """\
 
 def _run_relay_main(
     tmp_path, task_id, *, plan_text=None, no_plan=False, role="code",
-    tool="grok", run_results=None,
+    tool="grok", run_results=None, local_vendor_cli=False,
 ):
     """เรียก relay-call.main() ใน tmp cwd · คืน (exit_code, json_payload, tool_invocations)"""
     import sys
@@ -852,6 +879,14 @@ def _run_relay_main(
 
     invoked = {"count": 0}
     orig_run_once = relay_call.run_once
+    orig_tool_adapter = relay_call.DEFAULT_ADAPTERS.get(tool)
+    old_allow_local = os.environ.get("AI_RELAY_ALLOW_LOCAL_CLI")
+    if local_vendor_cli and tool == "codex":
+        relay_call.DEFAULT_ADAPTERS[tool] = {
+            "cmd": ["codex", "exec", "--sandbox", "workspace-write", "prompt"],
+            "run_in_cwd": True,
+        }
+        os.environ["AI_RELAY_ALLOW_LOCAL_CLI"] = "1"
     queued_results = list(run_results or [])
 
     def fake_run_once(*args, **kwargs):
@@ -892,6 +927,12 @@ def _run_relay_main(
         sys.argv = old_argv
         sys.stdout = old_stdout
         relay_call.run_once = orig_run_once
+        if orig_tool_adapter is not None:
+            relay_call.DEFAULT_ADAPTERS[tool] = orig_tool_adapter
+        if old_allow_local is None:
+            os.environ.pop("AI_RELAY_ALLOW_LOCAL_CLI", None)
+        else:
+            os.environ["AI_RELAY_ALLOW_LOCAL_CLI"] = old_allow_local
 
     lines = [ln for ln in captured.getvalue().splitlines() if ln.strip()]
     payload = json.loads(lines[-1]) if lines else {}
@@ -1022,6 +1063,7 @@ def test_codex_review_timeout_retries_once_inside_same_task(tmp_path):
             (124, "partial", relay_call.TIMEOUT_MARK + ":silence"),
             (0, final_event, ""),
         ],
+        local_vendor_cli=True,
     )
 
     assert exit_code == 0
@@ -1044,6 +1086,7 @@ def test_codex_review_without_final_message_is_not_accepted(tmp_path):
         role="review",
         tool="codex",
         run_results=[(0, progress_only, ""), (0, "Grok review final", "")],
+        local_vendor_cli=True,
     )
 
     assert exit_code == 0

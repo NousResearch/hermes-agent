@@ -841,22 +841,6 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
-                # Read-only-safe FTS capability detection (no DDL): the virtual
-                # tables already exist if the owning profile initialised them.
-                # Probe, don't build — a SELECT against the FTS virtual table
-                # is safe on a mode=ro connection and fails cleanly to False
-                # on an older runtime that lacks the FTS5 module / trigram
-                # tokenizer.
-                try:
-                    self._conn.execute("SELECT 1 FROM messages_fts LIMIT 1").fetchone()
-                    self._fts_enabled = True
-                    try:
-                        self._conn.execute("SELECT 1 FROM messages_fts_trigram LIMIT 1").fetchone()
-                        self._trigram_available = True
-                    except sqlite3.OperationalError:
-                        self._trigram_available = False
-                except sqlite3.OperationalError:
-                    self._fts_enabled = False
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)

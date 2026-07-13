@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import sqlite3
 import threading
 import time
@@ -79,6 +80,24 @@ _DURABLE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 _MAX_DURABLE_PENDING = 1000
 _DB_LOCK = threading.Lock()
 
+# Retry tuning for _execute_write, mirroring hermes_state.py's
+# SessionDB._execute_write (see that docstring for why jitter beats SQLite's
+# own deterministic busy-timeout backoff under real concurrent load).
+_WRITE_MAX_RETRIES = 15
+_WRITE_RETRY_MIN_S = 0.020
+_WRITE_RETRY_MAX_S = 0.150
+
+# async_delegations lives in the SAME state.db file hermes_state.py's
+# SessionDB owns (gateway + cron + CLI sessions all share it — see
+# SessionDB's own class docstring). Recorded once per resolved db path on the
+# first successful _connect() to it: the schema doesn't change at runtime, so
+# re-running CREATE TABLE / PRAGMA table_info / ALTER TABLE on every single
+# call here was pure added contention against that shared file for no
+# benefit. Keyed by path (not a single flag) since HERMES_HOME — and so the
+# resolved state.db — can change across profiles within one process (and in
+# tests, across isolated fixtures).
+_schema_ready_paths: set = set()
+
 
 def _db_path():
     return get_hermes_home() / "state.db"
@@ -87,41 +106,89 @@ def _db_path():
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
+    # Short like SessionDB's own connection (hermes_state.py): _execute_write
+    # opens a fresh connection per retry attempt, so a long per-connection
+    # busy-timeout here would multiply into a much longer worst-case stall
+    # than the app-level jittered retry it wraps is meant to bound.
+    conn = sqlite3.connect(path, timeout=1.0)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS async_delegations (
-            delegation_id TEXT PRIMARY KEY,
-            origin_session TEXT NOT NULL,
-            origin_ui_session_id TEXT NOT NULL DEFAULT '',
-            parent_session_id TEXT,
-            state TEXT NOT NULL,
-            dispatched_at REAL NOT NULL,
-            completed_at REAL,
-            updated_at REAL NOT NULL,
-            event_json TEXT,
-            result_json TEXT,
-            delivery_state TEXT NOT NULL DEFAULT 'pending',
-            delivery_attempts INTEGER NOT NULL DEFAULT 0,
-            delivered_at REAL,
-            owner_pid INTEGER,
-            owner_started_at INTEGER,
-            task_json TEXT,
-            delivery_claim TEXT,
-            delivery_claimed_at REAL
-        )"""
-    )
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
-    for name, sql_type in (
-        ("owner_pid", "INTEGER"),
-        ("owner_started_at", "INTEGER"),
-        ("task_json", "TEXT"),
-        ("delivery_claim", "TEXT"),
-        ("delivery_claimed_at", "REAL"),
-    ):
-        if name not in columns:
-            conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
+    if path not in _schema_ready_paths:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS async_delegations (
+                delegation_id TEXT PRIMARY KEY,
+                origin_session TEXT NOT NULL,
+                origin_ui_session_id TEXT NOT NULL DEFAULT '',
+                parent_session_id TEXT,
+                state TEXT NOT NULL,
+                dispatched_at REAL NOT NULL,
+                completed_at REAL,
+                updated_at REAL NOT NULL,
+                event_json TEXT,
+                result_json TEXT,
+                delivery_state TEXT NOT NULL DEFAULT 'pending',
+                delivery_attempts INTEGER NOT NULL DEFAULT 0,
+                delivered_at REAL,
+                owner_pid INTEGER,
+                owner_started_at INTEGER,
+                task_json TEXT,
+                delivery_claim TEXT,
+                delivery_claimed_at REAL
+            )"""
+        )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
+        for name, sql_type in (
+            ("owner_pid", "INTEGER"),
+            ("owner_started_at", "INTEGER"),
+            ("task_json", "TEXT"),
+            ("delivery_claim", "TEXT"),
+            ("delivery_claimed_at", "REAL"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
+        _schema_ready_paths.add(path)
     return conn
+
+
+def _execute_write(fn: Callable[[sqlite3.Connection], Any]) -> Any:
+    """Run *fn(conn)* under BEGIN IMMEDIATE with jittered retry on SQLITE_BUSY.
+
+    *fn* performs the INSERT/UPDATE/DELETE statements and must not call
+    ``commit()``/``rollback()`` itself — that's handled here, mirroring
+    ``hermes_state.py``'s ``SessionDB._execute_write``: this module opens its
+    own ad hoc connection per call to the same shared ``state.db`` SessionDB
+    owns, so it needs the same anti-convoy mitigation SessionDB already
+    established for that exact multi-process contention, rather than relying
+    solely on SQLite's own deterministic busy-timeout backoff.
+    """
+    last_err: Optional[sqlite3.OperationalError] = None
+    for attempt in range(_WRITE_MAX_RETRIES):
+        with _DB_LOCK:
+            conn = _connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    result = fn(conn)
+                except BaseException:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise
+                conn.commit()
+                return result
+            except sqlite3.OperationalError as exc:
+                err_msg = str(exc).lower()
+                if "locked" in err_msg or "busy" in err_msg:
+                    last_err = exc
+                    if attempt < _WRITE_MAX_RETRIES - 1:
+                        time.sleep(random.uniform(_WRITE_RETRY_MIN_S, _WRITE_RETRY_MAX_S))
+                        continue
+                raise
+            finally:
+                conn.close()
+    raise last_err or sqlite3.OperationalError(
+        "database is locked after max retries"
+    )
 
 
 def _persist_dispatch(record: Dict[str, Any]) -> None:
@@ -136,7 +203,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch")
         if key in record
     }
-    with _DB_LOCK, _connect() as conn:
+    def _write(conn: sqlite3.Connection) -> None:
         conn.execute(
             """INSERT OR REPLACE INTO async_delegations
                (delegation_id, origin_session, origin_ui_session_id,
@@ -149,19 +216,25 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
              record["dispatched_at"], now, __import__("os").getpid(),
              owner_started_at, json.dumps(task_payload)),
         )
+
+    _execute_write(_write)
     _prune_durable_records()
 
 
 def _delete_durable_delegation(delegation_id: str) -> None:
-    with _DB_LOCK, _connect() as conn:
-        conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
+    _execute_write(
+        lambda conn: conn.execute(
+            "DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,)
+        )
+    )
 
 
 def _prune_durable_records() -> None:
     """Bound terminal history, preferring delivered records for deletion."""
     now = time.time()
     cutoff = now - _DURABLE_RETENTION_SECONDS
-    with _DB_LOCK, _connect() as conn:
+
+    def _write(conn: sqlite3.Connection) -> None:
         conn.execute(
             "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?",
             (cutoff,),
@@ -195,25 +268,29 @@ def _prune_durable_records() -> None:
                 (overflow,),
             )
 
+    _execute_write(_write)
+
 
 def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
-        conn.execute(
+    _execute_write(
+        lambda conn: conn.execute(
             """UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
                event_json=?, result_json=?, delivery_state='pending'
                WHERE delegation_id=?""",
             (event.get("status", "completed"), event.get("completed_at", now), now,
              json.dumps(event), json.dumps(result), event["delegation_id"]),
         )
+    )
 
 
 def _note_delivery_attempt(delegation_id: str) -> None:
-    with _DB_LOCK, _connect() as conn:
-        conn.execute(
+    _execute_write(
+        lambda conn: conn.execute(
             "UPDATE async_delegations SET delivery_attempts=delivery_attempts+1, updated_at=? WHERE delegation_id=?",
             (time.time(), delegation_id),
         )
+    )
 
 
 def recover_abandoned_delegations() -> int:
@@ -223,8 +300,9 @@ def recover_abandoned_delegations() -> int:
     except Exception:
         return 0
     now = time.time()
-    recovered = 0
-    with _DB_LOCK, _connect() as conn:
+
+    def _write(conn: sqlite3.Connection) -> int:
+        recovered = 0
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
@@ -260,7 +338,9 @@ def recover_abandoned_delegations() -> int:
                 (now, now, json.dumps(event), json.dumps(result), delegation_id),
             )
             recovered += 1
-    return recovered
+        return recovered
+
+    return _execute_write(_write)
 
 
 def restore_undelivered_completions(target_queue) -> int:
@@ -280,7 +360,8 @@ def restore_undelivered_completions(target_queue) -> int:
 def mark_completion_delivered(delegation_id: str) -> bool:
     """Atomically acknowledge successful injection of a durable completion."""
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+
+    def _write(conn: sqlite3.Connection) -> bool:
         cur = conn.execute(
             """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
                WHERE delegation_id=? AND delivery_state!='delivered'""",
@@ -288,11 +369,14 @@ def mark_completion_delivered(delegation_id: str) -> bool:
         )
         return cur.rowcount == 1
 
+    return _execute_write(_write)
+
 
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Claim one pending completion across competing consumers/processes."""
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+
+    def _write(conn: sqlite3.Connection) -> bool:
         row = conn.execute(
             "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
             (delegation_id,),
@@ -308,6 +392,8 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         )
         return cur.rowcount == 1
 
+    return _execute_write(_write)
+
 
 def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
     """Claim a durable delegation event; non-durable events need no token."""
@@ -322,7 +408,8 @@ def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
 
 def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Release a failed delivery claim so another consumer may retry."""
-    with _DB_LOCK, _connect() as conn:
+
+    def _write(conn: sqlite3.Connection) -> bool:
         cur = conn.execute(
             """UPDATE async_delegations SET delivery_claim=NULL,
                       delivery_claimed_at=NULL, updated_at=?
@@ -332,11 +419,14 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         )
         return cur.rowcount == 1
 
+    return _execute_write(_write)
+
 
 def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Acknowledge acceptance for the consumer holding this claim."""
     now = time.time()
-    with _DB_LOCK, _connect() as conn:
+
+    def _write(conn: sqlite3.Connection) -> bool:
         cur = conn.execute(
             """UPDATE async_delegations SET delivery_state='delivered',
                       delivered_at=?, updated_at=?, delivery_claim=NULL,
@@ -346,6 +436,8 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
             (now, now, delegation_id, claim_id),
         )
         return cur.rowcount == 1
+
+    return _execute_write(_write)
 
 
 def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:

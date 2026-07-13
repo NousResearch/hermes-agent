@@ -112,6 +112,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.operator_cards import OperatorCard, render_operator_card_text
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
 from utils import atomic_json_write, env_float, env_int
@@ -157,6 +158,49 @@ def _abort_discord_websocket_transport(websocket: Any) -> bool:
         return False
     abort()
     return True
+
+
+_DISCORD_OPERATOR_CARD_COLORS = {
+    "done": 0x2ECC71,
+    "info": 0x3498DB,
+    "needs_review": 0xF1C40F,
+    "blocked": 0xE74C3C,
+    "critical": 0x992D22,
+}
+_DISCORD_OPERATOR_CARD_SEVERITY_LABELS = {
+    "done": "Done",
+    "info": "Info",
+    "needs_review": "Needs review",
+    "blocked": "Blocked",
+    "critical": "Critical",
+}
+
+
+def _build_operator_card_embed(card: OperatorCard) -> Any:
+    """Render a validated operator card as a bounded Discord embed."""
+    embed = discord.Embed(
+        title=card.title,
+        description=card.summary,
+        color=_DISCORD_OPERATOR_CARD_COLORS[card.severity],
+    )
+    for field in card.fields:
+        embed.add_field(name=field.label, value=field.value, inline=False)
+    if card.actions:
+        embed.add_field(
+            name="Actions",
+            value=" · ".join(action.label for action in card.actions),
+            inline=False,
+        )
+    if card.links:
+        embed.add_field(
+            name="Links",
+            value="\n".join(f"[{link.label}]({link.url})" for link in card.links),
+            inline=False,
+        )
+    card_type_label = card.card_type.replace("_", " ").title()
+    severity_label = _DISCORD_OPERATOR_CARD_SEVERITY_LABELS[card.severity]
+    embed.set_footer(text=f"{card_type_label} · {severity_label}")
+    return embed
 
 
 async def _wait_for_ready_or_bot_exit(
@@ -2832,6 +2876,23 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            operator_card = None
+            operator_card_embed = None
+            operator_card_thread_name = None
+            if metadata and "operator_card" in metadata:
+                operator_card = OperatorCard.from_mapping(metadata["operator_card"])
+                content = render_operator_card_text(
+                    operator_card,
+                    max_length=self.MAX_MESSAGE_LENGTH,
+                )
+                operator_card_embed = _build_operator_card_embed(operator_card)
+                severity_label = _DISCORD_OPERATOR_CARD_SEVERITY_LABELS[
+                    operator_card.severity
+                ]
+                operator_card_thread_name = (
+                    f"{severity_label} — {operator_card.title}"
+                )[:100]
+
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
             if metadata and metadata.get("thread_id"):
@@ -2856,7 +2917,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                result = await self._send_to_forum(channel, content)
+                result = await self._send_to_forum(
+                    channel,
+                    content,
+                    embed=operator_card_embed,
+                    thread_name=operator_card_thread_name,
+                )
                 await asyncio.to_thread(
                     self._record_discord_response,
                     reply_to=reply_to,
@@ -2889,10 +2955,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    send_kwargs: Dict[str, Any] = {
+                        "content": chunk,
+                        "reference": chunk_reference,
+                    }
+                    if i == 0 and operator_card_embed is not None:
+                        send_kwargs["embed"] = operator_card_embed
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -2911,10 +2980,8 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        send_kwargs["reference"] = None
+                        msg = await channel.send(**send_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -2954,7 +3021,14 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return result
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    async def _send_to_forum(
+        self,
+        forum_channel: Any,
+        content: str,
+        *,
+        embed: Any = None,
+        thread_name: Optional[str] = None,
+    ) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 
         Forum channels (type 15) don't support direct messages.  Instead we
@@ -2969,15 +3043,18 @@ class DiscordAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
-        thread_name = _derive_forum_thread_name(content)
+        thread_name = thread_name or _derive_forum_thread_name(content)
 
         starter_content = chunks[0] if chunks else thread_name
 
         try:
-            thread = await forum_channel.create_thread(
-                name=thread_name,
-                content=starter_content,
-            )
+            create_kwargs: Dict[str, Any] = {
+                "name": thread_name,
+                "content": starter_content,
+            }
+            if embed is not None:
+                create_kwargs["embed"] = embed
+            thread = await forum_channel.create_thread(**create_kwargs)
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")

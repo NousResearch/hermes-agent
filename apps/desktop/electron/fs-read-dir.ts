@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { resolveDirectoryForIpc } from './hardening'
+import { resolveLocalReadPath } from './wsl-path-bridge'
 
 const FS_READDIR_STAT_CONCURRENCY = 16
 
@@ -81,8 +82,12 @@ async function readDirForIpc(dirPath, options: any = {}) {
   const fsImpl = options.fs || fs
   let resolved
 
+  // On a Windows host with a WSL backend, a WSL/POSIX cwd (`/home/...`,
+  // `/mnt/c/...`) isn't readable as-is; bridge it to a UNC/drive form first.
+  const readPath = resolveLocalReadPath(String(dirPath ?? ''))
+
   try {
-    ;({ resolvedPath: resolved } = await resolveDirectoryForIpc(dirPath, {
+    ;({ resolvedPath: resolved } = await resolveDirectoryForIpc(readPath, {
       fs: fsImpl,
       purpose: 'Directory read'
     }))

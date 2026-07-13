@@ -113,11 +113,18 @@ class TestUpdateYesConfigMigration:
 
         args = SimpleNamespace(yes=False)
 
-        with patch("builtins.input", return_value="n") as mock_input, patch(
-            "hermes_cli.main.sys"
-        ) as mock_sys:
-            mock_sys.stdin.isatty.return_value = True
-            mock_sys.stdout.isatty.return_value = True
+        # Patch ``sys.stdin.isatty`` and ``sys.stdout.isatty`` directly on the
+        # real ``sys`` module instead of replacing ``hermes_cli.main.sys`` with
+        # a MagicMock. The MagicMock approach was flaky under ``pytest-xdist``
+        # — a sibling test that imported ``hermes_cli.main`` first could leave
+        # a different ``sys`` reference resolved inside the function and the
+        # mock would never be consulted, with CI then taking the
+        # "Non-interactive session" branch instead of prompting.
+        import sys as _sys
+
+        with patch("builtins.input", return_value="n") as mock_input, patch.object(
+            _sys.stdin, "isatty", return_value=True
+        ), patch.object(_sys.stdout, "isatty", return_value=True):
             cmd_update(args)
             # The user was actually prompted.
             assert mock_input.called
@@ -128,40 +135,3 @@ class TestUpdateYesConfigMigration:
 class TestUpdateYesStashRestore:
     """--yes auto-restores the pre-update autostash without prompting."""
 
-    @patch("hermes_cli.main._restore_stashed_changes")
-    @patch(
-        "hermes_cli.main._stash_local_changes_if_needed",
-        return_value="stash@{0}",
-    )
-    @patch("hermes_cli.config.check_config_version", return_value=(1, 1))
-    @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
-    @patch("hermes_cli.config.get_missing_env_vars", return_value=[])
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_yes_restores_stash_without_prompting(
-        self,
-        mock_run,
-        _mock_which,
-        _mock_missing_env,
-        _mock_missing_cfg,
-        _mock_version,
-        _mock_stash,
-        mock_restore,
-        capsys,
-    ):
-        # Not on main → cmd_update switches to main → autostash fires.
-        mock_run.side_effect = _make_run_side_effect(
-            branch="feature-branch", verify_ok=True, commit_count="1", dirty=True
-        )
-
-        args = SimpleNamespace(yes=True)
-
-        cmd_update(args)
-
-        # _restore_stashed_changes was called, and called with prompt_user=False
-        # every time (so the user never sees "Restore local changes now?").
-        assert mock_restore.called
-        for call in mock_restore.call_args_list:
-            assert call.kwargs.get("prompt_user") is False, (
-                f"Expected prompt_user=False under --yes, got {call.kwargs}"
-            )

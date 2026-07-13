@@ -2,7 +2,6 @@
 
 Updated for the mautrix-python SDK (no more matrix-nio / nio imports).
 """
-import io
 import os
 import tempfile
 import types
@@ -27,8 +26,17 @@ from gateway.platforms.base import MessageType
 # ---------------------------------------------------------------------------
 
 def _make_adapter():
-    """Create a MatrixAdapter with mocked config."""
-    from gateway.platforms.matrix import MatrixAdapter
+    """Create a MatrixAdapter with mocked config.
+
+    Pins ``require_mention: False`` so these media-detection tests are NOT
+    gated by the mention requirement. The adapter defaults require_mention to
+    True (falling back to the MATRIX_REQUIRE_MENTION env var), so without this
+    a group-room audio event with no @mention is dropped by
+    _resolve_message_context before dispatch — making the tests pass or fail
+    depending on leaked env state from other tests in the same shard. These
+    tests exercise voice/audio TYPE detection, not mention gating.
+    """
+    from plugins.platforms.matrix.adapter import MatrixAdapter
     from gateway.config import PlatformConfig
 
     config = PlatformConfig(
@@ -37,6 +45,7 @@ def _make_adapter():
         extra={
             "homeserver": "https://matrix.example.org",
             "user_id": "@bot:example.org",
+            "require_mention": False,
         },
     )
     adapter = MatrixAdapter(config)

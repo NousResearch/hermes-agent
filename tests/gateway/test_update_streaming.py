@@ -11,7 +11,6 @@ import json
 import os
 import time
 import asyncio
-from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -45,6 +44,14 @@ def _make_runner(hermes_home=None):
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._failed_platforms = {}
+    # config is accessed by _check_slash_access and quick_commands lookup;
+    # None makes policy_for_source return a disabled (allow-all) policy.
+    runner.config = None
+    # Bypass the destructive-slash confirm gate — this test exercises
+    # update-prompt interception, not the confirm prompt.
+    runner._read_user_config = lambda: {
+        "approvals": {"destructive_slash_confirm": False}
+    }
     return runner
 
 
@@ -229,6 +236,8 @@ class TestUpdateCommandGatewayFlag:
         cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
         assert "--gateway" in cmd_string
         assert "PYTHONUNBUFFERED" in cmd_string
+        assert "rc=$?" in cmd_string
+        assert "status=$?" not in cmd_string
         assert "stream progress" in result
 
 
@@ -430,30 +439,49 @@ class TestWatchUpdateProgress:
         assert "failed" in all_sent.lower()
 
     @pytest.mark.asyncio
-    async def test_falls_back_when_adapter_unavailable(self, tmp_path):
-        """Falls back to legacy notification when adapter can't be resolved."""
+    async def test_falls_back_and_delivers_after_reconnect(self, tmp_path):
+        """Completion-only fallback waits for the platform to reconnect.
+
+        When the target adapter isn't connected at watcher start, the watcher
+        must keep the markers and retry until the platform reconnects, then
+        deliver the completion notification — rather than dropping it on the
+        first completion check (the late-reconnect /update bug).
+        """
         runner = _make_runner()
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
-        # Platform doesn't match any adapter
+        # Target platform (discord) isn't connected yet; the update is finished.
         pending = {"platform": "discord", "chat_id": "111", "user_id": "222"}
-        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        pending_path = hermes_home / ".update_pending.json"
+        pending_path.write_text(json.dumps(pending))
         (hermes_home / ".update_output.txt").write_text("done\n")
         (hermes_home / ".update_exit_code").write_text("0")
 
-        # Only telegram adapter available
-        mock_adapter = AsyncMock()
-        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+        # Only telegram is connected at first.
+        runner.adapters = {Platform.TELEGRAM: AsyncMock()}
+
+        discord_adapter = AsyncMock()
+
+        async def reconnect_discord():
+            # The platform reconnect watcher registers discord mid-poll.
+            await asyncio.sleep(0.3)
+            runner.adapters[Platform.DISCORD] = discord_adapter
 
         with patch("gateway.run._hermes_home", hermes_home):
+            task = asyncio.create_task(reconnect_discord())
             await runner._watch_update_progress(
                 poll_interval=0.1,
                 stream_interval=0.2,
                 timeout=5.0,
             )
+            await task
 
-        # Should not crash; legacy notification handles this case
+        # The completion was delivered to discord once it reconnected...
+        discord_adapter.send.assert_called_once()
+        # ...and the markers are cleaned up after successful delivery.
+        assert not pending_path.exists()
+        assert not (hermes_home / ".update_exit_code").exists()
 
     @pytest.mark.asyncio
     async def test_prompt_forwarded_only_once(self, tmp_path):

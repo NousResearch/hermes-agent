@@ -166,6 +166,77 @@ class TestSlashCommandSessionIsolation:
         assert event.source.chat_id == "D123"
         assert event.source.user_id == "U123"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("payload", "expected_thread_id"),
+        [
+            ({"thread_ts": "1700.1"}, "1700.1"),
+            ({"message": {"thread_ts": "1700.2"}}, "1700.2"),
+            ({"container": {"thread_ts": "1700.3"}}, "1700.3"),
+            ({"message_ts": "1700.4"}, "1700.4"),
+            (
+                {
+                    "message": {"thread_ts": "1700.5"},
+                    "container": {"thread_ts": "1700.6"},
+                    "message_ts": "1700.7",
+                },
+                "1700.5",
+            ),
+        ],
+    )
+    async def test_slash_command_preserves_thread_payload_variants(
+        self, adapter, payload, expected_thread_id
+    ):
+        command = {
+            "command": "/model",
+            "text": "sol",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+            **payload,
+        }
+
+        await adapter._handle_slash_command(command)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.thread_id == expected_thread_id
+
+    @pytest.mark.asyncio
+    async def test_slash_command_prefers_parent_thread_over_fallbacks(self, adapter):
+        command = {
+            "command": "/model",
+            "text": "sol",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+            "thread_ts": "1700.parent",
+            "message_ts": "1700.message",
+            "message": {"thread_ts": "1700.message-parent"},
+            "container": {"thread_ts": "1700.container-parent"},
+        }
+
+        await adapter._handle_slash_command(command)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.thread_id == "1700.parent"
+
+    @pytest.mark.asyncio
+    async def test_slash_command_ignores_malformed_nested_thread_payloads(self, adapter):
+        command = {
+            "command": "/model",
+            "text": "sol",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+            "message": "not-a-dict",
+            "container": ["not", "a", "dict"],
+        }
+
+        await adapter._handle_slash_command(command)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.thread_id is None
+
 
 # ---------------------------------------------------------------------------
 # TestAppMentionHandler
@@ -1159,6 +1230,186 @@ class TestBangPrefixCommands:
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.text.startswith("/model gpt-5.4")
         assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_model_rich_text_echo_keeps_args_exact(self, adapter):
+        event = self._make_event("!model sol")
+        event["blocks"] = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [{"type": "text", "text": "!model sol"}],
+                    }
+                ],
+            }
+        ]
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert msg_event.text == "/model sol"
+        assert msg_event.get_command_args() == "sol"
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_mentioned_bang_command_is_normalized_before_enrichment(self, adapter):
+        event = self._make_event(
+            "<@U_BOT> !model sol",
+            channel_type="channel",
+            channel="C123",
+        )
+        event["blocks"] = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "text", "text": "<@U_BOT> !model sol"}
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert msg_event.text == "/model sol"
+        assert msg_event.get_command_args() == "sol"
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_command_skips_blocks_and_unfurls(self, adapter):
+        event = self._make_event("!model sol")
+        event["blocks"] = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "block metadata"},
+            }
+        ]
+        event["attachments"] = [
+            {
+                "title": "Preview",
+                "title_link": "https://example.com/preview",
+                "text": "unfurl body",
+            }
+        ]
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert msg_event.text == "/model sol"
+        assert msg_event.get_command_args() == "sol"
+
+    @pytest.mark.asyncio
+    async def test_bang_command_skips_fetched_thread_context(self, adapter):
+        event = self._make_event(
+            "!model sol",
+            thread_ts="1111111111.000001",
+            channel_type="channel",
+            channel="C123",
+        )
+        adapter._bot_message_ts.add("1111111111.000001")
+
+        with patch.object(
+            adapter,
+            "_fetch_thread_context",
+            new_callable=AsyncMock,
+            return_value="[Thread context]\nnoise\n\n",
+        ) as fetch_context:
+            await adapter._handle_slack_message(event)
+
+        fetch_context.assert_not_awaited()
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert msg_event.text == "/model sol"
+        assert msg_event.get_command_args() == "sol"
+
+    @pytest.mark.asyncio
+    async def test_bang_command_keeps_text_file_out_of_args(self, adapter):
+        event = self._make_event("!model sol")
+        event["files"] = [
+            {
+                "mimetype": "text/plain",
+                "name": "notes.txt",
+                "url_private_download": "https://files.slack.com/notes.txt",
+                "size": 11,
+            }
+        ]
+
+        with patch.object(
+            adapter,
+            "_download_slack_file_bytes",
+            new_callable=AsyncMock,
+            return_value=b"hello world",
+        ):
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert msg_event.text == "/model sol"
+        assert msg_event.get_command_args() == "sol"
+        assert msg_event.media_types == ["text/plain"]
+
+    @pytest.mark.asyncio
+    async def test_bang_command_keeps_attachment_notice_out_of_args(self, adapter):
+        event = self._make_event("!model sol")
+        event["files"] = [
+            {
+                "id": "F123",
+                "file_access": "check_file_info",
+                "mimetype": "text/plain",
+                "name": "missing.txt",
+            }
+        ]
+        adapter._app.client.files_info.return_value = {
+            "ok": False,
+            "error": "file_not_found",
+        }
+
+        with patch.object(
+            adapter,
+            "_describe_slack_api_error",
+            return_value="Slack could not access missing.txt",
+        ):
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert msg_event.text == "/model sol"
+        assert msg_event.get_command_args() == "sol"
+
+    @pytest.mark.asyncio
+    async def test_unknown_bang_text_dedupes_authored_echo_but_keeps_quote(self, adapter):
+        event = self._make_event("!nice work")
+        event["blocks"] = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [{"type": "text", "text": "!nice work"}],
+                    },
+                    {
+                        "type": "rich_text_quote",
+                        "elements": [
+                            {
+                                "type": "rich_text_section",
+                                "elements": [
+                                    {"type": "text", "text": "Quoted line"}
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert msg_event.text == "!nice work\n> Quoted line"
+        assert msg_event.message_type != MessageType.COMMAND
 
     @pytest.mark.asyncio
     async def test_bang_works_inside_thread(self, adapter):

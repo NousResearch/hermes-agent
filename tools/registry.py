@@ -82,11 +82,13 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "_override",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 _override=False):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -105,6 +107,7 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        self._override = _override
 
 
 # ---------------------------------------------------------------------------
@@ -377,53 +380,83 @@ class ToolRegistry:
         toolset are rejected to prevent accidental overwrites.
         """
         with self._lock:
+            # --- Plugin-first override gate --------------------------------
+            # Gateway loads plugins BEFORE model_tools registers built-ins
+            # (gateway/run.py, model_tools.py).  An unopted plugin that calls
+            # register(..., override=True) when no entry exists yet would
+            # bypass the existing-entry check below, create the entry, and
+            # then _override protection blocks the built-in from registering.
+            # Gate plugin-originated override=True even when no entry exists.
+            if override:
+                _owner = self._plugin_owner_of(handler)
+                if _owner is not None and not self._plugin_override_policy.get(_owner, False):
+                    logger.error(
+                        "Tool registration REJECTED: plugin %r attempted to "
+                        "register tool %r with override=True without operator "
+                        "opt-in. Set "
+                        "plugins.entries.<plugin_id>.allow_tool_override: true "
+                        "in config.yaml to allow it.",
+                        _owner, name,
+                    )
+                    raise PermissionError(
+                        f"Plugin module {_owner!r} cannot register tool "
+                        f"{name!r} with override=True without operator opt-in "
+                        f"(allow_tool_override)."
+                    )
+
             existing = self._tools.get(name)
-            if existing and existing.toolset != toolset:
-                # Allow MCP-to-MCP overwrites (legitimate: server refresh,
-                # or two MCP servers with overlapping tool names).
+            if existing:
                 both_mcp = (
                     existing.toolset.startswith("mcp-")
                     and toolset.startswith("mcp-")
                 )
                 if both_mcp:
+                    # Allow MCP-to-MCP overwrites (legitimate: server refresh,
+                    # or two MCP servers with overlapping tool names).
                     logger.debug(
                         "Tool '%s': MCP toolset '%s' overwriting MCP toolset '%s'",
                         name, toolset, existing.toolset,
                     )
-                elif override:
-                    _owner = self._plugin_owner_of(handler)
-                    if _owner is not None and not self._plugin_override_policy.get(_owner, False):
-                        logger.error(
-                            "Tool registration REJECTED: plugin %r attempted to "
-                            "override built-in tool %r (existing toolset %r) without "
-                            "operator opt-in. Set "
-                            "plugins.entries.<plugin_id>.allow_tool_override: true "
-                            "in config.yaml to allow it.",
-                            _owner, name, existing.toolset,
-                        )
-                        raise PermissionError(
-                            f"Plugin module {_owner!r} cannot override built-in "
-                            f"tool {name!r} without operator opt-in "
-                            f"(allow_tool_override)."
-                        )
-                    # Explicit opt-in (or non-plugin caller): replace the tool.
-                    # Logged at INFO so the override is auditable in agent.log.
+                elif existing._override:
+                    # Existing entry was itself registered with override=True.
+                    # Protect it from silent overwrite by a later same-toolset
+                    # registration that lacks override (e.g. discover_builtin_tools
+                    # re-running after a plugin has already overridden a built-in).
                     logger.info(
-                        "Tool '%s': toolset '%s' overriding existing toolset '%s' "
-                        "(override=True opt-in)",
-                        name, toolset, existing.toolset,
-                    )
-                else:
-                    # Reject shadowing — prevent plugins/MCP from overwriting
-                    # built-in tools or vice versa.
-                    logger.error(
-                        "Tool registration REJECTED: '%s' (toolset '%s') would "
-                        "shadow existing tool from toolset '%s'. Pass "
-                        "override=True to register() if the replacement is "
-                        "intentional, or deregister the existing tool first.",
-                        name, toolset, existing.toolset,
+                        "Tool '%s': keeping existing override=True entry from "
+                        "toolset '%s' — rejecting re-registration from toolset '%s' "
+                        "without override",
+                        name, existing.toolset, toolset,
                     )
                     return
+                elif existing.toolset != toolset:
+                    if override:
+                        # Plugin policy was already gated above; non-plugin
+                        # override callers reach here legitimately.
+                        logger.info(
+                            "Tool '%s': toolset '%s' overriding existing toolset '%s' "
+                            "(override=True opt-in)",
+                            name, toolset, existing.toolset,
+                        )
+                    else:
+                        # Cross-toolset shadowing without override — reject.
+                        logger.error(
+                            "Tool registration REJECTED: '%s' (toolset '%s') would "
+                            "shadow existing tool from toolset '%s'. Pass "
+                            "override=True to register() if the replacement is "
+                            "intentional, or deregister the existing tool first.",
+                            name, toolset, existing.toolset,
+                        )
+                        return
+                else:
+                    # Same-toolset re-registration without override.
+                    # Preserve the existing permissive behaviour (built-in
+                    # tool modules can re-register on re-import) but log a
+                    # debug line so plugin authors can detect silent overwrites.
+                    logger.debug(
+                        "Tool '%s': re-registering same-toolset entry (toolset '%s', no override)",
+                        name, toolset,
+                    )
             self._tools[name] = ToolEntry(
                 name=name,
                 toolset=toolset,
@@ -436,6 +469,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                _override=override,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by

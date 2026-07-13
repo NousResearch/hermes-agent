@@ -128,6 +128,17 @@ _EXTRA_KEYS = frozenset({
 })
 
 
+def _normalize_pool_auth_type(provider: str, token: Any, auth_type: Any) -> str:
+    """Infer pool auth metadata for token formats with one unambiguous meaning."""
+    if (
+        provider == "anthropic"
+        and isinstance(token, str)
+        and token.startswith("sk-ant-oat")
+    ):
+        return AUTH_TYPE_OAUTH
+    return str(auth_type or AUTH_TYPE_API_KEY)
+
+
 @dataclass
 class PooledCredential:
     provider: str
@@ -157,6 +168,11 @@ class PooledCredential:
     def __post_init__(self):
         if self.extra is None:
             self.extra = {}
+        self.auth_type = _normalize_pool_auth_type(
+            self.provider,
+            self.access_token,
+            self.auth_type,
+        )
 
     def __getattr__(self, name: str):
         if name in _EXTRA_KEYS:
@@ -175,16 +191,6 @@ class PooledCredential:
         data.setdefault("id", uuid.uuid4().hex[:6])
         data.setdefault("label", payload.get("source", provider))
         data.setdefault("auth_type", AUTH_TYPE_API_KEY)
-        # An Anthropic setup-token (sk-ant-oat*) is always OAuth regardless of
-        # how it was ingested. The env path infers this, but manually-added
-        # credentials (hermes auth add / dashboard) default to api_key and are
-        # then sent with an x-api-key header, which Anthropic rejects for OAuth
-        # tokens. Normalize here so every ingest path agrees with
-        # _is_oauth_token()'s prefix detection. See issue #63737.
-        if provider == "anthropic":
-            _oat = data.get("access_token") or ""
-            if isinstance(_oat, str) and _oat.startswith("sk-ant-oat"):
-                data["auth_type"] = AUTH_TYPE_OAUTH
         data.setdefault("priority", 0)
         data.setdefault("source", SOURCE_MANUAL)
         data.setdefault("access_token", "")
@@ -2262,12 +2268,6 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         if _is_source_suppressed(provider, source):
             continue
         active_sources.add(source)
-        # Claude Code OAuth tokens are the only Anthropic credentials that should flow into the OAuth refresh path.
-        auth_type = (
-            AUTH_TYPE_OAUTH
-            if provider == "anthropic" and token.startswith("sk-ant-oat")
-            else AUTH_TYPE_API_KEY
-        )
         base_url = env_url or pconfig.inference_base_url
         if provider == "kimi-coding":
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
@@ -2282,7 +2282,6 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
                 env_var=env_var,
                 token=token,
                 base_url=base_url,
-                auth_type=auth_type,
             ),
         )
     return changed, active_sources
@@ -2410,16 +2409,37 @@ def load_pool(provider: str) -> CredentialPool:
         for payload in raw_entries
     )
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
+    raw_needs_auth_normalization = any(
+        isinstance(payload, dict)
+        and _normalize_pool_auth_type(
+            provider,
+            payload.get("access_token"),
+            payload.get("auth_type", AUTH_TYPE_API_KEY),
+        ) != payload.get("auth_type", AUTH_TYPE_API_KEY)
+        for payload in raw_entries
+    )
+    if raw_needs_auth_normalization:
+        # A profile may be reading this provider from the global-root fallback.
+        # Keep that fallback read-only: only the store that owns these rows may
+        # rewrite them. Loading the default/root profile will heal global rows.
+        active_pool = _load_auth_store().get("credential_pool")
+        active_entries = active_pool.get(provider) if isinstance(active_pool, dict) else None
+        raw_needs_auth_normalization = bool(active_entries)
 
     if provider.startswith(CUSTOM_POOL_PREFIX):
         # Custom endpoint pool — seed from custom_providers config and model config
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)
-        changed = raw_needs_sanitization or custom_changed
+        changed = raw_needs_sanitization or raw_needs_auth_normalization or custom_changed
         changed |= _prune_stale_seeded_entries(entries, custom_sources)
     else:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
         env_changed, env_sources = _seed_from_env(provider, entries)
-        changed = raw_needs_sanitization or singleton_changed or env_changed
+        changed = (
+            raw_needs_sanitization
+            or raw_needs_auth_normalization
+            or singleton_changed
+            or env_changed
+        )
         # ``load_pool()`` is a non-destructive read for env-seeded entries: a
         # process missing a provider env var must not delete the persisted
         # pool entry for every other process (#9331). File-backed singletons

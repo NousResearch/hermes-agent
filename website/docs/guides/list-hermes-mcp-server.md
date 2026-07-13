@@ -20,7 +20,7 @@ Use it when submitting Hermes to the official MCP Registry, Glama, mcpservers.or
 | Package | `hermes-agent` on PyPI |
 | Recommended install | `pipx install "hermes-agent[mcp]"` or Hermes install script |
 | Source | `https://github.com/NousResearch/hermes-agent` |
-| Docs | `https://hermes-agent.nousresearch.com/docs/guides/use-mcp-with-hermes` |
+| Docs | `https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp#running-hermes-as-an-mcp-server` |
 | Category | agent runtime, messaging bridge, automation, personal AI assistant |
 | License | MIT |
 
@@ -77,11 +77,11 @@ Then configure the MCP client to launch Hermes with fixed arguments:
 }
 ```
 
-If a client or registry cannot parse PyPI extras, install MCP support separately before running the same command:
+If a client or registry cannot parse PyPI extras, inject the same pinned MCP runtime dependencies that the `[mcp]` extra declares before running the same command:
 
 ```bash
 pipx install hermes-agent
-pipx inject hermes-agent mcp
+pipx inject hermes-agent mcp==1.26.0 starlette==1.0.1
 ```
 
 For source installs, run:
@@ -137,7 +137,7 @@ The MCP server mode lets MCP clients such as Claude Code, Cursor, or Codex use H
 The goal is to make Hermes a safe operator layer between coding agents and the places humans actually coordinate: Discord, Slack, Telegram, email, and other gateway platforms.
 
 Repo: https://github.com/NousResearch/hermes-agent
-Docs: https://hermes-agent.nousresearch.com/docs/guides/use-mcp-with-hermes
+Docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp#running-hermes-as-an-mcp-server
 
 ### Product Hunt tagline
 
@@ -147,15 +147,9 @@ Self-improving AI agent for terminal, messaging, IDEs, and MCP clients.
 
 Hermes Agent is an open-source agent runtime that works across your terminal, messaging platforms, and IDEs. Its MCP server mode lets other MCP clients use Hermes as a conversation, channel, event, and approval bridge for connected platforms like Slack, Discord, Telegram, and email.
 
-## Commercial-support CTA
+## Support CTA placeholder
 
-Teams using Hermes for internal agent operations, messaging workflows, or custom MCP/gateway integrations can request commercial support for setup, security review, deployment hardening, and custom integrations.
-
-Suggested CTA copy:
-
-> Need Hermes deployed safely for your team? Nous Research can help with MCP setup, gateway integrations, custom tools, and production hardening. Open a GitHub discussion or contact the maintainers from the repository.
-
-Keep this CTA informational. Do not promise SLAs, managed hosting, or paid plans unless those offerings have been formally approved.
+Do not include commercial-support copy in directory submissions until the canonical support policy from #31292 has merged and been published. If a directory requires a support field before then, link to the GitHub repository issues/discussions only and avoid promises about paid support, SLAs, managed hosting, security reviews, or production hardening.
 
 ## Safety notes
 

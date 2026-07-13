@@ -302,6 +302,38 @@ from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
 
 
+def _format_acp_import_error(exc: ImportError) -> list[str]:
+    """Map an ImportError raised while starting the ACP adapter to
+    user-facing message lines.
+
+    The acp adapter imports the third-party ``acp`` package (provided by
+    ``agent-client-protocol``) lazily inside ``acp_adapter.entry.main``.
+    Any ImportError raised from there used to be reported as "ACP
+    dependencies not installed", even when the failing module was
+    unrelated — masking real install corruption behind a "reinstall the
+    extra" suggestion that doesn't actually fix the problem.
+    """
+    missing = getattr(exc, "name", None) or ""
+    if missing == "acp" or missing.startswith("acp."):
+        return [
+            "ACP dependencies not installed.",
+            "Install them with:  pip install -e '.[acp]'",
+        ]
+    if not missing:
+        return [
+            f"hermes acp failed to start: {exc}",
+            "The failing import could not be identified; this may not be an "
+            "ACP packaging issue.",
+            "Check your hermes install with:  pip install -e '.[acp]'",
+        ]
+    return [
+        f"hermes acp failed to start: {exc}",
+        f"An unrelated module ({missing}) could not be imported — this is not "
+        "an ACP packaging issue.",
+        "Check your hermes install with:  pip install -e '.[acp]'",
+    ]
+
+
 def _require_tty(command_name: str) -> None:
     """Exit with a clear error if stdin is not a terminal.
 
@@ -13015,9 +13047,9 @@ def cmd_acp(args):
         if getattr(args, "assume_yes", False):
             acp_argv.append("--yes")
         acp_main(acp_argv)
-    except ImportError:
-        print("ACP dependencies not installed.", file=sys.stderr)
-        print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
+    except ImportError as e:
+        for line in _format_acp_import_error(e):
+            print(line, file=sys.stderr)
         sys.exit(1)
 
 

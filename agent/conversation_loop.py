@@ -37,6 +37,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
+    promote_text_tool_call,
     _repair_tool_call_arguments,
     _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates,
@@ -1641,6 +1642,12 @@ def run_conversation(
                     _finish_result = _cc_fr.normalize_response(response)
                     finish_reason = _finish_result.finish_reason
                     assistant_message = _finish_result
+                    if promote_text_tool_call(assistant_message):
+                        # A complete validated call is safe to execute even
+                        # when a provider reports ``length`` after emitting the
+                        # closing wrapper.  Incomplete JSON never promotes.
+                        if finish_reason == "length":
+                            finish_reason = "stop"
                     if agent._should_treat_stop_as_truncated(
                         finish_reason,
                         assistant_message,
@@ -1966,7 +1973,7 @@ def run_conversation(
                             _is_stub_stall = (
                                 getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
                             )
-                            if truncated_tool_call_retries < 4:
+                            if truncated_tool_call_retries < 1:
                                 truncated_tool_call_retries += 1
                                 if _is_stub_stall:
                                     # The stream broke mid tool-call (network /
@@ -1974,26 +1981,25 @@ def run_conversation(
                                     # cap — say so instead of "max output tokens".
                                     agent._buffer_vprint(
                                         f"⚠️  Stream interrupted mid tool-call — "
-                                        f"retrying ({truncated_tool_call_retries}/4)..."
+                                        f"retrying ({truncated_tool_call_retries}/1)..."
                                     )
                                 else:
                                     agent._buffer_vprint(
                                         f"⚠️  Truncated tool call detected — "
                                         f"retrying API call "
-                                        f"({truncated_tool_call_retries}/4)..."
+                                        f"({truncated_tool_call_retries}/1)..."
                                     )
-                                # Boost max_tokens on each retry so the model has
-                                # more room to complete the tool-call JSON. A
-                                # network stall doesn't need a bigger budget, but
-                                # a genuine output-cap truncation does, and the
-                                # boost is harmless for the stall case.
-                                _tc_boost_base = agent.max_tokens if agent.max_tokens else 4096
-                                _tc_boost = _tc_boost_base * (2 ** truncated_tool_call_retries)
-                                _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
-                                if _tc_requested_cap is not None:
-                                    _tc_boost = max(_tc_boost, _tc_requested_cap)
-                                _tc_boost_cap = max(32768, _tc_requested_cap or 0)
-                                agent._ephemeral_max_output_tokens = min(_tc_boost, _tc_boost_cap)
+                                # Escalate max_tokens exactly once for a real
+                                # output-cap truncation. A network stream stall
+                                # retries once at the existing token budget.
+                                if not _is_stub_stall:
+                                    _tc_boost_base = agent.max_tokens if agent.max_tokens else 4096
+                                    _tc_boost = _tc_boost_base * 2
+                                    _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+                                    if _tc_requested_cap is not None:
+                                        _tc_boost = max(_tc_boost, _tc_requested_cap)
+                                    _tc_boost_cap = max(32768, _tc_requested_cap or 0)
+                                    agent._ephemeral_max_output_tokens = min(_tc_boost, _tc_boost_cap)
                                 # Don't append the broken response to messages;
                                 # just re-run the same API call from the current
                                 # message state, giving the model another chance.
@@ -2001,7 +2007,7 @@ def run_conversation(
                             agent._flush_status_buffer()
                             if _is_stub_stall:
                                 agent._vprint(
-                                    f"{agent.log_prefix}⚠️  Stream kept dropping mid tool-call after 4 retries — the action was not executed.",
+                                    f"{agent.log_prefix}⚠️  Stream dropped mid tool-call again after one retry — the action was not executed.",
                                     force=True,
                                 )
                             else:
@@ -2024,6 +2030,7 @@ def run_conversation(
                                 "completed": False,
                                 "partial": True,
                                 "error": _final_response,
+                                "ungraded_error": True,
                             }
 
                     # If we have prior messages, roll back to last complete state
@@ -4286,6 +4293,8 @@ def run_conversation(
             normalized = _transport.normalize_response(response, **_normalize_kwargs)
             assistant_message = normalized
             finish_reason = normalized.finish_reason
+            if promote_text_tool_call(assistant_message) and finish_reason == "length":
+                finish_reason = "stop"
             
             # Normalize content to string — some OpenAI-compatible servers
             # (llama-server, etc.) return content as a dict or list instead

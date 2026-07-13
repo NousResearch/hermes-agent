@@ -14,9 +14,11 @@ re-exports from ``run_agent`` remain in place so existing imports
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
+from types import SimpleNamespace
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,81 @@ logger = logging.getLogger(__name__)
 # below as well as by run_agent and the CLI for paste-from-clipboard
 # scrubbing.
 _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
+_TOOL_CALL_WRAPPER_RE = re.compile(
+    r"\A\s*<tool_call>(?P<payload>.*?)</tool_call>\s*\Z",
+    re.DOTALL,
+)
+
+
+def validate_tool_call_json(content: str) -> tuple[bool, dict[str, Any] | None, str | None]:
+    """Validate one model-emitted tool-call object, optionally XML-wrapped.
+
+    Some OpenAI-compatible models serialize a tool call into assistant text as
+    ``<tool_call>{...}</tool_call>``.  Only a single, complete outer wrapper
+    (or a bare JSON object) is accepted.  Prose, nested/multiple wrappers, and
+    non-object arguments fail closed rather than being repaired heuristically.
+    """
+    if not isinstance(content, str) or not content.strip():
+        return False, None, "tool call content must be a non-empty string"
+
+    stripped = content.strip()
+    wrapper_match = _TOOL_CALL_WRAPPER_RE.fullmatch(content)
+    if wrapper_match is not None:
+        payload = wrapper_match.group("payload").strip()
+        if "<tool_call>" in payload or "</tool_call>" in payload:
+            return False, None, "nested or multiple tool_call wrappers are not allowed"
+    elif "<tool_call>" in stripped or "</tool_call>" in stripped:
+        return False, None, "tool_call wrapper must contain the entire response"
+    else:
+        payload = stripped
+
+    try:
+        parsed = json.loads(payload)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        return False, None, f"invalid tool call JSON: {exc}"
+
+    if not isinstance(parsed, dict):
+        return False, None, "tool call JSON must be an object"
+    name = parsed.get("name")
+    if not isinstance(name, str) or not name or name != name.strip():
+        return False, None, "tool call name must be a non-empty, unpadded string"
+    if not isinstance(parsed.get("arguments"), dict):
+        return False, None, "tool call arguments must be an object"
+    return True, parsed, None
+
+
+def is_tool_call_exemplar(content: str) -> bool:
+    """Return whether *content* is one complete validated tool-call object."""
+    valid, _, _ = validate_tool_call_json(content)
+    return valid
+
+
+def promote_text_tool_call(message: Any) -> bool:
+    """Promote one validated text exemplar to an OpenAI-style tool call.
+
+    Returns ``False`` without mutation when the message already contains tool
+    calls or its content is not one complete validated exemplar.
+    """
+    if getattr(message, "tool_calls", None):
+        return False
+    content = getattr(message, "content", None)
+    valid, parsed, _ = validate_tool_call_json(content)
+    if not valid or parsed is None:
+        return False
+
+    arguments = json.dumps(parsed["arguments"], separators=(",", ":"))
+    digest = hashlib.sha256(
+        f'{parsed["name"]}\0{arguments}'.encode("utf-8")
+    ).hexdigest()[:24]
+    message.tool_calls = [
+        SimpleNamespace(
+            id=f"call_text_{digest}",
+            type="function",
+            function=SimpleNamespace(name=parsed["name"], arguments=arguments),
+        )
+    ]
+    message.content = ""
+    return True
 
 
 def _sanitize_surrogates(text: str) -> str:
@@ -474,4 +551,7 @@ __all__ = [
     "_sanitize_tools_non_ascii",
     "_strip_images_from_messages",
     "_sanitize_structure_non_ascii",
+    "validate_tool_call_json",
+    "is_tool_call_exemplar",
+    "promote_text_tool_call",
 ]

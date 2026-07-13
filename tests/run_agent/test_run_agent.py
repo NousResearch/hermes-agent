@@ -5148,8 +5148,7 @@ class TestRunConversation:
 
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
         """When tool call args are truncated, the agent retries the API call
-        (up to 3 times). If a retry succeeds (valid JSON args), tool execution
-        proceeds."""
+        once. If that retry succeeds, tool execution proceeds."""
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
         bad_tc = _mock_tool_call(
@@ -5186,11 +5185,38 @@ class TestRunConversation:
         mock_hfc.assert_called_once()
         assert result["final_response"] == "Done!"
 
-    def test_stub_stall_mid_tool_call_recovers_within_3_retries(self, agent):
+    def test_truncated_tool_call_stops_ungraded_after_one_retry(self, agent):
+        self._setup_agent(agent)
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        truncated = _mock_response(
+            content="", finish_reason="length", tool_calls=[bad_tc],
+        )
+        agent.client.chat.completions.create.side_effect = [truncated, truncated]
+
+        with (
+            patch("run_agent.handle_function_call") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        assert agent.client.chat.completions.create.call_count == 2
+        first_kwargs, retry_kwargs = [
+            call.kwargs for call in agent.client.chat.completions.create.call_args_list
+        ]
+        assert first_kwargs.get("max_tokens") is None
+        assert retry_kwargs["max_tokens"] == 8192
+        assert result["ungraded_error"] is True
+        mock_hfc.assert_not_called()
+
+    def test_stub_stall_mid_tool_call_stops_after_one_retry(self, agent):
         """A network stream stall mid tool-call (PARTIAL_STREAM_STUB_ID) must
-        retry up to 3 times rather than hard-failing after one — and recover
-        if a retry produces a complete tool call. Regression for the false
-        'model hit max output tokens' on Opus when the stream simply dropped."""
+        retry once without burning four attempts."""
         from hermes_constants import PARTIAL_STREAM_STUB_ID
 
         self._setup_agent(agent)
@@ -5200,18 +5226,37 @@ class TestRunConversation:
             arguments='{"path":"report.md","content":"partial',
             call_id="c1",
         )
-        # Two consecutive stub-stall responses, then a clean tool call.
+        # Two consecutive stub-stall responses terminate without execution.
         stall1 = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
         stall1.id = PARTIAL_STREAM_STUB_ID
         stall2 = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
         stall2.id = PARTIAL_STREAM_STUB_ID
-        good_tc = _mock_tool_call(
-            name="write_file",
-            arguments='{"path":"report.md","content":"full content"}',
-            call_id="c2",
+        with (
+            patch("run_agent.handle_function_call") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.client.chat.completions.create.side_effect = [stall1, stall2]
+            result = agent.run_conversation("write the report")
+
+        assert agent.client.chat.completions.create.call_count == 2
+        first_kwargs, retry_kwargs = [
+            call.kwargs for call in agent.client.chat.completions.create.call_args_list
+        ]
+        assert retry_kwargs.get("max_tokens") == first_kwargs.get("max_tokens")
+        assert result["ungraded_error"] is True
+        mock_hfc.assert_not_called()
+
+    def test_complete_wrapped_shell_call_executes_registered_terminal(self, agent):
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("terminal")
+        wrapped = _mock_response(
+            content='<tool_call>{"name":"shell","arguments":{"command":"pwd"}}</tool_call>',
+            finish_reason="length",
         )
-        good_resp = _mock_response(content="", finish_reason="stop", tool_calls=[good_tc])
         final_resp = _mock_response(content="Done!", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [wrapped, final_resp]
 
         with (
             patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
@@ -5219,14 +5264,11 @@ class TestRunConversation:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            agent.client.chat.completions.create.side_effect = [
-                stall1, stall2, good_resp, final_resp,
-            ]
-            result = agent.run_conversation("write the report")
+            result = agent.run_conversation("show the directory")
 
-        # Recovered on the 3rd attempt instead of refusing after the 1st.
-        mock_hfc.assert_called_once()
+        assert result["api_calls"] == 2
         assert result["final_response"] == "Done!"
+        assert mock_hfc.call_args.args[0] == "terminal"
 
     def test_truncated_tool_args_detected_when_finish_reason_not_length(self, agent):
         """When a router rewrites finish_reason from 'length' to 'tool_calls',

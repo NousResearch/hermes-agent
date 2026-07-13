@@ -2391,6 +2391,13 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     if not tool_name:
         return None
 
+    # Some models emit the generic lowercase name ``shell`` for Hermes' native
+    # command runner.  Alias only that exact observed spelling, and only when
+    # the actual ``terminal`` tool is registered.  Do not map to a nonexistent
+    # ``bash`` tool or broaden this to casing/fuzzy variants.
+    if tool_name == "shell" and "terminal" in agent.valid_tool_names:
+        return "terminal"
+
     # VolcEngine api/plan workaround (issue #33007): the endpoint's
     # protocol-translation layer occasionally leaks raw XML attribute
     # fragments into tool_use.name, e.g.

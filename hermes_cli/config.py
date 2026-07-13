@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Iterable, Optional, List, Tuple
 
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -6066,39 +6066,88 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
     return sanitized
 
 
-def save_env_value(key: str, value: str):
-    """Save or update a value in ~/.hermes/.env."""
-    if is_managed():
-        managed_error(f"set {key}")
-        return
+def _prepare_env_value(key: str, value: str) -> str:
+    """Validate *key* and normalise *value* for persistence in ``.env``.
+
+    Shared by the single- and multi-key writers so both enforce the same name
+    rules, subprocess-execution denylist, newline stripping (a newline in a
+    value would otherwise inject an extra KEY=VALUE line) and the ASCII-only
+    rule for credentials.
+    """
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     _reject_denylisted_env_var(key)
     value = value.replace("\n", "").replace("\r", "")
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
-    value = _check_non_ascii_credential(key, value)
-    ensure_hermes_home()
-    env_path = get_env_path()
+    return _check_non_ascii_credential(key, value)
+
+
+def save_env_values(
+    updates: Optional[Dict[str, str]] = None,
+    *,
+    remove: Iterable[str] = (),
+    env_path: Optional[Path] = None,
+) -> None:
+    """Set and/or remove several ``.env`` keys in one atomic, encrypted write.
+
+    This is the single writer every multi-key caller must go through. It reads
+    via ``_read_env_lines`` and writes via ``_write_env_lines``, so an
+    encrypted ``.env`` is decrypted on read and re-encrypted on write. A caller
+    that does its own ``read_text``/``write_text`` round-trip instead would
+    rewrite an encrypted ``.env`` as **plaintext** — leaking the credential it
+    just stored — while leaving the ``#HERMES-ENCRYPTED-V1`` marker on line 1,
+    so every later reader would try to decrypt the now-corrupt file and fail.
+
+    Doing all the keys in one read-modify-write (rather than looping over
+    :func:`save_env_value`) also means one decrypt/encrypt/atomic-replace cycle
+    instead of N, and lets removals and writes land together or not at all.
+
+    *env_path* defaults to ``~/.hermes/.env``; the memory-provider setups pass
+    an explicit path.
+    """
+    updates = dict(updates or {})
+    # A key that is both written and removed is a write — matches the
+    # remove-then-write precedence the memory-provider setups relied on.
+    remove_set = {key for key in remove if key not in updates}
+
+    prepared = {key: _prepare_env_value(key, value) for key, value in updates.items()}
+    for key in remove_set:
+        if not _ENV_VAR_NAME_RE.match(key):
+            raise ValueError(f"Invalid environment variable name: {key!r}")
+
+    if env_path is None:
+        ensure_hermes_home()
+        env_path = get_env_path()
+    env_path = Path(env_path)
+    env_path.parent.mkdir(parents=True, exist_ok=True)
 
     # _read_env_lines decrypts an encrypted .env transparently and tolerates
-    # a BOM on a plaintext one.
-    lines = _read_env_lines(env_path)
-    # Sanitize on every read: split concatenated keys, drop stale placeholders
-    lines = _sanitize_env_lines(lines)
+    # a BOM on a plaintext one. Sanitize on every read: split concatenated
+    # keys, drop stale placeholders.
+    lines = _sanitize_env_lines(_read_env_lines(env_path))
 
-    # Find and update or append
-    found = False
-    for i, line in enumerate(lines):
-        if line.strip().startswith(f"{key}="):
-            lines[i] = f"{key}={value}\n"
-            found = True
-            break
+    kept: List[str] = []
+    written: set = set()
+    for line in lines:
+        stripped = line.strip()
+        line_key = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+        if line_key in remove_set:
+            continue
+        if line_key in prepared:
+            # Rewrite the first definition in place and drop any later
+            # duplicates, so a stale value can't shadow the new one.
+            if line_key not in written:
+                kept.append(f"{line_key}={prepared[line_key]}\n")
+                written.add(line_key)
+            continue
+        kept.append(line)
 
-    if not found:
-        # Ensure there's a newline at the end of the file before appending
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-        lines.append(f"{key}={value}\n")
+    for key, value in prepared.items():
+        if key not in written:
+            # Ensure there's a newline at the end of the file before appending
+            if kept and not kept[-1].endswith("\n"):
+                kept[-1] += "\n"
+            kept.append(f"{key}={value}\n")
 
     # Preserve original permissions so Docker volume mounts aren't clobbered.
     original_mode = None
@@ -6108,12 +6157,23 @@ def save_env_value(key: str, value: str):
         except OSError:
             pass
     # _write_env_lines re-encrypts when credential encryption is active.
-    _write_env_lines(env_path, lines, original_mode=original_mode)
+    _write_env_lines(env_path, kept, original_mode=original_mode)
     if original_mode is None:
         _secure_file(env_path)
 
-    os.environ[key] = value
+    for key, value in prepared.items():
+        os.environ[key] = value
+    for key in remove_set:
+        os.environ.pop(key, None)
     invalidate_env_cache()
+
+
+def save_env_value(key: str, value: str):
+    """Save or update a value in ~/.hermes/.env."""
+    if is_managed():
+        managed_error(f"set {key}")
+        return
+    save_env_values({key: value})
 
 
 def remove_env_value(key: str) -> bool:

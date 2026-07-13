@@ -837,26 +837,21 @@ def _precreate_secret_file(path: Path) -> None:
 
 
 def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:
-    env_path.parent.mkdir(parents=True, exist_ok=True)
-    remove_set = set(remove_keys) - set(env_writes)
-    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-    updated_keys = set()
-    new_lines = []
-    for line in existing_lines:
-        key_match = line.split("=", 1)[0].strip() if "=" in line else ""
-        if key_match in remove_set:
-            continue
-        if key_match in env_writes:
-            new_lines.append(f"{key_match}={env_writes[key_match]}")
-            updated_keys.add(key_match)
-        else:
-            new_lines.append(line)
-    for key, val in env_writes.items():
-        if key not in updated_keys:
-            new_lines.append(f"{key}={val}")
+    """Replace the OPENVIKING_* namespace in .env in one atomic write.
+
+    Delegates to the shared config facade, which is the only writer that
+    understands the encrypted-.env envelope. A raw read_text/write_text
+    round-trip here would store these API keys as **plaintext** in a .env the
+    user had encrypted, while leaving the ``#HERMES-ENCRYPTED-V1`` marker on
+    line 1 — so every later reader would try to decrypt the now-corrupt file
+    and fail. The facade preserves this function's write-wins-over-remove
+    precedence, so a key that is both written and removed is still written.
+    """
+    from hermes_cli.config import save_env_values
+
     # Pre-create with 0600 so secrets are never briefly world-readable.
     _precreate_secret_file(env_path)
-    env_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")
+    save_env_values(env_writes, remove=remove_keys, env_path=env_path)
     _restrict_secret_file_permissions(env_path)
 
 

@@ -397,34 +397,21 @@ def cmd_setup(args) -> None:
 
 
 def _write_env_vars(env_path: Path, env_writes: dict) -> None:
-    """Append or update env vars in .env file."""
-    env_path.parent.mkdir(parents=True, exist_ok=True)
+    """Append or update env vars in .env file.
 
-    existing_lines = []
-    if env_path.exists():
-        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+    Delegates to the shared config facade rather than doing its own
+    read_text/write_text round-trip. The facade is the only writer that
+    understands the encrypted-.env envelope: a raw rewrite here would store
+    these API keys as **plaintext** in a .env the user had encrypted, and would
+    leave the ``#HERMES-ENCRYPTED-V1`` marker on line 1 — so every later reader
+    would try to decrypt the now-corrupt file and fail. The facade also gives us
+    0600-from-birth permissions (via a mkstemp + atomic replace, with no
+    world-readable window this function's post-hoc chmod could never close),
+    name validation, the subprocess-execution denylist, and os.environ sync.
+    """
+    from hermes_cli.config import save_env_values
 
-    updated_keys = set()
-    new_lines = []
-    for line in existing_lines:
-        key_match = line.split("=", 1)[0].strip() if "=" in line else ""
-        if key_match in env_writes:
-            new_lines.append(f"{key_match}={env_writes[key_match]}")
-            updated_keys.add(key_match)
-        else:
-            new_lines.append(line)
-
-    for key, val in env_writes.items():
-        if key not in updated_keys:
-            new_lines.append(f"{key}={val}")
-
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    # Restrict permissions — .env holds API keys and tokens.
-    try:
-        import stat
-        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    except OSError:
-        pass  # Windows or read-only FS
+    save_env_values(env_writes, env_path=env_path)
 
 
 # ---------------------------------------------------------------------------

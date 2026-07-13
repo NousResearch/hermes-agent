@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.parse
 import urllib.request
 import urllib.error
 import time
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli import __version__ as _HERMES_VERSION
+from utils import base_url_hostname
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -1672,7 +1674,10 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
 
 def _is_google_gemini_base_url(base_url: Optional[str]) -> bool:
     normalized = (base_url or "").strip().rstrip("/").lower()
-    return "generativelanguage.googleapis.com" in normalized
+    if base_url_hostname(normalized) != "generativelanguage.googleapis.com":
+        return False
+    path = urllib.parse.urlsplit(normalized).path.rstrip("/")
+    return not path.endswith("/openai")
 
 
 def _fetch_google_models(

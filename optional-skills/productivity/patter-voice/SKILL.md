@@ -1,199 +1,143 @@
 ---
 name: patter-voice
-description: Run a full AI voice agent over real phone calls with the Patter SDK — outbound and inbound, Twilio or Telnyx, with OpenAI Realtime, ElevenLabs ConvAI, or a custom STT/LLM/TTS pipeline. Includes live transcripts and a local dashboard.
+description: Run real-time AI agents on live phone calls.
 version: 1.0.0
-author: PatterAI
+author: Nicolò Tognoni (@nicolotognoni)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [voice, telephony, calls, twilio, telnyx, openai, deepgram, elevenlabs, agent-loop, transcripts, realtime, convai, pipeline]
+    tags: [voice, telephony, calls, twilio, telnyx, realtime, transcripts]
     related_skills: [telephony]
     category: productivity
     homepage: https://github.com/PatterAI/Patter
 ---
 
-# Patter Voice — Full AI Voice Agents over Real Phone Calls
+# Patter Voice Skill
 
-This optional skill teaches Hermes to drive [Patter](https://github.com/PatterAI/Patter), an open-source SDK that runs a complete voice agent loop on real phone calls — inbound or outbound — over Twilio or Telnyx.
+Drive an autonomous voice agent on real inbound or outbound phone calls through the
+Patter SDK, over Twilio or Telnyx, with live transcripts, barge-in, and mid-call tool
+use. It runs a full multi-turn conversation on the line and records every call's cost
+and transcript. It does not buy phone numbers and it does not send SMS — use the
+`telephony` skill for provisioning and texting.
 
-Where the built-in `telephony` skill is great for *placing a call and reading back a result*, Patter is for *running an autonomous voice agent on the line* with live transcripts, barge-in, tool calls during the conversation, and a local web dashboard.
+## When to Use
 
-## When to use this skill vs. `telephony`
+Use this skill when the user wants an AI to actually talk with a human on the phone —
+a receptionist, a support line, an outbound task-runner — rather than send a one-shot
+message. If both this and `telephony` are installed, split the work by intent:
 
 | You want to... | Use |
 |---|---|
-| Send/receive SMS, buy a Twilio number, place a one-shot call | `telephony` |
-| Use Bland.ai / Vapi as the AI calling backend | `telephony` |
-| Run an autonomous voice **agent loop** (multi-turn, real-time, with tools) | **patter-voice** |
-| Use Telnyx instead of (or alongside) Twilio | **patter-voice** |
-| Get live transcripts streamed during the call and persisted after | **patter-voice** |
-| Use OpenAI Realtime, ElevenLabs ConvAI, or a custom STT->LLM->TTS stack | **patter-voice** |
-| View calls + costs + metrics in a local dashboard | **patter-voice** |
-| Trigger calls from another tool via MCP | **patter-voice** (pair with the `patter-voice` MCP) |
+| Send/receive SMS, buy a number, place a one-shot call with a canned message | `telephony` |
+| Run a multi-turn AI voice **agent** on the line (real-time, with tools) | **patter-voice** |
+| Have the agent autonomously handle an outbound task (e.g. book an appointment) | **patter-voice** |
+| Answer an inbound number with an AI agent | **patter-voice** |
+| Pull the full transcript, cost, and metrics of a call afterwards | **patter-voice** |
+| Use Telnyx instead of, or alongside, Twilio | **patter-voice** |
 
-If both skills are installed, use `telephony` for "send a text / make a single call with a pre-canned message" and `patter-voice` for "have an AI talk to a human on the phone".
+Do not use this skill to dial emergency numbers, or for spam, harassment, or
+impersonation.
 
-## How it works — three engine modes
+## Prerequisites
 
-Patter ships three engines. Pick one per agent.
-
-| Mode | When | Latency | Cost |
-|---|---|---|---|
-| `OpenAIRealtime2` (default) | Default for everything. One key, lowest latency. | ~200 ms | $$$ |
-| `ElevenLabsConvAI` | Turn-taking conversations, robust to long pauses. | ~600 ms | $$ |
-| `Pipeline` (STT + LLM + TTS) | Custom stack — e.g. Deepgram + Claude + ElevenLabs voice. | ~800 ms | $-$$$$ |
-
-Patter handles WebSocket framing, audio transcoding (mulaw 8 kHz / pcm 16 kHz), VAD, barge-in, cost tracking, the local tunnel, and the dashboard. You write the system prompt, optional tools, and the engine choice.
-
-## Install
+This skill drives the **patter-voice** MCP server, installed from the Hermes MCP
+catalog:
 
 ```bash
-hermes skills install official/productivity/patter-voice
+hermes mcp install patter-voice
 ```
 
-Then install the Python SDK in whatever environment Hermes will exec into:
+Installation prompts for the credentials below and stores them in `~/.hermes/.env`.
+The server is spawned automatically over stdio when a session starts — there is no
+repo to clone and no process to start by hand. Hermes passes stdio servers a
+filtered environment, so the stored keys are not auto-forwarded: keep them in the
+environment Hermes runs in, or add them under `mcp_servers.patter-voice.env` in
+`~/.hermes/config.yaml` (see the entry's post-install notes).
 
-```bash
-pip install "getpatter>=0.6.2"
-```
+Credentials, by engine:
 
-TypeScript users:
+- **One carrier** — either Twilio (Account SID, Auth Token, and a phone number) or a
+  Telnyx API key with a Telnyx number.
+- **OpenAI** — an OpenAI API key, required by the default OpenAI Realtime engine.
+- **Pipeline / ConvAI only** — a Deepgram API key (speech-to-text) and an ElevenLabs
+  API key (conversational voice). Leave these blank unless you switch engines.
 
-```bash
-npm install getpatter@^0.6.2
-```
+Three engines are available; pick one per agent. OpenAI Realtime is the default
+(one key, lowest latency). ElevenLabs ConvAI is robust to long pauses. Pipeline
+composes a custom speech-to-text, LLM, and text-to-speech stack.
 
-## Required env vars
+## How to Run
 
-Set the ones you actually need. At minimum: one carrier + `OPENAI_API_KEY` for the default Realtime engine.
+1. Confirm the patter-voice tools are available (a session started after install
+   exposes them). If they are missing, the MCP is not installed yet — see
+   Prerequisites.
+2. Gather the task: who to call or which number to answer, the goal, and the persona
+   or instructions for the agent.
+3. For any outbound call, **confirm with the user before dialing** — telephony minutes
+   cost real money. Then place it with `make_call` (a simple call) or
+   `call_third_party` (an autonomous task against a third party).
+4. To answer an inbound number, set the agent up with `configure_inbound`.
+5. Track progress with `get_calls`, hang up a live call with `end_call`, and after the
+   call read the outcome with `get_transcript` and `get_metrics`.
 
-| Var | Required | Used for |
+## Quick Reference
+
+| Tool | Purpose | Cost |
 |---|---|---|
-| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` | yes (or Telnyx) | Twilio carrier |
-| `TELNYX_API_KEY` + Telnyx number | yes (or Twilio) | Telnyx carrier |
-| `OPENAI_API_KEY` | yes for `OpenAIRealtime2` | LLM + speech |
-| `ELEVENLABS_API_KEY` | for `ElevenLabsConvAI` or Pipeline TTS | conversational voice |
-| `DEEPGRAM_API_KEY` | for Pipeline STT | speech-to-text |
+| `make_call` | Place an outbound AI call to a number | Paid — confirm first |
+| `call_third_party` | Run an autonomous outbound task against a third party | Paid — confirm first |
+| `configure_inbound` | Set the AI agent that answers an inbound number | Free to configure |
+| `get_calls` | List recent calls with status, duration, and cost | Free |
+| `get_transcript` | Fetch the full transcript of one call | Free |
+| `get_metrics` | Read one call's cost, latency, and outcome | Free |
+| `end_call` | Hang up a call that is currently live | Free |
 
-The optional `patter-voice` MCP server can be installed in parallel so other agents can trigger calls via MCP — see `hermes mcp install official/patter-voice`.
+## Procedure
 
-## Examples
+**Outbound call.** Restate the goal and the destination number to the user and get an
+explicit go-ahead. Place the call with `make_call`, or with `call_third_party` when the
+agent must complete a task autonomously (for example, calling a business to book a
+slot). Poll `get_calls` for status; when it completes, summarise the outcome from
+`get_transcript`.
 
-### A. Outbound call with the default OpenAI Realtime engine (Python)
+**Inbound agent.** Use `configure_inbound` to attach an agent — its instructions,
+first message, and engine — to a number the user already owns. Incoming calls are then
+answered automatically. Review handled calls later with `get_calls` and
+`get_transcript`.
 
-```python
-import asyncio
-from getpatter import Patter, Twilio, OpenAIRealtime2
+**During a call.** Watch active calls with `get_calls`. If the user asks to stop a
+live call, or the conversation has clearly ended, use `end_call`. Patter's built-in
+transfer handoff can move a live human conversation, so only enable transfer when
+that is a wanted outcome.
 
-async def main():
-    phone = Patter(carrier=Twilio(), phone_number="+15550001234")
-    agent = phone.agent(
-        engine=OpenAIRealtime2(),
-        system_prompt=(
-            "You are Mia, the AI receptionist for Acme Plumbing. "
-            "Greet the caller warmly. Help them book a service visit. "
-            "Keep replies under two sentences."
-        ),
-        first_message="Hi, this is Mia at Acme Plumbing — how can I help?",
-    )
-    await phone.serve(agent, tunnel=True)
+**After a call.** Report the result from `get_transcript` and the call's cost from
+`get_metrics` (it takes the call id returned by `make_call` / listed by `get_calls`).
+Do not persist third-party phone numbers to Hermes memory unless the user explicitly
+asks.
 
-asyncio.run(main())
-```
+## Pitfalls
 
-Then in another shell, dial out with the SDK CLI:
+- **Real telephony minutes cost real money.** Always confirm with the user before
+  `make_call` or `call_third_party`.
+- **Phone numbers must be E.164** (`+` country code then the number, e.g.
+  `+15551234567`). Reject anything else before dialing.
+- Twilio trial accounts and regional rules can restrict who you may call.
+- Treat third-party numbers and transcripts as sensitive; keep them out of long-term
+  memory unless asked.
+- Patter is voice-only — for SMS or buying a number, hand off to the `telephony` skill.
 
-```bash
-patter call "+15551234567" --to "your_running_server_url"
-```
+## Verification
 
-### B. Inbound agent on a Telnyx number (Python)
+Cheap, side-effect-free checks that confirm the MCP is wired up correctly:
 
-```python
-import asyncio
-from getpatter import Patter, Telnyx, OpenAIRealtime2
-
-async def main():
-    phone = Patter(carrier=Telnyx(), phone_number="+15550009876")
-    agent = phone.agent(
-        engine=OpenAIRealtime2(),
-        system_prompt=(
-            "You are the support line for Acme. Identify the caller's issue, "
-            "answer if known, and offer to transfer to a human otherwise."
-        ),
-        first_message="Acme support, how can I help today?",
-    )
-    # Patter exposes a built-in `transfer_call` tool — the agent can call it
-    # mid-conversation. No custom code needed for transfer.
-    await phone.serve(agent, tunnel=True)
-
-asyncio.run(main())
-```
-
-### C. Custom STT + LLM + TTS Pipeline (TypeScript)
-
-```typescript
-import {
-  Patter, Twilio, Pipeline,
-  Deepgram, Anthropic, ElevenLabs,
-} from "getpatter";
-
-const phone = new Patter({ carrier: new Twilio(), phoneNumber: "+15550001234" });
-
-const agent = phone.agent({
-  engine: new Pipeline({
-    stt: new Deepgram(),
-    llm: new Anthropic({ model: "claude-sonnet-4-5" }),
-    tts: new ElevenLabs({ voiceId: "Rachel" }),
-  }),
-  systemPrompt:
-    "You are a polite cold-caller for Acme. Ask if they want a quote on roof repair. " +
-    "Stop immediately if they say no.",
-  firstMessage: "Hi, this is Acme calling about your roof — do you have 30 seconds?",
-});
-
-await phone.serve(agent, { tunnel: true });
-```
-
-## Live transcripts and the dashboard
-
-Patter persists every call (caller, callee, duration, cost, full transcript) to a local SQLite database and exposes them via a built-in dashboard:
-
-```bash
-patter dashboard
-# opens http://localhost:8080
-```
-
-Inside Hermes, pull a transcript with the `patter-voice` MCP tool `get_transcript`, or read directly from the SDK in a session:
-
-```python
-from getpatter import Patter, Twilio
-
-phone = Patter(carrier=Twilio(), phone_number="+15550001234")
-for call in phone.calls.list(limit=5):
-    print(call.id, call.status, call.duration_s, call.cost_usd)
-    print(call.transcript)
-```
-
-## Safety rules
-
-1. Real telephony minutes cost real money — confirm with the user before placing outbound calls.
-2. Never dial emergency numbers.
-3. Do not use Patter for harassment, spam, impersonation, or anything illegal.
-4. Treat third-party phone numbers as sensitive operational data — do not save them to Hermes memory unless the user asks.
-5. The agent's `transfer_call` tool moves a live human conversation — only enable it when transfer is a wanted outcome.
-6. Some carriers and regions restrict who you can dial. Twilio trial accounts in particular have allow-list limits.
-
-## What this skill does not do
-
-- It is **not** a managed cloud service. Everything runs locally; you bring the carrier keys.
-- It does **not** buy phone numbers — use the `telephony` skill or the Twilio / Telnyx console for provisioning.
-- It does **not** send SMS — Patter is voice-only today. Use `telephony` for SMS.
+1. Confirm the seven patter-voice tools are listed in the session's tool surface.
+2. Call `get_calls` — on a fresh install it returns an empty list rather than an error,
+   proving the server built, spawned, and is answering over stdio.
+3. Only after those succeed should you place a paid call, and only with user
+   confirmation.
 
 ## References
 
 - Patter SDK (Python + TypeScript): https://github.com/PatterAI/Patter
-- patter-mcp (Streamable HTTP MCP server): https://github.com/PatterAI/patter-mcp
-- Patter skills bundle (build-voice-agent, configure-telephony, inspect-calls-and-metrics, add-tools-and-handoffs, setup-patter): https://github.com/PatterAI/skills
-- Hermes integration page: https://docs.patter.com/integrations/hermes
+- patter-mcp server: https://github.com/PatterAI/patter-mcp

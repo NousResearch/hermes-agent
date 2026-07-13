@@ -8,25 +8,49 @@ name: patter-voice
 description: Place outbound AI phone calls (Twilio or Telnyx), run autonomous third-party tasks, and pull live call transcripts via the Patter SDK.
 source: https://github.com/PatterAI/patter-mcp
 
-# patter-mcp is a Streamable-HTTP MCP server that runs locally on :3000.
-# It is NOT distributed as an `npx -y` package today (see source README:
-# "Why not `npx -y getpatter-mcp` like other MCP servers?"), so the user
-# must clone + start the server before Hermes can connect. Once running,
-# Hermes connects by URL through the existing MCP HTTP client — no local
-# subprocess management here.
+# patter-mcp is not published on npm (there is no `npx -y getpatter-mcp`), so it
+# is installed from source: the catalog clones the pinned commit below, builds
+# it, and Hermes then spawns it directly over stdio. In stdio mode the server
+# speaks JSON-RPC on stdout and reroutes its own logs to stderr. Its default
+# transport (without `--stdio`) is Streamable HTTP on PATTER_PORT (8000), which
+# this entry deliberately does NOT use — stdio needs no local port and lets
+# Hermes manage the subprocess lifecycle.
 transport:
-  type: http
-  url: http://localhost:3000/mcp
+  type: stdio
+  # ${INSTALL_DIR} is substituted at install time (in command AND args) with the
+  # directory the catalog cloned patter-mcp into. `node` is resolved off PATH;
+  # patter-mcp requires Node ^20.19.0 || >=22.12.0 (package.json engines).
+  command: node
+  args:
+    - "${INSTALL_DIR}/dist/index.js"
+    - "--stdio"
 
-# Authentication. Patter itself has no central API key — credentials are
-# the underlying provider keys (carrier + LLM/STT/TTS) that the local
-# patter-mcp process reads from its own environment. Hermes prompts for
-# them at install time and writes them to ~/.hermes/.env so the user can
-# export them into the shell that launches patter-mcp.
+# Build from a pinned, immutable commit — manifests never float HEAD. This SHA
+# is patter-mcp HEAD as of 2026-06-02 (merge of PR #5). Bumping to a newer
+# server revision is a manifest edit + PR, and users pull it by re-running
+# `hermes mcp install patter-voice`.
+install:
+  type: git
+  url: https://github.com/PatterAI/patter-mcp.git
+  ref: e89dd8c9274c0ab923ecaa3a9216c27d8a635760
+  # Run in the cloned dir after checkout. `npm run build` invokes tsup and
+  # emits dist/index.js (the getpatter-mcp bin).
+  bootstrap:
+    - "npm ci"
+    - "npm run build"
+
+# Authentication. Patter itself has no central API key — credentials are the
+# underlying provider keys (carrier + LLM/STT/TTS) that patter-mcp reads from
+# its own process environment. Hermes prompts for them at install time and
+# writes them to ~/.hermes/.env.
 #
-# Required minimum: one carrier (Twilio OR Telnyx) + OPENAI_API_KEY for
-# the default OpenAI Realtime engine. Deepgram + ElevenLabs are only
-# required for the STT->LLM->TTS Pipeline mode.
+# NOTE: Hermes passes stdio MCP subprocesses a filtered environment (a safe
+# baseline of PATH/HOME/etc. only), so these keys are not auto-injected into the
+# spawned server — see post_install for how to make them reach it.
+#
+# Required minimum: one carrier (Twilio OR Telnyx) + OPENAI_API_KEY for the
+# default OpenAI Realtime engine. Deepgram + ElevenLabs are only required for
+# the STT->LLM->TTS Pipeline mode.
 auth:
   type: api_key
   env:
@@ -60,39 +84,34 @@ auth:
       secret: true
 
 # Tool selection at install time:
-# patter-mcp exposes 4 tools today. All four are safe-by-default for a
-# user who has scoped credentials to their own carrier number, so the
-# checklist starts with everything pre-checked. Mutating tools
-# (`make_call`, `call_third_party`) cost real telephony minutes — Hermes
-# should confirm with the user before invoking them.
+# patter-mcp exposes 7 tools. The six call and observability tools are
+# pre-checked by default. `configure_inbound` mutates the inbound-agent
+# configuration, so it is pruned from the default (mirrors n8n's
+# prune-mutating-tools pattern) — users can opt into it from the install-time
+# checklist. Note that `make_call` and `call_third_party` place real outbound
+# calls that cost telephony minutes; Hermes should confirm with the user before
+# invoking them.
 tools:
   default_enabled:
     - make_call
     - call_third_party
     - get_calls
     - get_transcript
+    - end_call
+    - get_metrics
 
 post_install: |
-  patter-mcp runs as a local Streamable-HTTP server on port 3000. Hermes
-  does not auto-spawn it. Start it once in a separate terminal before
-  using the tools:
+  Hermes spawns patter-mcp over stdio automatically — there is no separate
+  server to start. The provider keys you entered are saved to ~/.hermes/.env.
 
-      git clone https://github.com/PatterAI/patter-mcp.git
-      cd patter-mcp
-      npm install
-      npm run build
-      PATTER_EAGER=1 npm start
+  Because Hermes passes stdio MCP servers a filtered environment (a safe
+  baseline only), those keys are NOT auto-forwarded to the spawned server.
+  Make sure the carrier + LLM keys are present in the environment Hermes runs
+  in, or add them under `mcp_servers.patter-voice.env` in ~/.hermes/config.yaml
+  (e.g. `OPENAI_API_KEY: ${OPENAI_API_KEY}`), so patter-mcp can read them.
 
-  The `PATTER_EAGER=1` flag pre-warms the SDK so the first call is
-  instant (recommended for demos). Drop it for production / lazy boot.
-
-  Then, in another terminal, start a new Hermes session — the
-  patter-voice tools will appear once the HTTP probe at
-  http://localhost:3000/mcp succeeds.
-
-  Make sure the env vars you provided during install are exported into
-  the shell that launches patter-mcp (Hermes wrote them to
-  ~/.hermes/.env — `source` it before `npm start`).
-
-  Real telephony minutes cost real money. Confirm with the user before
+  Real telephony minutes cost real money — confirm with the user before
   placing outbound calls.
+
+  To update, re-run `hermes mcp install patter-voice` after a repo update.
+  Manifests never float HEAD, so nothing changes until you reinstall.

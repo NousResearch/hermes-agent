@@ -14,16 +14,18 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
-from hermes_cli.colors import Colors, color
+from hermes_cli.colors import Colors, color, RichColors, rich_color
+import rich
+from rich.text import Text
 
 def log_info(msg: str):
-    print(f"{color('→', Colors.CYAN)} {msg}")
+    rich.print(Text.assemble(rich_color('→', RichColors.CYAN), " ", msg))
 
 def log_success(msg: str):
-    print(f"{color('✓', Colors.GREEN)} {msg}")
+    rich.print(Text.assemble(rich_color('✓', RichColors.GREEN), " ", msg))
 
 def log_warn(msg: str):
-    print(f"{color('⚠', Colors.YELLOW)} {msg}")
+    rich.print(Text.assemble(rich_color('⚠', RichColors.YELLOW), " ", msg))
 
 def get_project_root() -> Path:
     """Get the project installation directory."""
@@ -510,58 +512,58 @@ def run_gui_uninstall(args):
     summary = gui_install_summary(hermes_home)
     skip_confirm = bool(getattr(args, "yes", False))
 
-    print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA, Colors.BOLD))
-    print(color("│         ⚕ Hermes Chat GUI Uninstaller                  │", Colors.MAGENTA, Colors.BOLD))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA, Colors.BOLD))
-    print()
+    rich.print()
+    rich.print(rich_color("┌─────────────────────────────────────────────────────────┐", RichColors.MAGENTA, RichColors.BOLD))
+    rich.print(rich_color("│         ⚕ Hermes Chat GUI Uninstaller                  │", RichColors.MAGENTA, RichColors.BOLD))
+    rich.print(rich_color("└─────────────────────────────────────────────────────────┘", RichColors.MAGENTA, RichColors.BOLD))
+    rich.print()
 
     if not summary["gui_installed"]:
-        print("No Hermes Chat GUI installation was found.")
-        print(f"  Checked: {hermes_home}, and the standard app locations for this OS.")
+        rich.print("No Hermes Chat GUI installation was found.")
+        rich.print(f"  Checked: {hermes_home}, and the standard app locations for this OS.")
         return
 
-    print(color("This removes the Chat GUI only. The Hermes agent stays installed.", Colors.CYAN))
-    print()
-    print(color("Will remove:", Colors.YELLOW, Colors.BOLD))
+    rich.print(rich_color("This removes the Chat GUI only. The Hermes agent stays installed.", RichColors.CYAN))
+    rich.print()
+    rich.print(rich_color("Will remove:", RichColors.YELLOW, RichColors.BOLD))
     for p in summary["source_built_artifacts"]:
-        print(f"  • {p}")
+        rich.print(f"  • {p}")
     for p in summary["packaged_app_paths"]:
-        print(f"  • {p}")
+        rich.print(f"  • {p}")
     if summary["userdata_exists"]:
-        print(f"  • {summary['userdata_dir']}  (desktop app data)")
-    print()
+        rich.print(f"  • {summary['userdata_dir']}  (desktop app data)")
+    rich.print()
     if agent_is_installed(hermes_home):
-        print(color("Kept intact:", Colors.GREEN, Colors.BOLD))
-        print(f"  • The Hermes agent at {hermes_home / 'hermes-agent'}")
-        print(f"  • Your config, sessions, and secrets under {hermes_home}")
-        print()
+        rich.print(rich_color("Kept intact:", RichColors.GREEN, RichColors.BOLD))
+        rich.print(f"  • The Hermes agent at {hermes_home / 'hermes-agent'}")
+        rich.print(f"  • Your config, sessions, and secrets under {hermes_home}")
+        rich.print()
 
     if not skip_confirm:
         try:
-            confirm = input(f"Type '{color('yes', Colors.YELLOW)}' to remove the Chat GUI: ").strip().lower()
+            confirm = input(f"Type '{rich_color('yes', RichColors.YELLOW)}' to remove the Chat GUI: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
-            print()
-            print("Cancelled.")
+            rich.print()
+            rich.print("Cancelled.")
             return
         if confirm != "yes":
-            print()
-            print("Uninstall cancelled.")
+            rich.print()
+            rich.print("Uninstall cancelled.")
             return
 
-    print()
-    print(color("Uninstalling Chat GUI...", Colors.CYAN, Colors.BOLD))
-    print()
+    rich.print()
+    rich.print(rich_color("Uninstalling Chat GUI...", RichColors.CYAN, RichColors.BOLD))
+    rich.print()
     uninstall_gui(hermes_home)
 
-    print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.GREEN, Colors.BOLD))
-    print(color("│            ✓ Chat GUI Uninstalled!                      │", Colors.GREEN, Colors.BOLD))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.GREEN, Colors.BOLD))
-    print()
-    print("The Hermes agent is still installed. Run 'hermes' to use the CLI,")
-    print("or 'hermes uninstall' to remove the agent too.")
-    print()
+    rich.print()
+    rich.print(rich_color("┌─────────────────────────────────────────────────────────┐", RichColors.GREEN, RichColors.BOLD))
+    rich.print(rich_color("│            ✓ Chat GUI Uninstalled!                      │", RichColors.GREEN, RichColors.BOLD))
+    rich.print(rich_color("└─────────────────────────────────────────────────────────┘", RichColors.GREEN, RichColors.BOLD))
+    rich.print()
+    rich.print("The Hermes agent is still installed. Run 'hermes' to use the CLI,")
+    rich.print("or 'hermes uninstall' to remove the agent too.")
+    rich.print()
 
 
 def run_uninstall(args):
@@ -574,6 +576,14 @@ def run_uninstall(args):
     """
     project_root = get_project_root()
     hermes_home = get_hermes_home()
+
+    if bool(getattr(args, "dry_run", False)):
+        _print_uninstall_dry_run(
+            project_root=project_root,
+            hermes_home=hermes_home,
+            full_uninstall=bool(getattr(args, "full", False)),
+        )
+        return
 
     # Detect named profiles when uninstalling from the default root —
     # offer to clean them up too instead of leaving zombie HERMES_HOMEs
@@ -599,49 +609,49 @@ def run_uninstall(args):
         )
         return
 
-    print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA, Colors.BOLD))
-    print(color("│            ⚕ Hermes Agent Uninstaller                  │", Colors.MAGENTA, Colors.BOLD))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA, Colors.BOLD))
-    print()
+    rich.print()
+    rich.print(rich_color("┌─────────────────────────────────────────────────────────┐", RichColors.MAGENTA, RichColors.BOLD))
+    rich.print(rich_color("│            ⚕ Hermes Agent Uninstaller                  │", RichColors.MAGENTA, RichColors.BOLD))
+    rich.print(rich_color("└─────────────────────────────────────────────────────────┘", RichColors.MAGENTA, RichColors.BOLD))
+    rich.print()
     
     # Show what will be affected
-    print(color("Current Installation:", Colors.CYAN, Colors.BOLD))
-    print(f"  Code:    {project_root}")
-    print(f"  Config:  {hermes_home / 'config.yaml'}")
-    print(f"  Secrets: {hermes_home / '.env'}")
-    print(f"  Data:    {hermes_home / 'cron/'}, {hermes_home / 'sessions/'}, {hermes_home / 'logs/'}")
-    print()
+    rich.print(rich_color("Current Installation:", RichColors.CYAN, RichColors.BOLD))
+    rich.print(f"  Code:    {project_root}")
+    rich.print(f"  Config:  {hermes_home / 'config.yaml'}")
+    rich.print(f"  Secrets: {hermes_home / '.env'}")
+    rich.print(f"  Data:    {hermes_home / 'cron/'}, {hermes_home / 'sessions/'}, {hermes_home / 'logs/'}")
+    rich.print()
 
     if named_profiles:
-        print(color("Other profiles detected:", Colors.CYAN, Colors.BOLD))
+        rich.print(rich_color("Other profiles detected:", RichColors.CYAN, RichColors.BOLD))
         for p in named_profiles:
             running = " (gateway running)" if getattr(p, "gateway_running", False) else ""
-            print(f"  • {p.name}{running}: {p.path}")
-        print()
+            rich.print(f"  • {p.name}{running}: {p.path}")
+        rich.print()
     
     # Ask for confirmation
-    print(color("Uninstall Options:", Colors.YELLOW, Colors.BOLD))
-    print()
-    print("  1) " + color("Keep data", Colors.GREEN) + " - Remove code only, keep configs/sessions/logs")
-    print("     (Recommended - you can reinstall later with your settings intact)")
-    print()
-    print("  2) " + color("Full uninstall", Colors.RED) + " - Remove everything including all data")
-    print("     (Warning: This deletes all configs, sessions, and logs permanently)")
-    print()
-    print("  3) " + color("Cancel", Colors.CYAN) + " - Don't uninstall")
-    print()
+    rich.print(rich_color("Uninstall Options:", RichColors.YELLOW, RichColors.BOLD))
+    rich.print()
+    rich.print(Text.assemble("  1) ", rich_color("Keep data", RichColors.GREEN), " - Remove code only, keep configs/sessions/logs"))
+    rich.print("     (Recommended - you can reinstall later with your settings intact)")
+    rich.print()
+    rich.print(Text.assemble("  2) ", rich_color("Full uninstall", RichColors.RED), " - Remove everything including all data"))
+    rich.print("     (Warning: This deletes all configs, sessions, and logs permanently)")
+    rich.print()
+    rich.print(Text.assemble("  3) ", rich_color("Cancel", RichColors.CYAN), " - Don't uninstall"))
+    rich.print()
     
     try:
-        choice = input(color("Select option [1/2/3]: ", Colors.BOLD)).strip()
+        choice = input(rich_color("Select option [1/2/3]: ", RichColors.BOLD)).strip()
     except (KeyboardInterrupt, EOFError):
-        print()
-        print("Cancelled.")
+        rich.print()
+        rich.print("Cancelled.")
         return
     
     if choice == "3" or choice.lower() in {"c", "cancel", "q", "quit", "n", "no"}:
-        print()
-        print("Uninstall cancelled.")
+        rich.print()
+        rich.print("Uninstall cancelled.")
         return
     
     full_uninstall = (choice == "2")
@@ -652,47 +662,47 @@ def run_uninstall(args):
     # those leave zombie services and data behind.
     remove_profiles = False
     if full_uninstall and named_profiles:
-        print()
-        print(color("Other profiles will NOT be removed by default.", Colors.YELLOW))
-        print(f"Found {len(named_profiles)} named profile(s): " +
+        rich.print()
+        rich.print(rich_color("Other profiles will NOT be removed by default.", RichColors.YELLOW))
+        rich.print(f"Found {len(named_profiles)} named profile(s): " +
               ", ".join(p.name for p in named_profiles))
-        print()
+        rich.print()
         try:
-            resp = input(color(
+            resp = input(rich_color(
                 f"Also stop and remove these {len(named_profiles)} profile(s)? [y/N]: ",
-                Colors.BOLD
+                RichColors.BOLD
             )).strip().lower()
         except (KeyboardInterrupt, EOFError):
-            print()
-            print("Cancelled.")
+            rich.print()
+            rich.print("Cancelled.")
             return
         remove_profiles = resp in {"y", "yes"}
 
     # Final confirmation
-    print()
+    rich.print()
     if full_uninstall:
-        print(color("⚠️  WARNING: This will permanently delete ALL Hermes data!", Colors.RED, Colors.BOLD))
-        print(color("   Including: configs, API keys, sessions, scheduled jobs, logs", Colors.RED))
+        rich.print(rich_color("⚠️  WARNING: This will permanently delete ALL Hermes data!", RichColors.RED, RichColors.BOLD))
+        rich.print(rich_color("   Including: configs, API keys, sessions, scheduled jobs, logs", RichColors.RED))
         if remove_profiles:
-            print(color(
+            rich.print(rich_color(
                 f"   Plus {len(named_profiles)} profile(s): " +
                 ", ".join(p.name for p in named_profiles),
-                Colors.RED
+                RichColors.RED
             ))
     else:
-        print("This will remove the Hermes code but keep your configuration and data.")
+        rich.print("This will remove the Hermes code but keep your configuration and data.")
     
-    print()
+    rich.print()
     try:
-        confirm = input(f"Type '{color('yes', Colors.YELLOW)}' to confirm: ").strip().lower()
+        confirm = input(f"Type '{rich_color('yes', RichColors.YELLOW)}' to confirm: ").strip().lower()
     except (KeyboardInterrupt, EOFError):
-        print()
-        print("Cancelled.")
+        rich.print()
+        rich.print("Cancelled.")
         return
     
     if confirm != "yes":
-        print()
-        print("Uninstall cancelled.")
+        rich.print()
+        rich.print("Uninstall cancelled.")
         return
 
     _perform_uninstall(
@@ -702,6 +712,30 @@ def run_uninstall(args):
         remove_profiles=remove_profiles,
         named_profiles=named_profiles,
     )
+
+
+def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_uninstall: bool) -> None:
+    """Print the uninstall plan without stopping services or deleting files."""
+    rich.print()
+    rich.print(rich_color("Dry run: no files, services, or environment entries will be changed.", RichColors.CYAN, RichColors.BOLD))
+    rich.print()
+    rich.print(rich_color("Would inspect/remove:", RichColors.YELLOW, RichColors.BOLD))
+    rich.print("  • Gateway services and standalone gateway processes")
+    rich.print("  • Hermes PATH entries from shell configs / Windows User PATH")
+    rich.print("  • Hermes wrapper scripts and Hermes-managed node/npm/npx symlinks")
+    rich.print("  • Desktop Chat GUI artifacts")
+    rich.print(f"  • Code checkout: {project_root}")
+    if full_uninstall:
+        rich.print(f"  • Hermes config/data: {hermes_home}")
+        if _is_default_hermes_home(hermes_home):
+            profiles = _discover_named_profiles()
+            if profiles:
+                rich.print("  • Named profiles (interactive uninstall asks before removing):")
+                for prof in profiles:
+                    rich.print(f"    - {prof.name}: {prof.path}")
+    else:
+        rich.print(f"  • Keep Hermes config/data: {hermes_home}")
+    rich.print()
 
 
 def _perform_uninstall(
@@ -720,9 +754,9 @@ def _perform_uninstall(
     delete the code checkout → (Windows) remove PortableGit/Node → optionally
     wipe ``$HERMES_HOME`` data and named profiles on full uninstall.
     """
-    print()
-    print(color("Uninstalling...", Colors.CYAN, Colors.BOLD))
-    print()
+    rich.print()
+    rich.print(rich_color("Uninstalling...", RichColors.CYAN, RichColors.BOLD))
+    rich.print()
     
     # 1. Stop and uninstall gateway service + kill standalone processes
     log_info("Checking for running gateway...")
@@ -855,32 +889,32 @@ def _perform_uninstall(
         log_info(f"Keeping configuration and data in {hermes_home}")
     
     # Done
-    print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.GREEN, Colors.BOLD))
-    print(color("│              ✓ Uninstall Complete!                      │", Colors.GREEN, Colors.BOLD))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.GREEN, Colors.BOLD))
-    print()
+    rich.print()
+    rich.print(rich_color("┌─────────────────────────────────────────────────────────┐", RichColors.GREEN, RichColors.BOLD))
+    rich.print(rich_color("│              ✓ Uninstall Complete!                      │", RichColors.GREEN, RichColors.BOLD))
+    rich.print(rich_color("└─────────────────────────────────────────────────────────┘", RichColors.GREEN, RichColors.BOLD))
+    rich.print()
     
     if not full_uninstall:
-        print(color("Your configuration and data have been preserved:", Colors.CYAN))
-        print(f"  {hermes_home}/")
-        print()
-        print("To reinstall later with your existing settings:")
+        rich.print(rich_color("Your configuration and data have been preserved:", RichColors.CYAN))
+        rich.print(f"  {hermes_home}/")
+        rich.print()
+        rich.print("To reinstall later with your existing settings:")
         if _is_windows():
-            print(color("  iex (irm https://hermes-agent.nousresearch.com/install.ps1)", Colors.DIM))
+            rich.print(rich_color("  iex (irm https://hermes-agent.nousresearch.com/install.ps1)", RichColors.DIM))
         else:
-            print(color("  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash", Colors.DIM))
-        print()
+            rich.print(rich_color("  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash", RichColors.DIM))
+        rich.print()
 
     if _is_windows():
-        print(color("Open a new terminal (PowerShell / Windows Terminal) to pick up", Colors.YELLOW))
-        print(color("the updated User PATH and environment variables.", Colors.YELLOW))
+        rich.print(rich_color("Open a new terminal (PowerShell / Windows Terminal) to pick up", RichColors.YELLOW))
+        rich.print(rich_color("the updated User PATH and environment variables.", RichColors.YELLOW))
     else:
-        print(color("Reload your shell to complete the process:", Colors.YELLOW))
-        print("  source ~/.bashrc  # or ~/.zshrc")
-    print()
-    print("Thank you for using Hermes Agent! ⚕")
-    print()
+        rich.print(rich_color("Reload your shell to complete the process:", RichColors.YELLOW))
+        rich.print("  source ~/.bashrc  # or ~/.zshrc")
+    rich.print()
+    rich.print("Thank you for using Hermes Agent! ⚕")
+    rich.print()
 
 
 class _UninstallArgs:

@@ -390,3 +390,114 @@ class TestRunJobTerminalCwd:
         # And after run_job completes, it's still the sentinel (nothing
         # overwrote or cleared it).
         assert os.environ["TERMINAL_CWD"] == before
+
+
+# ---------------------------------------------------------------------------
+# scheduler._run_job_script: subprocess cwd (job workdir) + no_agent path
+# ---------------------------------------------------------------------------
+
+def _seed_probe_script(sched, tmp_path, monkeypatch,
+                       body="import os\nprint(os.getcwd())\n"):
+    """Point HERMES_HOME at a temp dir and drop a script that prints its cwd.
+
+    Returns the resolved scripts dir (the historical default cwd).
+    """
+    from pathlib import Path
+
+    home = tmp_path / "home"
+    scripts = home / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / "probe.py").write_text(body, encoding="utf-8")
+    monkeypatch.setattr(sched, "_hermes_home", home)
+    return Path(scripts).resolve()
+
+
+class TestRunJobScriptCwd:
+    """_run_job_script must run the subprocess in the given cwd when provided.
+
+    Regression: the no_agent path used os.chdir(workdir) to set the script's
+    working directory, but subprocess.run() is invoked with an explicit cwd=
+    argument that overrides the parent process's cwd — so the configured
+    workdir was silently ignored and scripts always ran from HERMES_HOME/
+    scripts.  These tests fail before the fix (they'd land in the scripts dir)
+    and pass after it.
+    """
+
+    def test_honors_cwd_when_provided(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        import cron.scheduler as sched
+        _seed_probe_script(sched, tmp_path, monkeypatch)
+        workdir = tmp_path / "project"
+        workdir.mkdir()
+
+        ok, output = sched._run_job_script("probe.py", cwd=str(workdir))
+        assert ok is True, output
+        assert Path(output.strip()).resolve() == workdir.resolve()
+
+    def test_defaults_to_scripts_dir_without_cwd(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        import cron.scheduler as sched
+        scripts = _seed_probe_script(sched, tmp_path, monkeypatch)
+
+        ok, output = sched._run_job_script("probe.py")
+        assert ok is True, output
+        assert Path(output.strip()).resolve() == scripts
+
+    def test_falls_back_when_cwd_missing(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        import cron.scheduler as sched
+        scripts = _seed_probe_script(sched, tmp_path, monkeypatch)
+        missing = tmp_path / "never-created"
+
+        ok, output = sched._run_job_script("probe.py", cwd=str(missing))
+        assert ok is True, output
+        # A non-existent cwd is ignored; the script still runs (scripts dir).
+        assert Path(output.strip()).resolve() == scripts
+
+
+class TestNoAgentScriptWorkdir:
+    """End-to-end: a no_agent job's script executes in the configured workdir."""
+
+    def test_no_agent_script_runs_in_workdir(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        import cron.scheduler as sched
+        scripts = _seed_probe_script(sched, tmp_path, monkeypatch)
+        workdir = tmp_path / "project"
+        workdir.mkdir()
+
+        job = {
+            "id": "j1", "name": "wd", "no_agent": True,
+            "script": "probe.py", "workdir": str(workdir),
+        }
+        success, _doc, response, error = sched.run_job(job)
+        assert success is True, f"error={error!r}"
+        assert Path(response.strip()).resolve() == workdir.resolve()
+        assert Path(response.strip()).resolve() != scripts
+
+    def test_no_agent_without_workdir_uses_scripts_dir(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        import cron.scheduler as sched
+        scripts = _seed_probe_script(sched, tmp_path, monkeypatch)
+
+        job = {
+            "id": "j2", "name": "no-wd", "no_agent": True,
+            "script": "probe.py",
+        }
+        success, _doc, response, error = sched.run_job(job)
+        assert success is True, f"error={error!r}"
+        assert Path(response.strip()).resolve() == scripts
+
+    def test_no_agent_vanished_workdir_falls_back(self, tmp_path, monkeypatch):
+        """A workdir removed after job creation is skipped, not fatal."""
+        from pathlib import Path
+        import cron.scheduler as sched
+        scripts = _seed_probe_script(sched, tmp_path, monkeypatch)
+        gone = tmp_path / "removed"  # never created
+
+        job = {
+            "id": "j3", "name": "gone-wd", "no_agent": True,
+            "script": "probe.py", "workdir": str(gone),
+        }
+        success, _doc, response, error = sched.run_job(job)
+        assert success is True, f"error={error!r}"
+        assert Path(response.strip()).resolve() == scripts

@@ -2011,7 +2011,7 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(script_path: str, cwd: Optional[str] = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2037,6 +2037,14 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        cwd: Optional working directory for the script subprocess (a job's
+            configured ``workdir``).  When set and it exists, the script runs
+            with this as its cwd so relative paths resolve against the job's
+            project dir; otherwise the script runs from its own directory
+            (``HERMES_HOME/scripts/``), the historical default.  Passing it here
+            is required because ``subprocess.run(cwd=...)`` sets the child's cwd
+            absolutely — a parent-process ``os.chdir()`` would be overridden and
+            silently ignored.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2097,12 +2105,13 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         from tools.environments.local import _sanitize_subprocess_env
 
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        run_cwd = cwd if (cwd and Path(cwd).is_dir()) else str(path.parent)
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
-            cwd=str(path.parent),
+            cwd=run_cwd,
             env=_sanitize_subprocess_env(os.environ.copy()),
             **popen_kwargs,
         )
@@ -2530,25 +2539,21 @@ def run_job(
             return False, "", "", err
 
         # Apply workdir if configured — lets scripts use predictable relative
-        # paths. For no_agent jobs this is just the subprocess cwd (not an
-        # agent TERMINAL_CWD bridge).
+        # paths. For no_agent jobs this is the script's subprocess cwd (not an
+        # agent TERMINAL_CWD bridge). Pass it straight to _run_job_script: a
+        # parent-process os.chdir() would be overridden by the explicit cwd= in
+        # subprocess.run (so the workdir was silently ignored), and chdir is
+        # process-global — unsafe while other jobs run in parallel.
         _job_workdir = (job.get("workdir") or "").strip() or None
-        _prior_cwd = None
-        if _job_workdir and Path(_job_workdir).is_dir():
-            _prior_cwd = os.getcwd()
-            try:
-                os.chdir(_job_workdir)
-            except OSError:
-                _prior_cwd = None
+        if _job_workdir and not Path(_job_workdir).is_dir():
+            logger.warning(
+                "Job '%s': configured workdir %r no longer exists — "
+                "running script without it",
+                job_id, _job_workdir,
+            )
+            _job_workdir = None
 
-        try:
-            ok, output = _run_job_script(script_path)
-        finally:
-            if _prior_cwd is not None:
-                try:
-                    os.chdir(_prior_cwd)
-                except OSError:
-                    pass
+        ok, output = _run_job_script(script_path, cwd=_job_workdir)
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 

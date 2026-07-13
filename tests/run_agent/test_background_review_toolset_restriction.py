@@ -13,7 +13,6 @@ runtime via a thread-local whitelist on the existing
 that caused the prefix-cache miss.
 """
 
-import threading
 from unittest.mock import patch
 
 
@@ -38,6 +37,9 @@ def _make_agent_stub(agent_cls):
     agent._MEMORY_REVIEW_PROMPT = "review memory"
     agent._SKILL_REVIEW_PROMPT = "review skills"
     agent._COMBINED_REVIEW_PROMPT = "review both"
+    # Non-None so the test catches a missing-kwarg regression.
+    agent.enabled_toolsets = ["memory", "skills", "terminal"]
+    agent.disabled_toolsets = ["spotify", "feishu_doc"]
     return agent
 
 
@@ -52,13 +54,8 @@ class _SyncThread:
             self._target()
 
 
-def test_background_review_does_not_narrow_toolset_schema():
-    """The review fork must NOT pass enabled_toolsets to AIAgent.
-
-    Narrowing the schema diverges the ``tools`` cache key from the parent's,
-    which sits above ``system`` in Anthropic's cache hierarchy and forces a
-    full prefix-cache miss on every review (see #25322, PR #17276).
-    """
+def test_background_review_matches_parent_toolset_config():
+    """Fork must receive parent's toolset config so ``tools[]`` cache key matches."""
     import run_agent
 
     agent = _make_agent_stub(run_agent.AIAgent)
@@ -66,6 +63,7 @@ def test_background_review_does_not_narrow_toolset_schema():
 
     def _capture_init(self, *args, **kwargs):
         captured["enabled_toolsets"] = kwargs.get("enabled_toolsets", "UNSET")
+        captured["disabled_toolsets"] = kwargs.get("disabled_toolsets", "UNSET")
         raise RuntimeError("stop after capturing init args")
 
     with patch.object(run_agent.AIAgent, "__init__", _capture_init), \
@@ -77,11 +75,13 @@ def test_background_review_does_not_narrow_toolset_schema():
         )
 
     assert "enabled_toolsets" in captured, "AIAgent.__init__ was not called"
-    # The kwarg must be absent — letting AIAgent inherit the default full
-    # toolset so the schema bytes match the parent's.
-    assert captured["enabled_toolsets"] == "UNSET", (
-        f"Review fork narrowed the toolset schema (got {captured['enabled_toolsets']!r}), "
-        "which breaks prefix-cache parity with the parent."
+    assert captured["enabled_toolsets"] == agent.enabled_toolsets, (
+        f"enabled_toolsets mismatch: {captured['enabled_toolsets']!r} "
+        f"vs expected {agent.enabled_toolsets!r}"
+    )
+    assert captured["disabled_toolsets"] == agent.disabled_toolsets, (
+        f"disabled_toolsets mismatch: {captured['disabled_toolsets']!r} "
+        f"vs expected {agent.disabled_toolsets!r}"
     )
 
 
@@ -156,3 +156,74 @@ def test_background_review_agent_tools_are_limited():
     assert "delegate_task" not in expected_tools
     assert "web_search" not in expected_tools
     assert "execute_code" not in expected_tools
+
+
+def test_background_review_excludes_memory_when_disabled():
+    """A memory-disabled profile must NOT get the memory tool in the review fork.
+
+    Regression for #54937 layer 2: the whitelist hardcoded ["memory", "skills"],
+    so a skill-review fork on a profile with memory_enabled=false still granted
+    the LLM the MEMORY.md read/write tool, contaminating a profile that opted
+    out of built-in memory. The whitelist must gate "memory" on the flag.
+    """
+    import run_agent
+    from hermes_cli import plugins as _plugins
+
+    captured = {}
+
+    def _capture_whitelist(whitelist, deny_msg_fmt=None):
+        captured["whitelist"] = set(whitelist)
+        raise RuntimeError("stop after capturing whitelist")
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._memory_enabled = False
+    agent._user_profile_enabled = False
+
+    def _no_init(self, *args, **kwargs):
+        return None
+
+    with patch.object(run_agent.AIAgent, "__init__", _no_init), \
+         patch.object(_plugins, "set_thread_tool_whitelist", _capture_whitelist), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=False,
+            review_skills=True,
+        )
+
+    whitelist = captured["whitelist"]
+    # Skill tools still allowed...
+    assert "skill_manage" in whitelist
+    assert "skill_view" in whitelist
+    # ...but the built-in memory tool must be gated out.
+    assert "memory" not in whitelist
+
+
+def test_background_review_includes_memory_when_user_profile_enabled():
+    """user_profile_enabled alone (USER.md) still needs the memory tool."""
+    import run_agent
+    from hermes_cli import plugins as _plugins
+
+    captured = {}
+
+    def _capture_whitelist(whitelist, deny_msg_fmt=None):
+        captured["whitelist"] = set(whitelist)
+        raise RuntimeError("stop after capturing whitelist")
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._memory_enabled = False
+    agent._user_profile_enabled = True
+
+    def _no_init(self, *args, **kwargs):
+        return None
+
+    with patch.object(run_agent.AIAgent, "__init__", _no_init), \
+         patch.object(_plugins, "set_thread_tool_whitelist", _capture_whitelist), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert "memory" in captured["whitelist"]

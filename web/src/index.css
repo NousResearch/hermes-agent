@@ -43,10 +43,8 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* Hermes Agent — Nous DS with the LENS_0 (Hermes teal) lens applied   */
-/* statically. Mirrors nousnet-web/(hermes-agent)/layout.tsx so the    */
-/* canonical Hermes palette is the default — teal canvas + cream      */
-/* accent — without relying on leva/gsap at runtime.                  */
+/* Hermes Agent — Nous DS with the LENS_0 (Hermes teal) palette applied
+   statically as the default dashboard theme. */
 /* ------------------------------------------------------------------ */
 
 :root {
@@ -62,10 +60,6 @@
   --background: color-mix(in srgb, #041c1c 100%, transparent);
   --background-base: #041c1c;
   --background-alpha: 1;
-
-  /* Consumed by <Backdrop />; also theme-switchable. */
-  --warm-glow: rgba(255, 189, 56, 0.35);
-  --noise-opacity-mul: 1;
 
   /* Typography tokens — rewritten by ThemeProvider. Defaults match the
      system stack so themes that don't override look native. */
@@ -83,6 +77,15 @@
   --theme-radius: 0.5rem;
   --theme-spacing-mul: 1;
   --theme-density: comfortable;
+
+  /* Data-series accents — consumed by Analytics + Models pages for the
+     input-vs-output token visualisations (chart bars, table values,
+     legend swatches). Defaults are tuned for the Hermes-teal LENS_0
+     look: cream input + emerald-400 output read as warm/cool against
+     the dark canvas. Themes override via ThemeProvider, which emits
+     these as `--series-input-token` / `--series-output-token`. */
+  --series-input-token: #ffe6cb;
+  --series-output-token: #34d399;
 }
 
 /* Theme tokens cascade into the document root so every descendant inherits
@@ -115,6 +118,8 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
    all proportionally in Tailwind v4. */
 @theme inline {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
+  --font-sans: var(--theme-font-sans);
+  --font-mono: var(--theme-font-mono);
 }
 
 #root {
@@ -122,6 +127,18 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   height: 100%;
   max-height: 100%;
   overflow: hidden;
+}
+
+@media (max-width: 768px) {
+  html,
+  body,
+  #root {
+    min-height: 100dvh;
+    height: auto;
+    max-height: none;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
 }
 
 /* Nousnet's hermes-agent layout bumps `small` and `code` to readable
@@ -146,7 +163,11 @@ code { font-size: 0.875rem; }
   --color-secondary: color-mix(in srgb, var(--midground-base) 6%, var(--background-base));
   --color-secondary-foreground: var(--midground);
   --color-muted: color-mix(in srgb, var(--midground-base) 8%, var(--background-base));
-  --color-muted-foreground: color-mix(in srgb, var(--midground-base) 55%, transparent);
+  /* Routes the shadcn `muted-foreground` slot through the DS semantic
+     text-secondary token (defaults to midground 80%) so legacy call
+     sites that use `text-muted-foreground` get a readable color
+     instead of the old 55%-transparent default. */
+  --color-muted-foreground: var(--color-text-secondary);
   --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
   --color-accent-foreground: var(--midground);
   --color-destructive: #fb2c36;
@@ -165,6 +186,12 @@ code { font-size: 0.875rem; }
   --radius-xl: calc(var(--theme-radius) + 4px);
 }
 
+
+/* Collapsed sidebar tooltip entrance — skipped when moving between items. */
+@keyframes sidebar-tooltip-in {
+  from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
+  to   { opacity: 1; transform: translateY(-50%) translateX(0); }
+}
 
 /* Toast animations used by `components/Toast.tsx`. */
 @keyframes toast-in {
@@ -195,11 +222,6 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
-/* Plus-lighter blend used by logos/titles for a subtle glow. */
-.blend-lighter {
-  mix-blend-mode: plus-lighter;
-}
-
 /* System UI-monospace stack — distinct from `font-courier` (Courier
    Prime), used for dense data readouts where the display font would
    break the grid. Routes through the theme's mono stack so themes
@@ -221,16 +243,5 @@ code { font-size: 0.875rem; }
   pointer-events: none;
   background: repeating-conic-gradient(currentColor 0% 25%, #0000 0% 50%) 0 0 /
     2px 2px;
-}
-
-/* When a theme provides `assets.bg`, the backdrop's <div> renders it as
-   a CSS background; the default filler <img> is hidden to prevent
-   double-compositing. Unset → initial → empty, so the :not() selector
-   matches and the default image stays visible. */
-:root:not([style*="--theme-asset-bg:"]) .theme-default-filler {
-  display: block;
-}
-:root[style*="--theme-asset-bg:"] .theme-default-filler {
-  display: none;
 }
 

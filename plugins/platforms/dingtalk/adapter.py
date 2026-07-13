@@ -109,6 +109,14 @@ MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
+# Within a long-lived Stream Mode WebSocket the cached session_webhook can
+# only be refreshed by a new inbound message.  If a webhook crosses into
+# this window without being refreshed, we log a warning so operators see
+# the imminent failure before sends start silently dropping.  Larger than
+# the 5-min eviction safety margin in _get_valid_webhook so the warning
+# fires before eviction.
+_WEBHOOK_NEAR_EXPIRY_WINDOW_MS = 10 * 60 * 1000  # 10 minutes
+_WEBHOOK_WATCHER_INTERVAL_SEC = 60.0
 
 # DingTalk message type → runtime content type
 DINGTALK_TYPE_MAPPING = {
@@ -214,6 +222,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(max_size=1000)
         # Map chat_id -> (session_webhook, expired_time_ms) for reply routing
         self._session_webhooks: Dict[str, tuple[str, int]] = {}
+        # chat_id -> expired_time_ms we've already logged a near-expiry
+        # warning for.  Stored per-expiry so a refreshed webhook (new
+        # expired_time_ms) re-arms the warning.
+        self._webhook_expiry_warned: Dict[str, int] = {}
+        self._webhook_watch_task: Optional[asyncio.Task] = None
         # Map chat_id -> last inbound ChatbotMessage. Keyed by chat_id instead
         # of a single class attribute to avoid cross-message clobbering when
         # multiple conversations run concurrently.
@@ -239,7 +252,7 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     # -- Connection lifecycle -----------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to DingTalk via Stream Mode."""
         if not DINGTALK_STREAM_AVAILABLE:
             logger.warning(
@@ -298,6 +311,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
 
             self._stream_task = asyncio.create_task(self._run_stream())
+            self._webhook_watch_task = asyncio.create_task(self._watch_webhook_expiry())
             self._mark_connected()
             logger.info("[%s] Connected via Stream Mode", self.name)
             return True
@@ -358,6 +372,14 @@ class DingTalkAdapter(BasePlatformAdapter):
                 logger.debug("[%s] stream task did not exit cleanly during disconnect", self.name)
             self._stream_task = None
 
+        if self._webhook_watch_task:
+            self._webhook_watch_task.cancel()
+            try:
+                await asyncio.wait_for(self._webhook_watch_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            self._webhook_watch_task = None
+
         # Cancel any in-flight background tasks (emoji reactions, etc.)
         if self._bg_tasks:
             for task in list(self._bg_tasks):
@@ -384,6 +406,7 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         self._stream_client = None
         self._session_webhooks.clear()
+        self._webhook_expiry_warned.clear()
         self._message_contexts.clear()
         self._streaming_cards.clear()
         self._done_emoji_fired.clear()
@@ -1018,8 +1041,72 @@ class DingTalkAdapter(BasePlatformAdapter):
             if now_ms + safety_margin_ms >= expired_time_ms:
                 # Expired, remove from cache
                 self._session_webhooks.pop(chat_id, None)
+                self._webhook_expiry_warned.pop(chat_id, None)
                 return None
         return info
+
+    async def _watch_webhook_expiry(self) -> None:
+        """Proactively warn when a cached session_webhook is about to expire.
+
+        Within a long-lived Stream Mode WebSocket, a session_webhook can
+        only be refreshed when a new inbound message arrives in the same
+        chat.  If no one sends a message before its TTL, replies (cron
+        jobs, proactive messages) fail silently.  This watcher logs a
+        warning while the webhook is still valid so operators can spot
+        the imminent outage and prompt a fresh inbound message.
+        """
+        try:
+            while self._running:
+                try:
+                    await asyncio.sleep(_WEBHOOK_WATCHER_INTERVAL_SEC)
+                except asyncio.CancelledError:
+                    return
+                if not self._running:
+                    return
+                try:
+                    self._scan_webhooks_for_near_expiry()
+                except Exception:
+                    logger.error(
+                        "[%s] webhook-expiry watcher iteration failed",
+                        self.name, exc_info=True,
+                    )
+        except asyncio.CancelledError:
+            return
+
+    def _scan_webhooks_for_near_expiry(self) -> None:
+        """Emit a one-shot warning for each webhook entering the near-expiry window."""
+        if not self._session_webhooks:
+            if self._webhook_expiry_warned:
+                self._webhook_expiry_warned.clear()
+            return
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        live_chat_ids: Set[str] = set()
+        for chat_id, (_webhook, expired_time_ms) in list(
+            self._session_webhooks.items()
+        ):
+            live_chat_ids.add(chat_id)
+            if not expired_time_ms or expired_time_ms <= 0:
+                continue
+            remaining_ms = expired_time_ms - now_ms
+            if not 0 < remaining_ms <= _WEBHOOK_NEAR_EXPIRY_WINDOW_MS:
+                continue
+            # Re-warn if the webhook was refreshed (different expired_time_ms)
+            # since the last warning.
+            if self._webhook_expiry_warned.get(chat_id) == expired_time_ms:
+                continue
+            self._webhook_expiry_warned[chat_id] = expired_time_ms
+            logger.warning(
+                "[%s] session_webhook for chat_id=%s expires in %ds; replies "
+                "will fail until a new inbound message refreshes it. Stream "
+                "Mode only refreshes webhooks on incoming messages — proactive "
+                "sends to this chat may start failing silently.",
+                self.name, chat_id, max(0, remaining_ms // 1000),
+            )
+        # Drop warned entries for webhooks that have been evicted or refreshed
+        # outside the warning window so future expiries get warned again.
+        stale = [cid for cid in self._webhook_expiry_warned if cid not in live_chat_ids]
+        for cid in stale:
+            self._webhook_expiry_warned.pop(cid, None)
 
     async def _create_and_stream_card(
         self,

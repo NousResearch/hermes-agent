@@ -16,12 +16,34 @@ import {
   buildPollPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
+  createRetryMessageLookup,
   appendMediaFailureNote,
   extractBridgeEvent,
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
+
+// -- missing-message retry safety -----------------------------------------
+{
+  const store = createBoundedMessageStore(2);
+  store.remember({
+    key: { id: 'outbound-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: true },
+    message: { conversation: 'real payload' },
+  });
+
+  const getMessage = createRetryMessageLookup(store);
+  assert.deepEqual(
+    await getMessage({ id: 'outbound-1' }),
+    { conversation: 'real payload' },
+  );
+  assert.equal(
+    await getMessage({ id: 'missing-id' }),
+    undefined,
+    'a missing retry payload must not become a truthy empty conversation',
+  );
+  console.log('  ✓ retries use stored payloads and decline missing messages');
+}
 
 // -- quoted outbound text -------------------------------------------------
 {

@@ -38,6 +38,7 @@ import {
   buildLocationPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
+  createRetryMessageLookup,
   extractBridgeEvent,
   inferMediaType,
   mediaPayloadForFile,
@@ -398,13 +399,10 @@ async function startSocket() {
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
     markOnlineOnConnect: false,
-    // Required for Baileys 7.x: without this, incoming messages that need
-    // E2EE session re-establishment are silently dropped (msg.message === null)
-    getMessage: async (key) => {
-      // We don't maintain a message store, so return a placeholder.
-      // This is enough for Baileys to complete the retry handshake.
-      return { conversation: '' };
-    },
+    // Retry only payloads that are still available in the bounded store.
+    // Returning a fabricated `{ conversation: '' }` is truthy, so Baileys
+    // relays it as a visible blank message when a device requests a retry.
+    getMessage: createRetryMessageLookup(messageStore),
   });
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });

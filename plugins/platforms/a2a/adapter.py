@@ -387,6 +387,21 @@ class A2AAdapter(BasePlatformAdapter):
     def name(self) -> str:
         return "A2A"
 
+    @property
+    def authorization_is_upstream(self) -> bool:
+        """A2A authenticates every inbound request via bearer token (or
+        localhost-only binding) in ``do_POST`` before dispatch — the identity
+        is already authorized upstream. Without this override, the gateway's
+        per-platform user allow-list (``{PLATFORM}_ALLOWED_USERS``) rejects
+        A2A peers because their identity is a token-derived name or pod IP,
+        not a platform account the operator configures in an env allow-list.
+
+        This is authorization delegated to the A2A bearer-token transport,
+        not a fail-open: every request is 401'd if the credential is wrong.
+        Reported by kuangmi-bit (PR #41711 comment, Jun 27).
+        """
+        return True
+
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     async def connect(self, **_kwargs) -> bool:

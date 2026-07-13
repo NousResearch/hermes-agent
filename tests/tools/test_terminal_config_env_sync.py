@@ -224,3 +224,19 @@ def test_docker_env_is_bridged_everywhere():
     assert "docker_env" in _gateway_env_map_keys()
     assert "docker_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()
+
+
+def test_docker_extra_args_is_bridged_everywhere():
+    """Regression pin for docker_extra_args config key being silently ignored.
+
+    ``terminal.docker_extra_args`` in config.yaml passes arbitrary ``docker run``
+    flags.  The key was consumed by _create_environment's container_config (line
+    ~1130) and validated in DockerEnvironment.__init__, but was never bridged
+    from config.yaml to TERMINAL_DOCKER_EXTRA_ARGS, so the list was always empty
+    regardless of what the user set.  Guard all three bridging points so this
+    cannot regress.
+    """
+    assert "docker_extra_args" in _cli_env_map_keys()
+    assert "docker_extra_args" in _gateway_env_map_keys()
+    assert "docker_extra_args" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_EXTRA_ARGS" in _terminal_tool_env_var_names()

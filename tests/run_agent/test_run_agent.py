@@ -5355,6 +5355,231 @@ class TestRunConversation:
             "_record_task_failure should not be called outside kanban mode"
         )
 
+    # ── Output-cap retry: safe_out uses provider available_out + request estimate ──
+
+    def test_output_cap_retry_uses_provider_available_out(self, agent):
+        """run_conversation retries an output-cap error with max_tokens <=
+        available_out - 64, and does NOT halve context_length or trigger
+        compression.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 199000 = available_tokens: 1000"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        assert second_call["max_tokens"] <= 936
+        assert agent.context_compressor.context_length == 200_000
+        mock_compress.assert_not_called()
+
+    def test_output_cap_retry_with_large_api_only_content(self, agent):
+        """When a large system prompt makes api_messages huge while persisted
+        messages stay tiny, the retry cap must still respect provider
+        available_tokens — not blow up to the full context window.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        # Huge API-only system prompt; persisted messages are tiny.
+        agent._cached_system_prompt = "S" * 796_000
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 199000 = available_tokens: 1000"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        # The current branch (messages-only estimate) would send max_tokens
+        # near 199927 — this test fails on it.
+        assert second_call["max_tokens"] <= 936
+        assert agent.context_compressor.context_length == 200_000
+        mock_compress.assert_not_called()
+
+    def test_output_cap_retry_request_pressure_lower_bound(self, agent):
+        """When the provider reports a large available_tokens but local request
+        pressure leaves less room, the retry cap is the smaller of the two.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        # A large API-only system prompt so the local estimate is the binding
+        # constraint, not the provider's available_tokens.
+        agent._cached_system_prompt = "S" * 796_000
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 190000 = available_tokens: 50000"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        first_call = agent.client.chat.completions.create.call_args_list[0].kwargs
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+
+        # Verify the local estimate is actually the lower bound.
+        from agent.model_metadata import estimate_request_tokens_rough
+        estimated_request = estimate_request_tokens_rough(
+            first_call["messages"], tools=agent.tools or None,
+        )
+        local_available = 200_000 - estimated_request
+        expected_cap = max(1, min(50_000, local_available) - 64)
+        assert local_available < 50_000
+        assert second_call["max_tokens"] == expected_cap
+        assert agent.context_compressor.context_length == 200_000
+        mock_compress.assert_not_called()
+
+    def test_output_cap_retry_safety_floor_at_one(self, agent):
+        """When provider available_tokens is 1, the retry cap is floored at 1."""
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 199999 = available_tokens: 1"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        assert second_call["max_tokens"] == 1
+        assert agent.context_compressor.context_length == 200_000
+        mock_compress.assert_not_called()
+
+    def test_output_cap_retry_with_compression_disabled(self, agent):
+        """Output-cap retry must still work when compression.enabled is false.
+        The recovery is a max_tokens-only retry — it does not require compression,
+        so the compression-disabled guard must not block it.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = False
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 199000 = available_tokens: 1000"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        # Two API calls: the failed one and the retried one.
+        assert len(agent.client.chat.completions.create.call_args_list) == 2
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        assert result.get("compaction_disabled") is None
+        assert second_call["max_tokens"] <= 936
+        assert agent.context_compressor.context_length == 200_000
+        mock_compress.assert_not_called()
+
 
 class TestHookPayloadSanitizesSimpleNamespace:
     """Regression: ``_hook_jsonable`` referenced ``SimpleNamespace`` without

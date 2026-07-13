@@ -131,11 +131,10 @@ class FailingAgent:
         if cb is not None:
             cb("tool.started", "terminal", "pwd", {})
             time.sleep(0.25)
-        # Empty final_response + failed=True is the shape the gateway
-        # actually returns on provider errors (see gateway/run.py where
-        # failed keys are only propagated when final_response is empty).
+        # A provider failure can carry a non-empty user-facing diagnostic; the
+        # gateway must preserve failed=True on that normal response branch.
         return {
-            "final_response": "",
+            "final_response": "simulated provider failure",
             "messages": [],
             "api_calls": 1,
             "failed": True,
@@ -295,6 +294,7 @@ async def test_cleanup_skipped_on_failed_run(monkeypatch, tmp_path):
     )
 
     assert result.get("failed") is True
+    assert result["final_response"] == "simulated provider failure"
     # Whatever callback is registered should not trigger any deletion —
     # the cleanup callback is skipped on failed runs.
     cb = adapter.pop_post_delivery_callback(session_key)

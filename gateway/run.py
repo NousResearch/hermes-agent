@@ -575,6 +575,81 @@ def _resolve_gateway_display_bool(
     return bool(value)
 
 
+def _build_gateway_reasoning_block(
+    user_config: Any,
+    platform: Any,
+    last_reasoning: Any,
+    *,
+    default: bool = False,
+) -> str:
+    """Render reasoning once for both batch and streamed delivery."""
+    if not isinstance(user_config, dict) or not isinstance(last_reasoning, str):
+        return ""
+    try:
+        platform_key = _platform_config_key(platform)
+        if not _resolve_gateway_display_bool(
+            user_config,
+            platform_key,
+            "show_reasoning",
+            default=default,
+            platform=platform,
+            require_platform_override_for={Platform.MATTERMOST},
+        ):
+            return ""
+
+        lines = last_reasoning.strip().splitlines()
+        if not lines:
+            return ""
+        display_reasoning = "\n".join(lines[:15])
+        if len(lines) > 15:
+            display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
+
+        from gateway.display_config import resolve_display_setting
+
+        reasoning_style = resolve_display_setting(
+            user_config,
+            platform_key,
+            "reasoning_style",
+            "code",
+        )
+        if reasoning_style == "subtext":
+            quoted = "\n".join(
+                f"-# {line}" if line else "-#"
+                for line in display_reasoning.splitlines()
+            )
+            return f"-# 💭 Reasoning\n{quoted}"
+        if reasoning_style == "blockquote":
+            quoted = "\n".join(
+                f"> {line}" if line else ">"
+                for line in display_reasoning.splitlines()
+            )
+            return f"> 💭 **Reasoning:**\n{quoted}"
+        return f"💭 **Reasoning:**\n```\n{display_reasoning}\n```"
+    except Exception:
+        # Optional scratch-text display must never block the main response or
+        # fail open when configuration/plugin platform data is malformed.
+        return ""
+
+
+def _is_successful_streamed_delivery(already_sent: Any, failed: Any) -> bool:
+    """Preserve the established truthy result-flag compatibility contract."""
+    return bool(already_sent) and not bool(failed)
+
+
+def _gateway_reasoning_delivery_mode(
+    response: str,
+    *,
+    streamed_success: bool,
+    intentional_silence: bool,
+) -> str:
+    """Choose one mutually exclusive reasoning path."""
+    if intentional_silence:
+        return "none"
+    if streamed_success:
+        return "trailing"
+    return "prepend" if response else "none"
+
+
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
 
@@ -11800,59 +11875,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_entry.session_id,
                     )
 
-            # Prepend reasoning/thinking if display is enabled (per-platform).
-            # Mattermost requires explicit per-platform opt-in because this is
-            # scratch text, not ordinary final-answer content.
+            # Render reasoning once so non-streamed and streamed replies use
+            # the same platform opt-in and reasoning_style.
+            _reasoning_block = ""
             try:
-                _show_reasoning_effective = _resolve_gateway_display_bool(
-                    _load_gateway_config(),
-                    _platform_config_key(source.platform),
-                    "show_reasoning",
-                    default=bool(getattr(self, "_show_reasoning", False)),
-                    platform=source.platform,
-                    require_platform_override_for={Platform.MATTERMOST},
-                )
+                _reasoning_config = _load_gateway_config()
             except Exception:
-                _show_reasoning_effective = (
-                    False
-                    if source.platform == Platform.MATTERMOST
-                    else getattr(self, "_show_reasoning", False)
+                _reasoning_config = None
+            _streamed_success = _is_successful_streamed_delivery(
+                agent_result.get("already_sent"),
+                agent_result.get("failed"),
+            )
+            _reasoning_delivery_mode = _gateway_reasoning_delivery_mode(
+                response,
+                streamed_success=_streamed_success,
+                intentional_silence=_intentional_silence,
+            )
+            if _reasoning_delivery_mode != "none":
+                _reasoning_block = _build_gateway_reasoning_block(
+                    _reasoning_config,
+                    source.platform,
+                    agent_result.get("last_reasoning"),
+                    default=bool(getattr(self, "_show_reasoning", False)),
                 )
-            if _show_reasoning_effective and response and not _intentional_silence:
-                last_reasoning = agent_result.get("last_reasoning")
-                if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
-                    # Render style is per-platform: Discord defaults to "-# "
-                    # subtext (native small grey metadata text); other
-                    # platforms keep the fenced code block.
-                    try:
-                        from gateway.display_config import resolve_display_setting
-                        _reasoning_style = resolve_display_setting(
-                            _load_gateway_config(),
-                            _platform_config_key(source.platform),
-                            "reasoning_style",
-                            "code",
-                        )
-                    except Exception:
-                        _reasoning_style = "code"
-                    if _reasoning_style == "subtext":
-                        _quoted = "\n".join(
-                            f"-# {ln}" if ln else "-#" for ln in display_reasoning.splitlines()
-                        )
-                        response = f"-# 💭 Reasoning\n{_quoted}\n\n{response}"
-                    elif _reasoning_style == "blockquote":
-                        _quoted = "\n".join(
-                            f"> {ln}" if ln else ">" for ln in display_reasoning.splitlines()
-                        )
-                        response = f"> 💭 **Reasoning:**\n{_quoted}\n\n{response}"
-                    else:
-                        response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                if _reasoning_block and _reasoning_delivery_mode == "prepend":
+                    response = f"{_reasoning_block}\n\n{response}"
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -11872,7 +11919,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+            if _footer_line and response and not _streamed_success and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
@@ -12208,13 +12255,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # content the user hasn't seen (streaming only sent earlier
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
-            if agent_result.get("already_sent") and not agent_result.get("failed"):
-                if response:
-                    _media_adapter = self._adapter_for_source(source)
-                    if _media_adapter:
-                        await self._deliver_media_from_response(
-                            response, event, _media_adapter,
-                        )
+            if _streamed_success:
+                await self._deliver_streamed_response_extras(
+                    response,
+                    event,
+                    source,
+                    _reasoning_block
+                    if _reasoning_delivery_mode == "trailing"
+                    else "",
+                )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.
@@ -14404,6 +14453,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             chat_type=getattr(source, "chat_type", None),
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
         )
+
+    async def _send_streamed_reasoning(self, source, event, reasoning_block: str) -> None:
+        """Send reasoning that cannot be prepended to an already-streamed body."""
+        try:
+            adapter = self._adapter_for_source(source)
+            if adapter:
+                await adapter.send(
+                    source.chat_id,
+                    reasoning_block,
+                    metadata=self._thread_metadata_for_source(
+                        source,
+                        self._reply_anchor_for_event(event),
+                    ),
+                )
+        except Exception as exc:
+            logger.warning("Failed to send streamed reasoning block: %s", exc)
+
+    async def _deliver_streamed_response_extras(
+        self,
+        response: str,
+        event,
+        source,
+        reasoning_block: str,
+    ) -> None:
+        """Deliver unsent response media before the trailing reasoning block."""
+        if response:
+            try:
+                media_adapter = self._adapter_for_source(source)
+                if media_adapter:
+                    await self._deliver_media_from_response(
+                        response,
+                        event,
+                        media_adapter,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to deliver media from streamed response: %s", exc)
+        if reasoning_block:
+            await self._send_streamed_reasoning(source, event, reasoning_block)
 
     def _thread_metadata_for_target(
         self,
@@ -17060,6 +17147,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "tools": [],
             "history_offset": len(history),
             "session_id": session_id,
+            "failed": False,
             "response_previewed": _stream_consumer is not None and bool(full_response),
         }
 
@@ -19299,6 +19387,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "last_reasoning": result.get("last_reasoning"),
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
+                "failed": bool(result_holder[0].get("failed", False)) if result_holder[0] else False,
                 "completed": result_holder[0].get("completed") if result_holder[0] else None,
                 "interrupted": result_holder[0].get("interrupted", False) if result_holder[0] else False,
                 "partial": result_holder[0].get("partial", False) if result_holder[0] else False,

@@ -314,19 +314,26 @@ def _needs_chromium_sandbox_bypass() -> bool:
     return False
 
 
+def _read_output_file_lossy(path: str) -> str:
+    """Read a temp output file as text, tolerating non-UTF-8 bytes.
+
+    The agent-browser subprocess may write output in the system code page
+    (e.g. Cp1252 on Windows with accented characters) rather than UTF-8.
+    Reading with a strict UTF-8 decoder raised UnicodeDecodeError and turned
+    a recoverable browser error into a hard tool failure. We decode from
+    bytes with errors="replace" so the content is always returned.
+    """
+    try:
+        with open(path, "rb") as f:
+            return f.read().decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
 def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str, str]:
     """Best-effort read of agent-browser stdout/stderr temp files."""
-    stdout = stderr = ""
-    for path, slot in ((stdout_path, "stdout"), (stderr_path, "stderr")):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                text = f.read().strip()
-        except OSError:
-            continue
-        if slot == "stdout":
-            stdout = text
-        else:
-            stderr = text
+    stdout = _read_output_file_lossy(stdout_path)
+    stderr = _read_output_file_lossy(stderr_path)
     return stdout, stderr
 
 
@@ -2474,10 +2481,13 @@ def _run_browser_command(
             }
             # Fall through to fallback check below
         else:
-            with open(stdout_path, "r", encoding="utf-8") as f:
-                stdout = f.read()
-            with open(stderr_path, "r", encoding="utf-8") as f:
-                stderr = f.read()
+            # Read as bytes then decode with errors="replace": the
+            # agent-browser subprocess can emit non-UTF-8 output on Windows
+            # (e.g. Cp1252-encoded stderr with accented characters), which
+            # previously raised UnicodeDecodeError and bubbled up as a
+            # browser_navigate failure instead of surfacing the real error.
+            stdout = _read_output_file_lossy(stdout_path)
+            stderr = _read_output_file_lossy(stderr_path)
             returncode = proc.returncode
 
             # Clean up temp files (best-effort)

@@ -12,10 +12,11 @@ import math
 import os
 import re
 import threading
+import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -247,11 +248,16 @@ def _format_relative_time(iso_timestamp: str) -> str:
 def _recall_dedup_key(value: Any) -> str:
     # ``\w`` is Unicode-aware in Python. Excluding only underscores keeps
     # CJK and other non-Latin text eligible while normalizing punctuation.
-    return re.sub(r"[\W_]+", " ", str(value or "").casefold()).strip()
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return re.sub(r"[\W_]+", " ", normalized).strip()
 
 
 def _is_duplicate_recall(key: str, seen: set[str]) -> bool:
-    return key in seen or any(SequenceMatcher(None, key, previous).ratio() >= 0.92 for previous in seen)
+    # Only canonical exact matches are safe to merge. Fuzzy text similarity
+    # collapses meaningful corrections such as Python 3.12 vs 3.13, UTC+1 vs
+    # UTC+2, and S3 vs GCS. Keeping two paraphrases is preferable to silently
+    # hiding the newer or contradictory fact.
+    return key in seen
 
 
 def _is_transient_recall(text: Any, metadata: Any = None) -> bool:

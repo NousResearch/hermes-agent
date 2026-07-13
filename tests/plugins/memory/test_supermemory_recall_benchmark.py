@@ -128,6 +128,20 @@ def test_precision_gated_prefetch_meets_offline_recall_contract():
     assert metrics["required_durable_recall"] >= 0.7
 
 
+def test_evaluate_applies_non_default_policy_settings():
+    fixture = deepcopy(load_fixture(FIXTURE))
+    fixture["settings"]["recall_min_similarity"] = 1.0
+    fixture["settings"]["prefetch_include_profile"] = True
+    fixture["settings"]["max_recall_results"] = 1
+
+    report = evaluate(fixture)
+
+    assert report["settings_under_test"] == fixture["settings"]
+    assert report["metrics"]["required_durable_recall"] < 0.7857
+    assert report["exact_false_positive_modes"]["profile_injected_when_disabled"] is True
+    assert all(len(case["selected_ids"]) <= 1 for case in report["cases"])
+
+
 def test_selected_ids_are_traced_without_content_substring_matching():
     fixture = deepcopy(load_fixture(FIXTURE))
     documents = {document["id"]: document for document in fixture["documents"]}

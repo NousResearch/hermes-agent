@@ -147,8 +147,9 @@ def evaluate(fixture: dict[str, Any]) -> dict[str, Any]:
     provider._active = True
     provider._auto_recall = True
     provider._max_recall_results = settings["max_recall_results"]
+    provider._recall_min_similarity = settings["recall_min_similarity"]
+    provider._prefetch_include_profile = settings["prefetch_include_profile"]
     provider._profile_frequency = 50
-    provider._config = dict(settings)
     provider._client = FixtureClient(cases, documents)  # type: ignore[assignment]
 
     k = settings["k"]

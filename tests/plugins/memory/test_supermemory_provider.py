@@ -174,14 +174,34 @@ def test_format_prefetch_context_uses_one_result_and_character_budget():
     assert len(result) <= 330
 
 
-def test_format_prefetch_context_deduplicates_near_identical_facts():
+def test_format_prefetch_context_keeps_distinct_near_identical_facts():
     result = _format_prefetch_context(
         static_facts=["Avery prefers concise answers."],
         dynamic_facts=[],
         search_results=[{"memory": "Avery prefers a concise answer!", "similarity": 0.99}],
         max_results=5,
     )
-    assert result.count("Avery prefers") == 1
+    assert result.count("Avery prefers") == 2
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("Use Python 3.12", "Use Python 3.13"),
+        ("User timezone is UTC+1", "User timezone is UTC+2"),
+        ("Project Atlas uses S3", "Project Atlas uses GCS"),
+        ("Backups are enabled", "Backups are not enabled"),
+    ],
+)
+def test_format_prefetch_context_never_deduplicates_corrections(first, second):
+    result = _format_prefetch_context(
+        static_facts=[first],
+        dynamic_facts=[],
+        search_results=[{"memory": second, "similarity": 0.99}],
+        max_results=5,
+    )
+    assert first in result
+    assert second in result
 
 
 def test_format_prefetch_context_keeps_unicode_facts_and_deduplicates_variants():
@@ -192,6 +212,16 @@ def test_format_prefetch_context_keeps_unicode_facts_and_deduplicates_variants()
         max_results=5,
     )
     assert result.count("用户偏好简洁回答") == 1
+
+
+def test_format_prefetch_context_deduplicates_unicode_canonical_equivalents():
+    result = _format_prefetch_context(
+        static_facts=["Café"],
+        dynamic_facts=[],
+        search_results=[{"memory": "Cafe\u0301", "similarity": 0.99}],
+        max_results=5,
+    )
+    assert result.count("Caf") == 1
 
 
 @pytest.mark.parametrize(

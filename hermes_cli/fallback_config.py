@@ -12,6 +12,19 @@ def _normalized_base_url(value: Any) -> str:
 
 
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
+    # Hermes serializes list-valued config keys as JSON strings in YAML
+    # (``hermes config set fallback_providers '[{...}]'``).  The YAML
+    # parser gives us back a string.  Parse it so the fallback chain
+    # actually populates instead of silently returning empty (#61185).
+    if isinstance(raw, str) and raw.strip().startswith(("[", "{")):
+        import json
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+        else:
+            return _iter_fallback_entries(parsed)
+
     if isinstance(raw, dict):
         candidates = [raw]
     elif isinstance(raw, list):

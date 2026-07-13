@@ -272,6 +272,43 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["model"] == "openai/gpt-5.4"
 
+    def test_first_accounted_fallback_replaces_requested_primary_route(self, db):
+        """First successful fallback usage must persist one coherent route pair."""
+        db.create_session(session_id="s1", source="cli", model="gpt-5.6-sol")
+
+        db.update_token_counts(
+            "s1",
+            input_tokens=10,
+            output_tokens=5,
+            model="glm-5.2",
+            billing_provider="custom:zai",
+            billing_base_url="https://api.z.ai/api/coding/paas/v4/",
+            api_call_count=1,
+        )
+
+        session = db.get_session("s1")
+        assert session["model"] == "glm-5.2"
+        assert session["billing_provider"] == "custom:zai"
+        assert session["billing_base_url"] == "https://api.z.ai/api/coding/paas/v4/"
+        assert session["api_call_count"] == 1
+
+    def test_accounted_primary_route_is_not_rewritten_by_later_fallback(self, db):
+        """A mixed-provider session keeps its first accounted route in the legacy row."""
+        db.create_session(session_id="s1", source="cli", model="gpt-5.6-sol")
+        db.update_token_counts(
+            "s1", input_tokens=10, output_tokens=5, model="gpt-5.6-sol",
+            billing_provider="openai-codex", api_call_count=1,
+        )
+        db.update_token_counts(
+            "s1", input_tokens=10, output_tokens=5, model="glm-5.2",
+            billing_provider="custom:zai", api_call_count=1,
+        )
+
+        session = db.get_session("s1")
+        assert session["model"] == "gpt-5.6-sol"
+        assert session["billing_provider"] == "openai-codex"
+        assert session["api_call_count"] == 2
+
     def test_update_token_counts_preserves_existing_model(self, db):
         db.create_session(session_id="s1", source="cli", model="anthropic/claude-opus-4.6")
         db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4")
@@ -350,6 +387,181 @@ class TestSessionLifecycle:
         sess = db.get_session("s1")
         assert sess["billing_provider"] == "openai"
         assert sess["billing_mode"] == "local"  # preserved (COALESCE on None)
+
+    def test_per_model_usage_recorded_for_single_model(self, db):
+        """Each per-call delta lands in session_model_usage (#51607)."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=200, output_tokens=100,
+                               model="anthropic/claude-opus-4.8",
+                               billing_provider="anthropic", api_call_count=1)
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50,
+                               model="anthropic/claude-opus-4.8",
+                               billing_provider="anthropic", api_call_count=1)
+
+        rows = db._conn.execute(
+            "SELECT model, billing_provider, api_call_count, input_tokens, "
+            "output_tokens FROM session_model_usage WHERE session_id = 's1'"
+        ).fetchall()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["model"] == "anthropic/claude-opus-4.8"
+        assert row["billing_provider"] == "anthropic"
+        assert row["api_call_count"] == 2
+        assert row["input_tokens"] == 300
+        assert row["output_tokens"] == 150
+
+    def test_mid_session_switch_splits_per_model_usage(self, db):
+        """The headline #51607 case: tokens after a /model switch are
+        attributed to the new model, not the session's initial model.
+
+        The ``sessions`` summary row still holds combined totals + the latest
+        model, but session_model_usage keeps an accurate per-model split.
+        """
+        db.create_session(session_id="s1", source="cli",
+                          model="deepseek/deepseek-v4-pro")
+        # Pre-switch calls on deepseek.
+        db.update_token_counts("s1", input_tokens=40_000, output_tokens=8_000,
+                               model="deepseek/deepseek-v4-pro",
+                               billing_provider="deepseek", api_call_count=2)
+        # User runs /model — the gateway persists the new model …
+        db.update_session_model("s1", "anthropic/claude-opus-4.8")
+        # … and subsequent per-call deltas carry the new model/provider.
+        db.update_token_counts("s1", input_tokens=50_000, output_tokens=4_000,
+                               model="anthropic/claude-opus-4.8",
+                               billing_provider="openrouter", api_call_count=3)
+
+        rows = {
+            r["model"]: r
+            for r in db._conn.execute(
+                "SELECT model, billing_provider, input_tokens, output_tokens, "
+                "api_call_count FROM session_model_usage WHERE session_id = 's1'"
+            ).fetchall()
+        }
+        assert set(rows) == {"deepseek/deepseek-v4-pro",
+                             "anthropic/claude-opus-4.8"}
+        assert rows["deepseek/deepseek-v4-pro"]["input_tokens"] == 40_000
+        assert rows["deepseek/deepseek-v4-pro"]["api_call_count"] == 2
+        assert rows["anthropic/claude-opus-4.8"]["input_tokens"] == 50_000
+        assert rows["anthropic/claude-opus-4.8"]["billing_provider"] == "openrouter"
+        assert rows["anthropic/claude-opus-4.8"]["api_call_count"] == 3
+
+        # Summary row: latest model + combined totals (unchanged behaviour).
+        session = db.get_session("s1")
+        assert session["model"] == "anthropic/claude-opus-4.8"
+        assert session["input_tokens"] == 90_000
+        assert session["output_tokens"] == 12_000
+
+    def test_per_model_usage_falls_back_to_session_model(self, db):
+        """When a call omits the model, attribute it to the session's
+        recorded model — matches the COALESCE-from-session summary behaviour
+        and keeps existing callers (which pass no model) working.
+        """
+        db.create_session(session_id="s1", source="cli",
+                          model="gpt-4o", )
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5)
+
+        rows = db._conn.execute(
+            "SELECT model FROM session_model_usage WHERE session_id = 's1'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["model"] == "gpt-4o"
+
+    def test_absolute_update_does_not_record_per_model(self, db):
+        """absolute=True overwrites the cumulative summary row (gateway path)
+        and must NOT add per-model rows — those are accumulated from the
+        per-call incremental path, so recording here would double-count.
+        """
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db.update_token_counts("s1", input_tokens=500, output_tokens=200,
+                               model="gpt-4o", absolute=True)
+
+        rows = db._conn.execute(
+            "SELECT COUNT(*) AS n FROM session_model_usage WHERE session_id = 's1'"
+        ).fetchone()
+        assert rows["n"] == 0
+
+    def test_per_model_usage_keeps_distinct_billing_routes(self, db):
+        """The same model through distinct billing routes must not collapse."""
+        db.create_session(session_id="routes", source="cli", model="shared-model")
+        db.update_token_counts(
+            "routes", input_tokens=10, model="shared-model",
+            billing_provider="custom", billing_base_url="https://one.example/v1",
+            billing_mode="api_key", estimated_cost_usd=0.01, api_call_count=1,
+        )
+        db.update_token_counts(
+            "routes", input_tokens=20, model="shared-model",
+            billing_provider="custom", billing_base_url="https://two.example/v1",
+            billing_mode="subscription_included", estimated_cost_usd=0.0,
+            cost_status="included", api_call_count=1,
+        )
+
+        rows = db._conn.execute(
+            "SELECT billing_base_url, billing_mode, input_tokens "
+            "FROM session_model_usage WHERE session_id = 'routes' "
+            "ORDER BY billing_base_url"
+        ).fetchall()
+        assert [(r["billing_base_url"], r["billing_mode"], r["input_tokens"])
+                for r in rows] == [
+            ("https://one.example/v1", "api_key", 10),
+            ("https://two.example/v1", "subscription_included", 20),
+        ]
+
+    def test_metadata_only_update_does_not_replace_requested_route(self, db):
+        db.create_session(session_id="metadata", source="cli", model="primary")
+        db.update_token_counts(
+            "metadata", model="fallback", billing_provider="fallback-provider",
+            api_call_count=0,
+        )
+        row = db.get_session("metadata")
+        assert row["model"] == "primary"
+        assert row["billing_provider"] is None
+
+    def test_first_accounted_route_replaces_all_route_fields_atomically(self, db):
+        db.create_session(session_id="route", source="cli", model="primary")
+        db.update_session_billing_route(
+            "route", provider="primary-provider",
+            base_url="https://primary.example/v1", billing_mode="api_key",
+        )
+        db.update_token_counts(
+            "route", model="fallback", billing_provider="fallback-provider",
+            billing_base_url=None, billing_mode=None, api_call_count=1,
+        )
+        row = db.get_session("route")
+        assert row["model"] == "fallback"
+        assert row["billing_provider"] == "fallback-provider"
+        assert row["billing_base_url"] is None
+        assert row["billing_mode"] is None
+
+    def test_v17_backfill_seeds_existing_session_usage(self, tmp_path):
+        """A DB upgraded from <17 seeds one usage row per historical session
+        from its aggregate totals, so insights read uniformly from the table.
+        """
+        db_path = tmp_path / "legacy.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="legacy1", source="cli", model="gpt-4o")
+        db.update_token_counts("legacy1", input_tokens=1234, output_tokens=567,
+                               model="gpt-4o", billing_provider="openai")
+        # Simulate a pre-v17 database: drop the per-model rows and roll the
+        # recorded schema version back so the backfill migration re-runs.
+        db._conn.execute("DELETE FROM session_model_usage")
+        db._conn.execute("UPDATE schema_version SET version = 16")
+        db._conn.commit()
+        db.close()
+
+        # Reopen — _init_schema should backfill from the sessions aggregate.
+        db2 = SessionDB(db_path=db_path)
+        try:
+            rows = db2._conn.execute(
+                "SELECT model, billing_provider, input_tokens, output_tokens "
+                "FROM session_model_usage WHERE session_id = 'legacy1'"
+            ).fetchall()
+            assert len(rows) == 1
+            assert rows[0]["model"] == "gpt-4o"
+            assert rows[0]["billing_provider"] == "openai"
+            assert rows[0]["input_tokens"] == 1234
+            assert rows[0]["output_tokens"] == 567
+        finally:
+            db2.close()
 
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
@@ -933,6 +1145,19 @@ class TestMessageStorage:
         msgs = db.get_messages("s1")
         tool_msg = next(m for m in msgs if m["role"] == "tool")
         assert tool_msg["tool_name"] == "web_search"
+
+    def test_tool_effect_disposition_round_trips_through_session_db(self, db):
+        from agent.tool_dispatch_helpers import make_tool_result_message
+
+        db.create_session(session_id="s1", source="cli")
+        db.replace_messages(
+            "s1",
+            [make_tool_result_message(
+                "write_file", "worker detached", "c1", effect_disposition="unknown"
+            )],
+        )
+
+        assert db.get_messages_as_conversation("s1")[0]["effect_disposition"] == "unknown"
 
     def test_replace_messages_handles_multimodal_content(self, db):
         """`replace_messages` (used by /retry, /undo, /compress) must also
@@ -1881,6 +2106,18 @@ class TestDeleteAndExport:
         assert db.get_session("s1") is None
         assert db.message_count(session_id="s1") == 0
 
+    def test_delete_session_cascades_per_model_usage(self, db):
+        db.create_session(session_id="usage", source="cli", model="gpt-5")
+        db.update_token_counts(
+            "usage", input_tokens=10, model="gpt-5",
+            billing_provider="openai", api_call_count=1,
+        )
+        assert db.delete_session("usage") is True
+        count = db._conn.execute(
+            "SELECT COUNT(*) FROM session_model_usage WHERE session_id = 'usage'"
+        ).fetchone()[0]
+        assert count == 0
+
     def test_delete_nonexistent(self, db):
         assert db.delete_session("nope") is False
 
@@ -1930,6 +2167,221 @@ class TestDeleteAndExport:
         exports = db.export_all(source="cli")
         assert len(exports) == 1
         assert exports[0]["source"] == "cli"
+
+    def test_import_exported_session_round_trips(self, db, tmp_path):
+        db.create_session(
+            session_id="s1",
+            source="cli",
+            model="test-model",
+            model_config={"temperature": 0.2},
+            user_id="user-1",
+            cwd="/workspace",
+        )
+        db.set_session_title("s1", "Imported session")
+        db.update_session_cwd(
+            "s1",
+            "/workspace/project",
+            git_branch="feature/import",
+            git_repo_root="/workspace/project",
+        )
+        db.append_message("s1", role="user", content="Hello", timestamp=10)
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Hi",
+            timestamp=11,
+            tool_calls=[{"id": "call-1", "function": {"name": "noop"}}],
+            reasoning_details=[{"type": "summary", "text": "short"}],
+        )
+        db.end_session("s1", "complete")
+
+        exported = db.export_session("s1")
+        exported["handoff_state"] = "active"
+        exported["handoff_platform"] = "telegram"
+        exported["handoff_error"] = "stale runtime state"
+        exported["rewind_count"] = 3
+        target = SessionDB(db_path=tmp_path / "target_state.db")
+        try:
+            result = target.import_sessions([exported])
+            assert result["ok"] is True
+            assert result["imported"] == 1
+            assert result["skipped"] == 0
+
+            imported = target.get_session("s1")
+            assert imported["title"] == "Imported session"
+            assert imported["source"] == "cli"
+            assert imported["model"] == "test-model"
+            assert imported["cwd"] == "/workspace/project"
+            assert imported["git_branch"] == "feature/import"
+            assert imported["git_repo_root"] == "/workspace/project"
+            assert imported["message_count"] == 2
+            assert imported["tool_call_count"] == 1
+            assert imported["handoff_state"] is None
+            assert imported["handoff_platform"] is None
+            assert imported["handoff_error"] is None
+            assert imported["rewind_count"] == 0
+
+            messages = target.get_messages("s1")
+            assert [m["role"] for m in messages] == ["user", "assistant"]
+            assert messages[0]["content"] == "Hello"
+            assert messages[1]["tool_calls"][0]["id"] == "call-1"
+
+            duplicate = target.import_sessions([exported])
+            assert duplicate["imported"] == 0
+            assert duplicate["skipped"] == 1
+            assert duplicate["skipped_ids"] == ["s1"]
+        finally:
+            target.close()
+
+    def test_import_sessions_restores_valid_parents_and_detaches_missing(self, db):
+        result = db.import_sessions(
+            [
+                {
+                    "id": "child",
+                    "source": "cli",
+                    "parent_session_id": "parent",
+                    "messages": [],
+                },
+                {"id": "parent", "source": "cli", "messages": []},
+                {
+                    "id": "orphan",
+                    "source": "cli",
+                    "parent_session_id": "missing",
+                    "messages": [],
+                },
+            ]
+        )
+
+        assert result["ok"] is True
+        assert result["imported"] == 3
+        assert result["detached"] == 1
+        assert db.get_session("child")["parent_session_id"] == "parent"
+        assert db.get_session("orphan")["parent_session_id"] is None
+
+    def test_import_sessions_rejects_invalid_batch_atomically(self, db):
+        result = db.import_sessions(
+            [
+                {"id": "valid", "source": "cli", "messages": []},
+                {"source": "cli", "messages": []},
+            ]
+        )
+
+        assert result["ok"] is False
+        assert result["imported"] == 0
+        assert result["errors"] == [
+            {"index": 1, "error": "session id is required"}
+        ]
+        assert db.get_session("valid") is None
+
+    def test_import_sessions_detaches_cycle_and_lineage_still_terminates(self, db):
+        result = db.import_sessions(
+            [
+                {
+                    "id": "a",
+                    "source": "cli",
+                    "parent_session_id": "b",
+                    "end_reason": "compression",
+                    "messages": [],
+                },
+                {
+                    "id": "b",
+                    "source": "cli",
+                    "parent_session_id": "a",
+                    "end_reason": "compression",
+                    "messages": [],
+                },
+            ]
+        )
+
+        assert result["ok"] is True
+        assert result["detached"] == 1
+        assert db.get_session("a")["parent_session_id"] is None
+        assert db.get_session("b")["parent_session_id"] == "a"
+        assert db.get_compression_lineage("a") == ["a", "b"]
+
+    def test_import_sessions_detaches_self_parent(self, db):
+        result = db.import_sessions(
+            [
+                {
+                    "id": "self",
+                    "source": "cli",
+                    "parent_session_id": "self",
+                    "end_reason": "compression",
+                    "messages": [],
+                }
+            ]
+        )
+
+        assert result["ok"] is True
+        assert result["detached"] == 1
+        assert db.get_session("self")["parent_session_id"] is None
+
+    def test_compression_lineage_terminates_for_preexisting_cycle(self, db):
+        db.create_session("a", "cli")
+        db.end_session("a", "compression")
+        db.create_session("b", "cli", parent_session_id="a")
+        db.end_session("b", "compression")
+        db._conn.execute("UPDATE sessions SET parent_session_id = ? WHERE id = ?", ("b", "a"))
+        db._conn.commit()
+
+        lineage = db.get_compression_lineage("a")
+        assert set(lineage) == {"a", "b"}
+        assert len(lineage) == 2
+        assert set(db.export_session_lineage("a")["lineage_session_ids"]) == {"a", "b"}
+
+    @pytest.mark.parametrize(
+        ("payload", "error"),
+        [
+            (
+                {"id": "bad-json", "model_config": "{not-json", "messages": []},
+                "model_config must be valid JSON",
+            ),
+            (
+                {"id": "bad-text", "user_id": {"not": "text"}, "messages": []},
+                "user_id must be a string",
+            ),
+            (
+                {"id": "missing-role", "messages": [{"content": "x"}]},
+                "messages[0].role must be a non-empty string",
+            ),
+            (
+                {"id": "null-role", "messages": [{"role": None, "content": "x"}]},
+                "messages[0].role must be a non-empty string",
+            ),
+        ],
+    )
+    def test_import_sessions_rejects_invalid_metadata(self, db, payload, error):
+        result = db.import_sessions([payload])
+
+        assert result["ok"] is False
+        assert result["errors"] == [{"index": 0, "session_id": payload["id"], "error": error}]
+        assert db.get_session(payload["id"]) is None
+
+    def test_import_sessions_rejects_oversized_payloads_atomically(self, db):
+        oversized = "x" * (SessionDB._IMPORT_MAX_SESSION_BYTES + 1)
+        result = db.import_sessions(
+            [{"id": "oversized", "messages": [{"role": "user", "content": oversized}]}]
+        )
+
+        assert result["ok"] is False
+        assert result["errors"][0]["error"] == "session exceeds the import size limit"
+        assert db.get_session("oversized") is None
+
+        result = db.import_sessions(
+            [
+                {
+                    "id": "too-many-messages",
+                    "messages": [
+                        {"role": "user", "content": "x"}
+                    ]
+                    * (SessionDB._IMPORT_MAX_MESSAGES_PER_SESSION + 1),
+                }
+            ]
+        )
+
+        assert result["ok"] is False
+        assert result["errors"][0]["error"] == "messages exceeds the per-session import limit"
+        assert db.get_session("too-many-messages") is None
 
 
 # =========================================================================

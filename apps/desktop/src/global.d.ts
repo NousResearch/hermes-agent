@@ -163,6 +163,10 @@ declare global {
         scanRepos: (roots: string[], options?: { maxDepth?: number }) => Promise<{ root: string; label: string }[]>
       }
       terminal: {
+        /** Best-effort current working directory of the live PTY child (POSIX
+         *  only; null on Windows or when unavailable). Used to reopen a tab
+         *  where the user last `cd`'d. */
+        cwd: (id: string) => Promise<string | null>
         dispose: (id: string) => Promise<boolean>
         onData: (id: string, callback: (payload: string) => void) => () => void
         onExit: (id: string, callback: (payload: HermesTerminalExit) => void) => () => void

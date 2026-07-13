@@ -1142,6 +1142,90 @@ def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch)
     assert gateway._scan_gateway_pids(set(), all_profiles=True) == [2468]
 
 
+def _fake_psutil_process_iter(records):
+    """Build a minimal psutil.process_iter stand-in for gateway scan tests."""
+
+    class _Proc:
+        def __init__(self, info):
+            self.info = info
+
+        def cmdline(self):
+            return self.info.get("cmdline") or []
+
+    class _Psutil:
+        @staticmethod
+        def process_iter(attrs):
+            for record in records:
+                yield _Proc(record)
+
+    return _Psutil()
+
+
+def test_scan_gateway_pids_windows_psutil_when_cim_hides_cmdline(monkeypatch):
+    """CIM often returns empty CommandLine for SYSTEM gateways (#63743)."""
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    monkeypatch.setattr(
+        gateway.shutil,
+        "which",
+        lambda name: "powershell.exe" if name == "powershell" else None,
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "powershell.exe":
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "CommandLine=\n"
+                    "ProcessId=4242\n\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    fake_psutil = _fake_psutil_process_iter(
+        [
+            {
+                "pid": 4242,
+                "cmdline": [
+                    "pythonw.exe",
+                    "-m",
+                    "hermes_cli.main",
+                    "gateway",
+                    "run",
+                ],
+            }
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == [4242]
+
+
+def test_scan_gateway_pids_windows_psutil_only_when_no_wmic_or_powershell(monkeypatch):
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    monkeypatch.setattr(gateway.shutil, "which", lambda _name: None)
+    fake_psutil = _fake_psutil_process_iter(
+        [
+            {
+                "pid": 5150,
+                "cmdline": [
+                    "C:\\Hermes\\venv\\Scripts\\pythonw.exe",
+                    "-m",
+                    "hermes_cli.main",
+                    "gateway",
+                    "run",
+                ],
+            }
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == [5150]
+
+
 # ---------------------------------------------------------------------------
 # _wait_for_gateway_exit
 # ---------------------------------------------------------------------------

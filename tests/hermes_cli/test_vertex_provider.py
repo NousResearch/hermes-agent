@@ -129,3 +129,11 @@ def test_resolve_provider_client_vertex_reaches_handler(monkeypatch):
     assert client.api_key == "fake-oauth-token"
     assert str(client.base_url).rstrip("/") == "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
 
+
+def test_vertex_aux_aliases():
+    from agent.auxiliary_client import _normalize_aux_provider
+
+    for alias in ("google-vertex", "vertex-ai", "gcp-vertex", "vertexai", "Vertex", "VERTEX"):
+        assert _normalize_aux_provider(alias) == "vertex"
+
+

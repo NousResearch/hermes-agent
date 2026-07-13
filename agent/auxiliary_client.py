@@ -271,6 +271,10 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    "google-vertex": "vertex",
+    "vertex-ai": "vertex",
+    "gcp-vertex": "vertex",
+    "vertexai": "vertex",
 }
 
 

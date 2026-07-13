@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import subprocess
@@ -1985,7 +1986,7 @@ def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 
     class _FakeWorker:
-        def __init__(self, key, model, profile_home=None):
+        def __init__(self, key, model, cwd="", profile_home=None):
             self.key = key
 
         def close(self):
@@ -5670,7 +5671,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     unregistered_keys: list[str] = []
 
     class _FakeWorker:
-        def __init__(self, key, model, profile_home=None):
+        def __init__(self, key, model, cwd="", profile_home=None):
             self.key = key
             self._closed = False
 
@@ -5791,7 +5792,7 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     unregistered_keys: list[str] = []
 
     class _FakeWorker:
-        def __init__(self, key, model, profile_home=None):
+        def __init__(self, key, model, cwd="", profile_home=None):
             self.key = key
 
         def close(self):
@@ -5895,7 +5896,7 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
 
 def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     class _FakeWorker:
-        def __init__(self, key, model, profile_home=None):
+        def __init__(self, key, model, cwd="", profile_home=None):
             self.key = key
 
         def close(self):
@@ -5943,7 +5944,7 @@ def test_session_create_lazy_info_reports_desktop_contract(monkeypatch):
     date" on every launch even against a current backend."""
 
     class _FakeWorker:
-        def __init__(self, key, model, profile_home=None):
+        def __init__(self, key, model, cwd="", profile_home=None):
             self.key = key
 
         def close(self):
@@ -9001,3 +9002,360 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+# ── Slash-worker cwd propagation ──────────────────────────────────────
+# The slash worker is the parent of every stdio MCP server a session starts
+# (Hindsight's run_mcp.sh derives its bank from ${PWD}). A worker spawned in
+# the gateway's launch directory therefore routes a project session's memory
+# to the launch dir's project. Every construction path must hand the worker
+# the session's own validated cwd.
+
+
+class _CwdWorker:
+    """_SlashWorker double recording the cwd each spawn received.
+
+    ``cwd`` defaults to None here (it is required on the real worker) so a spawn
+    site that forgets it fails on the cwd assertion rather than on a TypeError,
+    which the ``except Exception`` guard around every spawn site would swallow.
+    """
+
+    spawns: list["_CwdWorker"] = []
+
+    def __init__(self, session_key, model, cwd=None, profile_home=None):
+        self.session_key = session_key
+        self.model = model
+        self.cwd = cwd
+        self.closed = False
+        _CwdWorker.spawns.append(self)
+
+    @classmethod
+    def last_cwd_for(cls, session_key: str):
+        for worker in reversed(cls.spawns):
+            if worker.session_key == session_key:
+                return worker.cwd
+        return None
+
+    def close(self):
+        self.closed = True
+
+    def run(self, _command):
+        return "ok"
+
+
+@pytest.fixture
+def cwd_worker(monkeypatch):
+    """Install _CwdWorker as _SlashWorker on a local terminal backend."""
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.setattr(_CwdWorker, "spawns", [])
+    monkeypatch.setattr(server, "_SlashWorker", _CwdWorker)
+    monkeypatch.setattr(server, "_resolve_model", lambda *a, **k: "test/model")
+    return _CwdWorker
+
+
+def _isolated_sessions(monkeypatch):
+    """Give a test its own server._sessions map (build threads mutate it)."""
+    monkeypatch.setattr(server, "_sessions", {})
+    return server._sessions
+
+
+def test_slash_worker_cwd_from_deferred_build(cwd_worker, monkeypatch, tmp_path):
+    """Deferred new-session build (_start_agent_build) spawns with the session cwd."""
+    project = tmp_path / "proj-a"
+    project.mkdir()
+    sessions = _isolated_sessions(monkeypatch)
+
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda sid, key, **kwargs: types.SimpleNamespace(model="test/model"),
+    )
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_probe_config_health", lambda *_a: None)
+
+    session = {
+        "agent": None,
+        "agent_ready": threading.Event(),
+        "session_key": "key-a",
+        "profile_home": None,
+        "cwd": str(project),
+    }
+    sessions["sid-a"] = session
+
+    server._start_agent_build("sid-a", session)
+    assert session["agent_ready"].wait(timeout=5), "agent build did not finish"
+    assert cwd_worker.last_cwd_for("key-a") == str(project)
+
+
+def test_slash_worker_cwd_from_session_resume(cwd_worker, monkeypatch, tmp_path):
+    """Eager resume (_init_session) spawns the worker with the resumed cwd."""
+    project = tmp_path / "proj-resume"
+    project.mkdir()
+    sessions = _isolated_sessions(monkeypatch)
+
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    server._init_session(
+        "sid-resume",
+        "key-resume",
+        types.SimpleNamespace(model="test/model"),
+        [],
+        cwd=str(project),
+    )
+    assert sessions["sid-resume"]["cwd"] == str(project)
+    assert cwd_worker.last_cwd_for("key-resume") == str(project)
+
+
+def test_slash_worker_cwd_on_restart(cwd_worker, monkeypatch, tmp_path):
+    """_restart_slash_worker (model/config switch) re-spawns with the session cwd."""
+    project = tmp_path / "proj-restart"
+    project.mkdir()
+    sessions = _isolated_sessions(monkeypatch)
+
+    session = {"session_key": "key-r", "cwd": str(project), "slash_worker": None}
+    sessions["sid-r"] = session
+
+    server._restart_slash_worker("sid-r", session)
+    assert cwd_worker.last_cwd_for("key-r") == str(project)
+
+
+def test_slash_worker_cwd_on_lazy_slash_exec(cwd_worker, monkeypatch, tmp_path):
+    """slash.exec recreating a missing worker uses the session cwd, not the launch dir."""
+    project = tmp_path / "proj-lazy"
+    project.mkdir()
+    sessions = _isolated_sessions(monkeypatch)
+
+    ready = threading.Event()
+    ready.set()
+    session = {
+        "agent": types.SimpleNamespace(model="test/model"),
+        "agent_ready": ready,
+        "session_key": "key-lazy",
+        "cwd": str(project),
+        "slash_worker": None,
+    }
+    sessions["sid-lazy"] = session
+
+    monkeypatch.setattr(server, "_mirror_slash_side_effects", lambda *a, **k: "")
+
+    resp = server._methods["slash.exec"](
+        "rid-lazy", {"session_id": "sid-lazy", "command": "/status"}
+    )
+    assert "result" in resp, resp
+    assert cwd_worker.last_cwd_for("key-lazy") == str(project)
+
+
+def test_slash_worker_cwd_isolated_between_sessions(cwd_worker, monkeypatch, tmp_path):
+    """Two live sessions on different projects never share a worker cwd."""
+    project_a = tmp_path / "proj-1"
+    project_b = tmp_path / "proj-2"
+    project_a.mkdir()
+    project_b.mkdir()
+    sessions = _isolated_sessions(monkeypatch)
+
+    for sid, key, project in (
+        ("sid-1", "key-1", project_a),
+        ("sid-2", "key-2", project_b),
+    ):
+        session = {"session_key": key, "cwd": str(project), "slash_worker": None}
+        sessions[sid] = session
+        server._restart_slash_worker(sid, session)
+
+    assert cwd_worker.last_cwd_for("key-1") == str(project_a)
+    assert cwd_worker.last_cwd_for("key-2") == str(project_b)
+
+
+# ── _local_session_process_cwd ────────────────────────────────────────
+
+
+def test_local_session_process_cwd_uses_session_cwd(monkeypatch, tmp_path):
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    project = tmp_path / "live"
+    project.mkdir()
+    assert server._local_session_process_cwd({"cwd": str(project)}) == str(project)
+
+
+def test_local_session_process_cwd_heals_deleted_worktree(monkeypatch, tmp_path):
+    """A session pinned to a vanished worktree resolves to the healed ancestor,
+    never to a nonexistent path — Popen(cwd=...) would raise on one."""
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    repo = tmp_path / "repo"
+    (repo / ".worktrees").mkdir(parents=True)
+    dead = repo / ".worktrees" / "gone"
+    session = {"cwd": str(dead), "session_key": "k"}
+
+    monkeypatch.setattr(server, "_session_db", lambda _s: contextlib.nullcontext(None))
+    monkeypatch.setattr(server, "_persist_session_git_meta", lambda *a, **k: None)
+
+    resolved = server._local_session_process_cwd(session)
+    assert resolved != str(dead)
+    assert os.path.isdir(resolved)
+
+
+def test_local_session_process_cwd_falls_back_when_unusable(monkeypatch, tmp_path):
+    """An unhealable/nonexistent cwd falls back to the gateway cwd."""
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.setattr(server, "_display_session_cwd", lambda _s: str(tmp_path / "nope"))
+    assert server._local_session_process_cwd({"cwd": "/x"}) == os.getcwd()
+
+
+def test_local_session_process_cwd_ignores_remote_backend(monkeypatch):
+    """A remote backend's cwd lives in the remote env — passing it to a host
+    Popen would either fail or land on an unrelated local directory."""
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    remote = "/remote/only/workspace"
+    assert server._local_session_process_cwd({"cwd": remote}) == os.getcwd()
+
+
+def test_local_session_process_cwd_empty_session_cwd(monkeypatch, tmp_path):
+    """No session cwd → the existing completion/default fallback, still a real dir."""
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+    assert server._local_session_process_cwd({}) == str(tmp_path)
+    assert server._local_session_process_cwd(None) == str(tmp_path)
+
+
+# ── session.cwd.set rebinds the worker ────────────────────────────────
+
+
+def _cwd_set_session(monkeypatch, sid, key, cwd, worker=None):
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+    monkeypatch.setattr(server, "_session_db", lambda _s: contextlib.nullcontext(None))
+    monkeypatch.setattr(server, "_persist_session_git_meta", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda _c: "main")
+    session = {
+        "session_key": key,
+        "cwd": str(cwd),
+        "slash_worker": worker,
+        "agent": None,
+        "running": False,
+    }
+    server._sessions[sid] = session
+    return session
+
+
+def test_session_cwd_set_restarts_worker_with_new_cwd(cwd_worker, monkeypatch, tmp_path):
+    """An active session that changes project must not keep the worker (and its
+    stdio MCP children) snapshotted on the old cwd."""
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    _isolated_sessions(monkeypatch)
+
+    stale = _CwdWorker("key-c", "test/model", cwd=str(old))
+    session = _cwd_set_session(monkeypatch, "sid-c", "key-c", old, worker=stale)
+
+    resp = server._methods["session.cwd.set"](
+        "rid-c", {"session_id": "sid-c", "cwd": str(new)}
+    )
+    assert "result" in resp, resp
+    assert stale.closed is True
+    assert session["slash_worker"] is not stale
+    assert cwd_worker.last_cwd_for("key-c") == str(new)
+
+
+def test_session_cwd_set_same_cwd_keeps_worker(cwd_worker, monkeypatch, tmp_path):
+    """An equivalent cwd is not a project change — restarting would drop the
+    worker's warm MCP connections for nothing."""
+    project = tmp_path / "same"
+    project.mkdir()
+    _isolated_sessions(monkeypatch)
+
+    worker = _CwdWorker("key-s", "test/model", cwd=str(project))
+    session = _cwd_set_session(monkeypatch, "sid-s", "key-s", project, worker=worker)
+    spawns_before = len(_CwdWorker.spawns)
+
+    resp = server._methods["session.cwd.set"](
+        "rid-s", {"session_id": "sid-s", "cwd": str(project) + os.sep}
+    )
+    assert "result" in resp, resp
+    assert session["slash_worker"] is worker
+    assert worker.closed is False
+    assert len(_CwdWorker.spawns) == spawns_before
+
+
+def test_session_cwd_set_lazy_session_spawns_no_worker(cwd_worker, monkeypatch, tmp_path):
+    """No worker yet → don't eagerly create one; the lazy path builds it with
+    the new cwd on first use."""
+    old = tmp_path / "lazy-old"
+    new = tmp_path / "lazy-new"
+    old.mkdir()
+    new.mkdir()
+    _isolated_sessions(monkeypatch)
+
+    session = _cwd_set_session(monkeypatch, "sid-l", "key-l", old, worker=None)
+
+    resp = server._methods["session.cwd.set"](
+        "rid-l", {"session_id": "sid-l", "cwd": str(new)}
+    )
+    assert "result" in resp, resp
+    assert session["slash_worker"] is None
+    assert _CwdWorker.spawns == []
+
+
+def test_session_cwd_set_busy_session_still_rejected(cwd_worker, monkeypatch, tmp_path):
+    """The existing 4009 guard wins before any worker rebind."""
+    old = tmp_path / "busy-old"
+    new = tmp_path / "busy-new"
+    old.mkdir()
+    new.mkdir()
+    _isolated_sessions(monkeypatch)
+
+    worker = _CwdWorker("key-b", "test/model", cwd=str(old))
+    session = _cwd_set_session(monkeypatch, "sid-b", "key-b", old, worker=worker)
+    session["running"] = True
+
+    resp = server._methods["session.cwd.set"](
+        "rid-b", {"session_id": "sid-b", "cwd": str(new)}
+    )
+    assert resp["error"]["code"] == 4009
+    assert session["cwd"] == str(old)
+    assert session["slash_worker"] is worker
+    assert worker.closed is False
+
+
+def test_session_cwd_set_restart_failure_leaves_no_worker(monkeypatch, tmp_path):
+    """A failed re-spawn must leave slash_worker=None so slash.exec's lazy
+    recovery path rebuilds it, instead of stranding the old-cwd worker."""
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    old = tmp_path / "fail-old"
+    new = tmp_path / "fail-new"
+    old.mkdir()
+    new.mkdir()
+    _isolated_sessions(monkeypatch)
+
+    def _boom(*_a, **_k):
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(server, "_SlashWorker", _boom)
+    monkeypatch.setattr(server, "_resolve_model", lambda *a, **k: "test/model")
+
+    stale = _CwdWorker("key-f", "test/model", cwd=str(old))
+    session = _cwd_set_session(monkeypatch, "sid-f", "key-f", old, worker=stale)
+
+    resp = server._methods["session.cwd.set"](
+        "rid-f", {"session_id": "sid-f", "cwd": str(new)}
+    )
+    assert "result" in resp, resp
+    assert session["slash_worker"] is None
+    assert stale.closed is True

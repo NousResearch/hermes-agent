@@ -25,6 +25,8 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import contextvars
+import functools
 import json
 import logging
 import re
@@ -624,7 +626,20 @@ class MemoryManager:
         but never losing the write itself. ``fn`` must do its own
         per-provider error handling; this wrapper only guards executor
         plumbing.
+
+        ``fn`` runs inside a SNAPSHOT of the caller's ContextVar context. A
+        pool worker otherwise starts with an empty context, so the session
+        ContextVars the turn thread bound (notably ``_SESSION_CWD``, the single
+        source of truth for the agent's project) are invisible there, and a
+        provider that derives per-project state from them — Hindsight picks its
+        memory bank from the session cwd — silently falls back to the process
+        launch dir. Snapshotting at submit time (not at run time) also pins the
+        turn that queued the work: a later session switch cannot redirect an
+        already-queued retain. Same rationale as
+        ``tools.thread_context.propagate_context_to_thread`` in the tool fan-out.
         """
+        ctx = contextvars.copy_context()
+        fn = functools.partial(ctx.run, fn)
         executor = self._get_sync_executor()
         if executor is None:
             # Executor unavailable (shut down / creation failed) — run

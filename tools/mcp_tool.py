@@ -1516,7 +1516,7 @@ class MCPServerTask:
     """
 
     __slots__ = (
-        "name", "session", "tool_timeout",
+        "name", "session", "tool_timeout", "cwd", "scope_key",
         "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config",
         "_sampling", "_elicitation",
@@ -1529,8 +1529,19 @@ class MCPServerTask:
         "_reconnect_retries",
     )
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, cwd: str = "", scope_key: str = ""):
         self.name = name
+        # Working directory this transport's stdio child is spawned in.
+        # Empty means "not cwd-sensitive": HTTP transports, and any task built
+        # without an explicit directory, which keeps inheriting the process cwd
+        # exactly as before. A non-empty ``cwd`` is what marks a task as
+        # scopable — see ``_call_scope()``.
+        self.cwd: str = cwd
+        # Key under which this instance's breaker/registry state lives. Equal
+        # to ``name`` for the instance that owns the tool schemas; the extra
+        # per-project clones carry their own key so a stale circuit breaker or
+        # reconnect from one project can never gate another's calls.
+        self.scope_key: str = scope_key or name
         self.session: Optional[Any] = None
         self.tool_timeout: float = _DEFAULT_TOOL_TIMEOUT
         self._task: Optional[asyncio.Task] = None
@@ -1764,6 +1775,16 @@ class MCPServerTask:
         """
         from tools.registry import registry
 
+        if self.scope_key != self.name:
+            # Per-project transport clone. The tool names/schemas belong to the
+            # primary instance (same guard as _register_tools_when_ready): a
+            # clone republishing them would mutate the agent's tool list
+            # mid-conversation from another project's transport, and — worse —
+            # would leave the clone owning _registered_tool_names, so when that
+            # one project's child dies the park/shutdown path would deregister
+            # the server's tools for every other session in the process.
+            # Only the transport is scoped; the schema never is.
+            return
         if not self._advertises_tools():
             # A server that doesn't implement tools/* should never send
             # tools/list_changed, but guard anyway — calling tools/list
@@ -2065,10 +2086,17 @@ class MCPServerTask:
         # package, not the watchdog wrapper.
         command, args = _wrap_command_with_watchdog(command, args)
 
+        # A stdio child inherits the parent's cwd unless told otherwise, and
+        # project-sensitive servers derive their state from it (Hindsight reads
+        # ${PWD} to pick a memory bank). Spawning in the task's own resolved
+        # directory is what makes two sessions in different projects reach
+        # different processes instead of one gateway-launch-dir process.
+        # None keeps the pre-existing inherit behavior for tasks with no cwd.
         server_params = StdioServerParameters(
             command=command,
             args=args,
             env=safe_env if safe_env else None,
+            cwd=self.cwd or None,
         )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
@@ -2159,7 +2187,9 @@ class MCPServerTask:
                     # Session is live again: clear any breaker state from a
                     # prior outage so the first call after recovery isn't
                     # gated on a stale consecutive-failure count (#16788).
-                    _reset_server_error(self.name)
+                    # Keyed by scope: one project's recovery must not clear
+                    # another project's failure count for the same server.
+                    _reset_server_error(self.scope_key)
                     # This session is live: reset the reconnect retry counter
                     # so transient prior failures do not accumulate toward
                     # permanent parking (#57604).
@@ -2599,6 +2629,13 @@ class MCPServerTask:
         """
         if not self._ready.is_set() or self._registered_tool_names:
             return
+        if self.scope_key != self.name:
+            # Per-project transport clone. Tool names and schemas are owned by
+            # the primary instance and must stay byte-identical for the whole
+            # conversation — re-publishing them from a clone's reconnect would
+            # mutate the agent's tool list mid-flight and break the prompt
+            # cache. Only the transport is scoped; the schema never is.
+            return
         self._registered_tool_names = _register_server_tools(
             self.name, self, self._config
         )
@@ -2968,6 +3005,34 @@ _servers: Dict[str, MCPServerTask] = {}
 _server_connecting: set[str] = set()
 _server_connect_errors: Dict[str, str] = {}
 
+# Per-project stdio transport clones, keyed by
+# ``server_name \0 profile_home \0 canonical_cwd``.
+#
+# ``_servers`` holds one instance per configured server, connected once during
+# discovery — in the gateway that means the directory ``hermes serve`` was
+# launched from, which is not any session's project. stdio children inherit
+# that cwd, so a project-sensitive server (Hindsight resolves its memory bank
+# from ${PWD}) answered every session with the launch directory's project.
+# Sessions whose resolved cwd differs from the discovered instance's get their
+# own transport here instead, created lazily on first call. HTTP transports are
+# absent by construction: they carry no cwd, so cloning them would only
+# multiply connections (see ``_call_scope``).
+#
+# The profile home is in the key because MCP credentials/config are resolved
+# per profile; two profiles sharing one child would cross their auth state.
+#
+# ponytail: unbounded in the number of distinct projects touched in one
+# process. Bound it with an LRU (or configure ``idle_timeout_seconds``, which
+# already recycles idle stdio children) if long-lived gateways start
+# accumulating processes.
+_scoped_servers: Dict[str, MCPServerTask] = {}
+
+# One lock per scope key: single-flight for the lazy connect, so two threads
+# racing the first call in the same project spawn one child, not two. Held
+# across the (blocking) connect, hence separate from ``_lock``, which only ever
+# guards short dict mutations.
+_scoped_connect_locks: Dict[str, threading.Lock] = {}
+
 # Circuit breaker: consecutive error counts per server.  After
 # _CIRCUIT_BREAKER_THRESHOLD consecutive failures, the handler returns
 # a "server unreachable" message that tells the model to stop retrying,
@@ -3244,9 +3309,12 @@ def _handle_auth_error_and_retry(
         )
         recovered = False
 
+    # Same thread and context as the handler that raised, so this resolves to
+    # the very transport the failed call used — not another project's clone.
+    srv = _server_in_scope(server_name)
+    breaker_key = _call_scope(server_name)[0]
+
     if recovered:
-        with _lock:
-            srv = _servers.get(server_name)
         reconnected = False
         if srv is not None and hasattr(srv, "_reconnect_event"):
             reconnected = _signal_reconnect_and_wait(
@@ -3264,17 +3332,17 @@ def _handle_auth_error_and_retry(
         # _bump_server_error on failure, so a genuinely broken server will
         # re-trip the breaker as normal.
         if reconnected:
-            _reset_server_error(server_name)
+            _reset_server_error(breaker_key)
 
         try:
             result = retry_call()
             try:
                 parsed = json.loads(result)
                 if "error" not in parsed:
-                    _reset_server_error(server_name)
+                    _reset_server_error(breaker_key)
                     return result
             except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)
+                _reset_server_error(breaker_key)
                 return result
         except Exception as retry_exc:
             logger.warning(
@@ -3285,7 +3353,7 @@ def _handle_auth_error_and_retry(
     # No recovery available, or retry also failed: surface a structured
     # needs_reauth error. Bumps the circuit breaker so the model stops
     # retrying the tool.
-    _bump_server_error(server_name)
+    _bump_server_error(breaker_key)
     return json.dumps({
         "error": (
             f"MCP server '{server_name}' requires re-authentication. "
@@ -3376,8 +3444,11 @@ def _handle_session_expired_and_retry(
     if not _is_session_expired_error(exc):
         return None
 
-    with _lock:
-        srv = _servers.get(server_name)
+    # Resolve the transport this call actually used: a stdio child that died
+    # ("broken pipe") belongs to one project's scope, and reconnecting another
+    # project's server would leave the caller's transport just as dead.
+    srv = _server_in_scope(server_name)
+    breaker_key = _call_scope(server_name)[0]
     if srv is None or not hasattr(srv, "_reconnect_event"):
         return None
 
@@ -3411,10 +3482,10 @@ def _handle_session_expired_and_retry(
         try:
             parsed = json.loads(result)
             if "error" not in parsed:
-                _server_error_counts[server_name] = 0
+                _server_error_counts[breaker_key] = 0
                 return result
         except (json.JSONDecodeError, TypeError):
-            _server_error_counts[server_name] = 0
+            _server_error_counts[breaker_key] = 0
             return result
     except Exception as retry_exc:
         logger.warning(
@@ -3784,20 +3855,160 @@ def _load_mcp_config() -> Dict[str, dict]:
 # Server connection helper
 # ---------------------------------------------------------------------------
 
-async def _connect_server(name: str, config: dict) -> MCPServerTask:
+async def _connect_server(
+    name: str, config: dict, cwd: str = "", scope_key: str = "",
+) -> MCPServerTask:
     """Create an MCPServerTask, start it, and return when ready.
 
     The server Task keeps the connection alive in the background.
     Call ``server.shutdown()`` (on the same event loop) to tear it down.
+
+    ``cwd`` is the directory a stdio child is spawned in (ignored by HTTP
+    transports); ``scope_key`` names the per-project clone (see
+    ``_scoped_servers``) and defaults to owning the server name's
+    registry/breaker state.
+
+    An omitted ``cwd`` means "the baseline scope", i.e. ``_canonical_call_cwd()``
+    — NOT the process cwd. The two routinely differ (the gateway's unit starts
+    in its install dir while ``TERMINAL_CWD`` carries the configured
+    ``terminal.cwd``), and a primary spawned in the process cwd would match no
+    session at all: ``_call_scope`` would clone every stdio server forever and
+    this connection would serve nobody.
 
     Raises:
         ValueError: if required config keys are missing.
         ImportError: if HTTP transport is needed but not available.
         Exception: on connection or initialization failure.
     """
-    server = MCPServerTask(name)
+    server = MCPServerTask(name, cwd=cwd or _canonical_call_cwd(), scope_key=scope_key)
     await server.start(config)
     return server
+
+
+# ---------------------------------------------------------------------------
+# Per-project transport scope
+# ---------------------------------------------------------------------------
+
+def _canonical_call_cwd() -> str:
+    """The directory this call's cwd-sensitive stdio servers must run in.
+
+    ``resolve_agent_cwd()`` is the existing single source of truth for "where
+    does the agent live": the per-session ContextVar the gateway binds, else
+    ``TERMINAL_CWD``, else the launch dir. It only accepts paths that are real
+    local directories, which is what makes the two dangerous cases safe for
+    free — a remote-backend session path (not present on this host) and a
+    deleted worktree both fall back to the host default, so ``Popen`` never
+    receives a nonexistent directory and every remote session shares one scope.
+
+    Must run on the CALLER's thread. Coroutines scheduled onto the MCP loop are
+    created in the loop thread's context and cannot see the session ContextVar
+    (the same reason ``_wrap_with_home_override`` exists), so the scope is
+    resolved here, at tool-call time, and passed down explicitly.
+    """
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    try:
+        # realpath so /project, /project/ and a symlinked path all name one
+        # scope instead of spawning a child each.
+        return os.path.realpath(str(resolve_agent_cwd()))
+    except Exception:
+        return os.path.realpath(os.getcwd())
+
+
+def _call_scope(server_name: str) -> tuple[str, str]:
+    """Return ``(scope_key, cwd)`` for the calling context.
+
+    ``cwd`` is empty exactly when the call belongs to the server's primary
+    ``_servers`` instance: HTTP transports (nothing to inherit a cwd from),
+    test doubles injected straight into ``_servers``, and any session already
+    sitting in the directory the primary child runs in. A *different* local
+    directory is the only thing that produces a scoped key — so single-project
+    processes (CLI, cron, a gateway whose sessions all live in the launch dir)
+    behave exactly as before and spawn nothing extra.
+    """
+    with _lock:
+        primary = _servers.get(server_name)
+    # isinstance, not duck-typing: tests inject Mock stand-ins into ``_servers``
+    # and a Mock answers every attribute with a truthy Mock, which would send a
+    # fake transport down the scoped-connect path hunting a child that does not
+    # exist. Anything that isn't a real task has no child process to scope.
+    if not isinstance(primary, MCPServerTask) or primary._is_http():
+        return server_name, ""
+
+    # Where the primary child is REALLY running: the cwd discovery spawned it
+    # with (``_canonical_call_cwd()`` — see _discover_and_register_server), and
+    # the process cwd only for a task built without one, which then inherited it.
+    primary_cwd = primary.cwd or os.path.realpath(os.getcwd())
+    want = _canonical_call_cwd()
+    if want == primary_cwd:
+        return server_name, ""
+
+    from hermes_constants import get_hermes_home
+
+    return f"{server_name}\0{get_hermes_home()}\0{want}", want
+
+
+def _server_in_scope(server_name: str) -> Optional[MCPServerTask]:
+    """Return the connected instance for this call's scope, without creating one."""
+    key, cwd = _call_scope(server_name)
+    with _lock:
+        if not cwd:
+            return _servers.get(server_name)
+        return _scoped_servers.get(key)
+
+
+def _ensure_server_in_scope(server_name: str) -> Optional[MCPServerTask]:
+    """Return this call's transport, connecting a missing project scope lazily."""
+    key, cwd = _call_scope(server_name)
+    with _lock:
+        if not cwd:
+            return _servers.get(server_name)
+        server = _scoped_servers.get(key)
+        if server is not None:
+            return server
+        primary = _servers.get(server_name)
+        # One lock per scope: concurrent first calls in the same project wait
+        # for a single spawn, while a different project connects in parallel.
+        connect_lock = _scoped_connect_locks.setdefault(key, threading.Lock())
+
+    if primary is None:
+        return None
+    # Reuse the primary's already-interpolated config; re-reading config.yaml
+    # here could pick up an edit mid-conversation and change the tool surface.
+    config = dict(getattr(primary, "_config", None) or {})
+    connect_timeout = float(config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT))
+
+    with connect_lock:
+        with _lock:
+            server = _scoped_servers.get(key)
+        if server is not None:
+            return server
+        try:
+            server = _run_on_mcp_loop(
+                lambda: asyncio.wait_for(
+                    _connect_server(server_name, config, cwd=cwd, scope_key=key),
+                    timeout=connect_timeout,
+                ),
+                # Outer bound sits above the inner one so the inner wait_for
+                # reports the real connect failure instead of racing it.
+                timeout=connect_timeout + 5,
+            )
+        except Exception as exc:
+            # Includes InterruptedError (the user sent a new message while the
+            # child was starting): the handlers already turn a missing server
+            # into a clean "not connected" reply, so nothing escapes as a crash.
+            logger.warning(
+                "MCP server '%s': could not start a transport for %s: %s",
+                server_name, cwd, _exc_str(exc),
+            )
+            return None
+        with _lock:
+            _scoped_servers[key] = server
+        logger.info(
+            "MCP server '%s': started a dedicated stdio transport in %s",
+            server_name, cwd,
+        )
+        return server
 
 
 # ---------------------------------------------------------------------------
@@ -3839,13 +4050,15 @@ def _request_lazy_reconnect(server_name: str, server: MCPServerTask) -> bool:
 
 
 def _get_connected_server_for_call(server_name: str) -> Optional[MCPServerTask]:
-    """Return a connected server, lazily reconnecting recycled stdio state."""
-    with _lock:
-        server = _servers.get(server_name)
+    """Return a connected server, lazily reconnecting recycled stdio state.
+
+    Transport selection happens here, per call, from the caller's session cwd —
+    never at registration time. That is what lets ``session.cwd.set`` take
+    effect on the very next tool call without touching the agent's tool list.
+    """
+    server = _ensure_server_in_scope(server_name)
     if server is not None and server.session is None and server._is_recycled_stdio():
         _request_lazy_reconnect(server_name, server)
-        with _lock:
-            server = _servers.get(server_name)
     return server
 
 
@@ -3864,6 +4077,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        # Breaker state is per transport, not per server name: one project's
+        # dead stdio child must not gate a healthy sibling project's calls.
+        # Resolved here, on the calling thread, because the session cwd lives
+        # in a ContextVar the MCP loop cannot see.
+        breaker_key = _call_scope(server_name)[0]
+
         # Circuit breaker: if this server has failed too many times
         # consecutively, short-circuit with a clear message so the model
         # stops retrying and uses alternative approaches (#10447).
@@ -3874,15 +4093,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         # failure the error paths below bump the count again, which
         # re-stamps the open-time via _bump_server_error (re-arming
         # the cooldown).
-        if _server_error_counts.get(server_name, 0) >= _CIRCUIT_BREAKER_THRESHOLD:
-            opened_at = _server_breaker_opened_at.get(server_name, 0.0)
+        if _server_error_counts.get(breaker_key, 0) >= _CIRCUIT_BREAKER_THRESHOLD:
+            opened_at = _server_breaker_opened_at.get(breaker_key, 0.0)
             age = time.monotonic() - opened_at
             if age < _CIRCUIT_BREAKER_COOLDOWN_SEC:
                 remaining = max(1, int(_CIRCUIT_BREAKER_COOLDOWN_SEC - age))
                 return json.dumps({
                     "error": (
                         f"MCP server '{server_name}' is unreachable after "
-                        f"{_server_error_counts[server_name]} consecutive "
+                        f"{_server_error_counts[breaker_key]} consecutive "
                         f"failures. Auto-retry available in ~{remaining}s. "
                         f"Do NOT retry this tool yet — use alternative "
                         f"approaches or ask the user to check the MCP server."
@@ -3892,7 +4111,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         server = _get_connected_server_for_call(server_name)
         if not server:
-            _bump_server_error(server_name)
+            _bump_server_error(breaker_key)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
@@ -3918,7 +4137,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # without burning iterations. The breaker resets once the
                 # fresh session initializes (_run_stdio/_run_http call
                 # _reset_server_error).
-                _bump_server_error(server_name)
+                _bump_server_error(breaker_key)
                 if _signal_reconnect(server):
                     return json.dumps({
                         "error": (
@@ -3999,11 +4218,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             try:
                 parsed = json.loads(result)
                 if "error" in parsed:
-                    _bump_server_error(server_name)
+                    _bump_server_error(breaker_key)
                 else:
-                    _reset_server_error(server_name)  # success — reset
+                    _reset_server_error(breaker_key)  # success — reset
             except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)  # non-JSON = success
+                _reset_server_error(breaker_key)  # non-JSON = success
             return result
         except InterruptedError:
             return _interrupted_call_result()
@@ -4028,7 +4247,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
 
-            _bump_server_error(server_name)
+            _bump_server_error(breaker_key)
             logger.error(
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,
@@ -4845,6 +5064,11 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     """Connect to a single MCP server, discover tools, and register them.
 
+    The discovered instance is the baseline scope: ``_connect_server`` spawns it
+    in ``_canonical_call_cwd()`` — the same resolver every tool call scopes
+    itself by — so only sessions that resolve to a *different* directory pay for
+    a transport of their own.
+
     Returns list of registered tool names.
     """
     connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
@@ -5421,9 +5645,13 @@ def shutdown_mcp_servers():
     Each server Task is signalled to exit its ``async with`` block so that
     the anyio cancel-scope cleanup happens in the same Task that opened it.
     All servers are shut down in parallel via ``asyncio.gather``.
+
+    Every scope is closed, not just the primary one: the per-project stdio
+    clones own real child processes, and skipping them would leak one process
+    per project the user visited.
     """
     with _lock:
-        servers_snapshot = list(_servers.values())
+        servers_snapshot = list(_servers.values()) + list(_scoped_servers.values())
 
     # Fast path: nothing to shut down.
     if not servers_snapshot:
@@ -5442,6 +5670,8 @@ def shutdown_mcp_servers():
                 )
         with _lock:
             _servers.clear()
+            _scoped_servers.clear()
+            _scoped_connect_locks.clear()
 
     with _lock:
         loop = _mcp_loop

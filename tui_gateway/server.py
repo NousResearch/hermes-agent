@@ -275,7 +275,13 @@ _detached_ws_transport = _DropTransport()
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
-    def __init__(self, session_key: str, model: str, profile_home: str | None = None):
+    def __init__(
+        self,
+        session_key: str,
+        model: str,
+        cwd: str,
+        profile_home: str | None = None,
+    ):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
@@ -297,6 +303,16 @@ class _SlashWorker:
         # slash_worker runs the Hermes agent → needs provider credentials.
         # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
         env = hermes_subprocess_env(inherit_credentials=True)
+        if _is_local_terminal_backend():
+            # Popen(cwd=...) alone is not enough: the child resolves its project
+            # through agent.runtime_cwd.resolve_agent_cwd(), which prefers
+            # TERMINAL_CWD — and it inherits the gateway's (the launch dir) in
+            # this env copy. cli.load_cli_config only re-exports it from the
+            # child's own cwd when _HERMES_GATEWAY is unset, which it is not once
+            # gateway.run has been imported. Pin it so both agree.
+            # Remote backends keep the inherited TERMINAL_CWD: it names a path in
+            # the target environment, not a host directory.
+            env["TERMINAL_CWD"] = cwd
         if profile_home:
             # Global-remote / multi-profile sessions: the worker must resolve
             # config/skills/state against the session's profile home, not the
@@ -311,6 +327,10 @@ class _SlashWorker:
         # inherited pgid, and killpg() then kills the TUI parent itself.
         # See agent/lsp/client.py for the symmetric LSP server fix and
         # tools/mcp_tool.py _filter_mcp_children for defense-in-depth.
+        #
+        # `cwd` is required, not defaulted: the worker's stdio MCP children read
+        # it as the project (see _local_session_process_cwd). A default would let
+        # a new call site silently fall back to the gateway's launch dir again.
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -318,7 +338,7 @@ class _SlashWorker:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            cwd=os.getcwd(),
+            cwd=cwd,
             env=env,
             creationflags=windows_hide_flags(),
             start_new_session=True,
@@ -1401,6 +1421,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 worker = _SlashWorker(
                     key,
                     getattr(agent, "model", _resolve_model()),
+                    _local_session_process_cwd(current),
                     profile_home=current.get("profile_home"),
                 )
                 _attach_worker(sid, current, worker)
@@ -1642,6 +1663,24 @@ def _display_session_cwd(session: dict | None) -> str:
         _persist_session_git_meta(session, healed)
 
     return healed
+
+
+def _local_session_process_cwd(session: dict | None) -> str:
+    """Host-valid cwd to spawn this session's child processes in.
+
+    The slash worker is the parent of every stdio MCP server a session starts,
+    and cwd-sensitive servers (Hindsight derives its bank from ${PWD}) inherit
+    it. Spawning in the gateway's launch directory therefore binds a project
+    session to whatever directory `hermes desktop` was started from.
+
+    Two paths must never reach a host ``Popen(cwd=...)``: a remote backend's cwd
+    (it exists in the target environment, not here) and a cwd that no longer
+    exists (Popen raises). Both fall back to the gateway's own cwd.
+    """
+    if not _is_local_terminal_backend():
+        return os.getcwd()
+    cwd = _display_session_cwd(session)
+    return cwd if cwd and os.path.isdir(cwd) else os.getcwd()
 
 
 def _session_source(session: dict | None) -> str:
@@ -2811,6 +2850,7 @@ def _restart_slash_worker(sid: str, session: dict):
         new_worker = _SlashWorker(
             session["session_key"],
             getattr(session.get("agent"), "model", _resolve_model()),
+            _local_session_process_cwd(session),
             profile_home=session.get("profile_home"),
         )
     except Exception:
@@ -4733,6 +4773,7 @@ def _init_session(
             _SlashWorker(
                 key,
                 getattr(agent, "model", _resolve_model()),
+                _local_session_process_cwd(_sessions[sid]),
                 profile_home=_sessions[sid].get("profile_home"),
             ),
         )
@@ -5954,10 +5995,18 @@ def _(rid, params: dict) -> dict:
     raw = str(params.get("cwd", "") or "").strip()
     if not raw:
         return _err(rid, 4016, "cwd required")
+    had_worker = session.get("slash_worker") is not None
+    previous = _local_session_process_cwd(session)
     try:
         cwd = _set_session_cwd(session, raw)
     except ValueError as e:
         return _err(rid, 4017, str(e))
+    # The live worker (and every stdio MCP server under it) snapshotted the old
+    # project at spawn; only a respawn moves them. Skip it when the path merely
+    # normalized to the same dir, and never spawn eagerly for a session that has
+    # no worker — slash.exec's lazy path will build one on the new cwd.
+    if had_worker and _local_session_process_cwd(session) != previous:
+        _restart_slash_worker(params.get("session_id", ""), session)
     agent = session.get("agent")
     info = _session_info(agent, session) if agent is not None else {
         "cwd": cwd,
@@ -13283,6 +13332,7 @@ def _(rid, params: dict) -> dict:
             worker = _SlashWorker(
                 session["session_key"],
                 getattr(session.get("agent"), "model", _resolve_model()),
+                _local_session_process_cwd(session),
                 profile_home=session.get("profile_home"),
             )
             _attach_worker(params.get("session_id", ""), session, worker)

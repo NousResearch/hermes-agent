@@ -228,6 +228,10 @@ class TestStdioPidTracking:
 
         server = MCPServerTask.__new__(MCPServerTask)
         server.name = "test-zombie-reap"
+        # __new__ skips __init__, so every slot _run_stdio touches must be set
+        # by hand: no cwd means "inherit the process's", the pre-scoping default.
+        server.cwd = ""
+        server.scope_key = "test-zombie-reap"
         server._ready = MagicMock()
         server._shutdown_event = MagicMock()
         server._shutdown_event.is_set.return_value = True

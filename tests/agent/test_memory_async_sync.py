@@ -136,3 +136,42 @@ def test_writes_are_serialized_in_order():
         mgr.sync_all(f"turn-{i}", "resp", session_id="s1")
     assert mgr.flush_pending(timeout=10) is True
     assert order == [f"turn-{i}" for i in range(5)]
+
+
+def test_background_work_sees_the_turn_session_context(tmp_path):
+    """The worker must run in the calling turn's ContextVar context.
+
+    A bare ``ThreadPoolExecutor`` worker starts with an EMPTY
+    ``contextvars.Context``, so ``_SESSION_CWD`` (set per session by the
+    gateway) is unbound there and ``resolve_agent_cwd()`` silently falls back
+    to the process launch dir. Providers that derive per-project state from it
+    — Hindsight picks its memory bank from the session cwd — then wrote the
+    launch directory's bank for every project's automatic retain/prefetch.
+    """
+    from agent.runtime_cwd import clear_session_cwd, resolve_agent_cwd, set_session_cwd
+
+    project = tmp_path / "wrxn"
+    project.mkdir()
+    seen: dict[str, str] = {}
+
+    class _CwdProvider(_SlowProvider):
+        _name = "cwd"
+
+        def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
+            seen["sync"] = str(resolve_agent_cwd())
+
+        def queue_prefetch(self, query, *, session_id=""):
+            seen["prefetch"] = str(resolve_agent_cwd())
+
+    mgr = MemoryManager()
+    mgr.add_provider(_CwdProvider(delay=0.0))
+
+    set_session_cwd(str(project))
+    try:
+        mgr.sync_all("hi", "hey", session_id="s1")
+        mgr.queue_prefetch_all("hi", session_id="s1")
+    finally:
+        clear_session_cwd()
+
+    assert mgr.flush_pending(timeout=10) is True
+    assert seen == {"sync": str(project), "prefetch": str(project)}

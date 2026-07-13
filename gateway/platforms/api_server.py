@@ -1398,8 +1398,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
+        from gateway.status import read_runtime_status
+        runtime = read_runtime_status() or {}
+        status = "degraded" if runtime.get("gateway_state") == "draining" else "ok"
         return web.json_response(
-            {"status": "ok", "platform": "hermes-agent", "version": _hermes_version()}
+            {"status": status, "platform": "hermes-agent", "version": _hermes_version()}
         )
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":

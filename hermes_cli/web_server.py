@@ -1198,7 +1198,8 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
             with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
                     body = json.loads(resp.read())
-                    return True, body
+                    if body.get("status") != "degraded":
+                        return True, body
         except Exception:
             continue
     return False, None

@@ -1331,17 +1331,38 @@ class ShellFileOperations(FileOperations):
         return WriteResult()
 
     def move_file(self, src: str, dst: str) -> WriteResult:
-        """Move a file via mv."""
+        """Move/rename a file or directory.
+
+        Cross-platform: runs via ``python3 -c`` / ``python -c`` so it works
+        on Windows shells (``cmd.exe``/PowerShell) that have no ``mv``.
+        Mirrors the approach used by ``_python_delete`` for the same reason.
+        """
         src = self._expand_path(src)
         dst = self._expand_path(dst)
         for p in (src, dst):
             if _is_write_denied(p):
                 return WriteResult(error=f"Move denied: {p} is a protected path")
-        result = self._exec(
-            f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
+
+        # Bake paths via repr() so quoting is correct on every shell/OS.
+        snippet = (
+            "import shutil, pathlib, sys\n"
+            f"src = pathlib.Path({src!r})\n"
+            f"dst = pathlib.Path({dst!r})\n"
+            "try:\n"
+            "    dst.parent.mkdir(parents=True, exist_ok=True)\n"
+            "    shutil.move(str(src), str(dst))\n"
+            "except Exception as exc:\n"
+            "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
         )
+
+        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+
+        # Fall back to ``python`` on Windows / older systems without python3.
+        if result.exit_code != 0 and "python3" in (result.stdout or ""):
+            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+
         if result.exit_code != 0:
-            return WriteResult(error=f"Failed to move {src} -> {dst}: {result.stdout}")
+            return WriteResult(error=f"Failed to move {src} -> {dst}: {(result.stdout or '').strip() or 'unknown error'}")
         return WriteResult()
 
     # =========================================================================

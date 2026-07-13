@@ -51,7 +51,14 @@ def _start_chrome(port: int):
                 return proc, profile, info["webSocketDebuggerUrl"]
         except Exception:
             time.sleep(0.25)
+    # Own cleanup here: this fails before main() binds proc/profile at the call
+    # site, so main()'s finally can't reap the process or remove the profile.
     proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except Exception:
+        proc.kill()
+    shutil.rmtree(profile, ignore_errors=True)
     raise RuntimeError("Chrome didn't expose CDP")
 
 

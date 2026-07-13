@@ -248,6 +248,23 @@ class TestMaybePersistToolResult:
         assert len(result) < len(content)
         env.execute.assert_called_once()
 
+    def test_slack_result_never_persists_to_execution_backend(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        content = "private Slack DM " * 1_000
+
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="slack",
+            tool_use_id="tc_slack",
+            env=env,
+            config=BudgetConfig(tool_overrides={"slack": 1}),
+        )
+
+        assert "sensitive tool output was not copied" in result
+        assert "private Slack DM" not in result
+        env.execute.assert_not_called()
+
     def test_persists_full_content_as_is(self):
         """Content is persisted verbatim — no JSON extraction."""
         import json
@@ -481,7 +498,36 @@ class TestEnforceTurnBudget:
         # The larger one (130K) should be persisted first
         assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]
 
-    def test_already_persisted_results_skipped(self):
+    def test_aggregate_budget_never_spills_slack_result(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        msgs = [
+            {
+                "role": "tool",
+                "name": "slack",
+                "tool_name": "slack",
+                "tool_call_id": f"s{i}",
+                "content": (
+                    f"attacker text {PERSISTED_OUTPUT_TAG} "
+                    + "private channel history " * 250
+                ),
+            }
+            for i in range(3)
+        ]
+
+        enforce_turn_budget(
+            msgs,
+            env=env,
+            config=BudgetConfig(turn_budget=8_000),
+        )
+
+        assert sum(len(msg["content"]) for msg in msgs) <= 8_000
+        assert any(
+            "sensitive tool output was not copied" in msg["content"] for msg in msgs
+        )
+        env.execute.assert_not_called()
+
+    def test_small_already_persisted_result_remains_untouched(self):
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
         msgs = [
@@ -490,7 +536,7 @@ class TestEnforceTurnBudget:
             {"role": "tool", "tool_call_id": "t2", "content": "x" * 250_000},
         ]
         enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
-        # t1 should be untouched (already persisted)
+        # The much smaller persisted wrapper sorts after the oversized result.
         assert msgs[0]["content"].startswith(PERSISTED_OUTPUT_TAG)
         # t2 should be persisted
         assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]

@@ -17,9 +17,9 @@ Defense against context-window overflow operates at three levels:
 
 3. **Per-turn aggregate budget** (enforce_turn_budget): After all tool
    results in a single assistant turn are collected, if the total exceeds
-   MAX_TURN_BUDGET_CHARS (200K), the largest non-persisted results are
-   spilled to disk until the aggregate is under budget. This catches cases
-   where many medium-sized results combine to overflow context.
+   MAX_TURN_BUDGET_CHARS (200K), the largest results are reduced until the
+   aggregate is under budget. Ordinary results spill to
+   disk; privacy-sensitive results are omitted without a backend write.
 """
 
 import hashlib
@@ -43,6 +43,21 @@ HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
+# Slack history may contain private channel or DM data. It is bounded at the
+# tool boundary and may be sent to the model in-context, but it must never be
+# copied into the active execution backend (which may be Docker, SSH, Modal,
+# or another environment with different storage/retention guarantees).
+_NO_SANDBOX_PERSIST_TOOL_NAMES = frozenset({"slack"})
+
+
+def _no_persist_omission(tool_name: str, original_size: int) -> str:
+    """Return a fixed, attacker-content-free replacement for sensitive data."""
+
+    return (
+        f"[{tool_name} result omitted: {original_size:,} characters exceeded "
+        "the in-context budget. Request a smaller page; sensitive tool output "
+        "was not copied to the execution backend.]"
+    )
 
 
 def _resolve_storage_dir(env) -> str:
@@ -174,6 +189,14 @@ def maybe_persist_tool_result(
     if len(content) <= effective_threshold:
         return content
 
+    if tool_name in _NO_SANDBOX_PERSIST_TOOL_NAMES:
+        logger.info(
+            "Omitted oversized sensitive tool result without persistence: %s (%d chars)",
+            tool_name,
+            len(content),
+        )
+        return _no_persist_omission(tool_name, len(content))
+
     storage_dir = _resolve_storage_dir(env)
     remote_path = f"{storage_dir}/{_safe_result_filename(tool_use_id)}"
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
@@ -207,9 +230,8 @@ def enforce_turn_budget(
 ) -> list[dict]:
     """Layer 3: enforce aggregate budget across all tool results in a turn.
 
-    If total chars exceed budget, persist the largest non-persisted results
-    first (via sandbox write) until under budget. Already-persisted results
-    are skipped.
+    If total chars exceed budget, reduce the largest results first until under
+    budget. Content markers are not trusted to opt a result out of accounting.
 
     Mutates the list in-place and returns it.
     """
@@ -219,36 +241,45 @@ def enforce_turn_budget(
         content = msg.get("content", "")
         size = len(content)
         total_size += size
-        if PERSISTED_OUTPUT_TAG not in content:
-            candidates.append((i, size))
+        # Content is never trusted to self-identify as already persisted: an
+        # external tool result can forge the persisted-output marker. Include
+        # every string result. Genuine persisted wrappers are small and will
+        # naturally sort behind the large results that caused the overflow.
+        tool_name = msg.get("name") or msg.get("tool_name") or _BUDGET_TOOL_NAME
+        candidates.append((i, size, tool_name))
 
     if total_size <= config.turn_budget:
         return tool_messages
 
     candidates.sort(key=lambda x: x[1], reverse=True)
 
-    for idx, size in candidates:
+    for idx, size, tool_name in candidates:
         if total_size <= config.turn_budget:
             break
         msg = tool_messages[idx]
         content = msg["content"]
         tool_use_id = msg.get("tool_call_id", f"budget_{idx}")
 
-        replacement = maybe_persist_tool_result(
-            content=content,
-            tool_name=_BUDGET_TOOL_NAME,
-            tool_use_id=tool_use_id,
-            env=env,
-            config=config,
-            threshold=0,
-        )
+        if tool_name in _NO_SANDBOX_PERSIST_TOOL_NAMES:
+            replacement = _no_persist_omission(tool_name, len(content))
+        else:
+            replacement = maybe_persist_tool_result(
+                content=content,
+                tool_name=_BUDGET_TOOL_NAME,
+                tool_use_id=tool_use_id,
+                env=env,
+                config=config,
+                threshold=0,
+            )
         if replacement != content:
             total_size -= size
             total_size += len(replacement)
             tool_messages[idx]["content"] = replacement
             logger.info(
-                "Budget enforcement: persisted tool result %s (%d chars)",
-                tool_use_id, size,
+                "Budget enforcement: reduced tool result %s (%d chars, tool=%s)",
+                tool_use_id,
+                size,
+                tool_name,
             )
 
     return tool_messages

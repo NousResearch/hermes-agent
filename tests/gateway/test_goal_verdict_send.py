@@ -152,6 +152,38 @@ async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
 
 
 @pytest.mark.asyncio
+async def test_goal_continuation_strips_direct_slack_provenance(hermes_home):
+    """A judge-created turn must not inherit trust from live Slack inbound."""
+    runner, adapter, session_entry, _src = _make_runner_with_adapter()
+    src = SessionSource(
+        platform=Platform.SLACK,
+        user_id="U1",
+        chat_id="C1",
+        user_name="tester",
+        chat_type="channel",
+        scope_id="T1",
+        delivered_via_direct_slack_adapter=True,
+    )
+    runner.adapters = {Platform.SLACK: adapter}
+    runner.session_store._generate_session_key.return_value = build_session_key(src)
+
+    from hermes_cli.goals import GoalManager
+
+    GoalManager(session_entry.session_id).set("polish the docs")
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("continue", "still needs work", False, None)):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="here's a partial edit",
+        )
+
+    assert src.delivered_via_direct_slack_adapter is True
+    queued = next(iter(adapter._pending_messages.values()))
+    assert queued.source.delivered_via_direct_slack_adapter is False
+
+
+@pytest.mark.asyncio
 async def test_goal_verdict_budget_exhausted_sends_pause(hermes_home):
     """When the budget is exhausted, a '⏸ Goal paused' message must be sent
     and no further continuation enqueued."""

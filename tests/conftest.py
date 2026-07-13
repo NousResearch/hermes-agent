@@ -178,6 +178,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_PLATFORM",
     "HERMES_SESSION_CHAT_ID",
     "HERMES_SESSION_CHAT_NAME",
+    "HERMES_SESSION_SCOPE_ID",
     "HERMES_SESSION_THREAD_ID",
     "HERMES_SESSION_SOURCE",
     "HERMES_SESSION_KEY",
@@ -655,7 +656,7 @@ def _live_system_guard(request, monkeypatch):
                 return real_killpg(pgid, sig, *args, **kwargs)
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
-                f"os.killpg({pgid}, {sig}) — PGID is outside the test "
+                f"os.killpg({pgid}, {sig}) — PGID is outside the test "  # windows-footgun: ok
                 "process group. See _live_system_guard for the why."
             )
 

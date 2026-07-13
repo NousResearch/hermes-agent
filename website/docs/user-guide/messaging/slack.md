@@ -342,19 +342,60 @@ In channels, always @mention the bot to start a conversation. Once the bot is ac
 
 ### Reading channel history
 
-When `channels:history` / `groups:history` are granted and the bot is invited to a channel, Slack agents receive the `slack` tool on the `hermes-slack` platform toolset. It can list visible channels, fetch recent `conversations.history`, and find recent messages or X/Twitter links in channels the bot can see.
+Slack history is an explicit, read-only opt-in. Enable **Slack History** for the
+Slack platform with `hermes tools`, or configure it directly:
+
+```yaml
+platform_toolsets:
+  slack: [hermes-slack, slack_history]
+```
+
+When the matching history scopes are granted, the `slack` tool can:
+
+- fetch a bounded page of the active channel with `conversations.history`;
+- fetch a thread parent and replies with `conversations.replies`, either from
+  the active thread or an HTTPS workspace Slack permalink; and
+- perform a bounded text or link-domain filter over recent active-channel
+  history.
 
 This is separate from live event delivery. Event subscriptions let Hermes react to messages as they arrive; the `slack` tool lets the agent look backward in a channel when a task asks for an older link or message.
 
-The history tool uses `SLACK_BOT_TOKEN` or `platforms.slack.token`, but it intentionally requires exactly one bot token. Comma-separated multi-workspace token lists fail closed because the tool does not yet select a token from the active Slack team/session. Run separate single-workspace deployments when you need deterministic history lookup across multiple Slack workspaces.
+The tool reuses the current profile's live Slack adapter and SDK client. It
+does not read a process-global token or create a second HTTP transport, so the
+profile and proxy stay consistent with the active conversation. Each adapter
+must own exactly one workspace: comma-separated multi-workspace bot tokens are
+rejected for history reads. Serve one Slack bot token per profile instead.
 
 History responses cap message text per result to keep tool output bounded. URLs are still extracted from the full Slack message text before truncation.
 
-If `slack.allowed_channels` / `SLACK_ALLOWED_CHANNELS` is configured, the history tool honors the same channel allowlist: `list_channels` filters out non-allowed channels, while `fetch_history` and `find_messages` reject non-allowed channel IDs. DMs remain exempt, matching live-message handling.
+History reads are always restricted to the current inbound channel or DM. A
+permalink for another channel, an arbitrary channel ID, and another user's DM
+are rejected before Hermes calls Slack. Bot visibility is not treated as user
+authorization. Retrieved message text is also wrapped as untrusted external
+data so instructions inside channel history do not become agent instructions.
+The inbound turn must come directly from the local Slack adapter; Slack turns
+delivered through an upstream relay cannot borrow a local adapter credential.
+
+Slack permalinks are parsed locally; Hermes never fetches the permalink URL.
+For a reply permalink, the `thread_ts` query value selects the parent thread.
+
+### Posting a deliberate reply
+
+The model-facing history tool is intentionally read-only. Hermes does not give
+the agent a generic outbound Slack action. Operator- or script-initiated writes
+use the existing [`hermes send`](/guides/pipe-script-output) command outside the
+agent loop. To reply to a known thread explicitly:
+
+```bash
+hermes send --to slack:C0A6KDTQ667:1783909752.038519 "Processed — thank you."
+```
+
+This preserves the project's boundary between model reads and deliberate
+outbound delivery.
 
 ### Message deletion limits
 
-The built-in `slack` history tool is read-only. Slack's `chat.delete` API does not let a bot token delete arbitrary user-authored messages; a bot token can delete only messages posted by that same bot. If you approve that a user-posted X URL has been processed, Hermes can record that state or reply/react when configured, but it cannot delete the original user message unless you add a separate Slack user/admin-token path with the permissions Slack requires.
+The `slack_history` toolset's built-in `slack` tool is read-only. Slack's `chat.delete` API does not let a bot token delete arbitrary user-authored messages; a bot token can delete only messages posted by that same bot. If you approve that a user-posted X URL has been processed, Hermes can record that state or reply/react when configured, but it cannot delete the original user message unless you add a separate Slack user/admin-token path with the permissions Slack requires.
 
 ---
 
@@ -574,6 +615,10 @@ Make sure the bot has been **invited to the channel** (`/invite @Hermes Agent`).
 ## Multi-Workspace Support
 
 Hermes can connect to **multiple Slack workspaces** simultaneously using a single gateway instance. Each workspace is authenticated independently with its own bot user ID.
+
+This gateway feature does not extend to the opt-in `slack_history` toolset's `slack` tool. For
+history reads, serve one workspace token per profile; a comma-separated
+multi-workspace adapter fails closed before calling the Slack API.
 
 ### Configuration
 

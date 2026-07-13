@@ -135,6 +135,7 @@ def _redirect_cache(tmp_path, monkeypatch):
 class TestSlashCommandSessionIsolation:
     @pytest.mark.asyncio
     async def test_channel_slash_command_uses_group_session_semantics(self, adapter):
+        adapter._team_clients = {"T123": adapter._app.client}
         command = {
             "text": "hello",
             "user_id": "U123",
@@ -150,9 +151,11 @@ class TestSlashCommandSessionIsolation:
         assert event.source.chat_id == "C123"
         assert event.source.user_id == "U123"
         assert event.source.scope_id == "T123"
+        assert event.source.delivered_via_direct_slack_adapter is True
 
     @pytest.mark.asyncio
     async def test_dm_slash_command_keeps_dm_session_semantics(self, adapter):
+        adapter._team_clients = {"T123": adapter._app.client}
         command = {
             "text": "hello",
             "user_id": "U123",
@@ -168,6 +171,21 @@ class TestSlashCommandSessionIsolation:
         assert event.source.chat_id == "D123"
         assert event.source.user_id == "U123"
         assert event.source.scope_id == "T123"
+        assert event.source.delivered_via_direct_slack_adapter is True
+
+    @pytest.mark.asyncio
+    async def test_unowned_slash_workspace_fails_before_agent_turn(self, adapter):
+        adapter._team_clients = {"T_OWN": adapter._app.client}
+        command = {
+            "text": "hello",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T_OTHER",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +203,7 @@ class TestAppMentionHandler:
 
         # Track which events get registered
         registered_events = []
+        event_handlers = {}
         registered_commands = []
 
         mock_app = MagicMock()
@@ -192,6 +211,7 @@ class TestAppMentionHandler:
         def mock_event(event_type):
             def decorator(fn):
                 registered_events.append(event_type)
+                event_handlers[event_type] = fn
                 return fn
 
             return decorator
@@ -262,6 +282,60 @@ class TestAppMentionHandler:
             assert slash_matcher.match(
                 expected
             ), f"Slack slash regex does not match {expected}"
+
+        adapter._handle_slack_message = AsyncMock()
+        asyncio.run(
+            event_handlers["app_mention"](
+                {"team": "T_EXTERNAL", "channel": "C12345678"},
+                None,
+                context={"team_id": "T_FAKE"},
+                body={},
+            )
+        )
+        adapter._handle_slack_message.assert_awaited_once_with(
+            {"team": "T_EXTERNAL", "channel": "C12345678"},
+            {},
+            installation_team_id="T_FAKE",
+        )
+
+        adapter._handle_slack_message.reset_mock()
+        asyncio.run(
+            event_handlers["app_mention"](
+                {"team": "T_FAKE", "channel": "C12345678"},
+                None,
+                context={},
+                body={},
+            )
+        )
+        adapter._handle_slack_message.assert_not_awaited()
+
+        asyncio.run(
+            event_handlers["app_mention"](
+                {"team": "T_EXTERNAL", "channel": "C12345678"},
+                None,
+                context={},
+                body={"team_id": "T_FAKE"},
+            )
+        )
+        adapter._handle_slack_message.assert_awaited_once_with(
+            {"team": "T_EXTERNAL", "channel": "C12345678"},
+            {"team_id": "T_FAKE"},
+            installation_team_id="T_FAKE",
+        )
+
+        adapter._handle_slack_file_shared = AsyncMock()
+        asyncio.run(
+            event_handlers["file_shared"](
+                {"team_id": "T_EXTERNAL", "file_id": "F123"},
+                None,
+                context={"team_id": "T_FAKE"},
+                body={},
+            )
+        )
+        adapter._handle_slack_file_shared.assert_awaited_once_with(
+            {"team_id": "T_EXTERNAL", "file_id": "F123"},
+            installation_team_id="T_FAKE",
+        )
 
 
 class TestSlackConnectCleanup:
@@ -354,6 +428,60 @@ class TestSlackConnectCleanup:
         assert result is True
         first_handler.close_async.assert_awaited_once_with()
         assert adapter._handler is second_handler
+        assert adapter._configured_workspace_count == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_start_clears_published_workspace_count_and_lock(self):
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+        # Simulate authorization state left by an earlier successful run. The
+        # reconnect must clear it before doing any work and again if startup
+        # fails after the new count has been published.
+        adapter._configured_workspace_count = 1
+
+        mock_app = MagicMock()
+
+        def _noop_decorator(_event_type):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        mock_app.event = _noop_decorator
+        mock_app.command = _noop_decorator
+        mock_app.action = _noop_decorator
+        mock_app.client = AsyncMock()
+
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(
+            return_value={
+                "user_id": "U_BOT",
+                "user": "testbot",
+                "team_id": "T_FAKE",
+                "team": "FakeTeam",
+            }
+        )
+
+        with (
+            patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
+            patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client),
+            patch.object(adapter, "_start_socket_mode_handler"),
+            patch.object(
+                adapter,
+                "_ensure_socket_watchdog",
+                side_effect=RuntimeError("watchdog setup failed"),
+            ),
+            patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}),
+            patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
+            patch("gateway.status.release_scoped_lock") as mock_release,
+        ):
+            result = await adapter.connect()
+
+        assert result is False
+        assert adapter._running is False
+        assert adapter._configured_workspace_count == 0
+        assert adapter._platform_lock_identity is None
+        mock_release.assert_called_once_with("slack-app-token", "xapp-fake")
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +636,7 @@ class TestSlackSocketWatchdog:
             assert adapter._handler is None
             assert adapter._socket_mode_task is None
             assert adapter._socket_watchdog_task is None
+            assert adapter._configured_workspace_count == 0
             assert instances[0].closed is True
 
             for _ in range(10):
@@ -1972,6 +2101,26 @@ class TestIncomingAudioHandling:
 
 
 class TestMessageRouting:
+    @pytest.mark.asyncio
+    async def test_trusted_outer_team_stamps_direct_slack_source(self, adapter):
+        adapter._team_clients = {"T_FAKE": adapter._app.client}
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1234567890.000009",
+        }
+
+        await adapter._handle_slack_message(
+            event,
+            installation_team_id="T_FAKE",
+        )
+
+        source = adapter.handle_message.await_args.args[0].source
+        assert source.scope_id == "T_FAKE"
+        assert source.delivered_via_direct_slack_adapter is True
+
     @pytest.mark.asyncio
     async def test_dm_processed_without_mention(self, adapter):
         """DM messages should be processed without requiring a bot mention."""

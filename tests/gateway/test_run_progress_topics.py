@@ -12,7 +12,7 @@ import pytest
 import gateway.platforms.base as base_platform
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.session import SessionSource
+from gateway.session import SessionSource, session_routing_source
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -697,6 +697,23 @@ class QueuedCommentaryAgent:
         }
 
 
+class QueuedSlackProvenanceAgent:
+    seen_direct_slack: list[bool] = []
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        from gateway.session_context import direct_slack_session
+
+        type(self).seen_direct_slack.append(direct_slack_session())
+        return {
+            "final_response": f"turn {len(type(self).seen_direct_slack)}",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class BackgroundReviewAgent:
     def __init__(self, **kwargs):
         self.background_review_callback = kwargs.get("background_review_callback")
@@ -1088,6 +1105,70 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
     assert result["final_response"] == "final response 2"
     assert "I'll inspect the repo first." in sent_texts
     assert "final response 1" in sent_texts
+
+
+@pytest.mark.asyncio
+async def test_queued_synthetic_slack_turn_rebinds_direct_provenance(monkeypatch, tmp_path):
+    """A queued synthetic turn cannot borrow the live Slack turn's read grant."""
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    QueuedSlackProvenanceAgent.seen_direct_slack = []
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = QueuedSlackProvenanceAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+    runner = _make_runner(adapter)
+    runner._goal_still_active_for_session = lambda _session_id: True
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"api_key": "***"},
+    )
+
+    source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="channel",
+        scope_id="T123",
+        delivered_via_direct_slack_adapter=True,
+    )
+    session_key = "agent:main:slack:channel:C123"
+    adapter._pending_messages[session_key] = MessageEvent(
+        text="[Continuing toward your standing goal]\nGoal: finish",
+        message_type=MessageType.TEXT,
+        source=session_routing_source(source),
+        message_id="queued-goal-1",
+    )
+
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    tokens = set_session_vars(
+        platform="slack",
+        chat_id="C123",
+        scope_id="T123",
+        session_key=session_key,
+        direct_slack=True,
+    )
+    try:
+        result = await runner._run_agent(
+            message="live inbound",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-slack-provenance",
+            session_key=session_key,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert result["final_response"] == "turn 2"
+    assert QueuedSlackProvenanceAgent.seen_direct_slack == [True, False]
 
 
 @pytest.mark.asyncio

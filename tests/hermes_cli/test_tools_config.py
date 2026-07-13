@@ -315,6 +315,50 @@ def test_discord_explicit_workaround_still_works():
     enabled = _get_platform_tools(config, "discord")
     assert "discord" in enabled
     assert "discord_admin" in enabled
+def test_slack_history_is_off_until_explicitly_enabled():
+    assert "slack_history" not in _get_platform_tools({}, "slack")
+    assert "slack_history" not in _get_platform_tools(
+        {"platform_toolsets": {"slack": ["hermes-slack"]}},
+        "slack",
+    )
+
+
+def test_slack_history_explicit_opt_in_is_slack_only():
+    slack_config = {
+        "platform_toolsets": {"slack": ["hermes-slack", "slack_history"]}
+    }
+    telegram_config = {
+        "platform_toolsets": {"telegram": ["hermes-telegram", "slack_history"]}
+    }
+
+    assert "slack_history" in _get_platform_tools(slack_config, "slack")
+    assert "slack_history" not in _get_platform_tools(telegram_config, "telegram")
+
+
+def test_slack_mcp_alias_is_not_shadowed_by_native_history_toolset():
+    from tools.registry import ToolRegistry
+    from toolsets import TOOLSETS, resolve_toolset
+
+    reg = ToolRegistry()
+    reg.register(
+        name="mcp__slack__search",
+        toolset="mcp-slack",
+        schema={
+            "name": "mcp__slack__search",
+            "description": "Search Slack through an MCP server",
+            "parameters": {"type": "object", "properties": {}},
+        },
+        handler=lambda *_args, **_kwargs: "{}",
+    )
+    reg.register_toolset_alias("slack", "mcp-slack")
+
+    assert "slack" not in TOOLSETS
+    with patch("tools.registry.registry", reg):
+        assert resolve_toolset("slack") == ["mcp__slack__search"]
+
+    config = {"mcp_servers": {"slack": {"url": "https://example.com/mcp"}}}
+    assert "slack" in _get_platform_tools(config, "cli")
+    assert "slack_history" not in _get_platform_tools(config, "cli")
 
 
 def test_get_platform_tools_x_search_auto_enabled_when_xai_api_key_present(monkeypatch):

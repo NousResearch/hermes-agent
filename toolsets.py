@@ -288,8 +288,8 @@ TOOLSETS = {
         "includes": [],
     },
 
-    "slack": {
-        "description": "Slack read-only channel history tools (list channels, fetch history, find links)",
+    "slack_history": {
+        "description": "Slack read-only active-conversation history and thread retrieval",
         "tools": ["slack"],
         "includes": [],
     },
@@ -473,9 +473,7 @@ TOOLSETS = {
     
     "hermes-slack": {
         "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS + [
-            "slack",
-        ],
+        "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
     

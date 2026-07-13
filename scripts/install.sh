@@ -570,11 +570,16 @@ install_uv() {
     # Two-stage: download the installer, then run it.  Piping
     # `curl | sh` masks curl failures (sh exits 0 on empty stdin)
     # and conflates network errors with installer errors.
-    local _uv_install_log _uv_installer
+    local _uv_install_log _uv_installer _uv_install_script_url
     _uv_install_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
     _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
-    if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_install_log"; then
-        log_error "Failed to download uv installer from https://astral.sh/uv/install.sh"
+    # UV_INSTALL_SCRIPT_URL: optional override for the uv installer script
+    # location (mirrored / air-gapped / proxied environments). The binary
+    # download inside the script separately honors astral's
+    # UV_INSTALLER_GITHUB_BASE_URL.
+    _uv_install_script_url="${UV_INSTALL_SCRIPT_URL:-https://astral.sh/uv/install.sh}"
+    if ! curl -LsSf "$_uv_install_script_url" -o "$_uv_installer" 2>"$_uv_install_log"; then
+        log_error "Failed to download uv installer from $_uv_install_script_url"
         log_info "curl output:"
         sed 's/^/    /' "$_uv_install_log" >&2
         log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"

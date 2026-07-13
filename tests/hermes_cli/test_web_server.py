@@ -7187,6 +7187,117 @@ class TestValidateProviderCredential:
         )
         assert captured["headers"] is None
 
+    @pytest.mark.parametrize(
+        ("base_url", "expected_trust_env"),
+        [
+            ("http://127.0.0.1:8080/v1", False),
+            ("http://localhost:11434/v1", False),
+            ("http://[::1]:8080/v1", False),
+            ("https://text.example.com/v1", True),
+        ],
+    )
+    def test_loopback_probe_bypasses_env_proxy(self, monkeypatch, base_url, expected_trust_env):
+        """Loopback endpoints must be probed directly, never through an
+        env-configured HTTP(S) proxy: the proxy's error page parses as "no
+        models" even though the endpoint answers fine when hit directly
+        (#63472). Non-loopback endpoints keep honoring env proxies."""
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": [{"id": "some-model"}]}
+
+        class _Client:
+            def __init__(self, *a, trust_env=True, **k):
+                captured["trust_env"] = trust_env
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, *a, **k):
+                return _Resp()
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        data = self._post("OPENAI_BASE_URL", base_url).json()
+        assert data["models"] == ["some-model"]
+        assert captured["trust_env"] is expected_trust_env
+
+    def test_loopback_probe_ignores_proxy_env_end_to_end(self, monkeypatch):
+        """Real localhost server + HTTP(S)_PROXY pointing at a dead port: the
+        probe must still enumerate the models. Fails before the fix (httpx
+        routes the loopback request into the dead proxy)."""
+        import http.server
+        import threading
+
+        payload = json.dumps(
+            {"object": "list", "data": [{"id": "qwen-local", "object": "model"}]}
+        ).encode()
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+            monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+            monkeypatch.delenv("NO_PROXY", raising=False)
+            base_url = f"http://127.0.0.1:{server.server_port}/v1"
+            data = self._post("OPENAI_BASE_URL", base_url).json()
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+        assert data["ok"] is True and data["reachable"] is True
+        assert data["models"] == ["qwen-local"]
+
+    def test_local_endpoint_error_status_surfaces_in_message(self, monkeypatch):
+        """An endpoint (or intercepting proxy) answering non-2xx must not read
+        as "advertised no models" — the HTTP status is surfaced instead."""
+
+        class _Resp:
+            status_code = 502
+            is_success = False
+
+            def json(self):
+                raise ValueError("not json")
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, *a, **k):
+                return _Resp()
+
+        monkeypatch.setattr("httpx.Client", _Client)
+
+        data = self._post("OPENAI_BASE_URL", "http://127.0.0.1:8080/v1").json()
+        assert data["ok"] is True and data["reachable"] is True
+        assert data["models"] == []
+        assert "HTTP 502" in data["message"]
+
 
 class TestDesktopCronTicker:
     """The dashboard backend fires cron jobs itself only when desktop-spawned."""

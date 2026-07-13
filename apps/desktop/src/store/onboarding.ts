@@ -810,6 +810,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   // the endpoint is up; an unreachable probe hard-blocks because we can't
   // resolve a model to route to.
   let model = ''
+  let probeMessage = ''
 
   try {
     const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)
@@ -823,14 +824,20 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     }
 
     model = (probe.models?.[0] ?? '').trim()
+    probeMessage = (probe.message ?? '').trim()
   } catch {
     return { ok: false, message: `Could not reach ${url}.` }
   }
 
   if (!model) {
+    // The probe distinguishes "endpoint answered but errored" (message set,
+    // e.g. a proxy or gateway answered HTTP 502 at /v1/models) from a healthy
+    // endpoint that genuinely serves no models.
     return {
       ok: false,
-      message: `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`
+      message: probeMessage
+        ? `Connected to ${url}, but ${probeMessage}`
+        : `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`
     }
   }
 

@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import inspect
 import importlib.util
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -6141,6 +6142,30 @@ _CREDENTIAL_PROBES: dict[str, tuple[str, str]] = {
 }
 
 
+def _probe_ignores_env_proxy(url: str) -> bool:
+    """Whether a ``/v1/models`` probe to ``url`` should bypass env proxies.
+
+    A loopback endpoint (llama.cpp, vLLM, Ollama on the same box) is never
+    meaningfully reachable *through* an HTTP(S) proxy: the proxy either fails
+    to connect back or answers with its own error page, which downstream
+    parses as "the endpoint advertised no models" even though hitting the URL
+    directly works. GUI-spawned backends inherit ``HTTP(S)_PROXY`` from the
+    login environment while an interactive CLI shell may not, and httpx (unlike
+    the CLI's urllib path on Windows) has no <local> proxy-bypass — so the
+    bypass must be explicit.
+    """
+    try:
+        host = urllib.parse.urlsplit(url).hostname or ""
+    except ValueError:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _parse_model_ids(resp: "Any") -> List[str]:
     """Extract model ids from an OpenAI-compatible ``/v1/models`` response.
 
@@ -6197,9 +6222,19 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
         api_key = (body.api_key or "").strip()
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
         try:
-            with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
+            with httpx.Client(
+                timeout=httpx.Timeout(8.0),
+                trust_env=not _probe_ignores_env_proxy(url),
+            ) as client:
                 resp = client.get(url, headers=headers)
-            return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
+            models = _parse_model_ids(resp)
+            message = ""
+            if not models and not resp.is_success:
+                # Distinguish "endpoint answered but errored" from "endpoint
+                # advertises no models" so the GUI doesn't tell the user to
+                # start a model on an endpoint that returned 404/502/….
+                message = f"{url} answered HTTP {resp.status_code}."
+            return {"ok": True, "reachable": True, "message": message, "models": models}
         except Exception:
             return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
 

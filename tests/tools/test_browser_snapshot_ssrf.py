@@ -346,6 +346,8 @@ class TestBrowserVisionPrivateNetworkGuard:
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "eval":
+                return _make_eval_result(self.PUBLIC_URL)
             if command == "screenshot":
                 return _make_screenshot_result()
             return {"success": False, "error": "should not be called"}
@@ -436,3 +438,60 @@ class TestBrowserVisionPrivateNetworkGuard:
         result_raw = browser_browser_vision(question="what", task_id="test")
         result = json.loads(result_raw)
         assert "private or internal address" not in result.get("error", "")
+
+    def test_peer_violation_removes_requested_and_backend_screenshot_paths(
+        self, monkeypatch, tmp_path
+    ):
+        """Blocked screenshots cannot remain at a backend-returned alternate path."""
+        from types import SimpleNamespace
+
+        import hermes_constants
+        from tools import browser_supervisor
+
+        records = []
+        requested_dir = tmp_path / "requested"
+        actual_path = tmp_path / "backend" / "actual.png"
+        requested_paths = []
+        unsafe_record = SimpleNamespace(
+            ts=101.0,
+            url="https://rebind.example/internal",
+            remote_ip="192.168.1.10",
+        )
+        fake_supervisor = SimpleNamespace(
+            snapshot=lambda: SimpleNamespace(network_responses=tuple(records)),
+        )
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "screenshot":
+                requested_path = type(actual_path)(args[-1])
+                requested_paths.append(requested_path)
+                requested_path.parent.mkdir(parents=True, exist_ok=True)
+                requested_path.write_bytes(b"private requested screenshot")
+                actual_path.parent.mkdir(parents=True, exist_ok=True)
+                actual_path.write_bytes(b"private backend screenshot")
+                records.append(unsafe_record)
+                return _make_screenshot_result(str(actual_path))
+            if command == "open":
+                return {"success": True}
+            return {"success": False, "error": "unexpected command"}
+
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(browser_tool, "_get_browser_engine", lambda: "chrome")
+        monkeypatch.setattr(browser_tool, "_should_inject_engine", lambda engine: False)
+        monkeypatch.setattr(browser_tool, "_run_browser_command", mock_run_browser_command)
+        monkeypatch.setattr(hermes_constants, "get_hermes_dir", lambda *args: requested_dir)
+        monkeypatch.setattr(
+            browser_supervisor.SUPERVISOR_REGISTRY,
+            "get",
+            lambda task_id: fake_supervisor,
+        )
+
+        result = json.loads(browser_browser_vision(question="what", task_id="test"))
+
+        assert result["success"] is False
+        assert "browser connected to a private/internal address" in result["error"]
+        assert requested_paths and not requested_paths[0].exists()
+        assert not actual_path.exists()

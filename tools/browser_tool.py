@@ -1392,12 +1392,29 @@ def _recent_unsafe_network_response(
         supervisor = SUPERVISOR_REGISTRY.get(task_id)
         if supervisor is None:
             return None
+        flush = getattr(supervisor, "flush_network_events", None)
+        if callable(flush):
+            flush()
         snapshot = supervisor.snapshot()
     except Exception as exc:
         logger.debug("Could not inspect browser network responses: %s", exc)
         return None
 
-    for record in getattr(snapshot, "network_responses", ()):
+    return _unsafe_network_response(
+        getattr(snapshot, "network_responses", ()),
+        since_ts,
+        allow_private_networks=allow_private_networks,
+    )
+
+
+def _unsafe_network_response(
+    records: Any,
+    since_ts: float,
+    *,
+    allow_private_networks: bool,
+) -> Optional[Tuple[str, str, str]]:
+    """Apply browser peer policy to an immutable response-record collection."""
+    for record in records:
         ts = float(getattr(record, "ts", 0.0) or 0.0)
         if ts < since_ts:
             continue
@@ -1417,18 +1434,43 @@ def _recent_unsafe_network_response(
     return None
 
 
-def _clear_network_response_history(task_id: str) -> None:
-    """Clear supervisor network-response history before a fresh navigation."""
+def _start_network_response_window(
+    task_id: str,
+) -> Optional[Tuple[str, str, str]]:
+    """Atomically rotate response history and validate the prior window."""
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
 
         supervisor = SUPERVISOR_REGISTRY.get(task_id)
-        if supervisor is not None:
+        if supervisor is None:
+            return None
+        flush = getattr(supervisor, "flush_network_events", None)
+        if callable(flush):
+            flush()
+        start_window = getattr(supervisor, "start_network_response_window", None)
+        if callable(start_window):
+            records = start_window()
+        else:
+            # Compatibility for supervisors created before atomic window
+            # rotation was introduced and for lightweight test doubles.
+            snapshot = supervisor.snapshot()
+            records = tuple(getattr(snapshot, "network_responses", ()))
             clear = getattr(supervisor, "clear_network_responses", None)
             if callable(clear):
                 clear()
     except Exception as exc:
-        logger.debug("Could not clear browser network responses: %s", exc)
+        logger.debug("Could not rotate browser network responses: %s", exc)
+        return None
+
+    return _unsafe_network_response(
+        records,
+        0.0,
+        allow_private_networks=(
+            _is_local_backend()
+            or _is_local_sidecar_key(task_id)
+            or _allow_private_urls()
+        ),
+    )
 
 
 def _block_browser_network_violation(
@@ -1449,11 +1491,87 @@ def _block_browser_network_violation(
         remote_ip,
         observed_host,
     )
-    _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
+    blank_result = _run_browser_command(
+        nav_session_key,
+        "open",
+        ["about:blank"],
+        timeout=10,
+    )
+    if not blank_result.get("success"):
+        retained = False
+        try:
+            from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+
+            supervisor = SUPERVISOR_REGISTRY.get(nav_session_key)
+            retain = getattr(supervisor, "retain_network_violation", None)
+            if callable(retain):
+                retain(remote_ip, observed_url)
+                retained = True
+        except Exception as exc:
+            logger.debug("Could not retain browser network violation: %s", exc)
+        if not retained:
+            # Without a supervisor latch, invalidate the exact session so a
+            # failed blank navigation cannot leave the unsafe page readable.
+            _cleanup_single_browser_session(nav_session_key)
     return json.dumps({
         "success": False,
         "error": f"Blocked: browser connected to a {reason}",
     })
+
+
+def _guard_browser_network_responses(
+    task_id: str,
+    since_ts: float = 0.0,
+) -> Optional[str]:
+    """Block when a supervised browser session reached an unsafe peer.
+
+    Interaction commands can navigate or trigger asynchronous requests without
+    changing the page's hostname. Content-returning commands therefore cannot
+    rely on URL re-resolution alone: they must enforce Chrome's recorded peer
+    IPs before exposing browser data to the agent.
+    """
+    network_violation = _recent_unsafe_network_response(
+        task_id,
+        since_ts,
+        allow_private_networks=(
+            _is_local_backend()
+            or _is_local_sidecar_key(task_id)
+            or _allow_private_urls()
+        ),
+    )
+    if network_violation is None:
+        return None
+    return _block_browser_network_violation(task_id, network_violation)
+
+
+def _start_guarded_browser_action(task_id: str) -> Optional[str]:
+    """Atomically validate prior peers and start a fresh observation window."""
+    network_violation = _start_network_response_window(task_id)
+    if network_violation is None:
+        return None
+    return _block_browser_network_violation(task_id, network_violation)
+
+
+def _run_guarded_browser_action(
+    task_id: str,
+    command: str,
+    args: List[str],
+    **kwargs: Any,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Run a browser action inside a fresh peer-observation window.
+
+    Check accumulated responses before clearing them so a late response from
+    the previous action cannot be erased by the next one. Explicit navigation
+    owns its reset separately because it is also the recovery path after a
+    blocked page.
+    """
+    blocked = _start_guarded_browser_action(task_id)
+    if blocked is not None:
+        return None, blocked
+
+    result = _run_browser_command(task_id, command, args, **kwargs)
+    blocked = _guard_browser_network_responses(task_id)
+    return result, blocked
 
 
 def _socket_safe_tmpdir() -> str:
@@ -2898,8 +3016,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
 
-    _clear_network_response_history(nav_session_key)
-    nav_started_at = time.time()
+    prior_network_violation = _start_network_response_window(nav_session_key)
     result = _run_browser_command(
         nav_session_key,
         "open",
@@ -2945,15 +3062,9 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                 "error": "Blocked: redirect landed on a private/internal address",
             })
 
-        network_violation = None
-        if not _is_local_backend():
-            network_violation = _recent_unsafe_network_response(
-                nav_session_key,
-                nav_started_at,
-                allow_private_networks=auto_local_this_nav or _allow_private_urls(),
-            )
-        if network_violation is not None:
-            return _block_browser_network_violation(nav_session_key, network_violation)
+        network_blocked = _guard_browser_network_responses(nav_session_key)
+        if network_blocked is not None:
+            return network_blocked
 
         response = {
             "success": True,
@@ -3012,18 +3123,20 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         except Exception as e:
             logger.debug("Auto-snapshot after navigate failed: %s", e)
 
-        network_violation = None
-        if not _is_local_backend():
-            network_violation = _recent_unsafe_network_response(
-                nav_session_key,
-                nav_started_at,
-                allow_private_networks=auto_local_this_nav or _allow_private_urls(),
-            )
-        if network_violation is not None:
-            return _block_browser_network_violation(nav_session_key, network_violation)
+        network_blocked = _guard_browser_network_responses(nav_session_key)
+        if network_blocked is not None:
+            return network_blocked
 
         return json.dumps(response, ensure_ascii=False)
     else:
+        network_blocked = _guard_browser_network_responses(nav_session_key)
+        if network_blocked is not None:
+            return network_blocked
+        if prior_network_violation is not None:
+            return _block_browser_network_violation(
+                nav_session_key,
+                prior_network_violation,
+            )
         return json.dumps({
             "success": False,
             "error": result.get("error", "Navigation failed")
@@ -3057,7 +3170,14 @@ def browser_snapshot(
     if not full:
         args.extend(["-c"])  # Compact mode
 
+    network_blocked = _guard_browser_network_responses(effective_task_id)
+    if network_blocked is not None:
+        return network_blocked
+
     result = _run_browser_command(effective_task_id, "snapshot", args)
+    network_blocked = _guard_browser_network_responses(effective_task_id)
+    if network_blocked is not None:
+        return network_blocked
 
     if result.get("success"):
         data = result.get("data", {})
@@ -3094,6 +3214,10 @@ def browser_snapshot(
                         }, ensure_ascii=False)
             except Exception as _url_exc:
                 logger.debug("browser_snapshot: URL safety check failed (%s)", _url_exc)
+
+        network_blocked = _guard_browser_network_responses(effective_task_id)
+        if network_blocked is not None:
+            return network_blocked
 
         # Check if snapshot needs summarization
         if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
@@ -3154,7 +3278,14 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     if not ref.startswith("@"):
         ref = f"@{ref}"
 
-    result = _run_browser_command(effective_task_id, "click", [ref])
+    result, network_blocked = _run_guarded_browser_action(
+        effective_task_id,
+        "click",
+        [ref],
+    )
+    if network_blocked is not None:
+        return network_blocked
+    assert result is not None
 
     if result.get("success"):
         response = {
@@ -3196,7 +3327,14 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         ref = f"@{ref}"
 
     # Use fill command (clears then types)
-    result = _run_browser_command(effective_task_id, "fill", [ref, text])
+    result, network_blocked = _run_guarded_browser_action(
+        effective_task_id,
+        "fill",
+        [ref, text],
+    )
+    if network_blocked is not None:
+        return network_blocked
+    assert result is not None
 
     from agent.display import (
         redact_browser_typed_text_for_display,
@@ -3262,7 +3400,14 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
 
     effective_task_id = _last_session_key(task_id or "default")
 
-    result = _run_browser_command(effective_task_id, "scroll", [direction, str(_SCROLL_PIXELS)])
+    result, network_blocked = _run_guarded_browser_action(
+        effective_task_id,
+        "scroll",
+        [direction, str(_SCROLL_PIXELS)],
+    )
+    if network_blocked is not None:
+        return network_blocked
+    assert result is not None
     if not result.get("success"):
         response = {
             "success": False,
@@ -3292,7 +3437,14 @@ def browser_back(task_id: Optional[str] = None) -> str:
         return camofox_back(task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
-    result = _run_browser_command(effective_task_id, "back", [])
+    result, network_blocked = _run_guarded_browser_action(
+        effective_task_id,
+        "back",
+        [],
+    )
+    if network_blocked is not None:
+        return network_blocked
+    assert result is not None
 
     if result.get("success"):
         # Browser history can land on a private/internal/cloud-metadata
@@ -3347,7 +3499,14 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
     blocked = _blocked_private_page_action(effective_task_id, "press")
     if blocked is not None:
         return blocked
-    result = _run_browser_command(effective_task_id, "press", [key])
+    result, network_blocked = _run_guarded_browser_action(
+        effective_task_id,
+        "press",
+        [key],
+    )
+    if network_blocked is not None:
+        return network_blocked
+    assert result is not None
 
     if result.get("success"):
         response = {
@@ -3409,6 +3568,10 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
 
     effective_task_id = _last_session_key(task_id or "default")
 
+    network_blocked = _guard_browser_network_responses(effective_task_id)
+    if network_blocked is not None:
+        return network_blocked
+
     if _eval_ssrf_guard_active(effective_task_id):
         _blocked_url = _current_page_private_url(effective_task_id)
         if _blocked_url:
@@ -3426,6 +3589,10 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
 
     console_result = _run_browser_command(effective_task_id, "console", console_args)
     errors_result = _run_browser_command(effective_task_id, "errors", error_args)
+
+    network_blocked = _guard_browser_network_responses(effective_task_id)
+    if network_blocked is not None:
+        return network_blocked
 
     messages = []
     if console_result.get("success"):
@@ -3670,6 +3837,10 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
+    network_blocked = _start_guarded_browser_action(effective_task_id)
+    if network_blocked is not None:
+        return network_blocked
+
     # ── Private-network guard (eval return-value path) ──────────────────────
     # The literal pre-scan above closes the direct-fetch sub-path
     # (`fetch('http://127.0.0.1/secret')`).  The post-eval page-URL recheck
@@ -3688,6 +3859,9 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
         if supervisor is not None:
             sup_result = supervisor.evaluate_runtime(expression)
+            network_blocked = _guard_browser_network_responses(effective_task_id)
+            if network_blocked is not None:
+                return network_blocked
             if sup_result.get("ok"):
                 raw_result = sup_result.get("result")
                 # Match the agent-browser path: if the value is a JSON string,
@@ -3738,6 +3912,9 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
 
     # --- Fallback: agent-browser CLI subprocess (original path) -------------
     result = _run_browser_command(effective_task_id, "eval", [expression])
+    network_blocked = _guard_browser_network_responses(effective_task_id)
+    if network_blocked is not None:
+        return network_blocked
 
     if not result.get("success"):
         err = result.get("error", "eval failed")
@@ -3950,7 +4127,14 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         })).filter(img => img.src && !img.src.startsWith('data:'))
     )"""
 
+    network_blocked = _guard_browser_network_responses(effective_task_id)
+    if network_blocked is not None:
+        return network_blocked
+
     result = _run_browser_command(effective_task_id, "eval", [js_code])
+    network_blocked = _guard_browser_network_responses(effective_task_id)
+    if network_blocked is not None:
+        return network_blocked
 
     if result.get("success"):
         # ── Private-network guard (sibling of snapshot/vision/eval guards) ──
@@ -3965,6 +4149,10 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
                         "JavaScript navigation via browser_console."
                     ),
                 }, ensure_ascii=False)
+
+        network_blocked = _guard_browser_network_responses(effective_task_id)
+        if network_blocked is not None:
+            return network_blocked
 
         data = result.get("data", {})
         raw_result = data.get("result", "[]")
@@ -4031,6 +4219,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
     screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
     effective_task_id = _last_session_key(task_id or "default")
+
+    network_blocked = _guard_browser_network_responses(effective_task_id)
+    if network_blocked is not None:
+        return network_blocked
 
     # ── Private-network guard: block vision from eval-navigated private pages ──
     # After any eval (browser_console) that may have changed location.href to a
@@ -4142,6 +4334,24 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 _engine_override="auto" if _lp_prerouted else None,
             )
 
+        blocked_screenshot_paths = {screenshot_path}
+        actual_screenshot_path = result.get("data", {}).get("path")
+        if actual_screenshot_path:
+            screenshot_path = Path(actual_screenshot_path)
+            blocked_screenshot_paths.add(screenshot_path)
+
+        network_blocked = _guard_browser_network_responses(effective_task_id)
+        if network_blocked is not None:
+            for blocked_path in blocked_screenshot_paths:
+                try:
+                    blocked_path.unlink(missing_ok=True)
+                except OSError as unlink_exc:
+                    logger.debug(
+                        "browser_vision: could not remove blocked screenshot (%s)",
+                        unlink_exc,
+                    )
+            return network_blocked
+
         if not result.get("success"):
             error_detail = result.get("error", "Unknown error")
             _cp = _get_cloud_provider()
@@ -4151,10 +4361,6 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 "error": f"Failed to take screenshot ({mode} mode): {error_detail}"
             }
             return json.dumps(_copy_fallback_warning(error_response, result), ensure_ascii=False)
-
-        actual_screenshot_path = result.get("data", {}).get("path")
-        if actual_screenshot_path:
-            screenshot_path = Path(actual_screenshot_path)
 
         # Check if screenshot file was created
         if not screenshot_path.exists():

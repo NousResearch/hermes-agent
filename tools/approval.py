@@ -1584,6 +1584,106 @@ def _iter_critical_command_variants(
             )
 
 
+_CONTAINER_RUNNERS = {"docker", "podman", "nerdctl"}
+_CONTAINER_OPTIONS_WITH_VALUE = {
+    "--add-host", "--annotation", "--attach", "--cap-add", "--cap-drop",
+    "--cgroup-parent", "--cidfile", "--device", "--dns", "--dns-option",
+    "--dns-search", "--entrypoint", "--env", "--env-file", "--expose",
+    "--gpus", "--group-add", "--hostname", "--ipc", "--label",
+    "--label-file", "--log-driver", "--log-opt", "--memory", "--mount",
+    "--name", "--network", "--network-alias", "--pid", "--platform",
+    "--publish", "--pull", "--restart", "--runtime", "--security-opt",
+    "--shm-size", "--stop-signal", "--stop-timeout", "--sysctl", "--tmpfs",
+    "--ulimit", "--user", "--userns", "--uts", "--volume",
+    "--volumes-from", "--workdir", "-a", "-c", "-e", "-h", "-l", "-m",
+    "-p", "-u", "-v", "-w",
+}
+
+
+def _container_root_bind_target(spec: str, *, mount_style: bool) -> str | None:
+    """Return the container target when *spec* bind-mounts host root."""
+    if mount_style:
+        fields = {}
+        for item in spec.split(","):
+            key, separator, value = item.partition("=")
+            if separator:
+                fields[key.strip().lower()] = value.strip()
+        mount_type = fields.get("type", "bind").lower()
+        source = fields.get("src") or fields.get("source")
+        target = fields.get("dst") or fields.get("destination") or fields.get("target")
+        if mount_type == "bind" and source == "/" and target:
+            return target.rstrip("/") or "/"
+        return None
+
+    parts = spec.split(":")
+    if len(parts) >= 2 and parts[0] == "/" and parts[1]:
+        return parts[1].rstrip("/") or "/"
+    return None
+
+
+def _iter_host_connected_container_payloads(command: str):
+    """Yield host-impacting payloads while preserving isolated containers."""
+    seen: set[str] = set()
+    for command_variant in _command_detection_variants(command):
+        try:
+            words = shlex.split(command_variant, posix=True)
+        except ValueError:
+            continue
+        if not words or os.path.basename(words[0]).lower() not in _CONTAINER_RUNNERS:
+            continue
+
+        try:
+            run_index = next(
+                index for index, word in enumerate(words[1:], start=1) if word == "run"
+            )
+        except StopIteration:
+            continue
+
+        privileged = False
+        root_bind_targets: list[str] = []
+        position = run_index + 1
+        image_index: int | None = None
+        while position < len(words):
+            word = words[position]
+            if word == "--":
+                image_index = position + 1 if position + 1 < len(words) else None
+                break
+            if not word.startswith("-") or word == "-":
+                image_index = position
+                break
+
+            option, separator, inline_value = word.partition("=")
+            if option == "--privileged":
+                privileged = not separator or inline_value.lower() not in {"0", "false", "no"}
+            if option in {"-v", "--volume", "--mount"}:
+                if separator:
+                    option_value = inline_value
+                elif position + 1 < len(words):
+                    position += 1
+                    option_value = words[position]
+                else:
+                    option_value = ""
+                target = _container_root_bind_target(
+                    option_value, mount_style=option == "--mount"
+                )
+                if target:
+                    root_bind_targets.append(target)
+            elif option in _CONTAINER_OPTIONS_WITH_VALUE and not separator:
+                position += 1
+            position += 1
+
+        if image_index is None or image_index >= len(words) or image_index + 1 >= len(words):
+            continue
+        payload = shlex.join(words[image_index + 1 :])
+        candidates = [payload] if privileged else []
+        for target in root_bind_targets:
+            candidates.append(payload if target == "/" else payload.replace(target, "/"))
+        for candidate in candidates:
+            if candidate not in seen:
+                seen.add(candidate)
+                yield candidate
+
+
 def classify_command_risk(command: str) -> dict | None:
     """Classify unrecoverable shell intent using stable Hermes categories.
 
@@ -1592,7 +1692,11 @@ def classify_command_risk(command: str) -> dict | None:
     normalization plus literal wrapper handling. Ordinary dangerous commands
     continue through the normal approval flow.
     """
-    for command_variant in _iter_critical_command_variants(command):
+    for command_variant in (
+        variant
+        for candidate_command in [command, *_iter_host_connected_container_payloads(command)]
+        for variant in _iter_critical_command_variants(candidate_command)
+    ):
         normalized = command_variant.lower()
         for pattern_re, reason in HARDLINE_PATTERNS_COMPILED:
             if not pattern_re.search(normalized):

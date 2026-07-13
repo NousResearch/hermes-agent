@@ -126,6 +126,40 @@ def test_shell_payload_scan_has_no_fixed_option_count_cap(option_count):
     assert approval.check_all_command_guards(command, "local")["approved"] is False
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "docker run --rm --privileged alpine sh -c reboot",
+        "docker run --rm --privileged=true alpine sh -c reboot",
+        "docker run --rm -v /:/host alpine sh -c 'rm -rf /host'",
+        "docker run --rm --volume=/:/host alpine sh -c 'rm -rf /host'",
+        "docker run --rm --mount type=bind,src=/,dst=/host alpine sh -c reboot",
+        "podman run --rm --privileged alpine sh -c reboot",
+    ],
+)
+def test_host_connected_container_payload_is_guarded(command):
+    risk = approval.classify_command_risk(command)
+
+    assert risk is not None
+    assert risk["category"] in {
+        "critical_filesystem_destruction",
+        "critical_host_disruption",
+    }
+    assert approval.check_all_command_guards(command, "local")["approved"] is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "docker run --rm alpine sh -c reboot",
+        "podman run --rm alpine sh -c 'rm -rf /'",
+    ],
+)
+def test_isolated_container_payload_keeps_container_boundary(command):
+    assert approval.classify_command_risk(command) is None
+    assert approval.check_critical_command_guard(command) is None
+
+
 @pytest.mark.parametrize("force", [False, True])
 def test_terminal_result_preserves_critical_category_reason_without_execution(
     monkeypatch, tmp_path, force

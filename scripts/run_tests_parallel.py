@@ -251,7 +251,36 @@ def _run_one_file(
     bound a pathologically slow or hung file as a whole.
     """
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
-    
+
+    # Isolate each pytest child from the runner's console / process group.
+    #
+    # POSIX: start_new_session=True → os.setsid() in the child, placing it
+    # at the head of its own process group so _kill_tree can SIGKILL the
+    # group atomically.
+    #
+    # Windows: start_new_session only maps to CREATE_NEW_PROCESS_GROUP in
+    # CPython 3.12+ — on 3.11 it is silently ignored, so every child
+    # shared the runner's console process group. One os.kill(pid, 0)
+    # liveness probe anywhere in the run — which on Windows routes through
+    # GenerateConsoleCtrlEvent (bpo-14484) — then broadcast
+    # KeyboardInterrupt to every concurrent child AND the runner itself.
+    # Pass the creationflags explicitly, on every Python version:
+    #   CREATE_NEW_PROCESS_GROUP — child is its own ctrl-event group root,
+    #     so console ctrl events can't fan out across children;
+    #   CREATE_NO_WINDOW — child gets its own invisible console, fully
+    #     insulating it from ctrl-event broadcasts on the runner's console
+    #     (and suppressing per-child conhost window flashes).
+    # _kill_tree handles the Windows kill path via taskkill /F /T.
+    if sys.platform == "win32":
+        isolation_kwargs: Dict[str, object] = {
+            "creationflags": (
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_NO_WINDOW
+            ),
+        }
+    else:
+        isolation_kwargs = {"start_new_session": True}
+
     subproc_start = time.monotonic()
     # launch the pytest process
     proc = subprocess.Popen(
@@ -262,11 +291,7 @@ def _run_one_file(
         text=True,
         # skipping writing bytecode because we're running a bunch of parallel python processes on the same code
         env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
-        # POSIX: place the child at the head of its own process group so
-        # _kill_tree can SIGKILL the group atomically.
-        # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
-        # _kill_tree handles the Windows path via taskkill /F /T.
-        start_new_session=True,
+        **isolation_kwargs,
     )
 
     # Capture the pgid NOW, before the leader can exit and be reaped. Once

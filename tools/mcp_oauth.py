@@ -846,7 +846,13 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         )
     client_name = cfg.get("client_name", "Hermes Agent")
     scope = cfg.get("scope")
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    # Some providers' WAFs (e.g. Reclaim.ai's AWS API Gateway) reject any
+    # authorize request whose query string contains a literal ``127.0.0.1``,
+    # returning ``{"message":"Forbidden"}``. ``redirect_host: localhost`` in
+    # the server's oauth config works around that; the callback listener
+    # still binds 127.0.0.1 either way.
+    redirect_host = cfg.get("redirect_host", "127.0.0.1")
+    redirect_uri = f"http://{redirect_host}:{port}/callback"
 
     metadata_kwargs: dict[str, Any] = {
         "client_name": client_name,

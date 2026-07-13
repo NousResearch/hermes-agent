@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  applyZoomLevel,
   clampZoomLevel,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
@@ -117,4 +118,43 @@ test('pet overlay opts out of zoom', () => {
 test('unknown window kinds default to chat (zoom enabled)', () => {
   assert.deepEqual(zoomWiringForWindowKind('unknown'), { zoom: true })
   assert.deepEqual(zoomWiringForWindowKind(undefined), { zoom: true })
+})
+
+// The UI Scale settings control drifts out of sync after a restart when zoom
+// is applied to the window but the renderer is never told: its $zoomPercent
+// store (see store/zoom.ts) only updates from zoom.get() (once, on load) and
+// 'hermes:zoom:changed' events. applyZoomLevel is the single funnel every zoom
+// path (user set, restore-on-load, lifecycle re-assert) shares, so applying a
+// level always notifies — the regression can't come back by forgetting a send.
+function fakeWebContents() {
+  const calls: Array<[string, ...unknown[]]> = []
+
+  return {
+    calls,
+    setZoomLevel: (level: number) => calls.push(['setZoomLevel', level]),
+    send: (channel: string, payload: unknown) => calls.push(['send', channel, payload])
+  }
+}
+
+test('applyZoomLevel applies the level then notifies the renderer', () => {
+  const wc = fakeWebContents()
+  const applied = applyZoomLevel(wc, 3)
+
+  assert.equal(applied, 3)
+  assert.deepEqual(wc.calls, [
+    ['setZoomLevel', 3],
+    ['send', 'hermes:zoom:changed', { level: 3, percent: zoomLevelToPercent(3) }]
+  ])
+})
+
+test('applyZoomLevel clamps garbage before applying and notifying', () => {
+  const wc = fakeWebContents()
+  const applied = applyZoomLevel(wc, 999)
+  const clamped = clampZoomLevel(999)
+
+  assert.equal(applied, clamped)
+  assert.deepEqual(wc.calls, [
+    ['setZoomLevel', clamped],
+    ['send', 'hermes:zoom:changed', { level: clamped, percent: zoomLevelToPercent(clamped) }]
+  ])
 })

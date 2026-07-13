@@ -32,6 +32,22 @@ export function percentToZoomLevel(percent) {
   return clampZoomLevel(Math.log(percent / 100) / Math.log(ZOOM_FACTOR_BASE))
 }
 
+/**
+ * Apply a clamped zoom level to a webContents AND notify the renderer, in that
+ * order. Every path that changes zoom (user action, restore-on-load, lifecycle
+ * re-assert) funnels through here so the settings UI Scale control can never
+ * drift from the actually-applied level — the bug where restore set the level
+ * but forgot to emit 'hermes:zoom:changed', leaving the control stuck at 100%.
+ * Returns the clamped level so callers can persist it.
+ */
+export function applyZoomLevel(webContents, level) {
+  const clamped = clampZoomLevel(level)
+  webContents.setZoomLevel(clamped)
+  webContents.send('hermes:zoom:changed', { level: clamped, percent: zoomLevelToPercent(clamped) })
+
+  return clamped
+}
+
 // Chromium on Windows can drop webContents zoom when a BrowserWindow is minimized
 // and restored. Re-apply the persisted level on these lifecycle transitions.
 export const ZOOM_REASSERT_WINDOW_EVENTS = ['show', 'restore']

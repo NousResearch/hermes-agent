@@ -36,9 +36,30 @@ import sys
 from pathlib import Path
 from hermes_constants import get_hermes_home
 
+# macOS stdio workaround for ACP pipe transport
+import platform
+import os
 
-# Methods clients send as periodic liveness probes. They are not part of the
-# ACP schema, so the acp router correctly returns JSON-RPC -32601 to the
+
+def _prepare_macos_stdio():
+    """On macOS, sys.stdout is often not accepted by asyncio's Unix pipe transport.
+    Duplicating the fd makes it a proper pipe-like object.
+    """
+    if platform.system() == "Darwin":
+        try:
+            stdout_fd = os.dup(sys.stdout.fileno())
+            sys.stdout = os.fdopen(stdout_fd, "w", buffering=1)
+            # Also duplicate stderr to be safe
+            stderr_fd = os.dup(sys.stderr.fileno())
+            sys.stderr = os.fdopen(stderr_fd, "w", buffering=1)
+        except Exception:
+            # If it fails, we still try to continue
+            pass
+
+
+_BENIGN_PROBE_METHODS = frozenset({"ping", "health", "healthcheck"})
+
+
 # caller — but the supervisor task that dispatches the request then surfaces
 # the raised RequestError via ``logging.exception("Background task failed")``,
 # which dumps a traceback to stderr every probe interval. Clients like
@@ -216,6 +237,8 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
+    _prepare_macos_stdio()
+
     args = _parse_args(argv)
     if args.version:
         _print_version()

@@ -4,12 +4,10 @@
 # transitive deps like onnxruntime that lack compatible wheels on
 # aarch64-darwin. The package and devShell still work on macOS.
 { inputs, ... }: {
-  perSystem = { pkgs, system, lib, ... }:
+  perSystem = { pkgs, lib, self', ... }:
     let
-      hermes-agent = inputs.self.packages.${system}.default;
-      hermesVenv = pkgs.callPackage ./python.nix {
-        inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
-      };
+      hermes-agent = self'.packages.default;
+      hermesVenv = hermes-agent.hermesVenv;
 
       configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
 
@@ -37,7 +35,46 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
     in {
       packages.configKeys = configKeys;
 
-      checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+      checks = {
+        # Cross-platform evaluation — catches "not supported for interpreter"
+        # errors (e.g. sphinx dropping python311) without needing a darwin builder.
+        # Evaluation is pure and instant; it doesn't build anything.
+        cross-eval = let
+          targetSystems = builtins.filter
+            (s: inputs.self.packages ? ${s})
+            [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
+          tryEvalPkg = sys:
+            let pkg = inputs.self.packages.${sys}.default;
+            in builtins.tryEval (builtins.seq pkg.drvPath true);
+          results = map (sys: { inherit sys; result = tryEvalPkg sys; }) targetSystems;
+          failures = builtins.filter (r: !r.result.success) results;
+          failMsg = lib.concatMapStringsSep "\n" (r: "  - ${r.sys}") failures;
+        in pkgs.runCommand "hermes-cross-eval" { } (
+          if failures != [] then
+            throw "Package fails to evaluate on:\n${failMsg}"
+          else ''
+            echo "PASS: package evaluates on all ${toString (builtins.length targetSystems)} platforms"
+            mkdir -p $out
+            echo "ok" > $out/result
+          ''
+        );
+
+        # Verify the default package builds successfully (cross-platform).
+        # On Linux the runtime checks below already depend on the package,
+        # but this ensures darwin builders also build it during flake check.
+        build-package = pkgs.runCommand "hermes-build-package" { } ''
+          echo "PASS: package built at ${hermes-agent}"
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify the devShell builds successfully (cross-platform).
+        build-devshell = pkgs.runCommand "hermes-build-devshell" { } ''
+          echo "PASS: devShell built at ${self'.devShells.default}"
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+      } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # Verify binaries exist and are executable
         package-contents = pkgs.runCommand "hermes-package-contents" { } ''
           set -e
@@ -103,6 +140,73 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # Verify bundled plugins (platforms, memory, context_engine) are present
+        bundled-plugins = pkgs.runCommand "hermes-bundled-plugins" { } ''
+          set -e
+          echo "=== Checking bundled plugins ==="
+          test -d ${hermes-agent}/share/hermes-agent/plugins || (echo "FAIL: plugins directory missing"; exit 1)
+          echo "PASS: plugins directory exists"
+
+          test -f ${hermes-agent}/share/hermes-agent/plugins/platforms/irc/plugin.yaml || \
+            (echo "FAIL: irc plugin manifest missing"; exit 1)
+          echo "PASS: irc plugin manifest present"
+
+          grep -q "HERMES_BUNDLED_PLUGINS" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_BUNDLED_PLUGINS not in wrapper"; exit 1)
+          echo "PASS: HERMES_BUNDLED_PLUGINS set in wrapper"
+
+          echo "=== All bundled plugins checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify bundled i18n locale catalogs are present and resolvable.
+        # Regression for #23943 / #27632 / #35374 — sealed Nix venvs dropped
+        # locales/, surfacing raw i18n keys like gateway.reset.header_default.
+        bundled-locales = pkgs.runCommand "hermes-bundled-locales" { } ''
+          set -e
+          echo "=== Checking bundled locales ==="
+          test -d ${hermes-agent}/share/hermes-agent/locales || (echo "FAIL: locales directory missing"; exit 1)
+          echo "PASS: locales directory exists"
+
+          LOC_COUNT=$(find ${hermes-agent}/share/hermes-agent/locales -name "*.yaml" | wc -l)
+          test "$LOC_COUNT" -ge 16 || (echo "FAIL: expected >=16 catalogs, found $LOC_COUNT"; exit 1)
+          echo "PASS: $LOC_COUNT locale catalogs found"
+
+          test -f ${hermes-agent}/share/hermes-agent/locales/en.yaml || (echo "FAIL: en.yaml missing"; exit 1)
+          echo "PASS: en.yaml present"
+
+          grep -q "HERMES_BUNDLED_LOCALES" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_BUNDLED_LOCALES not in wrapper"; exit 1)
+          echo "PASS: HERMES_BUNDLED_LOCALES set in wrapper"
+
+          echo "=== Rendering via the wrapper override (HERMES_BUNDLED_LOCALES) ==="
+          export HOME=$(mktemp -d)
+          RENDERED=$(cd "$HOME" && HERMES_BUNDLED_LOCALES=${hermes-agent}/share/hermes-agent/locales \
+            ${hermesVenv}/bin/python3 -c "from agent import i18n; print(i18n.t('gateway.reset.header_default', lang='en'))")
+          echo "rendered: $RENDERED"
+          test "$RENDERED" != "gateway.reset.header_default" || (echo "FAIL: i18n returned the raw key with HERMES_BUNDLED_LOCALES set"; exit 1)
+          echo "PASS: i18n renders a human string via the wrapper override"
+
+          # Defense-in-depth check: the sealed venv must ALSO resolve catalogs
+          # with NO env var, via the wheel's setuptools data-files materialized
+          # into the venv data scheme. If a future uv2nix bump drops data-files,
+          # the wrapper override above would mask the regression at runtime while
+          # `pip install`/other sealed paths silently break — this catches it.
+          echo "=== Rendering WITHOUT the env var (data-files materialization) ==="
+          BARE_DIR=$(cd "$HOME" && ${hermesVenv}/bin/python3 -c "from agent import i18n; print(i18n._locales_dir())")
+          BARE=$(cd "$HOME" && ${hermesVenv}/bin/python3 -c "from agent import i18n; print(i18n.t('gateway.reset.header_default', lang='en'))")
+          echo "resolved dir (no env var): $BARE_DIR"
+          echo "rendered: $BARE"
+          test "$BARE" != "gateway.reset.header_default" || \
+            (echo "FAIL: sealed venv could not resolve locales without HERMES_BUNDLED_LOCALES — data-files materialization regressed"; exit 1)
+          echo "PASS: sealed venv resolves locales via data-files without the env var"
+
+          echo "=== All bundled locales checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # Verify bundled TUI is present and compiled
         bundled-tui = pkgs.runCommand "hermes-bundled-tui" { } ''
           set -e
@@ -113,14 +217,36 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           test -f ${hermes-agent}/ui-tui/dist/entry.js || (echo "FAIL: compiled entry.js missing"; exit 1)
           echo "PASS: compiled entry.js present"
 
-          test -d ${hermes-agent}/ui-tui/node_modules || (echo "FAIL: node_modules missing"; exit 1)
-          echo "PASS: node_modules present"
+          # self-contained bundle; no runtime node_modules expected
 
           grep -q "HERMES_TUI_DIR" ${hermes-agent}/bin/hermes || \
             (echo "FAIL: HERMES_TUI_DIR not in wrapper"; exit 1)
           echo "PASS: HERMES_TUI_DIR set in wrapper"
 
           echo "=== All bundled TUI checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify HERMES_NODE is set in wrapper and points to Node 20+
+        # (string-width uses the /v regex flag which requires Node 20+)
+        hermes-node = pkgs.runCommand "hermes-node-version" { } ''
+          set -e
+          echo "=== Checking HERMES_NODE in wrapper ==="
+          grep -q "HERMES_NODE" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_NODE not set in wrapper"; exit 1)
+          echo "PASS: HERMES_NODE present in wrapper"
+
+          HERMES_NODE=$(sed -n "s/^export HERMES_NODE='\(.*\)'/\1/p" ${hermes-agent}/bin/hermes)
+          test -x "$HERMES_NODE" || (echo "FAIL: HERMES_NODE=$HERMES_NODE not executable"; exit 1)
+          echo "PASS: HERMES_NODE executable at $HERMES_NODE"
+
+          NODE_MAJOR=$("$HERMES_NODE" --version | sed 's/^v//' | cut -d. -f1)
+          test "$NODE_MAJOR" -ge 20 || \
+            (echo "FAIL: Node v$NODE_MAJOR < 20, TUI needs /v regex flag support"; exit 1)
+          echo "PASS: Node v$NODE_MAJOR >= 20"
+
+          echo "=== All HERMES_NODE checks passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';
@@ -143,6 +269,69 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           check_blocked "config edit" ${hermes-agent}/bin/hermes config edit
 
           echo "=== All guard checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify extraPythonPackages PYTHONPATH injection
+        extra-python-packages = let
+          testPkg = pkgs.python312Packages.pyfiglet;
+          hermesWithExtra = hermes-agent.override {
+            extraPythonPackages = [ testPkg ];
+          };
+        in pkgs.runCommand "hermes-extra-python-packages" { } ''
+          set -e
+          echo "=== Checking extraPythonPackages PYTHONPATH injection ==="
+
+          grep -q "PYTHONPATH" ${hermesWithExtra}/bin/hermes || \
+            (echo "FAIL: PYTHONPATH not in wrapper"; exit 1)
+          echo "PASS: PYTHONPATH present in wrapper"
+
+          grep -q "${testPkg}" ${hermesWithExtra}/bin/hermes || \
+            (echo "FAIL: test package path not in PYTHONPATH"; exit 1)
+          echo "PASS: test package path found in wrapper"
+
+          echo "=== Checking base package has no PYTHONPATH ==="
+          if grep -q "PYTHONPATH" ${hermes-agent}/bin/hermes; then
+            echo "FAIL: base package should not have PYTHONPATH"; exit 1
+          fi
+          echo "PASS: base package clean"
+
+          echo "=== All extraPythonPackages checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify extraDependencyGroups passes through to python.nix
+        extra-dependency-groups = let
+          hermesWithGroups = hermes-agent.override {
+            extraDependencyGroups = [ "honcho" ];
+          };
+        in pkgs.runCommand "hermes-extra-dependency-groups" { } ''
+          set -e
+          echo "=== Checking extraDependencyGroups override evaluates ==="
+
+          # Eval-only: verify the override produces valid derivation paths
+          # without building the full venv (which is expensive and redundant
+          # since the mechanism is just list concatenation into python.nix).
+          echo "derivation: ${hermesWithGroups}"
+          echo "venv: ${hermesWithGroups.hermesVenv}"
+          echo "PASS: extraDependencyGroups override evaluates cleanly"
+
+          echo "=== All extraDependencyGroups checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Regression guard: messaging deps live outside [all], so the
+        # #messaging variant must actually ship discord.py — otherwise
+        # `nix profile install .#messaging` regresses to the broken default.
+        messaging-variant = pkgs.runCommand "hermes-messaging-variant" { } ''
+          set -e
+          echo "=== Checking discord.py importable from messaging variant ==="
+          ${self'.packages.messaging.hermesVenv}/bin/python3 -c \
+            "import discord; print(discord.__version__)"
+          echo "PASS: discord.py importable from messaging variant venv"
           mkdir -p $out
           echo "ok" > $out/result
         '';

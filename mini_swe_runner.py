@@ -29,27 +29,34 @@ Usage:
 import json
 import logging
 import os
-import sys
-import time
-import uuid
 from datetime import datetime
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Literal
+from typing import List, Dict, Any, Optional
 
 import fire
 from dotenv import load_dotenv
+from agent.tool_dispatch_helpers import make_tool_result_message
 
 # Load environment variables
 load_dotenv()
 
 
-def _effective_temperature_for_model(model: str) -> Optional[float]:
-    """Return a fixed temperature for models with strict sampling contracts."""
+def _effective_temperature_for_model(
+    model: str,
+    base_url: Optional[str] = None,
+) -> Optional[float]:
+    """Return a fixed temperature for models with strict sampling contracts.
+
+    Returns ``None`` when the model manages temperature server-side (Kimi);
+    callers must omit the ``temperature`` kwarg entirely in that case.
+    """
     try:
-        from agent.auxiliary_client import _fixed_temperature_for_model
+        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
     except Exception:
         return None
-    return _fixed_temperature_for_model(model)
+    result = _fixed_temperature_for_model(model, base_url)
+    if result is OMIT_TEMPERATURE:
+        return None  # caller must omit temperature
+    return result
 
 
 
@@ -187,12 +194,6 @@ class MiniSWERunner:
         self.image = image
         self.cwd = cwd
         
-        # Setup logging
-        logging.basicConfig(
-            level=logging.DEBUG if verbose else logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            datefmt='%H:%M:%S'
-        )
         self.logger = logging.getLogger(__name__)
         
         # Initialize LLM client via centralized provider router.
@@ -457,7 +458,10 @@ Complete the user's task step by step."""
                         "tools": self.tools,
                         "timeout": 300.0,
                     }
-                    fixed_temperature = _effective_temperature_for_model(self.model)
+                    fixed_temperature = _effective_temperature_for_model(
+                        self.model,
+                        str(getattr(self.client, "base_url", "") or ""),
+                    )
                     if fixed_temperature is not None:
                         api_kwargs["temperature"] = fixed_temperature
 
@@ -523,11 +527,9 @@ Complete the user's task step by step."""
                             completed = True
                         
                         # Add tool response
-                        messages.append({
-                            "role": "tool",
-                            "content": result_json,
-                            "tool_call_id": tc.id
-                        })
+                        messages.append(make_tool_result_message(
+                            tc.function.name, result_json, tc.id,
+                        ))
                         
                         print(f"   ✅ exit_code={result['exit_code']}, output={len(result['output'])} chars")
                     
@@ -668,6 +670,13 @@ def main(
     """
     print("🚀 Mini-SWE Runner with Hermes Trajectory Format")
     print("=" * 60)
+    
+    # Configure root logging at the entry point (not in library __init__).
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%H:%M:%S'
+    )
     
     # Initialize runner
     runner = MiniSWERunner(

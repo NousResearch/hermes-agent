@@ -47,23 +47,73 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
     if (catalog?.canon) {
       const needle = `/${parsed.name}`.toLowerCase()
+      const exact = Object.entries(catalog.canon).find(([alias]) => alias.toLowerCase() === needle)?.[1]
 
-      const matches = [
-        ...new Set(
-          Object.entries(catalog.canon)
-            .filter(([alias]) => alias.startsWith(needle))
-            .map(([, canon]) => canon)
-        )
-      ]
+      if (exact) {
+        if (exact.toLowerCase() !== needle) {
+          return handler(`${exact}${argTail}`)
+        }
+      } else {
+        const matches = [
+          ...new Set(
+            Object.entries(catalog.canon)
+              .filter(([alias]) => alias.startsWith(needle))
+              .map(([, canon]) => canon)
+          )
+        ]
 
-      if (matches.length === 1 && matches[0]!.toLowerCase() !== needle) {
-        return handler(`${matches[0]}${argTail}`)
+        if (matches.length === 1 && matches[0]!.toLowerCase() !== needle) {
+          return handler(`${matches[0]}${argTail}`)
+        }
+
+        if (matches.length > 1) {
+          sys(`ambiguous command: ${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`)
+
+          return true
+        }
+      }
+    }
+
+    const handleDispatch = (raw: unknown): void => {
+      const d = asCommandDispatch(raw)
+
+      if (!d) {
+        return sys('error: invalid response: command.dispatch')
       }
 
-      if (matches.length > 1) {
-        sys(`ambiguous command: ${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`)
+      if (d.type === 'exec' || d.type === 'plugin') {
+        return sys(d.output || '(no output)')
+      }
 
-        return true
+      if (d.type === 'alias') {
+        return void handler(`/${d.target}${argTail}`)
+      }
+
+      if (d.type === 'skill') {
+        sys(`⚡ loading skill: ${d.name}`)
+
+        return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: skill payload missing message`)
+      }
+
+      if (d.type === 'send') {
+        if (d.notice?.trim()) {
+          sys(d.notice)
+        }
+
+        return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: empty message`)
+      }
+
+      if (d.type === 'prefill') {
+        // /undo returns prefill: drop the backed-up message text into
+        // the composer so the user can edit and resubmit, instead of
+        // submitting it immediately like 'send'.
+        if (d.notice?.trim()) {
+          sys(d.notice)
+        }
+
+        if (d.message) {
+          ctx.composer.setInput(d.message)
+        }
       }
     }
 
@@ -71,6 +121,10 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       .then(r => {
         if (stale()) {
           return
+        }
+
+        if (asCommandDispatch(r)) {
+          return handleDispatch(r)
         }
 
         const body = r?.output || `/${parsed.name}: no output`
@@ -86,25 +140,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
               return
             }
 
-            const d = asCommandDispatch(raw)
-
-            if (!d) {
-              return sys('error: invalid response: command.dispatch')
-            }
-
-            if (d.type === 'exec' || d.type === 'plugin') {
-              return sys(d.output || '(no output)')
-            }
-
-            if (d.type === 'alias') {
-              return handler(`/${d.target}${argTail}`)
-            }
-
-            if (d.type === 'skill') {
-              sys(`⚡ loading skill: ${d.name}`)
-
-              return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: skill payload missing message`)
-            }
+            handleDispatch(raw)
           })
           .catch(guardedErr)
       })

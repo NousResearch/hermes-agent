@@ -121,6 +121,8 @@ const YELLOW_FG_CODE: AnsiCode = {
   endCode: '\x1b[39m'
 }
 
+const MAX_TRANSITION_CACHE = 32768
+
 export class StylePool {
   private ids = new Map<string, number>()
   private styles: AnsiCode[][] = []
@@ -160,7 +162,9 @@ export class StylePool {
   /**
    * Returns the pre-serialized ANSI string to transition from one style to
    * another. Cached by (fromId, toId) — zero allocations after first call
-   * for a given pair.
+   * for a given pair. Full-clear at MAX_TRANSITION_CACHE guards against
+   * unbounded growth from ever-expanding id spaces; cache repopulates from
+   * the next frame's actual transitions.
    */
   transition(fromId: number, toId: number): string {
     if (fromId === toId) {
@@ -171,6 +175,10 @@ export class StylePool {
     let str = this.transitionCache.get(key)
 
     if (str === undefined) {
+      if (this.transitionCache.size >= MAX_TRANSITION_CACHE) {
+        this.transitionCache.clear()
+      }
+
       str = ansiCodesToString(diffAnsiCodes(this.get(fromId), this.get(toId)))
       this.transitionCache.set(key, str)
     }
@@ -429,6 +437,13 @@ export type Screen = Size & {
   noSelect: Uint8Array
 
   /**
+   * Per-cell written bitmap. A written plain space and never-written padding
+   * share the same packed cell value, so selection needs this side channel to
+   * preserve code indentation without selecting blank UI margins.
+   */
+  written: Uint8Array
+
+  /**
    * Per-ROW soft-wrap continuation marker. softWrap[r]=N>0 means row r
    * is a word-wrap continuation of row r-1 (the `\n` before it was
    * inserted by wrapAnsi, not in the source), and row r-1's written
@@ -465,6 +480,14 @@ export function isEmptyCellAt(screen: Screen, x: number, y: number): boolean {
   }
 
   return isEmptyCellByIndex(screen, y * screen.width + x)
+}
+
+export function isWrittenCellAt(screen: Screen, x: number, y: number): boolean {
+  if (x < 0 || y < 0 || x >= screen.width || y >= screen.height) {
+    return false
+  }
+
+  return screen.written[y * screen.width + x] === 1
 }
 
 /**
@@ -525,6 +548,7 @@ export function createScreen(
     emptyStyleId: styles.none,
     damage: undefined,
     noSelect: new Uint8Array(size),
+    written: new Uint8Array(size),
     softWrap: new Int32Array(height)
   }
 }
@@ -558,6 +582,7 @@ export function resetScreen(screen: Screen, width: number, height: number): void
     screen.cells = new Int32Array(buf)
     screen.cells64 = new BigInt64Array(buf)
     screen.noSelect = new Uint8Array(size)
+    screen.written = new Uint8Array(size)
   }
 
   if (screen.softWrap.length < height) {
@@ -567,6 +592,7 @@ export function resetScreen(screen: Screen, width: number, height: number): void
   // Reset all cells — single fill call, no loop
   screen.cells64.fill(EMPTY_CELL_VALUE, 0, size)
   screen.noSelect.fill(0, 0, size)
+  screen.written.fill(0, 0, size)
   screen.softWrap.fill(0, 0, height)
 
   // Update dimensions
@@ -762,6 +788,7 @@ export function setCellAt(screen: Screen, x: number, y: number, cell: Cell): voi
       if ((cells[spacerCI + 1]! & WIDTH_MASK) === CellWidth.SpacerTail) {
         cells[spacerCI] = EMPTY_CHAR_INDEX
         cells[spacerCI + 1] = packWord1(screen.emptyStyleId, 0, CellWidth.Narrow)
+        screen.written[y * screen.width + spacerX] = 0
       }
     }
   }
@@ -779,6 +806,7 @@ export function setCellAt(screen: Screen, x: number, y: number, cell: Cell): voi
       if ((cells[wideCI + 1]! & WIDTH_MASK) === CellWidth.Wide) {
         cells[wideCI] = EMPTY_CHAR_INDEX
         cells[wideCI + 1] = packWord1(screen.emptyStyleId, 0, CellWidth.Narrow)
+        screen.written[y * screen.width + x - 1] = 0
         clearedWideX = x - 1
       }
     }
@@ -787,6 +815,7 @@ export function setCellAt(screen: Screen, x: number, y: number, cell: Cell): voi
   // Pack cell data into cells array
   cells[ci] = internCharString(screen, cell.char)
   cells[ci + 1] = packWord1(cell.styleId, internHyperlink(screen, cell.hyperlink), cell.width)
+  screen.written[y * screen.width + x] = 1
 
   // Track damage - expand bounds in place instead of allocating new objects
   // Include the main cell position and any cleared orphan cells
@@ -833,11 +862,13 @@ export function setCellAt(screen: Screen, x: number, y: number, cell: Cell): voi
         if (spacerX + 1 < screen.width && (cells[orphanCI + 1]! & WIDTH_MASK) === CellWidth.SpacerTail) {
           cells[orphanCI] = EMPTY_CHAR_INDEX
           cells[orphanCI + 1] = packWord1(screen.emptyStyleId, 0, CellWidth.Narrow)
+          screen.written[y * screen.width + spacerX + 1] = 0
         }
       }
 
       cells[spacerCI] = SPACER_CHAR_INDEX
       cells[spacerCI + 1] = packWord1(screen.emptyStyleId, 0, CellWidth.SpacerTail)
+      screen.written[y * screen.width + spacerX] = 1
 
       // Expand damage to include SpacerTail so diff() scans it
       const d = screen.damage
@@ -921,6 +952,8 @@ export function blitRegion(
   const dstCells = dst.cells
   const srcNoSel = src.noSelect
   const dstNoSel = dst.noSelect
+  const srcWritten = src.written
+  const dstWritten = dst.written
 
   // softWrap is per-row — copy the row range regardless of stride/width.
   // Partial-width blits still carry the row's wrap provenance since the
@@ -939,6 +972,7 @@ export function blitRegion(
     const nsStart = regionY * src.width
     const nsLen = (maxY - regionY) * src.width
     dstNoSel.set(srcNoSel.subarray(nsStart, nsStart + nsLen), nsStart)
+    dstWritten.set(srcWritten.subarray(nsStart, nsStart + nsLen), nsStart)
   } else {
     // Per-row copy for partial-width or mismatched-stride regions
     let srcRowCI = regionY * srcStride + (regionX << 1)
@@ -949,6 +983,7 @@ export function blitRegion(
     for (let y = regionY; y < maxY; y++) {
       dstCells.set(srcCells.subarray(srcRowCI, srcRowCI + rowBytes), dstRowCI)
       dstNoSel.set(srcNoSel.subarray(srcRowNS, srcRowNS + rowLen), dstRowNS)
+      dstWritten.set(srcWritten.subarray(srcRowNS, srcRowNS + rowLen), dstRowNS)
       srcRowCI += srcStride
       dstRowCI += dstStride
       srcRowNS += src.width
@@ -981,6 +1016,7 @@ export function blitRegion(
       if ((srcCells[srcLastCI + 1]! & WIDTH_MASK) === CellWidth.Wide) {
         dstCells[dstSpacerCI] = SPACER_CHAR_INDEX
         dstCells[dstSpacerCI + 1] = packWord1(dst.emptyStyleId, 0, CellWidth.SpacerTail)
+        dstWritten[y * dst.width + maxX] = 1
         wroteSpacerOutsideRegion = true
       }
 
@@ -1022,6 +1058,7 @@ export function clearRegion(
 
   const cells = screen.cells
   const cells64 = screen.cells64
+  const written = screen.written
   const screenWidth = screen.width
   const rowBase = startY * screenWidth
   let damageMinX = startX
@@ -1032,6 +1069,7 @@ export function clearRegion(
   if (startX === 0 && maxX === screenWidth) {
     // Full-width: single fill, no boundary checks needed
     cells64.fill(EMPTY_CELL_VALUE, rowBase, rowBase + (maxY - startY) * screenWidth)
+    written.fill(0, rowBase, rowBase + (maxY - startY) * screenWidth)
   } else {
     // Partial-width: single loop handles boundary cleanup and fill per row.
     const stride = screenWidth << 1 // 2 Int32s per cell
@@ -1054,6 +1092,7 @@ export function clearRegion(
           if ((cells[prevW1]! & WIDTH_MASK) === CellWidth.Wide) {
             cells[prevW1 - 1] = EMPTY_CHAR_INDEX
             cells[prevW1] = packWord1(screen.emptyStyleId, 0, CellWidth.Narrow)
+            written[y * screenWidth + startX - 1] = 0
             damageMinX = startX - 1
           }
         }
@@ -1070,12 +1109,14 @@ export function clearRegion(
           if ((cells[nextW1]! & WIDTH_MASK) === CellWidth.SpacerTail) {
             cells[nextW1 - 1] = EMPTY_CHAR_INDEX
             cells[nextW1] = packWord1(screen.emptyStyleId, 0, CellWidth.Narrow)
+            written[y * screenWidth + maxX] = 0
             damageMaxX = maxX + 1
           }
         }
       }
 
       cells64.fill(EMPTY_CELL_VALUE, fillStart, fillStart + rowLen)
+      written.fill(0, fillStart, fillStart + rowLen)
       leftEdge += stride
       rightEdge += stride
       fillStart += screenWidth
@@ -1112,12 +1153,14 @@ export function shiftRows(screen: Screen, top: number, bottom: number, n: number
   const w = screen.width
   const cells64 = screen.cells64
   const noSel = screen.noSelect
+  const written = screen.written
   const sw = screen.softWrap
   const absN = Math.abs(n)
 
   if (absN > bottom - top) {
     cells64.fill(EMPTY_CELL_VALUE, top * w, (bottom + 1) * w)
     noSel.fill(0, top * w, (bottom + 1) * w)
+    written.fill(0, top * w, (bottom + 1) * w)
     sw.fill(0, top, bottom + 1)
 
     return
@@ -1127,17 +1170,21 @@ export function shiftRows(screen: Screen, top: number, bottom: number, n: number
     // SU: row top+n..bottom → top..bottom-n; clear bottom-n+1..bottom
     cells64.copyWithin(top * w, (top + n) * w, (bottom + 1) * w)
     noSel.copyWithin(top * w, (top + n) * w, (bottom + 1) * w)
+    written.copyWithin(top * w, (top + n) * w, (bottom + 1) * w)
     sw.copyWithin(top, top + n, bottom + 1)
     cells64.fill(EMPTY_CELL_VALUE, (bottom - n + 1) * w, (bottom + 1) * w)
     noSel.fill(0, (bottom - n + 1) * w, (bottom + 1) * w)
+    written.fill(0, (bottom - n + 1) * w, (bottom + 1) * w)
     sw.fill(0, bottom - n + 1, bottom + 1)
   } else {
     // SD: row top..bottom+n → top-n..bottom; clear top..top-n-1
     cells64.copyWithin((top - n) * w, top * w, (bottom + n + 1) * w)
     noSel.copyWithin((top - n) * w, top * w, (bottom + n + 1) * w)
+    written.copyWithin((top - n) * w, top * w, (bottom + n + 1) * w)
     sw.copyWithin(top - n, top, bottom + n + 1)
     cells64.fill(EMPTY_CELL_VALUE, top * w, (top - n) * w)
     noSel.fill(0, top * w, (top - n) * w)
+    written.fill(0, top * w, (top - n) * w)
     sw.fill(0, top, top - n)
   }
 }

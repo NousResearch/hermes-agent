@@ -24,6 +24,9 @@ class TestTextDisplayWidth:
     def test_mixed(self) -> None:
         assert _text_display_width("a中") == 1 + 2
 
+    def test_combining_mark_is_zero_width(self) -> None:
+        assert _text_display_width("e\u0301") == 1
+
 
 class TestFitDisplayWidth:
     def test_no_truncation_when_fits(self) -> None:
@@ -118,6 +121,17 @@ class TestPrintSessionsTable:
             if line.strip():
                 assert line.startswith("  ")
 
+    def test_indexed_rows_use_the_supplied_printer(self) -> None:
+        lines: list[str] = []
+        print_sessions_table(
+            [{"title": "中文", "preview": "preview", "last_active": None, "id": "id"}],
+            has_titles=True,
+            include_index=True,
+            print_fn=lines.append,
+        )
+        assert lines[0].startswith("#   Title")
+        assert lines[2].startswith("1   中文")
+
     def test_row_columns_have_expected_display_widths(self) -> None:
         """Guardrail: titled row layout matches fixed column budgets + spaces."""
         title = _pad_display_right("ColdStore Rust 项目", 32)
@@ -130,4 +144,3 @@ class TestPrintSessionsTable:
         assert _text_display_width(last) == 13
         # Single space between padded columns, then unbounded id.
         assert line == f"{title} {preview} {last} {sid}"
-

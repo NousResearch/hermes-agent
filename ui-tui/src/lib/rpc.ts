@@ -26,6 +26,22 @@ export const asCommandDispatch = (value: unknown): CommandDispatchResponse | nul
     return { type: 'skill', name: o.name, message: typeof o.message === 'string' ? o.message : undefined }
   }
 
+  if (t === 'send' && typeof o.message === 'string') {
+    return {
+      type: 'send',
+      message: o.message,
+      notice: typeof o.notice === 'string' ? o.notice : undefined
+    }
+  }
+
+  if (t === 'prefill' && typeof o.message === 'string') {
+    return {
+      type: 'prefill',
+      message: o.message,
+      notice: typeof o.notice === 'string' ? o.notice : undefined
+    }
+  }
+
   return null
 }
 

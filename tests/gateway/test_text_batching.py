@@ -9,8 +9,7 @@ Telegram and Feishu.
 """
 
 import asyncio
-import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -41,7 +40,7 @@ def _make_event(
 
 def _make_discord_adapter():
     """Create a minimal DiscordAdapter for testing text batching."""
-    from gateway.platforms.discord import DiscordAdapter
+    from plugins.platforms.discord.adapter import DiscordAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(DiscordAdapter)
@@ -148,6 +147,70 @@ class TestDiscordTextBatching:
         await asyncio.sleep(0.25)
         adapter.handle_message.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_shield_protects_handle_message_from_cancel(self):
+        """Regression guard: a follow-up chunk arriving while
+        handle_message is mid-flight must NOT cancel the running
+        dispatch.  _enqueue_text_event fires prior_task.cancel() on
+        every new chunk; without asyncio.shield around handle_message
+        the cancel propagates into the agent's streaming request and
+        aborts the response.
+        """
+        adapter = _make_discord_adapter()
+
+        handle_started = asyncio.Event()
+        release_handle = asyncio.Event()
+        first_handle_cancelled = asyncio.Event()
+        first_handle_completed = asyncio.Event()
+        call_count = [0]
+
+        async def slow_handle(event):
+            call_count[0] += 1
+            # Only the first call (batch 1) is the one we're protecting.
+            if call_count[0] == 1:
+                handle_started.set()
+                try:
+                    await release_handle.wait()
+                    first_handle_completed.set()
+                except asyncio.CancelledError:
+                    first_handle_cancelled.set()
+                    raise
+            # Second call (batch 2) returns immediately — not the subject
+            # of this test.
+
+        adapter.handle_message = slow_handle
+
+        # Prime batch 1 and wait for it to land inside handle_message.
+        adapter._enqueue_text_event(_make_event("batch 1", Platform.DISCORD))
+        await asyncio.wait_for(handle_started.wait(), timeout=1.0)
+
+        # A new chunk arrives — _enqueue_text_event fires
+        # prior_task.cancel() on batch 1's flush task, which is
+        # currently awaiting inside handle_message.
+        adapter._enqueue_text_event(_make_event("batch 2 follow-up", Platform.DISCORD))
+
+        # Let the cancel propagate.
+        await asyncio.sleep(0.05)
+
+        # CRITICAL ASSERTION: batch 1's handle_message must NOT have
+        # been cancelled.  Without asyncio.shield this assertion fails
+        # because CancelledError propagates from the flush task's
+        # `await self.handle_message(event)` into slow_handle.
+        assert not first_handle_cancelled.is_set(), (
+            "handle_message for batch 1 was cancelled by a follow-up "
+            "chunk — asyncio.shield is missing or broken"
+        )
+
+        # Release batch 1's handle_message and let it complete.
+        release_handle.set()
+        await asyncio.wait_for(first_handle_completed.wait(), timeout=1.0)
+        assert first_handle_completed.is_set()
+
+        # Cleanup
+        for task in list(adapter._pending_text_batch_tasks.values()):
+            task.cancel()
+        await asyncio.sleep(0.01)
+
 
 # =====================================================================
 # Matrix text batching
@@ -155,7 +218,7 @@ class TestDiscordTextBatching:
 
 def _make_matrix_adapter():
     """Create a minimal MatrixAdapter for testing text batching."""
-    from gateway.platforms.matrix import MatrixAdapter
+    from plugins.platforms.matrix.adapter import MatrixAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(MatrixAdapter)
@@ -240,7 +303,7 @@ class TestMatrixTextBatching:
 
 def _make_wecom_adapter():
     """Create a minimal WeComAdapter for testing text batching."""
-    from gateway.platforms.wecom import WeComAdapter
+    from plugins.platforms.wecom.adapter import WeComAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(WeComAdapter)
@@ -325,7 +388,7 @@ class TestWeComTextBatching:
 
 def _make_telegram_adapter():
     """Create a minimal TelegramAdapter for testing adaptive delay."""
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(TelegramAdapter)
@@ -389,7 +452,7 @@ class TestTelegramAdaptiveDelay:
 
 def _make_feishu_adapter():
     """Create a minimal FeishuAdapter for testing adaptive delay."""
-    from gateway.platforms.feishu import FeishuAdapter, FeishuBatchState
+    from plugins.platforms.feishu.adapter import FeishuAdapter, FeishuBatchState
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(FeishuAdapter)

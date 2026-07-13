@@ -1,4 +1,4 @@
-import React, { PureComponent, type ReactNode } from 'react'
+import { PureComponent, type ReactNode } from 'react'
 
 import { updateLastInteractionTime } from '../../bootstrap/state.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -9,6 +9,7 @@ import type { DOMElement } from '../dom.js'
 import { EventEmitter } from '../events/emitter.js'
 import { InputEvent } from '../events/input-event.js'
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js'
+import instances from '../instances.js'
 import {
   INITIAL_STATE,
   type ParsedInput,
@@ -17,7 +18,7 @@ import {
   parseMultipleKeypresses
 } from '../parse-keypress.js'
 import reconciler from '../reconciler.js'
-import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
+import { clearSelection, finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js'
 import { TerminalQuerier, xtversion } from '../terminal-querier.js'
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js'
@@ -29,10 +30,11 @@ import {
   FOCUS_IN,
   FOCUS_OUT
 } from '../termio/csi.js'
-import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, HIDE_CURSOR, SHOW_CURSOR } from '../termio/dec.js'
+import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, SHOW_CURSOR } from '../termio/dec.js'
 
 import AppContext from './AppContext.js'
 import { ClockProvider } from './ClockContext.js'
+import CursorAdvanceContext, { type CursorAdvanceNotifier } from './CursorAdvanceContext.js'
 import CursorDeclarationContext, { type CursorDeclarationSetter } from './CursorDeclarationContext.js'
 import ErrorOverview from './ErrorOverview.js'
 import StdinContext from './StdinContext.js'
@@ -75,6 +77,10 @@ type Props = {
   // DOM elements. Called for mode-1003 motion events with no button held.
   // No-op outside fullscreen (Ink.dispatchHover gates on altScreenActive).
   readonly onHoverAt: (col: number, row: number) => void
+  // Copy the active fullscreen text selection without clearing the highlight.
+  // Used for terminal-native right-click-copy behaviour.
+  readonly onCopySelectionNoClear: () => Promise<string>
+  readonly getSelectedText: () => string
   // Look up the OSC 8 hyperlink at (col, row) synchronously at click
   // time. Returns the URL or undefined. The browser-open is deferred by
   // MULTI_CLICK_TIMEOUT_MS so double-click can cancel it.
@@ -100,6 +106,18 @@ type Props = {
   // Enables IME composition at the input caret and lets screen readers /
   // magnifiers track the input. Optional so testing.tsx doesn't stub it.
   readonly onCursorDeclaration?: CursorDeclarationSetter
+  // Receives notifications that the physical cursor was advanced out-of-band
+  // (e.g. TextInput's fast-echo bypass writing directly to stdout). The
+  // handler in ink.tsx updates two pieces of state from a single call:
+  //   - `displayCursor` (the relative-move basis log-update uses on the
+  //     next frame; skipped on alt-screen where CSI H resets it every
+  //     frame anyway), and
+  //   - the active `cursorDeclaration.relativeX/Y` (the target the cursor
+  //     parks at after every frame; bumped on BOTH screens because
+  //     onRender's alt-screen branch emits an absolute CUP from it and
+  //     a stale declaration there is still visibly wrong).
+  // Optional so testing.tsx doesn't need to stub it.
+  readonly onCursorAdvance?: CursorAdvanceNotifier
   // Dispatch a keyboard event through the DOM tree. Called for each
   // parsed key alongside the legacy EventEmitter path.
   readonly dispatchKeyboardEvent: (parsedKey: ParsedKey) => void
@@ -196,7 +214,9 @@ export default class App extends PureComponent<Props, State> {
             <TerminalFocusProvider>
               <ClockProvider>
                 <CursorDeclarationContext.Provider value={this.props.onCursorDeclaration ?? (() => {})}>
-                  {this.state.error ? <ErrorOverview error={this.state.error as Error} /> : this.props.children}
+                  <CursorAdvanceContext.Provider value={this.props.onCursorAdvance ?? (() => {})}>
+                    {this.state.error ? <ErrorOverview error={this.state.error as Error} /> : this.props.children}
+                  </CursorAdvanceContext.Provider>
                 </CursorDeclarationContext.Provider>
               </ClockProvider>
             </TerminalFocusProvider>
@@ -204,12 +224,6 @@ export default class App extends PureComponent<Props, State> {
         </AppContext.Provider>
       </TerminalSizeContext.Provider>
     )
-  }
-  override componentDidMount() {
-    // In accessibility mode, keep the native cursor visible for screen magnifiers and other tools
-    if (this.props.stdout.isTTY) {
-      this.props.stdout.write(HIDE_CURSOR)
-    }
   }
   override componentWillUnmount() {
     if (this.props.stdout.isTTY) {
@@ -296,6 +310,21 @@ export default class App extends PureComponent<Props, State> {
             }
           })
         })
+
+        // Re-assert mouse tracking on raw-mode re-entry. <AlternateScreen>
+        // owns the initial enable, but its effect only re-runs on a
+        // mode/writeRaw change — NOT on a raw-mode bounce (count 1→0→1, e.g.
+        // an overlay that briefly drops the last useInput consumer). The
+        // teardown above now DISABLE_MOUSE_TRACKING's to stop the cooked-echo
+        // leak, so without this the terminal would be left with tracking off
+        // and the mouse silently dead until the next stdin-gap/resize
+        // re-assert. reassertTerminalModes() is gated on altScreenActive and
+        // idempotent, so it's a no-op when there's nothing to restore.
+        // Deferred (same setImmediate discipline as the XTVERSION probe) so it
+        // lands after any alt-screen enable writes in this render cycle.
+        setImmediate(() => {
+          instances.get(this.props.stdout)?.reassertTerminalModes()
+        })
       }
 
       this.rawModeEnabledCount++
@@ -311,6 +340,15 @@ export default class App extends PureComponent<Props, State> {
       this.props.stdout.write(DFE)
       // Disable bracketed paste mode
       this.props.stdout.write(DBP)
+      // Disable mouse tracking. Tracking is asserted by <AlternateScreen> /
+      // the Ink instance, NOT here — but dropping raw mode + detaching the
+      // readable listener while DEC 1003 hover stays on means the terminal
+      // falls back to cooked-mode echo and every mouse move leaks as text
+      // (`35;col;row M` shards over the prompt). Same hazard handleSuspend()
+      // already guards against; this teardown path missed it. Idempotent
+      // (no-op if tracking was never on), and re-enabling raw mode below
+      // re-asserts tracking so a transient drop→re-add round-trips cleanly.
+      this.props.stdout.write(DISABLE_MOUSE_TRACKING)
       stdin.setRawMode(false)
       stdin.removeListener('readable', this.handleReadable)
       stdin.unref()
@@ -322,8 +360,10 @@ export default class App extends PureComponent<Props, State> {
     // Clear the timer reference
     this.incompleteEscapeTimer = null
 
-    // Only proceed if we have incomplete sequences
-    if (!this.keyParseState.incomplete) {
+    // Only proceed if we have an incomplete escape sequence or an unterminated
+    // bracketed paste. Missing paste-end markers otherwise leave every later
+    // keystroke trapped in the paste buffer.
+    if (!this.keyParseState.incomplete && this.keyParseState.mode !== 'IN_PASTE') {
       return
     }
 
@@ -336,13 +376,16 @@ export default class App extends PureComponent<Props, State> {
     // drain stdin next and clear this timer. Prevents both the spurious
     // Escape key and the lost scroll event.
     if (this.props.stdin.readableLength > 0) {
-      this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.NORMAL_TIMEOUT)
+      this.incompleteEscapeTimer = setTimeout(
+        this.flushIncomplete,
+        this.keyParseState.mode === 'IN_PASTE' ? this.PASTE_TIMEOUT : this.NORMAL_TIMEOUT
+      )
 
       return
     }
 
-    // Process incomplete as a flush operation (input=null)
-    // This reuses all existing parsing logic
+    // Process incomplete/paste state as a flush operation (input=null).
+    // This reuses all existing parsing logic.
     this.processInput(null)
   }
 
@@ -361,8 +404,10 @@ export default class App extends PureComponent<Props, State> {
       reconciler.discreteUpdates(processKeysInBatch, this, keys, undefined, undefined)
     }
 
-    // If we have incomplete escape sequences, set a timer to flush them
-    if (this.keyParseState.incomplete) {
+    // If we have incomplete escape sequences or an unterminated paste, set a
+    // timer to flush/reset them. Paste starts are complete CSI sequences, so
+    // checking only `incomplete` would never arm the watchdog.
+    if (this.keyParseState.incomplete || this.keyParseState.mode === 'IN_PASTE') {
       // Cancel any existing timer first
       if (this.incompleteEscapeTimer) {
         clearTimeout(this.incompleteEscapeTimer)
@@ -411,6 +456,19 @@ export default class App extends PureComponent<Props, State> {
           level: 'warn'
         })
         stdin.addListener('readable', this.handleReadable)
+      }
+
+      // Issue #31486: even after re-attaching, any bytes already buffered
+      // when the loop threw are stranded because Node only fires 'readable'
+      // on buffer transitions, not for data the consumer already saw. Schedule
+      // one drain on the next macrotask so the handler runs against a fresh
+      // try/catch and clears whatever is left.
+      if (this.rawModeEnabledCount > 0 && stdin.readableLength > 0) {
+        setImmediate(() => {
+          if (this.rawModeEnabledCount > 0 && this.props.stdin.readableLength > 0) {
+            this.handleReadable()
+          }
+        })
       }
     }
   }
@@ -470,7 +528,7 @@ export default class App extends PureComponent<Props, State> {
       }
 
       if (this.props.stdout.isTTY) {
-        this.props.stdout.write(HIDE_CURSOR + EFE)
+        this.props.stdout.write(EFE)
       }
 
       this.inputEmitter.emit('resume')
@@ -569,17 +627,16 @@ function processKeysInBatch(app: App, items: ParsedInput[], _unused1: undefined,
 
 /** Exported for testing. Mutates app.props.selection and click/hover state. */
 export function handleMouseEvent(app: App, m: ParsedMouse): void {
-  // Allow disabling click handling while keeping wheel scroll (which goes
-  // through the keybinding system as 'wheelup'/'wheeldown', not here).
-  if (isMouseClicksDisabled()) {
-    return
-  }
-
   const sel = app.props.selection
   // Terminal coords are 1-indexed; screen buffer is 0-indexed
   const col = m.col - 1
   const row = m.row - 1
   const baseButton = m.button & 0x03
+
+  // Disable app click handling without blocking wheel/right-click dispatch.
+  if (isMouseClicksDisabled() && baseButton === 0) {
+    return
+  }
 
   if (m.action === 'press') {
     if ((m.button & 0x20) !== 0 && baseButton === 3) {
@@ -616,6 +673,37 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     if (baseButton !== 0) {
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
+
+      if (baseButton === 2 && hasSelection(sel)) {
+        if ((m.button & 0x20) !== 0) {
+          return
+        }
+
+        if (!app.props.getSelectedText()) {
+          return
+        }
+
+        void app.props
+          .onCopySelectionNoClear()
+          .then(text => {
+            if (text) {
+              // Right-click copy is a deliberate action (unlike copy-on-select
+              // during a drag, which keeps the highlight so the drag can
+              // continue). Clear the highlight so the user gets visual
+              // confirmation the copy landed and a follow-up right-click on
+              // empty space pastes instead of re-copying the stale range.
+              clearSelection(sel)
+              app.props.onSelectionChange()
+            } else {
+              app.props.onMouseDownAt(col, row, baseButton)
+            }
+          })
+          .catch(() => app.props.onMouseDownAt(col, row, baseButton))
+
+        return
+      }
+
+      app.props.onMouseDownAt(col, row, baseButton)
 
       return
     }

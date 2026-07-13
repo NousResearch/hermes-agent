@@ -1,70 +1,213 @@
 name: Tests
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_call:
+    inputs:
+      slice_count:
+        description: Number of parallel test slices
+        type: number
+        default: 8
 
 permissions:
   contents: read
 
-# Cancel in-progress runs for the same PR/branch
+# Cancel in-progress runs for the same ref
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
+  generate:
+    name: "Generate slices"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Restore duration cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: test_durations.json
+          key: test-durations
+
+      - name: Generate test slices
+        id: matrix
+        run: |
+          MATRIX=$(python3 scripts/run_tests_parallel.py --generate-slices ${{ inputs.slice_count }})
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Run tests slice ${{ matrix.slice.index }}/${{ inputs.slice_count }}
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.generate.outputs.matrix) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL --retry 3 --retry-delay 5 -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          rg --version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
+          # Keyed on the dependency manifests, so the cache is reused until
+          # pyproject.toml or uv.lock changes. `uv sync` still runs every
+          # time, but resolves from the warm cache instead of re-downloading
+          # and re-building wheels.
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
 
       - name: Set up Python 3.11
         run: uv python install 3.11
 
       - name: Install dependencies
-        run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+        # `uv sync --locked` installs the exact pinned set from uv.lock (and
+        # fails if the lock is out of sync with pyproject.toml), giving a
+        # reproducible env. It also creates .venv itself, so no separate
+        # `uv venv` step is needed.
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev
 
-      - name: Run tests
+      - name: Minimize uv cache
+        # Optimized for CI: prunes pre-built wheels that are cheap to
+        # re-download, keeping the persisted cache small and fast to restore.
+        run: uv cache prune --ci
+
+      - name: Run tests (slice ${{ matrix.slice.index }}/${{ inputs.slice_count }})
+        # Per-file isolation via scripts/run_tests.sh: each test file runs
+        # in its own freshly-spawned `python -m pytest <file>` subprocess
+        # with bounded parallelism. No xdist, no shared workers, no
+        # module-level state leakage between files.
+        #
+        # File list is pre-computed by the generate job (--generate-slices)
+        # which runs LPT distribution once and passes the file list to each
+        # matrix job via --files. Previously each job re-discovered files and
+        # re-ran LPT independently — redundant N times.
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto
+          scripts/run_tests.sh --files '${{ matrix.slice.files }}'
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
 
+      - name: Upload per-slice durations
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-durations-slice-${{ matrix.slice.index }}
+          path: test_durations.json
+          retention-days: 1
+
+  # Merge per-slice duration data into a single cache, so future runs
+  # (including PRs) get balanced slicing.
+  save-durations:
+    needs: test
+    if: needs.test.result == 'success' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all slice durations
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: test-durations-slice-*
+          path: durations
+          merge-multiple: true
+
+      - name: Merge into single durations file
+        run: |
+          python3 -c "
+          import json, glob, os
+          merged = {}
+          for f in glob.glob('durations/*test_durations.json'):
+            with open(f) as fh:
+              merged.update(json.load(fh))
+          with open('test_durations.json', 'w') as fh:
+            json.dump(merged, fh, indent=2, sort_keys=True)
+          print(f'Merged {len(merged)} file durations')
+          "
+
+      - name: Save merged duration cache
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: test_durations.json
+          key: test-durations-${{ github.run_id }}
+
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL --retry 3 --retry-delay 5 -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          rg --version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
+          # Keyed on the dependency manifests, so the cache is reused until
+          # pyproject.toml or uv.lock changes. `uv sync` still runs every
+          # time, but resolves from the warm cache instead of re-downloading
+          # and re-building wheels.
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
 
       - name: Set up Python 3.11
         run: uv python install 3.11
 
       - name: Install dependencies
+        # `uv sync --locked` installs the exact pinned set from uv.lock (and
+        # fails if the lock is out of sync with pyproject.toml), giving a
+        # reproducible env. It also creates .venv itself, so no separate
+        # `uv venv` step is needed.
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Minimize uv cache
+        # Optimized for CI: prunes pre-built wheels that are cheap to
+        # re-download, keeping the persisted cache small and fast to restore.
+        run: uv cache prune --ci
+
+      - name: Packaged-wheel i18n smoke test
         run: |
-          uv venv .venv --python 3.11
           source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+          python -m pytest -m integration tests/test_wheel_locales_e2e.py -v
 
       - name: Run e2e tests
         run: |

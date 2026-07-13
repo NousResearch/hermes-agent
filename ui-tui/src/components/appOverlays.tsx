@@ -4,13 +4,20 @@ import { useStore } from '@nanostores/react'
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
-import { $uiState } from '../app/uiStore.js'
+import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
+import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
+import { BillingOverlay } from './billingOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
-import { ApprovalPrompt, ClarifyPrompt } from './prompts.js'
-import { SessionPicker } from './sessionPicker.js'
+import { OverlayHint } from './overlayControls.js'
+import { PetPicker } from './petPicker.js'
+import { PluginsHub } from './pluginsHub.js'
+import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
+import { SkillsHub } from './skillsHub.js'
+
+const COMPLETION_WINDOW = 16
 
 export function PromptZone({
   cols,
@@ -20,12 +27,44 @@ export function PromptZone({
   onSudoSubmit
 }: Pick<AppOverlaysProps, 'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onSecretSubmit' | 'onSudoSubmit'>) {
   const overlay = useStore($overlayState)
-  const ui = useStore($uiState)
+  const theme = useStore($uiTheme)
 
   if (overlay.approval) {
     return (
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
-        <ApprovalPrompt onChoice={onApprovalChoice} req={overlay.approval} t={ui.theme} />
+        <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+      </Box>
+    )
+  }
+
+  if (overlay.billing) {
+    const current = overlay.billing
+
+    const onPatch = (next: Partial<typeof current>) =>
+      patchOverlayState(prev => (prev.billing ? { ...prev, billing: { ...prev.billing, ...next } } : prev))
+
+    const onClose = () => patchOverlayState({ billing: null })
+
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <BillingOverlay onClose={onClose} onPatch={onPatch} overlay={current} t={theme} />
+      </Box>
+    )
+  }
+
+  if (overlay.confirm) {
+    const req = overlay.confirm
+
+    const onConfirm = () => {
+      patchOverlayState({ confirm: null })
+      req.onConfirm()
+    }
+
+    const onCancel = () => patchOverlayState({ confirm: null })
+
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <ConfirmPrompt onCancel={onCancel} onConfirm={onConfirm} req={req} t={theme} />
       </Box>
     )
   }
@@ -38,7 +77,7 @@ export function PromptZone({
           onAnswer={onClarifyAnswer}
           onCancel={() => onClarifyAnswer('')}
           req={overlay.clarify}
-          t={ui.theme}
+          t={theme}
         />
       </Box>
     )
@@ -47,7 +86,7 @@ export function PromptZone({
   if (overlay.sudo) {
     return (
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
-        <MaskedPrompt cols={cols} icon="🔐" label="sudo password required" onSubmit={onSudoSubmit} t={ui.theme} />
+        <MaskedPrompt cols={cols} icon="🔐" label="sudo password required" onSubmit={onSudoSubmit} t={theme} />
       </Box>
     )
   }
@@ -61,7 +100,7 @@ export function PromptZone({
           label={overlay.secret.prompt}
           onSubmit={onSecretSubmit}
           sub={`for ${overlay.secret.envVar}`}
-          t={ui.theme}
+          t={theme}
         />
       </Box>
     )
@@ -74,53 +113,106 @@ export function FloatingOverlays({
   cols,
   compIdx,
   completions,
+  onActiveSessionSelect,
+  onActiveSessionClose,
   onModelSelect,
-  onPickerSelect,
+  onNewLiveSession,
+  onNewPromptSession,
+  onResumeSelect,
   pagerPageSize
-}: Pick<AppOverlaysProps, 'cols' | 'compIdx' | 'completions' | 'onModelSelect' | 'onPickerSelect' | 'pagerPageSize'>) {
+}: Pick<
+  AppOverlaysProps,
+  | 'cols'
+  | 'compIdx'
+  | 'completions'
+  | 'onActiveSessionSelect'
+  | 'onActiveSessionClose'
+  | 'onModelSelect'
+  | 'onNewLiveSession'
+  | 'onNewPromptSession'
+  | 'onResumeSelect'
+  | 'pagerPageSize'
+>) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
-  const ui = useStore($uiState)
+  const sid = useStore($uiSessionId)
+  const theme = useStore($uiTheme)
 
-  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || completions.length
+  const hasAny =
+    overlay.modelPicker ||
+    overlay.pager ||
+    overlay.petPicker ||
+    overlay.sessions ||
+    overlay.skillsHub ||
+    overlay.pluginsHub ||
+    completions.length
 
   if (!hasAny) {
     return null
   }
 
-  const start = Math.max(0, compIdx - 8)
+  // Fixed viewport centered on compIdx — previously the slice end was
+  // compIdx + 8 so the dropdown grew from 8 rows to 16 as the user scrolled
+  // down, bouncing the height on every keystroke.
+  const viewportSize = Math.min(COMPLETION_WINDOW, completions.length)
+
+  const start = Math.max(0, Math.min(compIdx - Math.floor(COMPLETION_WINDOW / 2), completions.length - viewportSize))
 
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
-      {overlay.picker && (
-        <FloatBox color={ui.theme.color.bronze}>
-          <SessionPicker
+      {overlay.sessions && (
+        <FloatBox color={theme.color.border}>
+          <ActiveSessionSwitcher
+            currentSessionId={sid}
             gw={gw}
-            onCancel={() => patchOverlayState({ picker: false })}
-            onSelect={onPickerSelect}
-            t={ui.theme}
+            onCancel={() => patchOverlayState({ sessions: false })}
+            onClose={onActiveSessionClose}
+            onNew={onNewLiveSession}
+            onNewPrompt={onNewPromptSession}
+            onResume={onResumeSelect}
+            onSelect={onActiveSessionSelect}
+            t={theme}
           />
         </FloatBox>
       )}
 
       {overlay.modelPicker && (
-        <FloatBox color={ui.theme.color.bronze}>
+        <FloatBox color={theme.color.border}>
           <ModelPicker
             gw={gw}
+            initialRefresh={typeof overlay.modelPicker === 'object' && overlay.modelPicker.refresh === true}
             onCancel={() => patchOverlayState({ modelPicker: false })}
             onSelect={onModelSelect}
-            sessionId={ui.sid}
-            t={ui.theme}
+            sessionId={sid}
+            t={theme}
           />
         </FloatBox>
       )}
 
+      {overlay.petPicker && (
+        <FloatBox color={theme.color.border}>
+          <PetPicker gw={gw} onClose={() => patchOverlayState({ petPicker: false })} t={theme} />
+        </FloatBox>
+      )}
+
+      {overlay.skillsHub && (
+        <FloatBox color={theme.color.border}>
+          <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={theme} />
+        </FloatBox>
+      )}
+
+      {overlay.pluginsHub && (
+        <FloatBox color={theme.color.border}>
+          <PluginsHub gw={gw} onClose={() => patchOverlayState({ pluginsHub: false })} t={theme} />
+        </FloatBox>
+      )}
+
       {overlay.pager && (
-        <FloatBox color={ui.theme.color.bronze}>
+        <FloatBox color={theme.color.border}>
           <Box flexDirection="column" paddingX={1} paddingY={1}>
             {overlay.pager.title && (
               <Box justifyContent="center" marginBottom={1}>
-                <Text bold color={ui.theme.color.gold}>
+                <Text bold color={theme.color.primary}>
                   {overlay.pager.title}
                 </Text>
               </Box>
@@ -131,34 +223,47 @@ export function FloatingOverlays({
             ))}
 
             <Box marginTop={1}>
-              <Text color={ui.theme.color.dim}>
+              <OverlayHint t={theme}>
                 {overlay.pager.offset + pagerPageSize < overlay.pager.lines.length
-                  ? `Enter/Space for more · q to close (${Math.min(overlay.pager.offset + pagerPageSize, overlay.pager.lines.length)}/${overlay.pager.lines.length})`
-                  : `end · q to close (${overlay.pager.lines.length} lines)`}
-              </Text>
+                  ? `↑↓/jk line · Enter/Space/PgDn page · b/PgUp back · g/G top/bottom · Esc/q close (${Math.min(overlay.pager.offset + pagerPageSize, overlay.pager.lines.length)}/${overlay.pager.lines.length})`
+                  : `end · ↑↓/jk · b/PgUp back · g top · Esc/q close (${overlay.pager.lines.length} lines)`}
+              </OverlayHint>
             </Box>
           </Box>
         </FloatBox>
       )}
 
       {!!completions.length && (
-        <FloatBox color={ui.theme.color.gold}>
+        <FloatBox color={theme.color.primary}>
           <Box flexDirection="column" width={Math.max(28, cols - 6)}>
-            {completions.slice(start, compIdx + 8).map((item, i) => {
+            {completions.slice(start, start + viewportSize).map((item, i) => {
               const active = start + i === compIdx
 
               return (
                 <Box
-                  backgroundColor={active ? ui.theme.color.completionCurrentBg : undefined}
+                  backgroundColor={active ? theme.color.completionCurrentBg : theme.color.completionBg}
                   flexDirection="row"
                   key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
                   width="100%"
                 >
-                  <Text bold color={ui.theme.color.label}>
-                    {' '}
-                    {item.display}
-                  </Text>
-                  {item.meta ? <Text color={ui.theme.color.dim}> {item.meta}</Text> : null}
+                  {/* flexShrink=0 — when meta overflows the row, Ink/Yoga
+                      otherwise shaves the last char off the display column
+                      (e.g. /goal renders as /goa). */}
+                  <Box flexShrink={0}>
+                    <Text bold color={theme.color.label}>
+                      {' '}
+                      {item.display}
+                    </Text>
+                  </Box>
+                  {item.meta ? (
+                    <Text
+                      backgroundColor={active ? theme.color.completionMetaCurrentBg : theme.color.completionMetaBg}
+                      color={theme.color.muted}
+                    >
+                      {' '}
+                      {item.meta}
+                    </Text>
+                  ) : null}
                 </Box>
               )
             })}

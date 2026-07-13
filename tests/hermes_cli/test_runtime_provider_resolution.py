@@ -76,14 +76,61 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "openai-codex", "responses_transport": "websocket"},
+    )
     monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
 
     resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert resolved["responses_transport"] == "websocket"
 
     assert resolved["provider"] == "openai-codex"
     assert resolved["api_key"] == "pool-token"
     assert resolved["credential_pool"] is not None
     assert resolved["source"] == "manual"
+
+
+def test_resolve_runtime_provider_codex(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openai-codex",
+            "default": "gpt-5-codex",
+            "responses_transport": "websocket-cached",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("P", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(
+        rp,
+        "resolve_codex_runtime_credentials",
+        lambda: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+            "source": "codex-auth-json",
+            "auth_file": "/tmp/auth.json",
+            "codex_home": "/tmp/codex",
+            "last_refresh": "2026-02-26T00:00:00Z",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert resolved["provider"] == "openai-codex"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert resolved["api_key"] == "codex-token"
+    assert resolved["responses_transport"] == "websocket-cached"
+    assert resolved["requested_provider"] == "openai-codex"
 
 
 def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):

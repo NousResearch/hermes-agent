@@ -557,6 +557,11 @@ def _resolve_runtime_from_pool_entry(
     return {
         "provider": provider,
         "api_mode": api_mode,
+        **(
+            {"responses_transport": _parse_responses_transport(model_cfg.get("responses_transport"))}
+            if provider == "openai-codex"
+            else {}
+        ),
         "base_url": base_url,
         "api_key": api_key,
         "source": getattr(entry, "source", "pool"),
@@ -1507,6 +1512,7 @@ def _resolve_explicit_runtime(
         return {
             "provider": "openai-codex",
             "api_mode": "codex_responses",
+            "responses_transport": _parse_responses_transport(model_cfg.get("responses_transport")),
             "base_url": base_url,
             "api_key": api_key,
             "source": "explicit",

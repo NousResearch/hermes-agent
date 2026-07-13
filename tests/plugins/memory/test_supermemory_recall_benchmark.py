@@ -62,6 +62,17 @@ def test_recall_benchmark_covers_selection_policy_edge_cases():
     )
     adversarial_queries = [case["query"].lower() for case in cases if case["category"] == "adversarial_transient"]
     assert any(all(marker not in query for marker in ("durable", "lasting", "persistent", "stable")) for query in adversarial_queries)
+    assert any(any(ord(character) > 127 for character in document["content"]) for document in documents.values())
+    assert any("documentType" in document.get("metadata", {}) for document in documents.values())
+    assert any(document.get("metadata", {}).get("type") == "full session" for document in documents.values())
+    malformed_scores = {
+        result[1]
+        for case in cases
+        for result in case.get("search", [])
+        if len(result) > 1
+        and (isinstance(result[1], str) or not 0 <= result[1] <= 1)
+    }
+    assert {"NaN", "Infinity", "-Infinity", -0.01, 1.01}.issubset(malformed_scores)
 
 
 def test_fixture_client_keeps_evaluator_truth_out_of_provider_responses():
@@ -112,8 +123,8 @@ def test_precision_gated_prefetch_meets_offline_recall_contract():
     assert metrics["durable_irrelevant_selections"] == 0
     assert metrics["transient_contamination_rate"] == 0.0
     assert metrics["transient_contamination_by_class"] == {}
-    # Profile recall is explicitly disabled by this fixture, so the three
-    # profile-only cases trade recall for no unsolicited profile injection.
+    # Profile recall is explicitly disabled by this fixture, so six required
+    # profile-only documents trade recall for no unsolicited profile injection.
     assert metrics["required_durable_recall"] >= 0.7
 
 

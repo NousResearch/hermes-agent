@@ -11,6 +11,7 @@ from plugins.memory.supermemory import (
     _clean_text_for_capture,
     _format_connection_summary,
     _format_prefetch_context,
+    _is_transient_recall,
     _load_supermemory_config,
     _probe_supermemory_connection,
     _save_supermemory_config,
@@ -28,6 +29,7 @@ class FakeClient:
         self.add_calls = []
         self.search_results = []
         self.profile_response = {"static": [], "dynamic": [], "search_results": []}
+        self.profile_calls = []
         self.ingest_calls = []
         self.forgotten_ids = []
         self.forget_by_query_response = {"success": True, "message": "Forgot"}
@@ -47,6 +49,7 @@ class FakeClient:
         return self.search_results
 
     def get_profile(self, query=None, *, container_tag=None):
+        self.profile_calls.append({"query": query, "container_tag": container_tag})
         return self.profile_response
 
     def forget_memory(self, memory_id, *, container_tag=None):
@@ -173,6 +176,47 @@ def test_format_prefetch_context_deduplicates_near_identical_facts():
     assert result.count("Avery prefers") == 1
 
 
+def test_format_prefetch_context_keeps_unicode_facts_and_deduplicates_variants():
+    result = _format_prefetch_context(
+        static_facts=["用户偏好简洁回答。"],
+        dynamic_facts=[],
+        search_results=[{"memory": "用户偏好简洁回答！", "similarity": 0.99}],
+        max_results=5,
+    )
+    assert result.count("用户偏好简洁回答") == 1
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"type": "full session"},
+        {"documentType": "full_session"},
+        {"DOCUMENT-TYPE": "Full-Session"},
+    ],
+)
+def test_transient_recall_normalizes_metadata_key_and_value_variants(metadata):
+    assert _is_transient_recall("Texte durable en apparence", metadata) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "If the browser test failed, capture the trace before retrying.",
+        "Current pull request approval requires two independent reviewers.",
+        "Kanban task status belongs in the handoff, not durable memory.",
+        "Project status terminology is defined in the release policy.",
+    ],
+)
+def test_transient_content_fallback_keeps_benign_durable_conventions(text):
+    assert _is_transient_recall(text) is False
+
+
+def test_transient_content_fallback_recognizes_french_kanban_status():
+    assert _is_transient_recall(
+        "La tâche Kanban t_demo123 est terminée après la revue."
+    ) is True
+
+
 def test_prefetch_does_not_include_profile_on_first_turn_by_default(provider):
     provider._client.profile_response = {
         "static": ["Jordan prefers short answers"],
@@ -204,6 +248,17 @@ def test_prefetch_includes_static_profile_only_when_opted_in(monkeypatch, tmp_pa
     assert "Recent Context" not in result
 
 
+@pytest.mark.parametrize("query", ["ok", "Merci !", "continue", ".", "…"])
+def test_prefetch_skips_trivial_queries_without_calling_client(provider, query):
+    provider._client.profile_response = {
+        "static": [],
+        "dynamic": [],
+        "search_results": [{"memory": "Unrelated high score", "similarity": 0.99}],
+    }
+    assert provider.prefetch(query) == ""
+    assert provider._client.profile_calls == []
+
+
 def test_prefetch_applies_similarity_boundary_and_suppresses_transient_material(provider):
     provider._client.profile_response = {
         "static": [],
@@ -226,6 +281,16 @@ def test_prefetch_applies_similarity_boundary_and_suppresses_transient_material(
     assert "Missing score" not in result
     assert "Full session transcript" not in result
     assert "Pull request 417" not in result
+
+
+@pytest.mark.parametrize("score", ["NaN", "Infinity", "-Infinity", -0.01, 1.01])
+def test_prefetch_rejects_non_finite_and_out_of_domain_similarity(provider, score):
+    provider._client.profile_response = {
+        "static": [],
+        "dynamic": [],
+        "search_results": [{"memory": f"Invalid score {score}", "similarity": score}],
+    }
+    assert provider.prefetch("recall invalid score") == ""
 
 
 def test_profile_client_preserves_search_result_metadata_for_recall_policy():

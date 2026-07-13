@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -43,10 +44,11 @@ _TRANSIENT_RECALL_TYPES = {
 }
 _TRANSIENT_RECALL_RE = re.compile(
     r"(?:"
-    r"\b(?:kanban\s+)?task\s+t_[a-z0-9_-]+\b|"
-    r"\b(?:current\s+)?pull request\b[^.\n]*(?:merged|approval|branch\s+was\s+deleted)|"
-    r"\b(?:latest|yesterday(?:'s)?)\s+test run\b|"
-    r"\b(?:browser\s+)?test\s+(?:failed|passed)\b|"
+    r"\b(?:kanban\s+)?task\s+t_[a-z0-9_-]+\b[^.\n]*(?:marked\s+done|is\s+blocked|completed)|"
+    r"\b(?:t[aâ]che\s+kanban|kanban\s+t[aâ]che)\s+t_[a-z0-9_-]+\b[^.\n]*(?:termin[eé]e?|bloqu[eé]e?)|"
+    r"\bpull request\s+\d+\b[^.\n]*(?:was\s+merged|needs?\s+one\s+more\s+approval|branch\s+was\s+deleted)|"
+    r"\bthe\s+current\s+pull request\s+needs?\s+one\s+more\s+approval\b|"
+    r"\b(?:latest\s+test\s+run|yesterday(?:'s)?\s+(?:browser\s+)?test)\b[^.\n]*(?:failed|passed)|"
     r"\bphase\s+\w+\s+is\s+in\s+progress\b|"
     r"\bthe\s+worker\s+is\s+currently\b|"
     r"\bwill\s+report\s+later\b|"
@@ -61,7 +63,8 @@ _MAX_ENTITY_CONTEXT_LENGTH = 1500
 _DEFAULT_BASE_URL = "https://api.supermemory.ai"
 _API_KEY_URL = "http://app.supermemory.ai/integrations?connect=hermes"
 _TRIVIAL_RE = re.compile(
-    r"^(ok|okay|thanks|thank you|got it|sure|yes|no|yep|nope|k|ty|thx|np)\.?$",
+    r"^(ok|okay|thanks|thank you|got it|sure|yes|no|yep|nope|k|ty|thx|np|"
+    r"hello|hi|hey|continue|go|merci|salut|parfait|d['’]accord|vas[- ]?y)\s*[.!?…]*$",
     re.IGNORECASE,
 )
 _CONTEXT_STRIP_RE = re.compile(
@@ -242,7 +245,9 @@ def _format_relative_time(iso_timestamp: str) -> str:
 
 
 def _recall_dedup_key(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+    # ``\w`` is Unicode-aware in Python. Excluding only underscores keeps
+    # CJK and other non-Latin text eligible while normalizing punctuation.
+    return re.sub(r"[\W_]+", " ", str(value or "").casefold()).strip()
 
 
 def _is_duplicate_recall(key: str, seen: set[str]) -> bool:
@@ -251,8 +256,12 @@ def _is_duplicate_recall(key: str, seen: set[str]) -> bool:
 
 def _is_transient_recall(text: Any, metadata: Any = None) -> bool:
     if isinstance(metadata, dict):
-        for field in ("type", "source", "category", "kind", "document_type"):
-            value = str(metadata.get(field) or "").strip().lower().replace("-", "_")
+        transient_fields = {"type", "source", "category", "kind", "documenttype"}
+        for raw_field, raw_value in metadata.items():
+            field = re.sub(r"[^a-z0-9]+", "", str(raw_field).casefold())
+            if field not in transient_fields:
+                continue
+            value = re.sub(r"[^a-z0-9]+", "_", str(raw_value).casefold()).strip("_")
             if value in _TRANSIENT_RECALL_TYPES:
                 return True
     return bool(_TRANSIENT_RECALL_RE.search(str(text or "")))
@@ -356,7 +365,8 @@ def _clean_text_for_capture(text: str) -> str:
 
 
 def _is_trivial_message(text: str) -> bool:
-    return bool(_TRIVIAL_RE.match((text or "").strip()))
+    stripped = (text or "").strip()
+    return not stripped or not any(character.isalnum() for character in stripped) or bool(_TRIVIAL_RE.match(stripped))
 
 
 class _SupermemoryClient:
@@ -800,7 +810,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         return "\n".join(lines)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        if not self._active or not self._auto_recall or not self._client or not query.strip():
+        if not self._active or not self._auto_recall or not self._client or _is_trivial_message(query):
             return ""
         try:
             profile = self._client.get_profile(query=query[:200])
@@ -824,7 +834,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
                     similarity = float(item.get("similarity"))
                 except (TypeError, ValueError):
                     continue
-                if similarity >= self._recall_min_similarity:
+                if math.isfinite(similarity) and 0.0 <= similarity <= 1.0 and similarity >= self._recall_min_similarity:
                     search_results.append(item)
             context = _format_prefetch_context(
                 static_facts=static_facts,

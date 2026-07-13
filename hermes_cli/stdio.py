@@ -265,4 +265,10 @@ def _augment_path_with_known_tools() -> None:
             prepend.append(d)
 
     if prepend:
-        os.environ["PATH"] = os.pathsep.join([*prepend, existing])
+        # Drop an empty ``existing`` before joining: ``os.pathsep.join([dir,
+        # ""])`` would leave a trailing separator, i.e. an empty PATH element,
+        # which resolves to the current working directory on Windows — an
+        # unintended and unsafe lookup location.  This branch is reachable when
+        # LOCALAPPDATA is unset (custom HERMES_HOME), where PATH can legitimately
+        # be empty.
+        os.environ["PATH"] = os.pathsep.join(p for p in [*prepend, existing] if p)

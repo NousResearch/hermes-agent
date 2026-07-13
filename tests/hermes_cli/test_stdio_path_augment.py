@@ -42,8 +42,37 @@ def test_augment_path_honors_custom_hermes_home(monkeypatch, tmp_path):
 
     entries = os.environ["PATH"].split(os.pathsep)
     assert str(git_cmd) in entries
-    # baseline must be preserved (prepend, not replace).
+    # baseline must be preserved (prepend, not replace)...
     assert str(baseline) in entries
+    # ...and the Hermes tool dir must be PREPENDED — appear before the prior
+    # PATH — so Hermes-managed tools win name collisions with the ambient PATH.
+    assert entries.index(str(git_cmd)) < entries.index(str(baseline))
+
+
+def test_augment_path_empty_existing_has_no_trailing_separator(monkeypatch, tmp_path):
+    """An empty existing PATH must not produce an empty PATH element.
+
+    ``os.pathsep.join([dir, ""])`` would leave a trailing separator; on Windows
+    an empty PATH element resolves to the current working directory, which is
+    unintended and unsafe.  This is reachable when LOCALAPPDATA is unset (custom
+    HERMES_HOME), where PATH can legitimately be empty.  Fails before the fix
+    (join leaves ``"...git\\cmd;"``); passes after (empty segments filtered).
+    """
+    monkeypatch.setattr(stdio, "is_windows", lambda: True)
+
+    hermes_home = tmp_path / "custom_home"
+    git_cmd = hermes_home / "git" / "cmd"
+    git_cmd.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setenv("PATH", "")
+
+    stdio._augment_path_with_known_tools()
+
+    entries = os.environ["PATH"].split(os.pathsep)
+    assert "" not in entries, "empty PATH element (trailing separator) must not be emitted"
+    assert str(git_cmd) in entries
 
 
 def test_augment_path_default_profile_uses_localappdata(monkeypatch, tmp_path):
@@ -71,3 +100,6 @@ def test_augment_path_default_profile_uses_localappdata(monkeypatch, tmp_path):
 
     entries = os.environ["PATH"].split(os.pathsep)
     assert str(git_cmd) in entries
+    # The prior PATH must be preserved and the tool dir prepended before it.
+    assert str(baseline) in entries
+    assert entries.index(str(git_cmd)) < entries.index(str(baseline))

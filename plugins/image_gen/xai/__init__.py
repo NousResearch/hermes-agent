@@ -209,6 +209,7 @@ class XAIImageGenProvider(ImageGenProvider):
             "modalities": ["text", "image"],
             "max_reference_images": 2,
             "max_source_images": 3,
+            "url_input": True,
         }
 
     def generate(

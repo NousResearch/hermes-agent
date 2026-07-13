@@ -246,6 +246,20 @@ class _EditCapableProvider(ImageGenProvider):
         }
 
 
+class _UrlEditCapableProvider(_EditCapableProvider):
+    def capabilities(self) -> Dict[str, Any]:
+        return {
+            "modalities": ["text", "image"],
+            "max_reference_images": 2,
+            "url_input": True,
+        }
+
+
+class _TextOnlyProvider(_EditCapableProvider):
+    def capabilities(self) -> Dict[str, Any]:
+        return {"modalities": ["text"], "max_reference_images": 0}
+
+
 class _LegacyProvider(ImageGenProvider):
     """Provider whose generate() predates image_url (no **kwargs absorb)."""
 
@@ -258,6 +272,101 @@ class _LegacyProvider(ImageGenProvider):
 
 
 class TestPluginDispatchImageToImage:
+    def _register(self, monkeypatch, provider, name="editcap"):
+        import tools.image_generation_tool as image_tool
+        from agent import image_gen_registry as reg
+        from hermes_cli import plugins as plugins_module
+
+        reg.register_provider(provider)
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: name)
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(reg, "get_provider", lambda n: provider if n == name else None)
+
+    def test_handler_preserves_url_order_without_download(self, cfg_home, monkeypatch):
+        import tools.image_source as image_source
+        import tools.image_generation_tool as image_tool
+
+        provider = _UrlEditCapableProvider()
+        self._register(monkeypatch, provider)
+
+        async def no_download(url):
+            raise AssertionError(f"unexpected download: {url}")
+
+        monkeypatch.setattr(image_source, "_download_to_bytes", no_download)
+        monkeypatch.setattr(image_source, "_http_block_reason", lambda url: None)
+        raw = image_tool._handle_image_generate({
+            "prompt": "edit it",
+            "image_url": "https://example.com/primary.png",
+            "reference_image_urls": [
+                "https://example.com/first.png",
+                "https://example.com/second.png",
+            ],
+        })
+
+        assert json.loads(raw)["success"] is True
+        assert provider.received["image_url"] == "https://example.com/primary.png"
+        assert provider.received["reference_image_urls"] == [
+            "https://example.com/first.png",
+            "https://example.com/second.png",
+        ]
+
+    def test_handler_materializes_local_and_data_refs_in_order(self, cfg_home, monkeypatch, tmp_path):
+        import base64
+        import tools.image_generation_tool as image_tool
+
+        provider = _UrlEditCapableProvider()
+        self._register(monkeypatch, provider)
+        png = b"\x89PNG\r\n\x1a\n" + b"\0" * 16
+        local = tmp_path / "input.png"
+        local.write_bytes(png)
+        data = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+        out = json.loads(image_tool._handle_image_generate({
+            "prompt": "edit it", "image_url": str(local),
+            "reference_image_urls": [data, str(local)],
+        }))
+
+        assert out["success"] is True
+        assert provider.received["image_url"].startswith("data:image/png;base64,")
+        assert provider.received["reference_image_urls"] == [data, provider.received["image_url"]]
+
+    def test_handler_rejects_excess_refs_before_resolution(self, cfg_home, monkeypatch):
+        import tools.image_generation_tool as image_tool
+
+        provider = _UrlEditCapableProvider()
+        self._register(monkeypatch, provider)
+        monkeypatch.setattr(
+            image_tool,
+            "_resolve_generation_sources",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected resolution")),
+        )
+
+        out = json.loads(image_tool._handle_image_generate({
+            "prompt": "edit it",
+            "reference_image_urls": ["a.png", "b.png", "c.png"],
+        }))
+
+        assert out["error_type"] == "too_many_references"
+        assert provider.received == {}
+
+    def test_handler_rejects_text_only_before_resolution(self, cfg_home, monkeypatch):
+        import tools.image_generation_tool as image_tool
+
+        provider = _TextOnlyProvider()
+        self._register(monkeypatch, provider)
+        monkeypatch.setattr(
+            image_tool,
+            "_resolve_generation_sources",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected resolution")),
+        )
+
+        out = json.loads(image_tool._handle_image_generate({
+            "prompt": "edit it", "image_url": "https://example.com/input.png",
+        }))
+
+        assert out["error_type"] == "modality_unsupported"
+        assert provider.received == {}
+
     def test_dispatch_forwards_image_url(self, cfg_home, monkeypatch):
         import tools.image_generation_tool as image_tool
         from hermes_cli import plugins as plugins_module

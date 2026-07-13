@@ -1511,15 +1511,26 @@ def _maybe_route_managed_krea(
     return json.dumps(result)
 
 
+_MAX_MATERIALIZED_IMAGE_BYTES = 25 * 1024 * 1024
+
+
 def _resolve_generation_sources(
-    image_url: Optional[str], reference_image_urls: Optional[list], *, task_id: Optional[str]
+    image_url: Optional[str], reference_image_urls: Optional[list], *, task_id: Optional[str], preserve_urls: bool = False
 ) -> tuple[Optional[str], Optional[list[str]]]:
-    """Resolve all edit inputs once before any image-generation provider sees them."""
+    """Materialize only source kinds the active provider cannot accept directly."""
     from model_tools import _run_async
     from tools.image_source import ResolveContext, resolve_image_source
 
+    total_bytes = 0
+
     def resolve(source: str) -> str:
+        nonlocal total_bytes
+        if preserve_urls and source.startswith(("http://", "https://")):
+            return source
         image = _run_async(resolve_image_source(source, ResolveContext(task_id=task_id)))
+        total_bytes += len(image.data)
+        if total_bytes > _MAX_MATERIALIZED_IMAGE_BYTES:
+            raise ValueError("image inputs exceed the 25MB materialization limit")
         return f"data:{image.mime};base64,{base64.b64encode(image.data).decode('ascii')}"
 
     primary = resolve(image_url) if isinstance(image_url, str) and image_url.strip() else None
@@ -1538,15 +1549,55 @@ def _handle_image_generate(args, **kw):
     reference_image_urls = args.get("reference_image_urls")
     task_id = kw.get("task_id")
 
+    from agent.image_gen_provider import normalize_reference_images
+    from tools.image_source import classify_image_source
+
+    reference_image_urls = normalize_reference_images(reference_image_urls)
+    sources = ([image_url] if isinstance(image_url, str) and image_url.strip() else []) + (reference_image_urls or [])
+    if sources:
+        caps = _active_image_capabilities()
+        if "image" not in (caps.get("modalities") or []):
+            return json.dumps({
+                "success": False, "image": None,
+                "error": "The active image provider does not support image inputs.",
+                "error_type": "modality_unsupported",
+            })
+        max_refs = int(caps.get("max_reference_images") or 0)
+        if len(reference_image_urls or []) > max_refs:
+            return json.dumps({
+                "success": False, "image": None,
+                "error": f"The active image provider supports at most {max_refs} reference images.",
+                "error_type": "too_many_references",
+            })
+        try:
+            data_bytes = sum(
+                (len(source.partition(",")[2]) * 3) // 4
+                for source in sources
+                if source.startswith("data:")
+            )
+            if data_bytes > _MAX_MATERIALIZED_IMAGE_BYTES:
+                raise ValueError("data image inputs exceed the materialization limit")
+            for source in sources:
+                classify_image_source(source, max_data_bytes=_MAX_MATERIALIZED_IMAGE_BYTES)
+        except Exception:
+            return json.dumps({
+                "success": False, "image": None,
+                "error": "Invalid image reference.",
+                "error_type": "invalid_image_reference",
+            })
+    else:
+        caps = {}
+
     try:
         image_url, reference_image_urls = _resolve_generation_sources(
-            image_url, reference_image_urls, task_id=task_id
+            image_url, reference_image_urls, task_id=task_id,
+            preserve_urls=bool(caps.get("url_input")),
         )
-    except Exception as exc:  # Resolver errors are user input errors, never provider errors.
+    except Exception:  # Resolver errors are user input errors, never provider errors.
         return json.dumps({
             "success": False,
             "image": None,
-            "error": f"Invalid image reference: {exc}",
+            "error": "Invalid image reference.",
             "error_type": "invalid_image_reference",
         })
 
@@ -1630,6 +1681,8 @@ def _active_image_capabilities() -> Dict[str, Any]:
                     info["modalities"] = list(caps["modalities"])
                 if caps.get("max_reference_images"):
                     info["max_reference_images"] = int(caps["max_reference_images"])
+                if caps.get("url_input"):
+                    info["url_input"] = True
                 return info
         except Exception:  # noqa: BLE001
             pass
@@ -1642,6 +1695,7 @@ def _active_image_capabilities() -> Dict[str, Any]:
         if meta.get("edit_endpoint"):
             info["modalities"] = ["text", "image"]
             info["max_reference_images"] = int(meta.get("max_reference_images") or 1)
+            info["url_input"] = True
         else:
             info["modalities"] = ["text"]
             info["max_reference_images"] = 0

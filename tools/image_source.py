@@ -86,25 +86,45 @@ class ResolvedImage:
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
-async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
+def classify_image_source(src: str, *, max_data_bytes: Optional[int] = None) -> str:
+    """Validate source shape without filesystem or network I/O and return its kind."""
     if not isinstance(src, str) or not src.strip():
         raise SourceNotFound("image_url is required", src=str(src))
     s = src.strip()
     if s.startswith("data:"):
-        data, mime = _resolve_data_url(s)
-        return _finalize(data, mime, "data", s)
+        header, _, payload = s.partition(",")
+        if ";base64" not in header:
+            raise NotAnImage("data: URL must be base64-encoded", src=s[:64])
+        limit = min(_MAX_INGEST_BYTES, max_data_bytes or _MAX_INGEST_BYTES)
+        if (len(payload) * 3) // 4 > limit:
+            raise SourceTooLarge("data: URL exceeds size limit", src=s[:64])
+        try:
+            base64.b64decode(payload, validate=True)
+        except Exception as exc:
+            raise NotAnImage(f"invalid base64 in data: URL: {exc}", src=s[:64])
+        return "data"
     if s.startswith(("http://", "https://")):
         reason = _http_block_reason(s)
         if reason:
             raise SourceUnsafe(reason, src=s)
-        return _finalize(await _download_to_bytes(s), "", "http", s)
-
+        return "http"
     if _SCHEME_RE.match(s) and not s.lower().startswith("file://"):
         raise UnsupportedScheme(
             "Unrecognized image source scheme. Use an http(s) URL, a local "
             "file path, a file:// URI, or a data: URL.",
             src=s,
         )
+    return "local"
+
+
+async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
+    kind = classify_image_source(src)
+    s = src.strip()
+    if kind == "data":
+        data, mime = _resolve_data_url(s)
+        return _finalize(data, mime, "data", s)
+    if kind == "http":
+        return _finalize(await _download_to_bytes(s), "", "http", s)
 
     # Everything else is a filesystem path — including bare relative names
     # like "pic.png" (accepted on main; a path-shape gate here regressed them).

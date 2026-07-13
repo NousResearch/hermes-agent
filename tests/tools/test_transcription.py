@@ -190,6 +190,44 @@ class TestTranscribeOpenAI:
         assert result["success"] is True
         assert result["transcript"] == "Hello from OpenAI"
 
+    def test_configured_language_is_forwarded(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "Привіт"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "openai": {"language": "uk"},
+             }), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(str(audio_file), "whisper-1")
+
+        assert result["success"] is True
+        assert mock_client.audio.transcriptions.create.call_args.kwargs["language"] == "uk"
+
+    def test_unset_language_omits_argument(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "Hello"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "openai": {"language": ""},
+             }), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(str(audio_file), "whisper-1")
+
+        assert result["success"] is True
+        assert "language" not in mock_client.audio.transcriptions.create.call_args.kwargs
+
 
 # ---------------------------------------------------------------------------
 # Main transcribe_audio() dispatch

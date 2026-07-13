@@ -521,24 +521,18 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
     cur_t0 = min(cur_starts)
     cur_max = (max(cur_ends) - cur_t0).total_seconds()
 
-    # Baseline run: relative offsets from its earliest start
-    bl_t0 = None
-    bl_max = 0.0
-    bl_jobs_timed = []
+    # Baseline run: max duration (for axis scale only — bars are aligned
+    # to the current job's start, not to the baseline timeline)
+    bl_max_dur = 0.0
     for bl_j in bl_map.values():
         if is_skipped(bl_j):
             continue
         s = parse_ts(bl_j.get("started_at"))
         e = parse_ts(bl_j.get("completed_at"))
         if s is not None and e is not None:
-            bl_jobs_timed.append((bl_j, s, e))
-            if bl_t0 is None or s < bl_t0:
-                bl_t0 = s
-            rel_end = (e - s).total_seconds() + (s - (bl_t0 or s)).total_seconds()
-    if bl_t0 is not None:
-        bl_max = max((e - bl_t0).total_seconds() for _, _, e in bl_jobs_timed) if bl_jobs_timed else 0
+            bl_max_dur = max(bl_max_dur, (e - s).total_seconds())
 
-    total_s = max(cur_max, bl_max)
+    total_s = max(cur_max, bl_max_dur)
     if total_s <= 0:
         total_s = 1
 
@@ -554,11 +548,14 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
 
         bl = bl_map.get(j["name"])
         bl_bar = ""
-        if bl and not is_skipped(bl) and bl_t0 is not None:
+        if bl and not is_skipped(bl):
             bl_s = parse_ts(bl.get("started_at"))
             bl_e = parse_ts(bl.get("completed_at"))
             if bl_s is not None and bl_e is not None:
-                bl_left = (bl_s - bl_t0).total_seconds() / total_s * 100
+                # Align baseline bar to the current job's start so the
+                # two durations are directly comparable — the baseline's
+                # own wait/position is irrelevant for a duration diff.
+                bl_left = left
                 bl_width = max((bl_e - bl_s).total_seconds() / total_s * 100, 0.5)
                 bl_dur = bl.get("duration_s") or 0
                 bl_bar = (

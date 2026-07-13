@@ -439,7 +439,9 @@ class CLIAgentSetupMixin:
                     # Keep _pending_title so it can be retried after row creation succeeds
             return True
         except Exception as e:
-            ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
+            ChatConsole().print(
+                f"[bold red]Failed to initialize agent: {_escape(str(e))}[/]"
+            )
             return False
 
     def _preload_resumed_session(self) -> bool:

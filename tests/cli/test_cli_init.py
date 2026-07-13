@@ -326,6 +326,37 @@ class TestSingleQueryState:
         assert hasattr(cli, "_pending_input")
 
 
+class TestInitAgentErrors:
+    def test_init_agent_escapes_rich_markup_in_exception_messages(self, monkeypatch):
+        cli_obj = _make_cli()
+        rendered_lines = []
+
+        cli_obj._session_db = MagicMock()
+        monkeypatch.setattr(cli_obj, "_ensure_runtime_credentials", lambda: True)
+        monkeypatch.setattr(cli_obj, "_install_tool_callbacks", lambda: None)
+        monkeypatch.setattr(cli_obj, "_ensure_tirith_security", lambda: None)
+        monkeypatch.setattr(
+            "hermes_cli.mcp_startup.wait_for_mcp_discovery", lambda: None
+        )
+
+        import cli as cli_module
+
+        def _boom(**_kwargs):
+            raise RuntimeError(
+                "Failed to initialize OpenAI client: Using SOCKS proxy, but the 'socksio' "
+                "package is not installed. Make sure to install httpx[socks]."
+            )
+
+        monkeypatch.setattr(cli_module, "AIAgent", _boom)
+        monkeypatch.setattr(cli_module, "_prepare_deferred_agent_startup", lambda: None)
+        monkeypatch.setattr(cli_module, "_cprint", rendered_lines.append)
+
+        assert cli_obj._init_agent() is False
+        rendered = "\n".join(rendered_lines)
+        assert "httpx[socks]" in rendered
+        assert "Failed to initialize agent:" in rendered
+
+
 class TestHistoryDisplay:
     def test_history_numbers_only_visible_messages_and_summarizes_tools(self, capsys):
         cli = _make_cli()

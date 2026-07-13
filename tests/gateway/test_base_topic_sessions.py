@@ -13,8 +13,8 @@ from gateway.session import SessionSource, build_session_key
 
 
 class DummyTelegramAdapter(BasePlatformAdapter):
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="fake-token"), Platform.TELEGRAM)
+    def __init__(self, platform: Platform = Platform.TELEGRAM):
+        super().__init__(PlatformConfig(enabled=True, token="fake-token"), platform)
         self._busy_text_mode = ""
         self.sent = []
         self.typing = []
@@ -353,3 +353,114 @@ class TestTelegramAutoTtsCaptionDelivery:
                 "metadata": {"thread_id": "17585", "notify": True},
             }
         ]
+
+
+class DummyVoiceOutAdapter(DummyTelegramAdapter):
+    """Adapter whose voice bubbles inherently render the spoken text
+    (Carbon Voice-style server-side STT). Non-Telegram so the caption
+    path stays out of the way."""
+
+    voice_out_carries_text = True
+
+    def __init__(self):
+        super().__init__(platform=Platform.DISCORD)
+
+
+class TestVoiceOutCarriesTextDelivery:
+    """Behavioral coverage for the auto-TTS dispatch on adapters that
+    opt into ``voice_out_carries_text``: the voice memo must thread via
+    ``reply_to``, and the follow-up text bubble is suppressed only when
+    the spoken text covers the complete response."""
+
+    @staticmethod
+    def _make_voice_event(chat_id: str = "chan-1", message_id: str = "voice-1") -> MessageEvent:
+        return MessageEvent(
+            text="hello",
+            message_type=MessageType.VOICE,
+            source=SessionSource(
+                platform=Platform.DISCORD,
+                chat_id=chat_id,
+                chat_type="group",
+            ),
+            message_id=message_id,
+        )
+
+    @staticmethod
+    async def _run_auto_tts(adapter, reply: str, tmp_path, tts_success: bool = True) -> MessageEvent:
+        async def hold(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter._keep_typing = hold
+        adapter._should_auto_tts_for_chat = lambda _chat_id: True
+        adapter.play_tts = AsyncMock(
+            return_value=SendResult(success=tts_success, message_id="tts-1", error=None if tts_success else "boom")
+        )
+        adapter.set_message_handler(lambda _event: asyncio.sleep(0, result=reply))
+
+        tts_path = tmp_path / "reply.ogg"
+        tts_path.write_text("audio", encoding="utf-8")
+        event = TestVoiceOutCarriesTextDelivery._make_voice_event()
+
+        with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+            "tools.tts_tool.text_to_speech_tool",
+            return_value=json.dumps({"file_path": str(tts_path)}),
+        ):
+            await adapter._process_message_background(event, build_session_key(event.source))
+        return event
+
+    @pytest.mark.asyncio
+    async def test_play_tts_receives_reply_anchor(self, tmp_path):
+        adapter = DummyVoiceOutAdapter()
+        event = await self._run_auto_tts(adapter, "Short reply", tmp_path)
+
+        adapter.play_tts.assert_awaited_once()
+        assert adapter.play_tts.await_args.kwargs["reply_to"] == event.message_id
+
+    @pytest.mark.asyncio
+    async def test_short_plain_reply_suppresses_followup_text(self, tmp_path):
+        adapter = DummyVoiceOutAdapter()
+        await self._run_auto_tts(adapter, "Short reply", tmp_path)
+
+        adapter.play_tts.assert_awaited_once()
+        assert adapter.play_tts.await_args.kwargs["caption"] is None
+        assert adapter.sent == []
+
+    @pytest.mark.asyncio
+    async def test_failed_tts_send_keeps_followup_text(self, tmp_path):
+        adapter = DummyVoiceOutAdapter()
+        await self._run_auto_tts(adapter, "Short reply", tmp_path, tts_success=False)
+
+        adapter.play_tts.assert_awaited_once()
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0]["content"] == "Short reply"
+        assert adapter.sent[0]["reply_to"] == "voice-1"
+
+    @pytest.mark.asyncio
+    async def test_long_reply_keeps_followup_text_when_tts_truncates(self, tmp_path):
+        adapter = DummyVoiceOutAdapter()
+        long_reply = "x" * 4001  # prepare_tts_text truncates to 4000
+        await self._run_auto_tts(adapter, long_reply, tmp_path)
+
+        adapter.play_tts.assert_awaited_once()
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0]["content"] == long_reply
+
+    @pytest.mark.asyncio
+    async def test_formatted_reply_keeps_followup_text_when_tts_strips_markdown(self, tmp_path):
+        adapter = DummyVoiceOutAdapter()
+        formatted_reply = "**Bold** with a [link](https://example.com)"
+        await self._run_auto_tts(adapter, formatted_reply, tmp_path)
+
+        adapter.play_tts.assert_awaited_once()
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0]["content"] == formatted_reply
+
+    @pytest.mark.asyncio
+    async def test_non_opted_in_adapter_keeps_followup_text(self, tmp_path):
+        adapter = DummyTelegramAdapter(platform=Platform.DISCORD)
+        assert adapter.voice_out_carries_text is False
+        await self._run_auto_tts(adapter, "Short reply", tmp_path)
+
+        adapter.play_tts.assert_awaited_once()
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0]["content"] == "Short reply"

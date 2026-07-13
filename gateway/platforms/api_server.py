@@ -914,17 +914,49 @@ class APIServerAdapter(BasePlatformAdapter):
         self._inflight_agent_runs: int = 0
 
     def active_agent_work_count(self) -> int:
-        """Count of in-flight agent work served by this API server adapter.
+        """Return all live agent work owned by this API adapter.
 
-        Covers the non-streaming chat/responses paths (``_inflight_agent_runs``)
-        plus live ``/v1/runs`` agents (``_active_run_agents``). Used by the
-        gateway shutdown drain so desk/API sessions get the same drain window
-        as messaging sessions and cron jobs (#63529).
+        ``/v1/runs`` registers an asyncio task before it constructs and stores
+        its agent, so ``_active_run_agents`` has a real queued-before-agent gap.
+        Reuse the task-based accounting used by the concurrent-run limit: it
+        covers that gap and excludes completed tasks retained until cleanup.
         """
         try:
-            return int(self._inflight_agent_runs) + len(self._active_run_agents)
+            return int(self._inflight_agent_runs) + sum(
+                not task.done() for task in self._active_run_tasks.values()
+            )
         except Exception:
             return 0
+
+    @staticmethod
+    def _gateway_is_draining() -> bool:
+        """Whether the owning gateway currently refuses new agent turns."""
+        try:
+            from gateway.run import _gateway_runner_ref
+
+            runner = _gateway_runner_ref()
+            return bool(
+                runner
+                and (
+                    getattr(runner, "_draining", False)
+                    or getattr(runner, "_external_drain_active", False)
+                )
+            )
+        except Exception:
+            return False
+
+    def _draining_response(self) -> Optional["web.Response"]:
+        """Return a retryable response while the gateway drains existing work."""
+        if not self._gateway_is_draining():
+            return None
+        return web.json_response(
+            _openai_error(
+                "Gateway is draining existing work; retry shortly.",
+                code="gateway_draining",
+            ),
+            status=503,
+            headers={"Retry-After": "1"},
+        )
 
     def _readiness_work_counts(self) -> tuple[int, int, int]:
         """Return bounded work counts from each subsystem's public state."""
@@ -1937,6 +1969,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        draining = self._draining_response()
+        if draining is not None:
+            return draining
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
@@ -1981,6 +2016,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        draining = self._draining_response()
+        if draining is not None:
+            return draining
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
@@ -2122,6 +2160,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        draining = self._draining_response()
+        if draining is not None:
+            return draining
 
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
@@ -3258,6 +3299,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        draining = self._draining_response()
+        if draining is not None:
+            return draining
 
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
@@ -4233,6 +4277,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        draining = self._draining_response()
+        if draining is not None:
+            return draining
 
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)

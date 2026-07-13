@@ -4143,54 +4143,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return 0
 
     def _active_api_run_count(self) -> int:
-        """Count of in-flight api_server agent runs across all adapters.
+        """Count API-server work that is outside ``_running_agents``.
 
-        Chat/responses/desktop API sessions live entirely inside
-        ``APIServerAdapter`` (``_inflight_agent_runs`` + ``_active_run_agents``)
-        and are invisible to ``self._running_agents``. Without this fold-in the
-        shutdown drain can report ``active_at_start=0`` and exit while desk/API
-        tools are still mid-flight (#63529) — the same structural failure cron
-        had before ``_active_cron_job_count`` (#60432). Best-effort: skips
-        adapters that don't expose the helper.
+        The primary API server owns the sole HTTP listener. Secondary multiplex
+        profiles cannot create an ``api_server`` adapter because it binds a port,
+        so only the primary registry is a supported source of this work.
         """
-        total = 0
         try:
-            from gateway.config import Platform
+            adapter = getattr(self, "adapters", {}).get(Platform.API_SERVER)
+            helper = getattr(adapter, "active_agent_work_count", None)
+            return max(0, int(helper())) if callable(helper) else 0
         except Exception:
             return 0
-
-        def _count_from(adapters) -> int:
-            n = 0
-            if not adapters:
-                return 0
-            try:
-                values = adapters.values() if hasattr(adapters, "values") else adapters
-            except Exception:
-                return 0
-            for adapter in values:
-                try:
-                    if getattr(adapter, "platform", None) != Platform.API_SERVER:
-                        continue
-                    helper = getattr(adapter, "active_agent_work_count", None)
-                    if callable(helper):
-                        n += int(helper())
-                    else:
-                        inflight = int(getattr(adapter, "_inflight_agent_runs", 0) or 0)
-                        active = getattr(adapter, "_active_run_agents", None) or {}
-                        n += inflight + len(active)
-                except Exception:
-                    continue
-            return n
-
-        try:
-            total += _count_from(getattr(self, "adapters", None))
-        except Exception:
-            pass
-        try:
-            total += _count_from(getattr(self, "_profile_adapters", None))
-        except Exception:
-            pass
-        return total
 
     # ── scale-to-zero idle detection / dormant-quiesce (Phase 0) ──────────────
     # The gateway-side BEHAVIOUR that consumes the relay scale-to-zero primitives

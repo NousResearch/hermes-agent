@@ -1271,8 +1271,14 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 > ❓ Which framework should I use for the dashboard?
 >
-> [1. Next.js] [2. Remix] [3. Astro]
+> 1. Next.js
+> 2. Remix
+> 3. Astro
+>
+> [Next.js] [Remix] [Astro]
 > [✏️ Other (type answer)]
+
+Each button is labelled with the choice text (truncated to 60 characters if long). The full numbered list stays in the message body so long choices remain readable even when a button label is clipped.
 
 Tap a button to answer, or tap **Other** to type a free-form response (the next message you send becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 

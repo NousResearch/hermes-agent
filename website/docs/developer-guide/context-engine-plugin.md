@@ -53,6 +53,12 @@ class LCMEngine(ContextEngine):
 
         Update self.last_prompt_tokens, self.last_completion_tokens,
         self.last_total_tokens from the response.
+
+        The legacy keys ``prompt_tokens``, ``completion_tokens``,
+        ``total_tokens`` are always present. Newer hosts also include
+        canonical buckets ``input_tokens``, ``output_tokens``,
+        ``cache_read_tokens``, ``cache_write_tokens``, ``reasoning_tokens`` —
+        treat them as optional for back-compat with older hosts.
         """
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
@@ -92,11 +98,14 @@ These have sensible defaults in the ABC. Override as needed:
 | `on_session_start(session_id, **kwargs)` | No-op | You need to load persisted state (DAG, DB) |
 | `on_session_end(session_id, messages)` | No-op | You need to flush state, close connections |
 | `on_session_reset()` | Resets token counters | You have per-session state to clear |
+| `carry_over_new_session_context(old_session_id, new_session_id)` | No-op | You need to migrate retained state from the old session to the new one (e.g. DAG handoff when `/new` runs with `carry_over=True`) |
 | `update_model(model, context_length, ...)` | Updates context_length + threshold | You need to recalculate budgets on model switch |
 | `get_tool_schemas()` | Returns `[]` | Your engine provides agent-callable tools (e.g., `lcm_grep`) |
 | `handle_tool_call(name, args, **kwargs)` | Returns error JSON | You implement tool handlers |
 | `should_compress_preflight(messages)` | Returns `False` | You can do a cheap pre-API-call estimate |
 | `get_status()` | Standard token/threshold dict | You have custom metrics to expose |
+
+**`on_session_start` kwargs.** When the host transitions sessions (`/new`, resume, compression split), it forwards optional kwargs including `conversation_id` (stable identity that survives `session_id` rotation across `/new` / resume / compression splits — useful for keying persisted state), `old_session_id`, `carry_over_context`, `platform`, `model`, and `context_length`. Engines should treat each as optional and ignore unknown keys for forward compatibility.
 
 ## Engine tools
 
@@ -124,6 +133,17 @@ def handle_tool_call(self, name, args, **kwargs):
 ```
 
 Engine tools are injected into the agent's tool list at startup and dispatched automatically — no registry registration needed.
+
+### Slash commands
+
+Engines registered via the `register(ctx)` pattern (see "Via general plugin system" below) can additionally expose slash commands by calling `ctx.register_command(name, handler, description=...)` during registration. Conflicts with built-in commands or with another plugin's command of the same name are silently rejected with a warning — built-ins win.
+
+```python
+def register(ctx):
+    engine = LCMEngine(context_length=200000)
+    ctx.register_context_engine(engine)
+    ctx.register_command("lcm", engine.handle_lcm_command, description="Inspect LCM state")
+```
 
 ## Registration
 

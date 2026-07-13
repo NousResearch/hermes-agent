@@ -10,7 +10,13 @@ import time
 from unittest.mock import MagicMock, patch
 
 
-from hermes_cli.main import _session_browse_picker
+from hermes_cli.display_width import cell_width
+from hermes_cli.main import (
+    _format_session_browse_fallback_row,
+    _format_session_browse_row,
+    _session_browse_name_width,
+    _session_browse_picker,
+)
 
 
 # ─── Sample session data ──────────────────────────────────────────────────────
@@ -238,6 +244,35 @@ class TestSessionBrowsePicker:
 
         output = capsys.readouterr().out
         assert "test_003_fallback" in output
+
+    def test_fallback_row_keeps_cjk_columns_aligned(self):
+        row = _format_session_browse_fallback_row(
+            0,
+            {
+                "id": "session-1",
+                "title": "中文标题",
+                "source": "cli",
+                "last_active": 1,
+            },
+        )
+
+        before_last_active = row.split("1970-01-01", 1)[0]
+        assert cell_width(before_last_active) == 2 + 3 + 2 + 50 + 2
+
+    def test_curses_row_keeps_cjk_columns_aligned(self):
+        width = 100
+        row = _format_session_browse_row(
+            {
+                "id": "session-1",
+                "title": "中文标题",
+                "source": "cli",
+                "last_active": 1,
+            },
+            width,
+        )
+
+        before_last_active = row.split("1970-01-01", 1)[0]
+        assert cell_width(before_last_active) == _session_browse_name_width(width) + 2
 
 
 # ─── Curses-based picker (mocked curses) ────────────────────────────────────

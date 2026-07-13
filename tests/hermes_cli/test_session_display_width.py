@@ -1,13 +1,14 @@
-"""Tests for CJK-aware session list column padding (hermes_cli.main display helpers)."""
+"""Tests for CJK-aware session list column padding."""
 
+import sys
 from unittest.mock import patch
 
-from hermes_cli.main import (
-    _fit_display_width,
-    _pad_display_right,
-    _text_display_width,
-    print_sessions_table,
+from hermes_cli.display_width import (
+    cell_width as _text_display_width,
+    fit_cells as _pad_display_right,
+    truncate_cells as _fit_display_width,
 )
+from hermes_cli.main import print_sessions_table
 
 
 class TestTextDisplayWidth:
@@ -27,6 +28,9 @@ class TestTextDisplayWidth:
     def test_combining_mark_is_zero_width(self) -> None:
         assert _text_display_width("e\u0301") == 1
 
+    def test_zwj_emoji_is_one_grapheme_cluster(self) -> None:
+        assert _text_display_width("👩\u200d💻") == 2
+
 
 class TestFitDisplayWidth:
     def test_no_truncation_when_fits(self) -> None:
@@ -45,6 +49,9 @@ class TestFitDisplayWidth:
 
     def test_max_cells_zero_returns_empty(self) -> None:
         assert _fit_display_width("hello", 0) == ""
+
+    def test_truncation_does_not_split_zwj_emoji(self) -> None:
+        assert _fit_display_width("👩\u200d💻xy", 3) == "👩\u200d💻…"
 
 
 class TestPadDisplayRight:
@@ -144,3 +151,68 @@ class TestPrintSessionsTable:
         assert _text_display_width(last) == 13
         # Single space between padded columns, then unbounded id.
         assert line == f"{title} {preview} {last} {sid}"
+
+
+def test_sessions_list_cli_prints_one_cjk_aware_table(monkeypatch, capsys) -> None:
+    """The real ``hermes sessions list`` path must not retain the old loop."""
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    class FakeDB:
+        def list_sessions_rich(self, **_kwargs):
+            return [
+                {
+                    "id": "session-1",
+                    "title": "中文标题",
+                    "preview": "mixed 中英文 preview",
+                    "last_active": 1,
+                    "source": "cli",
+                }
+            ]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", FakeDB)
+    monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "list", "--limit", "10"])
+
+    main_mod.main()
+
+    output = capsys.readouterr().out
+    assert output.count("Title") == 1
+    assert output.count("Preview") == 1
+    row = next(line for line in output.splitlines() if "session-1" in line)
+    before_last_active = row.split("1970-01-01", 1)[0]
+    assert _text_display_width(before_last_active) == 32 + 1 + 40 + 1
+
+
+def test_sessions_list_cli_aligns_cjk_workspace_column(monkeypatch, capsys) -> None:
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    class FakeDB:
+        def list_sessions_rich(self, **_kwargs):
+            return [
+                {
+                    "id": "session-2",
+                    "title": "中文标题",
+                    "preview": "unused in titled workspace rows",
+                    "last_active": 1,
+                    "source": "cli",
+                    "git_repo_root": "/tmp/中文工作区",
+                }
+            ]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", FakeDB)
+    monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "list", "--limit", "10"])
+
+    main_mod.main()
+
+    output = capsys.readouterr().out
+    assert output.count("Workspace") == 1
+    row = next(line for line in output.splitlines() if "session-2" in line)
+    before_last_active = row.split("1970-01-01", 1)[0]
+    assert _text_display_width(before_last_active) == 28 + 1 + 18 + 1

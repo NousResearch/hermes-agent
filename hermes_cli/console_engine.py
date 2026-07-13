@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Literal, NoReturn, Sequence
 from urllib.parse import urlparse
 
+from hermes_cli.display_width import fit_cells, truncate_cells
 from tools.ansi_strip import strip_ansi as _strip_ansi
 
 
@@ -135,12 +136,12 @@ def _format_sessions(sessions: Sequence[dict]) -> str:
     lines = [f"{'ID':<32} {'Source':<12} {'Msgs':>5}  Title / Preview"]
     lines.append("-" * 82)
     for session in sessions:
-        sid = str(session.get("id") or "")[:32]
-        source = str(session.get("source") or "-")[:12]
+        sid = fit_cells(str(session.get("id") or ""), 32)
+        source = fit_cells(str(session.get("source") or "-"), 12)
         messages = session.get("message_count") or 0
         title = session.get("title") or session.get("preview") or ""
-        title = str(title).replace("\n", " ")[:60]
-        lines.append(f"{sid:<32} {source:<12} {messages:>5}  {title}")
+        title = truncate_cells(str(title).replace("\n", " "), 60)
+        lines.append(f"{sid} {source} {messages:>5}  {title}")
     return "\n".join(lines)
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli.console_engine import HermesConsoleEngine, run_console_repl
+from hermes_cli.display_width import cell_width
 
 
 EXPECTED_CONSOLE_COMMANDS = {
@@ -599,6 +600,21 @@ def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home
     assert "tool-session" not in listed.output
     assert "Total sessions: 2" in stats.output
     assert "Listable sessions: 1" in stats.output
+
+
+def test_sessions_list_keeps_cjk_columns_aligned(_isolate_hermes_home):
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        db.create_session("cjk-session", source="cli", model="test/model")
+        db.set_session_title("cjk-session", "中文标题")
+    finally:
+        db.close()
+
+    output = HermesConsoleEngine().execute("sessions list --limit 10").output
+    row = next(line for line in output.splitlines() if "中文标题" in line)
+    assert cell_width(row.split("中文标题", 1)[0]) == 32 + 1 + 12 + 1 + 5 + 2
 
 
 def test_cron_pause_resume_and_run_require_confirmation(_isolate_hermes_home):

@@ -4854,18 +4854,67 @@ class DiscordAdapter(BasePlatformAdapter):
         content = getattr(message, "content", "") or ""
         return {match.group(1) for match in re.finditer(r"<@!?(\d+)>", content)}
 
+    def _raw_mentioned_role_ids(self, message: Any) -> set:
+        """Extract Discord role-mention IDs directly from raw message content.
+
+        Covers the raw ``<@&ROLE_ID>`` form so explicit role pings still count
+        even when Discord fails to hydrate ``message.role_mentions``.
+        """
+        content = getattr(message, "content", "") or ""
+        return {match.group(1) for match in re.finditer(r"<@&(\d+)>", content)}
+
+    def _self_role_ids(self, message: Any) -> set[str]:
+        """Return Discord role IDs that belong to this bot in the message's guild."""
+        if not self._client or not self._client.user:
+            return set()
+
+        guild = getattr(message, "guild", None) or getattr(getattr(message, "channel", None), "guild", None)
+        if guild is None:
+            return set()
+
+        member = None
+        get_member = getattr(guild, "get_member", None)
+        if callable(get_member):
+            try:
+                member = get_member(self._client.user.id)
+            except Exception:
+                member = None
+
+        if member is None:
+            member = getattr(guild, "me", None)
+
+        role_ids: set[str] = set()
+        for role in (getattr(member, "roles", None) or []):
+            role_id = getattr(role, "id", None)
+            if role_id is not None:
+                role_ids.add(str(role_id))
+        return role_ids
+
     def _self_is_explicitly_mentioned(self, message: Any) -> bool:
         """Return True when this bot is explicitly @mentioned in the message.
 
         Treats the bot as mentioned if it is either present in the resolved
-        ``message.mentions`` list OR referenced by its raw ``<@ID>`` / ``<@!ID>``
-        form in the message content.
+        ``message.mentions`` list, referenced by its raw ``<@ID>`` / ``<@!ID>``
+        form in the message content, or pinged via one of the bot's own roles
+        (resolved or raw ``<@&ROLE_ID>`` form).
         """
         if not self._client or not self._client.user:
             return False
         if self._client.user in getattr(message, "mentions", []):
             return True
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+        if str(self._client.user.id) in self._raw_mentioned_user_ids(message):
+            return True
+
+        self_role_ids = self._self_role_ids(message)
+        if not self_role_ids:
+            return False
+
+        resolved_role_ids = {
+            str(getattr(role, "id"))
+            for role in (getattr(message, "role_mentions", None) or [])
+            if getattr(role, "id", None) is not None
+        }
+        return bool(self_role_ids & (resolved_role_ids | self._raw_mentioned_role_ids(message)))
 
     def _self_is_raw_mentioned(self, message: Any) -> bool:
         """Return True only when this bot has an inline mention token.
@@ -4877,7 +4926,10 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if not self._client or not self._client.user:
             return False
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+        if str(self._client.user.id) in self._raw_mentioned_user_ids(message):
+            return True
+        self_role_ids = self._self_role_ids(message)
+        return bool(self_role_ids and (self_role_ids & self._raw_mentioned_role_ids(message)))
 
     def _discord_bots_require_inline_mention(self) -> bool:
         """Whether another bot must type an inline @mention to trigger us.
@@ -6172,6 +6224,7 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+        in_bot_thread = False
 
         snapshot_attachments = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
@@ -6188,6 +6241,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._client.user:
                 normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            for role_id in self._self_role_ids(message):
+                normalized_content = normalized_content.replace(f"<@&{role_id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
@@ -6580,14 +6635,21 @@ class DiscordAdapter(BasePlatformAdapter):
                 and not media_urls
                 and not pending_text_injection
             ):
-                logger.info(
-                    "[%s] Ignoring mention-only message from %s in %s",
-                    self.name,
-                    getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
-                    getattr(message.channel, "id", "unknown"),
-                )
-                return
-            event_text = "(The user sent a message with no text content)"
+                # In another bot's thread, an explicit bare mention is an
+                # intentional "join this thread" signal. Preserve that by
+                # surfacing a small placeholder text turn instead of dropping it.
+                if is_thread and not in_bot_thread:
+                    event_text = "(The user explicitly mentioned you to join this thread)"
+                else:
+                    logger.info(
+                        "[%s] Ignoring mention-only message from %s in %s",
+                        self.name,
+                        getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
+                        getattr(message.channel, "id", "unknown"),
+                    )
+                    return
+            if not event_text or not event_text.strip():
+                event_text = "(The user sent a message with no text content)"
 
         _chan = message.channel
         _parent_id = str(getattr(_chan, "parent_id", "") or "")

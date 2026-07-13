@@ -109,10 +109,13 @@ class TestRegisterTTSProvider:
             mgr = PluginManager()
             mgr.discover_and_load()
 
-        # Plugin loaded (register returned normally), but registry empty.
+        # Plugin loaded (register returned normally), but the bad plugin's
+        # non-provider was rejected — only bundled backends (e.g. cloudflare)
+        # may be present from discover_and_load().
         assert mgr._plugins["bad-tts-plugin"].enabled is True
         assert tts_registry.get_provider("not a provider") is None
-        assert tts_registry.list_providers() == []
+        registered_names = {p.name for p in tts_registry.list_providers()}
+        assert "not a provider" not in registered_names
         assert "does not inherit from TTSProvider" in caplog.text
 
         tts_registry._reset_for_tests()

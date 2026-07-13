@@ -3900,6 +3900,22 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "CLOUDFLARE_API_TOKEN": {
+        "description": "Cloudflare API token for Workers AI Aura TTS",
+        "prompt": "Cloudflare API token",
+        "url": "https://dash.cloudflare.com/profile/api-tokens",
+        "tools": ["text_to_speech"],
+        "password": True,
+        "category": "tool",
+    },
+    "CLOUDFLARE_ACCOUNT_ID": {
+        "description": "Cloudflare account ID for Workers AI Aura TTS",
+        "prompt": "Cloudflare account ID",
+        "url": "https://dash.cloudflare.com/",
+        "tools": ["text_to_speech"],
+        "password": False,
+        "category": "tool",
+    },
     "MISTRAL_API_KEY": {
         "description": "Mistral API key for Voxtral TTS and transcription (STT)",
         "prompt": "Mistral API key",

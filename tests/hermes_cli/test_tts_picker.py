@@ -34,8 +34,13 @@ class _FakeTTSProvider(TTSProvider):
 
 
 @pytest.fixture(autouse=True)
-def _reset_registry():
+def _reset_registry(monkeypatch):
     tts_registry._reset_for_tests()
+    # Prevent bundled plugin auto-discovery from re-populating the
+    # registry during these unit tests — we control registry contents
+    # directly via register_provider().
+    from hermes_cli import plugins as _plugins_mod
+    monkeypatch.setattr(_plugins_mod, "_ensure_plugins_discovered", lambda *a, **k: None)
     yield
     tts_registry._reset_for_tests()
 

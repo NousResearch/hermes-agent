@@ -675,6 +675,7 @@ async def test_observed_room_context_overlays_shared_rows_for_isolated_matrix_th
         event=event,
         source=source,
         session_entry=session_entry,
+        active_history=[],
     )
 
     assert runner.session_store.peeked_keys == [shared_key]
@@ -698,6 +699,90 @@ async def test_observed_room_context_overlays_shared_rows_for_isolated_matrix_th
         "Bob's earlier private answer",
     ]
     assert observed_context == "\n".join(row["content"] for row in observed_history)
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_excludes_chatter_before_previous_addressed_turn():
+    """Only room chatter since this participant's last addressed turn is overlaid."""
+    from gateway.run import GatewayRunner
+    from gateway.session import build_session_key
+
+    config = GatewayConfig(group_sessions_per_user=True)
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!room1:example.org",
+        chat_type="group",
+        user_id="@bob:example.org",
+        user_name="bob",
+    )
+    shared_source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id=source.chat_id,
+        chat_type=source.chat_type,
+    )
+    shared_key = build_session_key(
+        shared_source,
+        group_sessions_per_user=True,
+    )
+
+    class FakeStore:
+        def _generate_session_key(self, candidate):
+            return build_session_key(candidate, group_sessions_per_user=True)
+
+        def peek_session_id(self, key):
+            return "shared-observed-session" if key == shared_key else None
+
+        def load_transcript(self, session_id):
+            assert session_id == "shared-observed-session"
+            return [
+                {
+                    "role": "user",
+                    "content": "already seen room chatter",
+                    "observed": True,
+                    "timestamp": "2026-07-13T10:00:00+00:00",
+                },
+                {
+                    "role": "user",
+                    "content": "new room chatter",
+                    "observed": True,
+                    "timestamp": "2026-07-13T10:02:00+00:00",
+                },
+            ]
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = config
+    runner.session_store = FakeStore()
+    event = MessageEvent(
+        text="[bob|@bob:example.org]\nsecond addressed question",
+        source=source,
+        channel_prompt="observed Matrix room context",
+    )
+    session_entry = SimpleNamespace(
+        session_key=build_session_key(source, group_sessions_per_user=True),
+        session_id="bob-session",
+    )
+
+    observed_history = await runner._load_matrix_observed_context_history(
+        event=event,
+        source=source,
+        session_entry=session_entry,
+        active_history=[
+            {
+                "role": "user",
+                "content": "first addressed question",
+                # Addressed gateway turns are persisted as Unix seconds while
+                # Matrix observations use ISO-8601 timestamps.
+                "timestamp": 1783936860.0,
+            },
+            {
+                "role": "assistant",
+                "content": "first answer",
+                "timestamp": "2026-07-13T10:01:01+00:00",
+            },
+        ],
+    )
+
+    assert [row["content"] for row in observed_history] == ["new room chatter"]
 
 
 @pytest.mark.asyncio

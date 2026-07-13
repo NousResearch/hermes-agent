@@ -11178,6 +11178,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event: MessageEvent,
         source: SessionSource,
         session_entry: Any,
+        active_history: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """Load only passive Matrix room rows for an isolated addressed turn.
 
@@ -11224,10 +11225,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return []
 
+        # The shared room transcript outlives each participant's isolated
+        # conversation.  Use the last addressed user turn already persisted
+        # in this participant's transcript as a durable watermark: chatter
+        # that preceded it has already been offered to the model and must not
+        # be replayed on every later addressed turn.
+        last_addressed_timestamp = _coerce_gateway_timestamp(
+            next(
+                (
+                    message.get("timestamp")
+                    for message in reversed(active_history or [])
+                    if (
+                        isinstance(message, dict)
+                        and message.get("role") == "user"
+                        and not message.get("observed")
+                        and message.get("timestamp") is not None
+                    )
+                ),
+                None,
+            )
+        )
         observed_rows = [
             message
             for message in shared_history or []
-            if isinstance(message, dict) and bool(message.get("observed"))
+            if (
+                isinstance(message, dict)
+                and bool(message.get("observed"))
+                and (
+                    last_addressed_timestamp is None
+                    or (
+                        (observed_timestamp := _coerce_gateway_timestamp(
+                            message.get("timestamp")
+                        )) is not None
+                        and observed_timestamp > last_addressed_timestamp
+                    )
+                )
+            )
         ]
         # This is a prompt-only overlay, not persistent retention. Bound it
         # here so an isolated room with no recent addressed turn cannot grow
@@ -12140,6 +12173,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             event=event,
             source=source,
             session_entry=session_entry,
+            active_history=history,
         )
         if observed_matrix_history:
             history_for_agent = [*history, *observed_matrix_history]

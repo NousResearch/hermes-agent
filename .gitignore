@@ -119,6 +119,10 @@ docs/superpowers/*
 # treat it as a local edit and autostash it on every run (#38529).
 .hermes-bootstrap-complete
 
+# Installation method marker written by the bootstrap installer. Runtime state,
+# never a code change — ignore for the same reason as .hermes-bootstrap-complete.
+.install_method
+
 # Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
 .hermes-sandbox/
 

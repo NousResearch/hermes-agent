@@ -17,8 +17,8 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any, Literal, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -639,6 +639,32 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
     return cleaned or None
 
 
+PERSISTABLE_MODEL_IDENTITY_KEYS = ("model", "provider", "api_mode")
+
+
+class PersistedSessionRouteLookup(NamedTuple):
+    """Authoritative tri-state result for persisted session-route identity."""
+
+    state: Literal["absent", "valid", "unavailable"]
+    identity: Optional[dict] = None
+
+
+def sanitize_model_override_identity(
+    identity: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, str]]:
+    """Keep only the credential-free identity used for sticky routing."""
+    if not isinstance(identity, dict):
+        return None
+    cleaned = {
+        key: str(identity[key])
+        for key in PERSISTABLE_MODEL_IDENTITY_KEYS
+        if identity.get(key) not in (None, "")
+    }
+    if not cleaned.get("model") or not cleaned.get("provider"):
+        return None
+    return cleaned
+
+
 @dataclass
 class SessionEntry:
     """
@@ -726,8 +752,9 @@ class SessionEntry:
     # restart (the harness event the user didn't cause) — the in-memory
     # GatewayRunner._session_reasoning_overrides dict is otherwise lost on
     # restart, silently reverting /reasoning high back to the config default.
-    # Still CLEARED by /new, /reset, auto-reset, and finalization (durability,
-    # not scope). Shape: {"enabled": bool, "effort": str} or None.
+    # Preserved by manual /new and /reset by default, but still cleared by
+    # automatic reset/finalization. Shape: {"enabled": bool, "effort": str}
+    # or None; {"enabled": False, "effort": "none"} is an explicit override.
     reasoning_override: Optional[Dict[str, Any]] = None
 
     # Session-scoped /model override IDENTITY (never the secret): only
@@ -737,6 +764,15 @@ class SessionEntry:
     # ad-hoc/inline-credential override is not persisted (it can't be safely
     # reconstructed and would silently re-route to the config endpoint).
     model_override_identity: Optional[Dict[str, Any]] = None
+
+    # True when persisted data explicitly contained model_override_identity,
+    # but its value was not a valid {model, provider, api_mode?} mapping.  The
+    # sanitized public field remains None; this bit preserves the crucial
+    # distinction between absent and malformed so routing fails closed.  It is
+    # serialized as an empty identity marker, never as the untrusted raw value.
+    _model_override_identity_invalid: bool = field(
+        default=False, repr=False, compare=False
+    )
 
     # Last (provider, model) this session actually SERVED a turn on. Identity
     # only ({provider, model}) — never api_key/base_url — mirroring
@@ -793,7 +829,11 @@ class SessionEntry:
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
             "reasoning_override": self.reasoning_override,
-            "model_override_identity": self.model_override_identity,
+            "model_override_identity": (
+                {}
+                if self._model_override_identity_invalid
+                else sanitize_model_override_identity(self.model_override_identity)
+            ),
             "last_served_identity": self.last_served_identity,
         }
         if self.model_override:
@@ -844,6 +884,21 @@ class SessionEntry:
                 "Invalid session_key: potential directory traversal detected"
             )
 
+        raw_model_identity = data.get("model_override_identity")
+        model_identity = sanitize_model_override_identity(raw_model_identity)
+        model_identity_invalid = (
+            raw_model_identity is not None and model_identity is None
+        )
+        legacy_model_identity = sanitize_model_override_identity(
+            data.get("model_override")
+        )
+        if raw_model_identity is None and legacy_model_identity is not None:
+            # Upgrade a legacy-only preference as it enters memory. This keeps
+            # its non-secret api_mode before the compatibility mirror is
+            # sanitized, and makes the identity authoritative for subsequent
+            # reset/save/restart cycles.
+            model_identity = legacy_model_identity
+
         return cls(
             session_key=session_key,
             session_id=session_id,
@@ -879,11 +934,8 @@ class SessionEntry:
                 if isinstance(data.get("reasoning_override"), dict)
                 else None
             ),
-            model_override_identity=(
-                data.get("model_override_identity")
-                if isinstance(data.get("model_override_identity"), dict)
-                else None
-            ),
+            model_override_identity=model_identity,
+            _model_override_identity_invalid=model_identity_invalid,
             last_served_identity=(
                 data.get("last_served_identity")
                 if isinstance(data.get("last_served_identity"), dict)
@@ -1292,14 +1344,62 @@ class SessionStore:
         """Public read accessor for a single entry by session key."""
         return self._entries.get(session_key)
 
+    def lookup_persisted_route_identity(
+        self, session_key: str
+    ) -> PersistedSessionRouteLookup:
+        """Read the persisted model route without collapsing failures to absence.
+
+        This explicit capability is the authority used by the gateway's
+        fail-closed route precheck. Lightweight fixture stores that do not
+        implement it have no persisted-route authority and are treated as
+        absent by the caller.
+        """
+        if not session_key:
+            return PersistedSessionRouteLookup("absent")
+        try:
+            self._ensure_loaded()
+            entry = self.entry_for(session_key)
+            if entry is None:
+                return PersistedSessionRouteLookup("absent")
+            if entry._model_override_identity_invalid:
+                return PersistedSessionRouteLookup("unavailable")
+            identity = (
+                entry.model_override
+                if entry.model_override_identity is None
+                else entry.model_override_identity
+            )
+        except Exception:
+            return PersistedSessionRouteLookup("unavailable")
+
+        if identity is None:
+            return PersistedSessionRouteLookup("absent")
+        if not isinstance(identity, dict):
+            return PersistedSessionRouteLookup("unavailable")
+        model = identity.get("model")
+        provider = identity.get("provider")
+        if not model or not provider:
+            return PersistedSessionRouteLookup("unavailable")
+        return PersistedSessionRouteLookup(
+            "valid",
+            {
+                "model": str(model),
+                "provider": str(provider),
+                "api_mode": identity.get("api_mode"),
+            },
+        )
+
     def persist(self) -> None:
         """Public trigger for a durable save of the session index."""
         self._save()
 
-    def _save(self) -> None:
+    def _save(self, *, require_primary: bool = False) -> None:
         """Persist the routing index while the caller holds ``_lock``."""
         data, generation = self._snapshot_routing_locked()
-        self._persist_routing_data(data, generation)
+        self._persist_routing_data(
+            data,
+            generation,
+            require_primary=require_primary,
+        )
 
     def _snapshot_routing_locked(self) -> tuple[Dict[str, Any], int]:
         """Capture immutable routing data and a monotonic generation."""
@@ -1309,7 +1409,13 @@ class SessionStore:
             self._routing_generation,
         )
 
-    def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
+    def _persist_routing_data(
+        self,
+        data: Dict[str, Any],
+        generation: int,
+        *,
+        require_primary: bool = False,
+    ) -> None:
         """Serialize all whole-index writers through one durable write lock."""
         save_lock = getattr(self, "_save_lock", None)
         if save_lock is None:
@@ -1333,7 +1439,25 @@ class SessionStore:
                         logger.warning(
                             "gateway.session: state.db routing save failed: %s", exc
                         )
-            if getattr(self, "_write_sessions_json", True) or not db_saved:
+                        if require_primary:
+                            raise
+            if db_saved:
+                if getattr(self, "_write_sessions_json", True):
+                    try:
+                        self._save_sessions_json(data)
+                    except Exception as exc:
+                        # state.db is authoritative. Once its transaction has
+                        # committed, the legacy JSON mirror is best-effort and
+                        # must not turn a successful route change into an
+                        # apparent rollback that reverses after restart.
+                        logger.warning(
+                            "gateway.session: sessions.json routing mirror save "
+                            "failed after state.db commit: %s",
+                            exc,
+                        )
+            else:
+                # No usable DB primary: retain the supported JSON fallback.
+                # Its failure remains fatal because no durable commit exists.
                 self._save_sessions_json(data)
             self._persisted_routing_generation = generation
 
@@ -2173,6 +2297,37 @@ class SessionStore:
             entry.model_override = cleaned
             self._save()
 
+    def clear_model_route_override(self, session_key: str) -> bool:
+        """Atomically clear authoritative identity and its legacy mirror.
+
+        Both fields are mutated under the store lock and persisted from one
+        routing snapshot. If the primary persistence fails, the in-memory entry
+        is rolled back and the exception is propagated. Once state.db commits,
+        an optional JSON-mirror failure is only a warning and memory remains
+        consistent with the authoritative primary.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            old_identity = entry.model_override_identity
+            old_legacy = entry.model_override
+            old_invalid = entry._model_override_identity_invalid
+            if old_identity is None and old_legacy is None and not old_invalid:
+                return True
+            entry.model_override_identity = None
+            entry._model_override_identity_invalid = False
+            entry.model_override = None
+            try:
+                self._save(require_primary=True)
+            except BaseException:
+                entry.model_override_identity = old_identity
+                entry._model_override_identity_invalid = old_invalid
+                entry.model_override = old_legacy
+                raise
+            return True
+
     def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
         """Return the persisted /model override for *session_key*, if any."""
         with self._lock:
@@ -2437,8 +2592,19 @@ class SessionStore:
                 self._save()
         return count
 
-    def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
-        """Force reset a session, creating a new session ID."""
+    def reset_session(
+        self,
+        session_key: str,
+        display_name: Optional[str] = None,
+        *,
+        preserve_route_preferences: bool = False,
+    ) -> Optional[SessionEntry]:
+        """Force reset a session, creating a new session ID.
+
+        Automatic callers retain the legacy full-reset default. The manual
+        /new and /reset handler explicitly opts in to carrying only the two
+        persisted, non-secret route preference fields.
+        """
         db_end_session_id = None
         db_create_kwargs = None
         new_entry = None
@@ -2451,6 +2617,25 @@ class SessionStore:
 
             old_entry = self._entries[session_key]
             db_end_session_id = old_entry.session_id
+
+            preserved_model_identity = None
+            preserved_model_identity_invalid = False
+            if preserve_route_preferences:
+                if old_entry._model_override_identity_invalid:
+                    preserved_model_identity_invalid = True
+                else:
+                    preserved_model_identity = sanitize_model_override_identity(
+                        old_entry.model_override_identity
+                    )
+                    if preserved_model_identity is None:
+                        # Migrate a pre-identity legacy preference into the
+                        # authoritative credential-free shape. The sanitizer
+                        # intentionally drops api_key, base_url, and all other
+                        # endpoint/secret material. The new entry never keeps
+                        # the legacy mirror.
+                        preserved_model_identity = sanitize_model_override_identity(
+                            old_entry.model_override
+                        )
 
             now = _now()
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -2465,6 +2650,14 @@ class SessionStore:
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
                 is_fresh_reset=True,
+                model_override_identity=preserved_model_identity,
+                _model_override_identity_invalid=preserved_model_identity_invalid,
+                reasoning_override=(
+                    dict(old_entry.reasoning_override)
+                    if preserve_route_preferences
+                    and isinstance(old_entry.reasoning_override, dict)
+                    else None
+                ),
             )
 
             self._entries[session_key] = new_entry

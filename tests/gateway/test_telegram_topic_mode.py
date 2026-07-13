@@ -382,7 +382,9 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
 
     assert "Started a new Hermes session in this topic" not in result
     assert "parallel work" not in result
-    runner.session_store.reset_session.assert_called_once_with(group_key)
+    runner.session_store.reset_session.assert_called_once_with(
+        group_key, preserve_route_preferences=True
+    )
 
 
 @pytest.mark.asyncio
@@ -424,7 +426,9 @@ async def test_new_inside_telegram_topic_resets_current_topic_with_parallel_tip(
     assert "Started a new Hermes session in this topic" in result
     assert "parallel work" in result
     assert "All Messages" in result
-    runner.session_store.reset_session.assert_called_once_with(topic_key)
+    runner.session_store.reset_session.assert_called_once_with(
+        topic_key, preserve_route_preferences=True
+    )
 
 
 @pytest.mark.asyncio

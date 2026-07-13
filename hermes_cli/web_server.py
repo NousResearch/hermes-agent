@@ -736,6 +736,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `session_store.trigram_fts` is currently the only session-store field —
     # fold it into the agent tab rather than spawning a one-field category.
     "session_store": "agent",
+    # Manual reset controls session lifecycle alongside the agent's other
+    # conversation behavior. Keep its runtime dotpath unchanged while avoiding
+    # a one-field dashboard category.
+    "session_reset": "agent",
     # `onboarding.profile_build` is the only schema-surfaced onboarding field
     # (`onboarding.seen` is an internal latch dict, not a user setting), so fold
     # it into the agent tab rather than spawning a one-field orphan category.

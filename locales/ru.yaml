@@ -162,6 +162,22 @@ gateway:
     status_fast:           "fast"
     status_normal:         "normal"
 
+    route_off:             "⚡ Fast: off — {reason}"
+    route_status:          "⚡ Fast: {state} — {family} on `{route}`"
+    preference_status:     "⚡ Configured session preference: Fast {state} — {family} on `{route}`. Route availability is checked before each turn."
+    preference_off:        "⚡ Configured session preference: Fast off — {reason} Route availability is checked before each turn."
+    preference_unavailable: "⚡ Configured session preference `{route}` is currently unavailable because its credentials could not be resolved. The preference remains saved; restore credentials or use `/model reset`."
+    route_unavailable:     "⚡ Fast unavailable — {reason}"
+    route_saved:           "⚡ ✓ {family}: **{label}** (saved to config)"
+    route_session_only:    "⚡ ✓ {family}: **{label}** (config save failed; applied gateway-process-wide until restart)"
+    model_switch_unavailable: "⚡ Fast: unavailable on `{route}`; requests will use normal speed."
+    family_openai_priority: "OpenAI API Priority Processing"
+    family_codex_fast:     "Codex Fast"
+    family_anthropic_fast: "Anthropic Fast"
+    family_unsupported:    "Fast"
+    state_on:              "on"
+    state_off:             "off"
+
   footer:
     status:                "📎 Нижний колонтитул среды выполнения: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
     usage:                 "Использование: `/footer [on|off|status]`"
@@ -258,6 +274,8 @@ gateway:
     failed:                "❌ Ошибка перезагрузки навыков: {error}"
 
   reset:
+    preferences_preserved: "\n↪ Preserved explicit {preferences} preferences. Use `/model reset` and `/reasoning reset` to return to configured defaults."
+    model_preference_unavailable: "\n⚠ Preserved the explicit model preference, but it is currently unavailable because its credentials could not be resolved. Restore credentials or use `/model reset`."
     header_default:        "✨ Сеанс сброшен! Начинаем с чистого листа."
     header_new:            "✨ Новый сеанс запущен!"
     header_titled:         "✨ Новый сеанс запущен: {title}"

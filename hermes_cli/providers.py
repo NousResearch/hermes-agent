@@ -537,6 +537,26 @@ def is_routing_aggregator(provider: str) -> bool:
     return is_aggregator(provider_norm)
 
 
+_INFERRED_PROVIDER_API_MODES: dict[str, str] = {
+    "openai-codex": "codex_responses",
+    "anthropic": "anthropic_messages",
+    "openai": "codex_responses",
+    "openai-api": "codex_responses",
+}
+
+
+def infer_api_mode_from_provider(provider: str | None) -> str:
+    """Infer the configured wire protocol from a provider id alone.
+
+    This deliberately does not inspect credentials, URLs, or runtime state. It
+    owns the provider-only fallback used by route identity/status surfaces when
+    config omits ``api_mode``; full runtime resolution should continue to use
+    :func:`determine_api_mode` with its endpoint-aware rules.
+    """
+    normalized = str(provider or "").strip().lower()
+    return _INFERRED_PROVIDER_API_MODES.get(normalized, "chat_completions")
+
+
 def determine_api_mode(provider: str, base_url: str = "") -> str:
     """Determine the API mode (wire protocol) for a provider/endpoint.
 

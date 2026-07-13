@@ -86,6 +86,49 @@ class TestAdhocNotPersisted:
         assert saved[key].get("model_override_identity") is None
 
 
+class TestAtomicModelRouteClear:
+    def test_clear_persists_identity_and_legacy_mirror_together(self, tmp_path):
+        store = _make_store(tmp_path)
+        key = "agent:main:discord:c1:c1"
+        entry = _entry(key)
+        entry.model_override_identity = {
+            "model": "gpt-5.5", "provider": "openai-codex",
+            "api_mode": "codex_responses",
+        }
+        entry.model_override = {
+            "model": "gpt-5.5", "provider": "openai-codex",
+        }
+        store._entries[key] = entry
+        store._loaded = True
+
+        assert store.clear_model_route_override(key)
+
+        payload = json.loads((tmp_path / "sessions.json").read_text())[key]
+        assert payload["model_override_identity"] is None
+        assert payload.get("model_override") is None
+        restarted = SessionEntry.from_dict(payload)
+        assert restarted.model_override_identity is None
+        assert restarted.model_override is None
+
+    def test_save_failure_rolls_back_both_fields_and_raises(self, tmp_path):
+        store = _make_store(tmp_path)
+        key = "agent:main:discord:c1:c1"
+        entry = _entry(key)
+        identity = {"model": "gpt-5.5", "provider": "openai-codex"}
+        legacy = {"model": "gpt-5.5", "provider": "openai-codex"}
+        entry.model_override_identity = dict(identity)
+        entry.model_override = dict(legacy)
+        store._entries[key] = entry
+        store._loaded = True
+        store._save = MagicMock(side_effect=OSError("second write failed"))
+
+        with pytest.raises(OSError, match="second write failed"):
+            store.clear_model_route_override(key)
+
+        assert entry.model_override_identity == identity
+        assert entry.model_override == legacy
+
+
 class TestRehydrateReresolves:
     def test_rehydrate_reresolves_credentials(self, tmp_path):
         store = _make_store(tmp_path)

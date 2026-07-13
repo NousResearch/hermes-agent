@@ -935,6 +935,34 @@ def test_build_models_payload_forwards_refresh_flag():
     assert captured["refresh"] is True
 
 
+def test_inventory_capabilities_use_shared_provider_api_mode_inference():
+    from hermes_cli.inventory import _apply_capabilities
+
+    captured = {}
+
+    def _infer(provider):
+        captured["provider"] = provider
+        return "shared-mode"
+
+    def _resolve(**kwargs):
+        captured.update(kwargs)
+        return type("Capability", (), {"supported": True})()
+
+    rows = [{"slug": "openai-codex", "models": ["gpt-5.5"]}]
+    with (
+        patch(
+            "hermes_cli.providers.infer_api_mode_from_provider",
+            side_effect=_infer,
+        ),
+        patch("hermes_cli.models.resolve_fast_mode_capability", side_effect=_resolve),
+        patch("agent.models_dev.get_model_capabilities", return_value=None),
+    ):
+        _apply_capabilities(rows)
+
+    assert captured["provider"] == "openai-codex"
+    assert captured["api_mode"] == "shared-mode"
+
+
 def test_list_authenticated_providers_refresh_busts_cache():
     """refresh=True clears the provider-model disk cache exactly once;
     refresh=False leaves it untouched (so normal picker opens stay snappy)."""

@@ -13,11 +13,17 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import time
+from dataclasses import dataclass
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, Literal, NamedTuple, Optional
 
 from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.fast_mode_contracts import (
+    FAST_MODE_CAPABILITY_CATALOG,
+    anthropic_fast_contract_accepts,
+    normalize_fast_model_id,
+)
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -2076,41 +2082,28 @@ def provider_label(provider: Optional[str]) -> str:
     return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
 
 
-# Models that support OpenAI Priority Processing (service_tier="priority").
-# See https://openai.com/api-priority-processing/ for the canonical list.
-#
-# Pattern-based matching — any OpenAI flagship model (gpt-*, o1*, o3*, o4*)
-# is assumed to support Priority Processing. service_tier=priority is silently
-# ignored by non-OpenAI endpoints (OpenRouter/Copilot/opencode-zen proxies
-# strip the field), so false positives are harmless. Codex-series models
-# (gpt-5-codex, gpt-5.3-codex, etc.) are excluded — they don't expose the
-# service_tier parameter through the Codex Responses API.
-_OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = (
-    "gpt-",
-    "o1",
-    "o3",
-    "o4",
-)
+@dataclass(frozen=True)
+class FastModeCapability:
+    supported: bool
+    family: Literal[
+        "openai_priority", "codex_fast", "anthropic_fast", "unsupported"
+    ]
+    request_overrides: dict[str, Any]
+    reason: Optional[str] = None
 
 
 def _is_openai_fast_model(model_id: Optional[str]) -> bool:
-    """Return True if the model is an OpenAI flagship eligible for Priority Processing."""
-    raw = _strip_vendor_prefix(str(model_id or ""))
-    base = raw.split(":")[0]
-    if not base:
-        return False
-    # Exclude Codex-series — they route through the Codex Responses API
-    # which doesn't accept service_tier.
-    if "codex" in base:
-        return False
-    return any(base.startswith(prefix) for prefix in _OPENAI_FAST_MODE_PREFIXES)
+    """Return True only for the dated direct-OpenAI Priority contract."""
+    return normalize_fast_model_id(model_id) in FAST_MODE_CAPABILITY_CATALOG[
+        "openai_priority"
+    ]["models"]
 
 
 # Models that support Anthropic Fast Mode (speed="fast").
 # See https://platform.claude.com/docs/en/build-with-claude/fast-mode
 #
-# Pattern-based matching — any claude-* model is eligible. The anthropic
-# adapter gates speed=fast on native Anthropic endpoints only (see
+# The documented Opus versions are allowlisted. The Anthropic adapter also
+# gates speed=fast on native Anthropic endpoints only (see
 # _is_third_party_anthropic_endpoint in agent/anthropic_adapter.py), so
 # third-party proxies that would reject the beta header are protected.
 
@@ -2123,6 +2116,108 @@ def _strip_vendor_prefix(model_id: str) -> str:
     return raw
 
 
+def _fast_model_base(model_id: Optional[str]) -> str:
+    return normalize_fast_model_id(model_id)
+
+
+def resolve_fast_mode_capability(
+    *,
+    model: Optional[str],
+    provider: Optional[str],
+    api_mode: Optional[str],
+) -> FastModeCapability:
+    """Resolve Fast support from the complete transport contract.
+
+    Unknown providers and proxies fail closed even when they carry a GPT or
+    Claude model name. This result is shared by command UX and request
+    construction so support, explanation, and serialized overrides cannot
+    drift apart.
+    """
+    normalized_provider = normalize_provider(provider)
+    normalized_mode = str(api_mode or "").strip().lower()
+    base = _fast_model_base(model)
+    route = f"{normalized_provider}/{base or '<unset>'}"
+
+    openai_contract = FAST_MODE_CAPABILITY_CATALOG["openai_priority"]
+    if normalized_provider in {"openai", "openai-api"} and normalized_mode in {
+        "chat_completions",
+        "codex_responses",
+    }:
+        models = openai_contract["models"]
+        supported = base in models
+        return FastModeCapability(
+            supported=supported,
+            family="openai_priority",
+            request_overrides={"service_tier": "priority"} if supported else {},
+            reason=None
+            if supported
+            else f"OpenAI API Priority Processing is not documented for `{route}`.",
+        )
+
+    codex_contract = FAST_MODE_CAPABILITY_CATALOG["codex_fast"]
+    if (
+        normalized_provider == "openai-codex"
+        and normalized_mode == "codex_responses"
+    ):
+        models = codex_contract["models"]
+        supported = base in models
+        return FastModeCapability(
+            supported=supported,
+            family="codex_fast",
+            request_overrides={"service_tier": "fast"} if supported else {},
+            reason=None
+            if supported
+            else (
+                f"Codex Fast is not currently available for `{route}` "
+                "(OpenAI currently lists "
+                f"{', '.join(model.upper() for model in models)})."
+            ),
+        )
+
+    anthropic_contract = FAST_MODE_CAPABILITY_CATALOG["anthropic_fast"]
+    if (
+        normalized_provider == "anthropic"
+        and normalized_mode == "anthropic_messages"
+    ):
+        models = anthropic_contract["models"]
+        supported = base in models
+        if supported:
+            reason = None
+        else:
+            reason = (
+                f"Anthropic Fast (`speed=fast`) is not available for `{route}` "
+                "under the current native Messages contract."
+            )
+        return FastModeCapability(
+            supported=supported,
+            family="anthropic_fast",
+            request_overrides={"speed": "fast"} if supported else {},
+            reason=reason,
+        )
+
+    if normalized_mode == "anthropic_messages" and base == "claude-opus-4-8":
+        return FastModeCapability(
+            supported=False,
+            family="unsupported",
+            request_overrides={},
+            reason=(
+                f"`{route}` is a proxy route and cannot receive Hermes' "
+                "`speed=fast` override; select the separate "
+                "`claude-opus-4-8-fast` model instead."
+            ),
+        )
+
+    return FastModeCapability(
+        supported=False,
+        family="unsupported",
+        request_overrides={},
+        reason=(
+            f"`{route}` with API mode `{normalized_mode or '<unset>'}` does not "
+            "declare a supported Fast contract; requests will use normal speed."
+        ),
+    )
+
+
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     """Return whether Hermes should expose the /fast toggle for this model."""
     return _is_anthropic_fast_model(model_id) or _is_openai_fast_model(model_id)
@@ -2131,20 +2226,10 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     """Return True if the model accepts the Anthropic Fast Mode ``speed`` param.
 
-    This gates the *speed=fast request parameter*, which Anthropic supports on
-    Opus 4.6 only (Opus 4.7 explicitly 400s). It is deliberately NOT a general
-    "is this a fast model" check: for Opus 4.8 the fast offering is a SEPARATE
-    model id (``…-opus-4.8-fast``) selected via the model field, not the speed
-    parameter — see ``agent.anthropic_adapter._supports_fast_mode`` and its
-    test. Keep this in lock-step with that adapter gate so the UI never shows a
-    Fast toggle that the runtime would silently drop.
+    This gates the *speed=fast request parameter* using the same exact catalog
+    consumed by the native Anthropic transport adapter.
     """
-    raw = _strip_vendor_prefix(str(model_id or ""))
-    base = raw.split(":")[0]
-    if not base.startswith("claude-"):
-        return False
-    # Only Opus 4.6 supports the speed=fast parameter at present.
-    return "opus-4-6" in base or "opus-4.6" in base
+    return anthropic_fast_contract_accepts(model_id)
 
 
 def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:

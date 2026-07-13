@@ -2,8 +2,8 @@
 
 The in-memory _session_reasoning_overrides dict is lost on a gateway restart,
 silently reverting /reasoning high to the config default. P3a persists the
-override onto the SessionEntry (sessions.json) and rehydrates it on boot — while
-still clearing it on /new, /reset, /reasoning reset (durability, not scope).
+override onto the SessionEntry (sessions.json) and rehydrates it on boot. Manual
+/new and /reset preserve it; /reasoning reset and automatic reset clear it.
 """
 
 import json
@@ -85,7 +85,7 @@ class TestSetSessionReasoningOverrideWriteThrough:
         store._entries[key] = e
         runner = self._runner_with_store(store)
 
-        runner._set_session_reasoning_override(key, None)  # /new, /reset, /reasoning reset path
+        runner._set_session_reasoning_override(key, None)  # explicit/automatic clear path
         assert store._entries[key].reasoning_override is None
         assert key not in runner._session_reasoning_overrides
 

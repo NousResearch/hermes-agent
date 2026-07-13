@@ -254,13 +254,14 @@ def build_models_payload(
 def _apply_capabilities(rows: list[dict]) -> None:
     """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
 
-    `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
-    enforces). `reasoning` comes from the models.dev catalog when known and
+    `fast` uses the same provider-aware contract the runtime enforces.
+    `reasoning` comes from the models.dev catalog when known and
     defaults to True otherwise — the effort dial is broadly accepted and a
     no-op on models that ignore it, whereas hiding it from a capable-but-
     uncatalogued model is the worse failure.
     """
-    from hermes_cli.models import model_supports_fast_mode
+    from hermes_cli.models import resolve_fast_mode_capability
+    from hermes_cli.providers import infer_api_mode_from_provider
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -269,6 +270,7 @@ def _apply_capabilities(rows: list[dict]) -> None:
 
     for row in rows:
         slug = row.get("slug") or ""
+        api_mode = infer_api_mode_from_provider(slug)
         caps: dict[str, dict[str, bool]] = {}
 
         for model in row.get("models") or []:
@@ -282,7 +284,11 @@ def _apply_capabilities(rows: list[dict]) -> None:
                     reasoning = True
 
             caps[model] = {
-                "fast": bool(model_supports_fast_mode(model)),
+                "fast": resolve_fast_mode_capability(
+                    model=model,
+                    provider=slug,
+                    api_mode=api_mode,
+                ).supported,
                 "reasoning": reasoning,
             }
 

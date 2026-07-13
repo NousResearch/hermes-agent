@@ -89,6 +89,107 @@ class GatewaySlashCommandsMixin:
 
     async_session_store: AsyncSessionStore
 
+    @staticmethod
+    def _preserve_route_preferences_on_manual_reset() -> bool:
+        """Runtime-read kill switch for manual reset carry-over.
+
+        A missing section uses the new default. Read or shape failures use the
+        legacy false behavior so an operator's rollback remains dependable.
+        """
+        try:
+            from gateway.run import _gateway_config_home
+
+            config_path = _gateway_config_home() / "config.yaml"
+            if not config_path.exists():
+                return True
+            import yaml
+
+            # One immutable byte snapshot, parsed once. Do not validate one
+            # read and obtain policy from a second loader: that creates a
+            # rollback-policy TOCTOU when the second read fails or changes.
+            snapshot = config_path.read_text(encoding="utf-8")
+            cfg = yaml.safe_load(snapshot)
+            if cfg is None:
+                cfg = {}
+        except Exception as exc:
+            logger.warning(
+                "Could not read config session_reset manual preference policy; "
+                "using legacy preserve_route_preferences_on_manual_reset=false "
+                "(error=%s)",
+                type(exc).__name__,
+            )
+            return False
+        if not isinstance(cfg, dict):
+            logger.warning(
+                "Malformed gateway config while reading manual reset policy; "
+                "using legacy preserve_route_preferences_on_manual_reset=false"
+            )
+            return False
+        section = cfg.get("session_reset")
+        if section is None:
+            return True
+        if not isinstance(section, dict):
+            logger.warning(
+                "Malformed session_reset config (expected mapping); defaulting "
+                "preserve_route_preferences_on_manual_reset=false"
+            )
+            return False
+        value = section.get("preserve_route_preferences_on_manual_reset", True)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "off"}:
+                return False
+        logger.warning(
+            "Malformed session_reset.preserve_route_preferences_on_manual_reset; "
+            "defaulting to false"
+        )
+        return False
+
+    def _rehydrate_manual_reset_route_preferences(
+        self, session_key: str, entry: Any
+    ) -> None:
+        """Rebuild runtime caches from the newly rotated persisted entry."""
+        if not hasattr(self, "_session_model_overrides"):
+            self._session_model_overrides = {}
+        if not hasattr(self, "_session_reasoning_overrides"):
+            self._session_reasoning_overrides = {}
+        if not hasattr(self, "_session_model_override_unavailable"):
+            self._session_model_override_unavailable = set()
+        # NOTE(P3b/RC-2): cache reconciliation, not a preference clear. The
+        # newly rotated persisted entry is authoritative and is applied below.
+        self._session_model_overrides.pop(session_key, None)
+        self._session_reasoning_overrides.pop(session_key, None)
+        self._session_model_override_unavailable.discard(session_key)
+
+        reasoning = getattr(entry, "reasoning_override", None) if entry else None
+        if isinstance(reasoning, dict):
+            self._session_reasoning_overrides[session_key] = dict(reasoning)
+
+        # Resolve the identity from the exact entry returned by reset_session.
+        # This avoids consulting a stale/mocked store map between rotation and
+        # cache rebuild. No user-action setter is called, so reset cannot emit a
+        # fake switch/recovery announcement.
+        identity = getattr(entry, "model_override_identity", None) if entry else None
+        if (
+            isinstance(identity, dict)
+            and identity.get("model")
+            and identity.get("provider")
+        ):
+            try:
+                resolved = self._reresolve_model_override_credentials(identity)
+            except Exception:
+                resolved = None
+            if resolved is not None:
+                self._session_model_overrides[session_key] = resolved
+                self._session_model_override_unavailable.discard(session_key)
+            else:
+                self._session_model_override_unavailable.add(session_key)
+        getattr(self, "_override_target_just_changed", {}).pop(session_key, None)
+
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
 
@@ -200,13 +301,22 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
-        # Reset the session
-        new_entry = await self.async_session_store.reset_session(session_key)
+        # Reset transcript identity. Manual resets preserve deliberate route
+        # preferences by default; automatic reset call sites do not pass this
+        # flag and retain their legacy full-clear behavior.
+        preserve_route_preferences = (
+            self._preserve_route_preferences_on_manual_reset()
+        )
+        new_entry = await self.async_session_store.reset_session(
+            session_key,
+            preserve_route_preferences=preserve_route_preferences,
+        )
 
-        # Clear any session-scoped model/reasoning overrides so the next agent
-        # picks up configured defaults instead of previous session switches.
-        self._set_session_model_override(session_key, None)
-        self._set_session_reasoning_override(session_key, None)
+        if preserve_route_preferences:
+            self._rehydrate_manual_reset_route_preferences(session_key, new_entry)
+        else:
+            self._set_session_model_override(session_key, None)
+            self._set_session_reasoning_override(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
 
@@ -291,6 +401,28 @@ class GatewaySlashCommandsMixin:
                 # sanitize_title returned empty (whitespace-only / unprintable)
                 _title_note = t("gateway.reset.title_empty_untitled")
         header = header + _title_note
+
+        preserved_preferences = []
+        unavailable_model_preference = False
+        if preserve_route_preferences and new_entry:
+            invalid_model_preference = bool(
+                getattr(new_entry, "_model_override_identity_invalid", False)
+            )
+            if new_entry.model_override_identity or invalid_model_preference:
+                unavailable_model_preference = invalid_model_preference or session_key in getattr(
+                    self, "_session_model_override_unavailable", set()
+                )
+                if not unavailable_model_preference:
+                    preserved_preferences.append("model")
+            if new_entry.reasoning_override is not None:
+                preserved_preferences.append("reasoning")
+        if preserved_preferences:
+            header += t(
+                "gateway.reset.preferences_preserved",
+                preferences=" and ".join(preserved_preferences),
+            )
+        if unavailable_model_preference:
+            header += t("gateway.reset.model_preference_unavailable")
 
         # When /new runs inside a Telegram DM topic lane, rewrite the
         # (chat_id, thread_id) → session_id binding so the next message
@@ -1478,6 +1610,37 @@ class GatewaySlashCommandsMixin:
         except Exception as exc:  # noqa: BLE001 — announce must never break the switch
             logger.debug("model-switch announce failed: %s", exc)
 
+    def _fast_unavailable_model_switch_row(self, result: Any) -> Optional[str]:
+        """Explain when an enabled Fast toggle cannot follow a new route."""
+        if getattr(self, "_service_tier", None) != "priority":
+            return None
+        try:
+            from hermes_cli.models import resolve_fast_mode_capability
+
+            provider = getattr(result, "target_provider", None)
+            api_mode = getattr(result, "api_mode", None)
+            if not api_mode:
+                _, _, api_mode = self._configured_route_identity(
+                    {"model": {"provider": provider}}
+                )
+            capability = resolve_fast_mode_capability(
+                model=getattr(result, "new_model", None),
+                provider=provider,
+                api_mode=api_mode,
+            )
+            if capability.supported:
+                return None
+            route = (
+                f"{getattr(result, 'target_provider', None) or '<unknown>'}/"
+                f"{getattr(result, 'new_model', None) or '<unset>'}"
+            )
+            return t(
+                "gateway.fast.model_switch_unavailable",
+                route=route,
+            )
+        except Exception:
+            return None
+
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.
 
@@ -1552,12 +1715,48 @@ class GatewaySlashCommandsMixin:
         # (#30479).
         source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
         session_key = self._session_key_for_source(source)
+        configured_model = current_model
+        configured_provider = current_provider
         override = self._session_model_overrides.get(session_key, {})
         if override:
             current_model = override.get("model", current_model)
             current_provider = override.get("provider", current_provider)
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
+
+        # Explicit preference clear is authoritative. It clears both the
+        # identity field and the legacy sanitized mirror so a later /new or
+        # restart cannot resurrect the prior pin.
+        if model_input.strip().lower() == "reset" and not explicit_provider:
+            try:
+                await asyncio.to_thread(
+                    self._set_session_model_override,
+                    session_key,
+                    None,
+                    require_persistence=True,
+                )
+            except Exception:
+                logger.warning("Model route reset persistence failed")
+                return (
+                    "Model session override was not cleared because the session "
+                    "store could not persist the reset. No route change was made."
+                )
+            getattr(self, "_pending_model_notes", {}).pop(session_key, None)
+            getattr(self, "_last_resolved_model", {}).pop(session_key, None)
+            try:
+                self._evict_cached_agent(session_key)
+            except Exception:
+                pass
+            await self._announce_switch(
+                event.source,
+                "Model",
+                f"{current_provider}/{current_model}",
+                f"{configured_provider}/{configured_model}",
+            )
+            return (
+                "Model session override cleared; using configured route "
+                f"`{configured_provider}/{configured_model}`."
+            )
 
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
@@ -1809,6 +2008,9 @@ class GatewaySlashCommandsMixin:
                         # Build confirmation text
                         plabel = result.provider_label or result.target_provider
                         lines = [t("gateway.model.switched", model=result.new_model)]
+                        _fast_row = self._fast_unavailable_model_switch_row(result)
+                        if _fast_row:
+                            lines.append(_fast_row)
                         lines.append(t("gateway.model.provider_label", provider=plabel))
                         try:
                             _reasoning_label = self._reasoning_effort_label(
@@ -2120,6 +2322,9 @@ class GatewaySlashCommandsMixin:
             provider_label = result.provider_label or result.target_provider
             lines = [t("gateway.model.switched", model=result.new_model)]
             lines.append(t("gateway.model.provider_label", provider=provider_label))
+            _fast_row = self._fast_unavailable_model_switch_row(result)
+            if _fast_row:
+                lines.append(_fast_row)
 
             # Reasoning effort in effect after the switch. /model does NOT clear
             # a /reasoning session override, so resolve the session-aware value
@@ -2936,8 +3141,12 @@ class GatewaySlashCommandsMixin:
                 current[keys[-1]] = value
                 atomic_config_write(config_path, user_config)
                 return True
-            except Exception as e:
-                logger.error("Failed to save config key %s: %s", key_path, e)
+            except Exception as exc:
+                logger.error(
+                    "Failed to save config key %s (error=%s)",
+                    key_path,
+                    type(exc).__name__,
+                )
                 return False
 
         if not raw_args:
@@ -3140,18 +3349,42 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
-        from gateway.run import _hermes_home, _load_gateway_config, _resolve_gateway_model
+        from gateway.run import _hermes_home, _load_gateway_config
         import yaml
-        from hermes_cli.models import model_supports_fast_mode
+        from hermes_cli.models import resolve_fast_mode_capability
 
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / "config.yaml"
         self._service_tier = self._load_service_tier()
 
         user_config = _load_gateway_config()
-        model = _resolve_gateway_model(user_config)
-        if not model_supports_fast_mode(model):
-            return t("gateway.fast.not_supported")
+        session_key = self._session_key_for_source(event.source)
+        persisted_lookup = self._persisted_session_route_identity(session_key)
+        if persisted_lookup.state == "unavailable":
+            return t("gateway.fast.preference_unavailable", route="<unreadable>")
+        model, provider, api_mode = self._resolve_configured_session_route_identity(
+            source=event.source,
+            session_key=session_key,
+            user_config=user_config,
+            persisted_route_lookup=persisted_lookup,
+        )
+        capability = resolve_fast_mode_capability(
+            model=model,
+            provider=provider,
+            api_mode=api_mode,
+        )
+        route = f"{provider or '<unknown>'}/{model or '<unset>'}"
+        persisted_preference = persisted_lookup.identity
+        preference_unavailable = session_key in getattr(
+            self, "_session_model_override_unavailable", set()
+        )
+        logger.debug(
+            "Fast capability route=%s api_mode=%s family=%s supported=%s",
+            route,
+            api_mode or "",
+            capability.family,
+            capability.supported,
+        )
 
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""
@@ -3169,15 +3402,50 @@ class GatewaySlashCommandsMixin:
                 current[keys[-1]] = value
                 atomic_config_write(config_path, user_config)
                 return True
-            except Exception as e:
-                logger.error("Failed to save config key %s: %s", key_path, e)
+            except Exception as exc:
+                logger.error(
+                    "Failed to save config key %s (error=%s)",
+                    key_path,
+                    type(exc).__name__,
+                )
                 return False
 
         if not args or args == "status":
-            status = t("gateway.fast.status_fast") if self._service_tier == "priority" else t("gateway.fast.status_normal")
-            return t("gateway.fast.status", mode=status)
+            if persisted_preference and preference_unavailable:
+                return t(
+                    "gateway.fast.preference_unavailable",
+                    route=route,
+                )
+            if not capability.supported:
+                key = (
+                    "gateway.fast.preference_off"
+                    if persisted_preference
+                    else "gateway.fast.route_off"
+                )
+                return t(key, reason=capability.reason)
+            state = t(
+                "gateway.fast.state_on"
+                if self._service_tier == "priority"
+                else "gateway.fast.state_off"
+            )
+            family_label = t(f"gateway.fast.family_{capability.family}")
+            return t(
+                "gateway.fast.preference_status"
+                if persisted_preference
+                else "gateway.fast.route_status",
+                state=state,
+                family=family_label,
+                route=route,
+            )
 
         if args in {"fast", "on"}:
+            if persisted_preference and preference_unavailable:
+                return t(
+                    "gateway.fast.preference_unavailable",
+                    route=route,
+                )
+            if not capability.supported:
+                return t("gateway.fast.route_unavailable", reason=capability.reason)
             self._service_tier = "priority"
             saved_value = "fast"
             label = t("gateway.fast.label_fast")
@@ -3188,9 +3456,12 @@ class GatewaySlashCommandsMixin:
         else:
             return t("gateway.fast.unknown_arg", arg=args)
 
+        family_label = t(f"gateway.fast.family_{capability.family}")
         if _save_config_key("agent.service_tier", saved_value):
-            return t("gateway.fast.saved", label=label)
-        return t("gateway.fast.session_only", label=label)
+            return t("gateway.fast.route_saved", family=family_label, label=label)
+        return t(
+            "gateway.fast.route_session_only", family=family_label, label=label
+        )
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""

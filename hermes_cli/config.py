@@ -975,6 +975,12 @@ def _ensure_hermes_home_managed(home: Path):
 
 DEFAULT_CONFIG = {
     "model": "",
+    "session_reset": {
+        # Manual /new and /reset rotate transcript identity while retaining
+        # deliberate session /model and /reasoning choices. Runtime-read by
+        # the gateway so setting false restores legacy clearing immediately.
+        "preserve_route_preferences_on_manual_reset": True,
+    },
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},

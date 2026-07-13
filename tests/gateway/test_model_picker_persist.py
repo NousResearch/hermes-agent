@@ -201,3 +201,20 @@ async def test_picker_tap_session_flag_does_not_persist(tmp_path, monkeypatch):
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert written["model"]["default"] == "old-model"
     assert written["model"]["provider"] == "openai-codex"
+
+
+@pytest.mark.asyncio
+async def test_picker_confirmation_exercises_fast_status_row(tmp_path, monkeypatch):
+    """A successful interactive switch builds its fast-status confirmation."""
+    adapter = _FakePickerAdapter()
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openai-codex"},
+    )
+    runner = _make_runner(adapter)
+    runner._fast_unavailable_model_switch_row = lambda result: "fast-status-row"
+
+    confirmation = await _drive_picker(runner, _make_event("/model --session"))
+
+    assert "fast-status-row" in confirmation

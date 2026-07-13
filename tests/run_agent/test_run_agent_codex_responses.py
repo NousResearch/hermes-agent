@@ -761,6 +761,43 @@ def test_run_codex_stream_parses_create_stream_events(monkeypatch):
     assert response.status == "completed"
 
 
+def test_chatgpt_codex_fast_reaches_actual_outbound_request(monkeypatch):
+    """Transport boundary: Codex Fast survives through responses.create()."""
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.5",
+        provider="openai-codex",
+        api_mode="codex_responses",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        request_overrides={"service_tier": "fast"},
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _FakeCreateStream(
+            [
+                SimpleNamespace(type="response.created"),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(status="completed"),
+                ),
+            ]
+        )
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+    outbound = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+    agent._run_codex_stream(outbound)
+
+    assert captured["service_tier"] == "fast"
+    assert captured["stream"] is True
+
+
 def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatch):
     """Regression: Codex may send response.completed.response.output=null.
 

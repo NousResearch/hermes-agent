@@ -300,8 +300,7 @@ class ResponsesApiTransport(ProviderTransport):
         # supported: service_tier") — hit when ``/fast`` priority-processing
         # mode lingers from a prior model in the same session, or when a
         # user explicitly sets ``agent.service_tier`` in config.yaml.  The
-        # main-loop guard (``resolve_fast_mode_overrides`` only returns
-        # ``service_tier`` for OpenAI fast-eligible models) doesn't cover
+        # route-aware main-loop capability guard doesn't cover
         # those leak paths, so strip defensively when targeting xAI.  See
         # #28490 for the original report.
         if is_xai_responses:

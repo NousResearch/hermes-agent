@@ -1,4 +1,4 @@
-"""Tests that /new (and its /reset alias) clears session-scoped overrides."""
+"""Tests that manual /new and /reset preserve deliberate route preferences."""
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -52,8 +52,34 @@ def _make_runner():
     )
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = session_entry
-    runner.session_store.reset_session.return_value = session_entry
     runner.session_store._entries = {session_key: session_entry}
+    runner.session_store.entry_for.side_effect = runner.session_store._entries.get
+    runner.session_store.get_model_override.return_value = None
+
+    def _reset(key, *, preserve_route_preferences=False, **_kwargs):
+        old = runner.session_store._entries[key]
+        fresh = SessionEntry(
+            session_key=key,
+            session_id="sess-2",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=old.platform,
+            chat_type=old.chat_type,
+            model_override_identity=(
+                dict(old.model_override_identity)
+                if preserve_route_preferences and old.model_override_identity
+                else None
+            ),
+            reasoning_override=(
+                dict(old.reasoning_override)
+                if preserve_route_preferences and old.reasoning_override
+                else None
+            ),
+        )
+        runner.session_store._entries[key] = fresh
+        return fresh
+
+    runner.session_store.reset_session.side_effect = _reset
     runner.session_store._generate_session_key.return_value = session_key
     runner._running_agents = {}
     runner._pending_messages = {}
@@ -62,13 +88,16 @@ def _make_runner():
     runner._agent_cache_lock = None  # disables _evict_cached_agent lock path
     runner._is_user_authorized = lambda _source: True
     runner._format_session_info = lambda: ""
+    runner._reresolve_model_override_credentials = lambda identity: {
+        **identity,
+        "api_key": "fresh-key",
+    }
 
     return runner
 
 
 @pytest.mark.asyncio
-async def test_new_command_clears_session_model_override():
-    """/new must remove the session-scoped model override for that session."""
+async def test_new_command_preserves_session_route_preferences():
     runner = _make_runner()
     session_key = build_session_key(_make_source())
 
@@ -81,12 +110,22 @@ async def test_new_command_clears_session_model_override():
         "api_mode": "openai",
     }
     runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
+    entry = runner.session_store._entries[session_key]
+    entry.model_override_identity = {
+        "model": "gpt-4o",
+        "provider": "openai",
+        "api_mode": "codex_responses",
+    }
+    entry.reasoning_override = {"enabled": True, "effort": "high"}
     runner._pending_model_notes[session_key] = "[Note: switched to gpt-4o.]"
 
     await runner._handle_reset_command(_make_event("/new"))
 
-    assert session_key not in runner._session_model_overrides
-    assert session_key not in runner._session_reasoning_overrides
+    assert runner._session_model_overrides[session_key]["model"] == "gpt-4o"
+    assert runner._session_reasoning_overrides[session_key] == {
+        "enabled": True,
+        "effort": "high",
+    }
     assert session_key not in runner._pending_model_notes
 
 
@@ -106,8 +145,7 @@ async def test_new_command_no_override_is_noop():
 
 
 @pytest.mark.asyncio
-async def test_new_command_only_clears_own_session():
-    """/new must only clear the override for the session that triggered it."""
+async def test_new_command_only_rotates_own_session_preferences():
     runner = _make_runner()
     session_key = build_session_key(_make_source())
     other_key = "other_session_key"
@@ -128,14 +166,21 @@ async def test_new_command_only_clears_own_session():
     }
     runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
     runner._session_reasoning_overrides[other_key] = {"enabled": True, "effort": "low"}
+    entry = runner.session_store._entries[session_key]
+    entry.model_override_identity = {
+        "model": "gpt-4o",
+        "provider": "openai",
+        "api_mode": "codex_responses",
+    }
+    entry.reasoning_override = {"enabled": True, "effort": "high"}
     runner._pending_model_notes[session_key] = "[Note: switched to gpt-4o.]"
     runner._pending_model_notes[other_key] = "[Note: switched to claude-sonnet-4-6.]"
 
     await runner._handle_reset_command(_make_event("/new"))
 
-    assert session_key not in runner._session_model_overrides
+    assert runner._session_model_overrides[session_key]["model"] == "gpt-4o"
     assert other_key in runner._session_model_overrides
-    assert session_key not in runner._session_reasoning_overrides
+    assert runner._session_reasoning_overrides[session_key]["effort"] == "high"
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes

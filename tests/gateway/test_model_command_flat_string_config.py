@@ -13,11 +13,14 @@ the proper ``model: {default: ..., provider: ...}`` form.
 
 import yaml
 import pytest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from gateway.config import GatewayConfig
+from gateway.session import SessionSource, SessionStore
 
 
 def _make_runner():
@@ -199,6 +202,176 @@ async def test_model_session_flag_does_not_persist(tmp_path, monkeypatch):
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     # Config untouched — the session override is in-memory only.
     assert written["model"]["default"] == "old-model"
+
+
+@pytest.mark.asyncio
+async def test_model_reset_clears_session_override_without_switching_global(
+    tmp_path, monkeypatch
+):
+    cfg_path = _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "global-model", "provider": "openai-api"},
+    )
+    runner = _make_runner()
+    event = _make_event("/model reset")
+    session_key = runner._session_key_for_source(event.source)
+    runner._session_model_overrides[session_key] = {
+        "model": "session-model",
+        "provider": "openai-codex",
+        "api_mode": "codex_responses",
+        "api_key": "runtime-only",
+    }
+
+    result = await runner._handle_model_command(event)
+
+    assert session_key not in runner._session_model_overrides
+    assert "cleared" in result.lower()
+    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert written["model"]["default"] == "global-model"
+    assert written["model"]["provider"] == "openai-api"
+
+
+@pytest.mark.asyncio
+async def test_model_reset_persistence_failure_never_claims_success(
+    tmp_path, monkeypatch
+):
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "global-model", "provider": "openai-api"},
+    )
+    runner = _make_runner()
+    event = _make_event("/model reset")
+    session_key = runner._session_key_for_source(event.source)
+    original = {
+        "model": "session-model",
+        "provider": "openai-codex",
+        "api_mode": "codex_responses",
+        "api_key": "runtime-only",
+    }
+    runner._session_model_overrides[session_key] = dict(original)
+    runner.session_store = SimpleNamespace(
+        clear_model_route_override=MagicMock(
+            side_effect=OSError("atomic route save failed")
+        )
+    )
+
+    result = await runner._handle_model_command(event)
+
+    assert "was not cleared" in result
+    assert "No route change was made" in result
+    assert "cleared; using" not in result
+    assert runner._session_model_overrides[session_key] == original
+
+
+@pytest.mark.asyncio
+async def test_model_reset_db_commit_survives_json_mirror_failure(
+    tmp_path, monkeypatch, caplog
+):
+    from hermes_state import SessionDB
+
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "global-model", "provider": "openai-api"},
+    )
+    db = SessionDB(tmp_path / "state.db")
+    monkeypatch.setattr("hermes_state.SessionDB", lambda: db)
+    sessions_dir = tmp_path / "gateway-sessions"
+    store = SessionStore(sessions_dir, GatewayConfig())
+    runner = _make_runner()
+    event = _make_event("/model reset")
+    entry = store.get_or_create_session(event.source)
+    identity = {
+        "model": "session-model",
+        "provider": "openai-codex",
+        "api_mode": "codex_responses",
+    }
+    with store._lock:
+        entry.model_override_identity = dict(identity)
+        entry.model_override = dict(identity)
+        store._save()
+    runner.session_store = store
+    runner._session_model_overrides[entry.session_key] = {
+        **identity,
+        "api_key": "runtime-only",
+    }
+    monkeypatch.setattr(
+        store,
+        "_save_sessions_json",
+        MagicMock(side_effect=OSError("mirror is read-only")),
+    )
+
+    result = await runner._handle_model_command(event)
+
+    assert "cleared; using" in result
+    assert entry.session_key not in runner._session_model_overrides
+    assert entry.model_override_identity is None
+    assert entry.model_override is None
+    assert "after state.db commit" in caplog.text
+
+    restarted = SessionStore(sessions_dir, GatewayConfig())
+    restarted._ensure_loaded()
+    durable = restarted.entry_for(entry.session_key)
+    assert durable.model_override_identity is None
+    assert durable.model_override is None
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_model_reset_db_failure_rolls_back_memory_and_reports_failure(
+    tmp_path, monkeypatch
+):
+    from hermes_state import SessionDB
+
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "global-model", "provider": "openai-api"},
+    )
+    db = SessionDB(tmp_path / "state.db")
+    monkeypatch.setattr("hermes_state.SessionDB", lambda: db)
+    sessions_dir = tmp_path / "gateway-sessions"
+    store = SessionStore(sessions_dir, GatewayConfig())
+    runner = _make_runner()
+    event = _make_event("/model reset")
+    entry = store.get_or_create_session(event.source)
+    identity = {
+        "model": "session-model",
+        "provider": "openai-codex",
+        "api_mode": "codex_responses",
+    }
+    with store._lock:
+        entry.model_override_identity = dict(identity)
+        entry.model_override = dict(identity)
+        store._save()
+    runtime = {**identity, "api_key": "runtime-only"}
+    runner.session_store = store
+    runner._session_model_overrides[entry.session_key] = dict(runtime)
+    monkeypatch.setattr(
+        store._db,
+        "replace_gateway_routing_entries",
+        MagicMock(side_effect=OSError("primary commit failed")),
+    )
+
+    result = await runner._handle_model_command(event)
+
+    assert "was not cleared" in result
+    assert "No route change was made" in result
+    assert runner._session_model_overrides[entry.session_key] == runtime
+    assert entry.model_override_identity == identity
+    assert entry.model_override == identity
+
+    restarted = SessionStore(sessions_dir, GatewayConfig())
+    restarted._ensure_loaded()
+    durable = restarted.entry_for(entry.session_key)
+    assert durable.model_override_identity == identity
+    assert durable.model_override == {
+        "model": identity["model"],
+        "provider": identity["provider"],
+    }
+    db.close()
 
 
 @pytest.mark.asyncio

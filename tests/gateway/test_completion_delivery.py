@@ -175,8 +175,8 @@ def test_failed_async_injection_is_retried_and_only_success_is_acked(
     acknowledgements = []
     monkeypatch.setattr(
         async_delegation,
-        "mark_completion_delivered",
-        lambda delegation_id: acknowledgements.append(delegation_id) or True,
+        "complete_completion_delivery",
+        lambda delegation_id, _claim_id: acknowledgements.append(delegation_id) or True,
         raising=False,
     )
 

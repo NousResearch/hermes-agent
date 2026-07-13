@@ -3676,6 +3676,13 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
         try:
             return future.result(timeout=wait_timeout)
         except concurrent.futures.TimeoutError:
+            # On supported Python versions, concurrent.futures.TimeoutError
+            # aliases the built-in TimeoutError, so result(timeout=...) also
+            # raises it for a coroutine's own timeout.
+            # Resolve a done future without a timeout to propagate its stored
+            # outcome, including completion racing with this polling timeout.
+            if future.done():
+                return future.result()
             continue
 
 

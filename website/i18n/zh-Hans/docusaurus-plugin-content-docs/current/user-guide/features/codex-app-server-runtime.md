@@ -5,7 +5,7 @@ sidebar_label: Codex App-Server 运行时
 
 # Codex App-Server 运行时
 
-Hermes 可以选择将 `openai/*` 和 `openai-codex/*` 的轮次交由 [Codex CLI app-server](https://github.com/openai/codex) 处理，而不是运行自己的工具循环。启用后，终端命令、文件编辑、沙箱隔离以及 MCP 工具调用均在 Codex 的运行时内执行——Hermes 成为其外层 shell（会话数据库、斜杠命令、gateway、记忆与技能审查）。
+Hermes 可以选择将 `openai/*` 和 `openai-codex/*` 的轮次交由 [Codex CLI app-server](https://github.com/openai/codex) 处理，而不是运行自己的工具循环。启用后，终端命令、文件编辑、沙箱隔离以及 MCP 工具调用均在 Codex 的运行时内执行——Hermes 仍是其外层 shell，负责会话、恢复的历史记录、组装后的开发者上下文、记忆/插件召回、斜杠命令、gateway 集成以及受控的有状态工具。
 
 此功能**仅限手动启用**。除非你主动切换该标志，否则 Hermes 的默认行为不变。Hermes 不会自动将你路由到此运行时。
 
@@ -15,11 +15,13 @@ Hermes 可以选择将 `openai/*` 和 `openai-codex/*` 的轮次交由 [Codex CL
 - 使用 **Codex 自带的工具集和沙箱**——`shell` 用于终端/读/写/搜索，`apply_patch` 用于结构化编辑，`update_plan` 用于规划，全部在 seatbelt/landlock 沙箱内运行。
 - **原生 Codex 插件**——Linear、GitHub、Gmail、Calendar、Canva 等——通过 `codex plugin` 安装后，会自动迁移并在你的 Hermes 会话中激活。
 - **Hermes 的丰富工具一并可用**——web_search、web_extract、浏览器自动化、视觉、图像生成、技能和 TTS 通过 MCP 回调提供。Codex 会回调 Hermes 获取其自身没有内置的工具。
+- **Hermes 上下文和恢复的会话会继续生效**——当前 Hermes 配置文件组装的开发者指令、先前的用户/助手历史以及当前的记忆/插件召回都会桥接到 Codex 线程，同时不会把临时召回重复写入持久历史。
+- **Hermes 有状态工具仍然可用**——活跃的 `memory`、`session_search`、`todo` 和 `delegate_task` 通过 Codex 动态工具协议暴露，并由实时 AIAgent 执行，而不是交给无状态子进程。
 - **记忆与技能提示持续生效**——Codex 的事件被投影为 Hermes 的消息格式，使自我改进循环看到正常的对话记录。
 
 ## 模型实际拥有哪些工具
 
-这是大多数用户最想提前了解的部分。当此运行时开启时，执行你的轮次的模型拥有三个独立的工具来源：
+这是大多数用户最想提前了解的部分。当此运行时开启时，执行你的轮次的模型拥有四个独立的工具来源：
 
 ### 1. Codex 内置工具集（始终开启）
 
@@ -64,14 +66,16 @@ Hermes 将自身注册为 MCP server，以便 Codex 能够回调获取 Codex 自
 
 当模型需要其中某个工具时，Codex 通过 stdio MCP 生成 `hermes_tools_mcp_server` 子进程，调用通过 `model_tools.handle_function_call()` 分发（与 Hermes 默认运行时的代码路径相同），结果像其他 MCP 响应一样返回给 Codex。
 
-### 此运行时上不可用的工具
+### 4. 实时 Hermes 有状态工具（Codex 动态工具）
 
-以下四个 Hermes 工具需要运行中的 AIAgent 上下文（循环中间状态）才能分发，无状态的 MCP 回调无法驱动它们。需要这些工具时，请切换回默认运行时（`/codex-runtime auto`）：
+需要运行中 AIAgent 的有状态工具不能通过无状态 MCP 回调执行。Hermes 会改为仅在 Codex 的 `hermes` 动态工具命名空间下发布当前活跃且在允许列表中的定义，并通过当前 AIAgent 分发每次调用：
 
-- **`delegate_task`** — 生成子 agent
-- **`memory`** — Hermes 的持久记忆存储
-- **`session_search`** — 跨会话搜索
-- **`todo`** — Hermes 的待办存储（Codex 的 `update_plan` 是运行时内的等效工具）
+- **`delegate_task`** — 使用当前任务/会话上下文生成子 agent
+- **`memory`** — 读取或更新 Hermes 的持久记忆存储
+- **`session_search`** — 搜索已恢复及先前的 Hermes 会话
+- **`todo`** — 使用 Hermes 的持久待办存储；Codex 内置的 `update_plan` 仍作为独立的线程内计划工具可用
+
+可用性遵循 agent 当前的工具配置：已禁用或不可用的工具不会发布给 Codex。调用会保留 Hermes 现有的中间件、guardrail、存储、任务身份和委派行为。
 
 ## 工作流功能（`/goal`、kanban、cron）
 
@@ -99,14 +103,14 @@ Kanban 工具通过分发器设置的 `HERMES_KANBAN_TASK` 环境变量进行访
 
 ### Cron 任务
 
-**尚未经过专项测试。** Cron 任务通过 `cronjob` → `AIAgent.run_conversation` 运行，与 CLI 的代码路径相同。如果 cron 任务的配置中有 `openai_runtime: codex_app_server`，它将在 Codex 上运行。相同的工具可用性规则适用——Codex 内置工具 + 插件 + MCP 回调可用，agent 循环工具（delegate_task、memory、session_search、todo）不可用。如果你的 cron 任务依赖这些工具，请将 cron 限定在使用默认运行时的配置文件中。
+**尚未经过专项测试。** Cron 任务通过 `cronjob` → `AIAgent.run_conversation` 运行，与 CLI 的代码路径相同。如果 cron 任务的配置中有 `openai_runtime: codex_app_server`，它将在 Codex 上运行。Codex 内置工具、插件、MCP 回调以及活跃且在允许列表中的有状态工具，都遵循该 cron agent 配置的工具可用性。
 
 ## 权衡对比
 
 |  | Hermes 默认运行时 | Codex app-server（可选启用） |
 |---|---|---|
-| `delegate_task` 子 agent | 是 | 不可用——需要 agent 循环上下文 |
-| `memory`、`session_search`、`todo` | 是 | 不可用——需要 agent 循环上下文 |
+| `delegate_task` 子 agent | 是 | 是（实时动态工具桥，启用时） |
+| `memory`、`session_search`、`todo` | 是 | 是（实时动态工具桥，启用时） |
 | `web_search`、`web_extract` | 是 | 是（通过 MCP 回调） |
 | 浏览器自动化（Camofox/Browserbase） | 是 | 是（通过 MCP 回调） |
 | `vision_analyze`、`image_generate` | 是 | 是（通过 MCP 回调） |
@@ -359,7 +363,13 @@ tool_timeout_sec = 600.0
 
 **通过回调可用的工具：** `web_search`、`web_extract`、`browser_navigate`、`browser_click`、`browser_type`、`browser_press`、`browser_snapshot`、`browser_scroll`、`browser_back`、`browser_get_images`、`browser_console`、`browser_vision`、`vision_analyze`、`image_generate`、`skill_view`、`skills_list`、`text_to_speech`。
 
-**不可用的工具：** `delegate_task`、`memory`、`session_search`、`todo`。这些工具需要运行中的 AIAgent 上下文（循环中间状态）才能分发，无状态的 MCP 回调无法驱动它们。需要这些工具时，请使用默认 Hermes 运行时（`/codex-runtime auto`）。
+MCP 回调会有意保持无状态。因此，`delegate_task`、`memory`、`session_search` 和 `todo` 不通过这个子进程，而是使用下述实时动态工具桥。
+
+## 实时 Hermes 上下文与有状态工具桥
+
+对于新的 Codex 线程，Hermes 会发送当前配置文件组装后的开发者上下文。恢复 Hermes 会话时，先前的用户/助手消息通过 `thread/inject_items` 重放。当前外部记忆和插件召回仅附加到当前轮次，因此不会成为重复的持久用户历史。
+
+Hermes 还通过 Codex 的 `dynamicTools` 能力传递活跃且在允许列表中的 `memory`、`session_search`、`todo` 和 `delegate_task` 定义。经过关联校验的 `item/tool/call` 会路由回实时父 `AIAgent._invoke_tool` 路径，保留当前任务/会话上下文、存储、中间件、guardrail 和委派语义。格式错误、未激活或执行失败的调用会作为失败工具结果返回给 Codex，而不会终止轮次。
 
 ## 禁用
 
@@ -383,11 +393,11 @@ tool_timeout_sec = 600.0
 - 开关切换循环
 - 记忆和技能提示计数器（已通过集成测试实时验证）
 - 通过 Codex 使用 Hermes web_search（已实时验证："OpenAI Codex CLI – Getting Started" 端到端返回结果）
+- Hermes 开发者上下文、恢复的历史、临时召回以及实时有状态动态工具
 
 已知限制：
 
 - **Hermes 认证和 Codex 认证是独立的会话。** 为获得最佳体验，你需要同时运行 `codex login` 和 `hermes auth login codex`（运行时使用 Codex 的会话进行 LLM 调用）。这是 Hermes `_import_codex_cli_tokens` 中的有意设计——Hermes 不会与 Codex CLI 共享 OAuth 状态，以避免在 token 刷新时相互覆盖。
-- **`delegate_task`、`memory`、`session_search`、`todo` 在此运行时上不可用。** 它们需要运行中的 AIAgent 上下文，无状态的 MCP 回调无法提供。需要这些工具时，请使用 `/codex-runtime auto`。
 - **当 Codex 未跟踪变更集时，审批提示中没有内联 patch 预览。** Codex 的 `fileChange` 审批参数并不总是携带变更集。Hermes 会尽可能从对应的 `item/started` 通知中缓存数据，但如果审批在事件项流式传输完成之前到达，提示会回退到 Codex 提供的 `reason`。
 - **亚秒级取消无法保证。** 流式传输中途的中断（Codex 响应时按 Ctrl+C）通过 `turn/interrupt` 发送，但如果 Codex 已经刷新了最终消息，你仍会收到该响应。
 
@@ -397,8 +407,8 @@ tool_timeout_sec = 600.0
 
 ```
                 ┌─── Hermes shell (CLI / TUI / gateway) ───┐
-                │  sessions DB · slash commands · memory   │
-                │  & skill review · cron · session pickers │
+                │ sessions · context/history · slash cmds  │
+                │ stateful tools · reviews · cron · gateway│
                 └──┬──────────────────────────────────────┬┘
                    │ user_message               final     │
                    ▼                            text +    │
@@ -408,12 +418,13 @@ tool_timeout_sec = 600.0
         │     → CodexAppServerSession       │              │
         │   else: chat_completions / codex_responses (default)
         └────┬─────────────────────────────┘              │
-             │ JSON-RPC over stdio                        │
+             │ developer context + history + turn input   │
+             │ + dynamicTools over JSON-RPC/stdio         │
              ▼                                            │
         ┌──────────────────────────────────┐              │
         │  codex app-server (subprocess)    │──────────────┘
         │   thread/start, turn/start        │
-        │   item/* notifications            │
+        │   item/* notifications + tool/call │
         │   shell + apply_patch + update_plan│
         │   view_image + sandbox            │
         │   ┌─────────────────────────┐     │
@@ -438,4 +449,4 @@ tool_timeout_sec = 600.0
         └──────────────────────────────────────────────────────────┘
 ```
 
-有关实现细节，请参阅 [PR #24182](https://github.com/NousResearch/hermes-agent/pull/24182) 和 [Codex app-server 协议 README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)。
+有状态的 `hermes.*` 动态调用会直接返回实时 AIAgent，而不是 MCP 子进程。有关实现细节，请参阅 `agent/codex_bridge.py`、`agent/transports/codex_app_server_session.py`、[PR #24182](https://github.com/NousResearch/hermes-agent/pull/24182) 和 [Codex app-server 协议 README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)。

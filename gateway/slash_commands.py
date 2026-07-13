@@ -2646,7 +2646,8 @@ class GatewaySlashCommandsMixin:
             /reasoning show|on               Show model reasoning in responses
             /reasoning hide|off              Hide model reasoning from responses
         """
-        from gateway.run import _hermes_home, _platform_config_key
+        from gateway.run import _hermes_home, _load_gateway_config, _platform_config_key
+        from gateway.display_config import resolve_display_setting
         import yaml
 
         raw_args = event.get_command_args().strip()
@@ -2657,7 +2658,19 @@ class GatewaySlashCommandsMixin:
         # reads — same fix as /model (#30479).
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(_reasoning_source)
-        self._show_reasoning = self._load_show_reasoning()
+        platform_key = _platform_config_key(_reasoning_source.platform)
+        try:
+            display_config = _load_gateway_config()
+        except Exception:
+            display_config = {}
+        self._show_reasoning = bool(
+            resolve_display_setting(
+                display_config,
+                platform_key,
+                "show_reasoning",
+                False,
+            )
+        )
         self._reasoning_config = self._resolve_session_reasoning_config(
             source=event.source,
             session_key=session_key,
@@ -2688,10 +2701,13 @@ class GatewaySlashCommandsMixin:
             rc = self._reasoning_config
             if rc is None:
                 level = t("gateway.reasoning.level_default")
+                picker_effort = "default"
             elif rc.get("enabled") is False:
                 level = t("gateway.reasoning.level_disabled")
+                picker_effort = "none"
             else:
                 level = rc.get("effort", "medium")
+                picker_effort = str(level)
             display_state = (
                 t("gateway.reasoning.display_on")
                 if self._show_reasoning
@@ -2703,6 +2719,55 @@ class GatewaySlashCommandsMixin:
                 if has_session_override
                 else t("gateway.reasoning.scope_global")
             )
+
+            adapter = self.adapters.get(_reasoning_source.platform)
+            send_picker = getattr(adapter, "send_reasoning_picker", None)
+            if _reasoning_source.chat_type == "dm" and callable(send_picker):
+                async def _on_reasoning_selected(_chat_id: str, selection: str) -> str:
+                    selected = str(selection or "").strip().lower()
+                    if selected in {"show", "on"}:
+                        self._show_reasoning = True
+                        _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
+                        return t("gateway.reasoning.display_set_on", platform=platform_key)
+
+                    if selected in {"hide", "off"}:
+                        self._show_reasoning = False
+                        _save_config_key(f"display.platforms.{platform_key}.show_reasoning", False)
+                        return t("gateway.reasoning.display_set_off", platform=platform_key)
+
+                    if selected == "reset":
+                        self._set_session_reasoning_override(session_key, None)
+                        self._reasoning_config = self._load_reasoning_config()
+                        self._evict_cached_agent(session_key)
+                        return t("gateway.reasoning.reset_done")
+
+                    if selected == "none":
+                        parsed = {"enabled": False}
+                    elif selected in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
+                        parsed = {"enabled": True, "effort": selected}
+                    else:
+                        return t("gateway.reasoning.unknown_arg", arg=selected)
+
+                    self._reasoning_config = parsed
+                    self._set_session_reasoning_override(session_key, parsed)
+                    self._evict_cached_agent(session_key)
+                    return t("gateway.reasoning.set_session", effort=selected)
+
+                metadata = self._thread_metadata_for_source(
+                    _reasoning_source,
+                    self._reply_anchor_for_event(event),
+                )
+                result = await send_picker(
+                    chat_id=_reasoning_source.chat_id,
+                    current_effort=picker_effort,
+                    display_enabled=bool(self._show_reasoning),
+                    session_key=session_key,
+                    on_reasoning_selected=_on_reasoning_selected,
+                    metadata=metadata,
+                )
+                if result.success:
+                    return None
+
             return t(
                 "gateway.reasoning.status",
                 level=level,
@@ -2711,7 +2776,6 @@ class GatewaySlashCommandsMixin:
             )
 
         # Display toggle (per-platform)
-        platform_key = _platform_config_key(event.source.platform)
         if args in {"show", "on"}:
             self._show_reasoning = True
             _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
@@ -2893,6 +2957,48 @@ class GatewaySlashCommandsMixin:
             except Exception as e:
                 logger.error("Failed to save config key %s: %s", key_path, e)
                 return False
+
+        if not args:
+            adapter = self.adapters.get(event.source.platform)
+            send_picker = getattr(adapter, "send_fast_picker", None)
+            if event.source.chat_type == "dm" and callable(send_picker):
+                source = await asyncio.to_thread(
+                    self._normalize_source_for_session_key,
+                    event.source,
+                )
+                session_key = self._session_key_for_source(source)
+                current_mode = "fast" if self._service_tier == "priority" else "normal"
+
+                async def _on_fast_selected(_chat_id: str, selection: str) -> str:
+                    selected = str(selection or "").strip().lower()
+                    if selected in {"fast", "on"}:
+                        self._service_tier = "priority"
+                        saved_value = "fast"
+                        label = t("gateway.fast.label_fast")
+                    elif selected in {"normal", "off"}:
+                        self._service_tier = None
+                        saved_value = "normal"
+                        label = t("gateway.fast.label_normal")
+                    else:
+                        return t("gateway.fast.unknown_arg", arg=selected)
+
+                    if _save_config_key("agent.service_tier", saved_value):
+                        return t("gateway.fast.saved", label=label)
+                    return t("gateway.fast.session_only", label=label)
+
+                metadata = self._thread_metadata_for_source(
+                    source,
+                    self._reply_anchor_for_event(event),
+                )
+                result = await send_picker(
+                    chat_id=source.chat_id,
+                    current_mode=current_mode,
+                    session_key=session_key,
+                    on_fast_selected=_on_fast_selected,
+                    metadata=metadata,
+                )
+                if result.success:
+                    return None
 
         if not args or args == "status":
             status = t("gateway.fast.status_fast") if self._service_tier == "priority" else t("gateway.fast.status_normal")

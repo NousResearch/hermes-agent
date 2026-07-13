@@ -1046,6 +1046,13 @@ gateway:
 如果你知道确切的模型名称，直接输入 `/model <name>` 跳过选择器。你也可以输入 `/model <name> --global` 跨会话持久化更改。
 :::
 
+## 交互式推理与快速模式选择器
+
+在 Telegram 私聊中，不带参数发送 `/reasoning` 或 `/fast` 会打开内联键盘。
+推理强度默认为当前会话生效（除非使用 `--global`），快速模式则作用于整个
+gateway。若要直接设置，也可以继续使用 `/reasoning high --global`、
+`/fast normal` 等带参数命令。
+
 ## DNS-over-HTTPS 备用 IP
 
 在某些受限网络中，`api.telegram.org` 可能解析到无法访问的 IP。Telegram 适配器包含一个**备用 IP** 机制，在保留正确 TLS 主机名和 SNI 的同时，透明地对备用 IP 重试连接。

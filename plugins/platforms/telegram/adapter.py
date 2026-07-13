@@ -16,6 +16,7 @@ import os
 import html as _html
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -450,6 +451,8 @@ class TelegramAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
+    _SETTINGS_PICKER_TTL_SECONDS = 10 * 60
+    _SETTINGS_PICKER_MAX_ENTRIES = 128
 
     # Telegram's edit_message applies MarkdownV2 formatting only on the
     # finalize=True path.  Without this flag, stream_consumer._send_or_edit
@@ -643,6 +646,11 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
+        # Interactive /reasoning and /fast picker state per message. A chat can
+        # have multiple DM topics, so chat_id alone would let one topic's picker
+        # overwrite another's state.
+        self._reasoning_picker_state: Dict[tuple[str, int], dict] = {}
+        self._fast_picker_state: Dict[tuple[str, int], dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -4773,6 +4781,174 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    def _prune_settings_picker_state(
+        self,
+        state: Dict[tuple[str, int], dict],
+        *,
+        session_key: str,
+    ) -> None:
+        """Expire abandoned pickers and keep one active picker per session."""
+        now = time.monotonic()
+        stale_keys = [
+            key
+            for key, item in state.items()
+            if item.get("session_key") == session_key
+            or now - float(item.get("created_at", 0.0)) >= self._SETTINGS_PICKER_TTL_SECONDS
+        ]
+        for key in stale_keys:
+            state.pop(key, None)
+
+        overflow = len(state) - self._SETTINGS_PICKER_MAX_ENTRIES + 1
+        if overflow > 0:
+            oldest = sorted(
+                state,
+                key=lambda key: float(state[key].get("created_at", 0.0)),
+            )[:overflow]
+            for key in oldest:
+                state.pop(key, None)
+
+    async def send_reasoning_picker(
+        self,
+        chat_id: str,
+        current_effort: str,
+        display_enabled: bool,
+        session_key: str,
+        on_reasoning_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an inline-keyboard picker for /reasoning settings."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            effort = str(current_effort or "default")
+            display = "shown" if display_enabled else "hidden"
+            text = self.format_message(
+                (
+                    "🧠 *Reasoning Settings*\n\n"
+                    f"Current effort: `{effort}`\n"
+                    f"Reasoning display: `{display}`\n\n"
+                    "Effort buttons update this chat session; display buttons update Telegram. "
+                    "Use `/reasoning <level> --global` to persist effort globally."
+                )
+            )
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("None", callback_data="rp:none"),
+                    InlineKeyboardButton("Minimal", callback_data="rp:minimal"),
+                    InlineKeyboardButton("Low", callback_data="rp:low"),
+                ],
+                [
+                    InlineKeyboardButton("Medium", callback_data="rp:medium"),
+                    InlineKeyboardButton("High", callback_data="rp:high"),
+                    InlineKeyboardButton("XHigh", callback_data="rp:xhigh"),
+                ],
+                [
+                    InlineKeyboardButton("Max", callback_data="rp:max"),
+                    InlineKeyboardButton("Ultra", callback_data="rp:ultra"),
+                ],
+                [
+                    InlineKeyboardButton("Show reasoning", callback_data="rp:show"),
+                    InlineKeyboardButton("Hide reasoning", callback_data="rp:hide"),
+                ],
+                [
+                    InlineKeyboardButton("Reset session", callback_data="rp:reset"),
+                    InlineKeyboardButton("✗ Cancel", callback_data="rp:cancel"),
+                ],
+            ])
+            thread_id = metadata.get("thread_id") if metadata else None
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                ),
+                **self._link_preview_kwargs(),
+            )
+            self._prune_settings_picker_state(
+                self._reasoning_picker_state,
+                session_key=session_key,
+            )
+            self._reasoning_picker_state[(str(chat_id), int(msg.message_id))] = {
+                "msg_id": msg.message_id,
+                "session_key": session_key,
+                "on_reasoning_selected": on_reasoning_selected,
+                "created_at": time.monotonic(),
+            }
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_reasoning_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_fast_picker(
+        self,
+        chat_id: str,
+        current_mode: str,
+        session_key: str,
+        on_fast_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an inline-keyboard picker for /fast mode."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            mode = str(current_mode or "normal")
+            text = self.format_message(
+                (
+                    "⚡ *Fast Mode*\n\n"
+                    f"Current mode: `{mode}`\n\n"
+                    "Fast uses OpenAI Priority Processing / Anthropic Fast Mode "
+                    "when the current model supports it. This setting applies gateway-wide."
+                )
+            )
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Normal", callback_data="fp:normal"),
+                    InlineKeyboardButton("Fast", callback_data="fp:fast"),
+                ],
+                [InlineKeyboardButton("✗ Cancel", callback_data="fp:cancel")],
+            ])
+            thread_id = metadata.get("thread_id") if metadata else None
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                ),
+                **self._link_preview_kwargs(),
+            )
+            self._prune_settings_picker_state(
+                self._fast_picker_state,
+                session_key=session_key,
+            )
+            self._fast_picker_state[(str(chat_id), int(msg.message_id))] = {
+                "msg_id": msg.message_id,
+                "session_key": session_key,
+                "on_fast_selected": on_fast_selected,
+                "created_at": time.monotonic(),
+            }
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_fast_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -5295,6 +5471,112 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    async def _handle_reasoning_picker_callback(
+        self, query, data: str, chat_id: str
+    ) -> None:
+        """Handle /reasoning picker callbacks (rp:<selection>)."""
+        message_id = getattr(getattr(query, "message", None), "message_id", None)
+        if message_id is None:
+            await query.answer(text="Picker expired — use /reasoning again.")
+            return
+        state_key = (chat_id, int(message_id))
+        state = self._reasoning_picker_state.pop(state_key, None)
+        if not state:
+            await query.answer(text="Picker expired — use /reasoning again.")
+            return
+
+        selection = data.split(":", 1)[1] if ":" in data else ""
+        if selection == "cancel":
+            await query.edit_message_text(
+                text="Reasoning selection cancelled.",
+                reply_markup=None,
+            )
+            await query.answer()
+            return
+
+        callback = state.get("on_reasoning_selected")
+        if not callback:
+            await query.answer(text="Picker expired.")
+            return
+
+        try:
+            result_text = await callback(chat_id, selection)
+            failed = False
+        except Exception as exc:
+            logger.error("Reasoning picker update failed: %s", exc)
+            result_text = "Failed to update reasoning settings. Please try again."
+            failed = True
+
+        try:
+            await query.edit_message_text(
+                text=self.format_message(str(result_text)),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=None,
+            )
+        except Exception:
+            try:
+                await query.edit_message_text(
+                    text=str(result_text),
+                    parse_mode=None,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+        await query.answer(text="Update failed." if failed else "Reasoning updated!")
+
+    async def _handle_fast_picker_callback(
+        self, query, data: str, chat_id: str
+    ) -> None:
+        """Handle /fast picker callbacks (fp:<normal|fast>)."""
+        message_id = getattr(getattr(query, "message", None), "message_id", None)
+        if message_id is None:
+            await query.answer(text="Picker expired — use /fast again.")
+            return
+        state_key = (chat_id, int(message_id))
+        state = self._fast_picker_state.pop(state_key, None)
+        if not state:
+            await query.answer(text="Picker expired — use /fast again.")
+            return
+
+        selection = data.split(":", 1)[1] if ":" in data else ""
+        if selection == "cancel":
+            await query.edit_message_text(
+                text="Fast mode selection cancelled.",
+                reply_markup=None,
+            )
+            await query.answer()
+            return
+
+        callback = state.get("on_fast_selected")
+        if not callback:
+            await query.answer(text="Picker expired.")
+            return
+
+        try:
+            result_text = await callback(chat_id, selection)
+            failed = False
+        except Exception as exc:
+            logger.error("Fast picker update failed: %s", exc)
+            result_text = "Failed to update fast mode. Please try again."
+            failed = True
+
+        try:
+            await query.edit_message_text(
+                text=self.format_message(str(result_text)),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=None,
+            )
+        except Exception:
+            try:
+                await query.edit_message_text(
+                    text=str(result_text),
+                    parse_mode=None,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+        await query.answer(text="Update failed." if failed else "Fast mode updated!")
+
     async def _notify_clarify_expired(self, query, user_display: str) -> None:
         """Tell the user a clarify tap arrived too late to be delivered.
 
@@ -5334,6 +5616,19 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Reasoning/Fast settings picker callbacks ---
+        if data.startswith("rp:"):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_reasoning_picker_callback(query, data, chat_id)
+            return
+
+        if data.startswith("fp:"):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_fast_picker_callback(query, data, chat_id)
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):

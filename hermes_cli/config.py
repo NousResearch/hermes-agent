@@ -1255,6 +1255,15 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # Package manager used for LSP auto-installs.  Supported values:
+        #   "" (empty/auto) — detect the best available: pnpm > npm > yarn
+        #   "npm"            — always use npm
+        #   "pnpm"           — always use pnpm (inherits supply-chain policies)
+        #   "yarn"           — always use yarn
+        # When set to "pnpm" or "yarn", LSP installs inherit the user's
+        # supply-chain configuration (minimumReleaseAge, blockExoticSubdeps,
+        # etc.) instead of bypassing it via hardcoded npm.
+        "npm_command": "",
     },
 
     "web": {

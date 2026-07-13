@@ -233,36 +233,82 @@ def _do_install(pkg: str) -> Optional[str]:
     return None
 
 
+def _resolve_npm_command() -> Optional[str]:
+    """Resolve which npm-compatible package manager to use for LSP installs.
+
+    Reads ``terminal.npmCommand`` from config.yaml.  Supported values:
+
+    - ``""`` (empty / default) — auto-detect: pnpm > npm > yarn
+    - ``"npm"``  — force npm
+    - ``"pnpm"`` — force pnpm (inherits supply-chain policies)
+    - ``"yarn"`` — force yarn
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        npm_cmd = (cfg.get("terminal") or {}).get("npm_command", "")
+    except Exception:
+        npm_cmd = ""
+
+    npm_cmd = str(npm_cmd).strip().lower()
+
+    if npm_cmd in ("npm", "pnpm", "yarn"):
+        resolved = shutil.which(npm_cmd)
+        if resolved is not None:
+            return resolved
+        logger.info(
+            "[install] configured npm_command=%r not found on PATH, falling back",
+            npm_cmd,
+        )
+
+    # Auto-detect: prefer pnpm (supply-chain policies), then npm, then yarn.
+    for candidate in ("pnpm", "npm", "yarn"):
+        resolved = shutil.which(candidate)
+        if resolved is not None:
+            return resolved
+    return None
+
+
 def _install_npm(
     pkg: str,
     bin_name: str,
     extra_pkgs: Optional[list] = None,
 ) -> Optional[str]:
-    """Install an npm package into our staging dir.
+    """Install an npm-compatible package into our staging dir.
 
-    Uses ``npm install --prefix`` so the binaries land in
-    ``<staging>/node_modules/.bin/<bin_name>`` and we symlink them up
-    one level for direct PATH-style access.
+    Respects ``terminal.npmCommand`` in config.yaml to select between
+    npm, pnpm, and yarn.  When pnpm or yarn is selected, LSP installs
+    inherit the user's supply-chain configuration (minimumReleaseAge,
+    blockExoticSubdeps, etc.) instead of bypassing it.
+
+    Uses ``<pkg-manager> add --prefix <staging>`` so the binaries land
+    in ``<staging>/node_modules/.bin/<bin_name>`` and we symlink them
+    up one level for direct PATH-style access.
 
     ``extra_pkgs`` is a list of sibling packages to install in the
     same ``node_modules`` tree.  Used for LSP servers with runtime
     peer deps that npm doesn't auto-pull (typescript-language-server
     needs ``typescript`` next to it; intelephense ships standalone).
     """
-    npm = shutil.which("npm")
-    if npm is None:
-        logger.info("[install] cannot install %s: npm not on PATH", pkg)
+    pm = _resolve_npm_command()
+    if pm is None:
+        logger.info("[install] cannot install %s: no npm-compatible package manager found", pkg)
         return None
     staging = hermes_lsp_bin_dir().parent  # <HERMES_HOME>/lsp/
     install_targets = [pkg] + list(extra_pkgs or [])
+
+    # Build the argv for the selected package manager.
+    argv = _build_pm_argv(pm, staging, install_targets)
+
     try:
         logger.info(
-            "[install] npm install --prefix %s %s",
+            "[install] %s (in %s)",
+            " ".join(argv),
             staging,
-            " ".join(install_targets),
         )
         proc = subprocess.run(
-            [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets],
+            argv,
             check=False,
             capture_output=True,
             text=True,
@@ -271,11 +317,11 @@ def _install_npm(
         )
         if proc.returncode != 0:
             logger.warning(
-                "[install] npm install failed for %s: %s", pkg, proc.stderr.strip()[:500]
+                "[install] %s install failed for %s: %s", pm, pkg, proc.stderr.strip()[:500]
             )
             return None
     except (subprocess.TimeoutExpired, OSError) as e:
-        logger.warning("[install] npm install errored for %s: %s", pkg, e)
+        logger.warning("[install] %s install errored for %s: %s", pm, pkg, e)
         return None
 
     # Find the bin
@@ -294,8 +340,49 @@ def _install_npm(
                     except OSError:
                         return str(c)
             return str(link if link.exists() else c)
-    logger.warning("[install] npm install for %s succeeded but bin %s not found", pkg, bin_name)
+    logger.warning("[install] %s install for %s succeeded but bin %s not found", pm, pkg, bin_name)
     return None
+
+
+def _build_pm_argv(pm: str, staging: Path, targets: list[str]) -> list[str]:
+    """Build the command argv for a given package manager.
+
+    ``pm`` is the resolved full path (from ``_resolve_npm_command``).
+    Returns the full argument list ready for ``subprocess.run()``.
+
+    For pnpm and yarn, we create a minimal ``package.json`` in the staging
+    directory if one doesn't exist yet, because these managers require a
+    project root with a manifest (unlike ``npm install --prefix`` which
+    creates one implicitly).
+    """
+    name = Path(pm).name  # "pnpm", "npm", or "yarn"
+    if name == "pnpm":
+        _ensure_package_manifest(staging)
+        return [pm, "add", "--prefix", str(staging), "--silent", *targets]
+    if name == "yarn":
+        _ensure_package_manifest(staging)
+        return [pm, "add", "--cwd", str(staging), "--silent", *targets]
+    # npm (default)
+    return [pm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *targets]
+
+
+def _ensure_package_manifest(staging: Path) -> None:
+    """Create a minimal ``package.json`` in *staging* if none exists.
+
+    pnpm and yarn require a ``package.json`` at the project root before
+    they will run ``add`` / ``install``.  npm's ``--prefix`` flag creates
+    one implicitly, but pnpm and yarn do not.
+    """
+    manifest = staging / "package.json"
+    if manifest.exists():
+        return
+    try:
+        manifest.write_text(
+            '{"name":"hermes-lsp-staging","private":true,"version":"0.0.0"}\n',
+            encoding="utf-8",
+        )
+    except OSError as e:
+        logger.warning("[install] could not create package.json in %s: %s", staging, e)
 
 
 def _install_go(pkg: str, bin_name: str) -> Optional[str]:

@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts import run_tests_parallel
+
 
 # Both tests share the same handoff file: the leaker writes here, the
 # verifier reads here. We park it in $TMPDIR with a unique-per-run name
@@ -185,6 +187,30 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
             f"diag={diag!r} test_pid={test_pid} test_pgid={test_pgid}; "
             f"runner output:\n{proc.stdout}"
         )
+
+
+# ── Automatic worker count ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("cpu_count", "expected"), [(32, 32), (None, 4)])
+def test_default_worker_count_matches_cpu_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    cpu_count: int | None,
+    expected: int,
+) -> None:
+    """The automatic pool must not oversubscribe the reported CPU capacity."""
+    monkeypatch.delenv("HERMES_TEST_WORKERS", raising=False)
+    monkeypatch.setattr(run_tests_parallel.os, "cpu_count", lambda: cpu_count)
+
+    assert run_tests_parallel._default_worker_count() == expected
+
+
+def test_default_worker_count_honors_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit worker count still wins over automatic CPU sizing."""
+    monkeypatch.setenv("HERMES_TEST_WORKERS", "7")
+    monkeypatch.setattr(run_tests_parallel.os, "cpu_count", lambda: 32)
+
+    assert run_tests_parallel._default_worker_count() == 7
 
 
 # ── Bare pytest-flag passthrough ─────────────────────────────────────────────

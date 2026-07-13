@@ -1374,8 +1374,8 @@ class TestFetchDeepInfraModels:
                     {"id": "stabilityai/stable-diffusion-xl-base-1.0", "metadata": {}},
                 ]}).encode()
 
-        import urllib.request
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _Resp())
+        import hermes_cli.models as _models_mod
+        monkeypatch.setattr(_models_mod, "_urlopen_model_catalog_request", lambda req, *, timeout=None: _Resp())
         from hermes_cli.models import _fetch_deepinfra_models
         result = _fetch_deepinfra_models()
 
@@ -1399,16 +1399,16 @@ class TestFetchDeepInfraModels:
                     {"id": "meta-llama/Llama-3-70B-Instruct", "metadata": {}},
                 ]}).encode()
 
-        import urllib.request
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _Resp())
+        import hermes_cli.models as _models_mod
+        monkeypatch.setattr(_models_mod, "_urlopen_model_catalog_request", lambda req, *, timeout=None: _Resp())
         from hermes_cli.models import _fetch_deepinfra_models
         result = _fetch_deepinfra_models()
         assert result == ["meta-llama/Llama-3-70B-Instruct"]
 
     def test_returns_none_on_network_failure(self, monkeypatch):
         monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
-        import urllib.request
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: (_ for _ in ()).throw(Exception("timeout")))
+        import hermes_cli.models as _models_mod
+        monkeypatch.setattr(_models_mod, "_urlopen_model_catalog_request", lambda req, *, timeout=None: (_ for _ in ()).throw(Exception("timeout")))
         from hermes_cli.models import _fetch_deepinfra_models
         assert _fetch_deepinfra_models() is None
 
@@ -1432,8 +1432,8 @@ class TestFetchDeepInfraModels:
                     {"id": "nvidia/sdxl-turbo", "metadata": {}},
                 ]}).encode()
 
-        import urllib.request
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _Resp())
+        import hermes_cli.models as _models_mod
+        monkeypatch.setattr(_models_mod, "_urlopen_model_catalog_request", lambda req, *, timeout=None: _Resp())
         from hermes_cli.models import _fetch_deepinfra_models
         result = _fetch_deepinfra_models()
 
@@ -1483,14 +1483,13 @@ class TestDeepInfraTagFiltering:
             # null metadata — stub model, must be skipped
             {"id": "stub-model", "metadata": None},
         ]}
-        import urllib.request
+        import hermes_cli.models as _models_mod
         from hermes_cli.models import _fetch_deepinfra_models_by_tag
 
         for surface in ("chat", "image-gen", "tts", "stt", "embed"):
-            monkeypatch.setattr(urllib.request, "urlopen", _make_urlopen_returning(payload))
+            monkeypatch.setattr(_models_mod, "_urlopen_model_catalog_request", _make_urlopen_returning(payload))
             # Reset cache between iterations so each surface re-parses the payload.
-            import hermes_cli.models as _m
-            _m._deepinfra_catalog_cache.clear()
+            _models_mod._deepinfra_catalog_cache.clear()
             got = _fetch_deepinfra_models_by_tag(surface)
             assert got is not None
             ids = {item["id"] for item in got}
@@ -1508,10 +1507,10 @@ class TestDeepInfraTagFiltering:
                     assert surface in item["metadata"]["tags"]
 
     def test_returns_none_on_network_failure(self, monkeypatch):
-        import urllib.request
+        import hermes_cli.models as _models_mod
         monkeypatch.setattr(
-            urllib.request, "urlopen",
-            lambda *a, **kw: (_ for _ in ()).throw(Exception("timeout")),
+            _models_mod, "_urlopen_model_catalog_request",
+            lambda req, *, timeout=None: (_ for _ in ()).throw(Exception("timeout")),
         )
         from hermes_cli.models import _fetch_deepinfra_models_by_tag, _fetch_deepinfra_pricing
         assert _fetch_deepinfra_models_by_tag("chat") is None
@@ -1544,8 +1543,8 @@ class TestDeepInfraPricingFetcher:
             # non-chat — must not appear
             {"id": "vendor/model-image", "metadata": {"tags": ["image-gen"], "pricing": {"per_image_unit": 0.05}}},
         ]}
-        import urllib.request
-        monkeypatch.setattr(urllib.request, "urlopen", _make_urlopen_returning(payload))
+        import hermes_cli.models as _models_mod
+        monkeypatch.setattr(_models_mod, "_urlopen_model_catalog_request", _make_urlopen_returning(payload))
         from hermes_cli.models import get_pricing_for_provider
 
         # get_pricing_for_provider → _fetch_deepinfra_pricing dispatch path

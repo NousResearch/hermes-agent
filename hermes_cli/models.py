@@ -3710,7 +3710,7 @@ def _fetch_deepinfra_catalog(
 
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
         _deepinfra_catalog_neg_cache[cache_key] = time.monotonic()

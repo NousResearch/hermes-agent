@@ -59,7 +59,8 @@ def test_list_models_filters_by_image_gen_tag(monkeypatch):
                 }},
             ]}).encode()
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _Resp())
+    import hermes_cli.models as _models_mod
+    monkeypatch.setattr(_models_mod, "_urlopen_model_catalog_request", lambda req, *, timeout=None: _Resp())
     rows = deepinfra_plugin.DeepInfraImageGenProvider().list_models()
     ids = {row["id"] for row in rows}
     assert ids == {"vendor/img"}

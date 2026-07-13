@@ -31,14 +31,56 @@ def _install_stub_server(mcp_tool_module, name: str, call_tool_impl):
     ``call_tool_impl`` is an async function stored at ``session.call_tool``
     (it's what the tool handler invokes).
     """
+    import threading
+
     server = MagicMock()
     server.name = name
     session = MagicMock()
     session.call_tool = call_tool_impl
     server.session = session
-    server._reconnect_event = MagicMock()
-    server._ready = MagicMock()
-    server._ready.is_set.return_value = True
+
+    ready_flag = threading.Event()
+    ready_flag.set()
+
+    class _ReadyAdapter:
+        def is_set(self):
+            return ready_flag.is_set()
+
+        def clear(self):
+            ready_flag.clear()
+
+        def set(self):
+            ready_flag.set()
+
+    class _ReconnectAdapter:
+        def __init__(self):
+            self.set_calls = 0
+
+        def set(self):
+            self.set_calls += 1
+            old_session = server.session
+            new_session = MagicMock()
+            if old_session is not None:
+                new_session.call_tool = old_session.call_tool
+            elif call_tool_impl is not None:
+                new_session.call_tool = call_tool_impl
+            server.session = new_session
+            ready_flag.set()
+
+        # MagicMock-compat shim: the dead-session half-open test asserts the
+        # reconnect signal was delivered exactly once.
+        def assert_called_once(self):
+            assert self.set_calls == 1, f"set() called {self.set_calls} times"
+
+    server._reconnect_event = _ReconnectAdapter()
+    server._ready = _ReadyAdapter()
+    # A bare MagicMock returns a truthy Mock for every method, so
+    # ``_is_recycled_stdio()`` would spuriously report this stub as a recycled
+    # stdio server and divert dead-session tool calls into the lazy-reconnect
+    # wait (which polls the test-frozen ``time.monotonic`` forever). Real
+    # non-recycled servers return False here; make the stub faithful so the
+    # dead-session path falls through to the graceful reconnect handler.
+    server._is_recycled_stdio.return_value = False
 
     mcp_tool_module._servers[name] = server
     mcp_tool_module._server_error_counts.pop(name, None)
@@ -220,7 +262,7 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
 
         # Clean "reconnecting" error, and a reconnect was actually signalled.
         assert "reconnect" in parsed.get("error", "").lower(), parsed
-        server._reconnect_event.set.assert_called_once()
+        server._reconnect_event.assert_called_once()
     finally:
         _cleanup(mcp_tool, "srv")
 

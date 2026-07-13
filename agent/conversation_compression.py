@@ -465,6 +465,21 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    # Codex app-server sessions: the codex agent owns the real thread context;
+    # Hermes' summarizer would only rewrite a local mirror without shrinking
+    # the actual thread (#36801). Route compaction to the app server's own
+    # thread/compact mechanism. Behavior is controlled by
+    # ``compression.codex_app_server_auto`` (native|hermes|off).
+    if getattr(agent, "api_mode", None) == "codex_app_server":
+        return _compress_context_via_codex_app_server(
+            agent,
+            messages,
+            system_message,
+            approx_tokens=approx_tokens,
+            task_id=task_id,
+            force=force,
+        )
+
     # Lazy feasibility check — run the auxiliary-provider probe + context
     # length lookup just-in-time on the first compression attempt instead of
     # at AIAgent.__init__. Saves ~400ms cold off every short session that
@@ -657,6 +672,20 @@ def compress_context(
             return messages, _existing_sp
         finally:
             _release_lock()
+
+    # A compressor that returns the exact input object made no structural
+    # progress. Do not rotate/rewrite the session or arm post-compression
+    # deferral in that case; its own anti-thrash counter records the no-op.
+    if compressed is messages:
+        logger.info(
+            "Compression made no progress (session=%s) — skipping boundary rewrite.",
+            agent.session_id or "none",
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()
+        return messages, _existing_sp
 
     try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
@@ -946,6 +975,12 @@ def compress_context(
         agent.context_compressor.last_prompt_tokens = -1
         agent.context_compressor.last_completion_tokens = 0
         agent.context_compressor.awaiting_real_usage_after_compression = True
+        # Arm the effectiveness verdict only after a completed rewrite crosses
+        # the full compaction boundary. Exceptions, aborts, and no-op attempts
+        # leave this false, so unrelated later usage cannot be charged to an
+        # attempt that never changed the transcript.
+        if getattr(agent.context_compressor, "_last_compression_made_progress", False):
+            agent.context_compressor._verify_compaction_cleared_threshold = True
 
         # Clear the file-read dedup cache.  After compression the original
         # read content is summarised away — if the model re-reads the same
@@ -969,6 +1004,126 @@ def compress_context(
         # release will see the NEW session_id in state.db / SessionEntry and
         # acquire on that — no race against our just-finished work.
         _release_lock()
+
+
+def _compress_context_via_codex_app_server(
+    agent: Any,
+    messages: list,
+    system_message: Optional[str],
+    *,
+    approx_tokens: Optional[int] = None,
+    task_id: str = "default",
+    force: bool = False,
+) -> Tuple[list, str]:
+    """Route compaction to Codex app-server for Codex-owned threads.
+
+    Hermes' normal compressor rewrites the local OpenAI-style transcript.
+    That does not shrink the actual Codex app-server thread context. For this
+    runtime, ask Codex to compact its own thread and keep Hermes' transcript
+    unchanged.
+    """
+    auto_mode = str(
+        getattr(agent, "codex_app_server_auto_compaction", "native") or "native"
+    ).lower()
+    if auto_mode not in {"native", "hermes", "off"}:
+        auto_mode = "native"
+    if not force and auto_mode != "hermes":
+        logger.info(
+            "codex app-server compaction skipped: mode=%s force=false "
+            "(session=%s messages=%d tokens=~%s)",
+            auto_mode,
+            getattr(agent, "session_id", None) or "none",
+            len(messages),
+            f"{approx_tokens:,}" if approx_tokens else "unknown",
+        )
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
+    codex_session = getattr(agent, "_codex_session", None)
+    if codex_session is None:
+        logger.info(
+            "codex app-server compaction skipped: no active codex thread "
+            "(session=%s messages=%d tokens=~%s)",
+            getattr(agent, "session_id", None) or "none",
+            len(messages),
+            f"{approx_tokens:,}" if approx_tokens else "unknown",
+        )
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
+    logger.info(
+        "codex app-server compaction started: session=%s messages=%d tokens=~%s",
+        getattr(agent, "session_id", None) or "none",
+        len(messages),
+        f"{approx_tokens:,}" if approx_tokens else "unknown",
+    )
+    try:
+        agent._emit_status(COMPACTION_STATUS)
+    except Exception:
+        pass
+
+    result = codex_session.compact_thread()
+    if getattr(result, "should_retire", False):
+        try:
+            codex_session.close()
+        except Exception:
+            pass
+        agent._codex_session = None
+
+    if getattr(result, "interrupted", False) or getattr(result, "error", None):
+        try:
+            agent._emit_warning(
+                f"⚠ Codex app-server compaction failed: {result.error}"
+            )
+        except Exception:
+            pass
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
+    try:
+        from agent.codex_runtime import (
+            _record_codex_app_server_compaction,
+            _record_codex_app_server_usage,
+        )
+
+        _record_codex_app_server_compaction(
+            agent,
+            result,
+            approx_tokens=approx_tokens,
+            force=True,
+        )
+        # An empty usage report must consume the pending post-compaction verdict
+        # rather than leaving preflight deferral armed until some unrelated later
+        # Codex turn supplies usage. Minimal external test engines may not expose
+        # the ContextEngine update hook; preserve their existing bookkeeping.
+        if hasattr(agent.context_compressor, "update_from_response"):
+            _record_codex_app_server_usage(agent, result)
+    except Exception:
+        logger.debug("codex compaction bookkeeping failed", exc_info=True)
+
+    try:
+        from tools.file_tools import reset_file_dedup
+
+        reset_file_dedup(task_id)
+    except Exception:
+        pass
+
+    logger.info(
+        "codex app-server compaction done: session=%s thread=%s turn=%s",
+        getattr(agent, "session_id", None) or "none",
+        getattr(result, "thread_id", None) or "",
+        getattr(result, "turn_id", None) or "",
+    )
+    existing_prompt = getattr(agent, "_cached_system_prompt", None)
+    if not existing_prompt:
+        existing_prompt = agent._build_system_prompt(system_message)
+    return messages, existing_prompt
 
 
 def try_shrink_image_parts_in_messages(

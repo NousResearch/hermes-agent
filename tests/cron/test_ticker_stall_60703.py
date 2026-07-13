@@ -15,7 +15,6 @@ Three fixes under test:
    "already being fired".
 """
 
-import json
 import os
 import threading
 import time
@@ -43,6 +42,20 @@ except ImportError:  # pragma: no cover - non-POSIX
 
 
 pytestmark = pytest.mark.skipif(fcntl is None, reason="flock semantics are POSIX-only")
+
+def test_cron_store_uses_hermetic_home():
+    hermes_home = Path(os.environ["HERMES_HOME"]).resolve()
+    assert (
+        jobs_mod.HERMES_DIR,
+        jobs_mod.CRON_DIR,
+        jobs_mod.JOBS_FILE,
+        jobs_mod.OUTPUT_DIR,
+    ) == (
+        hermes_home,
+        hermes_home / "cron",
+        hermes_home / "cron" / "jobs.json",
+        hermes_home / "cron" / "output",
+    )
 
 
 def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event):

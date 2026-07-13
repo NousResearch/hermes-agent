@@ -270,7 +270,7 @@ def test_fetch_account_usage_deepseek_derives_balance_endpoint_from_runtime_base
         "resolve_runtime_provider",
         lambda **kwargs: {
             "api_key": "runtime-token",
-            "base_url": "https://deepseek-proxy.example/v1",
+            "base_url": "https://deepseek-proxy.example/v1/",
         },
     )
     monkeypatch.setattr(

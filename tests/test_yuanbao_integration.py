@@ -20,7 +20,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from gateway.config import Platform, PlatformConfig, GatewayConfig
 from gateway.platforms.yuanbao import YuanbaoAdapter
 
@@ -407,6 +407,43 @@ class TestP0PlatformScopedLock:
         adapter = YuanbaoAdapter(make_config())
         assert hasattr(adapter, '_acquire_platform_lock')
         assert hasattr(adapter, '_release_platform_lock')
+
+
+class TestGetChatInfo:
+    """get_chat_info resolves real group name/member-count and DM nicknames
+    where available, falling back to the raw chat_id otherwise."""
+
+    @pytest.mark.asyncio
+    async def test_group_resolves_real_name_and_member_count(self):
+        adapter = YuanbaoAdapter(make_config())
+        adapter._group_query.query_group_info_raw = AsyncMock(
+            return_value={"group_name": "Engineering", "member_count": 42}
+        )
+        info = await adapter.get_chat_info("group:12345")
+        assert info == {"name": "Engineering", "type": "group", "member_count": 42}
+
+    @pytest.mark.asyncio
+    async def test_group_falls_back_when_query_fails(self):
+        adapter = YuanbaoAdapter(make_config())
+        adapter._group_query.query_group_info_raw = AsyncMock(return_value=None)
+        info = await adapter.get_chat_info("group:12345")
+        assert info == {"name": "group:12345", "type": "group"}
+
+    @pytest.mark.asyncio
+    async def test_dm_resolves_nickname_from_member_cache(self):
+        adapter = YuanbaoAdapter(make_config())
+        adapter._member_cache["12345"] = (
+            0.0,
+            [{"user_id": "u1", "nickname": "Alice"}],
+        )
+        info = await adapter.get_chat_info("direct:u1")
+        assert info == {"name": "Alice", "type": "dm"}
+
+    @pytest.mark.asyncio
+    async def test_dm_falls_back_when_not_cached(self):
+        adapter = YuanbaoAdapter(make_config())
+        info = await adapter.get_chat_info("direct:unknown")
+        assert info == {"name": "direct:unknown", "type": "dm"}
 
 
 if __name__ == "__main__":

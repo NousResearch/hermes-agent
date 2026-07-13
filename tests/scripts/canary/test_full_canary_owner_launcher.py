@@ -5961,6 +5961,193 @@ def _stopped_release_receipt(plan):
     }
 
 
+def _writer_preflight_plan():
+    release_root = f"/opt/muncho-canary-releases/{RELEASE_SHA}"
+    absent_service = {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "UnitFileState": "",
+        "FragmentPath": "",
+        "DropInPaths": "",
+        "NeedDaemonReload": "no",
+    }
+    service_state = {
+        unit: dict(absent_service)
+        for unit in launcher._WRITER_PREFLIGHT_SERVICE_PATHS
+    }
+    unsigned = {
+        "schema": launcher.WRITER_PREFLIGHT_PLAN_SCHEMA,
+        "revision": RELEASE_SHA,
+        "stopped_release_receipt_path": (
+            f"{launcher.STOPPED_RELEASE_EVIDENCE_BASE}/{RELEASE_SHA}/"
+            "stopped-release-publication.json"
+        ),
+        "stopped_release_receipt_file_sha256": "1" * 64,
+        "stopped_release_receipt_sha256": "2" * 64,
+        "release_root": release_root,
+        "release_artifact_sha256": "3" * 64,
+        "release_manifest_path": f"{release_root}/release-manifest.json",
+        "release_manifest_file_sha256": "4" * 64,
+        "host_identity_receipt_path": launcher.STOPPED_RELEASE_HOST_RECEIPT_PATH,
+        "host_identity_receipt_file_sha256": "5" * 64,
+        "host_identity_receipt_sha256": "6" * 64,
+        "host_identity_sha256": "7" * 64,
+        "boot_id_sha256": "8" * 64,
+        "database": {
+            "host": launcher.DATABASE_HOST,
+            "port": launcher.DATABASE_PORT,
+            "database": launcher.DATABASE_NAME,
+            "user": "muncho_canary_writer_login",
+            "tls_server_name": (
+                launcher.WRITER_PREFLIGHT_DATABASE_TLS_SERVER_NAME
+            ),
+            "ca_path": "/etc/muncho/trust/cloudsql-server-ca.pem",
+            "ca_sha256": "9" * 64,
+        },
+        "credential_provenance": {
+            "path": "/etc/muncho/credentials/canonical-writer-db-password",
+            "device": 1,
+            "inode": 2,
+            "owner_uid": 999,
+            "group_gid": 994,
+            "mode": "0400",
+            "link_count": 1,
+            "modification_time_ns": 3,
+            "change_time_ns": 4,
+            "content_or_digest_recorded": False,
+        },
+        "owner_discord_user_ids": [
+            launcher.WRITER_PREFLIGHT_OWNER_DISCORD_USER_ID
+        ],
+        "external_iam_policy_sha256": APPROVAL_SHA,
+        "service_state": service_state,
+        "fixed_output_paths": {
+            "writer_config": "/etc/muncho/writer-activation/staged/writer.json",
+            "gateway_config": "/etc/muncho/writer-activation/staged/gateway.yaml",
+            "writer_unit": (
+                "/etc/muncho/writer-activation/staged/"
+                "muncho-canonical-writer.service"
+            ),
+            "gateway_unit": (
+                "/etc/muncho/writer-activation/staged/"
+                "hermes-cloud-gateway.service"
+            ),
+            "native_observation_plan": (
+                "/etc/muncho/writer-activation/staged/"
+                "native-observation-plan.json"
+            ),
+            "publication_evidence_root": launcher.WRITER_PREFLIGHT_EVIDENCE_BASE,
+        },
+        "invariants": {
+            "services_started": False,
+            "units_installed": False,
+            "daemon_reloaded": False,
+            "approval_created": False,
+            "discord_started": False,
+            "credential_content_or_digest_recorded": False,
+        },
+    }
+    return {
+        **unsigned,
+        "plan_sha256": hashlib.sha256(_canonical(unsigned)).hexdigest(),
+    }
+
+
+def _writer_preflight_receipt(plan):
+    artifacts = {
+        name: {"path": plan["fixed_output_paths"][name], "sha256": char * 64}
+        for name, char in (
+            ("writer_config", "a"),
+            ("gateway_config", "b"),
+            ("writer_unit", "c"),
+            ("gateway_unit", "d"),
+            ("native_observation_plan", "e"),
+        )
+    }
+    time_envelope = {
+        "config_collector_receipt_sha256": "f" * 64,
+        "native_observation_plan_sha256": "e" * 64,
+        "preflight_report_sha256": "0" * 64,
+        "collector_hba_observed_at_unix": 1_000,
+        "collector_collected_at_unix": 1_100,
+        "observed_at_unix": 1_200,
+        "collector_hba_expires_at_unix": 1_300,
+    }
+    time_envelope_sha256 = hashlib.sha256(_canonical(time_envelope)).hexdigest()
+    unsigned = {
+        "schema": launcher.WRITER_PREFLIGHT_RECEIPT_SCHEMA,
+        "ok": True,
+        "state": "staged_preflight_passed_services_stopped",
+        "revision": RELEASE_SHA,
+        "approved_plan_sha256": plan["plan_sha256"],
+        "stopped_release_receipt_sha256": plan[
+            "stopped_release_receipt_sha256"
+        ],
+        "release_artifact_sha256": plan["release_artifact_sha256"],
+        "release_manifest_file_sha256": plan[
+            "release_manifest_file_sha256"
+        ],
+        "host_identity_receipt_sha256": plan[
+            "host_identity_receipt_sha256"
+        ],
+        "config_collector_receipt_path": (
+            "/var/lib/muncho-writer-canary-evidence/config-collector/"
+            f"{RELEASE_SHA}/{'f' * 64}.json"
+        ),
+        "config_collector_receipt_sha256": "f" * 64,
+        "config_collector_receipt_file_sha256": "6" * 64,
+        "native_observation_plan_sha256": "e" * 64,
+        "external_iam_policy_sha256": plan["external_iam_policy_sha256"],
+        "preflight_report_path": (
+            f"{launcher.WRITER_PREFLIGHT_EVIDENCE_BASE}/{RELEASE_SHA}/"
+            f"{plan['plan_sha256']}/reports/{'0' * 64}.json"
+        ),
+        "preflight_report_file_sha256": "1" * 64,
+        "preflight_report_sha256": "0" * 64,
+        "preflight_observed_at_unix": 1_200,
+        "preflight_collector_hba_observed_at_unix": 1_000,
+        "preflight_collector_collected_at_unix": 1_100,
+        "preflight_collector_hba_expires_at_unix": 1_300,
+        "preflight_time_envelope_sha256": time_envelope_sha256,
+        "preflight_fresh_at_seal": True,
+        "service_state_before": plan["service_state"],
+        "service_state_after": plan["service_state"],
+        "artifacts": artifacts,
+        "provenance": {
+            "approved_plan_sha256": plan["plan_sha256"],
+            "release_artifact_sha256": plan["release_artifact_sha256"],
+            "release_manifest_file_sha256": plan[
+                "release_manifest_file_sha256"
+            ],
+            "database_ca_sha256": plan["database"]["ca_sha256"],
+            "config_collector_receipt_sha256": "f" * 64,
+            "config_collector_receipt_file_sha256": "6" * 64,
+            "collector_writer_config_sha256": "a" * 64,
+            "collector_gateway_config_sha256": "b" * 64,
+            "native_observation_plan_sha256": "e" * 64,
+            "native_writer_config_sha256": "a" * 64,
+            "native_gateway_config_sha256": "b" * 64,
+            "native_writer_unit_sha256": "c" * 64,
+            "native_gateway_unit_sha256": "d" * 64,
+            "preflight_report_sha256": "0" * 64,
+            "preflight_report_file_sha256": "1" * 64,
+            "preflight_time_envelope_sha256": time_envelope_sha256,
+        },
+        "invariants": plan["invariants"],
+        "sealed_at_unix": 1_234,
+        "receipt_path": (
+            f"{launcher.WRITER_PREFLIGHT_EVIDENCE_BASE}/{RELEASE_SHA}/"
+            f"{plan['plan_sha256']}/publication.json"
+        ),
+    }
+    return {
+        **unsigned,
+        "receipt_sha256": hashlib.sha256(_canonical(unsigned)).hexdigest(),
+    }
+
+
 def test_stopped_release_owner_validators_bind_host_receipt_path_exactly():
     plan = _stopped_release_plan()
     assert (
@@ -6045,6 +6232,135 @@ def test_stopped_release_transport_renders_only_fixed_canary_iap_argv():
     assert "scp" not in rendered
     assert "skyai-runtime-prod-01" not in rendered
     assert "ai-platform-runtime-01" not in rendered
+    assert PASSWORD.decode() not in rendered
+    assert DISCORD_TOKEN.decode() not in rendered
+
+
+def test_writer_preflight_owner_validators_bind_every_fixed_output_and_digest():
+    plan = _writer_preflight_plan()
+    assert launcher.validate_writer_preflight_plan(
+        plan,
+        expected_release_sha=RELEASE_SHA,
+        expected_external_iam_policy_sha256=APPROVAL_SHA,
+    ) == plan
+    receipt = _writer_preflight_receipt(plan)
+    assert launcher.validate_writer_preflight_receipt(
+        receipt,
+        plan=plan,
+    ) == receipt
+
+    drifted = json.loads(json.dumps(receipt))
+    drifted["artifacts"]["writer_unit"]["path"] = "/tmp/writer.service"
+    drifted["receipt_sha256"] = hashlib.sha256(
+        _canonical({
+            name: value
+            for name, value in drifted.items()
+            if name != "receipt_sha256"
+        })
+    ).hexdigest()
+    with pytest.raises(OwnerLauncherError, match="writer_preflight_receipt_invalid"):
+        launcher.validate_writer_preflight_receipt(drifted, plan=plan)
+
+    drifted_report = json.loads(json.dumps(receipt))
+    drifted_report["preflight_report_path"] = "/tmp/report.json"
+    drifted_report["receipt_sha256"] = hashlib.sha256(
+        _canonical({
+            name: value
+            for name, value in drifted_report.items()
+            if name != "receipt_sha256"
+        })
+    ).hexdigest()
+    with pytest.raises(OwnerLauncherError, match="writer_preflight_receipt_invalid"):
+        launcher.validate_writer_preflight_receipt(drifted_report, plan=plan)
+
+    drifted_service = json.loads(json.dumps(receipt))
+    drifted_service["service_state_after"][
+        "muncho-canonical-writer.service"
+    ]["ActiveState"] = "active"
+    drifted_service["receipt_sha256"] = hashlib.sha256(
+        _canonical({
+            name: value
+            for name, value in drifted_service.items()
+            if name != "receipt_sha256"
+        })
+    ).hexdigest()
+    with pytest.raises(OwnerLauncherError, match="writer_preflight_receipt_invalid"):
+        launcher.validate_writer_preflight_receipt(drifted_service, plan=plan)
+
+
+@pytest.mark.parametrize(
+    ("section", "name"),
+    (
+        ("artifact", "writer_config"),
+        ("provenance", "collector_writer_config_sha256"),
+        ("top", "config_collector_receipt_file_sha256"),
+        ("top", "preflight_report_file_sha256"),
+        ("top", "preflight_observed_at_unix"),
+        ("provenance", "approved_plan_sha256"),
+    ),
+)
+def test_writer_preflight_owner_rejects_independent_digest_chain_drift(
+    section,
+    name,
+):
+    plan = _writer_preflight_plan()
+    receipt = _writer_preflight_receipt(plan)
+    drifted = json.loads(json.dumps(receipt))
+    if section == "artifact":
+        drifted["artifacts"][name]["sha256"] = "7" * 64
+    elif section == "provenance":
+        drifted["provenance"][name] = "7" * 64
+    elif name == "preflight_observed_at_unix":
+        drifted[name] += 1
+    else:
+        drifted[name] = "7" * 64
+    drifted["receipt_sha256"] = hashlib.sha256(
+        _canonical({
+            field: value
+            for field, value in drifted.items()
+            if field != "receipt_sha256"
+        })
+    ).hexdigest()
+
+    with pytest.raises(OwnerLauncherError, match="writer_preflight_receipt_invalid"):
+        launcher.validate_writer_preflight_receipt(drifted, plan=plan)
+
+
+def test_writer_preflight_transport_uses_only_sealed_fixed_iap_argv():
+    identity = SimpleNamespace(
+        account_for_read_only_preflight=lambda: "owner@example.com",
+    )
+    transport = launcher.IapWriterPreflightTransport(
+        identity,
+        gcloud_executable=_StableExecutable(),
+        gcloud_configuration=_StableGcloudConfiguration(),
+        known_hosts=_StableExecutable("/trusted/google_compute_known_hosts"),
+    )
+    observed = []
+    plan = _writer_preflight_plan()
+
+    def run_remote(argv, **_kwargs):
+        observed.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, _canonical(plan) + b"\n", b"")
+
+    transport._run_remote = run_remote
+    assert transport._run_writer_preflight_command(
+        RELEASE_SHA,
+        "plan",
+        account="owner@example.com",
+        external_iam_policy_sha256=APPROVAL_SHA,
+    ) == plan
+
+    rendered = " ".join(observed[0])
+    assert (
+        f"/opt/muncho-canary-releases/{RELEASE_SHA}/venv/bin/python -B -I -m "
+        f"{launcher.WRITER_PREFLIGHT_MODULE} plan"
+    ) in rendered
+    assert "--chdir=/" in rendered
+    assert "scripts.canary.writer_release" not in rendered
+    assert "python -c" not in rendered
+    assert "heredoc" not in rendered
+    assert "scp" not in rendered
     assert PASSWORD.decode() not in rendered
     assert DISCORD_TOKEN.decode() not in rendered
 

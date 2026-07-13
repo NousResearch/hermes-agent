@@ -67,6 +67,16 @@ STOPPED_RELEASE_PLAN_SCHEMA = "muncho-canary-stopped-release-plan.v1"
 STOPPED_RELEASE_RECEIPT_SCHEMA = "muncho-canary-stopped-release-publication.v1"
 STOPPED_RELEASE_HOST_RECEIPT_PATH = "/etc/muncho/full-canary/host-identity.json"
 STOPPED_RELEASE_PYTHON_VERSION = "3.11.15"
+WRITER_PREFLIGHT_PLAN_SCHEMA = "muncho-writer-preflight-publication-plan.v2"
+WRITER_PREFLIGHT_RECEIPT_SCHEMA = "muncho-writer-preflight-publication.v3"
+WRITER_PREFLIGHT_MODULE = "gateway.canonical_writer_preflight_publisher"
+WRITER_PREFLIGHT_EVIDENCE_BASE = (
+    "/var/lib/muncho-writer-canary-evidence/staged-publication"
+)
+WRITER_PREFLIGHT_OWNER_DISCORD_USER_ID = "1279454038731264061"
+WRITER_PREFLIGHT_DATABASE_TLS_SERVER_NAME = (
+    "14-0d81ef63-2cac-4a64-84ad-c4f58c0cfd56.europe-west3.sql.goog"
+)
 SQL_INSTANCE = "muncho-canary-pg18-v2"
 DATABASE_HOST = "10.91.0.3"
 DATABASE_PORT = 5432
@@ -8600,6 +8610,589 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
         )
 
 
+_WRITER_PREFLIGHT_SYSTEMD_FIELDS = frozenset({
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "MainPID",
+    "UnitFileState",
+    "FragmentPath",
+    "DropInPaths",
+    "NeedDaemonReload",
+})
+_WRITER_PREFLIGHT_SERVICE_PATHS = {
+    "muncho-canonical-writer.service": (
+        "/etc/systemd/system/muncho-canonical-writer.service"
+    ),
+    "hermes-cloud-gateway.service": (
+        "/etc/systemd/system/hermes-cloud-gateway.service"
+    ),
+    "muncho-canonical-writer-export.service": None,
+    "muncho-discord-egress.service": None,
+}
+_WRITER_PREFLIGHT_PROVENANCE_FIELDS = frozenset({
+    "approved_plan_sha256",
+    "release_artifact_sha256",
+    "release_manifest_file_sha256",
+    "database_ca_sha256",
+    "config_collector_receipt_sha256",
+    "config_collector_receipt_file_sha256",
+    "collector_writer_config_sha256",
+    "collector_gateway_config_sha256",
+    "native_observation_plan_sha256",
+    "native_writer_config_sha256",
+    "native_gateway_config_sha256",
+    "native_writer_unit_sha256",
+    "native_gateway_unit_sha256",
+    "preflight_report_sha256",
+    "preflight_report_file_sha256",
+    "preflight_time_envelope_sha256",
+})
+
+
+def _validate_writer_preflight_service_state(value: Any) -> Mapping[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != set(_WRITER_PREFLIGHT_SERVICE_PATHS)
+    ):
+        raise OwnerLauncherError("writer_preflight_plan_invalid")
+    canonical: dict[str, dict[str, str]] = {}
+    for unit, installed_path in _WRITER_PREFLIGHT_SERVICE_PATHS.items():
+        state = value.get(unit)
+        if (
+            not isinstance(state, Mapping)
+            or set(state) != _WRITER_PREFLIGHT_SYSTEMD_FIELDS
+            or any(not isinstance(item, str) for item in state.values())
+        ):
+            raise OwnerLauncherError("writer_preflight_plan_invalid")
+        absent = state == {
+            "LoadState": "not-found",
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "MainPID": "0",
+            "UnitFileState": "",
+            "FragmentPath": "",
+            "DropInPaths": "",
+            "NeedDaemonReload": "no",
+        }
+        installed = installed_path is not None and state == {
+            "LoadState": "loaded",
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "MainPID": "0",
+            "UnitFileState": "disabled",
+            "FragmentPath": installed_path,
+            "DropInPaths": "",
+            "NeedDaemonReload": "no",
+        }
+        if not absent and not installed:
+            raise OwnerLauncherError("writer_preflight_plan_invalid")
+        canonical[unit] = {name: state[name] for name in sorted(state)}
+    return canonical
+
+
+def validate_writer_preflight_plan(
+    value: Mapping[str, Any],
+    *,
+    expected_release_sha: str,
+    expected_external_iam_policy_sha256: str,
+) -> Mapping[str, Any]:
+    """Validate the complete secret-free remote staging envelope."""
+
+    fields = {
+        "schema",
+        "revision",
+        "stopped_release_receipt_path",
+        "stopped_release_receipt_file_sha256",
+        "stopped_release_receipt_sha256",
+        "release_root",
+        "release_artifact_sha256",
+        "release_manifest_path",
+        "release_manifest_file_sha256",
+        "host_identity_receipt_path",
+        "host_identity_receipt_file_sha256",
+        "host_identity_receipt_sha256",
+        "host_identity_sha256",
+        "boot_id_sha256",
+        "database",
+        "credential_provenance",
+        "owner_discord_user_ids",
+        "external_iam_policy_sha256",
+        "service_state",
+        "fixed_output_paths",
+        "invariants",
+        "plan_sha256",
+    }
+    policy_sha256 = _require_sha256(
+        expected_external_iam_policy_sha256,
+        "writer_preflight_plan_invalid",
+    )
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("schema") != WRITER_PREFLIGHT_PLAN_SCHEMA
+        or value.get("revision") != expected_release_sha
+        or _RELEASE_SHA.fullmatch(expected_release_sha) is None
+        or value.get("external_iam_policy_sha256") != policy_sha256
+        or value.get("owner_discord_user_ids")
+        != [WRITER_PREFLIGHT_OWNER_DISCORD_USER_ID]
+    ):
+        raise OwnerLauncherError("writer_preflight_plan_invalid")
+    release_root = f"/opt/muncho-canary-releases/{expected_release_sha}"
+    stopped_receipt = (
+        f"{STOPPED_RELEASE_EVIDENCE_BASE}/{expected_release_sha}/"
+        "stopped-release-publication.json"
+    )
+    if (
+        value.get("release_root") != release_root
+        or value.get("release_manifest_path")
+        != f"{release_root}/release-manifest.json"
+        or value.get("stopped_release_receipt_path") != stopped_receipt
+        or value.get("host_identity_receipt_path")
+        != STOPPED_RELEASE_HOST_RECEIPT_PATH
+    ):
+        raise OwnerLauncherError("writer_preflight_plan_invalid")
+    for name in (
+        "stopped_release_receipt_file_sha256",
+        "stopped_release_receipt_sha256",
+        "release_artifact_sha256",
+        "release_manifest_file_sha256",
+        "host_identity_receipt_file_sha256",
+        "host_identity_receipt_sha256",
+        "host_identity_sha256",
+        "boot_id_sha256",
+        "external_iam_policy_sha256",
+    ):
+        _require_sha256(value.get(name), "writer_preflight_plan_invalid")
+    database = value.get("database")
+    if (
+        not isinstance(database, Mapping)
+        or set(database)
+        != {"host", "port", "database", "user", "tls_server_name", "ca_path", "ca_sha256"}
+        or database.get("host") != DATABASE_HOST
+        or database.get("port") != DATABASE_PORT
+        or database.get("database") != DATABASE_NAME
+        or database.get("user") != "muncho_canary_writer_login"
+        or database.get("tls_server_name")
+        != WRITER_PREFLIGHT_DATABASE_TLS_SERVER_NAME
+        or database.get("ca_path")
+        != "/etc/muncho/trust/cloudsql-server-ca.pem"
+    ):
+        raise OwnerLauncherError("writer_preflight_plan_invalid")
+    _require_sha256(database.get("ca_sha256"), "writer_preflight_plan_invalid")
+    credential = value.get("credential_provenance")
+    credential_fields = {
+        "path",
+        "device",
+        "inode",
+        "owner_uid",
+        "group_gid",
+        "mode",
+        "link_count",
+        "modification_time_ns",
+        "change_time_ns",
+        "content_or_digest_recorded",
+    }
+    if (
+        not isinstance(credential, Mapping)
+        or set(credential) != credential_fields
+        or credential.get("path")
+        != "/etc/muncho/credentials/canonical-writer-db-password"
+        or credential.get("owner_uid") != 999
+        or credential.get("group_gid") != 994
+        or credential.get("mode") != "0400"
+        or credential.get("link_count") != 1
+        or credential.get("content_or_digest_recorded") is not False
+        or any(
+            type(credential.get(name)) is not int or credential[name] < 0
+            for name in (
+                "device",
+                "inode",
+                "modification_time_ns",
+                "change_time_ns",
+            )
+        )
+    ):
+        raise OwnerLauncherError("writer_preflight_plan_invalid")
+    outputs = value.get("fixed_output_paths")
+    expected_outputs = {
+        "writer_config": "/etc/muncho/writer-activation/staged/writer.json",
+        "gateway_config": "/etc/muncho/writer-activation/staged/gateway.yaml",
+        "writer_unit": (
+            "/etc/muncho/writer-activation/staged/"
+            "muncho-canonical-writer.service"
+        ),
+        "gateway_unit": (
+            "/etc/muncho/writer-activation/staged/"
+            "hermes-cloud-gateway.service"
+        ),
+        "native_observation_plan": (
+            "/etc/muncho/writer-activation/staged/"
+            "native-observation-plan.json"
+        ),
+        "publication_evidence_root": WRITER_PREFLIGHT_EVIDENCE_BASE,
+    }
+    invariants = {
+        "services_started": False,
+        "units_installed": False,
+        "daemon_reloaded": False,
+        "approval_created": False,
+        "discord_started": False,
+        "credential_content_or_digest_recorded": False,
+    }
+    if outputs != expected_outputs or value.get("invariants") != invariants:
+        raise OwnerLauncherError("writer_preflight_plan_invalid")
+    _validate_writer_preflight_service_state(value.get("service_state"))
+    plan_sha256 = _require_sha256(
+        value.get("plan_sha256"),
+        "writer_preflight_plan_invalid",
+    )
+    unsigned = {name: item for name, item in value.items() if name != "plan_sha256"}
+    if plan_sha256 != _sha256(_canonical_bytes(unsigned)):
+        raise OwnerLauncherError("writer_preflight_plan_invalid")
+    return copy.deepcopy(dict(value))
+
+
+def validate_writer_preflight_receipt(
+    value: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    fields = {
+        "schema",
+        "ok",
+        "state",
+        "revision",
+        "approved_plan_sha256",
+        "stopped_release_receipt_sha256",
+        "release_artifact_sha256",
+        "release_manifest_file_sha256",
+        "host_identity_receipt_sha256",
+        "config_collector_receipt_path",
+        "config_collector_receipt_sha256",
+        "config_collector_receipt_file_sha256",
+        "native_observation_plan_sha256",
+        "external_iam_policy_sha256",
+        "preflight_report_path",
+        "preflight_report_file_sha256",
+        "preflight_report_sha256",
+        "preflight_observed_at_unix",
+        "preflight_collector_hba_observed_at_unix",
+        "preflight_collector_collected_at_unix",
+        "preflight_collector_hba_expires_at_unix",
+        "preflight_time_envelope_sha256",
+        "preflight_fresh_at_seal",
+        "service_state_before",
+        "service_state_after",
+        "artifacts",
+        "provenance",
+        "invariants",
+        "sealed_at_unix",
+        "receipt_path",
+        "receipt_sha256",
+    }
+    validated_plan = validate_writer_preflight_plan(
+        plan,
+        expected_release_sha=str(plan.get("revision")),
+        expected_external_iam_policy_sha256=str(
+            plan.get("external_iam_policy_sha256")
+        ),
+    )
+    revision = str(validated_plan["revision"])
+    plan_sha256 = str(validated_plan["plan_sha256"])
+    expected_receipt_path = (
+        f"{WRITER_PREFLIGHT_EVIDENCE_BASE}/{revision}/{plan_sha256}/"
+        "publication.json"
+    )
+    expected_collector_path = (
+        "/var/lib/muncho-writer-canary-evidence/config-collector/"
+        f"{revision}/"
+    )
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("schema") != WRITER_PREFLIGHT_RECEIPT_SCHEMA
+        or value.get("ok") is not True
+        or value.get("state")
+        != "staged_preflight_passed_services_stopped"
+        or value.get("revision") != revision
+        or value.get("approved_plan_sha256") != plan_sha256
+        or value.get("stopped_release_receipt_sha256")
+        != validated_plan["stopped_release_receipt_sha256"]
+        or value.get("release_artifact_sha256")
+        != validated_plan["release_artifact_sha256"]
+        or value.get("release_manifest_file_sha256")
+        != validated_plan["release_manifest_file_sha256"]
+        or value.get("host_identity_receipt_sha256")
+        != validated_plan["host_identity_receipt_sha256"]
+        or value.get("external_iam_policy_sha256")
+        != validated_plan["external_iam_policy_sha256"]
+        or value.get("invariants") != validated_plan["invariants"]
+        or value.get("receipt_path") != expected_receipt_path
+        or type(value.get("sealed_at_unix")) is not int
+        or value["sealed_at_unix"] < 0
+    ):
+        raise OwnerLauncherError("writer_preflight_receipt_invalid")
+    collector_sha = _require_sha256(
+        value.get("config_collector_receipt_sha256"),
+        "writer_preflight_receipt_invalid",
+    )
+    if value.get("config_collector_receipt_path") != (
+        expected_collector_path + collector_sha + ".json"
+    ):
+        raise OwnerLauncherError("writer_preflight_receipt_invalid")
+    for name in (
+        "config_collector_receipt_file_sha256",
+        "native_observation_plan_sha256",
+        "preflight_report_file_sha256",
+        "preflight_report_sha256",
+        "preflight_time_envelope_sha256",
+    ):
+        _require_sha256(value.get(name), "writer_preflight_receipt_invalid")
+    expected_report_path = (
+        f"{WRITER_PREFLIGHT_EVIDENCE_BASE}/{revision}/{plan_sha256}/reports/"
+        f"{value['preflight_report_sha256']}.json"
+    )
+    if value.get("preflight_report_path") != expected_report_path:
+        raise OwnerLauncherError("writer_preflight_receipt_invalid")
+    try:
+        service_before = _validate_writer_preflight_service_state(
+            value.get("service_state_before")
+        )
+        service_after = _validate_writer_preflight_service_state(
+            value.get("service_state_after")
+        )
+        planned_service = _validate_writer_preflight_service_state(
+            validated_plan.get("service_state")
+        )
+    except OwnerLauncherError:
+        raise OwnerLauncherError("writer_preflight_receipt_invalid") from None
+    if service_before != planned_service or service_after != service_before:
+        raise OwnerLauncherError("writer_preflight_receipt_invalid")
+    artifacts = value.get("artifacts")
+    expected_artifact_names = {
+        "writer_config",
+        "gateway_config",
+        "writer_unit",
+        "gateway_unit",
+        "native_observation_plan",
+    }
+    if not isinstance(artifacts, Mapping) or set(artifacts) != expected_artifact_names:
+        raise OwnerLauncherError("writer_preflight_receipt_invalid")
+    for name, artifact in artifacts.items():
+        if (
+            not isinstance(artifact, Mapping)
+            or set(artifact) != {"path", "sha256"}
+            or artifact.get("path")
+            != validated_plan["fixed_output_paths"][name]
+        ):
+            raise OwnerLauncherError("writer_preflight_receipt_invalid")
+        _require_sha256(
+            artifact.get("sha256"),
+            "writer_preflight_receipt_invalid",
+        )
+    if artifacts["native_observation_plan"]["sha256"] != value.get(
+        "native_observation_plan_sha256"
+    ):
+        raise OwnerLauncherError("writer_preflight_receipt_invalid")
+    provenance = value.get("provenance")
+    if (
+        not isinstance(provenance, Mapping)
+        or set(provenance) != _WRITER_PREFLIGHT_PROVENANCE_FIELDS
+    ):
+        raise OwnerLauncherError("writer_preflight_receipt_invalid")
+    for item in provenance.values():
+        _require_sha256(item, "writer_preflight_receipt_invalid")
+    expected_provenance_bindings = {
+        "approved_plan_sha256": validated_plan["plan_sha256"],
+        "release_artifact_sha256": validated_plan["release_artifact_sha256"],
+        "release_manifest_file_sha256": validated_plan[
+            "release_manifest_file_sha256"
+        ],
+        "database_ca_sha256": validated_plan["database"]["ca_sha256"],
+        "config_collector_receipt_sha256": value[
+            "config_collector_receipt_sha256"
+        ],
+        "config_collector_receipt_file_sha256": value[
+            "config_collector_receipt_file_sha256"
+        ],
+        "native_observation_plan_sha256": value[
+            "native_observation_plan_sha256"
+        ],
+        "preflight_report_sha256": value["preflight_report_sha256"],
+        "preflight_report_file_sha256": value[
+            "preflight_report_file_sha256"
+        ],
+        "preflight_time_envelope_sha256": value[
+            "preflight_time_envelope_sha256"
+        ],
+    }
+    if any(
+        provenance.get(name) != expected
+        for name, expected in expected_provenance_bindings.items()
+    ):
+        raise OwnerLauncherError("writer_preflight_receipt_invalid")
+    artifact_digest_bindings = {
+        "writer_config": (
+            "collector_writer_config_sha256",
+            "native_writer_config_sha256",
+        ),
+        "gateway_config": (
+            "collector_gateway_config_sha256",
+            "native_gateway_config_sha256",
+        ),
+        "writer_unit": ("native_writer_unit_sha256",),
+        "gateway_unit": ("native_gateway_unit_sha256",),
+        "native_observation_plan": ("native_observation_plan_sha256",),
+    }
+    if any(
+        artifacts[artifact_name]["sha256"] != provenance[provenance_name]
+        for artifact_name, provenance_names in artifact_digest_bindings.items()
+        for provenance_name in provenance_names
+    ):
+        raise OwnerLauncherError("writer_preflight_receipt_invalid")
+    hba_observed_at = value.get("preflight_collector_hba_observed_at_unix")
+    collector_collected_at = value.get("preflight_collector_collected_at_unix")
+    preflight_observed_at = value.get("preflight_observed_at_unix")
+    hba_expires_at = value.get("preflight_collector_hba_expires_at_unix")
+    sealed_at = value["sealed_at_unix"]
+    time_envelope = {
+        "config_collector_receipt_sha256": value[
+            "config_collector_receipt_sha256"
+        ],
+        "native_observation_plan_sha256": value[
+            "native_observation_plan_sha256"
+        ],
+        "preflight_report_sha256": value["preflight_report_sha256"],
+        "collector_hba_observed_at_unix": hba_observed_at,
+        "collector_collected_at_unix": collector_collected_at,
+        "observed_at_unix": preflight_observed_at,
+        "collector_hba_expires_at_unix": hba_expires_at,
+    }
+    if (
+        any(
+            type(item) is not int or item < 0
+            for item in (
+                hba_observed_at,
+                collector_collected_at,
+                preflight_observed_at,
+                hba_expires_at,
+            )
+        )
+        or hba_expires_at - hba_observed_at != 300
+        or not hba_observed_at
+        <= collector_collected_at
+        <= preflight_observed_at
+        <= hba_expires_at
+        or sealed_at < preflight_observed_at
+        or type(value.get("preflight_fresh_at_seal")) is not bool
+        or value["preflight_fresh_at_seal"] != (sealed_at <= hba_expires_at)
+        or value.get("preflight_time_envelope_sha256")
+        != _sha256(_canonical_bytes(time_envelope))
+    ):
+        raise OwnerLauncherError("writer_preflight_receipt_invalid")
+    receipt_sha256 = _require_sha256(
+        value.get("receipt_sha256"),
+        "writer_preflight_receipt_invalid",
+    )
+    unsigned = {name: item for name, item in value.items() if name != "receipt_sha256"}
+    if receipt_sha256 != _sha256(_canonical_bytes(unsigned)):
+        raise OwnerLauncherError("writer_preflight_receipt_invalid")
+    return copy.deepcopy(dict(value))
+
+
+class IapWriterPreflightTransport(IapStoppedReleaseTransport):
+    """Run the sealed, no-service-start writer staging publisher over IAP."""
+
+    def _run_writer_preflight_command(
+        self,
+        release_sha: str,
+        command: str,
+        *,
+        account: str,
+        external_iam_policy_sha256: str,
+        approved_plan_sha256: str | None = None,
+    ) -> Mapping[str, Any]:
+        if command not in {"plan", "apply"}:
+            raise OwnerLauncherError("writer_preflight_command_invalid")
+        external_digest = _require_sha256(
+            external_iam_policy_sha256,
+            "writer_preflight_plan_invalid",
+        )
+        if command == "apply":
+            approved = _require_sha256(
+                approved_plan_sha256,
+                "writer_preflight_plan_invalid",
+            )
+        elif approved_plan_sha256 is not None:
+            raise OwnerLauncherError("writer_preflight_plan_invalid")
+        else:
+            approved = None
+        interpreter = f"/opt/muncho-canary-releases/{release_sha}/venv/bin/python"
+        remote = (
+            *self._fixed_remote_environment(chdir="/"),
+            interpreter,
+            "-B",
+            "-I",
+            "-m",
+            WRITER_PREFLIGHT_MODULE,
+            command,
+            "--revision",
+            release_sha,
+            "--external-iam-policy-sha256",
+            external_digest,
+            *(() if approved is None else ("--approved-plan-sha256", approved)),
+        )
+        completed = self._run_remote(
+            remote,
+            account=account,
+            timeout_seconds=900.0 if command == "apply" else 300.0,
+        )
+        if (
+            not completed.stdout
+            or not completed.stdout.endswith(b"\n")
+            or b"\n" in completed.stdout[:-1]
+        ):
+            raise OwnerLauncherError("writer_preflight_output_invalid")
+        try:
+            return _decode_json_object(
+                completed.stdout,
+                maximum=_HTTP_RESPONSE_MAX_BYTES,
+            )
+        except OwnerLauncherError:
+            raise OwnerLauncherError("writer_preflight_output_invalid") from None
+
+    def publish(
+        self,
+        release_sha: str,
+        *,
+        external_iam_policy_sha256: str,
+    ) -> Mapping[str, Any]:
+        if _RELEASE_SHA.fullmatch(release_sha) is None:
+            raise OwnerLauncherError("invalid_release_sha")
+        account = self._owner_identity.account_for_read_only_preflight()
+        plan = validate_writer_preflight_plan(
+            self._run_writer_preflight_command(
+                release_sha,
+                "plan",
+                account=account,
+                external_iam_policy_sha256=external_iam_policy_sha256,
+            ),
+            expected_release_sha=release_sha,
+            expected_external_iam_policy_sha256=external_iam_policy_sha256,
+        )
+        return validate_writer_preflight_receipt(
+            self._run_writer_preflight_command(
+                release_sha,
+                "apply",
+                account=account,
+                external_iam_policy_sha256=external_iam_policy_sha256,
+                approved_plan_sha256=str(plan["plan_sha256"]),
+            ),
+            plan=plan,
+        )
+
+
 def _validate_admin_credential(username: str, password: bytearray) -> bytes:
     if not _ADMIN_USERNAME.fullmatch(username):
         raise OwnerLauncherError("invalid_admin_username")
@@ -10766,7 +11359,8 @@ def launch_full_canary(
 
 def _cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Owner-side isolated full-canary credential launcher"
+        description="Owner-side isolated full-canary credential launcher",
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--release-sha",
@@ -10783,6 +11377,15 @@ def _cli_parser() -> argparse.ArgumentParser:
         "--publish-stopped-release",
         action="store_true",
         help="publish the exact fork revision while every canary service is stopped",
+    )
+    actions.add_argument(
+        "--publish-writer-preflight",
+        action="store_true",
+        help="stage and attest writer-only inputs without starting services",
+    )
+    parser.add_argument(
+        "--external-iam-policy-sha256",
+        help="exact external IAM policy digest bound into writer staging",
     )
     return parser
 
@@ -10837,6 +11440,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             require_local_launcher_provenance(exact_release)
 
         if arguments.publish_stopped_release:
+            if arguments.external_iam_policy_sha256 is not None:
+                raise OwnerLauncherError("writer_preflight_plan_invalid")
             release_transport = IapStoppedReleaseTransport(
                 owner_identity,
                 gcloud_executable=gcloud_executable,
@@ -10846,6 +11451,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime_and_provenance_guard(release_sha)
             _emit_canonical_line(receipt)
             return 0
+        if arguments.publish_writer_preflight:
+            external_iam_policy_sha256 = _require_sha256(
+                arguments.external_iam_policy_sha256,
+                "writer_preflight_plan_invalid",
+            )
+            writer_transport = IapWriterPreflightTransport(
+                owner_identity,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+            )
+            receipt = writer_transport.publish(
+                release_sha,
+                external_iam_policy_sha256=external_iam_policy_sha256,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
+        if arguments.external_iam_policy_sha256 is not None:
+            raise OwnerLauncherError("writer_preflight_plan_invalid")
         transport = IapCoordinatorTransport(
             owner_identity,
             gcloud_executable=gcloud_executable,
@@ -10946,6 +11570,7 @@ __all__ = [
     "GcloudOwnerAccessToken",
     "IapCoordinatorTransport",
     "IapStoppedReleaseTransport",
+    "IapWriterPreflightTransport",
     "HttpResponse",
     "LocalLauncherProvenance",
     "OWNER_GATE_SCHEMA",
@@ -10975,6 +11600,8 @@ __all__ = [
     "STOPPED_RELEASE_PLAN_SCHEMA",
     "STOPPED_RELEASE_PYTHON_VERSION",
     "STOPPED_RELEASE_RECEIPT_SCHEMA",
+    "WRITER_PREFLIGHT_PLAN_SCHEMA",
+    "WRITER_PREFLIGHT_RECEIPT_SCHEMA",
     "STOPPED_RELEASE_SOURCE_BASE",
     "STOPPED_RELEASE_SOURCE_REPOSITORY",
     "TRUSTED_RUNTIME_BOOTSTRAP_RECEIPT_SCHEMA",
@@ -11017,6 +11644,8 @@ __all__ = [
     "validate_recovery_receipt",
     "validate_stopped_release_plan",
     "validate_stopped_release_receipt",
+    "validate_writer_preflight_plan",
+    "validate_writer_preflight_receipt",
     "validate_terminal_first_failure",
 ]
 

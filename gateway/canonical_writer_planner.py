@@ -1471,6 +1471,33 @@ def _remove_exact_staged_file(path: Path, payload: bytes) -> None:
         os.close(directory_fd)
 
 
+def _validated_preexisting_native_outputs(
+    outputs: Sequence[tuple[Path, bytes]],
+) -> set[Path]:
+    """Classify only exact deterministic unit residue as resumable."""
+
+    preexisting: set[Path] = set()
+    for target, payload in outputs:
+        if not os.path.lexists(target):
+            continue
+        # The native plan carries a fresh observation id and therefore cannot
+        # be reconstructed after a lost response.  Its existing copy must be
+        # handled by the enclosing staged publisher.  Deterministic unit bytes,
+        # however, are safe to resume only when their exact protected content
+        # matches the bytes derived by the planner.
+        if target == DEFAULT_STAGED_NATIVE_PLAN_PATH:
+            raise FileExistsError(target)
+        observed = _read_trusted_root_file(
+            target,
+            allowed_modes=frozenset({_ROOT_JSON_MODE}),
+            maximum=max(len(payload), 1),
+        )
+        if observed != payload:
+            raise RuntimeError("native staged output collision drifted")
+        preexisting.add(target)
+    return preexisting
+
+
 def _current_boot_id_sha256() -> str:
     raw = Path("/proc/sys/kernel/random/boot_id").read_bytes()
     if len(raw) > 128:
@@ -1670,12 +1697,12 @@ def build_and_stage_native_observation_plan(
         ),
         (DEFAULT_STAGED_NATIVE_PLAN_PATH, canonical_plan),
     )
-    for target, _payload in outputs:
-        if os.path.lexists(target):
-            raise FileExistsError(target)
+    preexisting = _validated_preexisting_native_outputs(outputs)
     created: list[tuple[Path, bytes]] = []
     try:
         for target, payload in outputs:
+            if target in preexisting:
+                continue
             _write_atomic_root_staged_file(target, payload)
             created.append((target, payload))
     except BaseException as write_error:

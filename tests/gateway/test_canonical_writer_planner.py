@@ -569,6 +569,53 @@ def test_stager_blocks_existing_fixed_path_without_overwrite_or_cleanup(
     assert target.read_bytes() == b"stale-but-unclassified"
 
 
+def test_native_staging_resume_accepts_only_same_deterministic_unit_bytes(
+    monkeypatch,
+):
+    outputs = (
+        (planner.DEFAULT_STAGED_WRITER_UNIT_PATH, b"writer-unit"),
+        (planner.DEFAULT_STAGED_GATEWAY_UNIT_PATH, b"gateway-unit"),
+        (planner.DEFAULT_STAGED_NATIVE_PLAN_PATH, b"native-plan"),
+    )
+    monkeypatch.setattr(
+        planner.os.path,
+        "lexists",
+        lambda path: path == planner.DEFAULT_STAGED_WRITER_UNIT_PATH,
+    )
+    monkeypatch.setattr(
+        planner,
+        "_read_trusted_root_file",
+        lambda path, **_kwargs: b"writer-unit",
+    )
+
+    assert planner._validated_preexisting_native_outputs(outputs) == {
+        planner.DEFAULT_STAGED_WRITER_UNIT_PATH
+    }
+
+    monkeypatch.setattr(
+        planner,
+        "_read_trusted_root_file",
+        lambda path, **_kwargs: b"conflicting-unit",
+    )
+    with pytest.raises(RuntimeError, match="collision drifted"):
+        planner._validated_preexisting_native_outputs(outputs)
+
+
+def test_native_staging_resume_leaves_existing_random_plan_to_publisher(
+    monkeypatch,
+):
+    outputs = ((planner.DEFAULT_STAGED_NATIVE_PLAN_PATH, b"native-plan"),)
+    monkeypatch.setattr(planner.os.path, "lexists", lambda _path: True)
+    monkeypatch.setattr(
+        planner,
+        "_read_trusted_root_file",
+        lambda *_args, **_kwargs: pytest.fail("must fail before reading plan residue"),
+    )
+
+    with pytest.raises(FileExistsError):
+        planner._validated_preexisting_native_outputs(outputs)
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [

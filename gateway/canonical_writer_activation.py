@@ -66,6 +66,9 @@ OWNER_APPROVAL_SCHEMA = OWNER_APPROVAL_RECEIPT_SCHEMA
 SYSTEMD_BUNDLE_SCHEMA = "muncho-writer-only-systemd-bundle.v2"
 RELEASE_SCHEMA = "muncho-writer-only-release.v1"
 NATIVE_OBSERVATION_SCHEMA = "muncho-writer-native-observation.v1"
+NATIVE_READ_ONLY_PREFLIGHT_SCHEMA = (
+    "muncho-writer-native-read-only-preflight.v2"
+)
 
 WRITER_UNIT = "muncho-canonical-writer.service"
 GATEWAY_UNIT = "hermes-cloud-gateway.service"
@@ -2620,7 +2623,7 @@ def _verify_native_preflight_inputs(
     runner: Runner,
     require_installed: bool,
     require_original_boot: bool,
-) -> None:
+) -> ConfigCollectorReceipt:
     """Perform all bounded host reads before the native lifecycle mutates state."""
 
     if (
@@ -2708,6 +2711,83 @@ def _verify_native_preflight_inputs(
         != collector_receipt.to_mapping()
     ):
         raise RuntimeError("config collector receipt rotated during preflight")
+    return final_collector_receipt
+
+
+def native_observation_read_only_preflight(
+    plan: NativeObservationPlan,
+    *,
+    runner: Runner = _runner,
+    _clock: Callable[[], float] = time.time,
+) -> Mapping[str, Any]:
+    """Prove staged native inputs without installing or starting anything.
+
+    The report intentionally contains only already-public plan identities and
+    mechanical negative assertions.  In particular it records neither a
+    credential value nor a digest derived from credential content.
+    """
+
+    _require_root_linux()
+    if not isinstance(plan, NativeObservationPlan):
+        raise TypeError("native observation plan is required")
+    validated = NativeObservationPlan.from_mapping(plan.to_mapping())
+    collector_receipt = _verify_native_preflight_inputs(
+        validated,
+        runner=runner,
+        require_installed=False,
+        require_original_boot=True,
+    )
+    observed_at_unix = int(_clock())
+    if observed_at_unix < 0:
+        raise ValueError("native preflight observation time is invalid")
+    collector_receipt.require_fresh(observed_at_unix)
+    hba_observed_at_unix = int(
+        collector_receipt.value["hba_observed_at_unix"]
+    )
+    collector_collected_at_unix = int(
+        collector_receipt.value["collected_at_unix"]
+    )
+    hba_expires_at_unix = int(
+        collector_receipt.value["hba_expires_at_unix"]
+    )
+    if (
+        hba_expires_at_unix - hba_observed_at_unix != 300
+        or not hba_observed_at_unix
+        <= collector_collected_at_unix
+        <= observed_at_unix
+        <= hba_expires_at_unix
+    ):
+        raise RuntimeError("native preflight observation freshness drifted")
+    unsigned: dict[str, Any] = {
+        "schema": NATIVE_READ_ONLY_PREFLIGHT_SCHEMA,
+        "ok": True,
+        "state": "staged_inputs_verified_services_stopped",
+        "revision": validated.value["revision"],
+        "native_observation_plan_sha256": validated.sha256,
+        "release_artifact_sha256": validated.value["artifact_sha256"],
+        "release_manifest_file_sha256": validated.value[
+            "release_manifest_file_sha256"
+        ],
+        "config_collector_receipt_sha256": validated.value[
+            "config_collector_receipt_sha256"
+        ],
+        "external_iam_policy_sha256": validated.value[
+            "external_iam_policy_sha256"
+        ],
+        "host_identity_sha256": validated.value["host_identity_sha256"],
+        "boot_id_sha256": validated.value["boot_id_sha256"],
+        "collector_hba_observed_at_unix": hba_observed_at_unix,
+        "collector_collected_at_unix": collector_collected_at_unix,
+        "observed_at_unix": observed_at_unix,
+        "collector_hba_expires_at_unix": hba_expires_at_unix,
+        "services_started": False,
+        "units_installed": False,
+        "daemon_reloaded": False,
+        "discord_started": False,
+        "approval_created": False,
+        "credential_content_or_digest_recorded": False,
+    }
+    return {**unsigned, "report_sha256": _sha256_json(unsigned)}
 
 
 def _verify_database_read_only(
@@ -5051,6 +5131,7 @@ __all__ = [
     "GATEWAY_UNIT",
     "InstallArtifact",
     "NATIVE_OBSERVATION_SCHEMA",
+    "NATIVE_READ_ONLY_PREFLIGHT_SCHEMA",
     "NativeObservationExecutor",
     "NumericIdentities",
     "OWNER_APPROVAL_SCHEMA",
@@ -5062,6 +5143,7 @@ __all__ = [
     "load_external_iam_receipt",
     "load_native_observation_plan",
     "load_owner_approval_receipt",
+    "native_observation_read_only_preflight",
     "activation_read_only_preflight",
     "install_staged_activation_plan",
     "install_staged_external_iam_receipt",

@@ -38,6 +38,7 @@ _PACKAGED_MODULES = {
     "gateway/canonical_writer_gateway_bootstrap.py",
     "gateway/canonical_writer_host_authority.py",
     "gateway/canonical_writer_planner.py",
+    "gateway/canonical_writer_preflight_publisher.py",
     "gateway/canonical_writer_readiness.py",
     "gateway/canonical_writer_release_contract.py",
     "gateway/canonical_writer_root_collector.py",
@@ -178,6 +179,7 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         import gateway.canonical_writer_gateway_bootstrap as gateway_bootstrap_module
         import gateway.canonical_writer_host_authority as host_authority_module
         import gateway.canonical_writer_planner as planner_module
+        import gateway.canonical_writer_preflight_publisher as publisher_module
         import gateway.canonical_writer_release_contract as release_contract_module
         import gateway.canonical_writer_service as service_module
         from gateway.canonical_writer_db import QueryResult
@@ -315,6 +317,9 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         assert "/site-packages/gateway/canonical_writer_planner.py" in (
             planner_module.__file__.replace("\\\\", "/")
         )
+        assert "/site-packages/gateway/canonical_writer_preflight_publisher.py" in (
+            publisher_module.__file__.replace("\\\\", "/")
+        )
         assert "/site-packages/gateway/canonical_writer_release_contract.py" in (
             release_contract_module.__file__.replace("\\\\", "/")
         )
@@ -413,6 +418,24 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
     assert planner_help_run.returncode == 0, planner_help_run.stderr
     assert "build-native-plan" in planner_help_run.stdout
     assert "build-final-plan" in planner_help_run.stdout
+    publisher_help_run = subprocess.run(
+        [
+            str(interpreter),
+            "-B",
+            "-I",
+            "-m",
+            "gateway.canonical_writer_preflight_publisher",
+            "--help",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert publisher_help_run.returncode == 0, publisher_help_run.stderr
+    assert "plan" in publisher_help_run.stdout
+    assert "apply" in publisher_help_run.stdout
     coordinator_help_run = subprocess.run(
         [
             str(interpreter),

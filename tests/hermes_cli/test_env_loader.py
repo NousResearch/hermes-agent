@@ -2,7 +2,204 @@ import importlib
 import os
 import sys
 
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.env_loader import (
+    classify_effective_credential_source,
+    get_effective_credential_source,
+    load_hermes_dotenv,
+)
+
+
+def test_effective_credential_source_prefers_matching_managed_value():
+    source = classify_effective_credential_source(
+        effective_value="managed-token",
+        managed_value="managed-token",
+        external_source="onepassword",
+        profile_value="managed-token",
+    )
+
+    assert source == "managed_env"
+
+
+def test_effective_credential_source_precedence_and_fallbacks():
+    assert classify_effective_credential_source(
+        effective_value="vault-token",
+        managed_value="different-token",
+        external_source="bitwarden",
+        profile_value="vault-token",
+    ) == "bitwarden"
+    assert classify_effective_credential_source(
+        effective_value="profile-token",
+        profile_value="profile-token",
+    ) == "profile_env"
+    assert classify_effective_credential_source(
+        effective_value="shell-token",
+        profile_value="different-token",
+    ) == "process_env"
+    assert classify_effective_credential_source(
+        effective_value=None,
+        external_source="onepassword",
+    ) == "missing"
+    assert classify_effective_credential_source(
+        effective_value="vault-token",
+        external_source="custom-vault",
+    ) == "unknown"
+
+
+def test_get_effective_credential_source_detects_profile_env(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=profile-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.managed_scope.load_managed_env",
+        lambda: {},
+    )
+
+    source = get_effective_credential_source(
+        "TELEGRAM_BOT_TOKEN",
+        effective_value="profile-token",
+        hermes_home=home,
+    )
+
+    assert source == "profile_env"
+
+
+def test_get_effective_credential_source_reads_legacy_encoded_profile_env(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_bytes(
+        b"# caf\xe9\nTELEGRAM_BOT_TOKEN=profile-token\n"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.managed_scope.load_managed_env",
+        lambda: {},
+    )
+
+    source = get_effective_credential_source(
+        "TELEGRAM_BOT_TOKEN",
+        effective_value="profile-token",
+        hermes_home=home,
+    )
+
+    assert source == "profile_env"
+
+
+def test_get_effective_credential_source_honors_context_local_profile(
+    tmp_path,
+    monkeypatch,
+):
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    primary.mkdir()
+    secondary.mkdir()
+    (primary / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=primary-token\n",
+        encoding="utf-8",
+    )
+    (secondary / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=secondary-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(primary))
+    monkeypatch.setattr(
+        "hermes_cli.managed_scope.load_managed_env",
+        lambda: {},
+    )
+
+    token = set_hermes_home_override(secondary)
+    try:
+        source = get_effective_credential_source(
+            "TELEGRAM_BOT_TOKEN",
+            effective_value="secondary-token",
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    assert source == "profile_env"
+
+
+def test_get_effective_credential_source_does_not_cross_profile_provenance(
+    tmp_path,
+    monkeypatch,
+):
+    from hermes_cli import env_loader
+
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    primary.mkdir()
+    secondary.mkdir()
+    (secondary / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=secondary-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.managed_scope.load_managed_env",
+        lambda: {},
+    )
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCES,
+        "TELEGRAM_BOT_TOKEN",
+        "onepassword",
+    )
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCES_BY_HOME,
+        (str(primary.resolve()), "TELEGRAM_BOT_TOKEN"),
+        "onepassword",
+    )
+
+    source = get_effective_credential_source(
+        "TELEGRAM_BOT_TOKEN",
+        effective_value="secondary-token",
+        hermes_home=secondary,
+    )
+
+    assert source == "profile_env"
+
+
+def test_get_effective_credential_source_uses_same_profile_provenance(
+    tmp_path,
+    monkeypatch,
+):
+    from hermes_cli import env_loader
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=old-profile-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.managed_scope.load_managed_env",
+        lambda: {},
+    )
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCES,
+        "TELEGRAM_BOT_TOKEN",
+        "onepassword",
+    )
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCES_BY_HOME,
+        (str(home.resolve()), "TELEGRAM_BOT_TOKEN"),
+        "onepassword",
+    )
+
+    source = get_effective_credential_source(
+        "TELEGRAM_BOT_TOKEN",
+        effective_value="vault-token",
+        hermes_home=home,
+    )
+
+    assert source == "onepassword"
 
 
 def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):

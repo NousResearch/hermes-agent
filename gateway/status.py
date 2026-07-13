@@ -46,6 +46,67 @@ _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
 
+_PLATFORM_RUNTIME_CREDENTIAL_SOURCES = frozenset(
+    {
+        "managed_env",
+        "bitwarden",
+        "onepassword",
+        "profile_env",
+        "process_env",
+        "missing",
+        "unknown",
+    }
+)
+_PLATFORM_RUNTIME_TRANSPORT_MODES = frozenset({"polling", "webhook"})
+
+
+def _sanitize_platform_runtime(runtime: Any) -> Optional[dict[str, Any]]:
+    """Return the fixed public runtime-receipt shape, or ``None`` if invalid.
+
+    Unknown fields are deliberately dropped.  The allowlist excludes all raw
+    credentials, hashes, URLs, and error details, so future adapter metadata
+    cannot accidentally expand this persisted diagnostics boundary.
+    """
+    if not isinstance(runtime, dict):
+        return None
+
+    credential_source = runtime.get("credential_source")
+    authenticated = runtime.get("authenticated")
+    bot_id = runtime.get("bot_id")
+    bot_username = runtime.get("bot_username")
+    transport_mode = runtime.get("transport_mode")
+    transport_ready = runtime.get("transport_ready")
+    verified_at = runtime.get("verified_at")
+
+    if credential_source not in _PLATFORM_RUNTIME_CREDENTIAL_SOURCES:
+        return None
+    if type(authenticated) is not bool or type(transport_ready) is not bool:
+        return None
+    if not isinstance(bot_id, str):
+        return None
+    if bot_username is not None and not isinstance(bot_username, str):
+        return None
+    if transport_mode not in _PLATFORM_RUNTIME_TRANSPORT_MODES:
+        return None
+    if not isinstance(verified_at, str):
+        return None
+    try:
+        parsed_verified_at = datetime.fromisoformat(verified_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed_verified_at.tzinfo is None:
+        return None
+
+    return {
+        "credential_source": credential_source,
+        "authenticated": authenticated,
+        "bot_id": bot_id,
+        "bot_username": bot_username,
+        "transport_mode": transport_mode,
+        "transport_ready": transport_ready,
+        "verified_at": verified_at,
+    }
+
 
 def _get_process_hermes_home() -> Path:
     """Return the process-level HERMES_HOME, skipping context-local overrides.
@@ -804,12 +865,27 @@ def write_runtime_status(
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
+    platform_runtime: Any = _UNSET,
     served_profiles: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
-    payload = _read_json_file(path) or _build_runtime_status_record()
     current_record = _build_pid_record()
+    payload = _read_json_file(path)
+    if payload is None:
+        payload = _build_runtime_status_record()
+    elif (
+        payload.get("pid") != current_record["pid"]
+        or payload.get("start_time") != current_record["start_time"]
+    ):
+        # A status file belongs to exactly one process incarnation. Never carry
+        # platform authentication/readiness evidence across a PID or start-time
+        # change and then make it appear to have been produced by the new
+        # gateway.
+        desired_state = payload.get("desired_state")
+        payload = _build_runtime_status_record()
+        if desired_state in {"running", "stopped"}:
+            payload["desired_state"] = desired_state
     payload.setdefault("platforms", {})
     payload["kind"] = current_record["kind"]
     payload["pid"] = current_record["pid"]
@@ -830,6 +906,13 @@ def write_runtime_status(
         # for a single-profile gateway. Lets `hermes status` show per-profile
         # coverage without a second probe.
         payload["served_profiles"] = list(served_profiles or [])
+        if len(payload["served_profiles"]) > 1:
+            # The fixed platforms.<name>.runtime shape identifies one adapter.
+            # A multiplexed gateway can own several adapters for the same
+            # platform, so retaining any one receipt would be ambiguous.
+            for existing_platform in payload["platforms"].values():
+                if isinstance(existing_platform, dict):
+                    existing_platform.pop("runtime", None)
 
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
@@ -839,6 +922,14 @@ def write_runtime_status(
             platform_payload["error_code"] = error_code
         if error_message is not _UNSET:
             platform_payload["error_message"] = error_message
+        if platform_runtime is not _UNSET:
+            sanitized_runtime = _sanitize_platform_runtime(platform_runtime)
+            served = payload.get("served_profiles")
+            multiplexed = isinstance(served, list) and len(served) > 1
+            if sanitized_runtime is None or multiplexed:
+                platform_payload.pop("runtime", None)
+            else:
+                platform_payload["runtime"] = sanitized_runtime
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
 

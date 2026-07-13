@@ -2666,25 +2666,43 @@ class BasePlatformAdapter(ABC):
     def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
         self._fatal_error_handler = handler
 
-    def _mark_connected(self) -> None:
+    def _mark_connected(self, *, platform_runtime: Any = None) -> None:
         self._running = True
         self._fatal_error_code = None
         self._fatal_error_message = None
         self._fatal_error_retryable = True
-        self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
+        self._write_runtime_status_safe(
+            "connected",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+            platform_runtime=platform_runtime,
+        )
 
     def _mark_disconnected(self) -> None:
         self._running = False
         if self.has_fatal_error:
             return
-        self._write_runtime_status_safe("disconnected", platform_state="disconnected", error_code=None, error_message=None)
+        self._write_runtime_status_safe(
+            "disconnected",
+            platform_state="disconnected",
+            error_code=None,
+            error_message=None,
+            platform_runtime=None,
+        )
 
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._running = False
         self._fatal_error_code = code
         self._fatal_error_message = message
         self._fatal_error_retryable = retryable
-        self._write_runtime_status_safe("fatal", platform_state="fatal", error_code=code, error_message=message)
+        self._write_runtime_status_safe(
+            "fatal",
+            platform_state="fatal",
+            error_code=code,
+            error_message=message,
+            platform_runtime=None,
+        )
 
     def _write_runtime_status_safe(self, context: str, **kwargs) -> None:
         """Write runtime status; log first failure per context at warning, rest at debug.

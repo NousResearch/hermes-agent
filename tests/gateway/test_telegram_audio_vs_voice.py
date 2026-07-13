@@ -12,7 +12,7 @@ These tests confirm that:
   3. Mixed media lists (voice + audio) split correctly.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -139,76 +139,6 @@ async def test_audio_attachment_context_note_format():
 # ---------------------------------------------------------------------------
 # 3. STT disabled still results in no transcription for audio file attachments
 # ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_pdf_document_attachment_includes_extracted_text():
-    """PDF document attachments should surface extracted text to the agent."""
-    runner = _make_runner(stt_enabled=True)
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
-    event = MessageEvent(
-        text="",
-        message_type=MessageType.DOCUMENT,
-        source=source,
-        media_urls=["/tmp/report.pdf"],
-        media_types=["application/pdf"],
-    )
-
-    with patch(
-        "gateway.run._extract_pdf_text",
-        new=AsyncMock(return_value="PDF says: hello world"),
-    ):
-        with patch(
-            "tools.credential_files.to_agent_visible_cache_path",
-            side_effect=lambda p: p,
-        ):
-            result = await runner._prepare_inbound_message_text(
-                event=event,
-                source=source,
-                history=[],
-            )
-
-    assert result is not None
-    assert "PDF says: hello world" in result
-    assert "PDF document" in result
-    assert "/tmp/report.pdf" in result
-
-
-@pytest.mark.asyncio
-async def test_pdf_document_attachment_uses_ocr_fallback():
-    """Scanned PDFs should use OCR fallback when text extraction fails."""
-    runner = _make_runner(stt_enabled=True)
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
-    event = MessageEvent(
-        text="",
-        message_type=MessageType.DOCUMENT,
-        source=source,
-        media_urls=["/tmp/scanned.pdf"],
-        media_types=["application/pdf"],
-    )
-
-    with patch(
-        "gateway.run._extract_pdf_text",
-        new=AsyncMock(return_value=None),
-    ):
-        with patch(
-            "gateway.run._ocr_pdf_text",
-            new=AsyncMock(return_value="[PDF OCR page 1]\nOCR says hello"),
-        ):
-            with patch(
-                "tools.credential_files.to_agent_visible_cache_path",
-                side_effect=lambda p: p,
-            ):
-                result = await runner._prepare_inbound_message_text(
-                    event=event,
-                    source=source,
-                    history=[],
-                )
-
-    assert result is not None
-    assert "OCR says hello" in result
-    assert "scanned PDF document" in result
-    assert "/tmp/scanned.pdf" in result
-
 
 @pytest.mark.asyncio
 async def test_audio_attachment_skips_stt_when_stt_disabled():

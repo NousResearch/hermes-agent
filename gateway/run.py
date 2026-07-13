@@ -1341,13 +1341,9 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
 
 
 async def _extract_pdf_text(path: str, *, max_chars: int = 12_000) -> Optional[str]:
-    """Best-effort PDF text extraction using pdftotext.
-
-    We keep the dependency surface tiny by shelling out to the system
-    pdftotext binary when it is available. The caller decides how to
-    present the extracted text; this helper only returns the plain text
-    or ``None`` on failure.
-    """
+    """Best-effort local PDF text extraction using ``pdftotext``."""
+    proc = None
+    communicate_task = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "pdftotext",
@@ -1357,7 +1353,12 @@ async def _extract_pdf_text(path: str, *, max_chars: int = 12_000) -> Optional[s
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+        # Keep communicate() alive when the timeout fires so the child can be
+        # killed and reaped instead of lingering in the gateway process.
+        communicate_task = asyncio.create_task(proc.communicate())
+        stdout, stderr = await asyncio.wait_for(
+            asyncio.shield(communicate_task), timeout=15.0
+        )
         if proc.returncode != 0:
             logger.debug(
                 "pdftotext failed for %s (rc=%s): %s",
@@ -1372,97 +1373,24 @@ async def _extract_pdf_text(path: str, *, max_chars: int = 12_000) -> Optional[s
         if len(text) > max_chars:
             text = text[:max_chars].rstrip() + "\n[... PDF text truncated ...]"
         return text
+    except asyncio.TimeoutError:
+        logger.debug("pdftotext timed out for %s", path)
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                if communicate_task is not None:
+                    await communicate_task
+                else:
+                    await proc.communicate()
+            except Exception as exc:
+                logger.debug("Failed to reap timed-out pdftotext for %s: %s", path, exc)
     except FileNotFoundError:
         logger.debug("pdftotext is not installed; skipping PDF extraction for %s", path)
     except Exception as exc:
         logger.debug("PDF extraction failed for %s: %s", path, exc)
-    return None
-
-
-async def _ocr_pdf_text(
-    path: str,
-    *,
-    max_pages: int = 3,
-    max_chars: int = 12_000,
-) -> Optional[str]:
-    """Best-effort OCR for scanned PDFs via rendered page images.
-
-    This is a fallback for PDFs that do not contain extractable text.
-    We render the first few pages with ``pdftoppm`` and then ask the
-    vision pipeline to transcribe the text it sees on each page.
-    """
-    try:
-        from agent.memory_manager import sanitize_context
-        from tools.vision_tools import vision_analyze_tool
-    except Exception as exc:
-        logger.debug("PDF OCR dependencies unavailable for %s: %s", path, exc)
-        return None
-
-    try:
-        with tempfile.TemporaryDirectory(prefix="hermes_pdf_ocr_") as tmpdir:
-            out_prefix = str(Path(tmpdir) / "page")
-            proc = await asyncio.create_subprocess_exec(
-                "pdftoppm",
-                "-png",
-                "-r",
-                "200",
-                "-f",
-                "1",
-                "-l",
-                str(max_pages),
-                path,
-                out_prefix,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
-            if proc.returncode != 0:
-                logger.debug(
-                    "pdftoppm failed for %s (rc=%s): %s",
-                    path,
-                    proc.returncode,
-                    stderr.decode(errors="replace").strip(),
-                )
-                return None
-
-            page_images = sorted(Path(tmpdir).glob("page-*.png"))
-            if not page_images:
-                logger.debug("pdftoppm produced no page images for %s", path)
-                return None
-
-            prompt = (
-                "Transcribe all visible text from this PDF page as accurately as possible. "
-                "Preserve line breaks, headings, tables, labels, and bullet points. "
-                "If the page contains no readable text, say that clearly."
-            )
-            parts: list[str] = []
-            for index, image_path in enumerate(page_images[:max_pages], start=1):
-                try:
-                    result_json = await vision_analyze_tool(
-                        image_url=str(image_path),
-                        user_prompt=prompt,
-                    )
-                    result = json.loads(result_json)
-                    if not result.get("success"):
-                        continue
-                    page_text = sanitize_context(result.get("analysis", "")).strip()
-                    if page_text:
-                        parts.append(f"[PDF page {index}]\n{page_text}")
-                except Exception as exc:
-                    logger.debug("PDF OCR page %s failed for %s: %s", index, path, exc)
-                    continue
-
-            if not parts:
-                return None
-
-            text = "\n\n".join(parts)
-            if len(text) > max_chars:
-                text = text[:max_chars].rstrip() + "\n[... PDF OCR text truncated ...]"
-            return text
-    except FileNotFoundError:
-        logger.debug("pdftoppm is not installed; skipping PDF OCR for %s", path)
-    except Exception as exc:
-        logger.debug("PDF OCR failed for %s: %s", path, exc)
     return None
 
 
@@ -8629,6 +8557,9 @@ class GatewayRunner:
                         if guessed:
                             mtype = guessed
 
+                if not mtype.startswith(("application/", "text/")):
+                    continue
+
                 basename = os.path.basename(path)
                 parts = basename.split("_", 2)
                 display_name = parts[2] if len(parts) >= 3 else basename
@@ -8640,42 +8571,14 @@ class GatewayRunner:
                 agent_path = to_agent_visible_cache_path(path)
                 ext = os.path.splitext(path)[1].lower()
 
-                if mtype.startswith("text/") or ext in _TEXT_EXTENSIONS:
-                    try:
-                        doc_text = Path(path).read_text(encoding="utf-8", errors="replace").strip()
-                    except Exception as exc:
-                        logger.debug("Text document read failed for %s: %s", path, exc)
-                        doc_text = ""
-
-                    if doc_text:
+                if source.platform == Platform.SIGNAL and (ext == ".pdf" or mtype == "application/pdf"):
+                    pdf_text = await _extract_pdf_text(path)
+                    if pdf_text:
                         context_note = (
-                            f"[The user sent a text document: '{display_name}'. "
-                            f"Its content has been included below. "
+                            f"[The user sent a PDF document: '{display_name}'. "
+                            f"Its extracted text has been included below. "
                             f"The file is also saved at: {agent_path}]"
                         )
-                        message_text = f"{context_note}\n\n{doc_text}\n\n{message_text}"
-                        continue
-
-                if ext == ".pdf" or mtype == "application/pdf":
-                    pdf_text = await _extract_pdf_text(path)
-                    used_ocr = False
-                    if not pdf_text:
-                        pdf_text = await _ocr_pdf_text(path)
-                        used_ocr = bool(pdf_text)
-
-                    if pdf_text:
-                        if used_ocr:
-                            context_note = (
-                                f"[The user sent a scanned PDF document: '{display_name}'. "
-                                f"Its OCR text has been included below. "
-                                f"The file is also saved at: {agent_path}]"
-                            )
-                        else:
-                            context_note = (
-                                f"[The user sent a PDF document: '{display_name}'. "
-                                f"Its extracted text has been included below. "
-                                f"The file is also saved at: {agent_path}]"
-                            )
                         message_text = f"{context_note}\n\n{pdf_text}\n\n{message_text}"
                     else:
                         context_note = (
@@ -8687,14 +8590,18 @@ class GatewayRunner:
                         message_text = f"{context_note}\n\n{message_text}"
                     continue
 
-                if not mtype.startswith(("application/", "text/")):
-                    continue
-
-                context_note = (
-                    f"[The user sent a document: '{display_name}'. "
-                    f"The file is saved at: {agent_path}. "
-                    f"Ask the user what they'd like you to do with it.]"
-                )
+                if mtype.startswith("text/"):
+                    context_note = (
+                        f"[The user sent a text document: '{display_name}'. "
+                        f"Its content has been included below. "
+                        f"The file is also saved at: {agent_path}]"
+                    )
+                else:
+                    context_note = (
+                        f"[The user sent a document: '{display_name}'. "
+                        f"The file is saved at: {agent_path}. "
+                        f"Ask the user what they'd like you to do with it.]"
+                    )
                 message_text = f"{context_note}\n\n{message_text}"
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:

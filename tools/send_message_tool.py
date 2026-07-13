@@ -6,14 +6,12 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
-import mimetypes
 import json
 import logging
 import os
 import re
 import ssl
 import time
-import tempfile
 from email.utils import formatdate
 
 from agent.redact import redact_sensitive_text
@@ -68,11 +66,6 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     re.IGNORECASE,
 )
 
-_ICS_ATTACHMENT_RE = re.compile(
-    r'<template\b[^>]*class=["\'][^"\']*\bics-attachment\b[^"\']*["\'][^>]*data-filename=["\']([^"\']+)["\'][^>]*>(.*?)</template>',
-    re.IGNORECASE | re.DOTALL,
-)
-
 
 def _sanitize_error_text(text) -> str:
     """Redact secrets from error text before surfacing it to users/models."""
@@ -85,54 +78,6 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
-
-
-def _sanitize_attachment_filename(name: str) -> str:
-    base = os.path.basename((name or "").strip())
-    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._-")
-    if not base:
-        base = "event.ics"
-    if not base.lower().endswith(".ics"):
-        base += ".ics"
-    return base
-
-
-def _extract_ics_attachments(message: str):
-    """Extract hidden ICS blocks from an HTML email body.
-
-    Expected format:
-      <template class="ics-attachment" data-filename="event.ics">
-      BEGIN:VCALENDAR
-      ...
-      END:VCALENDAR
-      </template>
-    """
-    attachment_paths = []
-
-    def _repl(match):
-        filename = _sanitize_attachment_filename(match.group(1))
-        content = match.group(2).strip()
-        if not content:
-            return ""
-        fd, path = tempfile.mkstemp(prefix="hermes_ics_", suffix="_" + filename)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\r\n") as handle:
-                handle.write(content.rstrip() + "\r\n")
-            attachment_paths.append(path)
-        except Exception:
-            try:
-                os.close(fd)
-            except Exception:
-                pass
-            try:
-                os.unlink(path)
-            except Exception:
-                pass
-            raise
-        return ""
-
-    cleaned = _ICS_ATTACHMENT_RE.sub(_repl, message)
-    return cleaned, attachment_paths
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -314,10 +259,7 @@ def _handle_send(args):
     force_document_attachments = "[[as_document]]" in message
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
-    cleaned_message, embedded_attachment_paths = _extract_ics_attachments(cleaned_message)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-    if embedded_attachment_paths:
-        media_files = list(media_files) + [(path, False) for path in embedded_attachment_paths]
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -407,12 +349,6 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
-    finally:
-        for attachment_path in embedded_attachment_paths:
-            try:
-                os.unlink(attachment_path)
-            except Exception:
-                pass
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):
@@ -837,7 +773,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
-            result = await _send_email(pconfig.extra, chat_id, chunk, media_files=media_files)
+            result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
         elif platform == Platform.MATRIX:
@@ -1345,19 +1281,9 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return _error(f"Signal send failed: {e}")
 
 
-async def _send_email(extra, chat_id, message, media_files=None):
-    """Send via SMTP (one-shot, no persistent connection needed).
-
-    Supports both plain-text and HTML email bodies. If the message looks like
-    HTML (or starts with an HTML doctype), send a multipart/alternative email
-    with a plain-text fallback so recipients see a real rendered HTML email in
-    capable clients. If media files are provided, attach them to the email as
-    regular MIME attachments.
-    """
+async def _send_email(extra, chat_id, message):
+    """Send via SMTP (one-shot, no persistent connection needed)."""
     import smtplib
-    import html as html_lib
-    import re
-    from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
@@ -1371,88 +1297,11 @@ async def _send_email(extra, chat_id, message, media_files=None):
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
-    def _looks_like_html(text: str) -> bool:
-        head = text.lstrip().lower()
-        return head.startswith("<!doctype html") or head.startswith("<html") or "<body" in head or "<table" in head
-
-    def _split_subject_and_body(text: str) -> tuple[str, str]:
-        """Allow callers to prefix the message with `Subject: ...`.
-
-        If present, the first non-empty line becomes the email subject and the
-        remainder becomes the email body.
-        """
-        stripped = text.lstrip()
-        if stripped.lower().startswith("subject:"):
-            first_line, _, rest = stripped.partition("\n")
-            subject = first_line.split(":", 1)[1].strip() or "Hermes Agent"
-            body = rest.lstrip("\r\n")
-            return subject, body
-        return "Hermes Agent", text
-
-    def _html_to_text(text: str) -> str:
-        # Small, dependency-free fallback for mail clients that don't render HTML.
-        text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", "", text)
-        text = re.sub(r"(?i)<br\s*/?>", "\n", text)
-        text = re.sub(r"(?i)</p\s*>", "\n\n", text)
-        text = re.sub(r"(?i)</div\s*>", "\n", text)
-        text = re.sub(r"(?i)</h[1-6]\s*>", "\n\n", text)
-        text = re.sub(r"(?i)<li\s*>", "- ", text)
-        text = re.sub(r"(?i)</li\s*>", "\n", text)
-        text = re.sub(r"<[^>]+>", "", text)
-        text = html_lib.unescape(text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        return text.strip()
-
     try:
-        from email import encoders
-        from email.mime.base import MIMEBase
-        import mimetypes as _mimetypes
-
-        subject, body = _split_subject_and_body(message)
-        attachments = list(media_files or [])
-
-        def _attachment_part(path: str):
-            filename = os.path.basename(path)
-            ctype, _ = _mimetypes.guess_type(filename)
-            if ctype is None:
-                ctype = "application/octet-stream"
-            maintype, subtype = ctype.split("/", 1)
-            with open(path, "rb") as handle:
-                payload = handle.read()
-            if maintype == "text":
-                try:
-                    text = payload.decode("utf-8")
-                except UnicodeDecodeError:
-                    text = payload.decode("utf-8", errors="replace")
-                part = MIMEText(text, _subtype=subtype, _charset="utf-8")
-                if subtype.lower() == "calendar":
-                    part.replace_header("Content-Type", 'text/calendar; charset="utf-8"; method=PUBLISH')
-            else:
-                part = MIMEBase(maintype, subtype)
-                part.set_payload(payload)
-                encoders.encode_base64(part)
-            part.add_header("Content-Disposition", "attachment", filename=filename)
-            return part
-
-        if _looks_like_html(body):
-            body_part = MIMEMultipart("alternative")
-            plain = _html_to_text(body)
-            body_part.attach(MIMEText(plain, "plain", "utf-8"))
-            body_part.attach(MIMEText(body, "html", "utf-8"))
-        else:
-            body_part = MIMEText(body, "plain", "utf-8")
-
-        if attachments:
-            msg = MIMEMultipart("mixed")
-            msg.attach(body_part)
-            for attachment_path, _is_voice in attachments:
-                msg.attach(_attachment_part(attachment_path))
-        else:
-            msg = body_part
-
+        msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address
         msg["To"] = chat_id
-        msg["Subject"] = subject
+        msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
         server = smtplib.SMTP(smtp_host, smtp_port)
@@ -1460,13 +1309,7 @@ async def _send_email(extra, chat_id, message, media_files=None):
         server.login(address, password)
         server.send_message(msg)
         server.quit()
-        return {
-            "success": True,
-            "platform": "email",
-            "chat_id": chat_id,
-            "content_type": "html" if _looks_like_html(body) else "plain",
-            "attachments": len(attachments),
-        }
+        return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         return _error(f"Email send failed: {e}")
 

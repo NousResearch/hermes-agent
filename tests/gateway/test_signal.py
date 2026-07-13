@@ -248,8 +248,7 @@ class TestSignalAttachmentFetch:
         assert call["method"] == "getAttachment"
         assert call["params"]["id"] == "attachment-123"
         assert "attachmentId" not in call["params"], "Must NOT use 'attachmentId' — causes NullPointerException in signal-cli"
-        account = call["params"]["account"]
-        assert account.startswith("+155")
+        assert call["params"]["account"] == "+15551234567"
 
     @pytest.mark.asyncio
     async def test_fetch_attachment_returns_none_on_empty(self, monkeypatch):

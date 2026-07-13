@@ -8,7 +8,6 @@ silently dropped.
 
 from __future__ import annotations
 
-import pytest
 
 from run_agent import AIAgent
 
@@ -134,6 +133,86 @@ def test_mixed_kinds_replay_through_correct_channels():
     assert statuses == ["status-1", "status-2"]
     assert vprints == [("vprint-1", True)]
     assert warns == ["warn-1"]
+
+
+def test_pending_fallback_notice_emitted_once_on_success():
+    """On successful recovery the one-shot fallback notice is surfaced even
+    though the noisy retry buffer is dropped."""
+    agent = _make_bare_agent()
+    emitted = []
+    agent._emit_status = lambda msg: emitted.append(msg)
+
+    # Simulate try_activate_fallback: buffer the noisy switch line AND record
+    # the durable one-shot notice.
+    agent._buffer_status("🔄 Primary model failed — switching to fallback: m2 via p2")
+    agent._pending_fallback_notice = "🔄 Switched to fallback model: m1 via p1 → m2 via p2"
+
+    # Success path order: emit pending notice, then drop the buffer.
+    agent._emit_pending_fallback_notice()
+    agent._clear_status_buffer()
+
+    # The durable notice was shown exactly once; the buffered retry noise was
+    # silently dropped.
+    assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
+    assert agent._retry_status_buffer == []
+    # Notice is cleared so it cannot re-emit on a later turn.
+    assert agent._pending_fallback_notice is None
+
+    # A second success path with no new fallback emits nothing.
+    agent._emit_pending_fallback_notice()
+    assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
+
+
+def test_pending_fallback_notice_noop_when_unset():
+    """No fallback this turn → no notice emitted on the success path."""
+    agent = _make_bare_agent()
+    emitted = []
+    agent._emit_status = lambda msg: emitted.append(msg)
+
+    # No _pending_fallback_notice attribute set at all.
+    agent._emit_pending_fallback_notice()
+    assert emitted == []
+
+
+def test_flush_discards_pending_fallback_notice():
+    """On terminal failure the flushed buffer already carries the switch line,
+    so the one-shot notice is discarded to avoid a stale duplicate later."""
+    agent = _make_bare_agent()
+    emitted = []
+    agent._emit_status = lambda msg: emitted.append(msg)
+
+    agent._buffer_status("🔄 Primary model failed — switching to fallback: m2 via p2")
+    agent._pending_fallback_notice = "🔄 Switched to fallback model: m1 via p1 → m2 via p2"
+
+    # Terminal failure flushes the buffered trace...
+    agent._flush_status_buffer()
+    assert emitted == ["🔄 Primary model failed — switching to fallback: m2 via p2"]
+    # ...and discards the pending notice so it won't re-emit on a later turn.
+    assert agent._pending_fallback_notice is None
+
+    emitted.clear()
+    agent._emit_pending_fallback_notice()
+    assert emitted == []
+
+
+def test_pending_fallback_notice_survives_emit_callback_error():
+    """A failing status callback must not leave the notice set for a stale
+    re-emit, and must not raise."""
+    agent = _make_bare_agent()
+    seen = []
+
+    def boom(msg):
+        seen.append(msg)
+        raise RuntimeError("simulated callback failure")
+
+    agent._emit_status = boom
+    agent._pending_fallback_notice = "🔄 Switched to fallback model: m1 via p1 → m2 via p2"
+
+    # Should not raise.
+    agent._emit_pending_fallback_notice()
+    # Attempt was made and the notice is cleared regardless.
+    assert seen == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
+    assert agent._pending_fallback_notice is None
 
 
 def test_flush_swallows_callback_exceptions():

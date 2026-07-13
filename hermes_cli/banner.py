@@ -2,7 +2,6 @@
 
 Pure display functions with no HermesCLI state dependency.
 """
-
 import json
 import logging
 import os
@@ -11,15 +10,18 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-
-from prompt_toolkit import print_formatted_text as _pt_print
-from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+# rich and prompt_toolkit are imported lazily (inside the functions that use
+# them) rather than at module level.  Importing this module is on the TUI
+# gateway's critical startup path purely to reach the lightweight update-check
+# helpers (``prefetch_update_check``); pulling rich.console + prompt_toolkit
+# eagerly added ~50ms of wasted imports before ``gateway.ready`` could fire.
+# Keep the type-only reference available to checkers without the runtime cost.
+if TYPE_CHECKING:
+    from rich.console import Console
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,8 @@ _RST = "\033[0m"
 
 def cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's renderer."""
+    from prompt_toolkit import print_formatted_text as _pt_print
+    from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
     _pt_print(_PT_ANSI(text))
 
 
@@ -50,17 +54,6 @@ def _skin_color(key: str, fallback: str) -> str:
         return get_active_skin().get_color(key, fallback)
     except Exception:
         return fallback
-
-
-def _skin_branding(key: str, fallback: str) -> str:
-    """Get a branding string from the active skin, or return fallback."""
-    try:
-        from hermes_cli.skin_engine import get_active_skin
-        return get_active_skin().get_branding(key, fallback)
-    except Exception:
-        return fallback
-
-
 # =========================================================================
 # ASCII Art & Branding
 # =========================================================================
@@ -128,6 +121,53 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+_OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
+
+
+def _canonical_github_remote(url: str | None) -> str:
+    """Return ``host/owner/repo`` for common GitHub remote URL forms."""
+    if not url:
+        return ""
+    value = url.strip()
+    if value.startswith("git@github.com:"):
+        value = "github.com/" + value[len("git@github.com:"):]
+    elif value.startswith("ssh://git@github.com/"):
+        value = "github.com/" + value[len("ssh://git@github.com/"):]
+    else:
+        parsed = urlparse(value)
+        if parsed.netloc and parsed.path:
+            value = f"{parsed.netloc}{parsed.path}"
+    value = value.strip().rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    return value.lower()
+
+
+def _is_ssh_remote(url: str | None) -> bool:
+    if not url:
+        return False
+    value = url.strip().lower()
+    return value.startswith("git@") or value.startswith("ssh://")
+
+
+def _is_official_ssh_remote(url: str | None) -> bool:
+    return _is_ssh_remote(url) and _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
+
+
+def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(cwd),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip()
 
 
 def _check_via_rev(local_rev: str) -> Optional[int]:
@@ -153,14 +193,50 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
+    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+    if _is_official_ssh_remote(origin_url):
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        checked = _check_via_rev(head_rev) if head_rev else None
+        if checked == UPDATE_AVAILABLE_NO_COUNT:
+            return 1
+        return checked
+
+    # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
+    # clone the history stops at a single commit, so a plain `git fetch` would
+    # unshallow the repo (dragging in the whole history) and
+    # `rev-list --count HEAD..origin/main` would report a huge bogus "behind"
+    # number (e.g. "12492 commits behind"). Detect shallow up front: fetch with
+    # --depth 1 to preserve the boundary and compare tip SHAs instead of
+    # counting. Full clones (developers, Docker dev images) keep the exact
+    # count path unchanged. Mirrors the desktop fix in apps/desktop/electron/main.cjs.
+    shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
+    is_shallow = shallow == "true"
+
     try:
+        fetch_args = ["git", "fetch", "origin"]
+        if is_shallow:
+            fetch_args += ["--depth", "1"]
+        fetch_args.append("--quiet")
         subprocess.run(
-            ["git", "fetch", "origin", "--quiet"],
+            fetch_args,
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
+
+    if is_shallow:
+        # No history to count across the shallow boundary. `origin/main` may not
+        # be a tracking ref in a `clone --depth 1`, so prefer FETCH_HEAD (just
+        # updated by the fetch above) and fall back to origin/main.
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        target_rev = (
+            _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
+            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
+        )
+        if not head_rev or not target_rev:
+            return None
+        return 0 if head_rev == target_rev else UPDATE_AVAILABLE_NO_COUNT
 
     try:
         result = subprocess.run(
@@ -232,7 +308,30 @@ def check_for_updates() -> Optional[int]:
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
 
-    # Read cache — invalidate if the embedded rev has changed since last check
+    # Docker images have no working tree to count commits against — the
+    # published image excludes `.git` (see .dockerignore) and sets no
+    # HERMES_REVISION (that's nix-only). Without this guard the checks below
+    # fall through to `check_via_pypi()`, whose PyPI-version mismatch flag (1)
+    # then gets rendered by the CLI banner and the TUI badge as a phantom
+    # "1 commit behind" — even though no git repo or commit math is involved,
+    # and `hermes update` correctly refuses to run in-place inside the
+    # container anyway. The dashboard's REST `/api/hermes/update/check`
+    # endpoint already short-circuits docker the same way (web_server.py);
+    # mirror that here so the banner/TUI surfaces agree. Returning None makes
+    # both the Rich banner (build_welcome_banner) and the Ink badge
+    # (branding.tsx, guarded on `typeof === 'number' && > 0`) show nothing.
+    try:
+        from hermes_cli.config import detect_install_method, get_project_root
+        if detect_install_method(get_project_root()) == "docker":
+            return None
+    except Exception:
+        pass
+
+    # Read cache — invalidate if the embedded rev OR installed version has
+    # changed since the last check. The version guard matters for pip installs:
+    # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
+    # changes VERSION but leaves rev unchanged (both None), and without this
+    # the stale "behind" count would survive the upgrade for up to 6h. See #34491.
     now = time.time()
     try:
         if cache_file.exists():
@@ -240,6 +339,7 @@ def check_for_updates() -> Optional[int]:
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
+                and cached.get("ver") == VERSION
             ):
                 return cached.get("behind")
     except Exception:
@@ -260,7 +360,9 @@ def check_for_updates() -> Optional[int]:
             behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        cache_file.write_text(
+            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+        )
     except Exception:
         pass
 
@@ -475,12 +577,13 @@ def _display_toolset_name(toolset_name: str) -> str:
     )
 
 
-def build_welcome_banner(console: Console, model: str, cwd: str,
+def build_welcome_banner(console: "Console", model: str, cwd: str,
                          tools: List[dict] = None,
                          enabled_toolsets: List[str] = None,
                          session_id: str = None,
                          get_toolset_for_tool=None,
-                         context_length: int = None):
+                         context_length: int = None,
+                         provider: str = None):
     """Build and print a welcome banner with caduceus on left and info on right.
 
     Args:
@@ -492,8 +595,13 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         session_id: Session identifier.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
+        provider: Active provider id. When ``"moa"``, ``model`` is a MoA
+            preset name and the banner renders the aggregator instead of a
+            bare model slug.
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from rich.panel import Panel
+    from rich.table import Table
     if get_toolset_for_tool is None:
         from model_tools import get_toolset_for_tool
 
@@ -501,6 +609,18 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     enabled_toolsets = enabled_toolsets or []
 
     _, unavailable_toolsets = check_tool_availability(quiet=True)
+    # The availability check walks the GLOBAL toolset registry, so it includes
+    # toolsets that aren't part of this agent's platform set at all (e.g.
+    # `discord`, `feishu_doc` on a CLI session). Those must never surface in the
+    # banner's "Available Tools" — they aren't exposed to the agent. Restrict to
+    # toolsets actually enabled for this agent; a toolset that's enabled but
+    # currently has unmet deps legitimately shows as disabled/lazy below.
+    _enabled_ts = {str(t) for t in enabled_toolsets}
+    if _enabled_ts:
+        unavailable_toolsets = [
+            item for item in unavailable_toolsets
+            if str(item.get("id", item.get("name", ""))) in _enabled_ts
+        ]
     disabled_tools = set()
     # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho,
     # homeassistant) — they show as unavailable at banner time because the
@@ -534,13 +654,36 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         _bskin = None
         _hero = HERMES_CADUCEUS
     left_lines = ["", _hero, ""]
-    model_short = model.split("/")[-1] if "/" in model else model
-    if model_short.endswith(".gguf"):
-        model_short = model_short[:-5]
-    if len(model_short) > 28:
-        model_short = model_short[:25] + "..."
-    ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-    left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+    if (provider or "").strip().lower() == "moa":
+        # MoA virtual provider: ``model`` is a preset name. Show the preset and
+        # its aggregator so the banner is meaningful instead of a bare slug.
+        preset_name = model
+        agg_label = ""
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import normalize_moa_config
+
+            _moa = normalize_moa_config(load_config().get("moa") or {})
+            _preset = _moa.get("presets", {}).get(preset_name)
+            if _preset:
+                _agg = _preset.get("aggregator") or {}
+                _am = str(_agg.get("model") or "")
+                agg_label = _am.split("/")[-1] if "/" in _am else _am
+        except Exception:
+            agg_label = ""
+        if len(preset_name) > 28:
+            preset_name = preset_name[:25] + "..."
+        agg_str = f" [dim {dim}]·[/] [dim {dim}]agg {agg_label}[/]" if agg_label else ""
+        ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
+        left_lines.append(f"[{accent}]MoA: {preset_name}[/]{agg_str}{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+    else:
+        model_short = model.split("/")[-1] if "/" in model else model
+        if model_short.endswith(".gguf"):
+            model_short = model_short[:-5]
+        if len(model_short) > 28:
+            model_short = model_short[:25] + "..."
+        ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
+        left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
 
     if os.getenv("HERMES_YOLO_MODE"):
         left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")
@@ -619,10 +762,26 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         right_lines.append("")
         right_lines.append(f"[bold {accent}]MCP Servers[/]")
         for srv in mcp_status:
+            status = srv.get("status")
             if srv["connected"]:
                 right_lines.append(
                     f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
                     f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
+                )
+            elif srv.get("disabled") or status == "disabled":
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[dim {dim}]— disabled[/]"
+                )
+            elif status == "connecting":
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[yellow]— connecting[/]"
+                )
+            elif status == "configured":
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[dim {dim}]— configured[/]"
                 )
             else:
                 right_lines.append(
@@ -632,19 +791,46 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     right_lines.append("")
     right_lines.append(f"[bold {accent}]Available Skills[/]")
-    skills_by_category = get_available_skills()
-    total_skills = sum(len(s) for s in skills_by_category.values())
+    # The skills catalog is only reachable when the `skills` toolset is enabled
+    # (it exposes skill_view / skill_manage). When it's disabled — e.g. a Blank
+    # Slate install — the agent literally cannot load any skill, so advertising
+    # the on-disk catalog here is misleading. Reflect the real state instead.
+    _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
+    if _skills_enabled:
+        skills_by_category = get_available_skills()
+        total_skills = sum(len(s) for s in skills_by_category.values())
+    else:
+        skills_by_category = {}
+        total_skills = 0
 
-    if skills_by_category:
+    # Dynamically size skills display based on terminal width.
+    # Rich grid with 2 columns; right column gets roughly 60% of terminal.
+    _term_cols = shutil.get_terminal_size().columns
+    _right_col_width = max(int(_term_cols * 0.6) - 10, 30)
+
+    if not _skills_enabled:
+        right_lines.append(f"[dim {dim}]Skills toolset disabled[/]")
+    elif skills_by_category:
         for category in sorted(skills_by_category.keys()):
             skill_names = sorted(skills_by_category[category])
-            if len(skill_names) > 8:
-                display_names = skill_names[:8]
-                skills_str = ", ".join(display_names) + f" +{len(skill_names) - 8} more"
-            else:
-                skills_str = ", ".join(skill_names)
-            if len(skills_str) > 50:
-                skills_str = skills_str[:47] + "..."
+            # Account for "category: " prefix
+            _prefix_len = len(category) + 2
+            _avail = max(_right_col_width - _prefix_len, 20)
+            # Accumulate skills until we run out of space
+            parts, length = [], 0
+            for i, name in enumerate(skill_names):
+                _sep = ", " if parts else ""
+                _needed = len(_sep) + len(name)
+                # Estimate indicator size IF we were to add this skill then stop
+                _after = len(skill_names) - (i + 1)  # remaining after adding this
+                _ind_len = len(f", +{_after} more") if _after > 0 else 0
+                if parts and length + _needed + _ind_len > _avail:
+                    remaining = len(skill_names) - len(parts)
+                    parts.append(f"+{remaining} more")
+                    break
+                parts.append(name)
+                length += _needed
+            skills_str = ", ".join(parts)
             right_lines.append(f"[dim {dim}]{category}:[/] [{text}]{skills_str}[/]")
     else:
         right_lines.append(f"[dim {dim}]No skills installed[/]")
@@ -701,6 +887,27 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                 right_lines.append(line)
     except Exception:
         pass  # Never break the banner over an update check
+
+    # Unsupported install-method warning — pip/PyPI and Homebrew are no
+    # longer an officially supported distribution method (see
+    # website/docs/getting-started/platform-support.md). Such installs miss
+    # the git checkout + installer-managed deps, so updates, self-update, and
+    # issue triage don't behave correctly. Warn, don't block. NixOS is fully
+    # supported and never hits this.
+    try:
+        from hermes_cli.config import (
+            detect_install_method,
+            format_unsupported_install_warning,
+            is_unsupported_install_method,
+            get_project_root
+        )
+        _install_method = detect_install_method(get_project_root())
+        if is_unsupported_install_method(_install_method):
+            right_lines.append(
+                f"[bold yellow]⚠ {format_unsupported_install_warning(_install_method)}[/]"
+            )
+    except Exception:
+        pass  # Never break the banner over the install-method check
 
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)

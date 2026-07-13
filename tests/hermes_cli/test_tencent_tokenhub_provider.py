@@ -10,7 +10,6 @@ from hermes_cli.auth import (
     resolve_provider,
     get_api_key_provider_status,
     resolve_api_key_provider_credentials,
-    AuthError,
 )
 
 
@@ -192,22 +191,22 @@ class TestTencentTokenhubCanonicalProvider:
 
 
 class TestTencentInOpenRouterAndNous:
-    """tencent/hy3-preview:free and tencent/hy3-preview should appear in OpenRouter and Nous curated lists."""
+    """tencent/hy3:free and tencent/hy3 should appear in OpenRouter and Nous curated lists."""
 
     def test_in_openrouter_fallback(self):
         from hermes_cli.models import OPENROUTER_MODELS
         ids = [mid for mid, _ in OPENROUTER_MODELS]
-        assert "tencent/hy3-preview:free" in ids
+        assert "tencent/hy3:free" in ids
 
     def test_paid_in_openrouter_fallback(self):
-        """tencent/hy3-preview (paid, no :free suffix) should also be in OpenRouter list."""
+        """tencent/hy3 (paid, no :free suffix) should also be in OpenRouter list."""
         from hermes_cli.models import OPENROUTER_MODELS
         ids = [mid for mid, _ in OPENROUTER_MODELS]
-        assert "tencent/hy3-preview" in ids
+        assert "tencent/hy3" in ids
 
     def test_in_nous_provider_models(self):
         from hermes_cli.models import _PROVIDER_MODELS
-        assert "tencent/hy3-preview" in _PROVIDER_MODELS["nous"]
+        assert "tencent/hy3" in _PROVIDER_MODELS["nous"]
 
 
 # =============================================================================
@@ -434,7 +433,7 @@ class TestTencentTokenhubCLIDispatch:
 
 
 class TestTencentTokenhubModelCatalogJSON:
-    """Verify tencent/hy3-preview:free and tencent/hy3-preview are present in the website model-catalog.json."""
+    """Verify tencent/hy3:free and tencent/hy3 are present in the website model-catalog.json."""
 
     def test_in_model_catalog_json(self):
         catalog_path = os.path.join(
@@ -458,8 +457,8 @@ class TestTencentTokenhubModelCatalogJSON:
             for provider_entry in providers:
                 for model in provider_entry.get("models", []):
                     all_ids.add(model.get("id", ""))
-        assert "tencent/hy3-preview:free" in all_ids
-        assert "tencent/hy3-preview" in all_ids
+        assert "tencent/hy3:free" in all_ids
+        assert "tencent/hy3" in all_ids
 
 
 # =============================================================================

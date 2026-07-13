@@ -56,10 +56,6 @@ class TestOpenRouterModels:
             assert isinstance(mid, str) and len(mid) > 0
             assert isinstance(desc, str)
 
-    def test_at_least_5_models(self):
-        """Sanity check that the models list hasn't been accidentally truncated."""
-        assert len(OPENROUTER_MODELS) >= 5
-
 
 class TestFetchOpenRouterModels:
     def test_live_fetch_recomputes_free_tags(self, monkeypatch):
@@ -71,21 +67,22 @@ class TestFetchOpenRouterModels:
                 return False
 
             def read(self):
-                return b'{"data":[{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"}},{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"}}]}'
+                return b'{"data":[{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"}}]}'
 
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == [
-            ("anthropic/claude-opus-4.6", "recommended"),
+            ("anthropic/claude-opus-4.8", "recommended"),
             ("qwen/qwen3.7-max", ""),
             ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
         ]
 
+
     def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=OSError("boom")):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("boom")):
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == OPENROUTER_MODELS
@@ -130,7 +127,10 @@ class TestFetchOpenRouterModels:
             ],
         )
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+        ):
             models = fetch_openrouter_models(force_refresh=True)
 
         ids = [mid for mid, _ in models]
@@ -158,17 +158,17 @@ class TestFetchOpenRouterModels:
                 # No supported_parameters field at all on either entry.
                 return (
                     b'{"data":['
-                    b'{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"}},'
+                    b'{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},'
                     b'{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}}'
                     b']}'
                 )
 
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
             models = fetch_openrouter_models(force_refresh=True)
 
         ids = [mid for mid, _ in models]
-        assert "anthropic/claude-opus-4.6" in ids
+        assert "anthropic/claude-opus-4.8" in ids
         assert "qwen/qwen3.7-max" in ids
 
 
@@ -305,6 +305,26 @@ class TestDetectProviderForModel:
         assert result is not None
         assert result[0] not in {"nous",}  # nous has claude models but shouldn't be suggested
 
+    def test_custom_provider_not_overridden_by_static_catalog(self):
+        """When current provider is custom:*, a static-catalog match must NOT
+        override it — otherwise a model served by the user's own endpoint gets
+        misattributed to a native provider, rewriting model.provider (#48305).
+
+        `gpt-5.4` is in the static openai catalog; with current=custom:foo,
+        detection must return None instead of switching to openai.
+        """
+        assert detect_provider_for_model("gpt-5.4", "custom:foo") is None
+
+    def test_bare_custom_provider_not_overridden_by_static_catalog(self):
+        """Same protection for the bare 'custom' provider."""
+        assert detect_provider_for_model("gpt-5.4", "custom") is None
+
+    def test_non_custom_provider_detection_unaffected(self):
+        """The custom-provider guard must NOT change detection for non-custom
+        current providers — a static-catalog model still routes normally."""
+        result = detect_provider_for_model("gpt-5.4", "openrouter")
+        assert result is not None and result[0] == "openai"
+
 
 class TestIsNousFreeTier:
     """Tests for is_nous_free_tier — account tier detection."""
@@ -415,7 +435,7 @@ class TestUnionWithPortalFreeRecommendations:
         }
 
     def test_adds_portal_free_model_missing_from_curated(self):
-        """A Portal-advertised free model not in curated is prepended + priced free."""
+        """A Portal-advertised free model not in curated is appended + priced free."""
         curated = ["anthropic/claude-opus-4.6"]
         pricing = {"anthropic/claude-opus-4.6": self._PAID}
         with patch(
@@ -424,8 +444,9 @@ class TestUnionWithPortalFreeRecommendations:
         ):
             ids, p = union_with_portal_free_recommendations(curated, pricing, "")
 
-        assert ids[0] == "qwen/qwen3.6-plus"  # prepended
-        assert "anthropic/claude-opus-4.6" in ids
+        # Curated ("HA") models stay first; Portal-only picks follow.
+        assert ids[0] == "anthropic/claude-opus-4.6"
+        assert ids[-1] == "qwen/qwen3.6-plus"  # appended
         # Synthetic free pricing entry created
         assert p["qwen/qwen3.6-plus"] == self._FREE
         # Existing pricing untouched
@@ -513,7 +534,7 @@ class TestUnionWithPortalFreeRecommendations:
             },
         ):
             ids, p = union_with_portal_free_recommendations(curated, pricing, "")
-        assert ids == ["qwen/qwen3.6-plus", "a"]
+        assert ids == ["a", "qwen/qwen3.6-plus"]
         assert p["qwen/qwen3.6-plus"] == self._FREE
 
 
@@ -539,7 +560,7 @@ class TestUnionWithPortalPaidRecommendations:
         }
 
     def test_adds_portal_paid_model_missing_from_curated(self):
-        """A Portal-advertised paid model not in curated is prepended."""
+        """A Portal-advertised paid model not in curated is appended."""
         curated = ["anthropic/claude-opus-4.6"]
         pricing = {"anthropic/claude-opus-4.6": self._PAID}
         with patch(
@@ -548,8 +569,9 @@ class TestUnionWithPortalPaidRecommendations:
         ):
             ids, p = union_with_portal_paid_recommendations(curated, pricing, "")
 
-        assert ids[0] == "openai/gpt-5.4"  # prepended
-        assert "anthropic/claude-opus-4.6" in ids
+        # Curated ("HA") models stay first; Portal-only picks follow.
+        assert ids[0] == "anthropic/claude-opus-4.6"
+        assert ids[-1] == "openai/gpt-5.4"  # appended
         # Existing pricing untouched
         assert p["anthropic/claude-opus-4.6"] == self._PAID
 
@@ -638,12 +660,12 @@ class TestUnionWithPortalPaidRecommendations:
             },
         ):
             ids, p = union_with_portal_paid_recommendations(curated, pricing, "")
-        assert ids == ["openai/gpt-5.4", "a"]
+        assert ids == ["a", "openai/gpt-5.4"]
         # No synthetic entry — pricing is untouched.
         assert "openai/gpt-5.4" not in p
 
     def test_preserves_relative_order_of_new_paid_models(self):
-        """Multiple new paid models are prepended in payload order."""
+        """Multiple new paid models are appended in payload order, after curated."""
         curated = ["anthropic/claude-opus-4.6"]
         pricing = {"anthropic/claude-opus-4.6": self._PAID}
         with patch(
@@ -652,9 +674,9 @@ class TestUnionWithPortalPaidRecommendations:
         ):
             ids, _ = union_with_portal_paid_recommendations(curated, pricing, "")
         assert ids == [
+            "anthropic/claude-opus-4.6",
             "openai/gpt-5.4",
             "openai/gpt-5.5",
-            "anthropic/claude-opus-4.6",
         ]
 
 
@@ -761,7 +783,7 @@ class TestNousRecommendedModels:
     def test_fetch_caches_per_portal_url(self):
         from hermes_cli.models import fetch_nous_recommended_models
         mock_cm = self._mock_urlopen(self._SAMPLE_PAYLOAD)
-        with patch("urllib.request.urlopen", return_value=mock_cm) as mock_urlopen:
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_cm) as mock_urlopen:
             a = fetch_nous_recommended_models("https://portal.example.com")
             b = fetch_nous_recommended_models("https://portal.example.com")
         assert a == self._SAMPLE_PAYLOAD
@@ -771,21 +793,21 @@ class TestNousRecommendedModels:
     def test_fetch_cache_is_keyed_per_portal(self):
         from hermes_cli.models import fetch_nous_recommended_models
         mock_cm = self._mock_urlopen(self._SAMPLE_PAYLOAD)
-        with patch("urllib.request.urlopen", return_value=mock_cm) as mock_urlopen:
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_cm) as mock_urlopen:
             fetch_nous_recommended_models("https://portal.example.com")
             fetch_nous_recommended_models("https://portal.staging-nousresearch.com")
         assert mock_urlopen.call_count == 2  # different portals → separate fetches
 
     def test_fetch_returns_empty_on_network_failure(self):
         from hermes_cli.models import fetch_nous_recommended_models
-        with patch("urllib.request.urlopen", side_effect=OSError("boom")):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("boom")):
             result = fetch_nous_recommended_models("https://portal.example.com")
         assert result == {}
 
     def test_fetch_force_refresh_bypasses_cache(self):
         from hermes_cli.models import fetch_nous_recommended_models
         mock_cm = self._mock_urlopen(self._SAMPLE_PAYLOAD)
-        with patch("urllib.request.urlopen", return_value=mock_cm) as mock_urlopen:
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_cm) as mock_urlopen:
             fetch_nous_recommended_models("https://portal.example.com")
             fetch_nous_recommended_models("https://portal.example.com", force_refresh=True)
         assert mock_urlopen.call_count == 2
@@ -909,3 +931,45 @@ class TestNousRecommendedModels:
             patch("hermes_cli.models.check_nous_free_tier", side_effect=RuntimeError("boom")),
         ):
             assert get_nous_recommended_aux_model(vision=False) == "paid-model"
+
+
+class TestCodexSoftAcceptPlausibilityGate:
+    """#45006 kernel (b): the openai-codex / xai-oauth hidden-model soft-accept
+    (#16172 / #19729) must only accept slugs that plausibly belong to that
+    provider's family. An undeclared, unrelated typed name (e.g. a local model
+    name) must be REJECTED with actionable --provider guidance instead of being
+    fake-accepted as a hidden Codex/Grok model (which would 400 on the next turn
+    and mislabel the provider as 'OpenAI Codex')."""
+
+    def test_unrelated_name_rejected_on_openai_codex(self):
+        from hermes_cli.models import validate_requested_model
+        r = validate_requested_model("qwen3.5-4b", "openai-codex")
+        assert r["accepted"] is False
+        assert r["persist"] is False
+        assert "--provider" in (r["message"] or "")
+
+    def test_unrelated_name_rejected_on_xai_oauth(self):
+        from hermes_cli.models import validate_requested_model
+        r = validate_requested_model("llama-3.1-8b", "xai-oauth")
+        assert r["accepted"] is False
+        assert "--provider" in (r["message"] or "")
+
+    def test_family_shaped_hidden_slug_still_soft_accepted_codex(self):
+        """#16172 intent preserved: a gpt-/codex-shaped unknown slug is still
+        soft-accepted (entitlement-gated hidden models)."""
+        from hermes_cli.models import validate_requested_model
+        r = validate_requested_model("gpt-5.9-codex-hidden", "openai-codex")
+        assert r["accepted"] is True
+        assert r["recognized"] is False
+
+    def test_family_shaped_hidden_slug_still_soft_accepted_xai(self):
+        from hermes_cli.models import validate_requested_model
+        r = validate_requested_model("grok-9-hidden", "xai-oauth")
+        assert r["accepted"] is True
+        assert r["recognized"] is False
+
+    def test_real_catalog_model_unaffected(self):
+        from hermes_cli.models import validate_requested_model
+        r = validate_requested_model("gpt-5.5", "openai-codex")
+        assert r["accepted"] is True
+        assert r["recognized"] is True

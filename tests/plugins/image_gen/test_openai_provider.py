@@ -124,6 +124,68 @@ class TestModelResolution:
 # ── Generate ────────────────────────────────────────────────────────────────
 
 
+class TestSourceImageLoading:
+    def test_load_image_bytes_blocks_credential_store(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        auth_json = hermes_home / "auth.json"
+        auth_json.write_text('{"api_key":"sk-secret"}', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with pytest.raises(ValueError, match="credential store"):
+            openai_plugin._load_image_bytes(str(auth_json))
+
+    def test_load_image_bytes_never_opens_blocked_credential(self, tmp_path, monkeypatch):
+        """The guard must fire BEFORE the file is opened — a credential store
+        must never be read into memory (#57698). Spy builtins.open and assert
+        it is never called for the blocked path."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        auth_json = hermes_home / "auth.json"
+        auth_json.write_text('{"api_key":"sk-secret"}', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        import builtins
+
+        real_open = builtins.open
+        opened: list = []
+
+        def _spy_open(file, *a, **k):
+            opened.append(str(file))
+            return real_open(file, *a, **k)
+
+        monkeypatch.setattr(builtins, "open", _spy_open)
+        with pytest.raises(ValueError, match="credential store"):
+            openai_plugin._load_image_bytes(str(auth_json))
+        assert str(auth_json) not in opened, "blocked credential must never be opened"
+
+    def test_load_image_bytes_allows_legit_local_image(self, tmp_path, monkeypatch):
+        """Negative control: a legitimate local image path is NOT blocked and
+        loads normally — proves the guard doesn't over-fire on everything."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        img = tmp_path / "pic.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
+
+        data, name = openai_plugin._load_image_bytes(str(img))
+        assert data == b"\x89PNG\r\n\x1a\nfake-image-bytes"
+        assert name == "pic.png"
+
+    def test_load_image_bytes_passthrough_data_uri_not_blocked(self, tmp_path, monkeypatch):
+        """Negative control: data: URIs are decoded, never routed through the
+        local-path guard (the guard only applies to local file reads)."""
+        import base64
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        b64 = base64.b64encode(b"xyz").decode("ascii")
+        data, name = openai_plugin._load_image_bytes(f"data:image/png;base64,{b64}")
+        assert data == b"xyz"
+        assert name.endswith(".png")
+
+
 class TestGenerate:
     def test_empty_prompt_rejected(self, provider):
         result = provider.generate("", aspect_ratio="square")
@@ -137,7 +199,6 @@ class TestGenerate:
         assert result["error_type"] == "auth_required"
 
     def test_b64_saves_to_cache(self, provider, tmp_path):
-        import base64
         png_bytes = bytes.fromhex(_PNG_HEX)
         fake_client = MagicMock()
         fake_client.images.generate.return_value = _fake_response(b64=_b64_png())

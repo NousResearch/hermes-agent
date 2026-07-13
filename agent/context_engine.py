@@ -115,6 +115,15 @@ class ContextEngine(ABC):
         """
         return False
 
+    def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
+        """Return True when preflight should trust recent real usage instead.
+
+        Built-in compression uses this to avoid re-compacting from known-noisy
+        rough estimates after a compressed request has already fit. Third-party
+        engines can ignore it safely.
+        """
+        return False
+
     # -- Optional: manual /compress preflight ------------------------------
 
     def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
@@ -185,12 +194,17 @@ class ContextEngine(ABC):
 
         Default returns the standard fields run_agent.py expects.
         """
+        # Clamp the -1 "compression just ran, awaiting real usage" sentinel
+        # (set by conversation_compression) to 0 so status readers don't see a
+        # raw -1 or a negative usage_percent on the transitional turn. Mirrors
+        # the CLI/gateway status-bar paths (cli.py, tui_gateway/server.py).
+        last_prompt = self.last_prompt_tokens if self.last_prompt_tokens > 0 else 0
         return {
-            "last_prompt_tokens": self.last_prompt_tokens,
+            "last_prompt_tokens": last_prompt,
             "threshold_tokens": self.threshold_tokens,
             "context_length": self.context_length,
             "usage_percent": (
-                min(100, self.last_prompt_tokens / self.context_length * 100)
+                min(100, last_prompt / self.context_length * 100)
                 if self.context_length else 0
             ),
             "compression_count": self.compression_count,

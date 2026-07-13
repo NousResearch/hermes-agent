@@ -8,11 +8,9 @@ Verifies that:
 
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
 
-import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -70,7 +68,7 @@ def test_all_profiles_register():
     # Spot-check representative providers from different categories
     for required in (
         "openrouter", "anthropic", "custom", "bedrock", "openai-codex",
-        "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan",
+        "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan", "fireworks",
     ):
         assert required in names, f"Missing profile: {required}"
 

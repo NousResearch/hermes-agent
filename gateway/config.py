@@ -461,6 +461,12 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Fine-grained lifecycle delivery controls. Defaults preserve historical
+    # behavior; operator profiles can route one copy to a dedicated target.
+    gateway_restart_notification_active_sessions: bool = True
+    gateway_restart_notification_home_channel: bool = True
+    gateway_restart_notification_target: Optional[HomeChannel] = None
+
     # Whether the gateway shows a "typing…" / "is thinking…" status indicator
     # while the agent processes a message on this platform. Default True
     # preserves prior behavior. Set False on platforms where the indicator is
@@ -482,6 +488,8 @@ class PlatformConfig:
             "extra": self.extra,
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
+            "gateway_restart_notification_active_sessions": self.gateway_restart_notification_active_sessions,
+            "gateway_restart_notification_home_channel": self.gateway_restart_notification_home_channel,
             "typing_indicator": self.typing_indicator,
         }
         if self.token:
@@ -490,6 +498,10 @@ class PlatformConfig:
             result["api_key"] = self.api_key
         if self.home_channel:
             result["home_channel"] = self.home_channel.to_dict()
+        if self.gateway_restart_notification_target:
+            result["gateway_restart_notification_target"] = (
+                self.gateway_restart_notification_target.to_dict()
+            )
         if self.channel_overrides:
             result["channel_overrides"] = {
                 cid: ov.to_dict() for cid, ov in self.channel_overrides.items()
@@ -512,6 +524,21 @@ class PlatformConfig:
         if _grn is None:
             _grn = extra.get("gateway_restart_notification")
 
+        _grn_active = data.get("gateway_restart_notification_active_sessions")
+        if _grn_active is None:
+            _grn_active = extra.get("gateway_restart_notification_active_sessions")
+
+        _grn_home = data.get("gateway_restart_notification_home_channel")
+        if _grn_home is None:
+            _grn_home = extra.get("gateway_restart_notification_home_channel")
+
+        _grn_target = data.get("gateway_restart_notification_target")
+        if _grn_target is None:
+            _grn_target = extra.get("gateway_restart_notification_target")
+        gateway_restart_notification_target = None
+        if isinstance(_grn_target, dict):
+            gateway_restart_notification_target = HomeChannel.from_dict(_grn_target)
+
         # typing_indicator mirrors gateway_restart_notification: it may arrive
         # top-level or bridged into extra by the shared-key loop in
         # load_gateway_config(), so check both.
@@ -533,6 +560,9 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            gateway_restart_notification_active_sessions=_coerce_bool(_grn_active, True),
+            gateway_restart_notification_home_channel=_coerce_bool(_grn_home, True),
+            gateway_restart_notification_target=gateway_restart_notification_target,
             typing_indicator=_coerce_bool(_typing, True),
             channel_overrides=channel_overrides,
             extra=extra,
@@ -1250,6 +1280,18 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "gateway_restart_notification_active_sessions" in platform_cfg:
+                    bridged["gateway_restart_notification_active_sessions"] = platform_cfg[
+                        "gateway_restart_notification_active_sessions"
+                    ]
+                if "gateway_restart_notification_home_channel" in platform_cfg:
+                    bridged["gateway_restart_notification_home_channel"] = platform_cfg[
+                        "gateway_restart_notification_home_channel"
+                    ]
+                if "gateway_restart_notification_target" in platform_cfg:
+                    bridged["gateway_restart_notification_target"] = platform_cfg[
+                        "gateway_restart_notification_target"
+                    ]
                 if "typing_indicator" in platform_cfg:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
                 has_channel_overrides = "channel_overrides" in platform_cfg

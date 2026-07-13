@@ -116,7 +116,11 @@ class TestInlineDetection:
             f"is {tmp_image} the same as {tmp_image}"
         )
         assert result is not None
+        # Repeated path -> single attachment, and BOTH occurrences are
+        # stripped from the remainder (neither copy lingers in the prompt).
         assert result["images"] == [tmp_image]
+        assert str(tmp_image) not in result["remainder"]
+        assert result["remainder"] == "is the same as"
 
     def test_quoted_path_with_spaces(self, tmp_image_with_spaces):
         result = _detect_inline_image_paths(

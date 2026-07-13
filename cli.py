@@ -2606,11 +2606,16 @@ def _detect_inline_image_paths(user_input: str) -> "dict | None":
 
         if suffix in _IMAGE_EXTENSIONS:
             resolved = _resolve_attachment_path(core)
-            if resolved is not None and str(resolved) not in seen:
-                seen.add(str(resolved))
-                images.append(resolved)
-                # Drop the path token from the prompt; preserve trailing
-                # punctuation so the remaining sentence still reads naturally.
+            if resolved is not None:
+                # Consume every successfully resolved image token (drop it
+                # from the prompt), but attach it only on first occurrence so
+                # a repeated path yields a single attachment and neither copy
+                # lingers in the remainder.
+                if str(resolved) not in seen:
+                    seen.add(str(resolved))
+                    images.append(resolved)
+                # Preserve trailing punctuation so the remaining sentence
+                # still reads naturally.
                 if trailing:
                     kept_tokens.append(trailing)
                 continue

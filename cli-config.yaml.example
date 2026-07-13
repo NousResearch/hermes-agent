@@ -526,6 +526,14 @@ prompt_caching:
 #     model: ""
 #     timeout: 30
 #
+#   # Curator LLM consolidation/review fork
+#   curator:
+#     provider: "auto"       # inherit the main chat provider/model
+#     model: ""
+#     timeout: 600            # reviews can take several minutes
+#     reasoning_effort: ""    # inherit agent.reasoning_effort, then provider default
+#                             # set "none" to disable reasoning for this fork
+#
 #   # Session search — summarizes matching past sessions
 #   session_search:
 #     provider: "auto"

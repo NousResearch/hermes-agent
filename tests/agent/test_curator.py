@@ -1018,6 +1018,106 @@ def test_review_model_defaults_to_main_when_slot_is_auto(curator_env):
     assert curator._resolve_review_model(cfg) == ("openrouter", "openai/gpt-5.5")
 
 
+@pytest.mark.parametrize(
+    "cfg,expected",
+    [
+        ({}, None),
+        (
+            {"agent": {"reasoning_effort": "high"}},
+            {"enabled": True, "effort": "high"},
+        ),
+        (
+            {
+                "agent": {"reasoning_effort": "high"},
+                "auxiliary": {"curator": {"reasoning_effort": "xhigh"}},
+            },
+            {"enabled": True, "effort": "xhigh"},
+        ),
+        (
+            {
+                "agent": {"reasoning_effort": "high"},
+                "auxiliary": {"curator": {"reasoning_effort": "none"}},
+            },
+            {"enabled": False},
+        ),
+        (
+            {
+                "agent": {"reasoning_effort": "high"},
+                "auxiliary": {"curator": {"reasoning_effort": False}},
+            },
+            {"enabled": False},
+        ),
+        (
+            {
+                "agent": {"reasoning_effort": "medium"},
+                "curator": {"auxiliary": {"reasoning_effort": "xhigh"}},
+            },
+            {"enabled": True, "effort": "xhigh"},
+        ),
+    ],
+)
+def test_review_reasoning_resolution(curator_env, cfg, expected):
+    curator = curator_env["curator"]
+
+    assert curator._resolve_review_reasoning_config(cfg) == expected
+
+
+def test_review_reasoning_canonical_wins_over_legacy(curator_env):
+    curator = curator_env["curator"]
+    cfg = {
+        "agent": {"reasoning_effort": "medium"},
+        "auxiliary": {"curator": {"reasoning_effort": "high"}},
+        "curator": {"auxiliary": {"reasoning_effort": "xhigh"}},
+    }
+
+    assert curator._resolve_review_reasoning_config(cfg) == {
+        "enabled": True,
+        "effort": "high",
+    }
+
+
+def test_invalid_canonical_reasoning_skips_legacy_and_falls_back_to_agent(
+    curator_env,
+    caplog,
+):
+    """A malformed canonical value must not resurrect deprecated legacy config."""
+    import logging
+
+    curator = curator_env["curator"]
+    cfg = {
+        "agent": {"reasoning_effort": "low"},
+        "auxiliary": {"curator": {"reasoning_effort": "turbo"}},
+        "curator": {"auxiliary": {"reasoning_effort": "xhigh"}},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="agent.curator"):
+        assert curator._resolve_review_reasoning_config(cfg) == {
+            "enabled": True,
+            "effort": "low",
+        }
+    assert any(
+        "invalid auxiliary.curator.reasoning_effort" in record.message
+        for record in caplog.records
+    )
+
+
+def test_legacy_review_reasoning_logs_deprecation(curator_env, caplog):
+    import logging
+
+    curator = curator_env["curator"]
+    cfg = {"curator": {"auxiliary": {"reasoning_effort": "high"}}}
+
+    with caplog.at_level(logging.INFO, logger="agent.curator"):
+        assert curator._resolve_review_reasoning_config(cfg) == {
+            "enabled": True,
+            "effort": "high",
+        }
+    assert any(
+        "deprecated curator.auxiliary.reasoning_effort" in record.message
+        for record in caplog.records
+    )
+
+
 def test_review_model_honors_auxiliary_curator_slot(curator_env):
     """auxiliary.curator.{provider,model} fully set → that pair wins."""
     curator = curator_env["curator"]
@@ -1044,7 +1144,7 @@ def test_review_runtime_passes_auxiliary_curator_credentials(curator_env):
             "curator": {
                 "provider": "custom",
                 "model": "local-mini",
-                "api_key": "sk-curator-only",
+                "api_key": "curator-token",
                 "base_url": "http://localhost:11434/v1",
             },
         },
@@ -1052,8 +1152,26 @@ def test_review_runtime_passes_auxiliary_curator_credentials(curator_env):
     binding = curator._resolve_review_runtime(cfg)
     assert binding.provider == "custom"
     assert binding.model == "local-mini"
-    assert binding.explicit_api_key == "sk-curator-only"
+    assert binding.explicit_api_key == "curator-token"
     assert binding.explicit_base_url == "http://localhost:11434/v1"
+
+
+def test_review_runtime_carries_resolved_reasoning(curator_env):
+    curator = curator_env["curator"]
+    binding = curator._resolve_review_runtime(
+        {
+            "agent": {"reasoning_effort": "medium"},
+            "auxiliary": {
+                "curator": {
+                    "provider": "openrouter",
+                    "model": "openai/gpt-5.4-mini",
+                    "reasoning_effort": "xhigh",
+                },
+            },
+        }
+    )
+
+    assert binding.reasoning_config == {"enabled": True, "effort": "xhigh"}
 
 
 def test_review_runtime_strips_blank_aux_credentials(curator_env):
@@ -1343,6 +1461,51 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
     assert meta.get("error") is None, meta.get("error")
     assert captured["kwargs"]["credential_pool"] is fake_pool
     assert captured["kwargs"]["request_overrides"] == fake_overrides
+
+
+def test_review_fork_passes_reasoning_when_provider_resolution_fails(
+    curator_env,
+    monkeypatch,
+):
+    """Task reasoning is config-derived and must survive runtime-provider failure."""
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+            "auxiliary": {"curator": {"reasoning_effort": "xhigh"}},
+        },
+    )
+
+    def _fail_provider_resolution(**_kwargs):
+        raise RuntimeError("provider lookup unavailable")
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _fail_provider_resolution,
+    )
+
+    class _StubAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    result = curator._run_llm_review("review")
+
+    assert result["error"] is None
+    assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
 
 def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch):

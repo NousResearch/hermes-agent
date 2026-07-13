@@ -726,7 +726,7 @@ class TestSaveConfigAtomicity:
 
             # Read raw YAML to verify it's valid and correct
             config_path = tmp_path / "config.yaml"
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 raw = yaml.safe_load(f)
             assert raw["model"] == "test/atomic-model"
             assert raw["agent"]["max_turns"] == 77
@@ -1643,6 +1643,31 @@ class TestMigrationWriteInvariant:
         # Defaults still take effect transparently via the read-time merge.
         assert loaded["curator"]["enabled"] == DEFAULT_CONFIG["curator"]["enabled"]
         assert loaded["display"]["compact"] == DEFAULT_CONFIG["display"]["compact"]
+
+    def test_curator_reasoning_default_is_effective_without_materializing_auxiliary(
+        self,
+        tmp_path,
+    ):
+        """Read-time deep merge exposes the default without rewriting user YAML."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"],
+                    "model": {"default": "test-model", "provider": "openrouter"},
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        original = config_path.read_text(encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            loaded = load_config()
+
+        assert config_path.read_text(encoding="utf-8") == original
+        assert "auxiliary" not in yaml.safe_load(original)
+        assert loaded["auxiliary"]["curator"]["reasoning_effort"] == ""
 
 
 class TestVerifyOnStopMigration:

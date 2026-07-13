@@ -72,12 +72,15 @@ auxiliary:
     provider: openrouter
     model: google/gemini-3-flash-preview
     timeout: 600               # generous — reviews can take several minutes
+    reasoning_effort: ""       # 继承 agent.reasoning_effort，然后使用 provider 默认值
 ```
 
 保持 `provider: auto`（默认值）会将审查 pass 路由到主聊天模型，与所有其他辅助任务的行为一致。
 
+`auxiliary.curator.reasoning_effort` 只影响 curator 审查 fork。空值会继承有效的 `agent.reasoning_effort`；若两者都未设置，则使用 provider 默认值。字面值 `none` 会明确禁用该 fork 的 reasoning。该设置本身不会启用 LLM consolidation——仍需设置 `curator.consolidate: true` 或运行 `hermes curator run --consolidate`。
+
 :::note 旧版配置
-早期版本使用独立的 `curator.auxiliary.{provider,model}` 块。该路径仍然有效，但会输出一条弃用日志——请迁移到上方的 `auxiliary.curator`，使 curator 与其他所有辅助任务共享相同的管道（`hermes model`、控制台 Models 标签页、`base_url`、`api_key`、`timeout`、`extra_body`）。
+早期版本使用独立的 `curator.auxiliary.{provider,model}` 块。当 canonical 值缺失时，provider/model 和 `curator.auxiliary.reasoning_effort` 仍作为已弃用 fallback 生效，并会输出弃用日志。请迁移到上方的 `auxiliary.curator`，使 curator 与其他所有辅助任务共享相同的管道（`hermes model`、控制台 Models 标签页、`base_url`、`api_key`、`timeout`、`extra_body`）。
 :::
 
 ## CLI

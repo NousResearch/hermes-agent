@@ -17,7 +17,9 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
-  rmSync
+  readFileSync,
+  rmSync,
+  writeFileSync
 } from 'node:fs'
 import { isMain } from './utils.mjs'
 
@@ -77,6 +79,43 @@ function copyBuildRelease(srcDir, destDir) {
   }
 }
 
+/**
+ * Makes node-pty's asar-unpacked path resolution idempotent in a staged
+ * destRoot so that helperPath never becomes `...asar.unpacked.unpacked`.
+ *
+ * Returns true if the file was patched, false if it was already safe or
+ * the target file doesn't exist.
+ */
+export function patchUnixTerminalAsarUnpacked(destRoot) {
+  const unixTerminalPath = join(destRoot, 'lib', 'unixTerminal.js')
+  if (!existsSync(unixTerminalPath)) return false
+
+  let content = readFileSync(unixTerminalPath, 'utf8')
+
+  // Guard: if already patched (regex-based or guard-based), skip.
+  if (content.includes("replace(/app\\.asar(?!\\.unpacked)/") ||
+      content.includes("!helperPath.includes('.asar.unpacked')")) {
+    return false
+  }
+
+  // Replace the naive string replacements with negative-lookahead regex
+  // so the path stays stable when it already contains .asar.unpacked.
+  const before = content
+  content = content.replace(
+    "helperPath.replace('app.asar', 'app.asar.unpacked')",
+    "helperPath.replace(/app\\.asar(?!\\.unpacked)/, 'app.asar.unpacked')"
+  )
+  content = content.replace(
+    "helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked')",
+    "helperPath.replace(/node_modules\\.asar(?!\\.unpacked)/, 'node_modules.asar.unpacked')"
+  )
+
+  if (content === before) return false
+
+  writeFileSync(unixTerminalPath, content, 'utf8')
+  return true
+}
+
 export function stageNodePty({ platform = process.platform, arch = process.arch } = {}) {
   const srcRoot = resolveNodePtyRoot()
   const destRoot = resolve(projectRoot, 'dist/node_modules/node-pty')
@@ -90,6 +129,19 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
 
   // lib/**/*.js — the JS surface node-pty's `main` points into.
   copyGlobByExt(join(srcRoot, 'lib'), join(destRoot, 'lib'), ['.js'])
+
+  // Patch unixTerminal.js so asar-unpacked path resolution is idempotent.
+  // Upstream node-pty 1.x does helperPath.replace('app.asar', 'app.asar.unpacked')
+  // and helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked').
+  // When the staged copy is already inside app.asar.unpacked (as it is in our
+  // asarUnpack build layout), the first replace turns app.asar.unpacked into
+  // app.asar.unpacked.unpacked — a non-existent path that causes posix_spawn
+  // to fail at terminal startup. Convert both replaces to use a negative-
+  // lookahead regex so they never double-append .unpacked.
+  const patched = patchUnixTerminalAsarUnpacked(destRoot)
+  if (patched) {
+    console.log('[stage-native-deps] patched unixTerminal.js for idempotent asar-unpacked path resolution')
+  }
 
   // build/Release/* — present when node-pty was compiled locally
   // (e.g. no prebuild available for this Electron ABI/platform combo).

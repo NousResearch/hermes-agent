@@ -1,0 +1,17 @@
+{
+  "id": "task-250",
+  "title": "Add template pack update dry-run and diff output",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "External Template Packs",
+  "summary": "Support reusable external template packs without embedding domain logic in Hermes OS core.",
+  "acceptanceCriteria": [
+    "Template packs are discovered, validated, and versioned outside domain-specific core code.",
+    "Compatibility checks protect users from invalid or unsupported template packs.",
+    "Install/update flows are previewable before writing files."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 48-54",
+  "generatedAt": "2026-06-16T21:13:09.545Z",
+  "completedAt": "2026-06-16T21:19:02.820Z",
+  "reviewNotes": "Implemented through Hermes OS project runtime extension contracts: installed command audits and workspace routing, guarded live-runtime plans, restore plans with conflicts and approvals, runtime dashboard modules, SQLite-backed runtime persistence projections, external template pack lifecycle helpers, continuous workspace health checks, dashboard UI rendering, and integration coverage."
+}

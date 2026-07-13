@@ -1,0 +1,17 @@
+{
+  "id": "task-357",
+  "title": "Add quality gate runner that blocks execution when required evaluations fail",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Evaluation & Quality Gates",
+  "summary": "Evaluate generated plans, workflows, templates, agent outputs, dashboard contracts, and runtime artifacts before progression.",
+  "acceptanceCriteria": [
+    "Quality gates are explicit and can block unsafe or low-quality outputs.",
+    "Evaluations are repeatable, explainable, and persisted as evidence.",
+    "Human review remains available for ambiguous or high-risk decisions."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 55-64",
+  "generatedAt": "2026-06-16T21:31:47.853Z",
+  "completedAt": "2026-06-16T21:36:13.020Z",
+  "reviewNotes": "Implemented through Hermes OS production runtime and governance contracts: live execution state, process/log/artifact contracts, approval UX and audit helpers, workspace automation, multi-project orchestration, agent fleet routing, telemetry and diagnostics, connector boundaries, evaluation gates, project memory intelligence, release hardening utilities, and focused integration tests."
+}

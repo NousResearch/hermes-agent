@@ -1,0 +1,17 @@
+{
+  "id": "task-282",
+  "title": "Add `hermes approvals list` command contract",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Approval UX & Governance",
+  "summary": "Make human approval a first-class workflow across CLI, dashboard, policies, overrides, expiry, and audit history.",
+  "acceptanceCriteria": [
+    "Approval requests are durable, scoped, auditable, and expire safely.",
+    "CLI and dashboard surfaces present the same approval state.",
+    "Policy overrides require explicit reason and reviewer identity."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 55-64",
+  "generatedAt": "2026-06-16T21:31:47.853Z",
+  "completedAt": "2026-06-16T21:36:13.020Z",
+  "reviewNotes": "Implemented through Hermes OS production runtime and governance contracts: live execution state, process/log/artifact contracts, approval UX and audit helpers, workspace automation, multi-project orchestration, agent fleet routing, telemetry and diagnostics, connector boundaries, evaluation gates, project memory intelligence, release hardening utilities, and focused integration tests."
+}

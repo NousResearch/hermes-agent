@@ -1,0 +1,17 @@
+{
+  "id": "task-426",
+  "title": "Add ambiguity handling with clarification questions and safe default routes",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Intent Routing Engine",
+  "summary": "Automatically classify natural-language requests into new-project, existing-project, research, architecture, task-work, review, and unknown-intent routes.",
+  "acceptanceCriteria": [
+    "Natural-language requests are classified into supported Hermes OS intent families with confidence and alternatives.",
+    "Ambiguous requests safely ask for clarification or select a non-destructive preview route.",
+    "Routing behavior is covered by a deterministic evaluation set."
+  ],
+  "source": "Hermes OS Conversational Operating Layer (COL) specification v1.0",
+  "generatedAt": "2026-06-17T00:00:00.000Z",
+  "completedAt": "2026-06-17T20:57:55.835Z",
+  "reviewNotes": "Implemented the Hermes OS Conversational Operating Layer MVP through hermes_os_integration.conversational. Added deterministic intent routing, Chief of Staff planning, workflow previews, session/project memory context, dynamic command suggestions, agent hierarchy/delegation records, guardrails, dashboard panels, API endpoint, CLI preview command, frontend API helper, and focused regression tests. Validated with .venv/bin/pytest tests/hermes_os_integration/test_conversational_operating_layer.py and .venv/bin/python -m hermes_cli.main ask Build a CRM for wholesalers --project ."
+}

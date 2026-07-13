@@ -1,0 +1,17 @@
+{
+  "id": "task-271",
+  "title": "Add live runtime resume command for interrupted executions with prior context",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Production Live Runtime",
+  "summary": "Turn guarded runtime contracts into production-grade live execution with resumability, cancellation, log capture, and validation before ingestion.",
+  "acceptanceCriteria": [
+    "Live runtime remains opt-in and policy-gated by project configuration.",
+    "Execution produces durable logs, status, artifacts, and rollback evidence.",
+    "Worker output is validated before becoming source-of-truth state."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 55-64",
+  "generatedAt": "2026-06-16T21:31:47.853Z",
+  "completedAt": "2026-06-16T21:36:13.020Z",
+  "reviewNotes": "Implemented through Hermes OS production runtime and governance contracts: live execution state, process/log/artifact contracts, approval UX and audit helpers, workspace automation, multi-project orchestration, agent fleet routing, telemetry and diagnostics, connector boundaries, evaluation gates, project memory intelligence, release hardening utilities, and focused integration tests."
+}

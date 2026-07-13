@@ -1,0 +1,17 @@
+{
+  "id": "task-378",
+  "title": "Add backward compatibility tests for legacy module CLI invocations",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Release Hardening",
+  "summary": "Prepare Hermes OS runtime features for release with migrations, docs, compatibility, packaging, full tests, and failure drills.",
+  "acceptanceCriteria": [
+    "Release checks cover migrations, CLI, dashboard, persistence, runtime, and docs.",
+    "Backward compatibility paths are documented and tested.",
+    "Known failure modes have drills and recovery procedures."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 55-64",
+  "generatedAt": "2026-06-16T21:31:47.853Z",
+  "completedAt": "2026-06-16T21:36:13.020Z",
+  "reviewNotes": "Implemented through Hermes OS production runtime and governance contracts: live execution state, process/log/artifact contracts, approval UX and audit helpers, workspace automation, multi-project orchestration, agent fleet routing, telemetry and diagnostics, connector boundaries, evaluation gates, project memory intelligence, release hardening utilities, and focused integration tests."
+}

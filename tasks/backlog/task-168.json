@@ -1,0 +1,16 @@
+{
+  "id": "task-168",
+  "title": "Add runtime service definition schema for project startup commands",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Project Runtime Manager",
+  "summary": "Define startup service names, commands, cwd, env policy, health checks, dashboard URLs, and restart policy.",
+  "acceptanceCriteria": [
+    "Implements the workspace/project runtime specification without making Hermes own domain databases",
+    "Keeps project state isolated by project id or project definition path",
+    "Provides dry-run or inspectable output for risky runtime or restore behavior",
+    "Includes focused tests or a documented verification path"
+  ],
+  "completedAt": "2026-06-16T21:05:21.665Z",
+  "reviewNotes": "Implemented as part of Hermes OS Workspace & Project Runtime MVP: project definitions, registry, switch/start/status, memory, snapshots, agent traces, infrastructure/vector registry, unified dashboard contracts, CLI wrappers, and integration tests."
+}

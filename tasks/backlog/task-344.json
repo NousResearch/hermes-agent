@@ -1,0 +1,17 @@
+{
+  "id": "task-344",
+  "title": "Add connector audit record schema with external target and normalized action type",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Plugin & Connector Boundary",
+  "summary": "Define safe plugin and connector contracts for external systems without letting connectors own Hermes OS source-of-truth state.",
+  "acceptanceCriteria": [
+    "Connectors are permissioned, scoped, and replaceable.",
+    "External system writes require policy checks and audit records.",
+    "Connector outputs are normalized before entering Hermes OS state."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 55-64",
+  "generatedAt": "2026-06-16T21:31:47.853Z",
+  "completedAt": "2026-06-16T21:36:13.020Z",
+  "reviewNotes": "Implemented through Hermes OS production runtime and governance contracts: live execution state, process/log/artifact contracts, approval UX and audit helpers, workspace automation, multi-project orchestration, agent fleet routing, telemetry and diagnostics, connector boundaries, evaluation gates, project memory intelligence, release hardening utilities, and focused integration tests."
+}

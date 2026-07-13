@@ -310,6 +310,24 @@ function appendProfileParam(url: string, profile?: string): string {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getHermesOsSummary: (project = ".", projectsRoot = "") => {
+    const params = new URLSearchParams({ project });
+    if (projectsRoot) params.set("projects_root", projectsRoot);
+    return fetchJSON<HermesOsSummary>(`/api/hermes-os/summary?${params.toString()}`);
+  },
+  askHermesOsConversation: (body: {
+    message: string;
+    project?: string;
+    user_id?: string;
+    session_id?: string;
+    active_goal?: string;
+    active_initiative?: string;
+    dry_run?: boolean;
+  }) => fetchJSON<Record<string, unknown>>("/api/hermes-os/conversation/ask", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *
@@ -1584,6 +1602,18 @@ export interface StatusResponse {
   latest_config_version: number;
   release_date: string;
   version: string;
+}
+
+export interface HermesOsPanel {
+  panel_id: string;
+  title: string;
+  data: Record<string, unknown>;
+}
+
+export interface HermesOsSummary {
+  project_id: string;
+  project_path: string;
+  panels: HermesOsPanel[];
 }
 
 export interface SessionInfo {

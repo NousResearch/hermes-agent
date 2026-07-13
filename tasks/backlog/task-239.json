@@ -1,0 +1,17 @@
+{
+  "id": "task-239",
+  "title": "Add SQLite schema for infrastructure and vector registry records",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Durable Project Runtime Persistence",
+  "summary": "Persist project runtime state, snapshots, traces, approvals, service health, costs, and dashboard state into the repository layer.",
+  "acceptanceCriteria": [
+    "Runtime state has durable storage with migration-safe schemas.",
+    "Records remain scoped by project id and avoid domain-specific assumptions.",
+    "Persistence APIs support import/export and integrity checks."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 48-54",
+  "generatedAt": "2026-06-16T21:13:09.545Z",
+  "completedAt": "2026-06-16T21:19:02.820Z",
+  "reviewNotes": "Implemented through Hermes OS project runtime extension contracts: installed command audits and workspace routing, guarded live-runtime plans, restore plans with conflicts and approvals, runtime dashboard modules, SQLite-backed runtime persistence projections, external template pack lifecycle helpers, continuous workspace health checks, dashboard UI rendering, and integration coverage."
+}

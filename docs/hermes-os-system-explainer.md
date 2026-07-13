@@ -32,6 +32,34 @@ Projects provide domain specifics.
 
 Hermes OS should not know about any specific project domain. It should not know about finance, media, CRM, markets, SaaS, APIs, or any other future business area. Those belong in templates or project artifacts, not in the OS itself.
 
+Workflow design should also use the Agent Pattern Catalog in `AGENT_PATTERNS.md`.
+Hermes should classify the task first, then choose the simplest reliable
+pattern: single agent/tool use for simple tasks, prompt chaining or planning
+for multi-step tasks, parallelization for independent work, router plus
+clarification for uncertain routing, human approval for high-risk actions,
+reflection plus evaluation for quality-sensitive output, resource-aware routing
+for cost-sensitive work, and planning plus memory plus monitoring for
+long-running projects.
+
+Hermes OS should also treat projects as first-class runtime units. A project is
+not only a folder; it has identity, memory, tasks, agents, infrastructure,
+dashboards, documents, runtime, and metrics. The workspace runtime target is:
+
+```text
+User
+  -> Hermes OS
+  -> Project Runtime
+  -> Agents
+  -> Infrastructure
+  -> Outputs
+```
+
+The `hermes switch <project>` workflow should eventually load the project
+definition, restore the workspace, open dashboard URLs, start services, load
+project memory, connect agents, load active tasks, and display project status.
+Hermes tracks infrastructure and vector stores, but domain databases remain
+project-owned and isolated.
+
 ## The Mental Model
 
 The system is designed around this path:
@@ -187,7 +215,18 @@ Useful flags:
 --block-on-critical
 --write-report
 --generate-docs
+--generate-tasks
+--persist
+--db /path/to/hermes-os.sqlite3
 --overwrite
+```
+
+Native Hermes command examples:
+
+```bash
+hermes architect review . --json
+hermes architect review . --write-report --persist --db .hermes/hermes-os.sqlite3
+hermes architect review . --generate-docs --generate-tasks
 ```
 
 Use this when you want Hermes OS to answer:
@@ -198,6 +237,31 @@ What is missing?
 What should be done next?
 Should execution be blocked?
 ```
+
+### Plan CLI
+
+Module:
+
+```text
+hermes_os_integration/plan_cli.py
+```
+
+Native command:
+
+```bash
+hermes plan <project>
+```
+
+Useful examples:
+
+```bash
+hermes plan . --json
+hermes plan . --write --generate-tasks
+hermes plan . --template .hermes/templates/base-project.yaml --persist --db .hermes/hermes-os.sqlite3
+```
+
+`--template` accepts a JSON/YAML template file or a directory of template files.
+`--persist` stores the compiled work graph in the Hermes OS SQLite repository.
 
 ### Project Scanners
 

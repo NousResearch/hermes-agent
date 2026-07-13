@@ -1,0 +1,17 @@
+{
+  "id": "task-409",
+  "title": "Add orchestration policy that prevents Chief of Staff from directly performing worker tasks",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Chief of Staff Agent",
+  "summary": "Create the coordinating agent that interprets user goals, selects workflows, delegates work, tracks progress, and reports status without performing implementation work directly.",
+  "acceptanceCriteria": [
+    "Chief of Staff coordinates workflows and agents without directly owning implementation output.",
+    "Every recommendation, delegation, and status report includes traceable context and next action.",
+    "Ambiguous or high-risk requests produce clarification or approval prompts instead of unsafe execution."
+  ],
+  "source": "Hermes OS Conversational Operating Layer (COL) specification v1.0",
+  "generatedAt": "2026-06-17T00:00:00.000Z",
+  "completedAt": "2026-06-17T20:57:55.835Z",
+  "reviewNotes": "Implemented the Hermes OS Conversational Operating Layer MVP through hermes_os_integration.conversational. Added deterministic intent routing, Chief of Staff planning, workflow previews, session/project memory context, dynamic command suggestions, agent hierarchy/delegation records, guardrails, dashboard panels, API endpoint, CLI preview command, frontend API helper, and focused regression tests. Validated with .venv/bin/pytest tests/hermes_os_integration/test_conversational_operating_layer.py and .venv/bin/python -m hermes_cli.main ask Build a CRM for wholesalers --project ."
+}

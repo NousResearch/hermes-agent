@@ -1686,6 +1686,44 @@ async def get_status():
     return status
 
 
+@app.get("/api/hermes-os/summary")
+async def get_hermes_os_summary(project: str = ".", projects_root: str = ""):
+    try:
+        from hermes_os_integration.dashboard import build_project_dashboard
+
+        return build_project_dashboard(project, projects_root or None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+class HermesOsConversationAskRequest(BaseModel):
+    message: str
+    project: str = "."
+    user_id: str = "operator"
+    session_id: str = "local"
+    active_goal: str = ""
+    active_initiative: str = ""
+    dry_run: bool = True
+
+
+@app.post("/api/hermes-os/conversation/ask")
+async def ask_hermes_os_conversation(payload: HermesOsConversationAskRequest):
+    try:
+        from hermes_os_integration.conversational import ask_col
+
+        return ask_col(
+            payload.message,
+            project_path=payload.project,
+            user_id=payload.user_id,
+            session_id=payload.session_id,
+            active_goal=payload.active_goal,
+            active_initiative=payload.active_initiative,
+            dry_run=payload.dry_run,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 _WINDOWS_11_MIN_BUILD = 22000
 
 

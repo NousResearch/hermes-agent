@@ -1,0 +1,15 @@
+{
+  "id": "task-148",
+  "title": "Add dashboard panels for loaded templates and compile failures",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Template Registry",
+  "summary": "Add dashboard panels for loaded templates and compile failures",
+  "acceptanceCriteria": [
+    "Templates can be discovered from Hermes template registry paths.",
+    "Template validation exposes diagnostics with source context where available.",
+    "Template metadata supports compatibility and dashboard reporting."
+  ],
+  "completedAt": "2026-06-16T21:09:32.718Z",
+  "reviewNotes": "Implemented in the Hermes OS native command, task-generation, dashboard, persistence, scheduled review, runtime policy, template registry, and execution-readiness work already recorded in docs/hermes-os-integration-log.md."
+}

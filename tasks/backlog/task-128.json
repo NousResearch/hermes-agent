@@ -1,0 +1,15 @@
+{
+  "id": "task-128",
+  "title": "Add dashboard actions to regenerate tasks in dry-run mode",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Dashboard Task UI",
+  "summary": "Add dashboard actions to regenerate tasks in dry-run mode",
+  "acceptanceCriteria": [
+    "Dashboard summary includes task backlog and execution planning signals.",
+    "Blocked and approval-sensitive work is visible in dashboard data contracts.",
+    "Regeneration and dry-run actions expose inspectable outputs."
+  ],
+  "completedAt": "2026-06-16T21:09:32.718Z",
+  "reviewNotes": "Implemented in the Hermes OS native command, task-generation, dashboard, persistence, scheduled review, runtime policy, template registry, and execution-readiness work already recorded in docs/hermes-os-integration-log.md."
+}

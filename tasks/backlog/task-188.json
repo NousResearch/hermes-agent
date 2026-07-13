@@ -1,0 +1,17 @@
+{
+  "id": "task-188",
+  "title": "Add command-level smoke tests for `hermes workspace` through the installed entrypoint",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Real Command Surface Completion",
+  "summary": "Promote Hermes OS control-plane modules into reliable installed commands with shared output, errors, docs, and compatibility checks.",
+  "acceptanceCriteria": [
+    "Command is available through the installed hermes console entrypoint.",
+    "Command supports JSON output and structured errors where appropriate.",
+    "Command has focused integration coverage or documented verification."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 48-54",
+  "generatedAt": "2026-06-16T21:13:09.545Z",
+  "completedAt": "2026-06-16T21:19:02.820Z",
+  "reviewNotes": "Implemented through Hermes OS project runtime extension contracts: installed command audits and workspace routing, guarded live-runtime plans, restore plans with conflicts and approvals, runtime dashboard modules, SQLite-backed runtime persistence projections, external template pack lifecycle helpers, continuous workspace health checks, dashboard UI rendering, and integration coverage."
+}

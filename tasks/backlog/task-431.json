@@ -1,0 +1,17 @@
+{
+  "id": "task-431",
+  "title": "Add new-project workflow chain for grill-me, PRD, architecture, plan, tasks, agents, tracker, dashboard, and workspace open",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Conversational Workflow Engine",
+  "summary": "Turn routed intents into checkpointed Hermes OS workflows that can run skills, call agents, produce artifacts, pause for approval, resume, cancel, and report progress.",
+  "acceptanceCriteria": [
+    "Routed intents produce checkpointed workflows with visible steps, agents, skills, approvals, and artifacts.",
+    "New-project, existing-project, research, architecture, and task-work flows can dry-run before execution.",
+    "Workflows can resume, cancel, and report failure recovery guidance from persisted checkpoints."
+  ],
+  "source": "Hermes OS Conversational Operating Layer (COL) specification v1.0",
+  "generatedAt": "2026-06-17T00:00:00.000Z",
+  "completedAt": "2026-06-17T20:57:55.835Z",
+  "reviewNotes": "Implemented the Hermes OS Conversational Operating Layer MVP through hermes_os_integration.conversational. Added deterministic intent routing, Chief of Staff planning, workflow previews, session/project memory context, dynamic command suggestions, agent hierarchy/delegation records, guardrails, dashboard panels, API endpoint, CLI preview command, frontend API helper, and focused regression tests. Validated with .venv/bin/pytest tests/hermes_os_integration/test_conversational_operating_layer.py and .venv/bin/python -m hermes_cli.main ask Build a CRM for wholesalers --project ."
+}

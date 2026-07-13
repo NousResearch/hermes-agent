@@ -1,0 +1,16 @@
+{
+  "id": "task-165",
+  "title": "Add VS Code workspace restore contract",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Workspace Snapshot & Restore",
+  "summary": "Define how Hermes records and restores VS Code workspace files and layout without assuming editor internals are always available.",
+  "acceptanceCriteria": [
+    "Implements the workspace/project runtime specification without making Hermes own domain databases",
+    "Keeps project state isolated by project id or project definition path",
+    "Provides dry-run or inspectable output for risky runtime or restore behavior",
+    "Includes focused tests or a documented verification path"
+  ],
+  "completedAt": "2026-06-16T21:05:21.665Z",
+  "reviewNotes": "Implemented as part of Hermes OS Workspace & Project Runtime MVP: project definitions, registry, switch/start/status, memory, snapshots, agent traces, infrastructure/vector registry, unified dashboard contracts, CLI wrappers, and integration tests."
+}

@@ -282,8 +282,11 @@ from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.dump import build_dump_parser
 from hermes_cli.subcommands.debug import build_debug_parser
 from hermes_cli.subcommands.backup import build_backup_parser
+from hermes_cli.subcommands.architect import build_architect_parser
+from hermes_cli.subcommands.project_runtime import build_project_runtime_parsers
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.plan import build_plan_parser
 from hermes_cli.subcommands.version import build_version_parser
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
@@ -10890,6 +10893,100 @@ def cmd_prompt_size(args):
     _impl(args)
 
 
+def cmd_architect(args):
+    """Run Hermes OS architecture review commands."""
+    from hermes_os_integration.architect_cli import main as _architect_main
+
+    argv = []
+    command = getattr(args, "architect_command", None)
+    if command:
+        argv.append(command)
+    if getattr(args, "project", None):
+        argv.append(args.project)
+    if getattr(args, "projects_root", None):
+        argv.extend(["--projects-root", args.projects_root])
+    if getattr(args, "scope", ""):
+        argv.extend(["--scope", args.scope])
+    for flag in ("json", "block_on_critical", "write_report", "generate_docs", "generate_tasks", "overwrite", "persist"):
+        if getattr(args, flag, False):
+            argv.append("--" + flag.replace("_", "-"))
+    if getattr(args, "db", ""):
+        argv.extend(["--db", args.db])
+    raise SystemExit(_architect_main(argv))
+
+
+def cmd_ask_col(args):
+    """Preview a Hermes OS conversational Chief of Staff plan."""
+    from hermes_os_integration.conversational import ask_col
+
+    message = " ".join(getattr(args, "message", []) or []).strip()
+    if not message:
+        print("hermes ask requires a message", file=sys.stderr)
+        raise SystemExit(2)
+    result = ask_col(
+        message,
+        project_path=getattr(args, "project", "."),
+        user_id=getattr(args, "user_id", "operator"),
+        session_id=getattr(args, "session_id", "local"),
+        active_goal=getattr(args, "goal", ""),
+        active_initiative=getattr(args, "initiative", ""),
+        dry_run=not bool(getattr(args, "live", False)),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+
+
+def cmd_plan(args):
+    """Run Hermes OS work-graph planning commands."""
+    from hermes_os_integration.plan_cli import main as _plan_main
+
+    argv = []
+    if getattr(args, "project", None):
+        argv.append(args.project)
+    if getattr(args, "projects_root", None):
+        argv.extend(["--projects-root", args.projects_root])
+    for flag in ("json", "write", "generate_tasks", "persist"):
+        if getattr(args, flag, False):
+            argv.append("--" + flag.replace("_", "-"))
+    if getattr(args, "template", ""):
+        argv.extend(["--template", args.template])
+    if getattr(args, "db", ""):
+        argv.extend(["--db", args.db])
+    raise SystemExit(_plan_main(argv))
+
+
+def cmd_project_runtime(args):
+    """Run Hermes OS project runtime commands."""
+    from hermes_os_integration.project_runtime import main as _runtime_main
+
+    if getattr(args, "project_runtime_command", "") == "workspace":
+        from hermes_os_integration.workspace_control import main as _workspace_main
+
+        argv = ["--projects-root", getattr(args, "projects_root", ".")]
+        if getattr(args, "json", False):
+            argv.append("--json")
+        raise SystemExit(_workspace_main(argv))
+
+    argv = ["--workspace-root", getattr(args, "workspace_root", ".")]
+    command = getattr(args, "project_runtime_command", "")
+    if command == "projects":
+        argv.append("projects")
+    elif command == "switch":
+        argv.extend(["switch", args.project])
+        if getattr(args, "live", False):
+            argv.append("--live")
+    elif command == "start":
+        argv.extend(["start", args.project])
+        if getattr(args, "live", False):
+            argv.append("--live")
+    elif command == "snapshot":
+        argv.extend(["snapshot", args.snapshot_action, args.project])
+        if getattr(args, "live", False):
+            argv.append("--live")
+    else:
+        argv.append("projects")
+    raise SystemExit(_runtime_main(argv))
+
+
 def cmd_logs(args):
     """View and filter Hermes log files."""
     from hermes_cli.logs import tail_log, list_logs
@@ -10920,16 +11017,16 @@ def cmd_logs(args):
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "architect", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
+        "model", "pairing", "plan", "plugins", "portal", "postinstall", "profile", "projects", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
+        "skills", "slack", "snapshot", "start", "status", "switch", "tools", "uninstall", "update",
+        "version", "webhook", "whatsapp", "whatsapp-cloud", "workspace", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -11444,6 +11541,24 @@ def main():
     parser, subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=cmd_chat)
 
+    ask_parser = subparsers.add_parser(
+        "ask",
+        help="Preview a Hermes OS Chief of Staff plan for a natural-language request",
+        description=(
+            "Route a natural-language request through the Hermes OS "
+            "Conversational Operating Layer and print the Chief of Staff "
+            "workflow plan as JSON. This is a dry-run preview by default."
+        ),
+    )
+    ask_parser.add_argument("message", nargs="+", help="Natural-language request to route")
+    ask_parser.add_argument("--project", default=".", help="Project path to use for memory loading")
+    ask_parser.add_argument("--user-id", default="operator", help="Operator identifier for the request")
+    ask_parser.add_argument("--session-id", default="local", help="Conversation session identifier")
+    ask_parser.add_argument("--goal", default="", help="Active goal to include in session memory")
+    ask_parser.add_argument("--initiative", default="", help="Active initiative to include in session memory")
+    ask_parser.add_argument("--live", action="store_true", help="Mark the request as live instead of dry-run")
+    ask_parser.set_defaults(func=cmd_ask_col)
+
     # =========================================================================
     # model command  (parser built in hermes_cli/subcommands/model.py)
     # =========================================================================
@@ -11695,6 +11810,11 @@ def main():
     build_backup_parser(subparsers, cmd_backup=cmd_backup)
 
     # =========================================================================
+    # architect command  (parser built in hermes_cli/subcommands/architect.py)
+    # =========================================================================
+    build_architect_parser(subparsers, cmd_architect=cmd_architect)
+
+    # =========================================================================
     # checkpoints command
     # =========================================================================
     checkpoints_parser = subparsers.add_parser(
@@ -11717,6 +11837,16 @@ def main():
     # config command  (parser built in hermes_cli/subcommands/config.py)
     # =========================================================================
     build_config_parser(subparsers, cmd_config=cmd_config)
+
+    # =========================================================================
+    # plan command  (parser built in hermes_cli/subcommands/plan.py)
+    # =========================================================================
+    build_plan_parser(subparsers, cmd_plan=cmd_plan)
+
+    # =========================================================================
+    # Hermes OS project runtime commands
+    # =========================================================================
+    build_project_runtime_parsers(subparsers, cmd_project_runtime=cmd_project_runtime)
 
     # =========================================================================
     # pairing command  (parser built in hermes_cli/subcommands/pairing.py)

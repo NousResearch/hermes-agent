@@ -4,6 +4,21 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+## Agent Pattern Selection
+
+Use `AGENT_PATTERNS.md` as the workflow design reference. Do not apply every
+pattern automatically; choose the simplest reliable pattern for the task.
+Before designing or executing a workflow, classify it:
+
+- Simple task -> single agent or tool use.
+- Multi-step task -> prompt chaining or planning.
+- Many independent tasks -> parallelization.
+- Uncertain routing -> router + clarification.
+- High-risk action -> human-in-the-loop.
+- Quality-sensitive output -> reflection + evaluation.
+- Cost-sensitive task -> resource-aware routing.
+- Long-running project -> planning + memory + monitoring.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a

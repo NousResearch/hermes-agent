@@ -5,6 +5,15 @@ from typing import Dict, List
 
 from .architecture_first import ArchitectureReviewReport
 from .contracts import RuntimeStatus
+from .health import check_runtime_health
+from .scanners import scan_project
+from .architecture_first import ArchitectureReviewRequest, review_architecture
+from .work_graph import compile_work_graph, resolve_dependencies
+from .execution import build_dry_run_execution_report
+from .tasks import generate_tasks_from_review, generate_tasks_from_work_graph, task_summary
+from .templates import discover_templates, template_registry_paths
+from .project_runtime_ops import runtime_dashboard_modules
+from .conversational import col_dashboard_panels
 
 
 @dataclass(frozen=True)
@@ -127,3 +136,116 @@ def agent_assignment_panel(graph, runtime_usage=None):
             "runtime_usage": runtime_usage or [],
         },
     )
+
+
+def task_backlog_panel(tasks):
+    return DashboardPanel(
+        panel_id="task-backlog",
+        title="Task Backlog",
+        data={
+            **task_summary(tasks),
+            "tasks": [
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "phase": task.phase,
+                    "status": task.status,
+                    "risk": task.risk,
+                    "dependencies": task.dependencies,
+                }
+                for task in tasks
+            ],
+        },
+    )
+
+
+def template_panel(templates, diagnostics):
+    return DashboardPanel(
+        panel_id="templates",
+        title="Templates",
+        data={
+            "template_count": len(templates),
+            "compile_failure_count": len(diagnostics),
+            "templates": [
+                {"template_id": template.template_id, "name": template.name, "version": template.version}
+                for template in templates
+            ],
+            "diagnostics": diagnostics,
+        },
+    )
+
+
+def dry_run_execution_panel(report):
+    return DashboardPanel(
+        panel_id="dry-run-execution",
+        title="Dry-run Execution",
+        data={
+            "batch_count": len(report.batches),
+            "expected_artifacts": report.expected_artifacts,
+            "policy_count": len(report.policies),
+        },
+    )
+
+
+def build_project_dashboard(project: str, projects_root: str | None = None, launcher_path: str = ""):
+    scan = scan_project(project, projects_root)
+    report = review_architecture(ArchitectureReviewRequest(
+        project_id=scan.project_id,
+        project_path=scan.project_path,
+        present_documents=scan.present_documents,
+        completed_stages=scan.completed_stages,
+    ))
+    graph = compile_work_graph(project, projects_root)
+    runtime = check_runtime_health(launcher_path or None)
+    tasks = generate_tasks_from_review(report, start_at=1)
+    tasks.extend(generate_tasks_from_work_graph(graph, start_at=len(tasks) + 1))
+    templates, diagnostics = discover_templates(template_registry_paths(scan.project_path))
+    dry_run = build_dry_run_execution_report(graph)
+    panels = [
+        architecture_score_panel(report),
+        gap_panel(report),
+        task_backlog_panel(tasks),
+        work_graph_summary_panel(graph),
+        dependency_block_panel(resolve_dependencies(graph)),
+        execution_validation_panel(graph),
+        agent_assignment_panel(graph),
+        template_panel(templates, diagnostics),
+        dry_run_execution_panel(dry_run),
+        runtime_delegation_panel(runtime),
+    ]
+    panels.extend(
+        DashboardPanel(
+            panel_id=module["panel_id"],
+            title=module["title"],
+            data=module["data"],
+        )
+        for module in runtime_dashboard_modules(
+            scan.project_id,
+            {
+                "runtime": {"services": []},
+                "infrastructure": {},
+                "vector_databases": {},
+            },
+        )
+    )
+    panels.extend(
+        DashboardPanel(
+            panel_id=module["panel_id"],
+            title=module["title"],
+            data=module["data"],
+        )
+        for module in col_dashboard_panels(scan.project_path)
+    )
+    return {
+        "project_id": scan.project_id,
+        "project_path": scan.project_path,
+        "panels": [_panel_to_dict(panel) for panel in panels],
+    }
+
+
+def _panel_to_dict(panel: DashboardPanel):
+    return {
+        "panel_id": panel.panel_id,
+        "title": panel.title,
+        "data": panel.data,
+    }

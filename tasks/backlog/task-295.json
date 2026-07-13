@@ -1,0 +1,17 @@
+{
+  "id": "task-295",
+  "title": "Add project shutdown automation for services, snapshots, and final status records",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Workspace Runtime Automation",
+  "summary": "Automate safe project switching, startup, restore, and shutdown flows with reusable plans and policy-aware execution.",
+  "acceptanceCriteria": [
+    "Automation generates a dry-run plan before making local changes.",
+    "Unsafe steps require approval and expose conflicts clearly.",
+    "Automation can be composed into repeatable project workflows."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 55-64",
+  "generatedAt": "2026-06-16T21:31:47.853Z",
+  "completedAt": "2026-06-16T21:36:13.020Z",
+  "reviewNotes": "Implemented through Hermes OS production runtime and governance contracts: live execution state, process/log/artifact contracts, approval UX and audit helpers, workspace automation, multi-project orchestration, agent fleet routing, telemetry and diagnostics, connector boundaries, evaluation gates, project memory intelligence, release hardening utilities, and focused integration tests."
+}

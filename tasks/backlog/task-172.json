@@ -1,0 +1,16 @@
+{
+  "id": "task-172",
+  "title": "Add runtime dashboard URL opening contract",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Project Runtime Manager",
+  "summary": "Define dashboard URL opening behavior separately from service startup and keep it dry-run capable.",
+  "acceptanceCriteria": [
+    "Implements the workspace/project runtime specification without making Hermes own domain databases",
+    "Keeps project state isolated by project id or project definition path",
+    "Provides dry-run or inspectable output for risky runtime or restore behavior",
+    "Includes focused tests or a documented verification path"
+  ],
+  "completedAt": "2026-06-16T21:05:21.665Z",
+  "reviewNotes": "Implemented as part of Hermes OS Workspace & Project Runtime MVP: project definitions, registry, switch/start/status, memory, snapshots, agent traces, infrastructure/vector registry, unified dashboard contracts, CLI wrappers, and integration tests."
+}

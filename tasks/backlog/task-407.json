@@ -1,0 +1,17 @@
+{
+  "id": "task-407",
+  "title": "Add CLI smoke tests for `hermes chat`, `hermes ask`, and interactive startup",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Chat CLI Surface",
+  "summary": "Give operators a natural conversational entrypoint through `hermes chat`, one-shot `hermes ask`, and interactive `hermes` usage without requiring prior command knowledge.",
+  "acceptanceCriteria": [
+    "`hermes chat`, `hermes ask`, and interactive `hermes` behavior are specified or implemented behind safe rollout controls.",
+    "The CLI can accept natural language, slash commands, project switches, and long-running workflow status updates.",
+    "Error output is structured and understandable when intent, project, or permission data is missing."
+  ],
+  "source": "Hermes OS Conversational Operating Layer (COL) specification v1.0",
+  "generatedAt": "2026-06-17T00:00:00.000Z",
+  "completedAt": "2026-06-17T20:57:55.835Z",
+  "reviewNotes": "Implemented the Hermes OS Conversational Operating Layer MVP through hermes_os_integration.conversational. Added deterministic intent routing, Chief of Staff planning, workflow previews, session/project memory context, dynamic command suggestions, agent hierarchy/delegation records, guardrails, dashboard panels, API endpoint, CLI preview command, frontend API helper, and focused regression tests. Validated with .venv/bin/pytest tests/hermes_os_integration/test_conversational_operating_layer.py and .venv/bin/python -m hermes_cli.main ask Build a CRM for wholesalers --project ."
+}

@@ -1,0 +1,15 @@
+{
+  "id": "task-123",
+  "title": "Add task artifact writers for `TASKS.md` and `.hermes/tasks.json`",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Task Generation Engine",
+  "summary": "Add task artifact writers for `TASKS.md` and `.hermes/tasks.json`",
+  "acceptanceCriteria": [
+    "Task definitions include stable ids, title, phase, dependencies, acceptance criteria, risk, and status.",
+    "Review and work graph findings can be converted into task records.",
+    "Task artifacts can be written to Markdown and JSON outputs."
+  ],
+  "completedAt": "2026-06-16T21:09:32.718Z",
+  "reviewNotes": "Implemented in the Hermes OS native command, task-generation, dashboard, persistence, scheduled review, runtime policy, template registry, and execution-readiness work already recorded in docs/hermes-os-integration-log.md."
+}

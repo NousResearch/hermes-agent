@@ -1,0 +1,17 @@
+{
+  "id": "task-332",
+  "title": "Add telemetry redaction policy for prompts, env vars, URLs, and credentials",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Observability & Telemetry",
+  "summary": "Add structured events, traces, metrics, trends, and diagnostics for runtime, planning, approvals, execution, dashboard, and agents.",
+  "acceptanceCriteria": [
+    "Telemetry is structured, project-scoped, and redacts sensitive data.",
+    "Dashboards expose trends and diagnostics instead of only current state.",
+    "Observability records can be exported and tested without live services."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 55-64",
+  "generatedAt": "2026-06-16T21:31:47.853Z",
+  "completedAt": "2026-06-16T21:36:13.020Z",
+  "reviewNotes": "Implemented through Hermes OS production runtime and governance contracts: live execution state, process/log/artifact contracts, approval UX and audit helpers, workspace automation, multi-project orchestration, agent fleet routing, telemetry and diagnostics, connector boundaries, evaluation gates, project memory intelligence, release hardening utilities, and focused integration tests."
+}

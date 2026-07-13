@@ -1,0 +1,15 @@
+{
+  "id": "task-138",
+  "title": "Add dashboard status for last review, next review, and review failures",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Scheduled Review Operations",
+  "summary": "Add dashboard status for last review, next review, and review failures",
+  "acceptanceCriteria": [
+    "Scheduled reviews can be registered or previewed without unsafe writes.",
+    "Review run summaries and score deltas can be persisted.",
+    "Approval gates and dashboard status fields are represented."
+  ],
+  "completedAt": "2026-06-16T21:09:32.718Z",
+  "reviewNotes": "Implemented in the Hermes OS native command, task-generation, dashboard, persistence, scheduled review, runtime policy, template registry, and execution-readiness work already recorded in docs/hermes-os-integration-log.md."
+}

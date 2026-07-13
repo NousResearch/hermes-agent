@@ -26,3 +26,20 @@
 - Reviewed Hermes OS v3 Control Plane + Governance + Work Graph Architecture roadmap.
 - Updated the plan around the new Work Graph Compiler north star and generated backlog tasks `task-080` through `task-113`.
 - Implemented tasks `task-080` through `task-113` with work graph schemas, architecture artifact reading, graph compilation, `hermes plan`, dependency resolution, execution queues, validation rules, intelligent assignment contracts, work graph dashboard panels, workspace summaries, autonomous review loops, and a domain-neutral template engine.
+
+## 2026-06-15
+
+- Integrated Architect CLI into native Hermes commands with `hermes architect review`.
+- Integrated Plan CLI into native Hermes commands with `hermes plan`.
+- Added a native Hermes OS dashboard page and `/api/hermes-os/summary` endpoint.
+- Added external JSON/YAML template loading for `hermes plan --template`.
+- Added SQLite-backed Hermes OS persistence while preserving the local JSON repository interface.
+- Added scheduled review job helpers with persisted review reports and score history.
+- Added runtime policy contracts for costs, retries, approvals, and audit records.
+- Generated the next implementation backlog in `TASKS.md` and appended tasks `task-114` through `task-153` to the integration plan.
+- Implemented tasks `task-114` through `task-153` with native command E2E coverage, task generation schemas and artifact writers, dashboard task/template/dry-run panels, SQLite migrations/import/export/integrity checks, scheduled review operations, runtime policy enforcement, template registry discovery, dry-run execution reports, artifact ingestion, and rollout-oriented tests.
+
+## 2026-06-16
+
+- Implemented tasks `task-184` through `task-267` with project runtime extension contracts for installed command audits, workspace command routing, guarded live-runtime plans, restore planning, runtime dashboard modules, durable runtime persistence projections, external template pack lifecycle helpers, continuous workspace health checks, dashboard UI rendering, and focused integration coverage.
+- Implemented tasks `task-268` through `task-387` with production runtime state contracts, approval governance, workspace automation, multi-project orchestration, agent fleet routing, telemetry and diagnostics, connector boundaries, evaluation gates, project memory intelligence, release hardening utilities, and focused integration coverage.

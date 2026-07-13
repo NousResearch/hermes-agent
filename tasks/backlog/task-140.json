@@ -1,0 +1,15 @@
+{
+  "id": "task-140",
+  "title": "Persist runtime policy audit records",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Runtime Policy Enforcement",
+  "summary": "Persist runtime policy audit records",
+  "acceptanceCriteria": [
+    "Runtime policy decisions are evaluated before worker execution.",
+    "Policy decisions produce audit records and retry/cost metadata.",
+    "High-risk actions can produce approval prompts instead of live execution."
+  ],
+  "completedAt": "2026-06-16T21:09:32.718Z",
+  "reviewNotes": "Implemented in the Hermes OS native command, task-generation, dashboard, persistence, scheduled review, runtime policy, template registry, and execution-readiness work already recorded in docs/hermes-os-integration-log.md."
+}

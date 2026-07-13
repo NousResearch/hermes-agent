@@ -1,0 +1,17 @@
+{
+  "id": "task-388",
+  "title": "Define Conversational Operating Layer contracts and ownership boundaries",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Conversational Operating Layer Foundation",
+  "summary": "Establish the chat-first operating layer as a first-class Hermes OS control-plane surface while preserving Hermes OS ownership of state, governance, and authoritative artifacts.",
+  "acceptanceCriteria": [
+    "COL contracts preserve Hermes OS as the source of truth for state, governance, tasks, workflows, approvals, and artifacts.",
+    "Conversation state is auditable and traceable to project memory and workflow records.",
+    "Feature flags allow chat-first behavior to be introduced without breaking existing commands."
+  ],
+  "source": "Hermes OS Conversational Operating Layer (COL) specification v1.0",
+  "generatedAt": "2026-06-17T00:00:00.000Z",
+  "completedAt": "2026-06-17T20:57:55.835Z",
+  "reviewNotes": "Implemented the Hermes OS Conversational Operating Layer MVP through hermes_os_integration.conversational. Added deterministic intent routing, Chief of Staff planning, workflow previews, session/project memory context, dynamic command suggestions, agent hierarchy/delegation records, guardrails, dashboard panels, API endpoint, CLI preview command, frontend API helper, and focused regression tests. Validated with .venv/bin/pytest tests/hermes_os_integration/test_conversational_operating_layer.py and .venv/bin/python -m hermes_cli.main ask Build a CRM for wholesalers --project ."
+}

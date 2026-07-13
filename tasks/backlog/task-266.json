@@ -1,0 +1,17 @@
+{
+  "id": "task-266",
+  "title": "Add dashboard activity feed records for continuous operations",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Continuous Workspace Operations",
+  "summary": "Add recurring workspace health loops that detect drift, stale work, failed services, missing approvals, and architecture regression.",
+  "acceptanceCriteria": [
+    "Continuous operations can run in dry-run mode before writing state.",
+    "Health checks produce project-scoped reports and dashboard signals.",
+    "Automated actions escalate risky writes to human approval."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 48-54",
+  "generatedAt": "2026-06-16T21:13:09.545Z",
+  "completedAt": "2026-06-16T21:19:02.820Z",
+  "reviewNotes": "Implemented through Hermes OS project runtime extension contracts: installed command audits and workspace routing, guarded live-runtime plans, restore plans with conflicts and approvals, runtime dashboard modules, SQLite-backed runtime persistence projections, external template pack lifecycle helpers, continuous workspace health checks, dashboard UI rendering, and integration coverage."
+}

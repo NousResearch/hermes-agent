@@ -1,0 +1,15 @@
+{
+  "id": "task-152",
+  "title": "Add validation result updates after artifact ingestion",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Execution Readiness",
+  "summary": "Add validation result updates after artifact ingestion",
+  "acceptanceCriteria": [
+    "Work graph dependencies can be planned into executable batches.",
+    "Dry-run reports include commands, policies, approvals, and expected artifacts.",
+    "Completed artifacts can update execution and validation state."
+  ],
+  "completedAt": "2026-06-16T21:09:32.718Z",
+  "reviewNotes": "Implemented in the Hermes OS native command, task-generation, dashboard, persistence, scheduled review, runtime policy, template registry, and execution-readiness work already recorded in docs/hermes-os-integration-log.md."
+}

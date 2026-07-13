@@ -1,0 +1,17 @@
+{
+  "id": "task-209",
+  "title": "Add VS Code workspace reopen implementation behind dry-run/live mode",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Workspace Restore Integrations",
+  "summary": "Turn workspace snapshots into actionable restore plans for editors, browsers, terminals, services, branches, and active task context.",
+  "acceptanceCriteria": [
+    "Restore behavior supports dry-run previews before launching local tools.",
+    "Restore contracts are separated from platform-specific launchers.",
+    "Unsafe or unavailable restore steps are reported without stopping the full plan."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 48-54",
+  "generatedAt": "2026-06-16T21:13:09.545Z",
+  "completedAt": "2026-06-16T21:19:02.820Z",
+  "reviewNotes": "Implemented through Hermes OS project runtime extension contracts: installed command audits and workspace routing, guarded live-runtime plans, restore plans with conflicts and approvals, runtime dashboard modules, SQLite-backed runtime persistence projections, external template pack lifecycle helpers, continuous workspace health checks, dashboard UI rendering, and integration coverage."
+}

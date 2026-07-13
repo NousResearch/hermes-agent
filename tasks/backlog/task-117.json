@@ -1,0 +1,15 @@
+{
+  "id": "task-117",
+  "title": "Add help text and docs examples for `hermes plan --template --persist --db`",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Native Command Hardening",
+  "summary": "Add help text and docs examples for `hermes plan --template --persist --db`",
+  "acceptanceCriteria": [
+    "Native Architect and Plan commands are exercised through the installed console entrypoint.",
+    "CLI help, examples, and error envelopes are inspectable without invoking legacy wrappers.",
+    "Invalid input paths return structured failure output."
+  ],
+  "completedAt": "2026-06-16T21:09:32.718Z",
+  "reviewNotes": "Implemented in the Hermes OS native command, task-generation, dashboard, persistence, scheduled review, runtime policy, template registry, and execution-readiness work already recorded in docs/hermes-os-integration-log.md."
+}

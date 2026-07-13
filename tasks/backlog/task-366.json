@@ -1,0 +1,17 @@
+{
+  "id": "task-366",
+  "title": "Add lessons-learned extraction from completed tasks, failures, and approvals",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Project Memory Intelligence",
+  "summary": "Turn project memory files and persisted decisions into searchable, summarized, drift-aware project context without making agent memory authoritative.",
+  "acceptanceCriteria": [
+    "Project memory is derived from persisted artifacts and project files.",
+    "Memory summaries are traceable to source records.",
+    "Drift warnings identify stale or conflicting decisions."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 55-64",
+  "generatedAt": "2026-06-16T21:31:47.853Z",
+  "completedAt": "2026-06-16T21:36:13.020Z",
+  "reviewNotes": "Implemented through Hermes OS production runtime and governance contracts: live execution state, process/log/artifact contracts, approval UX and audit helpers, workspace automation, multi-project orchestration, agent fleet routing, telemetry and diagnostics, connector boundaries, evaluation gates, project memory intelligence, release hardening utilities, and focused integration tests."
+}

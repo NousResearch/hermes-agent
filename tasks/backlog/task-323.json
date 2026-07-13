@@ -1,0 +1,17 @@
+{
+  "id": "task-323",
+  "title": "Add agent fleet dashboard panels for health, cost, latency, and routing confidence",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Agent Fleet Management",
+  "summary": "Manage agents as a measurable fleet with capabilities, availability, health, routing quality, cost, latency, and failure patterns.",
+  "acceptanceCriteria": [
+    "Agent routing decisions use explicit capability and health data.",
+    "Fleet metrics are project-scoped and workspace-aggregated.",
+    "Unhealthy agents are degraded or removed from routing."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 55-64",
+  "generatedAt": "2026-06-16T21:31:47.853Z",
+  "completedAt": "2026-06-16T21:36:13.020Z",
+  "reviewNotes": "Implemented through Hermes OS production runtime and governance contracts: live execution state, process/log/artifact contracts, approval UX and audit helpers, workspace automation, multi-project orchestration, agent fleet routing, telemetry and diagnostics, connector boundaries, evaluation gates, project memory intelligence, release hardening utilities, and focused integration tests."
+}

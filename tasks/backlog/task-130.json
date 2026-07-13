@@ -1,0 +1,15 @@
+{
+  "id": "task-130",
+  "title": "Add migration runner for future Hermes OS persistence changes",
+  "status": "completed",
+  "priority": "high",
+  "phase": "Persistence Migrations",
+  "summary": "Add migration runner for future Hermes OS persistence changes",
+  "acceptanceCriteria": [
+    "SQLite persistence exposes schema versioning and migration behavior.",
+    "Local JSON records can be imported and exported through portable bundles.",
+    "Integrity checks identify malformed or duplicate repository state."
+  ],
+  "completedAt": "2026-06-16T21:09:32.718Z",
+  "reviewNotes": "Implemented in the Hermes OS native command, task-generation, dashboard, persistence, scheduled review, runtime policy, template registry, and execution-readiness work already recorded in docs/hermes-os-integration-log.md."
+}

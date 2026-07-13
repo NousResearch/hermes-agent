@@ -1,0 +1,17 @@
+{
+  "id": "task-313",
+  "title": "Add orchestration report export for workspace review",
+  "status": "completed",
+  "priority": "medium",
+  "phase": "Multi-Project Orchestration",
+  "summary": "Coordinate work across projects using cross-project dependencies, blockers, shared queues, shared approvals, and orchestration dashboards.",
+  "acceptanceCriteria": [
+    "Cross-project relationships are explicit and do not merge project source-of-truth state.",
+    "Shared blockers and approvals are visible at workspace level.",
+    "Execution order respects dependencies across projects."
+  ],
+  "source": "Hermes OS extension roadmap generated from phases 55-64",
+  "generatedAt": "2026-06-16T21:31:47.853Z",
+  "completedAt": "2026-06-16T21:36:13.020Z",
+  "reviewNotes": "Implemented through Hermes OS production runtime and governance contracts: live execution state, process/log/artifact contracts, approval UX and audit helpers, workspace automation, multi-project orchestration, agent fleet routing, telemetry and diagnostics, connector boundaries, evaluation gates, project memory intelligence, release hardening utilities, and focused integration tests."
+}

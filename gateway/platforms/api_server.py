@@ -913,6 +913,19 @@ class APIServerAdapter(BasePlatformAdapter):
         # _active_run_tasks).
         self._inflight_agent_runs: int = 0
 
+    def active_agent_work_count(self) -> int:
+        """Count of in-flight agent work served by this API server adapter.
+
+        Covers the non-streaming chat/responses paths (``_inflight_agent_runs``)
+        plus live ``/v1/runs`` agents (``_active_run_agents``). Used by the
+        gateway shutdown drain so desk/API sessions get the same drain window
+        as messaging sessions and cron jobs (#63529).
+        """
+        try:
+            return int(self._inflight_agent_runs) + len(self._active_run_agents)
+        except Exception:
+            return 0
+
     def _readiness_work_counts(self) -> tuple[int, int, int]:
         """Return bounded work counts from each subsystem's public state."""
         active_api_runs = sum(

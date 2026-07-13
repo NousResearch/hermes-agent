@@ -10,6 +10,11 @@ first. Projection into user-visible stores happens later and may cross trust
 boundaries such as iCloud sync, Obsidian app state, or the broader user
 filesystem under `/Users/neilrobinson/`.
 
+Recommended capability name:
+
+- `canonical note-capture projection flow`
+- short form: `canonical note-capture projection`
+
 The contract is:
 
 1. Hermes classifies a capture to one canonical target identity.
@@ -44,6 +49,9 @@ For each captured item, Hermes writes:
 
 The canonical event is the source of truth. Projected files are derived
 artifacts.
+
+For the corrected runtime event shape that matches this contract, see
+[`docs/note-capture-runtime-event-schema.md`](./note-capture-runtime-event-schema.md).
 
 ## Target Model
 
@@ -199,6 +207,60 @@ Current approved canonical examples from the live vault:
   - current target status: `pending_migration`
   - current live predecessor path:
     `3.Areas/Personal/Invoices and receipts`
+- raw capture fallback:
+  - `1.Inbox` is a valid canonical target when explicitly selected
+  - `Resources/_Inbox Review` remains the low-confidence fallback destination
+
+## Runtime Agent Prompt
+
+Use the following prompt text when you need the runtime agent to apply this
+capability consistently:
+
+```md
+Use the canonical note-capture projection flow for generic captured notes and
+files.
+
+Rules:
+1. Resolve the capture to one canonical target identity before choosing a live
+   path.
+2. Treat `1.Inbox` as a valid explicit canonical target when the routing
+   decision says the note should remain in inbox form.
+3. Use `Resources/_Inbox Review` as the low-confidence fallback when the route
+   is uncertain.
+4. Write a canonical capture event first, including routing metadata.
+5. Stage one projected artifact per enabled downstream store.
+6. Do not treat the live Obsidian vault or other user-space folders as the
+   primary write surface for generic note capture.
+7. Treat external sync or projection workers as responsible for materializing
+   staged artifacts into live vault or filesystem targets.
+8. Treat daily-note creation as a special-case workflow, not the generic note
+   capture model.
+
+If routing metadata is available, preserve and propagate:
+- `target_id`
+- `target_class`
+- `logical_path`
+- `display_path`
+- `resolved_target_path`
+- `target_status`
+- `trust_boundary`
+
+Capability name: canonical note-capture projection flow.
+```
+
+## Runtime Schema
+
+When implementing or reviewing runtime capture output, use the corrected event
+shape and field semantics in
+[`docs/note-capture-runtime-event-schema.md`](./note-capture-runtime-event-schema.md).
+
+In particular:
+
+- `target_id` is a stable canonical identity, not a folder path
+- `resolved_target_path` is the resolved live target-relative path, not a
+  staging path
+- `target_status` tracks target lifecycle, not projection state
+- projection state lives under the per-store projection block
 
 ## Projected Path Derivation
 

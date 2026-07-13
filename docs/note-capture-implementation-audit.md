@@ -81,10 +81,12 @@ approved before runtime rollout.
 - Files:
   - `docs/note-capture-runtime-rollout.md`
   - `docs/note-capture-runtime-proposed-patches.md`
+  - `docs/note-capture-runtime-event-schema.md`
 - Status: written
 - Evidence:
   - names exact runtime files to edit
   - provides exact proposed wording for those runtime changes
+  - defines corrected runtime event semantics for canonical capture output
 
 ## Runtime Implementation Status
 

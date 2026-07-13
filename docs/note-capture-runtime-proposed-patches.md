@@ -5,6 +5,59 @@ after approval of the projection contract.
 
 It is intentionally concrete so approval can be based on exact wording.
 
+For the corrected runtime event shape and field semantics, see
+[`docs/note-capture-runtime-event-schema.md`](./note-capture-runtime-event-schema.md).
+
+## Runtime Agent Prompt
+
+Use this prompt block when you want Hermes-core runtime surfaces to understand
+and consistently apply the capability:
+
+```md
+Use the canonical note-capture projection flow for generic captured notes and
+files.
+
+Resolve each capture to one canonical target identity before choosing a live
+path. `1.Inbox` is a valid explicit canonical target when the routing decision
+is to keep the note as raw inbox material. `Resources/_Inbox Review` remains
+the low-confidence fallback when the route is uncertain.
+
+Write a canonical capture event first, preserve routing metadata, and stage
+one projected artifact per enabled downstream store. Do not treat the live
+Obsidian vault, `/opt/second_brain/`, or other user-space folders as the
+primary write surface for generic note capture. External sync or projection
+workers are responsible for materializing staged artifacts into live targets.
+
+Preserve and propagate routing metadata when available:
+- `target_id`
+- `target_class`
+- `logical_path`
+- `display_path`
+- `resolved_target_path`
+- `target_status`
+- `trust_boundary`
+
+Treat daily-note creation as a special-case workflow, not the generic note
+capture model.
+```
+
+Add this schema rule block where runtime prompts need a compact implementation
+guardrail:
+
+```md
+For generic note capture, preserve four separate concepts:
+- canonical identity (`target_id`)
+- resolved live target path (`resolved_target_path`)
+- staged artifact path (`staged_relative_path`)
+- projection state (`pending` / `projected` / `failed`)
+
+Do not use a folder path as `target_id`.
+Do not use a staging path as `resolved_target_path`.
+Do not use `staged` as `target_status`.
+Use `target_status` only for target lifecycle:
+`active`, `deferred`, `pending_migration`, `unavailable`.
+```
+
 ## 1. `~/HermesData/runtime/hermes-core/skills/note-taking/vault-routing/SKILL.md`
 
 ### Proposed replacement header
@@ -66,7 +119,8 @@ maps content to one canonical target identity, writes canonical capture events,
 and stages downstream projections per store. Vault, projection trees, and
 non-vault user-space targets are downstream materializations, not the primary
 write surface. Check structured projection status rather than assuming a direct
-live-path write.
+live-path write. `1.Inbox` is a valid explicit target; `Resources/_Inbox Review`
+is the low-confidence fallback.
 ```
 
 ## 3. `~/HermesData/runtime/hermes-core/profiles/orchestrator/memories/MEMORY.md`

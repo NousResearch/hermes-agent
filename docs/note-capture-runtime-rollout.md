@@ -5,6 +5,8 @@ with the canonical note-capture and staged projection contract defined in
 [`docs/note-capture-projection-contract.md`](./note-capture-projection-contract.md)
 and the target-space review in
 [`docs/note-capture-target-space-review.md`](./note-capture-target-space-review.md).
+Use [`docs/note-capture-runtime-event-schema.md`](./note-capture-runtime-event-schema.md)
+as the runtime output shape for canonical capture events.
 
 These runtime changes should be applied only after the projection contract is
 explicitly approved.
@@ -22,6 +24,10 @@ what Hermes-core says and expects about the trust boundaries across:
 - non-vault user filesystem targets
 - future targets represented through target registry status within those same
   target classes
+
+Use the capability name `canonical note-capture projection flow` when updating
+runtime skills, memories, and orchestration prompts so the model has one stable
+term for this behavior.
 
 ## Runtime Files To Update
 
@@ -56,6 +62,8 @@ Required update:
   separate `target_class`
 - Point the agent toward structured projection status rather than assuming a
   direct vault write
+- Clarify that `1.Inbox` is a valid explicit target while
+  `Resources/_Inbox Review` remains the low-confidence fallback
 
 ### 3. `~/HermesData/runtime/hermes-core/profiles/orchestrator/memories/MEMORY.md`
 
@@ -130,6 +138,9 @@ After approval and runtime edits, verify:
 4. Existing daily-note jobs still run successfully.
 5. Projection-status files remain readable and semantically consistent with the
    approved contract.
+6. Runtime capture events use the corrected field semantics:
+   stable `target_id`, live-relative `resolved_target_path`, lifecycle-only
+   `target_status`, and per-store projection state.
 
 ## Approval Gate
 

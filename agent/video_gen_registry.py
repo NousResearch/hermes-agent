@@ -103,9 +103,10 @@ def get_active_provider() -> Optional[VideoGenProvider]:
         if provider is not None:
             return provider
         logger.debug(
-            "video_gen.provider='%s' configured but not registered; falling back",
+            "video_gen.provider='%s' configured but not registered; failing closed",
             configured,
         )
+        return None
 
     def _is_available_safe(p: VideoGenProvider) -> bool:
         """Wrap ``is_available()`` so a buggy provider doesn't kill resolution."""

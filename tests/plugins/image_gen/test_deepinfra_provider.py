@@ -44,7 +44,7 @@ def test_list_models_filters_by_image_gen_tag(monkeypatch):
     """Plugin-side wiring: list_models() returns only ``image-gen``-tagged
     catalog entries and surfaces pricing + default dims when present."""
     import json
-    import urllib.request
+    import hermes_cli.models as models
 
     class _Resp:
         def __enter__(self): return self
@@ -59,7 +59,9 @@ def test_list_models_filters_by_image_gen_tag(monkeypatch):
                 }},
             ]}).encode()
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _Resp())
+    monkeypatch.setattr(
+        models, "_urlopen_model_catalog_request", lambda *a, **kw: _Resp()
+    )
     rows = deepinfra_plugin.DeepInfraImageGenProvider().list_models()
     ids = {row["id"] for row in rows}
     assert ids == {"vendor/img"}
@@ -95,3 +97,33 @@ def test_generate_calls_openai_sdk_with_deepinfra_base_url(monkeypatch):
     assert "deepinfra" in captured["base_url"]
     assert captured["api_key"] == "test-key"
     assert captured["kwargs"]["model"] == "vendor/test-img"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"image_url": "https://example.com/source.png"},
+        {"reference_image_urls": ["https://example.com/reference.png"]},
+    ],
+)
+def test_generate_rejects_unsupported_edit_inputs_without_calling_sdk(
+    monkeypatch, kwargs
+):
+    monkeypatch.setenv("DEEPINFRA_IMAGE_MODEL", "vendor/test-img")
+    fake_openai = MagicMock()
+    with patch.dict("sys.modules", {"openai": fake_openai}):
+        result = deepinfra_plugin.DeepInfraImageGenProvider().generate(
+            prompt="edit this", **kwargs
+        )
+
+    assert result["success"] is False
+    assert result["error_type"] == "modality_unsupported"
+    assert result["provider"] == "deepinfra"
+    fake_openai.OpenAI.assert_not_called()
+
+
+def test_capabilities_advertise_text_to_image_only():
+    assert deepinfra_plugin.DeepInfraImageGenProvider().capabilities() == {
+        "modalities": ["text"],
+        "max_reference_images": 0,
+    }

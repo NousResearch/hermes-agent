@@ -2064,11 +2064,9 @@ DEFAULT_CONFIG = {
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
     # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
-        # "" (auto) → use the active inference provider when it ships a built-in
-        # TTS backend (DeepInfra, OpenAI, xAI, …), else fall back to Edge. Set
-        # explicitly to pin a backend:
+        # Set explicitly to pin a backend:
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
-        "provider": "",
+        "provider": "edge",
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -3734,22 +3732,6 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
-    "DEEPINFRA_API_KEY": {
-        "description": "DeepInfra API key (100+ top models via api.deepinfra.com)",
-        "prompt": "DeepInfra API Key",
-        "url": "https://deepinfra.com/dash/api_keys",
-        "password": True,
-        "category": "provider",
-    },
-    "DEEPINFRA_BASE_URL": {
-        "description": "DeepInfra base URL override",
-        "prompt": "DeepInfra base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-
     # ── Tool API keys ──
     "EXA_API_KEY": {
         "description": "Exa API key for AI-native web search and contents",

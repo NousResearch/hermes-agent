@@ -352,72 +352,14 @@ def _load_tts_config() -> Dict[str, Any]:
         return {}
 
 
-def _active_model_provider() -> str:
-    """Return the active inference provider name.
-
-    Reuses :func:`agent.auxiliary_client._read_main_provider` so a runtime
-    provider switch (``--provider`` flag, per-session gateway provider,
-    fallback-model activation) is honored — reading ``model.provider`` from
-    disk directly would miss those. Empty string when unavailable. Used only
-    as a TTS default hint — see :func:`_get_provider`.
-    """
-    try:
-        from agent.auxiliary_client import _read_main_provider
-        return (_read_main_provider() or "").lower().strip()
-    except Exception:
-        try:
-            from hermes_cli.config import load_config_readonly
-            return str((load_config_readonly().get("model") or {}).get("provider") or "").lower().strip()
-        except Exception:
-            return ""
-
-
-# API-key env vars for the cloud TTS backends. Local backends (edge, piper,
-# neutts, kittentts) are always available. Used to gate the auto-default: the
-# active inference provider's TTS backend is only inherited when it can
-# actually authenticate — otherwise we fall back to free Edge instead of
-# silently switching a deployment onto a backend that will error at call time.
-_TTS_PROVIDER_KEY_ENV_VARS: Dict[str, tuple] = {
-    "elevenlabs": ("ELEVENLABS_API_KEY",),
-    "openai": ("OPENAI_API_KEY",),
-    "minimax": ("MINIMAX_API_KEY",),
-    "xai": ("XAI_API_KEY",),
-    "mistral": ("MISTRAL_API_KEY",),
-    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
-    "deepinfra": ("DEEPINFRA_API_KEY",),
-}
-
-
-def _tts_provider_available(name: str) -> bool:
-    """Return True when TTS backend *name* has usable credentials.
-
-    Local/command backends (not in the key map) are always considered
-    available.
-    """
-    env_vars = _TTS_PROVIDER_KEY_ENV_VARS.get(name)
-    if env_vars is None:
-        return True
-    return any((get_env_value(v) or "").strip() for v in env_vars)
-
-
 def _get_provider(tts_config: Dict[str, Any]) -> str:
-    """Get the configured TTS provider name.
+    """Get the explicitly configured TTS provider or the free default.
 
-    When ``tts.provider`` is set it always wins. With no explicit provider,
-    fall back to the active inference provider *if* it ships a built-in TTS
-    backend AND that backend can authenticate — so a single-provider
-    deployment gets matching TTS out of the box without silently switching a
-    credential-less deployment off the free Edge default. Anything else keeps
-    the historical Edge default. Provider-agnostic: no backend is
-    special-cased here.
+    Inference credentials do not imply consent to paid speech generation.
+    Users opt into cloud TTS by setting ``tts.provider`` (normally through
+    ``hermes tools``); otherwise the historical Edge backend remains active.
     """
-    explicit = (tts_config.get("provider") or "").lower().strip()
-    if explicit:
-        return explicit
-    active = _active_model_provider()
-    if active and active in BUILTIN_TTS_PROVIDERS and _tts_provider_available(active):
-        return active
-    return DEFAULT_PROVIDER
+    return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
 # ===========================================================================

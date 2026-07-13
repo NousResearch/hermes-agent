@@ -17,18 +17,14 @@ class TestTTSProviderNullGuard:
         """YAML ``tts: {provider: null}`` should fall back to default."""
         from tools.tts_tool import _get_provider, DEFAULT_PROVIDER
 
-        # Pin the active inference provider to a non-TTS one so the
-        # active-provider fallback doesn't fire — isolates the null guard.
-        with patch("tools.tts_tool._active_model_provider", return_value="anthropic"):
-            result = _get_provider({"provider": None})
+        result = _get_provider({"provider": None})
         assert result == DEFAULT_PROVIDER.lower().strip()
 
     def test_missing_provider_returns_default(self):
         """No ``provider`` key + non-TTS active provider should return default."""
         from tools.tts_tool import _get_provider, DEFAULT_PROVIDER
 
-        with patch("tools.tts_tool._active_model_provider", return_value="anthropic"):
-            result = _get_provider({})
+        result = _get_provider({})
         assert result == DEFAULT_PROVIDER.lower().strip()
 
     def test_valid_provider_passed_through(self):
@@ -37,19 +33,12 @@ class TestTTSProviderNullGuard:
         result = _get_provider({"provider": "OPENAI"})
         assert result == "openai"
 
-    def test_falls_back_to_active_tts_capable_provider_when_available(self):
-        """No explicit tts.provider + a TTS-capable, credentialled active
-        provider → use it. DeepInfra/OpenAI are in BUILTIN_TTS_PROVIDERS, so a
-        single-provider deployment gets matching TTS without configuring
-        tts.provider — but only when the backend can authenticate."""
-        from tools.tts_tool import _get_provider
+    def test_missing_provider_keeps_free_default_with_cloud_credentials(self):
+        """A chat-provider key must not silently opt the user into paid TTS."""
+        from tools.tts_tool import _get_provider, DEFAULT_PROVIDER
 
-        with patch("tools.tts_tool._active_model_provider", return_value="deepinfra"), \
-                patch("tools.tts_tool._tts_provider_available", return_value=True):
-            assert _get_provider({}) == "deepinfra"
-        with patch("tools.tts_tool._active_model_provider", return_value="openai"), \
-                patch("tools.tts_tool._tts_provider_available", return_value=True):
-            assert _get_provider({"provider": None}) == "openai"
+        assert _get_provider({}) == DEFAULT_PROVIDER
+        assert _get_provider({"provider": None}) == DEFAULT_PROVIDER
 
     def test_active_provider_without_credentials_keeps_edge(self):
         """A TTS-capable active provider that can't authenticate must NOT
@@ -57,16 +46,13 @@ class TestTTSProviderNullGuard:
         errors for a credential-less deployment)."""
         from tools.tts_tool import _get_provider, DEFAULT_PROVIDER
 
-        with patch("tools.tts_tool._active_model_provider", return_value="openai"), \
-                patch("tools.tts_tool._tts_provider_available", return_value=False):
-            assert _get_provider({}) == DEFAULT_PROVIDER.lower().strip()
+        assert _get_provider({}) == DEFAULT_PROVIDER.lower().strip()
 
     def test_explicit_provider_wins_over_active(self):
         """An explicit tts.provider always overrides the active-provider fallback."""
         from tools.tts_tool import _get_provider
 
-        with patch("tools.tts_tool._active_model_provider", return_value="deepinfra"):
-            assert _get_provider({"provider": "edge"}) == "edge"
+        assert _get_provider({"provider": "edge"}) == "edge"
 
 
 # ── Web tools ─────────────────────────────────────────────────────────────

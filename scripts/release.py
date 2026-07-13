@@ -1453,6 +1453,7 @@ AUTHOR_MAP = {
     "michaelfackerell@gmail.com": "MikeFac",
     "18024642@qq.com": "GuyCui",
     "eumael.mkt@gmail.com": "maelrx",
+    "georgi@deepinfra.com": "ats3v",
     # v0.11.0 additions
     "benbarclay@gmail.com": "benbarclay",
     "lijiawen@umich.edu": "Jiawen-lee",

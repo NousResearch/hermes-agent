@@ -1,3 +1,6 @@
+import { normalizeProfileKey } from '@/store/profile-key'
+import { parseSessionIdentityKey } from '@/store/session-identity'
+
 // The gateway tags every event — and therefore every native notification —
 // with the *runtime* session id (the key under which the session lives in the
 // gateway's in-memory `_sessions` map). The chat route, however, is keyed by
@@ -13,12 +16,17 @@
 // (e.g. a notification for a session this window never opened), in which case
 // the normal resume/REST lookup handles it.
 export function storedSessionIdForNotification(
+  profile: string | null | undefined,
   id: string,
   runtimeIdByStoredSessionId: ReadonlyMap<string, string>
 ): string {
-  for (const [storedId, runtimeId] of runtimeIdByStoredSessionId) {
-    if (runtimeId === id) {
-      return storedId
+  const profileKey = normalizeProfileKey(profile)
+
+  for (const [storedKey, runtimeId] of runtimeIdByStoredSessionId) {
+    const stored = parseSessionIdentityKey(storedKey)
+
+    if (stored?.profile === profileKey && runtimeId === id) {
+      return stored.sessionId
     }
   }
 

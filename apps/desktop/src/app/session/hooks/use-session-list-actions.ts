@@ -9,14 +9,15 @@ import {
 } from '@/lib/session-source'
 import { setCronJobs } from '@/store/cron'
 import { $pinnedSessionIds, $sessionsLimit, bumpSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
-import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import {
+  $cronSessions,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
-  $workingSessionIds,
+  $workingSessions,
   CRON_SECTION_LIMIT,
-  getRecentlySettledSessionIds,
+  getRecentlySettledSessions,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   setCronSessions,
@@ -28,6 +29,7 @@ import {
   setSessionsLoading,
   setSessionsTotal
 } from '@/store/session'
+import { makeSessionIdentity, type SessionIdentity, toggleSessionIdentity } from '@/store/session-identity'
 
 import { sameCronSignature } from '../../desktop-controller-utils'
 
@@ -47,21 +49,26 @@ const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
 // sees the persisted row), and sessions whose turn just settled (same race, but
 // for a chat the user has already navigated away from). Pass `scope` to only
 // keep the active row when it belongs to the profile being paged.
-function sessionsToKeep(scope?: string): Set<string> {
-  const keep = new Set<string>([
-    ...$workingSessionIds.get(),
-    ...$pinnedSessionIds.get(),
-    ...getRecentlySettledSessionIds()
-  ])
+function sessionsToKeep(scope?: string): SessionIdentity[] {
+  let keep = [...$workingSessions.get(), ...getRecentlySettledSessions()]
+
+  const pinned = new Set($pinnedSessionIds.get())
+
+  for (const session of [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()]) {
+    if (pinned.has(session.id) || (session._lineage_root_id && pinned.has(session._lineage_root_id))) {
+      keep = toggleSessionIdentity(keep, makeSessionIdentity(session.profile, session.id), true)
+
+      if (session._lineage_root_id) {
+        keep = toggleSessionIdentity(keep, makeSessionIdentity(session.profile, session._lineage_root_id), true)
+      }
+    }
+  }
 
   const active = $selectedStoredSessionId.get()
 
   if (active) {
-    const session = scope ? $sessions.get().find(s => s.id === active) : null
-
-    if (!scope || !session || normalizeProfileKey(session.profile) === scope) {
-      keep.add(active)
-    }
+    const profile = scope ?? normalizeProfileKey($activeGatewayProfile.get())
+    keep = toggleSessionIdentity(keep, makeSessionIdentity(profile, active), true)
   }
 
   return keep

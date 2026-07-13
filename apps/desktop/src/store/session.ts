@@ -7,6 +7,16 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import {
+  hasSessionIdentity,
+  makeSessionIdentity,
+  profileSessionKey,
+  type SessionIdentity,
+  sessionIdentityEqual,
+  sessionIdentityKey,
+  toggleSessionIdentity
+} from './session-identity'
+
 type Updater<T> = T | ((current: T) => T)
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
@@ -152,23 +162,24 @@ export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id
 export function mergeSessionPage(
   previous: SessionInfo[],
   incoming: SessionInfo[],
-  keepIds: Iterable<string>
+  keepSessions: Iterable<SessionIdentity>
 ): SessionInfo[] {
-  const keep = keepIds instanceof Set ? keepIds : new Set(keepIds)
+  const keep = new Set([...keepSessions].map(sessionIdentityKey))
+  const rowKey = (session: SessionInfo, sessionId = session.id) => profileSessionKey(session.profile, sessionId)
 
   // Carry a known title onto a row that arrives title-less, so a freshly
   // submitted session (e.g. a branch draft) holds its placeholder instead of
   // flashing its raw message preview in the gap between persist and the async
   // auto-titler. A real clear sets the local title null first, so this never
   // masks one.
-  const prevById = new Map(previous.map(session => [session.id, session]))
+  const prevById = new Map(previous.map(session => [rowKey(session), session]))
 
   const merged = incoming.map(session => {
     if (session.title?.trim()) {
       return session
     }
 
-    const carried = prevById.get(session.id)?.title?.trim()
+    const carried = prevById.get(rowKey(session))?.title?.trim()
 
     return carried ? { ...session, title: carried } : session
   })
@@ -177,19 +188,19 @@ export function mergeSessionPage(
     return merged
   }
 
-  const incomingIds = new Set(merged.map(session => session.id))
+  const incomingIds = new Set(merged.map(session => rowKey(session)))
 
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
   // rows survive as separate sidebar entries (fixes #43483).
-  const incomingLineageKeys = new Set(merged.map(session => session._lineage_root_id ?? session.id))
+  const incomingLineageKeys = new Set(merged.map(session => rowKey(session, session._lineage_root_id ?? session.id)))
 
   const survivors = previous.filter(
     session =>
-      !incomingIds.has(session.id) &&
-      !incomingLineageKeys.has(session._lineage_root_id ?? session.id) &&
-      (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
+      !incomingIds.has(rowKey(session)) &&
+      !incomingLineageKeys.has(rowKey(session, session._lineage_root_id ?? session.id)) &&
+      (keep.has(rowKey(session)) || (session._lineage_root_id != null && keep.has(rowKey(session, session._lineage_root_id))))
   )
 
   return survivors.length ? [...survivors, ...merged] : merged
@@ -228,7 +239,7 @@ export const $messagingTruncated = atom<boolean>(false)
 // one. Empty for single-profile users (fall back to $sessionsTotal).
 export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
-export const $workingSessionIds = atom<string[]>([])
+export const $workingSessions = atom<SessionIdentity[]>([])
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
@@ -302,7 +313,7 @@ export const setMessagingTruncated = (next: Updater<boolean>) => updateAtom($mes
 export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =>
   updateAtom($sessionProfileTotals, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
-export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
+export const setWorkingSessions = (next: Updater<SessionIdentity[]>) => updateAtom($workingSessions, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
@@ -388,10 +399,10 @@ const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 // Notified (with the stored session id) whenever the watchdog force-clears a
 // stuck session. The session-state cache subscribes to also drop that session's
-// busy/awaiting flags — clearing `$workingSessionIds` alone only removes the
+// busy/awaiting flags — clearing `$workingSessions` alone only removes the
 // sidebar dot, leaving the composer stuck on "Thinking"/Stop for a hung or
 // looping turn that never streamed its terminal event.
-type SessionWatchdogListener = (storedSessionId: string) => void
+type SessionWatchdogListener = (identity: SessionIdentity) => void
 const sessionWatchdogListeners = new Set<SessionWatchdogListener>()
 
 export function onSessionWatchdogClear(listener: SessionWatchdogListener): () => void {
@@ -400,36 +411,38 @@ export function onSessionWatchdogClear(listener: SessionWatchdogListener): () =>
   return () => void sessionWatchdogListeners.delete(listener)
 }
 
-function armSessionWatchdog(sessionId: string) {
-  const existing = sessionWatchdogTimers.get(sessionId)
+function armSessionWatchdog(identity: SessionIdentity) {
+  const key = sessionIdentityKey(identity)
+  const existing = sessionWatchdogTimers.get(key)
 
   if (existing) {
     clearTimeout(existing)
   }
 
   const timer = setTimeout(() => {
-    sessionWatchdogTimers.delete(sessionId)
+    sessionWatchdogTimers.delete(key)
 
     // Re-check the latest state at fire-time. If the user already navigated
     // away or the session genuinely finished, the timer is a no-op.
-    if ($workingSessionIds.get().includes(sessionId)) {
-      setWorkingSessionIds(current => current.filter(id => id !== sessionId))
+    if (hasSessionIdentity($workingSessions.get(), identity)) {
+      setWorkingSessions(current => current.filter(candidate => !sessionIdentityEqual(candidate, identity)))
     }
 
     for (const listener of sessionWatchdogListeners) {
-      listener(sessionId)
+      listener(identity)
     }
   }, SESSION_WATCHDOG_TIMEOUT_MS)
 
-  sessionWatchdogTimers.set(sessionId, timer)
+  sessionWatchdogTimers.set(key, timer)
 }
 
-function clearSessionWatchdog(sessionId: string) {
-  const existing = sessionWatchdogTimers.get(sessionId)
+function clearSessionWatchdog(identity: SessionIdentity) {
+  const key = sessionIdentityKey(identity)
+  const existing = sessionWatchdogTimers.get(key)
 
   if (existing) {
     clearTimeout(existing)
-    sessionWatchdogTimers.delete(sessionId)
+    sessionWatchdogTimers.delete(key)
   }
 }
 
@@ -448,26 +461,29 @@ function clearSessionWatchdog(sessionId: string) {
 // session (mergeSessionPage only revives rows still present in the in-memory
 // list, which optimistic delete/archive already drops).
 const SESSION_SETTLE_GRACE_MS = 30 * 1000
-const settledSessionExpiry = new Map<string, number>()
+const settledSessionExpiry = new Map<string, { expiry: number; identity: SessionIdentity }>()
 
-function markSessionSettled(sessionId: string) {
-  settledSessionExpiry.set(sessionId, Date.now() + SESSION_SETTLE_GRACE_MS)
+function markSessionSettled(identity: SessionIdentity) {
+  settledSessionExpiry.set(sessionIdentityKey(identity), {
+    expiry: Date.now() + SESSION_SETTLE_GRACE_MS,
+    identity
+  })
 }
 
-function clearSessionSettled(sessionId: string) {
-  settledSessionExpiry.delete(sessionId)
+function clearSessionSettled(identity: SessionIdentity) {
+  settledSessionExpiry.delete(sessionIdentityKey(identity))
 }
 
 /** Stored ids of sessions whose turn ended within the grace window. Prunes
  *  expired entries as it reads, so it stays bounded without a timer. */
-export function getRecentlySettledSessionIds(now: number = Date.now()): string[] {
-  const live: string[] = []
+export function getRecentlySettledSessions(now: number = Date.now()): SessionIdentity[] {
+  const live: SessionIdentity[] = []
 
-  for (const [id, expiry] of settledSessionExpiry) {
+  for (const [key, { expiry, identity }] of settledSessionExpiry) {
     if (expiry > now) {
-      live.push(id)
+      live.push(identity)
     } else {
-      settledSessionExpiry.delete(id)
+      settledSessionExpiry.delete(key)
     }
   }
 
@@ -476,63 +492,67 @@ export function getRecentlySettledSessionIds(now: number = Date.now()): string[]
 
 /** Call when a streaming event for a session lands. Refreshes the watchdog
  *  so the session keeps its "working" status as long as data keeps coming. */
-export function noteSessionActivity(sessionId: string | null | undefined) {
-  if (!sessionId || !$workingSessionIds.get().includes(sessionId)) {
-    return
-  }
-
-  armSessionWatchdog(sessionId)
-}
-
-// Toggle an id's membership in a string-set atom, no-op when unchanged (keeps
-// the same array reference so subscribers don't churn).
-const toggleMembership = (set: (next: Updater<string[]>) => void, id: string, on: boolean) =>
-  set(current => {
-    const present = current.includes(id)
-
-    if (on) {
-      return present ? current : [...current, id]
-    }
-
-    return present ? current.filter(x => x !== id) : current
-  })
-
-// Stored session ids with a blocking prompt (clarify) waiting on the user.
-// Separate from $workingSessionIds: a session can be "working" (turn running)
-// AND need input. The sidebar row reads this for a persistent indicator that,
-// unlike a toast, survives window blur / alt-tab.
-export const $attentionSessionIds = atom<string[]>([])
-export const setAttentionSessionIds = (next: Updater<string[]>) => updateAtom($attentionSessionIds, next)
-
-export function setSessionAttention(sessionId: string | null | undefined, needsInput: boolean) {
-  if (sessionId) {
-    toggleMembership(setAttentionSessionIds, sessionId, needsInput)
-  }
-}
-
-export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {
+export function noteSessionActivity(
+  profile: string | null | undefined,
+  sessionId: string | null | undefined
+) {
   if (!sessionId) {
     return
   }
 
-  const wasWorking = $workingSessionIds.get().includes(sessionId)
+  const identity = makeSessionIdentity(profile, sessionId)
 
-  toggleMembership(setWorkingSessionIds, sessionId, working)
+  if (hasSessionIdentity($workingSessions.get(), identity)) {
+    armSessionWatchdog(identity)
+  }
+}
+
+// Stored session ids with a blocking prompt (clarify) waiting on the user.
+// Separate from $workingSessions: a session can be "working" (turn running)
+// AND need input. The sidebar row reads this for a persistent indicator that,
+// unlike a toast, survives window blur / alt-tab.
+export const $attentionSessions = atom<SessionIdentity[]>([])
+export const setAttentionSessions = (next: Updater<SessionIdentity[]>) => updateAtom($attentionSessions, next)
+
+export function setSessionAttention(
+  profile: string | null | undefined,
+  sessionId: string | null | undefined,
+  needsInput: boolean
+) {
+  if (sessionId) {
+    const identity = makeSessionIdentity(profile, sessionId)
+    setAttentionSessions(current => toggleSessionIdentity(current, identity, needsInput))
+  }
+}
+
+export function setSessionWorking(
+  profile: string | null | undefined,
+  sessionId: string | null | undefined,
+  working: boolean
+) {
+  if (!sessionId) {
+    return
+  }
+
+  const identity = makeSessionIdentity(profile, sessionId)
+  const wasWorking = hasSessionIdentity($workingSessions.get(), identity)
+
+  setWorkingSessions(current => toggleSessionIdentity(current, identity, working))
 
   // Bookend the watchdog: arm on enter, disarm on leave. A later
   // noteSessionActivity() from a streaming event refreshes the timer.
   if (working) {
-    clearSessionSettled(sessionId)
-    armSessionWatchdog(sessionId)
+    clearSessionSettled(identity)
+    armSessionWatchdog(identity)
   } else {
-    clearSessionWatchdog(sessionId)
+    clearSessionWatchdog(identity)
 
     // Only grant grace on a real working→idle transition (updateSessionState
     // re-asserts `false` on every state tick, which must not keep extending the
     // window). This keeps the just-finished session visible long enough for the
     // aggregator to return its now-persisted row.
     if (wasWorking) {
-      markSessionSettled(sessionId)
+      markSessionSettled(identity)
     }
   }
 }

@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { $gatewayState } from '@/store/session'
+import type { SessionIdentity } from '@/store/session-identity'
 
-import { useGatewayBoot } from './use-gateway-boot'
+import { profilesWithLiveSessionState, useGatewayBoot } from './use-gateway-boot'
 
 // End-to-end-ish repro of the "remote VPS → stuck on CONNECTING, no Settings"
 // bug that drives the REAL useGatewayBoot hook + REAL HermesGateway through a
@@ -266,5 +267,12 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
+  })
+})
+
+describe('profilesWithLiveSessionState', () => {
+  it('does not keep profile B from profile A state with the same stored id', () => {
+    const working: SessionIdentity[] = [{ profile: 'default', sessionId: 'same-id' }]
+    expect(profilesWithLiveSessionState(working, [])).toEqual(new Set(['default']))
   })
 })

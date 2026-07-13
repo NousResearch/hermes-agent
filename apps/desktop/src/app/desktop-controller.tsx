@@ -54,13 +54,14 @@ import {
   $freshSessionRequest,
   $profileScope,
   ensureGatewayProfile,
+  normalizeProfileKey,
   refreshActiveProfile
 } from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
   $activeSessionId,
-  $attentionSessionIds,
+  $attentionSessions,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
@@ -79,6 +80,7 @@ import {
   setMessages,
   setRememberedSessionId
 } from '../store/session'
+import { profileSessionKey } from '../store/session-identity'
 import { onSessionsChanged } from '../store/session-sync'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
@@ -319,7 +321,11 @@ export function DesktopController() {
       const sessionId = typeof payload === 'string' ? payload : payload.sessionId
 
       if (sessionId) {
-        const route = sessionRoute(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionIdRef.current))
+        const notificationProfile = normalizeProfileKey(profile ?? $activeGatewayProfile.get())
+
+        const route = sessionRoute(
+          storedSessionIdForNotification(notificationProfile, sessionId, runtimeIdByStoredSessionIdRef.current)
+        )
 
         if (profile) {
           void ensureGatewayProfile(profile).then(() => navigate(route))
@@ -436,7 +442,15 @@ export function DesktopController() {
     }
 
     // Pin on the durable lineage-root id so the pin survives auto-compression.
-    const session = $sessions.get().find(s => s.id === sessionId || s._lineage_root_id === sessionId)
+    const profile = normalizeProfileKey($activeGatewayProfile.get())
+
+    const session = $sessions
+      .get()
+      .find(
+        s =>
+          normalizeProfileKey(s.profile) === profile && (s.id === sessionId || s._lineage_root_id === sessionId)
+      )
+
     const pinId = session ? sessionPinId(session) : sessionId
 
     if ($pinnedSessionIds.get().includes(pinId)) {
@@ -511,15 +525,14 @@ export function DesktopController() {
     async (
       attempts = 1,
       storedSessionId = selectedStoredSessionIdRef.current,
-      runtimeSessionId = activeSessionIdRef.current
+      runtimeSessionId = activeSessionIdRef.current,
+      profile: string | null | undefined = $activeGatewayProfile.get()
     ) => {
       if (!storedSessionId || !runtimeSessionId) {
         return
       }
 
-      const storedProfile = $sessions
-        .get()
-        .find(session => session.id === storedSessionId || session._lineage_root_id === storedSessionId)?.profile
+      const storedProfile = normalizeProfileKey(profile)
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
@@ -531,7 +544,8 @@ export function DesktopController() {
               ...state,
               messages: preserveLocalAssistantErrors(messages, state.messages)
             }),
-            storedSessionId
+            storedSessionId,
+            storedProfile
           )
 
           // Rehydration runs *after* a turn completes, so an "active" stored
@@ -570,7 +584,13 @@ export function DesktopController() {
       return
     }
 
-    const stored = $messagingSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+    const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
+
+    const stored = $messagingSessions
+      .get()
+      .find(
+        s => sessionMatchesStoredId(s, storedSessionId) && normalizeProfileKey(s.profile) === activeProfile
+      )
 
     if (!stored || !isMessagingSource(stored.source)) {
       return
@@ -578,7 +598,7 @@ export function DesktopController() {
 
     try {
       const latest = await getSessionMessages(storedSessionId, stored.profile)
-      const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
+      const signatureKey = profileSessionKey(stored.profile, storedSessionId)
       const sig = sessionMessagesSignature(latest.messages)
 
       if (messagingTranscriptSignatureRef.current.get(signatureKey) === sig) {
@@ -591,7 +611,8 @@ export function DesktopController() {
       updateSessionState(
         runtimeSessionId,
         state => ({ ...state, messages: preserveLocalAssistantErrors(messages, state.messages) }),
-        storedSessionId
+        storedSessionId,
+        stored.profile
       )
     } catch {
       // Non-fatal: next poll or manual refresh can hydrate.
@@ -873,11 +894,11 @@ export function DesktopController() {
   // it rides the same atom the pop-out overlay mirrors — no session list needed
   // there. Every window keeps its own in-window pet in sync.
   useEffect(() => {
-    const sync = () => setPetActivity({ awaitingInput: $attentionSessionIds.get().length > 0 })
+    const sync = () => setPetActivity({ awaitingInput: $attentionSessions.get().length > 0 })
 
     sync()
 
-    return $attentionSessionIds.listen(sync)
+    return $attentionSessions.listen(sync)
   }, [])
 
   useGatewayBoot({
@@ -951,7 +972,13 @@ export function DesktopController() {
   // tick. Gate on the active session actually being a messaging source.
   const activeIsMessaging =
     !!selectedStoredSessionId &&
-    isMessagingSource(messagingSessions.find(s => sessionMatchesStoredId(s, selectedStoredSessionId))?.source)
+    isMessagingSource(
+      messagingSessions.find(
+        s =>
+          sessionMatchesStoredId(s, selectedStoredSessionId) &&
+          normalizeProfileKey(s.profile) === normalizeProfileKey(activeGatewayProfile)
+      )?.source
+    )
 
   // Keep the currently-viewed messaging transcript live.
   useEffect(() => {
@@ -985,6 +1012,7 @@ export function DesktopController() {
   useRouteResume({
     activeSessionId,
     activeSessionIdRef,
+    activeProfile: activeGatewayProfile,
     creatingSessionRef,
     currentView,
     freshDraftReady,
@@ -1019,9 +1047,9 @@ export function DesktopController() {
   const sidebar = (
     <ChatSidebar
       currentView={currentView}
-      onArchiveSession={sessionId => void archiveSession(sessionId)}
-      onBranchSession={sessionId => void branchStoredSession(sessionId)}
-      onDeleteSession={sessionId => void removeSession(sessionId)}
+      onArchiveSession={(sessionId, profile) => void archiveSession(sessionId, profile)}
+      onBranchSession={(sessionId, profile) => void branchStoredSession(sessionId, profile)}
+      onDeleteSession={(sessionId, profile) => void removeSession(sessionId, profile)}
       onLoadMoreMessaging={loadMoreMessagingForPlatform}
       onLoadMoreProfileSessions={loadMoreSessionsForProfile}
       onLoadMoreSessions={loadMoreSessions}

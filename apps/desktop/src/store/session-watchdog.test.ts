@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $workingSessionIds, onSessionWatchdogClear, setSessionWorking, setWorkingSessionIds } from './session'
+import { $workingSessions, onSessionWatchdogClear, setSessionWorking, setWorkingSessions } from './session'
+import type { SessionIdentity } from './session-identity'
 
 const WATCHDOG_MS = 8 * 60 * 1000
 
 describe('session watchdog', () => {
   beforeEach(() => {
     vi.useFakeTimers()
-    setWorkingSessionIds(() => [])
+    setWorkingSessions(() => [])
   })
 
   afterEach(() => {
@@ -15,29 +16,28 @@ describe('session watchdog', () => {
     vi.useRealTimers()
   })
 
-  it('drops a stuck session and notifies listeners once the silence window elapses', () => {
-    const cleared: string[] = []
+  it('drops and notifies only the timed-out profile when stored ids collide', () => {
+    const cleared: SessionIdentity[] = []
     const off = onSessionWatchdogClear(id => cleared.push(id))
 
-    setSessionWorking('s1', true)
-    expect($workingSessionIds.get()).toContain('s1')
+    setSessionWorking('default', 'same-id', true)
+    vi.advanceTimersByTime(1)
+    setSessionWorking('work', 'same-id', true)
 
-    vi.advanceTimersByTime(WATCHDOG_MS)
+    vi.advanceTimersByTime(WATCHDOG_MS - 1)
 
-    // Both the sidebar dot AND the busy-clearing signal fire — the contract
-    // that lets the composer recover from a hung/looping turn, not just the dot.
-    expect($workingSessionIds.get()).not.toContain('s1')
-    expect(cleared).toEqual(['s1'])
+    expect($workingSessions.get()).toEqual([{ profile: 'work', sessionId: 'same-id' }])
+    expect(cleared).toEqual([{ profile: 'default', sessionId: 'same-id' }])
 
     off()
   })
 
   it('never fires for a session that settles before the window', () => {
-    const cleared: string[] = []
+    const cleared: SessionIdentity[] = []
     const off = onSessionWatchdogClear(id => cleared.push(id))
 
-    setSessionWorking('s2', true)
-    setSessionWorking('s2', false)
+    setSessionWorking('default', 's2', true)
+    setSessionWorking('default', 's2', false)
 
     vi.advanceTimersByTime(WATCHDOG_MS)
 
@@ -47,11 +47,11 @@ describe('session watchdog', () => {
   })
 
   it('stops notifying after unsubscribe', () => {
-    const cleared: string[] = []
+    const cleared: SessionIdentity[] = []
     const off = onSessionWatchdogClear(id => cleared.push(id))
     off()
 
-    setSessionWorking('s3', true)
+    setSessionWorking('default', 's3', true)
     vi.advanceTimersByTime(WATCHDOG_MS)
 
     expect(cleared).toEqual([])

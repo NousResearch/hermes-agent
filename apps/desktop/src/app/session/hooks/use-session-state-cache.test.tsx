@@ -3,6 +3,7 @@ import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { $activeGatewayProfile } from '@/store/profile'
 import {
   $currentFastMode,
   $currentModel,
@@ -11,6 +12,7 @@ import {
   $currentServiceTier,
   $messages,
   $turnStartedAt,
+  $workingSessions,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentProvider,
@@ -18,6 +20,7 @@ import {
   setCurrentServiceTier,
   setTurnStartedAt
 } from '@/store/session'
+import { getProfileSessionValue } from '@/store/session-identity'
 
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -67,6 +70,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    $activeGatewayProfile.set('default')
   })
 
   afterEach(() => {
@@ -92,7 +96,9 @@ describe('useSessionStateCache — per-session turn timer', () => {
     })
 
     // The background session's own cache entry holds the clock...
-    expect(cache.sessionStateByRuntimeIdRef.current.get('bg-runtime')?.turnStartedAt).toBe(startedAt)
+    expect(getProfileSessionValue(cache.sessionStateByRuntimeIdRef.current, 'default', 'bg-runtime')?.turnStartedAt).toBe(
+      startedAt
+    )
     // ...but the global atom (statusbar timer) is untouched — a background turn
     // must not drive the foreground timer.
     expect($turnStartedAt.get()).toBeNull()
@@ -161,7 +167,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
 
     rerender(<Harness activeSessionId="bg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="bg-stored" />)
 
-    const bgState = cache.sessionStateByRuntimeIdRef.current.get('bg-runtime')
+    const bgState = getProfileSessionValue(cache.sessionStateByRuntimeIdRef.current, 'default', 'bg-runtime')
     expect(bgState).toBeTruthy()
 
     act(() => {
@@ -194,7 +200,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
 
     rerender(<Harness activeSessionId="bg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="bg-stored" />)
 
-    const bgState = cache.sessionStateByRuntimeIdRef.current.get('bg-runtime')
+    const bgState = getProfileSessionValue(cache.sessionStateByRuntimeIdRef.current, 'default', 'bg-runtime')
     expect(bgState).toBeTruthy()
 
     act(() => {
@@ -206,6 +212,102 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentServiceTier.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
+  })
+})
+
+describe('useSessionStateCache — profile identity', () => {
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    $activeGatewayProfile.set('default')
+    $messages.set([])
+    $workingSessions.set([])
+  })
+
+  it('stores the same runtime and stored ids independently across profiles', () => {
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="same-runtime" onReady={c => (cache = c)} />)
+
+    act(() => {
+      cache.updateSessionState(
+        'same-runtime',
+        state => ({ ...state, messages: [userMessage('default-message', 'default')] }),
+        'same-stored',
+        'default'
+      )
+      cache.updateSessionState(
+        'same-runtime',
+        state => ({ ...state, messages: [userMessage('work-message', 'work')] }),
+        'same-stored',
+        'work'
+      )
+    })
+
+    expect(cache.sessionStateByRuntimeIdRef.current.size).toBe(2)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.size).toBe(2)
+    expect(getProfileSessionValue(cache.runtimeIdByStoredSessionIdRef.current, 'default', 'same-stored')).toBe(
+      'same-runtime'
+    )
+    expect(getProfileSessionValue(cache.runtimeIdByStoredSessionIdRef.current, 'work', 'same-stored')).toBe(
+      'same-runtime'
+    )
+    expect(
+      [...cache.sessionStateByRuntimeIdRef.current.values()].map(state => state.messages[0]?.id).sort()
+    ).toEqual(['default-message', 'work-message'])
+  })
+
+  it('publishes only the matching active profile when runtime ids collide', () => {
+    let cache!: Cache
+    $activeGatewayProfile.set('default')
+    render(<ViewHarness activeSessionId="same-runtime" onReady={c => (cache = c)} />)
+
+    act(() => {
+      cache.updateSessionState(
+        'same-runtime',
+        state => ({ ...state, busy: false, messages: [userMessage('work-message', 'work')] }),
+        'same-stored',
+        'work'
+      )
+    })
+    expect($messages.get()).toEqual([])
+
+    act(() => {
+      cache.updateSessionState(
+        'same-runtime',
+        state => ({ ...state, busy: false, messages: [userMessage('default-message', 'default')] }),
+        'same-stored',
+        'default'
+      )
+    })
+    expect($messages.get().map(message => message.id)).toEqual(['default-message'])
+  })
+
+  it('watchdog healing clears only the matching profile cache entry', () => {
+    vi.useFakeTimers()
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="same-runtime" onReady={c => (cache = c)} />)
+
+    act(() => {
+      cache.updateSessionState(
+        'same-runtime',
+        state => ({ ...state, awaitingResponse: true, busy: true }),
+        'same-stored',
+        'default'
+      )
+      vi.advanceTimersByTime(1)
+      cache.updateSessionState(
+        'same-runtime',
+        state => ({ ...state, awaitingResponse: true, busy: true }),
+        'same-stored',
+        'work'
+      )
+      vi.advanceTimersByTime(8 * 60 * 1000 - 1)
+    })
+
+    expect(getProfileSessionValue(cache.sessionStateByRuntimeIdRef.current, 'default', 'same-runtime')?.busy).toBe(
+      false
+    )
+    expect(getProfileSessionValue(cache.sessionStateByRuntimeIdRef.current, 'work', 'same-runtime')?.busy).toBe(true)
   })
 })
 

@@ -4,6 +4,8 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import type { PreviewServerRestart } from '@/store/preview'
 import type { ActionStatusResponse, SessionInfo } from '@/types/hermes'
 
+import { makeSessionIdentity, type SessionIdentity, sessionIdentityKey } from './session-identity'
+
 const HISTORY_LIMIT = 8
 const COMPLETED_TTL_MS = 5 * 60 * 1000
 
@@ -29,18 +31,21 @@ export function upsertDesktopActionTask(status: ActionStatusResponse): void {
 }
 
 export function buildRailTasks(
-  workingSessionIds: readonly string[],
+  workingSessions: readonly SessionIdentity[],
   sessions: readonly SessionInfo[],
   previewRestart: PreviewServerRestart | null,
   actionTasks: Record<string, DesktopActionTask>
 ): RailTask[] {
-  const sessionsById = new Map(sessions.map(session => [session.id, session]))
+  const sessionsByIdentity = new Map(
+    sessions.map(session => [sessionIdentityKey(makeSessionIdentity(session.profile, session.id)), session])
+  )
 
-  const sessionTasks: RailTask[] = workingSessionIds.map((id, index) => {
-    const session = sessionsById.get(id)
+  const sessionTasks: RailTask[] = workingSessions.map((identity, index) => {
+    const normalizedIdentity = makeSessionIdentity(identity.profile, identity.sessionId)
+    const session = sessionsByIdentity.get(sessionIdentityKey(normalizedIdentity))
 
     return {
-      id: `session:${id}`,
+      id: `session:${sessionIdentityKey(normalizedIdentity)}`,
       label: session ? sessionTitle(session) : 'Session task',
       detail: 'Agent task running',
       status: 'running',

@@ -4,7 +4,7 @@ import { queryClient } from '@/lib/query-client'
 import { resetSessionsLimit } from '@/store/layout'
 import {
   setActiveSessionId,
-  setAttentionSessionIds,
+  setAttentionSessions,
   setCronSessions,
   setFreshDraftReady,
   setMessages,
@@ -16,7 +16,7 @@ import {
   setSessions,
   setSessionsLoading,
   setSessionsTotal,
-  setWorkingSessionIds
+  setWorkingSessions
 } from '@/store/session'
 
 // True while a soft gateway-mode apply is mid-flight (wipe → re-dial). Lets the
@@ -44,8 +44,8 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
-  setWorkingSessionIds([])
-  setAttentionSessionIds([])
+  setWorkingSessions([])
+  setAttentionSessions([])
   setSessionsLoading(true)
   resetSessionsLimit()
 

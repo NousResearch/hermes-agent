@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { TodoItem } from '@/lib/todos'
+import { getProfileSessionValue, setProfileSessionValue } from '@/store/session-identity'
 import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -28,10 +29,13 @@ function Harness() {
     refreshHermesConfig: vi.fn(async () => undefined),
     refreshSessions: vi.fn(async () => undefined),
     sessionStateByRuntimeIdRef,
-    updateSessionState: (sessionId, updater) => {
-      const current = sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState()
+    updateSessionState: (sessionId, updater, _storedSessionId, profile = 'default') => {
+      const current =
+        getProfileSessionValue(sessionStateByRuntimeIdRef.current, profile, sessionId) ??
+        createClientSessionState(null, [], profile)
+
       const next = updater(current)
-      sessionStateByRuntimeIdRef.current.set(sessionId, next)
+      setProfileSessionValue(sessionStateByRuntimeIdRef.current, profile, sessionId, next)
 
       return next
     }

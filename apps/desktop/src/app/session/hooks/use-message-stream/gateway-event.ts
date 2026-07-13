@@ -39,6 +39,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { profileSessionKey } from '@/store/session-identity'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
@@ -55,20 +56,22 @@ interface GatewayEventDeps {
   compactedTurnRef: MutableRefObject<Set<string>>
   lastCwdInfoSessionRef: MutableRefObject<string | null>
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
-  appendAssistantDelta: (sessionId: string, delta: string) => void
-  appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean) => void
-  completeAssistantMessage: (sessionId: string, text: string) => void
-  failAssistantMessage: (sessionId: string, errorMessage: string) => void
-  flushQueuedDeltas: (sessionId?: string) => void
+  appendAssistantDelta: (profile: string, sessionId: string, delta: string) => void
+  appendReasoningDelta: (profile: string, sessionId: string, delta: string, replace?: boolean) => void
+  completeAssistantMessage: (profile: string, sessionId: string, text: string) => void
+  failAssistantMessage: (profile: string, sessionId: string, errorMessage: string) => void
+  flushQueuedDeltas: (profile?: string, sessionId?: string) => void
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
-  sessionInterrupted: (sessionId: string) => boolean
+  sessionInterrupted: (profile: string, sessionId: string) => boolean
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    profile?: string | null
   ) => ClientSessionState
   upsertToolCall: (
+    profile: string,
     sessionId: string,
     payload: GatewayEventPayload | undefined,
     phase: 'running' | 'complete',
@@ -106,14 +109,26 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       const sessionId = explicitSid || activeSessionIdRef.current
-      const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
+
+      const isActiveEvent =
+        !!sessionId &&
+        sessionId === activeSessionIdRef.current &&
+        profile === normalizeProfileKey($activeGatewayProfile.get())
+
+      const eventSessionKey = sessionId ? profileSessionKey(profile, sessionId) : null
+
+      const updateEventSessionState = (
+        runtimeSessionId: string,
+        updater: (state: ClientSessionState) => ClientSessionState,
+        storedSessionId?: string | null
+      ) => updateSessionState(runtimeSessionId, updater, storedSessionId, profile)
 
       const markSessionNeedsInput = (): string | null => {
         if (!sessionId) {
           return null
         }
 
-        return updateSessionState(sessionId, state => ({ ...state, needsInput: true })).storedSessionId
+        return updateEventSessionState(sessionId, state => ({ ...state, needsInput: true })).storedSessionId
       }
 
       if (event.type === 'gateway.ready') {
@@ -158,9 +173,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             // tracks the live thread. A fresh selection (different session id)
             // is a switch, not a move, so it refreshes data without yanking scope.
             const cwdMoved = payload.cwd !== $currentCwd.get()
-            const sameSession = !!sessionId && sessionId === lastCwdInfoSessionRef.current
+            const sameSession = eventSessionKey === lastCwdInfoSessionRef.current
 
-            lastCwdInfoSessionRef.current = sessionId
+            lastCwdInfoSessionRef.current = eventSessionKey
             setCurrentCwd(payload.cwd)
 
             if (cwdMoved && sameSession) {
@@ -194,7 +209,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (sessionId && hasStatePatch) {
-          updateSessionState(sessionId, state => ({
+          updateEventSessionState(sessionId, state => ({
             ...state,
             ...statePatch,
             branch: statePatch.branch ?? state.branch,
@@ -204,7 +219,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (apply) {
           if (runningChanged && sessionId) {
-            updateSessionState(sessionId, state => {
+            updateEventSessionState(sessionId, state => {
               const busy = Boolean(payload!.running)
 
               if (state.busy === busy && (busy || !state.awaitingResponse)) {
@@ -259,17 +274,17 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           return
         }
 
-        flushQueuedDeltas(sessionId)
+        flushQueuedDeltas(profile, sessionId)
         clearSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
-        compactedTurnRef.current.delete(sessionId)
-        nativeSubagentSessionsRef.current.delete(sessionId)
+        compactedTurnRef.current.delete(eventSessionKey!)
+        nativeSubagentSessionsRef.current.delete(eventSessionKey!)
 
         if (isActiveEvent) {
           triggerHaptic('streamStart')
         }
 
-        updateSessionState(sessionId, state => ({
+        updateEventSessionState(sessionId, state => ({
           ...state,
           busy: true,
           awaitingResponse: true,
@@ -283,7 +298,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'message.delta') {
         if (sessionId) {
-          appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
+          appendAssistantDelta(profile, sessionId, coerceGatewayText(payload?.text))
         }
       } else if (event.type === 'thinking.delta') {
         // thinking.delta carries the kawaii spinner status (face + verb from
@@ -298,7 +313,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'reasoning.delta') {
         if (sessionId) {
-          appendReasoningDelta(sessionId, coerceThinkingText(payload?.text))
+          appendReasoningDelta(profile, sessionId, coerceThinkingText(payload?.text))
         }
 
         if (isActiveEvent) {
@@ -306,7 +321,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'reasoning.available') {
         if (sessionId) {
-          appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), true)
+          appendReasoningDelta(profile, sessionId, coerceThinkingText(payload?.text), true)
         }
 
         if (isActiveEvent) {
@@ -323,7 +338,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           const cnt = typeof payload?.count === 'number' ? payload.count : undefined
           const header = idx && cnt ? `◇ Reference ${idx}/${cnt} — ${label}` : `◇ Reference — ${label}`
           const body = coerceThinkingText(payload?.text)
-          appendReasoningDelta(sessionId, `${header}\n${body}\n\n`, true)
+          appendReasoningDelta(profile, sessionId, `${header}\n${body}\n\n`, true)
         }
 
         if (isActiveEvent) {
@@ -352,12 +367,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         clearActiveSessionTodos(sessionId)
         setSessionCompacting(sessionId, false)
 
-        flushQueuedDeltas(sessionId)
+        flushQueuedDeltas(profile, sessionId)
 
         playCompletionSound()
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
-        completeAssistantMessage(sessionId, finalText)
+        completeAssistantMessage(profile, sessionId, finalText)
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
@@ -387,7 +402,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (storedId && nextTitle) {
           setSessions(prev =>
-            prev.map(s => (s.id === storedId || s._lineage_root_id === storedId ? { ...s, title: nextTitle } : s))
+            prev.map(s =>
+              normalizeProfileKey(s.profile) === profile && (s.id === storedId || s._lineage_root_id === storedId)
+                ? { ...s, title: nextTitle }
+                : s
+            )
           )
         }
       } else if (event.type === 'tool.start' || event.type === 'tool.progress' || event.type === 'tool.generating') {
@@ -395,16 +414,16 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           return
         }
 
-        flushQueuedDeltas(sessionId)
-        upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
+        flushQueuedDeltas(profile, sessionId)
+        upsertToolCall(profile, sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
 
         if (isActiveEvent) {
           setPetActivity({ reasoning: false, toolRunning: true })
         }
       } else if (event.type === 'tool.complete') {
         if (sessionId) {
-          flushQueuedDeltas(sessionId)
-          upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
+          flushQueuedDeltas(profile, sessionId)
+          upsertToolCall(profile, sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
 
           if (isActiveEvent) {
             setPetActivity({ toolRunning: false })
@@ -414,11 +433,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           // one is the clarify resolving — drop the "needs input" flag here so
           // the sidebar indicator clears as soon as it's answered, not only at
           // message.complete.
-          updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
+          updateEventSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
 
           // terminal/process tool calls are the only things that spawn or reap
           // background processes — sync the composer status stack right after.
-          if (!sessionInterrupted(sessionId) && (payload?.name === 'terminal' || payload?.name === 'process')) {
+          if (!sessionInterrupted(profile, sessionId) && (payload?.name === 'terminal' || payload?.name === 'process')) {
             void refreshBackgroundProcesses(sessionId)
           }
         }
@@ -434,12 +453,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           notifyWorkspaceChanged()
         }
       } else if (SUBAGENT_EVENT_TYPES.has(event.type)) {
-        if (sessionId && payload && !sessionInterrupted(sessionId)) {
-          if (!nativeSubagentSessionsRef.current.has(sessionId)) {
+        if (sessionId && payload && !sessionInterrupted(profile, sessionId)) {
+          if (!nativeSubagentSessionsRef.current.has(eventSessionKey!)) {
             pruneDelegateFallbackSubagents(sessionId)
           }
 
-          nativeSubagentSessionsRef.current.add(sessionId)
+          nativeSubagentSessionsRef.current.add(eventSessionKey!)
           upsertSubagent(
             sessionId,
             payload as Record<string, unknown>,
@@ -592,7 +611,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)
-          compactedTurnRef.current.add(sessionId)
+          compactedTurnRef.current.add(eventSessionKey!)
         } else if (sessionId && payload?.kind === 'process') {
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.
@@ -610,8 +629,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const text = coerceGatewayText(payload?.text).trim()
 
         if (text && sessionId) {
-          flushQueuedDeltas(sessionId)
-          updateSessionState(sessionId, state => ({
+          flushQueuedDeltas(profile, sessionId)
+          updateEventSessionState(sessionId, state => ({
             ...state,
             messages: [
               ...state.messages,
@@ -636,7 +655,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           clearClarifyRequest({ profile, sessionId })
           clearActiveSessionTodos(sessionId)
           setSessionCompacting(sessionId, false)
-          compactedTurnRef.current.delete(sessionId)
+          compactedTurnRef.current.delete(eventSessionKey!)
         }
 
         if (isActiveEvent) {
@@ -647,6 +666,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         dispatchNativeNotification({
           body: errorMessage,
           kind: 'turnError',
+          profile,
           sessionId,
           title: translateNow('notifications.native.turnErrorTitle')
         })
@@ -667,8 +687,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (sessionId) {
-          flushQueuedDeltas(sessionId)
-          failAssistantMessage(sessionId, errorMessage)
+          flushQueuedDeltas(profile, sessionId)
+          failAssistantMessage(profile, sessionId, errorMessage)
         }
 
         if (isActiveEvent) {

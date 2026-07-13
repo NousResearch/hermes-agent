@@ -21,6 +21,7 @@ import {
 } from '@/lib/generated-images'
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { getProfileSessionValue, profileSessionKey } from '@/store/session-identity'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
@@ -35,7 +36,8 @@ interface MessageStreamOptions {
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,
-    runtimeSessionId?: string | null
+    runtimeSessionId?: string | null,
+    profile?: string | null
   ) => Promise<void>
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
@@ -44,11 +46,14 @@ interface MessageStreamOptions {
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    profile?: string | null
   ) => ClientSessionState
 }
 
 interface QueuedStreamDeltas {
+  profile: string
+  sessionId: string
   assistant: string
   reasoning: string
 }
@@ -63,7 +68,8 @@ export function useMessageStream({
   updateSessionState
 }: MessageStreamOptions) {
   const sessionInterrupted = useCallback(
-    (sessionId: string) => sessionStateByRuntimeIdRef.current.get(sessionId)?.interrupted ?? false,
+    (profile: string, sessionId: string) =>
+      getProfileSessionValue(sessionStateByRuntimeIdRef.current, profile, sessionId)?.interrupted ?? false,
     [sessionStateByRuntimeIdRef]
   )
 
@@ -71,6 +77,7 @@ export function useMessageStream({
   // streamId/groupId bookkeeping every event callback would otherwise repeat.
   const mutateStream = useCallback(
     (
+      profile: string,
       sessionId: string,
       transform: (parts: ChatMessagePart[], message: ChatMessage) => ChatMessagePart[],
       seed: () => ChatMessagePart[],
@@ -123,7 +130,7 @@ export function useMessageStream({
             sawAssistantPayload: true,
             awaitingResponse: false
           }
-        })
+        }, undefined, profile)
       }
 
       apply()
@@ -142,22 +149,23 @@ export function useMessageStream({
   const lastCwdInfoSessionRef = useRef<null | string>(null)
 
   const flushQueuedDeltas = useCallback(
-    (sessionId?: string) => {
+    (profile?: string, sessionId?: string) => {
       const queue = queuedDeltasRef.current
-      const ids = sessionId ? [sessionId] : [...queue.keys()]
+      const ids = profile && sessionId ? [profileSessionKey(profile, sessionId)] : [...queue.keys()]
 
-      for (const id of ids) {
-        const queued = queue.get(id)
+      for (const key of ids) {
+        const queued = queue.get(key)
 
         if (!queued) {
           continue
         }
 
-        queue.delete(id)
+        queue.delete(key)
 
         if (queued.assistant) {
           mutateStream(
-            id,
+            queued.profile,
+            queued.sessionId,
             parts => dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(parts, queued.assistant)),
             () => [assistantTextPart(queued.assistant)]
           )
@@ -165,7 +173,8 @@ export function useMessageStream({
 
         if (queued.reasoning) {
           mutateStream(
-            id,
+            queued.profile,
+            queued.sessionId,
             parts => appendReasoningPart(parts, queued.reasoning),
             () => [reasoningPart(queued.reasoning)]
           )
@@ -211,14 +220,15 @@ export function useMessageStream({
   }, [flushQueuedDeltas])
 
   const queueDelta = useCallback(
-    (sessionId: string, key: keyof QueuedStreamDeltas, delta: string) => {
+    (profile: string, sessionId: string, key: 'assistant' | 'reasoning', delta: string) => {
       if (!delta) {
         return
       }
 
-      const queued = queuedDeltasRef.current.get(sessionId) ?? { assistant: '', reasoning: '' }
+      const identityKey = profileSessionKey(profile, sessionId)
+      const queued = queuedDeltasRef.current.get(identityKey) ?? { profile, sessionId, assistant: '', reasoning: '' }
       queued[key] += delta
-      queuedDeltasRef.current.set(sessionId, queued)
+      queuedDeltasRef.current.set(identityKey, queued)
       scheduleDeltaFlush()
     },
     [scheduleDeltaFlush]
@@ -241,31 +251,32 @@ export function useMessageStream({
   )
 
   const appendAssistantDelta = useCallback(
-    (sessionId: string, delta: string) => {
+    (profile: string, sessionId: string, delta: string) => {
       if (!delta) {
         return
       }
 
-      queueDelta(sessionId, 'assistant', delta)
+      queueDelta(profile, sessionId, 'assistant', delta)
     },
     [queueDelta]
   )
 
   const appendReasoningDelta = useCallback(
-    (sessionId: string, delta: string, replace = false) => {
+    (profile: string, sessionId: string, delta: string, replace = false) => {
       if (!delta) {
         return
       }
 
       if (!replace) {
-        queueDelta(sessionId, 'reasoning', delta)
+        queueDelta(profile, sessionId, 'reasoning', delta)
 
         return
       }
 
-      flushQueuedDeltas(sessionId)
+      flushQueuedDeltas(profile, sessionId)
 
       mutateStream(
+        profile,
         sessionId,
         (parts, message) => {
           if (replace && chatMessageText(message).trim()) {
@@ -286,6 +297,7 @@ export function useMessageStream({
 
   const upsertToolCall = useCallback(
     (
+      profile: string,
       sessionId: string,
       payload: GatewayEventPayload | undefined,
       phase: 'running' | 'complete',
@@ -293,9 +305,9 @@ export function useMessageStream({
     ) => {
       // Text deltas flush on a timer but tool events apply now; flush first so
       // a tool part can't jump ahead of the text that preceded it.
-      flushQueuedDeltas(sessionId)
+      flushQueuedDeltas(profile, sessionId)
 
-      if (sessionInterrupted(sessionId)) {
+      if (sessionInterrupted(profile, sessionId)) {
         return
       }
 
@@ -309,7 +321,9 @@ export function useMessageStream({
         }
       }
 
-      if (!nativeSubagentSessionsRef.current.has(sessionId)) {
+      const identityKey = profileSessionKey(profile, sessionId)
+
+      if (!nativeSubagentSessionsRef.current.has(identityKey)) {
         for (const subagentPayload of delegateTaskPayloads(payload, phase, sourceEventType)) {
           upsertSubagent(
             sessionId,
@@ -321,6 +335,7 @@ export function useMessageStream({
       }
 
       mutateStream(
+        profile,
         sessionId,
         parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase)),
         () => upsertToolPart([], payload, phase),
@@ -331,7 +346,7 @@ export function useMessageStream({
   )
 
   const completeAssistantMessage = useCallback(
-    (sessionId: string, text: string) => {
+    (profile: string, sessionId: string, text: string) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
@@ -442,24 +457,25 @@ export function useMessageStream({
           needsInput: false,
           turnStartedAt: null
         }
-      })
+      }, undefined, profile)
 
       void refreshSessions().catch(() => undefined)
       // Sync the freshly-titled row to other windows (e.g. main, when the turn
       // ran in the pop-out).
       broadcastSessionsChanged()
 
-      if (compactedTurnRef.current.delete(sessionId)) {
+      if (compactedTurnRef.current.delete(profileSessionKey(profile, sessionId))) {
         shouldHydrate = false
       }
 
       if (shouldHydrate) {
-        void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
+        void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId, profile)
       }
 
       dispatchNativeNotification({
         body: text.slice(0, 140) || translateNow('notifications.native.turnDoneBody'),
         kind: 'turnDone',
+        profile,
         sessionId,
         title: translateNow('notifications.native.turnDoneTitle')
       })
@@ -468,7 +484,7 @@ export function useMessageStream({
   )
 
   const failAssistantMessage = useCallback(
-    (sessionId: string, errorMessage: string) => {
+    (profile: string, sessionId: string, errorMessage: string) => {
       updateSessionState(sessionId, state => {
         const streamId = state.streamId ?? `assistant-error-${Date.now()}`
         const groupId = state.pendingBranchGroup ?? undefined
@@ -508,7 +524,7 @@ export function useMessageStream({
           needsInput: false,
           turnStartedAt: null
         }
-      })
+      }, undefined, profile)
     },
     [updateSessionState]
   )

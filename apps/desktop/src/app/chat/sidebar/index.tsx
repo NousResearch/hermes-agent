@@ -90,10 +90,11 @@ import {
   $sessions,
   $sessionsLoading,
   $sessionsTotal,
-  $workingSessionIds,
+  $workingSessions,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
+import { type SessionIdentity, sessionIdentityEqual } from '@/store/session-identity'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
 import type { SidebarNavItem } from '../../types'
@@ -205,9 +206,9 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreProfileSessions?: (profile: string) => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string) => void
-  onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
-  onBranchSession: (sessionId: string) => void
+  onDeleteSession: (sessionId: string, profile?: string) => void
+  onArchiveSession: (sessionId: string, profile?: string) => void
+  onBranchSession: (sessionId: string, profile?: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
   onManageCronJob: (jobId: string) => void
   onTriggerCronJob: (jobId: string) => void
@@ -249,7 +250,7 @@ export function ChatSidebar({
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
-  const workingSessionIds = useStore($workingSessionIds)
+  const workingSessions = useStore($workingSessions)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
   // Only surface the profile switcher when more than one profile exists, so
@@ -338,8 +339,6 @@ export function ChatSidebar({
     () => [...visibleSessions].sort((a, b) => (b.started_at || 0) - (a.started_at || 0)),
     [visibleSessions]
   )
-
-  const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
 
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.
@@ -662,19 +661,19 @@ export function ChatSidebar({
   // session settles (its turn finished) or the window refocuses (an external
   // terminal may have changed things) — only while a project is entered, and
   // only the cheap per-repo `git worktree list`, never the heavy tree scan.
-  const prevWorkingIdsRef = useRef<string[]>(workingSessionIds)
+  const prevWorkingSessionsRef = useRef<SessionIdentity[]>(workingSessions)
 
   useEffect(() => {
-    const prev = prevWorkingIdsRef.current
-    prevWorkingIdsRef.current = workingSessionIds
+    const prev = prevWorkingSessionsRef.current
+    prevWorkingSessionsRef.current = workingSessions
 
     // A session leaving the working set means its turn just completed.
-    const aTurnSettled = prev.some(id => !workingSessionIds.includes(id))
+    const aTurnSettled = prev.some(identity => !workingSessions.some(current => sessionIdentityEqual(current, identity)))
 
     if (inEnteredProject && aTurnSettled) {
       refreshWorktrees()
     }
-  }, [workingSessionIds, inEnteredProject])
+  }, [workingSessions, inEnteredProject])
 
   useEffect(() => {
     if (!inEnteredProject) {
@@ -1149,7 +1148,7 @@ export function ChatSidebar({
                 pinned={false}
                 rootClassName="min-h-32 flex-1 overflow-hidden p-0"
                 sessions={searchResults}
-                workingSessionIdSet={workingSessionIdSet}
+                workingSessions={workingSessions}
               />
             )}
 
@@ -1172,7 +1171,7 @@ export function ChatSidebar({
                 rootClassName="shrink-0 p-0 pb-1"
                 sessions={pinnedSessions}
                 sortable={pinnedSessions.length > 1}
-                workingSessionIdSet={workingSessionIdSet}
+                workingSessions={workingSessions}
               />
             )}
 
@@ -1327,7 +1326,7 @@ export function ChatSidebar({
                 )}
                 sessions={displayAgentSessions}
                 sortable={!showAllProfiles && agentSessions.length > 1}
-                workingSessionIdSet={workingSessionIdSet}
+                workingSessions={workingSessions}
               />
             )}
 
@@ -1373,7 +1372,7 @@ export function ChatSidebar({
                     pinned={false}
                     rootClassName="shrink-0 p-0"
                     sessions={shownSessions}
-                    workingSessionIdSet={workingSessionIdSet}
+                    workingSessions={workingSessions}
                   />
                 )
               })}

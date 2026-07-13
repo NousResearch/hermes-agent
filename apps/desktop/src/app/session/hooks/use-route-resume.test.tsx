@@ -3,12 +3,14 @@ import type { MutableRefObject } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $resumeExhaustedSessionId, setResumeExhaustedSessionId } from '@/store/session'
+import { profileSessionKey } from '@/store/session-identity'
 
 import { useRouteResume } from './use-route-resume'
 
 interface HarnessProps {
   activeSessionId: null | string
   activeSessionIdRef: MutableRefObject<null | string>
+  activeProfile?: string
   creatingSessionRef: MutableRefObject<boolean>
   currentView: string
   freshDraftReady: boolean
@@ -24,8 +26,13 @@ interface HarnessProps {
   startFreshSessionDraft: (focus: boolean) => unknown
 }
 
-function RouteResumeHarness({ resumeFailedSessionId = null, resumeExhaustedSessionId = null, ...props }: HarnessProps) {
-  useRouteResume({ ...props, resumeExhaustedSessionId, resumeFailedSessionId })
+function RouteResumeHarness({
+  activeProfile = 'default',
+  resumeFailedSessionId = null,
+  resumeExhaustedSessionId = null,
+  ...props
+}: HarnessProps) {
+  useRouteResume({ ...props, activeProfile, resumeExhaustedSessionId, resumeFailedSessionId })
 
   return null
 }
@@ -41,7 +48,11 @@ describe('useRouteResume', () => {
     const startFreshSessionDraft = vi.fn()
     const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
     const creatingSessionRef = { current: false }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([[profileSessionKey('default', 'session-1'), 'runtime-1']])
+    }
+
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
 
     const { rerender } = render(
@@ -93,7 +104,11 @@ describe('useRouteResume', () => {
     const startFreshSessionDraft = vi.fn()
     const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
     const creatingSessionRef = { current: false }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([[profileSessionKey('default', 'session-1'), 'runtime-1']])
+    }
+
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
 
     const { rerender } = render(
@@ -139,7 +154,7 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, 'default')
   })
 
   it('resumes when pathname changes to a routed session', () => {
@@ -189,7 +204,7 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-2', true)
+    expect(resumeSession).toHaveBeenCalledWith('session-2', true, 'default')
   })
 
   it('resumes the selected route again when the gateway reconnects', () => {
@@ -197,7 +212,11 @@ describe('useRouteResume', () => {
     const startFreshSessionDraft = vi.fn()
     const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
     const creatingSessionRef = { current: false }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([[profileSessionKey('default', 'session-1'), 'runtime-1']])
+    }
+
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
 
     const { rerender } = render(
@@ -257,7 +276,7 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, 'default')
   })
 })
 
@@ -307,7 +326,7 @@ describe('useRouteResume bounded auto-retry after a failed resume', () => {
     // First backoff window (1s) elapses → one retry.
     vi.advanceTimersByTime(1_000)
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, 'default')
   })
 
   it('does NOT retry a failed session that is not the routed one', () => {

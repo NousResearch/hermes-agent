@@ -20,6 +20,7 @@ import {
   setResumeFailedSessionId,
   setSessions
 } from '@/store/session'
+import { profileSessionKey } from '@/store/session-identity'
 
 import type { ClientSessionState } from '../../types'
 
@@ -398,14 +399,15 @@ describe('resumeSession failure recovery', () => {
 
   it('does not reuse an empty cached runtime view for a stored session with history', async () => {
     const runtimeIdByStoredSessionIdRef = {
-      current: new Map([['stored-1', 'runtime-stale']])
+      current: new Map([[profileSessionKey('default', 'stored-1'), 'runtime-stale']])
     } satisfies MutableRefObject<Map<string, string>>
 
     const sessionStateByRuntimeIdRef = {
       current: new Map([
         [
-          'runtime-stale',
+          profileSessionKey('default', 'runtime-stale'),
           {
+            profile: 'default',
             awaitingResponse: false,
             branch: '',
             busy: false,
@@ -451,8 +453,8 @@ describe('resumeSession failure recovery', () => {
     })
 
     expect(requestGateway).not.toHaveBeenCalledWith('session.usage', { session_id: 'runtime-stale' })
-    expect(runtimeIdByStoredSessionIdRef.current.has('stored-1')).toBe(false)
-    expect(sessionStateByRuntimeIdRef.current.has('runtime-stale')).toBe(false)
+    expect(runtimeIdByStoredSessionIdRef.current.has(profileSessionKey('default', 'stored-1'))).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.has(profileSessionKey('default', 'runtime-stale'))).toBe(false)
     expect($activeSessionId.get()).toBe('runtime-1')
     expect($messages.get().length).toBe(1)
   })
@@ -554,11 +556,11 @@ describe('resumeSession warm-cache mapping integrity', () => {
     // exact "open chat A, chat B loads" corruption a reaped/respawned pooled
     // backend can leave behind.
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
-      current: new Map([['stored-A', 'rt-recycled']])
+      current: new Map([[profileSessionKey('default', 'stored-A'), 'rt-recycled']])
     }
 
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
-      current: new Map([['rt-recycled', clientState('stored-B')]])
+      current: new Map([[profileSessionKey('default', 'rt-recycled'), clientState('stored-B')]])
     }
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -590,19 +592,19 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(resumeCalls[0][1]).toMatchObject({ session_id: 'stored-A' })
 
     // The corrupt mapping was purged so it can't mis-resolve again.
-    expect(runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
-    expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(false)
+    expect(runtimeIdByStoredSessionIdRef.current.has(profileSessionKey('default', 'stored-A'))).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.has(profileSessionKey('default', 'rt-recycled'))).toBe(false)
   })
 
   it('honours a warm cache entry whose stored id matches (no needless refetch)', async () => {
     // Correctly-wired mapping: 'rt-A' <-> 'stored-A'. The fast-path should trust
     // it and never reach session.resume (only the lightweight usage probe).
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
-      current: new Map([['stored-A', 'rt-A']])
+      current: new Map([[profileSessionKey('default', 'stored-A'), 'rt-A']])
     }
 
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
-      current: new Map([['rt-A', clientState('stored-A')]])
+      current: new Map([[profileSessionKey('default', 'rt-A'), clientState('stored-A')]])
     }
 
     const requestGateway = vi.fn(async (method: string) => {
@@ -628,7 +630,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     // Fast-path served the session from cache: no full resume RPC, mapping intact.
     const methods = requestGateway.mock.calls.map(([method]) => method)
     expect(methods).not.toContain('session.resume')
-    expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+    expect(runtimeIdByStoredSessionIdRef.current.get(profileSessionKey('default', 'stored-A'))).toBe('rt-A')
   })
 })
 

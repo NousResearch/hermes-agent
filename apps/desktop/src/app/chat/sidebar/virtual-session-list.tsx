@@ -7,6 +7,7 @@ import type { SessionInfo } from '@/hermes'
 import { type SidebarSessionEntry } from '@/lib/session-branch-tree'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
+import { hasSessionIdentity, makeSessionIdentity, type SessionIdentity, sessionIdentityKey } from '@/store/session-identity'
 
 import { SidebarSessionRow } from './session-row'
 
@@ -27,14 +28,14 @@ interface VirtualSessionListProps {
   activeSessionId: null | string
   className?: string
   entries: SidebarSessionEntry[]
-  onArchiveSession: (sessionId: string) => void
+  onArchiveSession: (sessionId: string, profile?: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
-  onDeleteSession: (sessionId: string) => void
+  onDeleteSession: (sessionId: string, profile?: string) => void
   onResumeSession: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
   pinned: boolean
   sortable: boolean
-  workingSessionIdSet: Set<string>
+  workingSessions: readonly SessionIdentity[]
 }
 
 const ROW_ESTIMATE_PX = 28
@@ -51,7 +52,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onTogglePin,
   pinned,
   sortable,
-  workingSessionIdSet
+  workingSessions
 }) => {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
 
@@ -84,10 +85,10 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       branchStem,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
-      onArchive: () => onArchiveSession(session.id),
+      isWorking: hasSessionIdentity(workingSessions, makeSessionIdentity(session.profile, session.id)),
+      onArchive: () => onArchiveSession(session.id, session.profile),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
-      onDelete: () => onDeleteSession(session.id),
+      onDelete: () => onDeleteSession(session.id, session.profile),
       onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id),
       reorderable
@@ -96,7 +97,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     return reorderable ? (
       <VirtualSortableRow
         index={virtualItem.index}
-        key={session.id}
+        key={sessionIdentityKey(makeSessionIdentity(session.profile, session.id))}
         measureRef={virtualizer.measureElement}
         rowProps={commonProps}
         session={session}
@@ -105,7 +106,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       <SidebarSessionRow
         {...commonProps}
         data-index={virtualItem.index}
-        key={session.id}
+        key={sessionIdentityKey(makeSessionIdentity(session.profile, session.id))}
         ref={virtualizer.measureElement}
         session={session}
       />

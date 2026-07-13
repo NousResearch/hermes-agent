@@ -10,6 +10,7 @@ import type { SessionInfo } from '@/hermes'
 import { flattenSessionsWithBranches } from '@/lib/session-branch-tree'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
+import { hasSessionIdentity, makeSessionIdentity, type SessionIdentity } from '@/store/session-identity'
 
 import { SidebarCount } from './chrome'
 import {
@@ -85,10 +86,10 @@ interface SidebarSessionsSectionProps {
   onToggle: () => void
   sessions: SessionInfo[]
   activeSessionId: null | string
-  workingSessionIdSet: Set<string>
+  workingSessions: readonly SessionIdentity[]
   onResumeSession: (sessionId: string) => void
-  onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  onDeleteSession: (sessionId: string, profile?: string) => void
+  onArchiveSession: (sessionId: string, profile?: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
@@ -143,7 +144,7 @@ export function SidebarSessionsSection({
   onToggle,
   sessions,
   activeSessionId,
-  workingSessionIdSet,
+  workingSessions,
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
@@ -196,10 +197,10 @@ export function SidebarSessionsSection({
       branchStem,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
-      onArchive: () => onArchiveSession(session.id),
+      isWorking: hasSessionIdentity(workingSessions, makeSessionIdentity(session.profile, session.id)),
+      onArchive: () => onArchiveSession(session.id, session.profile),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
-      onDelete: () => onDeleteSession(session.id),
+      onDelete: () => onDeleteSession(session.id, session.profile),
       onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id),
       reorderable: draggable && !branchStem,
@@ -312,7 +313,7 @@ export function SidebarSessionsSection({
         onTogglePin={onTogglePin}
         pinned={pinned}
         sortable={sessionsDraggable}
-        workingSessionIdSet={workingSessionIdSet}
+        workingSessions={workingSessions}
       />
     )
 

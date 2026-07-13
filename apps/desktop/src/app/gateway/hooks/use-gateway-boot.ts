@@ -28,17 +28,17 @@ import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
   $activeSessionId,
-  $attentionSessionIds,
+  $attentionSessions,
   $connection,
   $currentCwd,
-  $sessions,
-  $workingSessionIds,
+  $workingSessions,
   ensureDefaultWorkspaceCwd,
   setConnection,
   setCurrentBranch,
   setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
+import type { SessionIdentity } from '@/store/session-identity'
 import type { RpcEvent } from '@/types/hermes'
 
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
@@ -47,6 +47,13 @@ import type { RpcEvent } from '@/types/hermes'
 // Settings / sign in / switch to local — the "lost connection breaks the app"
 // dead end. The next successful reconnect clears it.
 const RECONNECT_ESCALATE_AFTER = 6
+
+export function profilesWithLiveSessionState(
+  working: readonly SessionIdentity[],
+  attention: readonly SessionIdentity[]
+): Set<string> {
+  return new Set([...working, ...attention].map(identity => normalizeProfileKey(identity.profile)))
+}
 
 interface GatewayBootOptions {
   handleGatewayEvent: (event: RpcEvent) => void
@@ -387,21 +394,11 @@ export function useGatewayBoot({
     // its profile has a running (working) or blocked (needs-input) session.
     // Once that profile goes idle its socket is dropped and its backend is free
     // to idle-reap. The active profile is always spared.
-    const recomputeKeptGateways = () => {
-      const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
-      const keep = new Set<string>()
+    const recomputeKeptGateways = () =>
+      pruneSecondaryGateways(profilesWithLiveSessionState($workingSessions.get(), $attentionSessions.get()))
 
-      for (const session of $sessions.get()) {
-        if (live.has(session.id)) {
-          keep.add(normalizeProfileKey(session.profile))
-        }
-      }
-
-      pruneSecondaryGateways(keep)
-    }
-
-    const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
-    const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
+    const offWorking = $workingSessions.subscribe(() => recomputeKeptGateways())
+    const offAttention = $attentionSessions.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
 
     const offWindowState = desktop.onWindowStateChanged?.(payload => {

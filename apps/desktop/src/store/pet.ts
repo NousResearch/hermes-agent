@@ -142,7 +142,7 @@ export const setPetInfo = (info: PetInfo) => $petInfo.set(info)
  * to the always-present `$busy` chat signal so the pet reacts out of the box.
  *
  * `awaitingInput` (a clarify/approval blocking on the user) is an explicit flag
- * on `$petActivity` — set by the controller from `$attentionSessionIds` and
+ * on `$petActivity` — set by the controller from `$attentionSessions` and
  * mirrored to the pop-out overlay through the same atom, so both surfaces agree
  * without the overlay needing the session list.
  */

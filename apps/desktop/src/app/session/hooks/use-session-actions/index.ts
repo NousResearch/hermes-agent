@@ -44,6 +44,11 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import {
+  deleteProfileSessionValue,
+  getProfileSessionValue,
+  setProfileSessionValue
+} from '@/store/session-identity'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
@@ -71,7 +76,11 @@ interface SessionActionsOptions {
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
   creatingSessionRef: MutableRefObject<boolean>
-  ensureSessionState: (sessionId: string, storedSessionId?: string | null) => ClientSessionState
+  ensureSessionState: (
+    sessionId: string,
+    storedSessionId?: string | null,
+    profile?: string | null
+  ) => ClientSessionState
   getRouteToken: () => string
   navigate: NavigateFunction
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -79,11 +88,12 @@ interface SessionActionsOptions {
   selectedStoredSessionId: string | null
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
-  syncSessionStateToView: (sessionId: string, state: ClientSessionState) => void
+  syncSessionStateToView: (sessionId: string, state: ClientSessionState, profile?: string | null) => void
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    profile?: string | null
   ) => ClientSessionState
 }
 
@@ -239,7 +249,7 @@ export function useSessionActions({
 
         activeSessionIdRef.current = created.session_id
         selectedStoredSessionIdRef.current = stored
-        ensureSessionState(created.session_id, stored)
+        ensureSessionState(created.session_id, stored, newChatProfile)
 
         if (stored) {
           // Seed the sidebar preview with the user's first message so the row
@@ -262,7 +272,7 @@ export function useSessionActions({
         const runtimeInfo = applyRuntimeInfo(created.info)
 
         if (runtimeInfo) {
-          updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
+          updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored, newChatProfile)
         }
 
         // User may have armed YOLO on the new-chat draft before the runtime
@@ -358,41 +368,34 @@ export function useSessionActions({
       // under the current route (the "open chat A, chat B loads" bug). On a
       // mismatch the mapping is cross-wired: purge both sides and report a miss
       // so the caller falls through to a full resume that rebinds a correct id.
-      const storedFromCache = () =>
+      const storedFromCache = (profile: string) =>
         $sessions
           .get()
           .find(
             session =>
               sessionMatchesStoredId(session, storedSessionId) &&
-              (!expectedProfile || normalizeProfileKey(session.profile) === normalizeProfileKey(expectedProfile))
+              normalizeProfileKey(session.profile) === profile
           )
 
-      const takeWarmCache = (): { runtimeId: string; state: ClientSessionState } | null => {
-        if (expectedProfile) {
-          return null
-        }
+      const takeWarmCache = (profile: string): { runtimeId: string; state: ClientSessionState } | null => {
+        const runtimeId = getProfileSessionValue(runtimeIdByStoredSessionIdRef.current, profile, storedSessionId)
 
-        const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        const state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
+        const state = runtimeId
+          ? getProfileSessionValue(sessionStateByRuntimeIdRef.current, profile, runtimeId)
+          : undefined
 
         if (!runtimeId || !state) {
           return null
         }
 
         if (state.storedSessionId !== storedSessionId) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(runtimeId)
+          deleteProfileSessionValue(runtimeIdByStoredSessionIdRef.current, profile, storedSessionId)
+          deleteProfileSessionValue(sessionStateByRuntimeIdRef.current, profile, runtimeId)
 
           return null
         }
 
         return { runtimeId, state }
-      }
-
-      if (!takeWarmCache()) {
-        setActiveSessionId(null)
-        activeSessionIdRef.current = null
-        setMessages([])
       }
 
       // Swap the single live gateway to this session's profile before any
@@ -405,7 +408,9 @@ export function useSessionActions({
         return false
       }
 
-      const sessionProfile = expectedProfile ?? storedForProfile?.profile
+      const sessionProfile = normalizeProfileKey(
+        expectedProfile ?? storedForProfile?.profile ?? $activeGatewayProfile.get()
+      )
 
       if (resumeRequestRef.current !== requestId) {
         return false
@@ -416,13 +421,19 @@ export function useSessionActions({
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and
       // purges a cross-wired mapping before we trust the fast-path.
-      const warmHit = takeWarmCache()
+      const warmHit = takeWarmCache(sessionProfile)
+
+      if (!warmHit) {
+        setActiveSessionId(null)
+        activeSessionIdRef.current = null
+        setMessages([])
+      }
 
       if (warmHit) {
         const cachedRuntimeId = warmHit.runtimeId
         const cachedState = warmHit.state
 
-        const stored = storedFromCache() ?? storedForProfile
+        const stored = storedFromCache(sessionProfile) ?? storedForProfile
 
         const cachedViewState =
           !cachedState.model && stored?.model != null
@@ -433,12 +444,12 @@ export function useSessionActions({
             : cachedState
 
         if (cachedViewState !== cachedState) {
-          sessionStateByRuntimeIdRef.current.set(cachedRuntimeId, cachedViewState)
+          setProfileSessionValue(sessionStateByRuntimeIdRef.current, sessionProfile, cachedRuntimeId, cachedViewState)
         }
 
         if (sessionShouldHaveTranscript(stored) && cachedViewState.messages.length === 0) {
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+          deleteProfileSessionValue(runtimeIdByStoredSessionIdRef.current, sessionProfile, storedSessionId)
+          deleteProfileSessionValue(sessionStateByRuntimeIdRef.current, sessionProfile, cachedRuntimeId)
         } else {
           setFreshDraftReady(false)
           clearNotifications()
@@ -446,7 +457,7 @@ export function useSessionActions({
           selectedStoredSessionIdRef.current = storedSessionId
           setActiveSessionId(cachedRuntimeId)
           activeSessionIdRef.current = cachedRuntimeId
-          syncSessionStateToView(cachedRuntimeId, cachedViewState)
+          syncSessionStateToView(cachedRuntimeId, cachedViewState, sessionProfile)
           setCurrentCwd(cachedViewState.cwd)
           setCurrentBranch(cachedViewState.branch)
           setSessionStartedAt(Date.now())
@@ -473,8 +484,8 @@ export function useSessionActions({
               return false
             }
 
-            runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-            sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+            deleteProfileSessionValue(runtimeIdByStoredSessionIdRef.current, sessionProfile, storedSessionId)
+            deleteProfileSessionValue(sessionStateByRuntimeIdRef.current, sessionProfile, cachedRuntimeId)
           }
         }
       }
@@ -490,7 +501,7 @@ export function useSessionActions({
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())
 
-      const stored = storedFromCache() ?? storedForProfile
+      const stored = storedFromCache(sessionProfile) ?? storedForProfile
 
       applyStoredSessionPreviewRuntimeInfo(stored)
 
@@ -608,7 +619,8 @@ export function useSessionActions({
             busy: resumedRunning,
             awaitingResponse: resumedRunning
           }),
-          storedSessionId
+          storedSessionId,
+          sessionProfile
         )
 
         return true
@@ -714,14 +726,26 @@ export function useSessionActions({
 
         const routedSessionId = branched.stored_session_id ?? branched.session_id
         const preview = branchMessages.map(({ content }) => content).find(Boolean) ?? null
+        const branchProfile = normalizeProfileKey($activeGatewayProfile.get())
         // Draft until submit: nest under the parent at the parent's recency so it
         // doesn't bubble to the top until a real message lands (backend persists
         // + auto-names it then). The selected row survives refreshes (sessionsToKeep).
         const rows = $sessions.get()
-        const parent = parentStoredId ? rows.find(session => sessionMatchesStoredId(session, parentStoredId)) : null
+
+        const parent = parentStoredId
+          ? rows.find(
+              session =>
+                sessionMatchesStoredId(session, parentStoredId) &&
+                normalizeProfileKey(session.profile) === branchProfile
+            )
+          : null
 
         const siblings = parentStoredId
-          ? rows.filter(session => session.parent_session_id?.trim() === parentStoredId).length
+          ? rows.filter(
+              session =>
+                session.parent_session_id?.trim() === parentStoredId &&
+                normalizeProfileKey(session.profile) === branchProfile
+            ).length
           : 0
 
         setFreshDraftReady(false)
@@ -733,7 +757,7 @@ export function useSessionActions({
           parentStoredId,
           parent ? parent.last_active || parent.started_at : undefined
         )
-        ensureSessionState(branched.session_id, routedSessionId)
+        ensureSessionState(branched.session_id, routedSessionId, branchProfile)
         setActiveSessionId(branched.session_id)
         activeSessionIdRef.current = branched.session_id
         updateSessionState(
@@ -744,7 +768,8 @@ export function useSessionActions({
             busy: false,
             awaitingResponse: false
           }),
-          routedSessionId
+          routedSessionId,
+          branchProfile
         )
         setSelectedStoredSessionId(routedSessionId)
         selectedStoredSessionIdRef.current = routedSessionId
@@ -754,7 +779,7 @@ export function useSessionActions({
         patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
 
         if (runtimeInfo) {
-          updateSessionState(branched.session_id, state => ({ ...state, ...runtimeInfo }), routedSessionId)
+          updateSessionState(branched.session_id, state => ({ ...state, ...runtimeInfo }), routedSessionId, branchProfile)
         }
 
         return true
@@ -825,8 +850,16 @@ export function useSessionActions({
     async (storedSessionId: string, sessionProfile?: string | null): Promise<boolean> => {
       clearNotifications()
 
-      const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-      const profile = sessionProfile ?? stored?.profile
+      const profileKey = normalizeProfileKey(sessionProfile ?? $activeGatewayProfile.get())
+
+      const stored = $sessions
+        .get()
+        .find(
+          session =>
+            sessionMatchesStoredId(session, storedSessionId) && normalizeProfileKey(session.profile) === profileKey
+        )
+
+      const profile = sessionProfile ?? stored?.profile ?? profileKey
 
       try {
         await ensureGatewayProfile(profile)
@@ -850,11 +883,21 @@ export function useSessionActions({
   )
 
   const removeSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, sessionProfile?: string) => {
       clearNotifications()
 
-      const removed = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-      const wasSelected = selectedStoredSessionId === storedSessionId
+      const profile = normalizeProfileKey(sessionProfile ?? $activeGatewayProfile.get())
+
+      const removed = $sessions
+        .get()
+        .find(
+          session =>
+            sessionMatchesStoredId(session, storedSessionId) && normalizeProfileKey(session.profile) === profile
+        )
+
+      const wasSelected =
+        selectedStoredSessionId === storedSessionId && normalizeProfileKey($activeGatewayProfile.get()) === profile
+
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
@@ -862,7 +905,12 @@ export function useSessionActions({
       // live tip after compression. Drop both so the pin can't linger.
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
 
-      setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      setSessions(prev =>
+        prev.filter(
+          session =>
+            !sessionMatchesStoredId(session, storedSessionId) || normalizeProfileKey(session.profile) !== profile
+        )
+      )
       // Evict from the project tree's optimistic layer too (the backend snapshot
       // still lists it until its next refresh), so grouped + flat views drop the
       // row in lockstep.
@@ -902,7 +950,13 @@ export function useSessionActions({
           setFreshDraftReady(false)
           setSelectedStoredSessionId(storedSessionId)
           selectedStoredSessionIdRef.current = storedSessionId
-          const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+
+          const stored = $sessions
+            .get()
+            .find(
+              session =>
+                sessionMatchesStoredId(session, storedSessionId) && normalizeProfileKey(session.profile) === profile
+            )
 
           if (stored) {
             setCurrentUsage(current => ({
@@ -938,18 +992,33 @@ export function useSessionActions({
   )
 
   const archiveSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, sessionProfile?: string) => {
       clearNotifications()
 
-      const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-      const wasSelected = selectedStoredSessionId === storedSessionId
+      const profile = normalizeProfileKey(sessionProfile ?? $activeGatewayProfile.get())
+
+      const archived = $sessions
+        .get()
+        .find(
+          session =>
+            sessionMatchesStoredId(session, storedSessionId) && normalizeProfileKey(session.profile) === profile
+        )
+
+      const wasSelected =
+        selectedStoredSessionId === storedSessionId && normalizeProfileKey($activeGatewayProfile.get()) === profile
+
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
-      setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      setSessions(prev =>
+        prev.filter(
+          session =>
+            !sessionMatchesStoredId(session, storedSessionId) || normalizeProfileKey(session.profile) !== profile
+        )
+      )
       tombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
       // Archived sessions are hidden by the listSessions(min_messages=1) query
       // on the next refresh, so they count as "removed" for the load-more
@@ -967,12 +1036,23 @@ export function useSessionActions({
         // in flight and briefly reinsert the still-unarchived backend row. Win
         // that race after the mutation succeeds so right-click → Archive does
         // not appear to do nothing until the next full refresh.
-        setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+        setSessions(prev =>
+          prev.filter(
+            session =>
+              !sessionMatchesStoredId(session, storedSessionId) || normalizeProfileKey(session.profile) !== profile
+          )
+        )
         $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {
-          setSessions(prev => [archived, ...prev.filter(session => !sessionMatchesStoredId(session, storedSessionId))])
+          setSessions(prev => [
+            archived,
+            ...prev.filter(
+              session =>
+                !sessionMatchesStoredId(session, storedSessionId) || normalizeProfileKey(session.profile) !== profile
+            )
+          ])
           setSessionsTotal(prev => prev + 1)
         }
 

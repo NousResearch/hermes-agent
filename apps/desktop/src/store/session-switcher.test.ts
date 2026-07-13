@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
+import { $activeGatewayProfile } from './profile'
 import { $selectedStoredSessionId, $sessions } from './session'
 import {
   $switcherIndex,
@@ -12,7 +13,7 @@ import {
   onSwitcherTabDown,
   onSwitcherTabUp,
   openOrAdvanceSwitcher,
-  slotSessionId,
+  slotSession,
   SWITCHER_REVEAL_MS
 } from './session-switcher'
 
@@ -33,12 +34,14 @@ const tabTap = (direction: 1 | -1 = 1) => {
 
 beforeEach(() => {
   vi.useRealTimers()
+  $activeGatewayProfile.set('default')
   closeSwitcher()
   $switcherSessions.set([])
   $switcherIndex.set(0)
 })
 
 afterEach(() => {
+  $activeGatewayProfile.set('default')
   seed([], null)
 })
 
@@ -53,7 +56,7 @@ describe('openOrAdvanceSwitcher', () => {
   it('jumps immediately on a quick Tab tap without opening the HUD', () => {
     seed(['a', 'b', 'c'], 'a')
 
-    expect(tabTap()).toBe('b')
+    expect(tabTap()).toEqual({ profile: 'default', sessionId: 'b' })
     expect($switcherOpen.get()).toBe(false)
     expect(commitOnCtrlUp()).toBeNull()
   })
@@ -83,7 +86,7 @@ describe('openOrAdvanceSwitcher', () => {
   it('opens on a second Tab while Ctrl is still down', () => {
     seed(['a', 'b', 'c'], 'a')
 
-    expect(tabTap()).toBe('b')
+    expect(tabTap()).toEqual({ profile: 'default', sessionId: 'b' })
     onSwitcherTabDown()
     openOrAdvanceSwitcher(1)
     onSwitcherTabUp()
@@ -95,21 +98,33 @@ describe('openOrAdvanceSwitcher', () => {
   it('commits the HUD highlight on Ctrl up', () => {
     seed(['a', 'b', 'c'], 'a')
 
-    expect(tabTap()).toBe('b')
+    expect(tabTap()).toEqual({ profile: 'default', sessionId: 'b' })
     onSwitcherTabDown()
     openOrAdvanceSwitcher(1)
     onSwitcherTabUp()
 
-    expect(commitOnCtrlUp()).toBe('c')
+    expect(commitOnCtrlUp()).toEqual({ profile: 'default', sessionId: 'c' })
+  })
+
+  it('locates the current row by profile plus stored id', () => {
+    $activeGatewayProfile.set('work')
+    $sessions.set([
+      { id: 'same-id', profile: 'default' } as SessionInfo,
+      { id: 'same-id', profile: 'work' } as SessionInfo,
+      { id: 'next', profile: 'work' } as SessionInfo
+    ])
+    $selectedStoredSessionId.set('same-id')
+
+    expect(tabTap()).toEqual({ profile: 'work', sessionId: 'next' })
   })
 })
 
-describe('slotSessionId', () => {
+describe('slotSession', () => {
   it('reads the armed snapshot while browsing is pending', () => {
     seed(['a', 'b', 'c'], 'a')
     tabTap()
     $sessions.set([session('x')])
 
-    expect(slotSessionId(2)).toBe('b')
+    expect(slotSession(2)).toEqual({ profile: 'default', sessionId: 'b' })
   })
 })

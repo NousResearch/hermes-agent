@@ -16,13 +16,8 @@ import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
-// Canonical key for a profile: trimmed, empty → "default". Used everywhere we
-// compare a session's owning profile against the live gateway's profile.
-export function normalizeProfileKey(name: string | null | undefined): string {
-  const value = (name ?? '').trim()
-
-  return value || 'default'
-}
+export { normalizeProfileKey } from './profile-key'
+import { normalizeProfileKey } from './profile-key'
 
 // The profile the running local backend is actually scoped to (mirrors
 // /api/profiles/active `current`). "default" is the root ~/.hermes. This is the

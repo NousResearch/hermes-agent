@@ -5,6 +5,8 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { $activeGatewayProfile } from '@/store/profile'
+import { normalizeProfileKey } from '@/store/profile-key'
 import {
   $busy,
   $messages,
@@ -21,6 +23,12 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import {
+  deleteProfileSessionValue,
+  getProfileSessionValue,
+  profileSessionKey,
+  setProfileSessionValue
+} from '@/store/session-identity'
 
 import type { ClientSessionState } from '../../types'
 
@@ -74,11 +82,13 @@ export function useSessionStateCache({
   setMessages
 }: SessionStateCacheOptions) {
   const busy = useStore($busy)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const activeSessionIdRef = useRef<string | null>(null)
+  const activeGatewayProfileRef = useRef(normalizeProfileKey(activeGatewayProfile))
   const selectedStoredSessionIdRef = useRef<string | null>(null)
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
   const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
-  const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
+  const pendingViewStateRef = useRef<{ profile: string; sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
   // Runtime id whose transcript currently occupies `$messages` — lets the
   // flush below tell a same-session refresh from a thread switch.
@@ -89,6 +99,10 @@ export function useSessionStateCache({
   }, [activeSessionId])
 
   useEffect(() => {
+    activeGatewayProfileRef.current = normalizeProfileKey(activeGatewayProfile)
+  }, [activeGatewayProfile])
+
+  useEffect(() => {
     setMutableRef(busyRef, busy)
   }, [busy, busyRef])
 
@@ -96,8 +110,13 @@ export function useSessionStateCache({
     selectedStoredSessionIdRef.current = selectedStoredSessionId
   }, [selectedStoredSessionId])
 
-  const ensureSessionState = useCallback((sessionId: string, storedSessionId?: string | null) => {
-    const existing = sessionStateByRuntimeIdRef.current.get(sessionId)
+  const ensureSessionState = useCallback((
+    sessionId: string,
+    storedSessionId?: string | null,
+    profile: string | null | undefined = activeGatewayProfileRef.current
+  ) => {
+    const profileKey = normalizeProfileKey(profile)
+    const existing = getProfileSessionValue(sessionStateByRuntimeIdRef.current, profileKey, sessionId)
 
     if (existing) {
       if (storedSessionId !== undefined) {
@@ -105,26 +124,27 @@ export function useSessionStateCache({
         existing.storedSessionId = storedSessionId
 
         if (storedSessionId) {
-          runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+          setProfileSessionValue(runtimeIdByStoredSessionIdRef.current, profileKey, storedSessionId, sessionId)
 
           if (existing.busy) {
-            setSessionWorking(storedSessionId, true)
+            setSessionWorking(profileKey, storedSessionId, true)
           }
         }
 
         if (previousStoredSessionId && previousStoredSessionId !== storedSessionId) {
-          setSessionWorking(previousStoredSessionId, false)
+          deleteProfileSessionValue(runtimeIdByStoredSessionIdRef.current, profileKey, previousStoredSessionId)
+          setSessionWorking(profileKey, previousStoredSessionId, false)
         }
       }
 
       return existing
     }
 
-    const created = createClientSessionState(storedSessionId ?? null)
-    sessionStateByRuntimeIdRef.current.set(sessionId, created)
+    const created = createClientSessionState(storedSessionId ?? null, [], profileKey)
+    setProfileSessionValue(sessionStateByRuntimeIdRef.current, profileKey, sessionId, created)
 
     if (storedSessionId) {
-      runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+      setProfileSessionValue(runtimeIdByStoredSessionIdRef.current, profileKey, storedSessionId, sessionId)
     }
 
     return created
@@ -134,7 +154,11 @@ export function useSessionStateCache({
     const pending = pendingViewStateRef.current
     pendingViewStateRef.current = null
 
-    if (!pending || pending.sessionId !== activeSessionIdRef.current) {
+    if (
+      !pending ||
+      pending.sessionId !== activeSessionIdRef.current ||
+      pending.profile !== normalizeProfileKey($activeGatewayProfile.get())
+    ) {
       return
     }
 
@@ -153,7 +177,7 @@ export function useSessionStateCache({
     // polluted view becomes the next switch's baseline. Only carry errors
     // across a same-session refresh; our cached state already keeps its own.
     const nextMessages =
-      viewSessionIdRef.current === pending.sessionId
+      viewSessionIdRef.current === profileSessionKey(pending.profile, pending.sessionId)
         ? preserveLocalAssistantErrors(pending.state.messages, currentMessages)
         : pending.state.messages
 
@@ -161,7 +185,7 @@ export function useSessionStateCache({
       setMessages(nextMessages)
     }
 
-    viewSessionIdRef.current = pending.sessionId
+    viewSessionIdRef.current = profileSessionKey(pending.profile, pending.sessionId)
 
     syncRuntimeMetadataToView(pending.state)
     setBusy(pending.state.busy)
@@ -174,7 +198,13 @@ export function useSessionStateCache({
   }, [busyRef, setAwaitingResponse, setBusy, setMessages])
 
   const syncSessionStateToView = useCallback(
-    (sessionId: string, state: ClientSessionState) => {
+    (
+      sessionId: string,
+      state: ClientSessionState,
+      profile: string | null | undefined = state.profile || activeGatewayProfileRef.current
+    ) => {
+      const profileKey = normalizeProfileKey(profile)
+
       // Only the currently-viewed session may stage into the shared `$messages`
       // view. A background session (e.g. one still busy and emitting stream /
       // error updates after the user toggled away) must update its own cache
@@ -184,12 +214,12 @@ export function useSessionStateCache({
       // prevents a background write from overwriting an already-pending
       // foreground write within the same animation frame (only one RAF is
       // scheduled, so the last `pendingViewStateRef` writer would otherwise win).
-      if (sessionId !== activeSessionIdRef.current) {
+      if (sessionId !== activeSessionIdRef.current || profileKey !== normalizeProfileKey($activeGatewayProfile.get())) {
         return
       }
 
       syncRuntimeMetadataToView(state)
-      pendingViewStateRef.current = { sessionId, state }
+      pendingViewStateRef.current = { profile: profileKey, sessionId, state }
 
       // Terminal / attention transitions (turn finished, error, or the agent is
       // now waiting on the user) MUST reach the view immediately. Electron
@@ -246,32 +276,34 @@ export function useSessionStateCache({
     (
       sessionId: string,
       updater: (state: ClientSessionState) => ClientSessionState,
-      storedSessionId?: string | null
+      storedSessionId?: string | null,
+      profile: string | null | undefined = activeGatewayProfileRef.current
     ) => {
-      const previous = ensureSessionState(sessionId, storedSessionId)
-      const next = updater({ ...previous, messages: previous.messages })
-      sessionStateByRuntimeIdRef.current.set(sessionId, next)
+      const profileKey = normalizeProfileKey(profile)
+      const previous = ensureSessionState(sessionId, storedSessionId, profileKey)
+      const next = { ...updater({ ...previous, messages: previous.messages }), profile: profileKey }
+      setProfileSessionValue(sessionStateByRuntimeIdRef.current, profileKey, sessionId, next)
 
       if (previous.storedSessionId !== next.storedSessionId || !next.busy) {
-        setSessionWorking(previous.storedSessionId, false)
+        setSessionWorking(profileKey, previous.storedSessionId, false)
       }
 
       if (previous.storedSessionId !== next.storedSessionId || !next.needsInput) {
-        setSessionAttention(previous.storedSessionId, false)
+        setSessionAttention(profileKey, previous.storedSessionId, false)
       }
 
-      setSessionWorking(next.storedSessionId, next.busy)
-      setSessionAttention(next.storedSessionId, next.needsInput)
+      setSessionWorking(profileKey, next.storedSessionId, next.busy)
+      setSessionAttention(profileKey, next.storedSessionId, next.needsInput)
 
       // Every state update is effectively a "still alive" heartbeat for
       // streaming events. The session-store watchdog uses this to keep the
       // working flag alive during long-running turns and to clear it once
       // the stream goes silent.
       if (next.busy) {
-        noteSessionActivity(next.storedSessionId)
+        noteSessionActivity(profileKey, next.storedSessionId)
       }
 
-      syncSessionStateToView(sessionId, next)
+      syncSessionStateToView(sessionId, next, profileKey)
 
       return next
     },
@@ -285,20 +317,32 @@ export function useSessionStateCache({
   // re-syncs `$busy` when the healed session is the one on screen.
   useEffect(
     () =>
-      onSessionWatchdogClear(storedSessionId => {
-        const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        const state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
+      onSessionWatchdogClear(identity => {
+        const runtimeId = getProfileSessionValue(
+          runtimeIdByStoredSessionIdRef.current,
+          identity.profile,
+          identity.sessionId
+        )
+
+        const state = runtimeId
+          ? getProfileSessionValue(sessionStateByRuntimeIdRef.current, identity.profile, runtimeId)
+          : undefined
 
         if (!runtimeId || !state?.busy) {
           return
         }
 
-        updateSessionState(runtimeId, current => ({
-          ...current,
-          awaitingResponse: false,
-          busy: false,
-          needsInput: false
-        }))
+        updateSessionState(
+          runtimeId,
+          current => ({
+            ...current,
+            awaitingResponse: false,
+            busy: false,
+            needsInput: false
+          }),
+          identity.sessionId,
+          identity.profile
+        )
       }),
     [updateSessionState]
   )

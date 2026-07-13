@@ -6,6 +6,7 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
+import { normalizeProfileKey } from '@/store/profile-key'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
 
 export const SLASH_COMMAND_RE = /^\/[^\s/]*(?:\s|$)/
@@ -34,9 +35,11 @@ const EMPTY_THINKING_PLACEHOLDER_RE =
 
 export function createClientSessionState(
   storedSessionId: string | null = null,
-  messages: ChatMessage[] = []
+  messages: ChatMessage[] = [],
+  profile: string | null | undefined = 'default'
 ): ClientSessionState {
   return {
+    profile: normalizeProfileKey(profile),
     storedSessionId,
     messages,
     branch: '',

@@ -1,15 +1,15 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
 import {
   $activeSessionId,
-  $attentionSessionIds,
+  $attentionSessions,
   $connection,
   $currentCwd,
-  $workingSessionIds,
+  $workingSessions,
   applyConfiguredDefaultProjectDir,
-  getRecentlySettledSessionIds,
+  getRecentlySettledSessions,
   mergeSessionPage,
   sessionPinId,
   setCurrentCwd,
@@ -17,6 +17,7 @@ import {
   setSessionWorking,
   workspaceCwdForNewSession
 } from './session'
+import { makeSessionIdentity } from './session-identity'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -37,31 +38,34 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
   ...over
 })
 
+const identity = (sessionId: string, profile = 'default') => makeSessionIdentity(profile, sessionId)
+
 describe('setSessionAttention', () => {
-  it('adds and removes a session id without duplicating it', () => {
-    $attentionSessionIds.set([])
+  it('tracks the same stored id independently across profiles', () => {
+    $attentionSessions.set([])
 
-    setSessionAttention('s1', true)
-    setSessionAttention('s1', true)
-    expect($attentionSessionIds.get()).toEqual(['s1'])
+    setSessionAttention('default', 'same-id', true)
+    setSessionAttention('default', 'same-id', true)
+    setSessionAttention('work', 'same-id', true)
+    expect($attentionSessions.get()).toEqual([
+      { profile: 'default', sessionId: 'same-id' },
+      { profile: 'work', sessionId: 'same-id' }
+    ])
 
-    setSessionAttention('s2', true)
-    expect($attentionSessionIds.get()).toEqual(['s1', 's2'])
+    setSessionAttention('default', 'same-id', false)
+    expect($attentionSessions.get()).toEqual([{ profile: 'work', sessionId: 'same-id' }])
 
-    setSessionAttention('s1', false)
-    expect($attentionSessionIds.get()).toEqual(['s2'])
-
-    $attentionSessionIds.set([])
+    $attentionSessions.set([])
   })
 
   it('ignores empty ids and no-op clears', () => {
-    $attentionSessionIds.set([])
+    $attentionSessions.set([])
 
-    setSessionAttention(null, true)
-    setSessionAttention(undefined, true)
-    setSessionAttention('', true)
-    setSessionAttention('missing', false)
-    expect($attentionSessionIds.get()).toEqual([])
+    setSessionAttention('default', null, true)
+    setSessionAttention('default', undefined, true)
+    setSessionAttention('default', '', true)
+    setSessionAttention('default', 'missing', false)
+    expect($attentionSessions.get()).toEqual([])
   })
 })
 
@@ -94,7 +98,7 @@ describe('mergeSessionPage', () => {
     const previous = [session({ id: 'c' }), session({ id: 'b' }), session({ id: 'a' })]
     const incoming = [session({ id: 'a', message_count: 2 })]
 
-    const merged = mergeSessionPage(previous, incoming, ['b', 'c'])
+    const merged = mergeSessionPage(previous, incoming, [identity('b'), identity('c')])
 
     expect(merged.map(s => s.id)).toEqual(['c', 'b', 'a'])
     // The finished session comes from the fresh server payload, not the stale
@@ -102,11 +106,19 @@ describe('mergeSessionPage', () => {
     expect(merged.find(s => s.id === 'a')?.message_count).toBe(2)
   })
 
+  it('keeps only the matching profile when two rows share a stored id', () => {
+    const previous = [session({ id: 'same', profile: 'default' }), session({ id: 'same', profile: 'work' })]
+
+    const merged = mergeSessionPage(previous, [], [{ profile: 'work', sessionId: 'same' }])
+
+    expect(merged).toEqual([session({ id: 'same', profile: 'work' })])
+  })
+
   it('does not duplicate a working session the server already returned', () => {
     const previous = [session({ id: 'b' }), session({ id: 'a' })]
     const incoming = [session({ id: 'b', message_count: 4 }), session({ id: 'a' })]
 
-    const merged = mergeSessionPage(previous, incoming, ['b'])
+    const merged = mergeSessionPage(previous, incoming, [identity('b')])
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a'])
     expect(merged.find(s => s.id === 'b')?.message_count).toBe(4)
@@ -118,7 +130,7 @@ describe('mergeSessionPage', () => {
     const previous = [session({ id: 'b' }), session({ id: 'gone' })]
     const incoming = [session({ id: 'b' })]
 
-    expect(mergeSessionPage(previous, incoming, ['b']).map(s => s.id)).toEqual(['b'])
+    expect(mergeSessionPage(previous, incoming, [identity('b')]).map(s => s.id)).toEqual(['b'])
   })
 
   it('keeps a pinned session that has aged off the recent page', () => {
@@ -129,7 +141,7 @@ describe('mergeSessionPage', () => {
     const previous = [session({ id: 'recent' }), session({ id: 'pinned' })]
     const incoming = [session({ id: 'recent' })]
 
-    const merged = mergeSessionPage(previous, incoming, ['pinned'])
+    const merged = mergeSessionPage(previous, incoming, [identity('pinned')])
 
     expect(merged.map(s => s.id)).toEqual(['pinned', 'recent'])
   })
@@ -140,7 +152,7 @@ describe('mergeSessionPage', () => {
     const previous = [session({ id: 'tip', _lineage_root_id: 'root' })] as SessionInfo[]
     const incoming = [session({ id: 'other' })] as SessionInfo[]
 
-    const merged = mergeSessionPage(previous, incoming, ['root'])
+    const merged = mergeSessionPage(previous, incoming, [identity('root')])
 
     expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
   })
@@ -157,7 +169,7 @@ describe('mergeSessionPage', () => {
     // 'tip-4' is in the keep set (e.g. it was the active/working session),
     // but should still be evicted because the incoming page carries the same
     // lineage under a new tip id.
-    const merged = mergeSessionPage(previous, incoming, ['tip-4'])
+    const merged = mergeSessionPage(previous, incoming, [identity('tip-4')])
 
     expect(merged.map(s => s.id)).toEqual(['tip-5'])
     // The new tip comes from the server payload.
@@ -174,13 +186,34 @@ describe('mergeSessionPage', () => {
 
     const incoming = [session({ id: 'a-new', _lineage_root_id: 'lineage-a' })] as SessionInfo[]
 
-    const merged = mergeSessionPage(previous, incoming, ['b'])
+    const merged = mergeSessionPage(previous, incoming, [identity('b')])
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
   })
 })
 
 describe('workspaceCwdForNewSession', () => {
+  let localStorageDescriptor: PropertyDescriptor | undefined
+
+  beforeEach(() => {
+    const values = new Map<string, string>()
+    localStorageDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')
+
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        clear: () => values.clear(),
+        getItem: (key: string) => values.get(key) ?? null,
+        key: (index: number) => [...values.keys()][index] ?? null,
+        get length() {
+          return values.size
+        },
+        removeItem: (key: string) => values.delete(key),
+        setItem: (key: string, value: string) => values.set(key, value)
+      } satisfies Storage
+    })
+  })
+
   afterEach(() => {
     applyConfiguredDefaultProjectDir(null)
     $connection.set(null)
@@ -189,6 +222,12 @@ describe('workspaceCwdForNewSession', () => {
     window.localStorage.removeItem('hermes.desktop.workspace-cwd')
     window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default')
     window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-b.default')
+
+    if (localStorageDescriptor) {
+      Object.defineProperty(window, 'localStorage', localStorageDescriptor)
+    } else {
+      Reflect.deleteProperty(window, 'localStorage')
+    }
   })
 
   it('prefers the configured default over the sticky remembered workspace', () => {
@@ -240,13 +279,13 @@ describe('workspaceCwdForNewSession', () => {
   })
 })
 
-describe('getRecentlySettledSessionIds', () => {
+describe('getRecentlySettledSessions', () => {
   afterEach(() => {
     vi.useRealTimers()
-    $workingSessionIds.set([])
+    $workingSessions.set([])
 
     // Drain anything left in the grace map so tests stay isolated.
-    for (const id of getRecentlySettledSessionIds(Number.MAX_SAFE_INTEGER)) {
+    for (const id of getRecentlySettledSessions(Number.MAX_SAFE_INTEGER)) {
       void id
     }
   })
@@ -254,46 +293,79 @@ describe('getRecentlySettledSessionIds', () => {
   it('keeps a session for the grace window after its turn settles, then drops it', () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
-    $workingSessionIds.set([])
+    $workingSessions.set([])
 
     // A turn starts then ends: the working→idle transition grants grace.
-    setSessionWorking('s1', true)
-    setSessionWorking('s1', false)
-    expect(getRecentlySettledSessionIds()).toEqual(['s1'])
+    setSessionWorking('default', 's1', true)
+    setSessionWorking('default', 's1', false)
+    expect(getRecentlySettledSessions()).toEqual([{ profile: 'default', sessionId: 's1' }])
 
     // Still inside the window.
     vi.setSystemTime(29_000)
-    expect(getRecentlySettledSessionIds()).toEqual(['s1'])
+    expect(getRecentlySettledSessions()).toEqual([{ profile: 'default', sessionId: 's1' }])
 
     // Past the window: the entry is pruned on read.
     vi.setSystemTime(31_000)
-    expect(getRecentlySettledSessionIds()).toEqual([])
+    expect(getRecentlySettledSessions()).toEqual([])
   })
 
   it('does not grant grace when the session was never working (idle re-asserts)', () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
-    $workingSessionIds.set([])
+    $workingSessions.set([])
 
     // updateSessionState re-asserts `false` for idle sessions on every tick;
     // these must not pin an idle chat into the keep-set indefinitely.
-    setSessionWorking('idle', false)
-    setSessionWorking('idle', false)
-    expect(getRecentlySettledSessionIds()).toEqual([])
+    setSessionWorking('default', 'idle', false)
+    setSessionWorking('default', 'idle', false)
+    expect(getRecentlySettledSessions()).toEqual([])
   })
 
   it('clears the grace timer when the session goes busy again', () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
-    $workingSessionIds.set([])
+    $workingSessions.set([])
 
-    setSessionWorking('s2', true)
-    setSessionWorking('s2', false)
-    expect(getRecentlySettledSessionIds()).toEqual(['s2'])
+    setSessionWorking('default', 's2', true)
+    setSessionWorking('default', 's2', false)
+    expect(getRecentlySettledSessions()).toEqual([{ profile: 'default', sessionId: 's2' }])
 
     // A new turn for the same session is "working" again — drop it from the
     // settled set so it's tracked as working, not recently-finished.
-    setSessionWorking('s2', true)
-    expect(getRecentlySettledSessionIds()).toEqual([])
+    setSessionWorking('default', 's2', true)
+    expect(getRecentlySettledSessions()).toEqual([])
+  })
+
+  it('keeps same-id grace entries separate across profiles', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    $workingSessions.set([])
+
+    setSessionWorking('default', 'same-id', true)
+    setSessionWorking('work', 'same-id', true)
+    setSessionWorking('default', 'same-id', false)
+    setSessionWorking('work', 'same-id', false)
+
+    expect(getRecentlySettledSessions()).toEqual([
+      { profile: 'default', sessionId: 'same-id' },
+      { profile: 'work', sessionId: 'same-id' }
+    ])
+  })
+})
+
+describe('setSessionWorking', () => {
+  afterEach(() => $workingSessions.set([]))
+
+  it('tracks the same stored id independently across profiles', () => {
+    setSessionWorking('default', 'same-id', true)
+    setSessionWorking('work', 'same-id', true)
+
+    expect($workingSessions.get()).toEqual([
+      { profile: 'default', sessionId: 'same-id' },
+      { profile: 'work', sessionId: 'same-id' }
+    ])
+
+    setSessionWorking('default', 'same-id', false)
+    expect($workingSessions.get()).toEqual([{ profile: 'work', sessionId: 'same-id' }])
   })
 })

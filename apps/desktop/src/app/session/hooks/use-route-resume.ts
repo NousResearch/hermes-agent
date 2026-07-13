@@ -1,17 +1,20 @@
 import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
+import { normalizeProfileKey } from '@/store/profile-key'
 import { setResumeExhaustedSessionId } from '@/store/session'
+import { getProfileSessionValue } from '@/store/session-identity'
 
 interface RouteResumeOptions {
   activeSessionId: string | null
+  activeProfile: string
   activeSessionIdRef: MutableRefObject<string | null>
   creatingSessionRef: MutableRefObject<boolean>
   currentView: string
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, expectedProfile?: string) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -67,6 +70,7 @@ function rawHashLooksLikeSession(): boolean {
 
 export function useRouteResume({
   activeSessionId,
+  activeProfile,
   activeSessionIdRef,
   creatingSessionRef,
   currentView,
@@ -113,7 +117,11 @@ export function useRouteResume({
     }
 
     if (routedSessionId) {
-      const cachedRuntime = runtimeIdByStoredSessionIdRef.current.get(routedSessionId)
+      const cachedRuntime = getProfileSessionValue(
+        runtimeIdByStoredSessionIdRef.current,
+        normalizeProfileKey(activeProfile),
+        routedSessionId
+      )
 
       const alreadyActive =
         routedSessionId === selectedStoredSessionIdRef.current &&
@@ -147,7 +155,7 @@ export function useRouteResume({
       // rebinds/reaps the session on its side, and trusting it strands Desktop on
       // a dead id ("session not found"). Otherwise keep skipping when already active.
       if ((gatewayBecameOpen || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
-        void resumeSession(routedSessionId, true)
+        void resumeSession(routedSessionId, true, normalizeProfileKey(activeProfile))
       }
 
       return
@@ -163,6 +171,7 @@ export function useRouteResume({
     }
   }, [
     activeSessionId,
+    activeProfile,
     activeSessionIdRef,
     creatingSessionRef,
     currentView,
@@ -267,7 +276,7 @@ export function useRouteResume({
       // having fired. A flapping backend could then hit MAX in a couple of
       // re-renders with far fewer than MAX real attempts. (Point 3)
       retryAttemptRef.current += 1
-      void resumeSession(sessionId, true)
+      void resumeSession(sessionId, true, normalizeProfileKey(activeProfile))
     }, resumeRetryDelayMs(attempt))
 
     return () => clearTimeout(timer)
@@ -275,6 +284,7 @@ export function useRouteResume({
     activeSessionIdRef,
     creatingSessionRef,
     currentView,
+    activeProfile,
     gatewayState,
     resumeSession,
     resumeFailedSessionId,

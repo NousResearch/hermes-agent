@@ -22,6 +22,7 @@ import {
 import {
   $newChatProfile,
   cycleProfile,
+  ensureGatewayProfile,
   requestProfileCreate,
   switchProfileToSlot,
   switchToDefaultProfile,
@@ -30,6 +31,7 @@ import {
 import { requestNewWorktree } from '@/store/projects'
 import { toggleReview } from '@/store/review'
 import { setModelPickerOpen } from '@/store/session'
+import type { SessionIdentity } from '@/store/session-identity'
 import {
   $switcherOpen,
   closeSwitcher,
@@ -37,7 +39,7 @@ import {
   onSwitcherTabDown,
   onSwitcherTabUp,
   openOrAdvanceSwitcher,
-  slotSessionId,
+  slotSession,
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
@@ -85,9 +87,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     profileSwitchHandlers[`profile.switch.${slot}`] = () => switchProfileToSlot(slot)
   }
 
-  const goToSession = (sessionId: null | string) => {
-    if (sessionId) {
-      navigate(sessionRoute(sessionId))
+  const goToSession = (session: SessionIdentity | null) => {
+    if (session) {
+      void ensureGatewayProfile(session.profile).then(() => navigate(sessionRoute(session.sessionId)))
     }
   }
 
@@ -97,7 +99,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   for (let slot = 1; slot <= SESSION_SLOT_COUNT; slot += 1) {
     sessionSlotHandlers[`session.slot.${slot}`] = () => {
       closeSwitcher()
-      goToSession(slotSessionId(slot))
+      goToSession(slotSession(slot))
     }
   }
 

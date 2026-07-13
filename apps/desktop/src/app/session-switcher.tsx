@@ -5,7 +5,9 @@ import { useNavigate } from 'react-router-dom'
 
 import { sessionTitle } from '@/lib/chat-runtime'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds, $workingSessionIds } from '@/store/session'
+import { ensureGatewayProfile } from '@/store/profile'
+import { $attentionSessions, $workingSessions } from '@/store/session'
+import { hasSessionIdentity, makeSessionIdentity, sessionIdentityKey } from '@/store/session-identity'
 import { $switcherIndex, $switcherOpen, $switcherSessions, closeSwitcher } from '@/store/session-switcher'
 
 import { HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from './floating-hud'
@@ -17,8 +19,8 @@ export function SessionSwitcher() {
   const open = useStore($switcherOpen)
   const sessions = useStore($switcherSessions)
   const index = useStore($switcherIndex)
-  const working = useStore($workingSessionIds)
-  const attention = useStore($attentionSessionIds)
+  const working = useStore($workingSessions)
+  const attention = useStore($attentionSessions)
   const navigate = useNavigate()
 
   const activeRef = useRef<HTMLDivElement>(null)
@@ -31,12 +33,9 @@ export function SessionSwitcher() {
     return null
   }
 
-  const workingIds = new Set(working)
-  const attentionIds = new Set(attention)
-
-  const pick = (sessionId: string) => {
+  const pick = (profile: string | null | undefined, sessionId: string) => {
     closeSwitcher()
-    navigate(sessionRoute(sessionId))
+    void ensureGatewayProfile(profile).then(() => navigate(sessionRoute(sessionId)))
   }
 
   return createPortal(
@@ -58,6 +57,7 @@ export function SessionSwitcher() {
       >
         {sessions.map((session, i) => {
           const selected = i === index
+          const identity = makeSessionIdentity(session.profile, session.id)
 
           return (
             <div
@@ -67,14 +67,17 @@ export function SessionSwitcher() {
                 HUD_TEXT,
                 selected ? 'bg-accent text-accent-foreground' : 'text-(--ui-text-secondary)'
               )}
-              key={session.id}
+              key={sessionIdentityKey(identity)}
               onMouseDown={e => {
                 e.preventDefault()
-                pick(session.id)
+                pick(session.profile, session.id)
               }}
               ref={selected ? activeRef : undefined}
             >
-              <SwitcherDot attention={attentionIds.has(session.id)} working={workingIds.has(session.id)} />
+              <SwitcherDot
+                attention={hasSessionIdentity(attention, identity)}
+                working={hasSessionIdentity(working, identity)}
+              />
               <span className="min-w-0 flex-1 truncate">{sessionTitle(session)}</span>
               {i < 9 && (
                 <span

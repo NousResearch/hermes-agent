@@ -2,7 +2,9 @@ import { atom } from 'nanostores'
 
 import type { SessionInfo } from '@/types/hermes'
 
+import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { $selectedStoredSessionId, $sessions } from './session'
+import { makeSessionIdentity, type SessionIdentity } from './session-identity'
 
 // Mac-style session switcher (^Tab). Quick tap jumps on keydown; the HUD opens
 // only when Tab is held past REVEAL_MS or tapped again while Ctrl is down.
@@ -57,7 +59,7 @@ export function onSwitcherTabUp(): void {
 
 // First Tab returns a session id to jump to immediately; later Tabs move the
 // highlight (Ctrl↑ commits when the HUD is open).
-export function openOrAdvanceSwitcher(direction: 1 | -1): string | null {
+export function openOrAdvanceSwitcher(direction: 1 | -1): SessionIdentity | null {
   const sessions = $sessions.get()
 
   if (sessions.length < 2) {
@@ -74,7 +76,12 @@ export function openOrAdvanceSwitcher(direction: 1 | -1): string | null {
     return null
   }
 
-  const current = sessions.findIndex(session => session.id === $selectedStoredSessionId.get())
+  const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
+
+  const current = sessions.findIndex(
+    session => session.id === $selectedStoredSessionId.get() && normalizeProfileKey(session.profile) === activeProfile
+  )
+
   const start = current === -1 ? (direction === 1 ? -1 : 0) : current
   const nextIndex = wrap(start + direction, sessions.length)
 
@@ -92,13 +99,22 @@ export function openOrAdvanceSwitcher(direction: 1 | -1): string | null {
   pendingBrowse = true
   scheduleReveal()
 
-  return sessions[nextIndex]?.id ?? null
+  const target = sessions[nextIndex]
+
+  return target ? makeSessionIdentity(target.profile, target.id) : null
 }
 
-export const highlightedSessionId = (): string | null => $switcherSessions.get()[$switcherIndex.get()]?.id ?? null
+export const highlightedSession = (): SessionIdentity | null => {
+  const target = $switcherSessions.get()[$switcherIndex.get()]
 
-export const slotSessionId = (slot: number): string | null =>
-  ($switcherOpen.get() || pendingBrowse ? $switcherSessions.get() : $sessions.get())[slot - 1]?.id ?? null
+  return target ? makeSessionIdentity(target.profile, target.id) : null
+}
+
+export const slotSession = (slot: number): SessionIdentity | null => {
+  const target = ($switcherOpen.get() || pendingBrowse ? $switcherSessions.get() : $sessions.get())[slot - 1]
+
+  return target ? makeSessionIdentity(target.profile, target.id) : null
+}
 
 export function closeSwitcher(): void {
   closedAt = Date.now()
@@ -108,7 +124,7 @@ export function closeSwitcher(): void {
   $switcherOpen.set(false)
 }
 
-export function commitOnCtrlUp(): string | null {
+export function commitOnCtrlUp(): SessionIdentity | null {
   clearRevealTimer()
   pendingBrowse = false
 
@@ -116,7 +132,7 @@ export function commitOnCtrlUp(): string | null {
     return null
   }
 
-  const target = highlightedSessionId()
+  const target = highlightedSession()
   closeSwitcher()
 
   return target

@@ -646,7 +646,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 
 # Cap a single upload so a runaway request can't fill the disk. 25 MB
 # comfortably covers PDFs, images, and source docs — the kanban use case.
-_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+_MAX_ATTACHMENT_BYTES = kanban_db.KANBAN_ATTACHMENT_MAX_BYTES
 
 
 def _safe_attachment_name(raw: str) -> str:

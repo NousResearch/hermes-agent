@@ -960,16 +960,17 @@ class ShellFileOperations(FileOperations):
     def _escape_shell_arg(self, arg: str) -> str:
         """Escape a string for safe use in shell commands.
 
-        On Windows a native drive path (``C:\\Users\\x``) is first rewritten to
-        the Git Bash / MSYS ``/c/Users/x`` form: bash eats the backslashes and
-        MSYS otherwise mangles ``C:\\...`` (the "Directory \\drivers\\etc does not
-        exist" class of failures). Reuses the env-layer translator so shell file
-        ops and the terminal ``cd`` agree on the path form. No-op off Windows and
-        for non-drive-qualified paths.
+        On Windows native drive paths (``C:\\Users\\x`` / ``C:/Users/x``)
+        and mixed MSYS leftovers (``/c/Users\\x``) are rewritten to the
+        Git Bash ``/c/Users/x`` form via ``_bash_safe_path``: bash eats
+        backslashes and MSYS otherwise mangles drive paths into the
+        ``Directory \\drivers\\etc does not exist`` failure class. Reuses
+        the env-layer translator so shell file ops and the terminal ``cd``
+        agree on the path form. No-op off Windows and for plain POSIX paths.
         """
-        from tools.environments.local import _windows_to_msys_path
+        from tools.environments.local import _bash_safe_path
 
-        arg = _windows_to_msys_path(arg)
+        arg = _bash_safe_path(arg)
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 

@@ -250,6 +250,21 @@ class ContextEngine(ABC):
         message and intentionally never rewrites the list, to preserve the
         cache prefix), ``select_context()`` may *replace* the message list.
 
+        Ordering / cache contract: the host runs this hook **before** prompt
+        cache-control and **before** every request sanitizer (orphaned-tool
+        cleanup, thinking-only/role normalization, whitespace/JSON
+        normalization). So (a) whatever the hook returns still passes through
+        the same validation as any request — a malformed replacement cannot
+        reach the provider — and (b) prompt-cache stability (an AGENTS.md
+        invariant) is preserved: the default no-op leaves the request
+        byte-identical, so cache behaviour is unchanged for the built-in
+        compressor and any non-implementing engine. An engine that *does*
+        replace the list changes its own cache prefix by definition; that is
+        the engine's concern, and cache-control breakpoints are re-derived on
+        the selected list. The hook is evaluated per provider request (so it
+        re-runs on retries within a turn), consistent with "select the context
+        for THIS request".
+
         Args:
             request_messages: The assembled request message list (system
                 prompt + history + any ephemeral prefill), in OpenAI format.

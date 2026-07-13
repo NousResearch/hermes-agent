@@ -3435,7 +3435,10 @@ class AIAgent:
           - process_registry entries for task_id (user's bg shells)
           - terminal sandbox for task_id (cwd, env, shell state)
           - browser daemon for task_id (open tabs, cookies)
-          - memory provider (has its own lifecycle; keeps running)
+          - memory provider transport; gateway soft-eviction closes it
+            separately before calling this method, because providers such as
+            MemOS own per-agent bridge subprocesses that must not outlive the
+            evicted AIAgent instance.
 
         We DO close:
           - OpenAI/httpx client pool (big chunk of held memory + sockets;

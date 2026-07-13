@@ -158,6 +158,8 @@ _MARKDOWN_HINT_RE = re.compile(
 # Detect markdown tables: a line starting with | followed by a separator line.
 # Feishu post-type 'md' elements do not render tables, so we force text mode.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+# Detect fenced code blocks — used by card-mode routing (matches OpenClaw shouldUseCard).
+_MARKDOWN_CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -621,6 +623,183 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
 
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
+
+
+# ---------------------------------------------------------------------------
+# Schema 2.0 interactive card — GFM table + code block rendering
+# ---------------------------------------------------------------------------
+
+# Maximum GFM tables allowed in a single Schema 2.0 card.  Exceeding this
+# limit triggers 230099 / 11310 (verified 2026-03 by openclaw + cc-haha).
+_FEISHU_CARD_TABLE_LIMIT = 3
+
+# Regex to find GFM tables *outside* fenced code blocks.
+_GFM_TABLE_OUTSIDE_CODE_RE = re.compile(
+    r"\|.+\|[\r\n]+\|[-:| ]+\|[\s\S]*?(?=\n\n|\n(?!\|)|$)"
+)
+
+# HTML-escape < > & in card markdown content to prevent Feishu from
+# mis-parsing them as HTML tags/entities inside schema 2.0 markdown elements.
+_CARD_MARKDOWN_ESCAPE_MAP = str.maketrans({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+})
+
+
+def _escape_card_markdown(text: str) -> str:
+    """Escape & < > for safe embedding in Feishu card markdown elements."""
+    return text.translate(_CARD_MARKDOWN_ESCAPE_MAP)
+
+
+def _build_table_card_payload(content: str) -> str:
+    """Build a Feishu Schema 2.0 interactive card with a ``markdown`` element.
+
+    Schema 2.0's ``markdown`` element renders GFM tables, fenced code blocks,
+    blockquotes, and inline formatting natively (verified 2026-05-24).
+
+    The markdown is run through cc-haha's optimisation pipeline + HTML escaping
+    before being wrapped into the card JSON.
+    """
+    # Escape user content first, then optimise — optimisation adds <br> tags
+    # that must NOT be escaped.
+    escaped = _escape_card_markdown(content)
+    sanitised = _sanitise_card_text(escaped)
+    optimised = _optimise_markdown_for_feishu(sanitised)
+    return json.dumps(
+        {
+            "schema": "2.0",
+            "config": {
+                "update_multi": True,
+                "width_mode": "fill",
+            },
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": optimised or " ",
+                        "text_align": "left",
+                    }
+                ],
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
+def _sanitise_card_text(
+    text: str,
+    table_limit: int = _FEISHU_CARD_TABLE_LIMIT,
+) -> str:
+    """Wrap GFM tables beyond *table_limit* inside fenced code blocks.
+
+    The first *table_limit* tables are left as-is for native rendering;
+    any extras are turned into `` ``` ... ``` `` code blocks to avoid
+    the 230099 / 11310 errors.
+    """
+    # Step 1 — locate code-block spans so we don't touch tables inside them.
+    code_ranges: list[tuple[int, int]] = []
+    for m in re.finditer(r"```[\s\S]*?```", text):
+        code_ranges.append((m.start(), m.end()))
+
+    def _inside_code(idx: int) -> bool:
+        return any(start <= idx < end for start, end in code_ranges)
+
+    # Step 2 — find GFM tables outside code blocks.
+    tables: list[re.Match[str]] = []
+    for m in _GFM_TABLE_OUTSIDE_CODE_RE.finditer(text):
+        if not _inside_code(m.start()):
+            tables.append(m)
+
+    if len(tables) <= table_limit:
+        return text
+
+    # Step 3 — replace extra tables with code blocks (right-to-left so
+    # earlier indices stay valid).
+    result = text
+    for m in reversed(tables[table_limit:]):
+        replacement = "```\n" + m.group(0).rstrip() + "\n```"
+        result = result[: m.start()] + replacement + result[m.end():]
+
+    return result
+
+
+def _optimise_markdown_for_feishu(text: str) -> str:
+    """Pre-process markdown for Feishu Schema 2.0 rendering.
+
+    Ported from cc-haha ``optimizeMarkdownForFeishu``.  Applies:
+    1. Heading downgrade (H1→H4, H2+→H5) when H1-H3 are present.
+    2. ``<br>`` spacing around consecutive headings / tables / code blocks.
+    3. Blank-line compression (3+ → 2).
+    """
+    try:
+        return _do_optimise_markdown(text)
+    except Exception:
+        return text
+
+
+def _do_optimise_markdown(text: str) -> str:
+    # ── 1. Protect fenced code blocks with placeholders ──────────────────
+    MARK = "___CB_"
+    code_blocks: list[str] = []
+    out = re.sub(
+        r"```[\s\S]*?```",
+        lambda m: f"{MARK}{code_blocks.append(m.group(0)) or len(code_blocks) - 1}___",
+        text,
+    )
+
+    # ── 2. Heading downgrade ────────────────────────────────────────────
+    if re.search(r"^#{1,3} ", text, re.MULTILINE):
+        out = re.sub(r"^#{2,6} (.+)$", r"##### \1", out, flags=re.MULTILINE)
+        out = re.sub(r"^# (.+)$", r"#### \1", out, flags=re.MULTILINE)
+
+    # ── 3. Schema 2.0 paragraph spacing ─────────────────────────────────
+    # 3a. Consecutive headings → <br>
+    out = re.sub(r"^(#{4,5} .+)\n{1,2}(#{4,5} )", r"\1\n<br>\n\2", out, flags=re.MULTILINE)
+
+    # 3b. Non-table line before table → add blank line
+    out = re.sub(r"^([^|\n].*)\n(\|.+\|)", r"\1\n\n\2", out, flags=re.MULTILINE)
+
+    # 3c. Insert <br> before table blocks
+    out = re.sub(r"\n\n((?:\|.+\|[^\S\n]*\n?)+)", r"\n\n<br>\n\n\1", out)
+
+    # 3d. Append <br> after table blocks
+    def _table_post_br(m: re.Match[str]) -> str:
+        after = out[m.end():].lstrip("\n")
+        if not after or re.match(r"^(---|#{4,5} |\*\*)", after):
+            return m.group(0)
+        return m.group(0) + "\n<br>\n"
+
+    out = re.sub(r"((?:^\|.+\|[^\S\n]*\n?)+)", _table_post_br, out, flags=re.MULTILINE)
+
+    # 3e-g. Compact redundant <br> + blank-line combos
+    out = re.sub(
+        r"^((?!#{4,5} )(?!\*\*).+)\n\n(<br>)\n\n(\|)",
+        r"\1\n\2\n\3",
+        out,
+        flags=re.MULTILINE,
+    )
+    out = re.sub(
+        r"^(\*\*.+)\n\n(<br>)\n\n(\|)",
+        r"\1\n\2\n\n\3",
+        out,
+        flags=re.MULTILINE,
+    )
+    out = re.sub(
+        r"(\|[^\n]*\n)\n(<br>\n)((?!#{4,5} )(?!\*\*))",
+        r"\1\2\3",
+        out,
+        flags=re.MULTILINE,
+    )
+
+    # ── 4. Compress 3+ blank lines → 2 ──────────────────────────────────
+    out = re.sub(r"\n{3,}", "\n\n", out)
+
+    # ── 5. Restore code blocks with <br> padding ────────────────────────
+    for i, block in enumerate(code_blocks):
+        out = out.replace(f"{MARK}{i}___", f"\n<br>\n{block}\n<br>\n")
+
+    return out
 
 
 def parse_feishu_post_payload(
@@ -1911,9 +2090,10 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type in {"post", "interactive"} and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                        logger.info("[Feishu] Invalid %s payload rejected by API; falling back to plain text", msg_type)
+                    else:
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1922,11 +2102,11 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 if (
-                    msg_type == "post"
+                    msg_type in {"post", "interactive"}
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    logger.info("[Feishu] %s payload rejected by API response; falling back to plain text", msg_type)
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1960,8 +2140,8 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await self._run_blocking(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+            if not result.success and msg_type in {"post", "interactive"} and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+                logger.info("[Feishu] Invalid %s update payload rejected by API; falling back to plain text", msg_type)
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
                     content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
@@ -4524,10 +4704,11 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Use Schema 2.0 interactive cards for tables and code blocks, which
+        # render GFM tables, fenced code blocks, blockquotes, and inline
+        # formatting natively.
+        if _MARKDOWN_TABLE_RE.search(content) or _MARKDOWN_CODE_BLOCK_RE.search(content):
+            return "interactive", _build_table_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

@@ -2708,22 +2708,13 @@ class TestAdapterBehavior(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        # Content contains a fenced code block, so _build_outbound_payload
+        # now routes it as an interactive Schema 2.0 card.
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
         payload = json.loads(captured["request"].request_body.content)
-        rows = payload["zh_cn"]["content"]
-        self.assertEqual(
-            rows,
-            [
-                [
-                    {
-                        "tag": "md",
-                        "text": "确认已入库 ✓\n文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n**解码后的内容：**",
-                    }
-                ],
-                [{"tag": "md", "text": "```json\n{\"cron\": \"list\"}\n```"}],
-                [{"tag": "md", "text": "后续说明仍应保留。"}],
-            ],
-        )
+        self.assertEqual(payload["schema"], "2.0")
+        self.assertEqual(payload["body"]["elements"][0]["tag"], "markdown")
+        self.assertIn("确认已入库", payload["body"]["elements"][0]["content"])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
@@ -5051,3 +5042,121 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFeishuCardFormatting(unittest.TestCase):
+    """Tests for Schema 2.0 card formatting used for tables and code blocks."""
+
+    maxDiff = None
+
+    def _import(self):
+        from plugins.platforms.feishu.adapter import (
+            _build_table_card_payload,
+            _escape_card_markdown,
+            _sanitise_card_text,
+        )
+        return _build_table_card_payload, _escape_card_markdown, _sanitise_card_text
+
+    def test_escape_card_markdown_escapes_html_entities(self):
+        _escape_card_markdown = self._import()[1]
+        self.assertEqual(
+            _escape_card_markdown("a & b < c > d"),
+            "a &amp; b &lt; c &gt; d",
+        )
+
+    def test_escape_card_markdown_preserves_safe_text(self):
+        _escape_card_markdown = self._import()[1]
+        self.assertEqual(_escape_card_markdown("hello world"), "hello world")
+
+    def test_escape_card_markdown_handles_empty_string(self):
+        _escape_card_markdown = self._import()[1]
+        self.assertEqual(_escape_card_markdown(""), "")
+
+    def test_sanitise_card_text_under_limit_unchanged(self):
+        _sanitise_card_text = self._import()[2]
+        text = "| a | b |\n| - | - |\n| 1 | 2 |"
+        self.assertEqual(_sanitise_card_text(text, table_limit=3), text)
+
+    def test_sanitise_card_text_wraps_extra_tables_in_code_block(self):
+        _sanitise_card_text = self._import()[2]
+        text = (
+            "| h1 | h2 |\n"
+            "| -- | -- |\n"
+            "| v1 | v2 |\n"
+            "\n"
+            "| a | b |\n"
+            "| - | - |\n"
+            "| 1 | 2 |\n"
+        )
+        result = _sanitise_card_text(text, table_limit=1)
+        self.assertIn("```", result)
+        self.assertIn("| 1 | 2 |", result)
+
+    def test_sanitise_card_text_skips_tables_inside_code_blocks(self):
+        _sanitise_card_text = self._import()[2]
+        text = (
+            "```\n"
+            "| in | code |\n"
+            "| -- | ---- |\n"
+            "| x  | y    |\n"
+            "```\n"
+            "\n"
+            "| real | table |\n"
+            "| ---- | ----- |\n"
+            "| a    | b     |\n"
+        )
+        result = _sanitise_card_text(text, table_limit=1)
+        self.assertEqual(result, text)
+
+    def test_build_table_card_payload_is_valid_json_with_schema(self):
+        _build_table_card_payload = self._import()[0]
+        payload = _build_table_card_payload("| A | B |\n| - | - |\n| 1 | 2 |")
+        parsed = json.loads(payload)
+        self.assertEqual(parsed.get("schema"), "2.0")
+        self.assertIn("body", parsed)
+        self.assertIn("elements", parsed["body"])
+        markdown_elem = parsed["body"]["elements"][0]
+        self.assertEqual(markdown_elem.get("tag"), "markdown")
+        self.assertIn("content", markdown_elem)
+
+    def test_build_table_card_payload_includes_config(self):
+        _build_table_card_payload = self._import()[0]
+        parsed = json.loads(_build_table_card_payload("hello"))
+        self.assertTrue(parsed["config"]["update_multi"])
+        self.assertEqual(parsed["config"]["width_mode"], "fill")
+
+    def test_build_outbound_payload_returns_interactive_for_tables(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._settings = {}
+        msg_type, payload = adapter._build_outbound_payload(
+            "| A | B |\n| - | - |\n| 1 | 2 |"
+        )
+        self.assertEqual(msg_type, "interactive")
+        parsed = json.loads(payload)
+        self.assertEqual(parsed["schema"], "2.0")
+
+    def test_build_outbound_payload_returns_interactive_for_code_blocks(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._settings = {}
+        msg_type, payload = adapter._build_outbound_payload(
+            "```python\nprint('hello')\n```"
+        )
+        self.assertEqual(msg_type, "interactive")
+        parsed = json.loads(payload)
+        self.assertEqual(parsed["schema"], "2.0")
+
+    def test_build_outbound_payload_returns_post_for_markdown_no_tables(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._settings = {}
+        msg_type, payload = adapter._build_outbound_payload("**bold** and *italic*")
+        self.assertEqual(msg_type, "post")
+
+    def test_build_outbound_payload_returns_text_for_plain_content(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._settings = {}
+        msg_type, payload = adapter._build_outbound_payload("hello world")
+        self.assertEqual(msg_type, "text")

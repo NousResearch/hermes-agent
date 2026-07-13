@@ -47,6 +47,28 @@ class TestTuiApprovalEmitRedaction:
         tui_server._emit_approval_request("s", None)
         assert emitted["payload"] == {}
 
+    @pytest.mark.parametrize(
+        ("data", "expected"),
+        [
+            ({"smart_denied": True, "allow_permanent": True}, ["once", "deny"]),
+            ({"allow_permanent": False}, ["once", "session", "deny"]),
+            ({"allow_permanent": True}, ["once", "session", "always", "deny"]),
+        ],
+    )
+    def test_emit_approval_request_derives_choices(self, monkeypatch, data, expected):
+        from tui_gateway import server as tui_server
+
+        emitted = {}
+        monkeypatch.setattr(
+            tui_server,
+            "_emit",
+            lambda event, sid, payload=None: emitted.update({"payload": payload}),
+        )
+
+        tui_server._emit_approval_request("s", data)
+
+        assert emitted["payload"]["choices"] == expected
+
     def test_no_raw_command_emit_in_approval_registrations(self):
         """Every register_gateway_notify approval callback must route through the
         redacting `_emit_approval_request` helper — no registration may emit the

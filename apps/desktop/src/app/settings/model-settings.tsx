@@ -82,7 +82,7 @@ export function ModelSettingsSkeleton() {
 
 // Hermes' reasoning levels (VALID_REASONING_EFFORTS); `none` = thinking off.
 // Empty config = Hermes default (medium), shown as Medium.
-const EFFORT_VALUES = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const
+const EFFORT_VALUES = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const
 
 // agent.service_tier stores "fast"/"priority"/"on" for fast; anything else is
 // normal (mirrors tui_gateway _load_service_tier).
@@ -93,8 +93,8 @@ const isFastTier = (tier: unknown): boolean =>
       .toLowerCase()
   )
 
-// Reuse the composer's effort labels (`xhigh` shows as "Max", else 1:1).
-const effortLabelKey = (v: string) => (v === 'xhigh' ? 'max' : v) as 'high' | 'low' | 'max' | 'medium' | 'minimal'
+// Reuse the composer's effort labels.
+const effortLabelKey = (v: string) => v as 'high' | 'low' | 'max' | 'medium' | 'minimal' | 'ultra' | 'xhigh'
 
 // A provider row is "ready" to pick a model from when it reports models. The
 // backend now surfaces the full `hermes model` universe (every canonical
@@ -298,23 +298,62 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     return moa.presets[selectedMoaPreset] || moa.presets[moa.default_preset] || Object.values(moa.presets)[0] || null
   }, [moa, selectedMoaPreset])
 
+  // Mirror of `moa` so inline edits compute the next state purely (outside the
+  // setState updater) and hand it straight to the debounced autosave.
+  const moaRef = useRef<MoaConfigResponse | null>(null)
+
+  useEffect(() => {
+    moaRef.current = moa
+  }, [moa])
+
+  const moaSaveTimer = useRef<number | null>(null)
+
+  useEffect(
+    () => () => {
+      if (moaSaveTimer.current) {
+        window.clearTimeout(moaSaveTimer.current)
+      }
+    },
+    []
+  )
+
+  // Quiet debounced persist for inline MoA edits — mirrors the config page's
+  // autosave so slot/aggregator tweaks save themselves, matching the
+  // preset-level ops (set default / add / delete) that already persist on
+  // click. No `applying` spinner, so selecting stays responsive.
+  const scheduleMoaSave = useCallback((next: MoaConfigResponse) => {
+    if (moaSaveTimer.current) {
+      window.clearTimeout(moaSaveTimer.current)
+    }
+
+    moaSaveTimer.current = window.setTimeout(() => {
+      void saveMoaModels(next)
+        .then(setMoa)
+        .catch(err => setError(err instanceof Error ? err.message : String(err)))
+    }, 600)
+  }, [])
+
   const updateMoaPreset = useCallback(
     (updater: (preset: NonNullable<typeof currentMoaPreset>) => NonNullable<typeof currentMoaPreset>) => {
-      setMoa(prev => {
-        if (!prev || !selectedMoaPreset || !prev.presets[selectedMoaPreset]) {
-          return prev
-        }
+      const prev = moaRef.current
 
-        return {
-          ...prev,
-          presets: {
-            ...prev.presets,
-            [selectedMoaPreset]: updater(prev.presets[selectedMoaPreset])
-          }
+      if (!prev || !selectedMoaPreset || !prev.presets[selectedMoaPreset]) {
+        return
+      }
+
+      const next: MoaConfigResponse = {
+        ...prev,
+        presets: {
+          ...prev.presets,
+          [selectedMoaPreset]: updater(prev.presets[selectedMoaPreset])
         }
-      })
+      }
+
+      moaRef.current = next
+      setMoa(next)
+      scheduleMoaSave(next)
     },
-    [selectedMoaPreset]
+    [scheduleMoaSave, selectedMoaPreset]
   )
 
   const updateMoaSlot = useCallback((slot: MoaModelSlot, patch: Partial<MoaModelSlot>): MoaModelSlot => {
@@ -841,12 +880,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       </section>
       {moa && currentMoaPreset && (
         <section>
-          <div className="mb-2.5 flex items-center justify-between">
-            <SectionHeading icon={Cpu} title="Mixture of Agents" />
-            <Button disabled={applying} onClick={() => void saveMoa(moa)} size="sm" variant="textStrong">
-              {applying ? m.applying : t.common.save}
-            </Button>
-          </div>
+          <SectionHeading icon={Cpu} title="Mixture of Agents" />
           <p className="mb-2 text-xs text-muted-foreground">
             Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
             acting model.

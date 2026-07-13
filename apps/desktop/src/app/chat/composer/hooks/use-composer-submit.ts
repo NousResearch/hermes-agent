@@ -79,7 +79,11 @@ export function useComposerSubmit({
 
     const restore = () => {
       loadIntoComposer(text, submittedAttachments)
-      stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
+      // Use the scope captured at dispatch, not whatever session is focused
+      // now — the gateway can reject well after the user has switched away,
+      // and re-stashing into the currently-focused session would overwrite
+      // its draft with the rejected text from a different session (#54527).
+      stashAt(submittedScope, text, submittedAttachments)
     }
 
     void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))

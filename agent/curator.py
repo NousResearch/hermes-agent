@@ -45,12 +45,26 @@ def _strip_aux_credential(value: Any) -> Optional[str]:
 
 
 class _ReviewRuntimeBinding(NamedTuple):
-    """Provider/model for the curator review fork plus optional per-slot overrides."""
+    """Provider/model for the curator review fork plus per-slot overrides."""
 
     provider: str
     model: str
     explicit_api_key: Optional[str]
     explicit_base_url: Optional[str]
+    request_overrides: Dict[str, Any]
+
+
+def _merge_request_overrides(
+    runtime_overrides: Any,
+    slot_extra_body: Any,
+) -> Dict[str, Any]:
+    """Merge resolver metadata with task-local request body fields."""
+    merged = dict(runtime_overrides or {})
+    if isinstance(slot_extra_body, dict) and slot_extra_body:
+        extra_body = dict(merged.get("extra_body") or {})
+        extra_body.update(slot_extra_body)
+        merged["extra_body"] = extra_body
+    return merged
 
 
 DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
@@ -1764,6 +1778,7 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
             _task_model,
             _strip_aux_credential(_cur_task.get("api_key")),
             _strip_aux_credential(_cur_task.get("base_url")),
+            _merge_request_overrides({}, _cur_task.get("extra_body")),
         )
 
     # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
@@ -1781,10 +1796,11 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
             str(_legacy_model),
             _strip_aux_credential(_legacy.get("api_key")),
             _strip_aux_credential(_legacy.get("base_url")),
+            _merge_request_overrides({}, _legacy.get("extra_body")),
         )
 
     # 3. Fall through to the main chat model
-    return _ReviewRuntimeBinding(_main_provider, _main_model, None, None)
+    return _ReviewRuntimeBinding(_main_provider, _main_model, None, None, {})
 
 
 def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
@@ -1850,6 +1866,11 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     _base_url = None
     _api_mode = None
     _resolved_provider = None
+    _credential_pool = None
+    _request_overrides: Dict[str, Any] = {}
+    _max_tokens = None
+    _acp_command = None
+    _acp_args = None
     _model_name = ""
     try:
         from hermes_cli.config import load_config
@@ -1867,6 +1888,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         _base_url = _rp.get("base_url")
         _api_mode = _rp.get("api_mode")
         _resolved_provider = _rp.get("provider") or _provider
+        _credential_pool = _rp.get("credential_pool")
+        _request_overrides = _merge_request_overrides(
+            _rp.get("request_overrides"),
+            _binding.request_overrides.get("extra_body"),
+        )
+        _max_tokens = _rp.get("max_output_tokens")
+        _acp_command = _rp.get("command")
+        _acp_args = list(_rp.get("args") or [])
+        if isinstance(_rp.get("model"), str) and _rp["model"].strip():
+            _model_name = _rp["model"].strip()
     except Exception as e:
         logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
 
@@ -1875,12 +1906,21 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
     review_agent = None
     try:
+        _agent_kwargs: Dict[str, Any] = {}
+        if isinstance(_max_tokens, int):
+            _agent_kwargs["max_tokens"] = _max_tokens
+        if isinstance(_acp_command, str) and _acp_command:
+            _agent_kwargs["acp_command"] = _acp_command
+            _agent_kwargs["acp_args"] = _acp_args or []
         review_agent = AIAgent(
             model=_model_name,
             provider=_resolved_provider,
             api_key=_api_key,
             base_url=_base_url,
             api_mode=_api_mode,
+            credential_pool=_credential_pool,
+            request_overrides=_request_overrides,
+            **_agent_kwargs,
             # Umbrella-building over a large skill collection is worth a
             # high iteration ceiling — the pass typically takes 50-100
             # API calls against hundreds of candidate skills. The

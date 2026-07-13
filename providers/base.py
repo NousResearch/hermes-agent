@@ -196,6 +196,8 @@ class ProviderProfile:
         import json
         import urllib.request
 
+        from hermes_cli.urllib_security import open_credentialed_url
+
         req = urllib.request.Request(url)
         if api_key:
             req.add_header("Authorization", f"Bearer {api_key}")
@@ -208,7 +210,7 @@ class ProviderProfile:
             req.add_header(k, v)
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
             return [m["id"] for m in items if isinstance(m, dict) and "id" in m]

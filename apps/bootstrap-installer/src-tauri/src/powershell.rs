@@ -1,6 +1,6 @@
 //! Drives PowerShell (Windows) or bash (Unix) for install.ps1 / install.sh.
 //!
-//! Port of `spawnPowerShell` from bootstrap-runner.cjs, with the same
+//! Port of `spawnPowerShell` from bootstrap-runner.ts, with the same
 //! line-buffered stdout/stderr streaming + cancellation semantics.
 //!
 //! On Windows we pass `-NoProfile -ExecutionPolicy Bypass -File <script>`.
@@ -19,7 +19,7 @@ pub struct StreamSink {
     pub on_stderr_line: Box<dyn Fn(&str) + Send + Sync>,
 }
 
-/// Outcome of a script invocation. Mirrors bootstrap-runner.cjs's
+/// Outcome of a script invocation. Mirrors bootstrap-runner.ts's
 /// `{stdout, stderr, code, signal, killed}` shape.
 #[derive(Debug)]
 pub struct ScriptResult {
@@ -258,7 +258,7 @@ fn interpreter_label() -> String {
 /// Parses the LAST line of stdout that looks like a JSON object matching
 /// the install.ps1 stage-result contract: `{ok: bool, stage: string, ...}`.
 ///
-/// Mirrors `parseStageResult` from bootstrap-runner.cjs. install.ps1 may
+/// Mirrors `parseStageResult` from bootstrap-runner.ts. install.ps1 may
 /// print info/banner lines before the result frame; we scan from the end.
 pub fn parse_stage_result(stdout: &str) -> Option<crate::events::StageResultPayload> {
     for line in stdout.lines().rev() {

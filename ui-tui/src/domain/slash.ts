@@ -1,5 +1,12 @@
-/** Appended to `/model` args from the TUI picker for session scope; stripped in `session` slash before `config.set`. */
+/** Appended by TUI pickers; converted to the backend's `--session` flag before `config.set`. */
 export const TUI_SESSION_MODEL_FLAG = '--tui-session'
+
+export const sessionScopedModelArg = (value: string) => {
+  const parts = value.trim().split(/\s+/).filter(Boolean)
+  const kept = parts.filter(part => part !== TUI_SESSION_MODEL_FLAG && part !== '--global' && part !== '--session')
+
+  return kept.length ? `${kept.join(' ')} --session` : ''
+}
 
 export const looksLikeSlashCommand = (text: string) => /^\/[^\s/]*(?:\s|$)/.test(text)
 

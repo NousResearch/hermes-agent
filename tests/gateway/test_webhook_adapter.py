@@ -609,6 +609,285 @@ class TestEventFilter:
 
 
 # ===================================================================
+# Payload filters
+# ===================================================================
+
+
+class TestPayloadFilters:
+    """Tests for route-level payload filters in _handle_webhook."""
+
+    @pytest.mark.asyncio
+    async def test_filter_rejects_before_agent_dispatch(self):
+        """A non-matching filter returns ignored and never starts the agent."""
+        routes = {
+            "todoist": {
+                "secret": _INSECURE_NO_AUTH,
+                "filters": [{"field": "payload.label", "equals": "urgent"}],
+                "prompt": "Task: {payload.content}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"payload": {"label": "later", "content": "Buy milk"}},
+                headers={"X-GitHub-Delivery": "filter-skip-1"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {
+                "status": "ignored",
+                "reason": "filter",
+                "route": "todoist",
+            }
+
+        adapter.handle_message.assert_not_called()
+        assert "filter-skip-1" not in adapter._seen_deliveries
+
+    @pytest.mark.asyncio
+    async def test_filter_accepts_nested_any_and_in_file(self, tmp_path, monkeypatch):
+        """Nested any groups can match dynamic watchlists under HERMES_HOME."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        watchlist = tmp_path / "data" / "watchlist.json"
+        watchlist.parent.mkdir()
+        watchlist.write_text(json.dumps(["chat-1", "chat-2"]), encoding="utf-8")
+        routes = {
+            "waha": {
+                "secret": _INSECURE_NO_AUTH,
+                "filters": [
+                    {"field": "payload.fromMe", "equals": False},
+                    {
+                        "any": [
+                            {
+                                "field": "payload.chatId",
+                                "in_file": "~/.hermes/data/watchlist.json",
+                            },
+                            {
+                                "field": "payload.id.remote",
+                                "in_file": "~/.hermes/data/watchlist.json",
+                            },
+                        ]
+                    },
+                ],
+                "prompt": "Message from {payload.chatId}: {payload.body}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/waha",
+                json={
+                    "payload": {
+                        "fromMe": False,
+                        "chatId": "chat-2",
+                        "body": "hello",
+                    }
+                },
+                headers={"X-GitHub-Delivery": "filter-match-1"},
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+        assert len(captured) == 1
+        assert captured[0].text == "Message from chat-2: hello"
+
+    @pytest.mark.asyncio
+    async def test_filter_applies_to_deliver_only_before_delivery(self):
+        """Filtered direct-delivery routes skip target delivery too."""
+        routes = {
+            "alerts": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "123"},
+                "filters": [{"field": "severity", "in": ["critical"]}],
+                "prompt": "Alert: {message}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=SendResult(success=True))
+        mock_runner = MagicMock()
+        mock_runner.adapters = {Platform.TELEGRAM: mock_target}
+        adapter.gateway_runner = mock_runner
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/alerts",
+                json={"severity": "info", "message": "noise"},
+                headers={"X-GitHub-Delivery": "filter-direct-1"},
+            )
+            assert resp.status == 200
+            assert (await resp.json())["reason"] == "filter"
+
+        mock_target.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_script_transforms_payload_before_prompt_rendering(self, tmp_path, monkeypatch):
+        """A script can replace the payload used by prompt templates."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        script = scripts / "todoist_filter.py"
+        script.write_text(
+            "import json, sys\n"
+            "payload = json.load(sys.stdin)\n"
+            "payload['body'] = payload['task']['content'].upper()\n"
+            "print(json.dumps(payload))\n",
+            encoding="utf-8",
+        )
+        routes = {
+            "todoist": {
+                "secret": _INSECURE_NO_AUTH,
+                "script": "todoist_filter.py",
+                "prompt": "Task: {body}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"task": {"content": "pay bills"}},
+                headers={"X-GitHub-Delivery": "script-transform-1"},
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+        assert captured[0].text == "Task: PAY BILLS"
+        assert captured[0].raw_message["body"] == "PAY BILLS"
+
+    @pytest.mark.asyncio
+    async def test_script_tilde_hermes_path_resolves_to_active_profile_home(self, tmp_path, monkeypatch):
+        """~/.hermes/scripts paths must resolve through HERMES_HOME for profiles."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "todoist_filter.py").write_text(
+            "import json, sys\n"
+            "payload = json.load(sys.stdin)\n"
+            "payload['body'] = 'profile-safe'\n"
+            "print(json.dumps(payload))\n",
+            encoding="utf-8",
+        )
+        routes = {
+            "todoist": {
+                "secret": _INSECURE_NO_AUTH,
+                "script": "~/.hermes/scripts/todoist_filter.py",
+                "prompt": "Task: {body}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"task": {"content": "pay bills"}},
+                headers={"X-GitHub-Delivery": "script-profile-path-1"},
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+        assert captured[0].text == "Task: profile-safe"
+
+    @pytest.mark.asyncio
+    async def test_script_silent_stdout_ignores_without_idempotency_hit(self, tmp_path, monkeypatch):
+        """Empty or [SILENT] script stdout filters the webhook out."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "skip.py").write_text("print('[SILENT]')\n", encoding="utf-8")
+        routes = {
+            "todoist": {
+                "secret": _INSECURE_NO_AUTH,
+                "script": "skip.py",
+                "prompt": "Task: {body}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"body": "ignore me"},
+                headers={"X-GitHub-Delivery": "script-silent-1"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {
+                "status": "ignored",
+                "reason": "script",
+                "route": "todoist",
+            }
+
+        adapter.handle_message.assert_not_called()
+        assert "script-silent-1" not in adapter._seen_deliveries
+
+    @pytest.mark.asyncio
+    async def test_script_nonzero_exit_ignores_webhook(self, tmp_path, monkeypatch):
+        """A script can fail closed by exiting nonzero."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "skip.py").write_text(
+            "import sys\nsys.exit(2)\n",
+            encoding="utf-8",
+        )
+        routes = {
+            "todoist": {
+                "secret": _INSECURE_NO_AUTH,
+                "script": "skip.py",
+                "prompt": "Task: {body}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"body": "ignore me"},
+                headers={"X-GitHub-Delivery": "script-nonzero-1"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+            assert data["reason"] == "script"
+
+        adapter.handle_message.assert_not_called()
+        assert "script-nonzero-1" not in adapter._seen_deliveries
+
+
+# ===================================================================
 # HTTP handling
 # ===================================================================
 
@@ -1246,4 +1525,3 @@ class TestInsecureNoAuthSafetyRail:
             assert result is True
         finally:
             await adapter.disconnect()
-

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -82,6 +83,85 @@ class TestBuildChannelDirectoryWrites:
             result = load_directory()
 
         assert result == previous
+
+
+class TestBuildChannelDirectoryOffload:
+    def test_discord_builder_runs_off_event_loop_thread(self, tmp_path):
+        from gateway.config import Platform
+
+        cache_file = tmp_path / "channel_directory.json"
+        loop_thread = threading.get_ident()
+        builder_threads = []
+
+        def fake_build_discord(_adapter):
+            builder_threads.append(threading.get_ident())
+            return []
+
+        with patch("gateway.channel_directory._build_discord", side_effect=fake_build_discord), \
+             patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            asyncio.run(build_channel_directory({Platform.DISCORD: object()}))
+
+        assert builder_threads
+        assert all(tid != loop_thread for tid in builder_threads)
+
+    def test_session_discovery_runs_off_event_loop_thread(self, tmp_path):
+        from gateway.config import Platform
+
+        cache_file = tmp_path / "channel_directory.json"
+        loop_thread = threading.get_ident()
+        calls = []
+
+        def fake_build_from_sessions(platform_name):
+            calls.append((platform_name, threading.get_ident()))
+            return []
+
+        with patch("gateway.channel_directory._build_from_sessions", side_effect=fake_build_from_sessions), \
+             patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            asyncio.run(build_channel_directory({Platform.TELEGRAM: object()}))
+
+        assert [name for name, _ in calls] == ["telegram"]
+        assert calls[0][1] != loop_thread
+
+    def test_plugin_session_discovery_runs_off_event_loop_thread(self, tmp_path):
+        cache_file = tmp_path / "channel_directory.json"
+        loop_thread = threading.get_ident()
+        calls = []
+        plugin_entry = SimpleNamespace(name="irc")
+
+        def fake_build_from_sessions(platform_name):
+            calls.append((platform_name, threading.get_ident()))
+            return []
+
+        with patch("gateway.channel_directory._build_from_sessions", side_effect=fake_build_from_sessions), \
+             patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch(
+                 "gateway.platform_registry.platform_registry.plugin_entries",
+                 return_value=[plugin_entry],
+             ):
+            asyncio.run(build_channel_directory({"irc": object()}))
+
+        assert [name for name, _ in calls] == ["irc"]
+        assert calls[0][1] != loop_thread
+
+    def test_slack_session_merge_runs_off_event_loop_thread(self):
+        loop_thread = threading.get_ident()
+        calls = []
+
+        class FakeSlackClient:
+            async def users_conversations(self, **_kwargs):
+                return {"ok": True, "channels": []}
+
+        def fake_build_from_sessions(platform_name):
+            calls.append((platform_name, threading.get_ident()))
+            return [{"id": "D1", "name": "Alice", "type": "dm"}]
+
+        adapter = SimpleNamespace(_team_clients={"T1": FakeSlackClient()})
+        with patch("gateway.channel_directory._build_from_sessions", side_effect=fake_build_from_sessions):
+            channels = asyncio.run(_build_slack(adapter))
+
+        assert channels == [{"id": "D1", "name": "Alice", "type": "dm"}]
+        assert [name for name, _ in calls] == ["slack"]
+        assert calls[0][1] != loop_thread
 
 
 class TestResolveChannelName:

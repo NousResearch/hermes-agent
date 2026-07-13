@@ -180,8 +180,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   }
 
   // Selecting a MoA preset switches the session to it PERSISTENTLY, using the
-  // same path real provider selections use (config.set model="<preset>
-  // --provider moa" via onSelectModel → the gateway's persistent switch_model).
+  // same path real provider selections use (onSelectModel → config.set with
+  // --session for live sessions → the gateway's persistent switch_model).
   // Previously this dispatched the one-shot `/moa` command, which ran a single
   // turn through MoA and then silently reverted to the prior model (#54670) —
   // the dropdown presented presets like persistent selections but they weren't.

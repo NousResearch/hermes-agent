@@ -58,3 +58,28 @@ export interface QueueEditState {
 }
 
 export const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
+
+export interface PendingDraftPersist {
+  scope: string | null
+  text: string
+}
+
+/**
+ * Defense-in-depth for #54527: the debounce timer and the `pagehide` flush
+ * both write a captured `{ scope, text }` pair some time after it was
+ * scheduled. Before either commits the write, this checks the pair is still
+ * the one currently on file — i.e. nothing cleared or replaced it in the
+ * meantime (a session swap, a newer keystroke). The scope-capture fix
+ * upstream (`draftScopeRef`) already makes every captured pair correct by
+ * construction; this guard exists so that if a future change reintroduces a
+ * stale/live-ref read at one of these call sites, the write is dropped
+ * instead of silently filing one session's text under another session's key.
+ */
+export function isPendingDraftPersistCurrent(
+  pending: PendingDraftPersist | null,
+  expected: PendingDraftPersist | null
+): boolean {
+  return (
+    pending !== null && expected !== null && pending.scope === expected.scope && pending.text === expected.text
+  )
+}

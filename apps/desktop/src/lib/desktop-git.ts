@@ -1,4 +1,5 @@
 import type {
+  HermesGitBaseBranch,
   HermesGitBranch,
   HermesGitWorktree,
   HermesRepoStatus,
@@ -57,6 +58,9 @@ const remoteGit: GitBridge = {
 
   branchList: async repoPath =>
     (await gitGet<{ branches: HermesGitBranch[] }>('branches', { path: repoPath })).branches,
+
+  baseBranchList: async repoPath =>
+    (await gitGet<{ branches: HermesGitBaseBranch[] }>('base-branches', { path: repoPath })).branches,
 
   repoStatus: repoPath => gitGet<HermesRepoStatus | null>('status', { path: repoPath }),
 

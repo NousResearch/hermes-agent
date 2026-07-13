@@ -492,7 +492,11 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
     try {
       await editLearningNode(skillEditor.name, skillDraft)
-      notify({ kind: 'success', title: t.skills.skillUpdated, message: t.skills.appliesToNewSessions(skillEditor.name) })
+      notify({
+        kind: 'success',
+        title: t.skills.skillUpdated,
+        message: t.skills.appliesToNewSessions(skillEditor.name)
+      })
       setSkillEditor(null)
       void refreshCapabilities()
     } catch (err) {
@@ -577,7 +581,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                   left={sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
                   right={
                     <ListStripMenu
-                      items={[{ disabled: bulkBusy, label: t.skills.disableUnused, onSelect: () => void disableUnused() }]}
+                      items={[
+                        { disabled: bulkBusy, label: t.skills.disableUnused, onSelect: () => void disableUnused() }
+                      ]}
                       label={t.skills.tabSkills}
                       toggle={bulkSwitch(allSkillsEnabled)}
                     />

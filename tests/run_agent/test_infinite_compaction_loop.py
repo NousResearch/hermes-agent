@@ -34,6 +34,9 @@ def _make_compressor(**kwargs) -> ContextCompressor:
         quiet_mode=True,
     )
     defaults.update(kwargs)
+    # NOTE: 96K < 512K, so the small-context floor raises the effective
+    # threshold_percent to 0.75 → threshold_tokens = 72_000. Tests use
+    # 73_000 as the "over threshold" probe value.
     with patch("agent.context_compressor.get_model_context_length", return_value=96000):
         return ContextCompressor(**defaults)
 
@@ -68,14 +71,14 @@ class TestCompressNoOpRegistersIneffective:
         )
         # A large session that passes the min_for_compress check
         messages = _build_session(10, words_per_turn=10)
-        comp.last_prompt_tokens = 65_000
+        comp.last_prompt_tokens = 73_000
 
         # Mock _find_tail_cut_by_tokens to return head_end,
         # causing compress_start >= compress_end
         original = comp._find_tail_cut_by_tokens
         comp._find_tail_cut_by_tokens = lambda msgs, he: he  # force no-op
 
-        result = comp.compress(messages, current_tokens=65_000)
+        result = comp.compress(messages, current_tokens=73_000)
 
         assert comp._ineffective_compression_count >= 1, (
             f"Expected ineffective_compression_count >= 1, got {comp._ineffective_compression_count}"
@@ -88,10 +91,10 @@ class TestCompressNoOpRegistersIneffective:
             config_context_length=96000,
         )
         messages = _build_session(10, words_per_turn=10)
-        comp.last_prompt_tokens = 65_000
+        comp.last_prompt_tokens = 73_000
         comp._find_tail_cut_by_tokens = lambda msgs, he: he  # force no-op
 
-        comp.compress(messages, current_tokens=65_000)
+        comp.compress(messages, current_tokens=73_000)
 
         assert comp._last_compression_savings_pct == 0.0
 
@@ -102,14 +105,14 @@ class TestCompressNoOpRegistersIneffective:
             config_context_length=96000,
         )
         messages = _build_session(10, words_per_turn=10)
-        comp.last_prompt_tokens = 65_000
+        comp.last_prompt_tokens = 73_000
         comp._find_tail_cut_by_tokens = lambda msgs, he: he  # force no-op
 
-        comp.compress(messages, current_tokens=65_000)
-        comp.compress(messages, current_tokens=65_000)
+        comp.compress(messages, current_tokens=73_000)
+        comp.compress(messages, current_tokens=73_000)
 
         assert comp._ineffective_compression_count >= 2
-        assert not comp.should_compress(65_000), (
+        assert not comp.should_compress(73_000), (
             "should_compress should return False after 2+ ineffective compressions"
         )
 
@@ -120,11 +123,11 @@ class TestCompressNoOpRegistersIneffective:
             config_context_length=96000,
         )
         messages = _build_session(10, words_per_turn=10)
-        comp.last_prompt_tokens = 65_000
+        comp.last_prompt_tokens = 73_000
         original_cut = comp._find_tail_cut_by_tokens
         comp._find_tail_cut_by_tokens = lambda msgs, he: he  # force no-op
 
-        result = comp.compress(messages, current_tokens=65_000)
+        result = comp.compress(messages, current_tokens=73_000)
 
         assert len(result) == len(messages), (
             f"Expected unchanged message count {len(messages)}, got {len(result)}"
@@ -214,9 +217,9 @@ class TestEffectiveCompressionResetsCounter:
         )
         messages = _build_session(30, words_per_turn=100)
         comp._generate_summary = MagicMock(return_value="Compacted summary of earlier turns.")
-        comp.last_prompt_tokens = 65_000
+        comp.last_prompt_tokens = 73_000
 
-        comp.compress(messages, current_tokens=65_000)
+        comp.compress(messages, current_tokens=73_000)
 
         assert comp._ineffective_compression_count == 0, (
             f"Expected 0 ineffective compressions with effective compression, "
@@ -234,16 +237,16 @@ class TestAntiThrashing:
     def test_ineffective_count_2_blocks(self):
         """_ineffective_compression_count >= 2 -> should_compress returns False."""
         comp = _make_compressor(config_context_length=96000)
-        comp.last_prompt_tokens = 65_000
+        comp.last_prompt_tokens = 73_000
         comp._ineffective_compression_count = 2
-        assert not comp.should_compress(65_000)
+        assert not comp.should_compress(73_000)
 
     def test_ineffective_count_1_allows(self):
         """_ineffective_compression_count = 1 -> should_compress still True."""
         comp = _make_compressor(config_context_length=96000)
-        comp.last_prompt_tokens = 65_000
+        comp.last_prompt_tokens = 73_000
         comp._ineffective_compression_count = 1
-        assert comp.should_compress(65_000)
+        assert comp.should_compress(73_000)
 
     def test_below_threshold_allows(self):
         """Tokens below threshold -> should_compress returns False regardless."""
@@ -266,20 +269,75 @@ class TestCooldownGuard:
         """A future cooldown deadline -> should_compress returns False even
         when tokens are over threshold."""
         comp = _make_compressor(config_context_length=96000)
-        comp.last_prompt_tokens = 65_000
+        comp.last_prompt_tokens = 73_000
         comp._summary_failure_cooldown_until = time.monotonic() + 60
-        assert not comp.should_compress(65_000)
+        assert not comp.should_compress(73_000)
 
     def test_expired_cooldown_allows(self):
         """A past cooldown deadline -> compression resumes normally."""
         comp = _make_compressor(config_context_length=96000)
-        comp.last_prompt_tokens = 65_000
+        comp.last_prompt_tokens = 73_000
         comp._summary_failure_cooldown_until = time.monotonic() - 1
-        assert comp.should_compress(65_000)
+        assert comp.should_compress(73_000)
 
     def test_no_cooldown_allows(self):
         """The default (no cooldown set) does not block compression."""
         comp = _make_compressor(config_context_length=96000)
-        comp.last_prompt_tokens = 65_000
+        comp.last_prompt_tokens = 73_000
         assert comp._summary_failure_cooldown_until == 0.0
-        assert comp.should_compress(65_000)
+        assert comp.should_compress(73_000)
+
+
+# ---------------------------------------------------------------------------
+# Test: #48621 — gpt-5.3-codex-spark short-session boundary
+#
+# Issue #48621 Bug 2 claims that a short high-token session (15-20 messages,
+# ~90k tokens on a 128k model with protect_last_n=20) hits
+# compress_start >= compress_end, causing a silent context wipe.  The
+# raw-budget fallback added in the #40803 fix already mitigates this: the
+# boundary logic always exposes a minimal compressible window.  This test
+# locks that behavior in for the exact #48621 parameters.
+# ---------------------------------------------------------------------------
+
+class TestCodexSparkShortSessionBoundary:
+    """Verify that gpt-5.3-codex-spark's short-session scenario always yields
+    a non-empty compressible window (no silent wipe)."""
+
+    def test_short_high_token_session_has_compressible_window(self):
+        """16 messages with large tool outputs on a 128k model must leave
+        a compressible middle (compress_start < compress_end)."""
+        comp = _make_compressor(
+            model="gpt-5.3-codex-spark",
+            threshold_percent=0.70,
+            protect_first_n=3,
+            protect_last_n=20,
+            config_context_length=128000,
+        )
+        # Build system + 3 head pairs + 3 tool groups (large outputs) + tail pair
+        big_tool = "x" * 20000  # ~5k tokens each
+        messages = [{"role": "system", "content": "You are a helpful agent."}]
+        for i in range(3):
+            messages.append({"role": "user", "content": f"Question {i}"})
+            messages.append({"role": "assistant", "content": f"Answer {i}"})
+        for i in range(3):
+            messages.append({"role": "user", "content": f"Run command {i}"})
+            messages.append({
+                "role": "assistant", "content": "",
+                "tool_calls": [{
+                    "id": f"tc{i}", "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }],
+            })
+            messages.append({"role": "tool", "tool_call_id": f"tc{i}", "content": big_tool})
+        messages.append({"role": "user", "content": "Final question"})
+        messages.append({"role": "assistant", "content": "Final answer"})
+
+        head = comp._protect_head_size(messages)
+        compress_start = comp._align_boundary_forward(messages, head)
+        compress_end = comp._find_tail_cut_by_tokens(messages, compress_start)
+
+        assert compress_start < compress_end, (
+            f"No compressible window: start={compress_start}, end={compress_end}. "
+            f"This would cause the silent context wipe described in #48621."
+        )
+        assert comp.has_content_to_compress(messages) is True

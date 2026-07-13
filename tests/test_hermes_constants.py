@@ -483,10 +483,10 @@ class TestParseReasoningEffort:
         """Guard against silently dropping a documented level.
 
         The docstring promises "minimal", "low", "medium", "high", "xhigh",
-        "max". If someone removes one from VALID_REASONING_EFFORTS without
+        "max", "ultra". If someone removes one from VALID_REASONING_EFFORTS without
         updating the docstring, this test will fail and force the call out.
         """
-        documented = {"minimal", "low", "medium", "high", "xhigh", "max"}
+        documented = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
 
 
@@ -834,3 +834,38 @@ class TestGetHermesDir:
         legacy.symlink_to(empty)
         result = get_hermes_dir("cache/audio", "audio_cache")
         assert result == tmp_path / "cache/audio"
+
+
+class TestWslPathTranslation:
+    """Cross-boundary path translation for a Windows-host UI + WSL backend."""
+
+    def test_windows_drive_to_wsl_mount(self):
+        assert hermes_constants.windows_path_to_wsl(r"C:\Users\alex") == "/mnt/c/Users/alex"
+        assert hermes_constants.windows_path_to_wsl("C:/Users/alex") == "/mnt/c/Users/alex"
+        assert hermes_constants.windows_path_to_wsl("D:\\") == "/mnt/d/"
+
+    def test_windows_drive_ignores_non_drive_paths(self):
+        assert hermes_constants.windows_path_to_wsl("/home/alex") is None
+        assert hermes_constants.windows_path_to_wsl("relative\\dir") is None
+
+    def test_wsl_unc_to_posix_both_spellings(self):
+        assert hermes_constants.wsl_unc_path_to_posix(r"\\wsl.localhost\Ubuntu\home\alex") == "/home/alex"
+        assert hermes_constants.wsl_unc_path_to_posix(r"\\wsl$\Ubuntu\home\alex") == "/home/alex"
+        # Forward-slash spelling and distro root.
+        assert hermes_constants.wsl_unc_path_to_posix("//wsl.localhost/Debian/srv/app") == "/srv/app"
+        assert hermes_constants.wsl_unc_path_to_posix("\\\\wsl.localhost\\Ubuntu\\") == "/"
+
+    def test_wsl_unc_ignores_non_unc_paths(self):
+        assert hermes_constants.wsl_unc_path_to_posix(r"C:\Users\alex") is None
+        assert hermes_constants.wsl_unc_path_to_posix("/home/alex") is None
+
+    def test_translate_is_noop_off_wsl(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: False)
+        assert hermes_constants.translate_cwd_for_wsl_backend(r"C:\Users\alex") == r"C:\Users\alex"
+
+    def test_translate_maps_windows_and_unc_on_wsl(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        assert hermes_constants.translate_cwd_for_wsl_backend(r"C:\Users\alex") == "/mnt/c/Users/alex"
+        assert hermes_constants.translate_cwd_for_wsl_backend(r"\\wsl.localhost\Ubuntu\home\alex") == "/home/alex"
+        # Already-POSIX paths pass through untouched.
+        assert hermes_constants.translate_cwd_for_wsl_backend("/home/alex") == "/home/alex"

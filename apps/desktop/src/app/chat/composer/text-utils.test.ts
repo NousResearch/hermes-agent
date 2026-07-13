@@ -46,6 +46,14 @@ describe('detectTrigger', () => {
     expect(detectTrigger('/path/to/file')).toBeNull()
   })
 
+  it('does not trigger slash popover mid-message', () => {
+    expect(detectTrigger('hello /')).toBeNull()
+    expect(detectTrigger('hello /skill')).toBeNull()
+    expect(detectTrigger('hello there /personality alic')).toBeNull()
+    expect(detectTrigger('text\n/skill')).toBeNull()
+    expect(detectTrigger('multi word message /')).toBeNull()
+  })
+
   it('still anchors at-mention triggers strictly at the token edge', () => {
     expect(detectTrigger('@file:path with space')).toBeNull()
   })

@@ -105,22 +105,25 @@ def _make_parent_no_subagents() -> MagicMock:
 
 
 class TestSessionHasCompressionInFlight:
-    def test_returns_false_without_session_store(self) -> None:
+    @pytest.mark.asyncio
+    async def test_returns_false_without_session_store(self) -> None:
         runner = _make_runner()
         runner.session_store = None
-        assert runner._session_has_compression_in_flight("sk") is False
+        assert await runner._session_has_compression_in_flight("sk") is False
 
-    def test_returns_true_when_lock_held(self) -> None:
+    @pytest.mark.asyncio
+    async def test_returns_true_when_lock_held(self) -> None:
         runner = _make_runner()
         sk = build_session_key(_make_event().source)
         runner._session_db._db.get_compression_lock_holder.return_value = "holder-1"
-        assert runner._session_has_compression_in_flight(sk) is True
+        assert await runner._session_has_compression_in_flight(sk) is True
 
-    def test_returns_false_when_lock_free(self) -> None:
+    @pytest.mark.asyncio
+    async def test_returns_false_when_lock_free(self) -> None:
         runner = _make_runner()
         sk = build_session_key(_make_event().source)
         runner._session_db._db.get_compression_lock_holder.return_value = None
-        assert runner._session_has_compression_in_flight(sk) is False
+        assert await runner._session_has_compression_in_flight(sk) is False
 
 
 class TestBusyHandlerDemotesInterruptForCompression:

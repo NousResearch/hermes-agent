@@ -150,6 +150,18 @@ class TestLoadConfigCacheEnvStaleness:
 class TestLoadCliConfigExpansion:
     """Verify that load_cli_config() also expands ${VAR} references."""
 
+    def test_cli_config_ignores_empty_terminal_section(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("terminal:\n")
+
+        monkeypatch.setattr("cli._hermes_home", tmp_path)
+
+        from cli import load_cli_config
+        config = load_cli_config()
+
+        assert isinstance(config["terminal"], dict)
+        assert config["terminal"]["env_type"] == "local"
+
     def test_cli_config_expands_auxiliary_api_key(self, tmp_path, monkeypatch):
         config_yaml = (
             "auxiliary:\n"

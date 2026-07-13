@@ -60,6 +60,42 @@ def _segments(path: str) -> list[str]:
     return [s for s in re.split(r"[/\\]", (path or "").rstrip("/\\")) if s]
 
 
+def _is_windows_path(path: str) -> bool:
+    value = (path or "").strip()
+    # Drive-letter (`C:\…`), UNC (`\\srv`, `//srv`), or any backslash-rooted path
+    # — the root-relative `\wsl.localhost\…` / `\Users\…` spellings included. A
+    # single leading `/` stays POSIX (case-sensitive).
+    return bool(re.match(r"^[A-Za-z]:[/\\]", value)) or value.startswith(("\\", "//"))
+
+
+def _comparison_segments(path: str) -> list[str]:
+    """Path segments suitable for identity comparisons on any host.
+
+    Windows paths remain case-insensitive even when tests or remote backends run
+    on POSIX. Display paths and emitted IDs keep their original spelling.
+    """
+    segs = _segments(path)
+    return [segment.casefold() for segment in segs] if _is_windows_path(path) else segs
+
+
+def _path_key(path: str) -> str:
+    """Canonical comparison key (separator/trailing-slash agnostic)."""
+    return "/".join(_comparison_segments(path))
+
+
+def _lane_key(path_or_lane: str) -> str:
+    """Canonicalize only the path portion of a lane id.
+
+    Branch labels remain byte-preserved; repo/worktree paths follow platform path
+    identity so equivalent Windows spellings do not create duplicate lanes.
+    """
+    for marker in ("::branch::", "::kanban"):
+        if marker in path_or_lane:
+            root, suffix = path_or_lane.split(marker, 1)
+            return f"{_path_key(root)}{marker}{suffix}"
+    return _path_key(path_or_lane)
+
+
 def base_name(path: str) -> str:
     segs = _segments(path)
     return segs[-1] if segs else ""
@@ -73,8 +109,8 @@ def kanban_worktree_dir(path: str) -> Optional[str]:
 
 def _is_path_under(folder: str, target: str) -> bool:
     """True when ``target`` equals ``folder`` or is nested under it (segment-wise)."""
-    f = _segments(folder)
-    t = _segments(target)
+    f = _comparison_segments(folder)
+    t = _comparison_segments(target)
     if not f or len(f) > len(t):
         return False
     return all(f[i] == t[i] for i in range(len(f)))
@@ -249,7 +285,8 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
         if not placement:
             continue
 
-        entry = lanes.get(placement["lane_key"])
+        lane_identity = _lane_key(placement["lane_key"])
+        entry = lanes.get(lane_identity)
         if entry is None:
             entry = {
                 "group": {
@@ -264,7 +301,7 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
                 "repo_label": placement["repo_label"],
                 "repo_path": placement["repo_path"],
             }
-            lanes[placement["lane_key"]] = entry
+            lanes[lane_identity] = entry
         entry["group"]["sessions"].append(session)
 
     repos: dict[str, dict] = {}
@@ -275,7 +312,8 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
         if not hydrate:
             group["sessions"] = []
 
-        repo = repos.get(entry["repo_key"])
+        repo_identity = _path_key(entry["repo_key"])
+        repo = repos.get(repo_identity)
         if repo is None:
             repo = {
                 "id": entry["repo_key"],
@@ -284,7 +322,7 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
                 "groups": [],
                 "sessionCount": 0,
             }
-            repos[entry["repo_key"]] = repo
+            repos[repo_identity] = repo
         repo["groups"].append(group)
         repo["sessionCount"] += count
 
@@ -311,7 +349,12 @@ def _seed_folder_repos(
     empty) project body. Folders already covered by a session-derived repo (same
     git root) are left untouched.
     """
-    seen = {r["id"] for r in repos} | {r["path"] for r in repos if r.get("path")}
+    seen = {
+        _path_key(value)
+        for repo in repos
+        for value in (repo.get("id"), repo.get("path"))
+        if value
+    }
     seeded = list(repos)
 
     for folder in folders or []:
@@ -320,10 +363,11 @@ def _seed_folder_repos(
             continue
         info = resolve(raw) if resolve else None
         root = (info or {}).get("repo_root") or re.sub(r"[/\\]+$", "", raw)
-        if not root or root in seen:
+        root_key = _path_key(root)
+        if not root_key or root_key in seen:
             continue
         seeded.append({"id": root, "label": base_name(root) or root, "path": root, "groups": [], "sessionCount": 0})
-        seen.add(root)
+        seen.add(root_key)
 
     if len(seeded) != len(repos):
         _disambiguate_labels(seeded)
@@ -347,7 +391,7 @@ class _FolderIndex:
         self._by_path: dict[str, tuple[dict, int]] = {}
         for project in projects:
             for folder in project.get("folders") or []:
-                segs = _segments(folder.get("path") or "")
+                segs = _comparison_segments(folder.get("path") or "")
                 if not segs:
                     continue
                 key = "/".join(segs)
@@ -359,7 +403,7 @@ class _FolderIndex:
 
     def match(self, target: str) -> tuple[Optional[dict], int]:
         """Owning project for ``target`` by longest ancestor folder, + its depth."""
-        segs = _segments(target or "")
+        segs = _comparison_segments(target or "")
         # Longest prefix first → deepest (most specific) folder wins.
         for end in range(len(segs), 0, -1):
             hit = self._by_path.get("/".join(segs[:end]))
@@ -430,6 +474,7 @@ def build_tree(
     preview_limit: int = 3,
     hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
+    is_junk_cwd: Optional[Callable[[str], bool]] = None,
 ) -> dict:
     """Build the authoritative project tree.
 
@@ -437,9 +482,11 @@ def build_tree(
     ``sessions`` are projected session-row dicts (must carry ``id``, ``cwd``,
     ``git_branch``, ``git_repo_root``, ``started_at``, ``last_active``).
     ``discovered_repos`` are ``{"root", "label", "sessions", "last_active"}``.
-    ``is_junk_root`` flags roots that must never become an AUTO project (the
-    bare home dir, the HERMES_HOME subtree) — their sessions fall through to the
-    flat Recents list. User-created projects are honored regardless.
+    ``is_junk_root`` flags git roots that must never become an AUTO project (the
+    bare home dir, the HERMES_HOME subtree). ``is_junk_cwd`` is the narrower
+    policy for non-git session folders: selected descendants may be intentional
+    workspaces even when their parent tree contains Hermes state. User-created
+    projects are honored regardless.
 
     Returns ``{"projects": [...], "scoped_session_ids": [...]}``. When
     ``hydrate`` is False (overview), lane ``sessions`` arrays are emptied but
@@ -448,6 +495,7 @@ def build_tree(
     """
     active_projects = [p for p in projects if not p.get("archived")]
     _junk = is_junk_root or (lambda _root: False)
+    _junk_cwd = is_junk_cwd or (lambda _cwd: False)
     folder_index = _FolderIndex(active_projects)
 
     by_project: dict[str, list[dict]] = {}
@@ -493,34 +541,67 @@ def build_tree(
             )
         )
 
-    # Tier 2: auto projects from leftover sessions, one per common git repo root.
-    by_repo: dict[str, list[dict]] = {}
+    # Tier 2: auto projects from leftover sessions. Prefer the common git repo
+    # root, then fall back to the session cwd for historical/non-git workspaces.
+    # The pre-Projects desktop grouped every non-empty cwd; keeping that fallback
+    # prevents upgrades from flattening those sessions into Recents.
+    by_auto_root: dict[str, dict] = {}
+
+    def _add_auto(root: str, session: dict) -> None:
+        key = _path_key(root)
+        if not key:
+            return
+        bucket = by_auto_root.setdefault(key, {"root": root, "sessions": []})
+        bucket["sessions"].append(session)
+
     for session in unowned:
         root = _session_repo_root(session, resolve)
         if root:
-            by_repo.setdefault(root, []).append(session)
+            # A real git root uses the stricter repo policy. Do not reinterpret a
+            # filtered internal repo as a cwd-only project.
+            if not _junk(root):
+                _add_auto(root, session)
+            continue
+
+        cwd = (session.get("cwd") or "").strip()
+        if not cwd or _junk_cwd(cwd):
+            continue
+        placement = _place(
+            cwd,
+            (session.get("git_branch") or "").strip(),
+            resolve,
+            (session.get("git_repo_root") or "").strip(),
+        )
+        if placement:
+            _add_auto(placement["repo_key"], session)
 
     seen: set[str] = set()
-    for repo_root, repo_sessions in by_repo.items():
-        # The home dir / HERMES_HOME subtree is config + state, never a project;
-        # its sessions stay loose in Recents (not scoped to a phantom project).
-        if _junk(repo_root):
-            continue
-        repos = _build_repos(repo_sessions, resolve, hydrate)
-        repo_node = next((r for r in repos if r["id"] == repo_root or r["path"] == repo_root), None)
+    for bucket in by_auto_root.values():
+        auto_root = bucket["root"]
+        auto_sessions = bucket["sessions"]
+        auto_key = _path_key(auto_root)
+        repos = _build_repos(auto_sessions, resolve, hydrate)
+        repo_node = next(
+            (
+                repo
+                for repo in repos
+                if _path_key(repo.get("id") or repo.get("path") or "") == auto_key
+            ),
+            None,
+        )
         if repo_node is None:
             continue
-        seen.add(repo_root)
-        scoped_ids.extend(s["id"] for s in repo_sessions if s.get("id"))
+        seen.add(auto_key)
+        scoped_ids.extend(s["id"] for s in auto_sessions if s.get("id"))
         result.append(
             _project_node(
-                pid=repo_root,
-                label=base_name(repo_root) or repo_root,
-                path=repo_root,
+                pid=auto_root,
+                label=base_name(auto_root) or auto_root,
+                path=auto_root,
                 repos=repos,
                 session_count=repo_node["sessionCount"],
-                last_active=_last_active(repo_sessions),
-                preview_sessions=_previews(repo_sessions),
+                last_active=_last_active(auto_sessions),
+                preview_sessions=_previews(auto_sessions),
                 is_auto=True,
             )
         )
@@ -533,9 +614,10 @@ def build_tree(
             continue
         info = resolve(raw_root) if resolve else None
         root = (info or {}).get("repo_root") or raw_root
-        if root in seen or _junk(root) or _project_for_path(folder_index, root):
+        root_key = _path_key(root)
+        if root_key in seen or _junk(root) or _project_for_path(folder_index, root):
             continue
-        seen.add(root)
+        seen.add(root_key)
         label = repo.get("label") or base_name(root) or root
         result.append(
             _project_node(

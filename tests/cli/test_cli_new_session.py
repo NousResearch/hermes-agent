@@ -175,6 +175,87 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     cli.agent._invalidate_system_prompt.assert_called_once()
 
 
+def test_new_session_queues_boundary_commit_with_snapshot(tmp_path):
+    """/new hands the OLD session's history + ids to the memory manager's
+    serialized boundary task instead of blocking on extraction inline."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    mm = MagicMock()
+    cli.agent._memory_manager = mm
+
+    cli.process_command("/new")
+
+    mm.commit_session_boundary_async.assert_called_once()
+    args, kwargs = mm.commit_session_boundary_async.call_args
+    assert args[0] == [{"role": "user", "content": "hello"}]
+    assert kwargs["new_session_id"] == cli.session_id
+    assert kwargs["parent_session_id"] == old_session_id
+    assert kwargs["reason"] == "new_session"
+    # The queued path replaces the inline switch — not both.
+    mm.on_session_switch.assert_not_called()
+
+
+def test_new_session_without_history_switches_inline(tmp_path):
+    """No old-session history → nothing to extract → plain inline switch."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+    cli.conversation_history = []
+
+    mm = MagicMock()
+    cli.agent._memory_manager = mm
+
+    cli.process_command("/new")
+
+    mm.commit_session_boundary_async.assert_not_called()
+    mm.on_session_switch.assert_called_once()
+    _, kwargs = mm.on_session_switch.call_args
+    assert kwargs["reset"] is True
+
+
+def test_new_session_delivers_context_engine_boundary_synchronously(tmp_path):
+    """The context-engine on_session_end must fire during /new itself.
+
+    It is cheap local state work and ordering-sensitive: it must land before
+    reset_session_state() rebinds the engine to the new session. The LLM-bound
+    provider extraction is what gets deferred, not this."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    engine_calls = []
+    cli.agent.context_compressor.on_session_end = (
+        lambda sid, msgs: engine_calls.append((sid, list(msgs)))
+    )
+
+    cli.process_command("/new")
+
+    assert engine_calls == [(old_session_id, [{"role": "user", "content": "hello"}])]
+
+
+def test_run_cleanup_flushes_pending_memory_manager_work(tmp_path):
+    """A '/new then quit' must not drop the queued old-session extraction.
+
+    _run_cleanup gives the manager's serialized worker a bounded drain via
+    flush_pending() before shutdown_all()'s short-fuse drain runs."""
+    import cli as _cli_mod
+
+    agent = MagicMock()
+    mm = MagicMock()
+    mm.flush_pending.return_value = True
+    agent._memory_manager = mm
+    agent._session_messages = []
+
+    old_ref = _cli_mod._active_agent_ref
+    _cli_mod._active_agent_ref = agent
+    _cli_mod._cleanup_done = False
+    try:
+        _cli_mod._run_cleanup(notify_session_finalize=False)
+    finally:
+        _cli_mod._cleanup_done = True
+        _cli_mod._active_agent_ref = old_ref
+
+    mm.flush_pending.assert_called_once_with(timeout=10)
+
+
 def test_new_command_rotates_hermes_session_id_env_and_context(tmp_path):
     from gateway.session_context import _VAR_MAP, get_session_env
 

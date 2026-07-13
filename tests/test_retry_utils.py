@@ -210,3 +210,51 @@ def test_non_zai_backoff_returns_default_wait():
     )
     assert wait == 12.0
     assert policy is None
+
+
+def test_zai_overload_retry_ceiling_exceeds_short_attempts():
+    """Invariant: the ceiling must sit above the short-retry threshold, or the
+    long-backoff tier is unreachable and the whole schedule is dead code
+    (the original bug: default api_max_retries == short_attempts == 3)."""
+    from agent.retry_utils import (
+        zai_coding_overload_retry_ceiling,
+        _ZAI_CODING_OVERLOAD_LONG_BACKOFF,
+    )
+
+    short_attempts = 3
+    ceiling = zai_coding_overload_retry_ceiling(short_attempts)
+    assert ceiling > short_attempts
+    # Invariant (not a formula mirror): the loop's give-up check
+    # (retry_count >= ceiling) runs *before* the attempt's backoff, so the
+    # ceiling must leave headroom for every long-backoff entry to execute —
+    # i.e. the largest attempt the loop still computes backoff for
+    # (ceiling - 1) must reach the final long-tier index.
+    last_attempt_with_backoff = ceiling - 1
+    assert last_attempt_with_backoff - short_attempts >= len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF)
+
+
+def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
+    """End-to-end over the attempt range the retry loop actually walks: with the
+    extended ceiling, at least one attempt reaches the long-backoff tier and the
+    full 30/60/90/120s schedule is exercised."""
+    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
+    from agent.retry_utils import zai_coding_overload_retry_ceiling
+
+    err = _zai_overload_error()
+    ceiling = zai_coding_overload_retry_ceiling()
+
+    long_waits = []
+    # The loop computes backoff for attempts 1..ceiling-1 (it gives up at ceiling).
+    for attempt in range(1, ceiling):
+        _wait, policy = adaptive_rate_limit_backoff(
+            attempt,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            model="glm-5.2",
+            error=err,
+            default_wait=1.0,
+        )
+        if policy == "zai_coding_overload_long":
+            long_waits.append(_wait)
+
+    assert long_waits, "long-backoff tier never reached within the retry ceiling"
+    assert long_waits == [30.0, 60.0, 90.0, 120.0]

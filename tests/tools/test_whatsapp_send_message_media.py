@@ -219,3 +219,78 @@ def test_text_only_unchanged_behavior():
         "message_id": "t1",
     }
     assert len(calls) == 1 and calls[0][0].endswith("/send")
+
+
+def test_caption_rides_media_no_separate_text_send():
+    """MEDIA:<path> caption -> single /send-media with caption, no /send."""
+    img = _tmpfile(".png")
+    try:
+        session_ctx, calls = _session_with([_resp(200, {"messageId": "m1"})])
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            res = asyncio.run(
+                _standalone_send(
+                    _pconfig(),
+                    "12345",
+                    "",
+                    media_files=[(img, False)],
+                    caption="2-bedroom floor plan",
+                )
+            )
+        assert res["success"] is True
+        # No separate /send — exactly one /send-media carrying the caption.
+        assert len(calls) == 1
+        assert calls[0][0].endswith("/send-media")
+        assert calls[0][1]["caption"] == "2-bedroom floor plan"
+        assert calls[0][1]["mediaType"] == "image"
+    finally:
+        os.unlink(img)
+
+
+def test_caption_ignored_for_multi_file_send():
+    """A caption never rides a multi-file send (association is ambiguous)."""
+    img = _tmpfile(".png")
+    img2 = _tmpfile(".jpg")
+    try:
+        session_ctx, calls = _session_with(
+            [_resp(200, {"messageId": "m1"}), _resp(200, {"messageId": "m2"})]
+        )
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            res = asyncio.run(
+                _standalone_send(
+                    _pconfig(),
+                    "12345",
+                    "",
+                    media_files=[(img, False), (img2, False)],
+                    caption="should be ignored",
+                )
+            )
+        assert res["success"] is True
+        media_calls = [c for c in calls if c[0].endswith("/send-media")]
+        assert len(media_calls) == 2
+        assert all("caption" not in c[1] for c in media_calls)
+    finally:
+        os.unlink(img)
+        os.unlink(img2)
+
+
+def test_missing_captioned_file_falls_back_to_text():
+    """If the single captioned file is missing, the caption is delivered as a
+    plain /send message rather than being silently lost (W1)."""
+    session_ctx, calls = _session_with([_resp(200, {"messageId": "t1"})])
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        res = asyncio.run(
+            _standalone_send(
+                _pconfig(),
+                "12345",
+                "",
+                media_files=[("/no/such/file.png", False)],
+                caption="floor plan",
+            )
+        )
+    # The send still surfaces the missing-file error...
+    assert "error" in res
+    assert "not found" in res["error"]
+    # ...but the caption text was delivered on its own first.
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/send")
+    assert calls[0][1]["message"] == "floor plan"

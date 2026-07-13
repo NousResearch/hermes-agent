@@ -61,6 +61,21 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 
 
 logger = logging.getLogger(__name__)
+DBHUB_COUNCIL_REPLY_WEBHOOK_URL = os.getenv(
+    "DBHUB_COUNCIL_REPLY_WEBHOOK_URL",
+    "http://100.120.46.116:8787/council-reply",
+)
+DBHUB_COUNCIL_REPLY_TIMEOUT_SECONDS = float(
+    os.getenv("DBHUB_COUNCIL_REPLY_TIMEOUT_SECONDS", "1900")
+)
+DBHUB_COUNCIL_COMMAND_RE = re.compile(
+    r"(^|\s)(review|approve\s+codex|run\s+codex|rerun\s+codex|restart\s+codex|fresh\s+codex|codex|approve|handoff|codex\s+handoff|desktop\s+handoff|more|details|explain|skip|ack|ignore)(\s|$)",
+    re.I,
+)
+SLACK_FREEFORM_MENTION_DISABLED_TEXT = os.getenv(
+    "HERMES_SLACK_FREEFORM_MENTION_DISABLED_TEXT",
+    "Hermes free-form Slack mentions are disabled for DBhub operations. Copy the DBhub Council handoff block into Codex Desktop instead.",
+)
 
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
@@ -2883,6 +2898,28 @@ class SlackAdapter(BasePlatformAdapter):
                     for t in to_remove:
                         self._mentioned_threads.discard(t)
 
+        if (
+            is_mentioned
+            and await self._maybe_handle_dbhub_council_reply(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts if is_thread_reply else ts,
+                message_ts=ts,
+                text=original_text,
+            )
+        ):
+            return
+
+        if (
+            is_mentioned
+            and not is_dm
+            and not self._slack_freeform_mentions_enabled()
+            and not text.startswith("/")
+        ):
+            await self._post_freeform_mention_disabled_notice(
+                channel_id, event_thread_ts if is_thread_reply else ts
+            )
+            return
+
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
         if is_thread_reply and not self._has_active_session_for_thread(
@@ -3234,6 +3271,144 @@ class SlackAdapter(BasePlatformAdapter):
             self._reacting_message_ids.add(ts)
 
         await self.handle_message(msg_event)
+
+    async def _maybe_handle_dbhub_council_reply(
+        self,
+        *,
+        channel_id: str,
+        thread_ts: str,
+        message_ts: str = "",
+        text: str,
+    ) -> bool:
+        """Route DBhub Council action-thread replies to the DBhub bridge."""
+        token = self._dbhub_council_webhook_token()
+        if not token or not channel_id or not thread_ts or not text:
+            return False
+        council_command = self._looks_like_dbhub_council_command(text)
+        payload = {
+            "channel": channel_id,
+            "thread_ts": thread_ts,
+            "message_ts": message_ts,
+            "text": text,
+        }
+        try:
+            async with aiohttp.ClientSession(trust_env=True) as session:
+                async with session.post(
+                    DBHUB_COUNCIL_REPLY_WEBHOOK_URL,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=aiohttp.ClientTimeout(
+                        total=DBHUB_COUNCIL_REPLY_TIMEOUT_SECONDS
+                    ),
+                ) as resp:
+                    try:
+                        data = await resp.json()
+                    except Exception:
+                        logger.warning(
+                            "[Slack] DBhub Council reply route returned non-JSON status=%s",
+                            resp.status,
+                        )
+                        return False
+        except Exception as exc:
+            logger.warning("[Slack] DBhub Council reply route failed: %r", exc)
+            if council_command:
+                try:
+                    await self._get_client(channel_id).chat_postMessage(
+                        channel=channel_id,
+                        text="DBhub Council route failed before I could complete the handoff. Check the Hermes queue webhook logs before retrying.",
+                        thread_ts=thread_ts,
+                        unfurl_links=False,
+                        unfurl_media=False,
+                    )
+                except Exception as post_exc:
+                    logger.warning(
+                        "[Slack] failed to post DBhub Council route failure: %s",
+                        post_exc,
+                    )
+                return True
+            return False
+
+        if data.get("reason") == "action_not_found":
+            if council_command:
+                await self._post_freeform_mention_disabled_notice(channel_id, thread_ts)
+                return True
+            return False
+        if not data.get("handled"):
+            return False
+        reply_text = str(data.get("reply_text") or "").strip()
+        if not reply_text:
+            return False
+        reply_channel = str(data.get("reply_channel") or channel_id)
+        reply_thread_ts = str(data.get("reply_thread_ts") or thread_ts)
+        try:
+            await self._get_client(reply_channel).chat_postMessage(
+                channel=reply_channel,
+                text=reply_text,
+                thread_ts=reply_thread_ts,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+            return True
+        except Exception as exc:
+            logger.warning("[Slack] failed to post DBhub Council route reply: %s", exc)
+            return False
+
+    def _looks_like_dbhub_council_command(self, text: str) -> bool:
+        stripped = re.sub(
+            r"<@[A-Z0-9]+>|@TCIA-HM\s+Agent|@Hermes|@DBhub",
+            "",
+            text or "",
+            flags=re.I,
+        ).strip()
+        return bool(DBHUB_COUNCIL_COMMAND_RE.search(stripped))
+
+    def _slack_freeform_mentions_enabled(self) -> bool:
+        value = str(
+            self.config.extra.get(
+                "freeform_mentions_enabled",
+                os.getenv("HERMES_SLACK_FREEFORM_MENTIONS_ENABLED", "0"),
+            )
+        ).strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
+    async def _post_freeform_mention_disabled_notice(
+        self, channel_id: str, thread_ts: str
+    ) -> None:
+        if not channel_id or not thread_ts:
+            return
+        try:
+            await self._get_client(channel_id).chat_postMessage(
+                channel=channel_id,
+                text=SLACK_FREEFORM_MENTION_DISABLED_TEXT,
+                thread_ts=thread_ts,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Slack] failed to post disabled free-form mention notice: %s", exc
+            )
+
+    def _dbhub_council_webhook_token(self) -> str:
+        token = os.getenv("HERMES_QUEUE_WEBHOOK_TOKEN", "").strip()
+        if token:
+            return token
+        for path in (
+            "/home/admin1/.config/hermes/queue-webhook.env",
+            "/home/admin1/dbhub-core/projects/dbhub-plane-loader/.env",
+        ):
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    for raw in handle:
+                        line = raw.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        key, value = line.split("=", 1)
+                        if key.strip() == "HERMES_QUEUE_WEBHOOK_TOKEN":
+                            return value.strip().strip("'\"")
+            except OSError:
+                continue
+        return ""
 
     # ----- Approval button support (Block Kit) -----
 

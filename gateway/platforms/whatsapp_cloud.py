@@ -758,9 +758,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         # Mirror Telegram: render full choice text in body so long
         # options aren't truncated to the 20-char button label cap.
-        # Truncate choices to MAX_CHOICES (4) — the tool layer enforces
-        # this already, but be defensive.
-        choices_list = [str(c).strip() for c in choices[:10] if str(c).strip()]
+        # WhatsApp list messages allow 10 rows total. Reserve one row for
+        # the "Other" escape hatch so max-size clarify prompts still fit.
+        choices_limit = 10 if len(choices) <= 3 else 9
+        choices_list = [
+            str(c).strip() for c in choices[:choices_limit] if str(c).strip()
+        ]
         option_lines = "\n".join(
             f"{i + 1}. {c}" for i, c in enumerate(choices_list)
         )

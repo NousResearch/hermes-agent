@@ -1665,6 +1665,33 @@ class TestSendClarifyButtons:
         assert "Other" in rows[4]["title"]
 
     @pytest.mark.asyncio
+    async def test_ten_choices_list_mode_reserves_row_for_other(self):
+        """WhatsApp list messages cap at 10 rows including Other."""
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "wamid.q10"}]})
+        )
+
+        result = await adapter.send_clarify(
+            chat_id="15551234567",
+            question="Pick one",
+            choices=[f"Choice {i}" for i in range(1, 11)],
+            clarify_id="q10",
+            session_key="sess-10",
+        )
+
+        assert result.success
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert payload["interactive"]["type"] == "list"
+        rows = payload["interactive"]["action"]["sections"][0]["rows"]
+        assert len(rows) == 10
+        assert rows[0]["id"] == "cl:q10:0"
+        assert rows[8]["id"] == "cl:q10:8"
+        assert rows[9]["id"] == "cl:q10:other"
+        assert "Other" in rows[9]["title"]
+
+    @pytest.mark.asyncio
     async def test_open_ended_falls_back_to_plain_text(self):
         """No choices → plain text send, no interactive payload."""
         adapter = _make_adapter()

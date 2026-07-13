@@ -106,9 +106,9 @@ class _Runtime:
                     )
             else:
                 logger.warning(
-                    "NeMo Relay dynamic plugins require nemo-relay>=0.6,<0.7; this binding does "
-                    "not expose plugin.activate_dynamic_plugins. Continuing with static "
-                    "observability only."
+                    "NeMo Relay dynamic plugins require a binding that exposes "
+                    "plugin.activate_dynamic_plugins (available in NeMo Relay 0.6+). "
+                    "Continuing with static observability only."
                 )
         initialize = getattr(plugin_mod, "initialize", None)
         if not callable(initialize):
@@ -774,7 +774,7 @@ def _load_settings() -> _Settings:
     return _Settings(
         plugins_toml_path=plugins_toml_path,
         plugins_config=plugins_config,
-        dynamic_plugins=_dynamic_plugin_specs(plugins_config),
+        dynamic_plugins=_dynamic_plugin_specs(plugins_config, plugins_toml_path),
         adaptive_enabled=adaptive_config is not None,
         adaptive_mode=_adaptive_mode(adaptive_config),
         atof_enabled=_env_bool("HERMES_NEMO_RELAY_ATOF_ENABLED"),
@@ -792,14 +792,40 @@ def _load_settings() -> _Settings:
 
 
 def _static_plugin_config(plugins_config: dict[str, Any]) -> dict[str, Any]:
-    """Return Relay's base plugin config without Hermes-owned host fields."""
-    return {key: value for key, value in plugins_config.items() if key != "dynamic_plugins"}
+    """Return Relay's base config without embedding- or gateway-host fields."""
+    return {
+        key: value
+        for key, value in plugins_config.items()
+        if key not in {"dynamic_plugins", "plugins"}
+    }
 
 
-def _dynamic_plugin_specs(plugins_config: dict[str, Any] | None) -> list[dict[str, Any]]:
+def _dynamic_plugin_specs(
+    plugins_config: dict[str, Any] | None,
+    plugins_toml_path: str = "",
+) -> list[dict[str, Any]]:
     if not isinstance(plugins_config, dict):
         return []
+
     raw_specs = plugins_config.get("dynamic_plugins")
+    plugins_section = plugins_config.get("plugins")
+    if plugins_section is not None:
+        if not isinstance(plugins_section, dict):
+            logger.error(
+                "Invalid NeMo Relay plugins config: expected [plugins] to be an object; "
+                "no dynamic plugins will be activated. Continuing with static "
+                "observability only."
+            )
+            return []
+        if plugins_section:
+            logger.error(
+                "Hermes cannot activate Relay gateway [[plugins.dynamic]] records because "
+                "the Python binding does not expose the CLI lifecycle resolver for "
+                "enablement, trust policy, and worker environments. Use Hermes-owned "
+                "[[dynamic_plugins]] activation specs instead; no dynamic plugins will be "
+                "activated. Continuing with static observability only."
+            )
+            return []
     if raw_specs is None:
         return []
     if not isinstance(raw_specs, list):
@@ -847,21 +873,26 @@ def _dynamic_plugin_specs(plugins_config: dict[str, Any] | None) -> list[dict[st
             )
             invalid = True
             continue
-        if environment_ref is not None and not isinstance(environment_ref, str):
+        if environment_ref is not None and (
+            not isinstance(environment_ref, str) or not environment_ref.strip()
+        ):
             logger.warning(
-                "Invalid NeMo Relay dynamic_plugins[%d]: environment_ref must be a string",
+                "Invalid NeMo Relay dynamic_plugins[%d]: environment_ref must be a "
+                "non-empty string",
                 index,
             )
             invalid = True
             continue
         spec: dict[str, Any] = {
-            "plugin_id": plugin_id,
+            "plugin_id": plugin_id.strip(),
             "kind": kind,
-            "manifest_ref": manifest_ref,
+            "manifest_ref": _config_relative_path(manifest_ref.strip(), plugins_toml_path),
             "config": config,
         }
         if environment_ref is not None:
-            spec["environment_ref"] = environment_ref
+            spec["environment_ref"] = _config_relative_path(
+                environment_ref.strip(), plugins_toml_path
+            )
         specs.append(spec)
     if invalid:
         logger.error(
@@ -870,6 +901,17 @@ def _dynamic_plugin_specs(plugins_config: dict[str, Any] | None) -> list[dict[st
         )
         return []
     return specs
+
+
+def _config_relative_path(value: str, plugins_toml_path: str) -> str:
+    """Resolve a plugin path relative to its physical ``plugins.toml`` file."""
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    config_path = Path(plugins_toml_path) if plugins_toml_path else Path.cwd() / "plugins.toml"
+    if not config_path.is_absolute():
+        config_path = Path.cwd() / config_path
+    return os.path.abspath(config_path.parent / path)
 
 
 def _flush_relay_subscribers(nemo_relay: Any) -> None:

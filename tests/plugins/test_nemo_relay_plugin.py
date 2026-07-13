@@ -603,6 +603,73 @@ def test_nemo_relay_plugin_activates_and_owns_dynamic_plugins(tmp_path, monkeypa
     assert event_names.index("atif.deregister") < event_names.index("plugin.activation.close")
 
 
+def test_nemo_relay_rejects_gateway_dynamic_config_with_actionable_diagnostic(
+    tmp_path, monkeypatch, caplog
+):
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        """
+version = 1
+
+[[plugins.dynamic]]
+manifest = "plugins/fixture/relay-plugin.toml"
+
+[plugins.dynamic.config]
+mode = "test"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    with caplog.at_level("ERROR"):
+        plugin.on_session_start(session_id="s1")
+
+    assert not any(event[0] == "plugin.activate_dynamic" for event in fake.events)
+    initialize = next(event for event in fake.events if event[0] == "plugin.initialize")
+    assert initialize[1] == {"version": 1}
+    assert "does not expose the CLI lifecycle resolver" in caplog.text
+    assert "Use Hermes-owned [[dynamic_plugins]]" in caplog.text
+
+
+def test_nemo_relay_explicit_dynamic_paths_resolve_from_plugins_toml(tmp_path, monkeypatch):
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    plugins_toml = config_dir / "plugins.toml"
+    plugins_toml.write_text(
+        """
+version = 1
+
+[[dynamic_plugins]]
+plugin_id = "worker-fixture"
+kind = "worker"
+manifest_ref = "../plugins/worker/relay-plugin.toml"
+environment_ref = "../environments/worker-fixture"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    plugin.on_session_start(session_id="s1")
+
+    activation = next(event for event in fake.events if event[0] == "plugin.activate_dynamic")
+    assert activation[2] == [
+        {
+            "plugin_id": "worker-fixture",
+            "kind": "worker",
+            "manifest_ref": str(tmp_path / "plugins" / "worker" / "relay-plugin.toml"),
+            "environment_ref": str(tmp_path / "environments" / "worker-fixture"),
+            "config": {},
+        }
+    ]
+    runtime = plugin._get_runtime()
+    assert runtime is not None
+    runtime.shutdown()
+
+
 @pytest.mark.parametrize(
     ("provider", "api_mode", "expected_surface", "should_rewrite"),
     [
@@ -763,7 +830,7 @@ def test_nemo_relay_plugin_degrades_to_static_config_on_relay_0_5(
     initialize = next(event for event in fake.events if event[0] == "plugin.initialize")
     assert "dynamic_plugins" not in initialize[1]
     assert not any(event[0] == "plugin.activate_dynamic" for event in fake.events)
-    assert "require nemo-relay>=0.6,<0.7" in caplog.text
+    assert "available in NeMo Relay 0.6+" in caplog.text
 
 
 def test_nemo_relay_plugin_rejects_invalid_dynamic_specs(tmp_path, monkeypatch, caplog):

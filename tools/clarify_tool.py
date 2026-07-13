@@ -12,6 +12,7 @@ a thin dispatcher that delegates to a platform-provided callback.
 """
 
 import json
+import inspect
 from typing import List, Optional, Callable
 
 
@@ -57,6 +58,7 @@ def clarify_tool(
     question: str,
     choices: Optional[List[str]] = None,
     callback: Optional[Callable] = None,
+    tool_call_id: Optional[str] = None,
 ) -> str:
     """
     Ask the user a question, optionally with multiple-choice options.
@@ -66,8 +68,10 @@ def clarify_tool(
         choices:  Up to 4 predefined answer choices. When omitted the
                   question is purely open-ended.
         callback: Platform-provided function that handles the actual UI
-                  interaction. Signature: callback(question, choices) -> str.
-                  Injected by the agent runner (cli.py / gateway).
+                  interaction. Existing two-argument callbacks remain supported;
+                  callbacks declaring ``tool_call_id`` receive the stable call ID.
+        tool_call_id: Stable identity of this tool occurrence, when invoked by
+                      the agent runtime.
 
     Returns:
         JSON string with the user's response.
@@ -99,7 +103,18 @@ def clarify_tool(
         )
 
     try:
-        user_response = callback(question, choices)
+        supports_tool_call_id = False
+        if tool_call_id:
+            try:
+                inspect.signature(callback).bind(question, choices, tool_call_id=tool_call_id)
+                supports_tool_call_id = True
+            except (TypeError, ValueError):
+                pass
+        user_response = (
+            callback(question, choices, tool_call_id=tool_call_id)
+            if supports_tool_call_id
+            else callback(question, choices)
+        )
     except Exception as exc:
         return json.dumps(
             {"error": f"Failed to get user input: {exc}"},

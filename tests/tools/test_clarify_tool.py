@@ -1,6 +1,8 @@
 """Tests for tools/clarify_tool.py - Interactive clarifying questions."""
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
 
@@ -155,6 +157,60 @@ class TestClarifyToolCallbackHandling:
 
         result = json.loads(clarify_tool("Q?", callback=mock_callback))
         assert result["user_response"] == "response with spaces"
+
+    def test_callback_receives_stable_tool_call_id_when_supported(self):
+        received = {}
+
+        def callback(question, choices, *, tool_call_id=None):
+            received.update(question=question, choices=choices, tool_call_id=tool_call_id)
+            return "A"
+
+        result = json.loads(clarify_tool(
+            "Choose",
+            choices=["A", "B"],
+            callback=callback,
+            tool_call_id="call-clarify-2",
+        ))
+
+        assert result["user_response"] == "A"
+        assert received == {
+            "question": "Choose",
+            "choices": ["A", "B"],
+            "tool_call_id": "call-clarify-2",
+        }
+
+    def test_two_argument_callback_remains_backward_compatible_with_tool_call_id(self):
+        result = json.loads(clarify_tool(
+            "Choose",
+            callback=lambda question, choices: "legacy",
+            tool_call_id="call-clarify-legacy",
+        ))
+
+        assert result["user_response"] == "legacy"
+
+    def test_concurrent_clarifications_keep_ids_when_requests_arrive_reversed(self):
+        release_first = threading.Event()
+        requests = []
+
+        def callback(question, choices, *, tool_call_id=None):
+            if tool_call_id == "call-a":
+                release_first.wait(timeout=2)
+            else:
+                release_first.set()
+            requests.append((question, tool_call_id))
+            return question
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(
+                clarify_tool, "A", callback=callback, tool_call_id="call-a"
+            )
+            second = executor.submit(
+                clarify_tool, "B", callback=callback, tool_call_id="call-b"
+            )
+            first.result(timeout=3)
+            second.result(timeout=3)
+
+        assert requests == [("B", "call-b"), ("A", "call-a")]
 
 
 class TestCheckClarifyRequirements:

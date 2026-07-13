@@ -3933,8 +3933,14 @@ def _agent_cbs(sid: str) -> dict:
         "notice_clear_callback": lambda key: _emit(
             "notification.clear", sid, {"key": key}
         ),
-        "clarify_callback": lambda q, c: _block(
-            "clarify.request", sid, {"question": q, "choices": c}
+        "clarify_callback": lambda q, c, tool_call_id=None: _block(
+            "clarify.request",
+            sid,
+            {
+                "question": q,
+                "choices": c,
+                **({"tool_call_id": tool_call_id} if tool_call_id else {}),
+            },
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.

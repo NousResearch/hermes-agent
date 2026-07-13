@@ -17,6 +17,25 @@ from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
 
 
+def test_clarify_request_carries_tool_call_id_without_tool_progress_side_channel(monkeypatch):
+    calls = []
+
+    def fake_block(event_type, sid, payload, **kwargs):
+        calls.append((event_type, sid, payload, kwargs))
+        return "A"
+
+    monkeypatch.setattr(server, "_block", fake_block)
+
+    callback = server._agent_cbs("sid-direct-clarify")["clarify_callback"]
+    assert callback("Choose", ["A", "B"], tool_call_id="call-direct-2") == "A"
+    assert calls == [(
+        "clarify.request",
+        "sid-direct-clarify",
+        {"question": "Choose", "choices": ["A", "B"], "tool_call_id": "call-direct-2"},
+        {},
+    )]
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

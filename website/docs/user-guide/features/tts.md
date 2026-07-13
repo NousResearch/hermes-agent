@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with ten providers:
+Convert text to speech with eleven providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -25,6 +25,7 @@ Convert text to speech with ten providers:
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
 | **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
 | **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
+| **Cloudflare Workers AI** | Good | Free tier | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` |
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
@@ -43,7 +44,7 @@ Convert text to speech with ten providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "cloudflare" | "neutts" | "kittentts" | "piper"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -70,6 +71,11 @@ tts:
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
     audio_tags: false           # Enable hidden Gemini 3.1 TTS audio-tag insertion
     persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
+  cloudflare:
+    model: "@cf/deepgram/aura-2-en"   # Deepgram Aura models on Cloudflare Workers AI
+    voice: "asteria"                  # asteria, luna, stella, athena, hera, orion, arcas, perseus, boreas, zeus
+    encoding: "mp3"                   # mp3 (default), linear16, ulaw
+    # base_url: "https://api.cloudflare.com/client/v4/accounts"  # override if using a custom endpoint
   xai:
     voice_id: "eve"             # or a custom voice ID — see docs below
     language: "en"              # ISO 639-1 code
@@ -140,6 +146,7 @@ Each provider has a documented per-request input-character cap. Hermes truncates
 | MiniMax | 10000 |
 | Mistral | 4000 |
 | Google Gemini | 32000 |
+| Cloudflare Workers AI | 5000 |
 | ElevenLabs | Model-aware (see below) |
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |
@@ -174,6 +181,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles
 - **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
+- **Cloudflare Workers AI** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
@@ -189,7 +197,7 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, Cloudflare Workers AI, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
@@ -344,6 +352,14 @@ For TTS engines that can't be expressed as a single shell command — Python SDK
 | OAuth refresh flow (not a static bearer token) | **Plugin** |
 
 Built-ins always win, and command providers win over a same-name plugin — so plugins are safe to register against any non-built-in name without worrying about shadowing your existing config.
+
+:::note
+The **Cloudflare Workers AI** provider listed in the table above is
+itself a bundled plugin (`plugins/tts/cloudflare/`). It auto-loads as a
+`kind: backend` plugin and registers via `ctx.register_tts_provider()`,
+so `tts.provider: cloudflare` routes through the same plugin dispatch
+path described here — no manual `hermes plugins enable` step is needed.
+:::
 
 #### Minimal plugin
 

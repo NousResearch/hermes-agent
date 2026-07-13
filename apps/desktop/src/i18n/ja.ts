@@ -2009,16 +2009,6 @@ export const ja = defineLocale({
       viewAllLogs: 'すべてのログを見る →',
       messagingPlatforms: 'メッセージングプラットフォーム'
     },
-    approvalMode: {
-      title: '承認モード',
-      ariaLabel: mode => `承認モード: ${mode}`,
-      manual: '手動',
-      manualDescription: '承認が必要な操作の前に確認します',
-      smart: 'スマート',
-      smartDescription: '必要な場合にのみ確認します',
-      off: 'オフ',
-      offDescription: '承認プロンプトなしで実行します'
-    },
     statusbar: {
       unknown: '不明',
       restart: '再起動',

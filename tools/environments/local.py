@@ -66,35 +66,6 @@ def _windows_to_msys_path(cwd: str) -> str:
     return f"/{drive}/{tail}" if tail else f"/{drive}/"
 
 
-def _bash_safe_path(path: str) -> str:
-    """Return *path* in a form safe to embed in a Git Bash script.
-
-    Native ``C:\\Users\\x`` / ``C:/Users/x`` → ``/c/Users/x`` via
-    :func:`_windows_to_msys_path`. Mixed MSYS leftovers
-    (``/c/Users\\Alexander\\Documents``) get backslashes normalized so
-    bash does not eat ``\\U`` and trip the ``Directory \\drivers\\etc``
-    failure class. No-op off Windows and for empty input.
-
-    ``get_temp_dir`` already emits forward-slash ``C:/...`` forms for
-    Python compatibility; those still need the ``/c/...`` rewrite —
-    MSYS argument conversion treats ``C:/...`` as a Windows path and
-    can corrupt the login-shell ``drivers\\etc`` lookup.
-    """
-    if not _IS_WINDOWS or not path:
-        return path
-    path = _windows_to_msys_path(path)
-    if "\\" in path:
-        path = path.replace("\\", "/")
-    return path
-
-
-def _quote_bash_path(path: str) -> str:
-    """Quote *path* for safe interpolation into a Git Bash script on Windows."""
-    import shlex
-
-    return shlex.quote(_bash_safe_path(path))
-
-
 def _resolve_safe_cwd(cwd: str) -> str:
     """Return ``cwd`` if it exists as a directory, else the nearest existing
     ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
@@ -1022,10 +993,6 @@ class LocalEnvironment(BaseEnvironment):
     def _quote_cwd_for_cd(cwd: str) -> str:
         """Use native paths for Python, but Git Bash-friendly paths for cd."""
         return BaseEnvironment._quote_cwd_for_cd(_windows_to_msys_path(cwd))
-
-    def _quote_shell_path(self, path: str) -> str:
-        """Rewrite native/mixed Windows paths before quoting for Git Bash."""
-        return _quote_bash_path(path)
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

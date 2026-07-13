@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextvars
-import json
 import threading
 
 import pytest
@@ -112,10 +111,8 @@ def gw_session(monkeypatch):
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
     monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-    # Force manual mode regardless of host config and disable any process-level
-    # yolo inherited from the developer's live environment.
+    # Force manual mode regardless of host config.
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
-    monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
 
     session_key = "cluster-test-session"
     token = A.set_current_session_key(session_key)
@@ -145,23 +142,6 @@ def _register_resolver(session_key: str, result):
         A._gateway_notify_cbs[session_key] = cb
 
 
-def _register_capturing_resolver(session_key: str, result):
-    """Resolve immediately and retain the exact approval payload shown."""
-    seen = {}
-
-    def cb(approval_data):
-        seen["approval_data"] = approval_data
-        with A._lock:
-            entries = A._gateway_queues.get(session_key, [])
-            if entries:
-                entries[-1].result = result
-                entries[-1].event.set()
-
-    with A._lock:
-        A._gateway_notify_cbs[session_key] = cb
-    return seen
-
-
 def test_guard_isolated_backend_approved():
     # Container backends already sandbox the child — no-op approve.
     assert A.check_execute_code_guard("import os", "docker")["approved"] is True
@@ -178,7 +158,6 @@ def test_guard_headless_local_approved(monkeypatch):
 
 
 def test_guard_cron_deny_blocks(monkeypatch):
-    monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
@@ -252,21 +231,11 @@ def test_guard_gateway_user_denies_blocks(gw_session):
     assert res["user_consent"] is False
 
 
-@pytest.mark.parametrize(
-    "approval_config",
-    [
-        {"timeout": 0},
-        {"timeout": 0, "gateway_timeout": 300},
-    ],
-    ids=["shared-timeout-only", "shared-timeout-is-canonical"],
-)
-def test_guard_gateway_wait_uses_canonical_timeout(
-    gw_session, monkeypatch, approval_config
-):
+def test_guard_gateway_timeout_blocks(gw_session, monkeypatch):
     # Register a callback that never resolves; force an immediate timeout.
     with A._lock:
         A._gateway_notify_cbs[gw_session] = lambda _d: None
-    monkeypatch.setattr(A, "_get_approval_config", lambda: approval_config)
+    monkeypatch.setattr(A, "_get_approval_config", lambda: {"gateway_timeout": 0})
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is False
     assert res["outcome"] == "timeout"
@@ -286,161 +255,15 @@ def test_guard_smart_mode(gw_session, monkeypatch):
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is True and res.get("smart_approved") is True
 
-    # Smart DENY on an interactive surface now asks the owner. With no bound
-    # notifier it remains pending rather than being hard-denied.
     monkeypatch.setattr(A, "_smart_approve", lambda c, d: "deny")
     res = A.check_execute_code_guard("import os", "local")
-    assert res["approved"] is False and res["status"] == "pending_approval"
+    assert res["approved"] is False and res.get("smart_denied") is True
 
     # escalate → falls through to manual gateway approval
     monkeypatch.setattr(A, "_smart_approve", lambda c, d: "escalate")
     _register_resolver(gw_session, "once")
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is True
-
-
-def test_terminal_smart_deny_owner_override_is_one_operation(gw_session, monkeypatch):
-    """A human may override DENY, but a broad UI choice must not be persisted."""
-    with A._lock:
-        A._permanent_approved.discard("owner-override-test-danger")
-        A._session_approved.get(gw_session, set()).discard("owner-override-test-danger")
-    monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
-    monkeypatch.setattr(A, "_smart_approve", lambda _command, _description: "deny")
-    monkeypatch.setattr(
-        A,
-        "detect_dangerous_command",
-        lambda command: (True, "owner-override-test-danger", f"risk:{command}"),
-    )
-    monkeypatch.setattr(
-        "tools.tirith_security.check_command_security",
-        lambda _command: {"action": "allow", "findings": [], "summary": ""},
-        raising=False,
-    )
-
-    shown = _register_capturing_resolver(gw_session, "always")
-    result = A.check_all_command_guards("dangerous /tmp/first", "local")
-
-    assert result["approved"] is True
-    assert result["user_approved"] is True
-    assert shown["approval_data"]["smart_denied"] is True
-    assert shown["approval_data"]["allow_permanent"] is False
-    assert A.is_approved(gw_session, "owner-override-test-danger") is False
-
-    _register_resolver(gw_session, "deny")
-    changed = A.check_all_command_guards("dangerous /tmp/second", "local")
-    assert changed["approved"] is False
-    assert changed["outcome"] == "denied"
-
-
-def test_execute_code_smart_deny_owner_override_is_one_operation(gw_session, monkeypatch):
-    """Never persist the coarse execute_code key after overriding smart DENY."""
-    with A._lock:
-        A._permanent_approved.discard("execute_code")
-        A._session_approved.get(gw_session, set()).discard("execute_code")
-    monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
-    monkeypatch.setattr(A, "_smart_approve", lambda _command, _description: "deny")
-
-    shown = _register_capturing_resolver(gw_session, "session")
-    result = A.check_execute_code_guard("print('first')", "local")
-
-    assert result["approved"] is True
-    assert result["user_approved"] is True
-    assert shown["approval_data"]["smart_denied"] is True
-    assert shown["approval_data"]["allow_permanent"] is False
-    assert A.is_approved(gw_session, "execute_code") is False
-
-    _register_resolver(gw_session, "deny")
-    changed = A.check_execute_code_guard("print('second')", "local")
-    assert changed["approved"] is False
-    assert changed["outcome"] == "denied"
-
-
-def test_smart_escalate_still_persists_session_choice(gw_session, monkeypatch):
-    """The DENY restriction must not alter Smart ESCALATE's manual choices."""
-    key = "smart-escalate-persistence"
-    with A._lock:
-        A._session_approved.get(gw_session, set()).discard(key)
-    monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
-    monkeypatch.setattr(A, "_smart_approve", lambda _command, _description: "escalate")
-    monkeypatch.setattr(
-        A, "detect_dangerous_command",
-        lambda command: (True, key, f"risk:{command}"),
-    )
-    monkeypatch.setattr(
-        "tools.tirith_security.check_command_security",
-        lambda _command: {"action": "allow", "findings": [], "summary": ""},
-        raising=False,
-    )
-
-    shown = _register_capturing_resolver(gw_session, "session")
-    result = A.check_all_command_guards("dangerous escalate", "local")
-
-    assert result["approved"] is True
-    assert shown["approval_data"]["allow_permanent"] is True
-    assert "smart_denied" not in shown["approval_data"]
-    assert A.is_approved(gw_session, key) is True
-
-
-def test_terminal_smart_deny_pending_payload_is_one_operation(gw_session, monkeypatch):
-    monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
-    monkeypatch.setattr(A, "_smart_approve", lambda _command, _description: "deny")
-    monkeypatch.setattr(
-        A, "detect_dangerous_command",
-        lambda command: (True, "pending-smart-deny", f"risk:{command}"),
-    )
-    monkeypatch.setattr(
-        "tools.tirith_security.check_command_security",
-        lambda _command: {"action": "allow", "findings": [], "summary": ""},
-        raising=False,
-    )
-
-    result = A.check_all_command_guards("dangerous pending", "local")
-
-    assert result["status"] == "pending_approval"
-    assert result["smart_denied"] is True
-    assert result["allow_permanent"] is False
-    with A._lock:
-        pending = dict(A._pending[gw_session])
-    assert pending["smart_denied"] is True
-    assert pending["allow_permanent"] is False
-
-
-def test_execute_code_smart_deny_pending_payload_is_one_operation(gw_session, monkeypatch):
-    monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
-    monkeypatch.setattr(A, "_smart_approve", lambda _command, _description: "deny")
-
-    result = A.check_execute_code_guard("print('pending')", "local")
-
-    assert result["status"] == "pending_approval"
-    assert result["smart_denied"] is True
-    assert result["allow_permanent"] is False
-    with A._lock:
-        pending = dict(A._pending[gw_session])
-    assert pending["smart_denied"] is True
-    assert pending["allow_permanent"] is False
-
-
-def test_terminal_serializes_smart_deny_pending_capabilities(monkeypatch):
-    from tools import terminal_tool as terminal_module
-
-    monkeypatch.setattr(
-        terminal_module,
-        "_check_all_guards",
-        lambda *_args, **_kwargs: {
-            "approved": False,
-            "status": "pending_approval",
-            "command": "rm -rf /tmp/example",
-            "description": "recursive delete",
-            "pattern_key": "rm-rf",
-            "smart_denied": True,
-            "allow_permanent": False,
-        },
-    )
-
-    payload = json.loads(terminal_module.terminal_tool(command="rm -rf /tmp/example"))
-
-    assert payload["smart_denied"] is True
-    assert payload["allow_permanent"] is False
 
 
 def test_guard_session_yolo_bypasses(gw_session):
@@ -510,7 +333,6 @@ def test_execute_code_entry_blocks_before_spawn_when_guard_denies(monkeypatch, t
     from tools import terminal_tool as TT
 
     marker = tmp_path / "child-ran.marker"
-    monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)

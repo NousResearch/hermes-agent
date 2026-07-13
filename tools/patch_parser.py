@@ -253,11 +253,8 @@ def _validate_operations(
     from tools.fuzzy_match import fuzzy_find_and_replace
 
     errors: List[str] = []
-    real_change_count = 0
 
     for op in operations:
-        if op.operation != OperationType.UPDATE:
-            real_change_count += 1
         if op.operation == OperationType.UPDATE:
             read_result = file_ops.read_file_raw(op.file_path)
             if read_result.error:
@@ -265,15 +262,8 @@ def _validate_operations(
                 continue
 
             simulated = read_result.content
-            for hunk_index, hunk in enumerate(op.hunks, start=1):
+            for hunk in op.hunks:
                 search_lines = [l.content for l in hunk.lines if l.prefix in {' ', '-'}]
-                removed_lines = [l.content for l in hunk.lines if l.prefix == '-']
-                added_lines = [l.content for l in hunk.lines if l.prefix == '+']
-                if not removed_lines and not added_lines:
-                    # Models occasionally emit inert anchor hunks between real
-                    # changes. Ignore them without poisoning the atomic patch.
-                    continue
-                real_change_count += 1
                 if not search_lines:
                     # Addition-only hunk: validate context hint uniqueness
                     if hunk.context_hint:
@@ -301,7 +291,7 @@ def _validate_operations(
                 if count == 0:
                     label = f"'{hunk.context_hint}'" if hunk.context_hint else "(no hint)"
                     msg = (
-                        f"{op.file_path}: hunk {hunk_index} {label} not found"
+                        f"{op.file_path}: hunk {label} not found"
                         + (f" — {match_error}" if match_error else "")
                     )
                     try:
@@ -334,9 +324,6 @@ def _validate_operations(
                 )
 
         # ADD: parent directory creation handled by write_file; no pre-check needed.
-
-    if not errors and real_change_count == 0:
-        errors.append("Patch contains no changes (only context lines were provided)")
 
     return errors
 
@@ -558,8 +545,6 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str, Optiona
             elif line.prefix == '+':
                 replace_lines.append(line.content)
 
-        if search_lines and search_lines == replace_lines:
-            continue
         if search_lines:
             search_pattern = '\n'.join(search_lines)
             replacement = '\n'.join(replace_lines)

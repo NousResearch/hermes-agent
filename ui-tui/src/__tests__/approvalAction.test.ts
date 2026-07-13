@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { approvalAction, approvalOptions } from '../components/prompts.js'
+import { approvalAction } from '../components/prompts.js'
 
 describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
   it('maps Esc to deny — parity with global Ctrl+C cancellation', () => {
@@ -57,24 +57,5 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
     expect(approvalAction('4', {}, 0, opts)).toEqual({ kind: 'noop' })
     expect(approvalAction('', { downArrow: true }, 2, opts)).toEqual({ kind: 'noop' })
     expect(approvalAction('', { return: true }, 2, opts)).toEqual({ kind: 'choose', choice: 'deny' })
-  })
-
-  it('offers only once and deny for Smart DENY owner override', () => {
-    const opts = approvalOptions({ allowPermanent: true, command: 'rm -rf /', description: 'blocked', smartDenied: true })
-
-    expect(opts).toEqual(['once', 'deny'])
-    expect(approvalAction('2', {}, 0, opts)).toEqual({ kind: 'choose', choice: 'deny' })
-    expect(approvalAction('3', {}, 0, opts)).toEqual({ kind: 'noop' })
-  })
-
-  it('uses explicit gateway choices as the prompt contract', () => {
-    expect(
-      approvalOptions({
-        allowPermanent: true,
-        choices: ['once', 'deny'],
-        command: 'rm -rf /',
-        description: 'blocked'
-      })
-    ).toEqual(['once', 'deny'])
   })
 })

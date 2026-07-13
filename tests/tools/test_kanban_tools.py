@@ -484,31 +484,6 @@ def test_complete_rejects_non_list_artifacts(worker_env):
     assert "artifacts must be a list" in err
 
 
-def test_complete_missing_scratch_artifact_stays_in_flight(worker_env):
-    """A false deliverable claim must return retry guidance, not mark Done."""
-    from hermes_cli import kanban_db as kb
-    from tools import kanban_tools as kt
-
-    with kb.connect() as conn:
-        task = kb.get_task(conn, worker_env)
-        assert task is not None
-        workspace = kb.resolve_workspace(task)
-        kb.set_workspace_path(conn, worker_env, workspace)
-
-    output = kt._handle_complete({
-        "summary": "report complete",
-        "artifacts": [str(workspace / "missing-report.md")],
-    })
-    error = json.loads(output).get("error", "")
-
-    assert "could not preserve" in error
-    assert "still in-flight" in error
-    assert "retry kanban_complete" in error
-    with kb.connect() as conn:
-        assert kb.get_task(conn, worker_env).status == "running"
-    assert workspace.exists()
-
-
 def test_complete_rejects_no_handoff(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({})

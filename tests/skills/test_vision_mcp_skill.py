@@ -37,6 +37,14 @@ def test_frontmatter_matches_optional_skill_standards() -> None:
     assert _frontmatter_value("license") == "MIT"
 
 
+def test_author_credits_human_contributor_first() -> None:
+    # AGENTS.md contributed-skill standard: the external contributor's real
+    # name + GitHub handle come first; "Hermes Agent" is the secondary
+    # collaborator, never the primary author.
+    author = _frontmatter_value("author")
+    assert author == "Haruyuki (Haruhiyuki), Hermes Agent"
+
+
 def test_platforms_gate_real_supported_desktops() -> None:
     platforms = _frontmatter_value("platforms")
     assert "macos" in platforms
@@ -46,8 +54,10 @@ def test_platforms_gate_real_supported_desktops() -> None:
 
 def test_modern_sections_are_present_in_order() -> None:
     src = SKILL_PATH.read_text(encoding="utf-8")
+    # AGENTS.md skill standard: modern `# <Skill> Skill` title form.
+    assert re.search(r"^# Vision-MCP Skill$", src, re.MULTILINE)
     sections = [
-        "# Vision-MCP",
+        "# Vision-MCP Skill",
         "## When to Use",
         "## Prerequisites",
         "## How to Run",
@@ -85,3 +95,25 @@ def test_skill_calls_out_low_level_and_mutating_tool_consent() -> None:
     ]:
         assert tool in src
     assert "explicit user consent" in src
+
+
+def test_setup_commands_match_the_catalog_manifest_pin() -> None:
+    # The skill duplicates the manifest's npx setup commands. Catalog policy
+    # pins the CLI release in the manifest; the skill must reference the same
+    # exact version so the two files cannot drift (and never float `@latest`).
+    manifest = (
+        SKILL_DIR.parents[2] / "optional-mcps" / "vision-mcp" / "manifest.yaml"
+    ).read_text(encoding="utf-8")
+    manifest_refs = set(re.findall(r"@vision-mcp/cli@(\S+?)[\"\s]", manifest))
+    assert len(manifest_refs) == 1, f"manifest pins one CLI version: {manifest_refs}"
+    version = manifest_refs.pop()
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+
+    src = SKILL_PATH.read_text(encoding="utf-8")
+    skill_refs = set(re.findall(r"@vision-mcp/cli@([\w.<>-]+)", src))
+    # `@<version>` placeholders in upgrade guidance are allowed; every literal
+    # version must equal the manifest pin.
+    literal_refs = {r for r in skill_refs if r != "<version>"}
+    assert literal_refs == {version}, (
+        f"SKILL.md references {literal_refs}, manifest pins {version}"
+    )

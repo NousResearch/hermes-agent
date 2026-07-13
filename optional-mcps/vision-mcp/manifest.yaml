@@ -9,12 +9,18 @@ source: https://github.com/Haruhiyuki/vision-mcp
 # Vision-MCP is an npm-published stdio MCP server. The apps root is kept
 # outside the Hermes install so learned maps and patches survive package
 # updates and can be shared with other MCP clients.
+#
+# The CLI version is exact-pinned (catalog policy: manifests pin transport
+# details, see hermes_cli/mcp_catalog.py). Bumping it requires a manifest PR
+# that re-validates the release's registered tools against default_enabled
+# below. After a bump, users must re-run `install-helper --force` once to
+# rebuild the native helper.
 transport:
   type: stdio
   command: npx
   args:
     - -y
-    - "@vision-mcp/cli@latest"
+    - "@vision-mcp/cli@0.8.0"
     - serve
     - --apps-root
     - "${HOME}/.vision-mcp/apps"
@@ -52,11 +58,11 @@ post_install: |
   Vision-MCP controls visible desktop applications through screenshots,
   accessibility trees, OCR, and input events. Before running real GUI
   workflows, install the native helper and grant platform permissions:
-    npx -y @vision-mcp/cli@latest doctor
-    npx -y @vision-mcp/cli@latest install-helper
+    npx -y @vision-mcp/cli@0.8.0 doctor
+    npx -y @vision-mcp/cli@0.8.0 install-helper
 
   Copy starter app maps into the default apps root with:
-    npx -y @vision-mcp/cli@latest init-apps
+    npx -y @vision-mcp/cli@0.8.0 init-apps
 
   Install the companion Hermes skill for operating guidance:
     hermes skills install official/mcp/vision-mcp

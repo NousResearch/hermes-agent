@@ -7,6 +7,7 @@ launch an MCP is mocked.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -548,7 +549,7 @@ class TestShippedVisionMcpManifest:
         assert entry.transport.command == "npx"
         assert entry.transport.args == [
             "-y",
-            "@vision-mcp/cli@latest",
+            "@vision-mcp/cli@0.8.0",
             "serve",
             "--apps-root",
             "${HOME}/.vision-mcp/apps",
@@ -568,11 +569,41 @@ class TestShippedVisionMcpManifest:
             "vision_map.init",
             "vision_map.apply_patch",
             "vision_map.add_control",
+            "vision_map.propose_controls",
             "vision_map.commit_state",
             "vision_map.commit_workflow",
             "vision_map.harvest_session",
         }:
             assert raw_or_mutating_tool not in defaults
+
+    def test_manifest_exact_pins_the_cli_release(self, monkeypatch):
+        """Catalog policy (hermes_cli/mcp_catalog.py): manifests pin transport
+        details. A floating ref (`@latest`, a dist-tag, or a range) would let a
+        future npm publish silently change the spawned subprocess and its tool
+        surface without a manifest review — the exact regression this pin
+        prevents. The same pinned version must be used everywhere the manifest
+        invokes the CLI (serve args and post_install setup commands).
+        """
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import get_entry
+
+        entry = get_entry("vision-mcp")
+        assert entry is not None
+
+        cli_refs = [a for a in entry.transport.args if a.startswith("@vision-mcp/cli@")]
+        assert len(cli_refs) == 1
+        version = cli_refs[0].removeprefix("@vision-mcp/cli@")
+        assert re.fullmatch(r"\d+\.\d+\.\d+", version), (
+            f"@vision-mcp/cli must be pinned to an exact semver release, "
+            f"got {cli_refs[0]!r}"
+        )
+
+        post_install_refs = re.findall(r"@vision-mcp/cli@(\S+)", entry.post_install)
+        assert post_install_refs, "post_install should show pinned setup commands"
+        assert set(post_install_refs) == {version}, (
+            "post_install commands must use the same pinned CLI version as "
+            "transport.args"
+        )
 
 
 # ---------------------------------------------------------------------------

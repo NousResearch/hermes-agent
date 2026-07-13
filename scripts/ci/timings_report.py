@@ -157,6 +157,17 @@ def dur_s(started: str | None, completed: str | None) -> float | None:
     return (e - s).total_seconds()
 
 
+def is_skipped(job: dict) -> bool:
+    """A job is 'skipped' when GitHub didn't actually run it.
+
+    Skipped jobs have conclusion == 'skipped' and typically have null or
+    equal started_at/completed_at timestamps, yielding duration_s of None
+    or 0. They should be excluded from delta comparisons, gantt bars,
+    regression tables, and aggregate stats (wall/compute).
+    """
+    return job.get("conclusion") == "skipped"
+
+
 # ---------------------------------------------------------------------------
 # Timings collection
 # ---------------------------------------------------------------------------
@@ -309,10 +320,13 @@ def fmt_tick(seconds: int) -> str:
 # ---------------------------------------------------------------------------
 
 def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
-    jobs = timings.get("jobs", [])
-    bl_jobs = {j["name"]: j for j in (baseline or {}).get("jobs", [])}
+    jobs_all = timings.get("jobs", [])
+    jobs = [j for j in jobs_all if not is_skipped(j)]
+    bl_jobs_all = (baseline or {}).get("jobs", [])
+    bl_jobs = [j for j in bl_jobs_all if not is_skipped(j)]
+    bl_map = {j["name"]: j for j in bl_jobs}
 
-    # Wall time
+    # Wall time (skipped jobs have no real timestamps)
     starts = [s for s in (parse_ts(j.get("started_at")) for j in jobs) if s is not None]
     ends = [e for e in (parse_ts(j.get("completed_at")) for j in jobs) if e is not None]
     wall = (max(ends) - min(starts)).total_seconds() if starts and ends else 0
@@ -322,19 +336,19 @@ def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
     bl_wall = None
     bl_compute = None
     if baseline:
-        bl_starts = [s for s in (parse_ts(j.get("started_at")) for j in baseline.get("jobs", [])) if s is not None]
-        bl_ends = [e for e in (parse_ts(j.get("completed_at")) for j in baseline.get("jobs", [])) if e is not None]
+        bl_starts = [s for s in (parse_ts(j.get("started_at")) for j in bl_jobs) if s is not None]
+        bl_ends = [e for e in (parse_ts(j.get("completed_at")) for j in bl_jobs) if e is not None]
         if bl_starts and bl_ends:
             bl_wall = (max(bl_ends) - min(bl_starts)).total_seconds()
-        bl_compute = sum(j.get("duration_s") or 0 for j in baseline.get("jobs", []))
+        bl_compute = sum(j.get("duration_s") or 0 for j in bl_jobs)
 
-    # Per-job deltas
+    # Per-job deltas (skipped excluded)
     faster = 0
     slower = 0
     unchanged = 0
     no_baseline = 0
     for j in jobs:
-        bl = bl_jobs.get(j["name"])
+        bl = bl_map.get(j["name"])
         if not bl:
             no_baseline += 1
             continue
@@ -347,6 +361,9 @@ def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
         else:
             faster += 1
 
+    skipped = sum(1 for j in jobs_all if is_skipped(j))
+    bl_skipped = sum(1 for j in bl_jobs_all if is_skipped(j))
+
     return {
         "wall": wall,
         "compute": compute,
@@ -356,7 +373,9 @@ def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
         "slower": slower,
         "unchanged": unchanged,
         "no_baseline": no_baseline,
-        "total_jobs": len(jobs),
+        "skipped": skipped,
+        "bl_skipped": bl_skipped,
+        "total_jobs": len(jobs_all),
     }
 
 
@@ -447,7 +466,8 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
     (relative to each run's earliest job start). The axis scale spans
     0..max_end across both runs so bars are directly comparable.
     """
-    jobs = [j for j in timings.get("jobs", []) if j.get("started_at") and j.get("completed_at")]
+    jobs = [j for j in timings.get("jobs", [])
+            if j.get("started_at") and j.get("completed_at") and not is_skipped(j)]
     bl_map = {j["name"]: j for j in (baseline or {}).get("jobs", [])}
 
     # Current run: relative offsets from earliest start
@@ -463,6 +483,8 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
     bl_max = 0.0
     bl_jobs_timed = []
     for bl_j in bl_map.values():
+        if is_skipped(bl_j):
+            continue
         s = parse_ts(bl_j.get("started_at"))
         e = parse_ts(bl_j.get("completed_at"))
         if s is not None and e is not None:
@@ -489,7 +511,7 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
 
         bl = bl_map.get(j["name"])
         bl_bar = ""
-        if bl and bl_t0 is not None:
+        if bl and not is_skipped(bl) and bl_t0 is not None:
             bl_s = parse_ts(bl.get("started_at"))
             bl_e = parse_ts(bl.get("completed_at"))
             if bl_s is not None and bl_e is not None:
@@ -507,7 +529,7 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
             name_display = f'{escape(j["workflow_name"])} / {escape(j["name"])}'
 
         delta_info = ""
-        if bl and bl.get("duration_s") is not None:
+        if bl and not is_skipped(bl) and bl.get("duration_s") is not None:
             d_text, d_cls = fmt_delta(dur, bl.get("duration_s"))
             delta_info = f' — {d_text}'
 
@@ -575,11 +597,6 @@ def _job_table(timings: dict, baseline: dict | None) -> str:
     bl_map = {j["name"]: j for j in (baseline or {}).get("jobs", [])}
     rows = []
     for j in timings.get("jobs", []):
-        dur = j.get("duration_s")
-        bl = bl_map.get(j["name"])
-        bl_dur = bl.get("duration_s") if bl else None
-        delta_text, delta_cls = fmt_delta(dur, bl_dur)
-
         name = escape(j["name"])
         if j.get("workflow_name"):
             name = f'{escape(j["workflow_name"])} / {escape(j["name"])}'
@@ -587,6 +604,23 @@ def _job_table(timings: dict, baseline: dict | None) -> str:
         concl = j.get("conclusion", "")
         concl_icon = {"success": "✓", "failure": "✗", "skipped": "⊘"}.get(concl, "?")
         concl_cls = {"success": "faster", "failure": "slower", "skipped": "neutral"}.get(concl, "neutral")
+
+        if is_skipped(j):
+            rows.append(
+                f'<tr>'
+                f'<td class="job-name">{name}</td>'
+                f'<td class="num neutral">skipped</td>'
+                f'<td class="num neutral">—</td>'
+                f'<td class="num neutral">—</td>'
+                f'<td class="{concl_cls}" style="text-align:center">{concl_icon}</td>'
+                f'</tr>'
+            )
+            continue
+
+        dur = j.get("duration_s")
+        bl = bl_map.get(j["name"])
+        bl_dur = bl.get("duration_s") if bl and not is_skipped(bl) else None
+        delta_text, delta_cls = fmt_delta(dur, bl_dur)
 
         rows.append(
             f'<tr>'
@@ -611,6 +645,8 @@ def _step_details(timings: dict, baseline: dict | None) -> str:
     blocks = []
     for j in timings.get("jobs", []):
         if not j.get("steps"):
+            continue
+        if is_skipped(j):
             continue
         bl = bl_map.get(j["name"], {})
         bl_steps = {s["name"]: s for s in bl.get("steps", [])}
@@ -659,8 +695,10 @@ def _regressions(timings: dict, baseline: dict | None) -> str:
 
     deltas = []  # (abs_delta, job_name, step_name, current, baseline, is_slower)
     for j in timings.get("jobs", []):
+        if is_skipped(j):
+            continue
         bl = bl_map.get(j["name"])
-        if not bl:
+        if not bl or is_skipped(bl):
             continue
         bl_steps = {s["name"]: s for s in bl.get("steps", [])}
         for s in j.get("steps", []):

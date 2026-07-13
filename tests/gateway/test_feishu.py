@@ -4604,9 +4604,51 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
             return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
         )
         adapter._resolve_source_chat_type = Mock(return_value="group")
-        adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
+        adapter.build_source = Mock(
+            side_effect=lambda **kwargs: SimpleNamespace(thread_id=kwargs["thread_id"])
+        )
         adapter._dispatch_inbound_event = AsyncMock()
         return adapter
+
+    def _process_root_id_reply(self, chat_type):
+        adapter = self._build_adapter()
+        adapter._fetch_message_text = AsyncMock(return_value="quoted message")
+        message = SimpleNamespace(
+            content=json.dumps({"text": "reply"}),
+            message_type="text",
+            message_id=f"m_{chat_type}_reply",
+            mentions=None,
+            chat_id=f"oc_{chat_type}",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+            root_id="om_quoted",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type=chat_type,
+                message_id=message.message_id,
+            )
+        )
+        return adapter._dispatch_inbound_event.call_args.args[0]
+
+    def test_p2p_root_id_keeps_reply_context_without_thread(self):
+        event = self._process_root_id_reply("p2p")
+
+        self.assertIsNone(event.source.thread_id)
+        self.assertEqual(event.reply_to_message_id, "om_quoted")
+        self.assertEqual(event.reply_to_text, "quoted message")
+
+    def test_group_root_id_is_preserved_as_thread(self):
+        event = self._process_root_id_reply("group")
+
+        self.assertEqual(event.source.thread_id, "om_quoted")
+        self.assertEqual(event.reply_to_message_id, "om_quoted")
+        self.assertEqual(event.reply_to_text, "quoted message")
 
     def test_leading_self_mention_stripped_for_command(self):
         from gateway.platforms.base import MessageType

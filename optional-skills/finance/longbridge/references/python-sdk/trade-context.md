@@ -25,6 +25,12 @@ ctx.unsubscribe([TopicType.Private])
 
 ## Submit Order
 
+> ⚠️ **State-changing — confirm before executing.** `submit_order` places a real order against
+> the user's brokerage account. Read back symbol, side, quantity, and price and get an explicit
+> "yes, place it" from the user immediately before calling this — never chain a submission
+> straight off a data lookup. Same rule as `mcp.md`'s "always ask for confirmation before
+> executing."
+
 ```python
 from decimal import Decimal
 from longbridge.openapi import TradeContext, Config, OrderSide, OrderType, TimeInForceType
@@ -56,6 +62,10 @@ resp = ctx.submit_order(
 | `outside_rth` | US only: `OutsideRTH.RTHOnly / AnyTime / Overnight` |
 
 ## Replace / Cancel Order
+
+> ⚠️ **State-changing — confirm before executing.** Both calls immediately mutate a live order.
+> Confirm the target `order_id` and the new price/quantity (for `replace_order`) with the user
+> right before calling — same confirmation gate as Submit Order above.
 
 ```python
 ctx.replace_order(

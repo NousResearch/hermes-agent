@@ -43,7 +43,7 @@ curl -sSL https://open.longbridge.com/longbridge/longbridge-terminal/install | s
 claude mcp add longbridge https://openapi.longbridge.com/mcp
 ```
 
-First tool call triggers an OAuth browser flow. See [references/mcp.md](references/mcp.md) for Cursor, ChatGPT, Zed.
+First tool call triggers an OAuth browser flow. See [mcp.md](mcp.md) for Cursor, ChatGPT, Zed.
 
 ## Revoking Authorization
 

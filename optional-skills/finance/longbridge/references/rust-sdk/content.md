@@ -97,16 +97,24 @@ async fn main() -> anyhow::Result<()> {
 
 ## Note: Python SDK
 
-The Python SDK does not expose a `ContentContext`. For news/filings/topics in Python, use:
+The Python SDK **does** expose `ContentContext` / `AsyncContentContext` with the same
+`news(symbol)` / `topics(symbol)` methods shown above — see
+[python-sdk/content-context.md](../python-sdk/content-context.md). Filings are on
+`QuoteContext.filings(symbol)` instead (there is no separate content-filings call), documented in
+[python-sdk/quote-context.md](../python-sdk/quote-context.md). Other equivalent options:
 
 1. **CLI** — `longbridge news SYMBOL`, `longbridge filing SYMBOL`, `longbridge topic SYMBOL`
-2. **HttpClient** — raw HTTP calls to `/v1/content/{symbol}/news`, `/v1/content/{symbol}/topics`, `/v1/quote/filings`
-3. **MCP** — `news`, `topics`, `filings` tools
+2. **MCP** — `news`, `topics`, `filings` tools
 
 ```python
-# Python: via HttpClient
-http = HttpClient.from_oauth(oauth)
-news = http.request("get", "/v1/content/TSLA.US/news")
-topics = http.request("get", "/v1/content/TSLA.US/topics")
-filings = http.request("get", "/v1/quote/filings", body={"symbol": "TSLA.US"})
+# Python: via ContentContext + QuoteContext
+from longbridge.openapi import ContentContext, QuoteContext, Config
+
+config = Config.from_apikey_env()
+content = ContentContext(config)
+quote = QuoteContext(config)
+
+news = content.news("TSLA.US")
+topics = content.topics("TSLA.US")
+filings = quote.filings("TSLA.US")
 ```

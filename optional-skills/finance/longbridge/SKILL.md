@@ -1,8 +1,8 @@
 ---
 name: longbridge
-description: Live financial market data, trading, and portfolio analysis via Longbridge Securities — quotes, K-lines, news, filings, fundamentals, earnings, options, insider trades, institutional holdings, watchlist, account positions and P&L. Covers US, HK, A-share, SG markets.
+description: Live quotes, trading, and portfolio data via Longbridge.
 version: 1.0.0
-author: Longbridge (https://longbridge.com)
+author: Hogan (hogan-yuan), Longbridge
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -13,98 +13,107 @@ metadata:
     requires_setup: true
 ---
 
-# Longbridge Developers Platform
+# Longbridge Skill
 
-Full-stack financial data and trading platform: CLI, Python/Rust SDK, MCP, and LLM integration.
+Full-stack financial data and trading platform for Longbridge Securities — CLI, Python/Rust
+SDKs, and MCP server, covering US, HK, A-share, and Singapore markets. Handles live quotes,
+fundamentals, news/filings, options, and account/portfolio/order management. Requires a
+Longbridge brokerage account and OAuth login; it does not work standalone without setup.
 
-> **Response language**: match the user's input language — Simplified Chinese / Traditional Chinese / English.
+> **Response language**: match the user's input language — Simplified Chinese / Traditional
+> Chinese / English.
 
-**Official docs:** https://open.longbridge.com
-**llms.txt:** https://open.longbridge.com/llms.txt
+## When to Use
 
-For setup and authentication details, see [references/setup.md](references/setup.md).
+- User asks about stock price, portfolio, positions, or P&L for a symbol on US, HK, China
+  A-share, or Singapore exchanges
+- User wants news, SEC/regulatory filings, or community discussion for a symbol
+- User wants fundamentals, valuation percentile, or analyst estimates
+- User wants to place, replace, or cancel a real brokerage order (confirmation required — see
+  Pitfalls)
+- User asks about Longbridge SDK syntax (Python/Rust), MCP server setup, or LLMs.txt/IDE/RAG
+  integration
 
----
+## Prerequisites
 
-## Investment Analysis Workflow
+- A Longbridge brokerage account, OAuth-authenticated via one of:
+  - **CLI** — install + `longbridge auth login` (full steps in
+    [references/setup.md](references/setup.md))
+  - **MCP** — hosted endpoint, no local install (full steps in
+    [references/mcp.md](references/mcp.md))
+- `requires_setup: true` — this skill cannot answer live-data questions until authentication is
+  done. If the user hasn't set up either path yet, walk them through
+  [references/setup.md](references/setup.md) first.
 
-When the user asks about stock performance, portfolio advice, or market analysis:
+## How to Run
 
-1. **Get live data** via CLI — quotes, positions, K-line history, intraday
-2. **Get news/catalysts** via CLI — **prefer Longbridge first**; fall back to WebSearch only if insufficient
-3. **Combine** — price action + volume + catalyst → analysis + suggestion
+Invoke the CLI through the `terminal` tool:
+
+```bash
+longbridge <command> [flags]
+```
+
+**Always run `longbridge --help` and `longbridge <command> --help` before relying on a flag** —
+the CLI evolves and this file does not attempt to enumerate every option.
+
+## Quick Reference
 
 ```bash
 # Market data
 longbridge quote SYMBOL.US
 longbridge positions                # stock positions
-longbridge portfolio                # P/L, asset distribution, holdings, cash (always pull when user asks about "my portfolio")
-longbridge portfolio short-margin   # short-selling margin deposit details per position
+longbridge portfolio                # P/L, asset distribution, holdings, cash
 longbridge kline history SYMBOL.US --start YYYY-MM-DD --end YYYY-MM-DD --period day
 longbridge intraday SYMBOL.US
 
-# News & content (prefer these over WebSearch)
+# News & content (prefer these over web_search)
 longbridge news SYMBOL.US           # latest news articles
-longbridge news detail <id>         # full article content
-longbridge news search "keyword"    # keyword search across news articles
-longbridge filing SYMBOL.US         # regulatory filings list (8-K, 10-Q, 10-K, etc.)
+longbridge filing SYMBOL.US         # regulatory filings (8-K, 10-Q, 10-K, etc.)
 longbridge topic SYMBOL.US          # community discussion
-longbridge topic search "keyword"   # keyword search across community topics
-longbridge market-temp              # market sentiment index (0–100)
+longbridge market-temp              # market sentiment index (0-100)
 
 # Fundamentals & analysis
 longbridge financial-statement SYMBOL.US --kind ALL   # hierarchical IS/BS/CF with YoY
 longbridge financial-report SYMBOL.US --latest        # key KPI summary (revenue/EPS/ROE)
 longbridge analyst-estimates SYMBOL.US                # EPS consensus (high/low/mean/median)
-longbridge valuation-rank SYMBOL.US                   # daily PE/PB/PS industry percentile rank
-
-# IPO
-longbridge ipo subscriptions        # HK IPOs in subscription stage
-longbridge ipo calendar             # all upcoming and recent IPOs
-longbridge ipo us-subscriptions     # US IPOs in subscription stage
+longbridge valuation-rank SYMBOL.US                   # daily PE/PB/PS industry percentile
 
 # Account
-longbridge assets                   # full asset overview: cash, buying power, margin, risk level
-longbridge statement --help         # check subcommands for statement export options
-longbridge bank-cards               # bank cards linked to the account
-longbridge withdrawals              # withdrawal history
-longbridge deposits                 # deposit history
-
-# Institutional investors (SEC 13F)
-longbridge investors                # top active fund managers by AUM
-longbridge investors <CIK>          # holdings for a specific investor by CIK
+longbridge assets                   # cash, buying power, margin, risk level
 longbridge insider-trades SYMBOL.US # SEC Form 4 insider transaction history
 ```
 
-For commands with complex flags, always run `longbridge <command> --help` for current options.
+## Procedure
 
-Only fall back to WebSearch when Longbridge news is insufficient (e.g., breaking news not yet indexed, macro events unrelated to a specific symbol).
+**Investment analysis workflow** — when the user asks about stock performance, portfolio
+advice, or market analysis:
 
----
+1. **Get live data** via CLI — quotes, positions, K-line history, intraday
+2. **Get news/catalysts** via CLI — prefer Longbridge first; fall back to `web_search` only if
+   Longbridge's results are insufficient (e.g. breaking news not yet indexed, macro events
+   unrelated to a specific symbol)
+3. **Combine** — price action + volume + catalyst → analysis + suggestion
 
-## Choose the Right Tool
+**Choose the right tool:**
 
 ```
-User wants to...                         → Use
-─────────────────────────────────────────────────────────────────
+User wants to...                         -> Use
+--------------------------------------------------------------------
 Quick quote / one-off data lookup        CLI
 Interactive terminal workflows           CLI
-Script market data, save to file         CLI + jq  (or Python SDK)
+Script market data, save to file         CLI + jq (or Python SDK)
 Loops, conditions, transformations       Python SDK (sync)
 Async pipelines, concurrent fetches      Python SDK (async)
 Production service, high throughput      Rust SDK
 Real-time WebSocket subscription loop    SDK (Python or Rust)
 Programmatic order strategy              SDK
 Talk to AI about stocks (no code)        MCP (hosted or self-hosted)
-Use Cursor/Claude for trading analysis   MCP
 Add Longbridge API docs to IDE/RAG       LLMs.txt / Markdown API
 ```
 
-## Symbol Format
+**Symbol format** — `<CODE>.<MARKET>`, applies to all tools:
 
-`<CODE>.<MARKET>` — applies to all tools.
-
-| Market         | Suffix | Examples                        |
+| Market         | Suffix | Examples                       |
 | -------------- | ------ | ------------------------------- |
 | Hong Kong      | `HK`   | `700.HK`, `9988.HK`, `2318.HK`  |
 | United States  | `US`   | `TSLA.US`, `AAPL.US`, `NVDA.US` |
@@ -113,62 +122,98 @@ Add Longbridge API docs to IDE/RAG       LLMs.txt / Markdown API
 | Singapore      | `SG`   | `D05.SG`, `U11.SG`              |
 | Crypto         | `HAS`  | `BTCUSD.HAS`, `ETHUSD.HAS`      |
 
+## Pitfalls
+
+- **Order placement is state-changing — always confirm first.** Before calling
+  `submit_order`/`replace_order`/`cancel_order` (SDK) or an order-placing MCP tool, read back
+  symbol, side, quantity, and price and get an explicit "yes" from the user. See the warnings in
+  [references/python-sdk/trade-context.md](references/python-sdk/trade-context.md) and
+  [references/rust-sdk/trade-context.md](references/rust-sdk/trade-context.md).
+- **Don't over-rely on `web_search` for symbol news.** Longbridge's `news`/`filing`/`topic`
+  commands are the primary source; only fall back when they're genuinely insufficient.
+- **CLI flags change across versions.** Don't hardcode a flag from memory — check
+  `longbridge <command> --help` first.
+- **Python SDK does have `ContentContext`.** Some third-party docs claim otherwise; it exists
+  with `news()`/`topics()` methods — see
+  [references/python-sdk/content-context.md](references/python-sdk/content-context.md). Filings
+  are on `QuoteContext.filings()` instead, not on `ContentContext`.
+
+## Verification
+
+```bash
+longbridge quote AAPL.US
+```
+
+Should print a quote for AAPL with a non-empty price field. If it instead errors with an auth
+message, walk the user through [references/setup.md](references/setup.md).
+
 ## Reference Files
 
 ### CLI (Terminal)
 
-- **Overview** — install, auth, output formats, patterns: [references/cli/overview.md](references/cli/overview.md)
-
-**Always use `longbridge --help` to list available commands, and `longbridge <command> --help` for specific options and flags.** Do not rely on hardcoded documentation — the CLI's built-in help is always up-to-date.
+- **Overview** — install, auth, output formats, patterns:
+  [references/cli/overview.md](references/cli/overview.md)
 
 ### Python SDK
 
-- **Overview** — install, Config, auth, HttpClient: [references/python-sdk/overview.md](references/python-sdk/overview.md)
-- **QuoteContext** — all quote methods + subscriptions: [references/python-sdk/quote-context.md](references/python-sdk/quote-context.md)
-- **TradeContext** — orders, account, executions: [references/python-sdk/trade-context.md](references/python-sdk/trade-context.md)
-- **Types & Enums** — Period, OrderType, SubType, push types: [references/python-sdk/types.md](references/python-sdk/types.md)
+- **Overview** — install, Config, auth, HttpClient:
+  [references/python-sdk/overview.md](references/python-sdk/overview.md)
+- **QuoteContext** — all quote methods + subscriptions:
+  [references/python-sdk/quote-context.md](references/python-sdk/quote-context.md)
+- **ContentContext** — news + topics:
+  [references/python-sdk/content-context.md](references/python-sdk/content-context.md)
+- **TradeContext** — orders, account, executions:
+  [references/python-sdk/trade-context.md](references/python-sdk/trade-context.md)
+- **Types & Enums** — Period, OrderType, SubType, push types:
+  [references/python-sdk/types.md](references/python-sdk/types.md)
 
 ### Rust SDK
 
-- **Overview** — Cargo.toml, Config, auth, error handling: [references/rust-sdk/overview.md](references/rust-sdk/overview.md)
-- **QuoteContext** — all methods, SubFlags, PushEvent: [references/rust-sdk/quote-context.md](references/rust-sdk/quote-context.md)
-- **TradeContext** — orders, SubmitOrderOptions builder, account: [references/rust-sdk/trade-context.md](references/rust-sdk/trade-context.md)
-- **Content** — news, filings, topics (ContentContext + Python fallback): [references/rust-sdk/content.md](references/rust-sdk/content.md)
-- **Types & Enums** — all Rust enums and structs: [references/rust-sdk/types.md](references/rust-sdk/types.md)
+- **Overview** — Cargo.toml, Config, auth, error handling:
+  [references/rust-sdk/overview.md](references/rust-sdk/overview.md)
+- **QuoteContext** — all methods, SubFlags, PushEvent:
+  [references/rust-sdk/quote-context.md](references/rust-sdk/quote-context.md)
+- **TradeContext** — orders, SubmitOrderOptions builder, account:
+  [references/rust-sdk/trade-context.md](references/rust-sdk/trade-context.md)
+- **Content** — news, filings, topics (with Python-SDK cross-reference):
+  [references/rust-sdk/content.md](references/rust-sdk/content.md)
+- **Types & Enums** — all Rust enums and structs:
+  [references/rust-sdk/types.md](references/rust-sdk/types.md)
 
 ### AI Integration
 
-- **MCP** — hosted service, self-hosted server, setup & auth: [references/mcp.md](references/mcp.md)
-- **LLMs & Markdown** — llms.txt, `open.longbridge.com` doc Markdown, `longbridge.com` live news/quote pages (`.md` suffix + Accept header), Cursor/IDE integration: [references/llm.md](references/llm.md)
+- **MCP** — hosted service, self-hosted server, setup & auth:
+  [references/mcp.md](references/mcp.md)
+- **LLMs & Markdown** — llms.txt, `open.longbridge.com` doc Markdown, Cursor/IDE integration:
+  [references/llm.md](references/llm.md)
 
 Load specific reference files on demand — do not load all at once.
 
----
+## Related Skills
 
-## Related skills
+The skills below are siblings in the `longbridge/skills` family. If they're installed, defer to
+them for the listed user intents — they're more specialised and produce better-formatted
+output. If they're **not** installed, this skill's own CLI workflow above handles the same
+queries with less specialised formatting.
 
-The skills below are siblings in the `longbridge/skills` family. If they're installed, defer to them for the listed user intents — they're more specialised and produce better-formatted output. If they're **not** installed, this skill's own CLI workflow above can handle the same queries with less specialised formatting; the foundation skill remains usable standalone.
+| If the user wants ...                                                          | Use                                                       |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Live quote / static reference / valuation indices for a single name            | [`longbridge-quote`](../longbridge-quote)                 |
+| Candlestick / intraday chart                                                    | [`longbridge-kline`](../longbridge-kline)                 |
+| Orderbook depth / brokers / tick trades                                        | [`longbridge-depth`](../longbridge-depth)                 |
+| Capital flow / large-order distribution                                        | [`longbridge-capital-flow`](../longbridge-capital-flow)   |
+| Market-level state — open/close, sentiment temperature, calendar               | [`longbridge-market-temp`](../longbridge-market-temp)     |
+| Options / warrants                                                             | [`longbridge-derivatives`](../longbridge-derivatives)     |
+| Stock + fund holdings, multi-currency assets, margin ratio, max-buy quantity   | [`longbridge-positions`](../longbridge-positions)         |
+| Today's / historical orders, executions, cash flow                            | [`longbridge-orders`](../longbridge-orders)               |
+| Read-only watchlist groups                                                      | [`longbridge-watchlist`](../longbridge-watchlist)         |
+| Watchlist mutations (create / rename / add / remove)                          | [`longbridge-watchlist-admin`](../longbridge-watchlist-admin) |
+| "Is X expensive?" — historical PE/PB percentile, industry context             | [`longbridge-valuation`](../longbridge-valuation)         |
+| 5-dimension fundamentals (KPIs, dividends, consensus, ratings)                 | [`longbridge-fundamental`](../longbridge-fundamental)     |
+| Account-level P&L and contribution analysis                                    | [`longbridge-portfolio`](../longbridge-portfolio)         |
+| Classified news + filings + community sentiment for a single name             | [`longbridge-news`](../longbridge-news)                   |
+| Institutional-grade post-earnings report                                       | [`longbridge-earnings`](../longbridge-earnings)           |
 
-| If the user wants … | Use |
-|---|---|
-| Live quote / static reference / valuation indices for a single name | [`longbridge-quote`](../longbridge-quote) |
-| Candlestick / intraday chart | [`longbridge-kline`](../longbridge-kline) |
-| Orderbook depth / brokers / tick trades | [`longbridge-depth`](../longbridge-depth) |
-| Capital flow / large-order distribution | [`longbridge-capital-flow`](../longbridge-capital-flow) |
-| Market-level state — open / close, sentiment temperature, calendar | [`longbridge-market-temp`](../longbridge-market-temp) |
-| Options / warrants | [`longbridge-derivatives`](../longbridge-derivatives) |
-| US overnight-eligible securities catalog / HK broker dictionary | [`longbridge-security-list`](../longbridge-security-list) |
-| Stock + fund holdings, multi-currency assets, margin ratio, max-buy quantity | [`longbridge-positions`](../longbridge-positions) |
-| Today's / historical orders, executions, cash flow | [`longbridge-orders`](../longbridge-orders) |
-| Read-only watchlist groups | [`longbridge-watchlist`](../longbridge-watchlist) |
-| Watchlist mutations (create / rename / add / remove) | [`longbridge-watchlist-admin`](../longbridge-watchlist-admin) |
-| Active real-time WebSocket subscription diagnostics | [`longbridge-subscriptions`](../longbridge-subscriptions) |
-| "Is X expensive?" — historical PE / PB percentile, industry context | [`longbridge-valuation`](../longbridge-valuation) |
-| 5-dimension fundamentals (KPIs, dividends, consensus, ratings) | [`longbridge-fundamental`](../longbridge-fundamental) |
-| 2–5 symbol comparison matrix | [`longbridge-peer-comparison`](../longbridge-peer-comparison) |
-| Account-level P&L and contribution analysis | [`longbridge-portfolio`](../longbridge-portfolio) |
-| Classified news + filings + community sentiment for a single name | [`longbridge-news`](../longbridge-news) |
-| Daily incremental briefing across the watchlist | [`longbridge-catalyst-radar`](../longbridge-catalyst-radar) |
-| Institutional-grade post-earnings DOCX report (8–12 pages) | [`longbridge-earnings`](../longbridge-earnings) |
-
-This skill (`longbridge`) stays in scope when the user asks about: SDK syntax (Python / Rust), MCP server setup, LLMs.txt / IDE / RAG integration, raw CLI subcommand discovery, or anything cross-cutting that doesn't map cleanly to one specialised skill.
+This skill (`longbridge`) stays in scope for SDK syntax questions, MCP setup, LLMs.txt/IDE/RAG
+integration, raw CLI subcommand discovery, or anything cross-cutting that doesn't map to one
+specialised skill.

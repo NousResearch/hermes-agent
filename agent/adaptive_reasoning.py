@@ -40,7 +40,7 @@ def _is_verified_gpt56_codex(agent: Any) -> bool:
         return False
 
     model = str(getattr(agent, "model", "") or "").strip().lower()
-    if model not in {"gpt-5.6", "gpt-5.6-sol"}:
+    if model != "gpt-5.6-sol":
         return False
     base_url = str(getattr(agent, "base_url", "") or "").strip().rstrip("/")
     return base_url == _CODEX_BASE_URL
@@ -133,7 +133,19 @@ def _base_reasoning_config(agent: Any) -> dict[str, Any] | None:
     if isinstance(configured, dict):
         if configured.get("enabled") is False:
             return {"enabled": False}
-        effort = _normalize_effort(configured.get("effort"), default=_DEFAULT_BASELINE)
+        configured_effort = _normalize_effort(
+            configured.get("effort"), default=_DEFAULT_BASELINE
+        )
+        # The verified GPT-5.6-sol route is quality-first even when an older
+        # config still carries ``minimal``, ``low``, or ``medium``.  This is a
+        # static capability floor, not a task classifier: no prompt, message,
+        # tool argument, or task metadata is inspected.  Explicitly disabling
+        # reasoning above remains authoritative, while an operator-selected
+        # deeper baseline (xhigh/max) is preserved.
+        effort = max(
+            (configured_effort, _DEFAULT_BASELINE),
+            key=lambda item: _EFFORT_INDEX[item],
+        )
         return {"enabled": True, "effort": effort}
     # Only the verified GPT-5.6 Codex route receives the quality-first default.
     if _is_verified_gpt56_codex(agent):

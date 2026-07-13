@@ -68,6 +68,27 @@ def test_quality_first_baseline_and_model_authored_escalation_are_turn_scoped():
     assert effective_reasoning_config(agent) == {"enabled": True, "effort": "high"}
 
 
+def test_verified_route_has_static_high_floor_without_task_classification():
+    for configured in ("minimal", "low", "medium", "high", "", "unknown"):
+        agent = _agent(reasoning_config={"enabled": True, "effort": configured})
+        assert effective_reasoning_config(agent) == {
+            "enabled": True,
+            "effort": "high",
+        }
+
+    # A deeper explicit operator baseline remains authoritative. The adaptive
+    # action only ever raises from that baseline and never classifies task text.
+    agent = _agent(reasoning_config={"enabled": True, "effort": "xhigh"})
+    assert effective_reasoning_config(agent) == {
+        "enabled": True,
+        "effort": "xhigh",
+    }
+    receipt = _apply(agent, {"effort": "high"})
+    assert receipt["status"] == "rejected"
+    assert receipt["reason"] == "below_user_baseline"
+    assert receipt["baseline_effort"] == "xhigh"
+
+
 def test_static_defaults_are_model_gated_bounded_and_pro_absent():
     assert DEFAULT_CONFIG["agent"]["reasoning_effort"] == ""
     assert DEFAULT_CONFIG["agent"]["adaptive_reasoning"] == {
@@ -188,6 +209,11 @@ def test_verified_backend_gate_rejects_copilot_github_and_custom_routes():
         ("openai-codex", "https://models.github.ai/inference", "gpt-5.6-sol"),
         ("openai-codex", "https://example.com/backend-api/codex", "gpt-5.6-sol"),
         ("openai-codex", "http://chatgpt.com/backend-api/codex", "gpt-5.6-sol"),
+        (
+            "openai-codex",
+            "https://chatgpt.com/backend-api/codex",
+            "gpt-5.6",
+        ),
         (
             "openai-codex",
             "https://chatgpt.com/backend-api/codex",

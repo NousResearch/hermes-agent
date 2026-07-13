@@ -12,12 +12,34 @@ from __future__ import annotations
 import pytest
 
 from gateway.kanban_watchers import _resolve_auto_decompose_settings
+from hermes_cli.config import DEFAULT_CONFIG, _deep_merge
+from hermes_cli.kanban_planning_policy import auxiliary_planning_enabled
 
 
 def test_disabled_by_default_when_key_absent():
     enabled, per_tick = _resolve_auto_decompose_settings(lambda: {"kanban": {}})
     assert enabled is False
     assert per_tick == 3
+
+
+def test_legacy_cloud_shape_disables_semantic_planning_but_keeps_mechanical_dispatch():
+    """An existing install need not materialize the new key on disk.
+
+    Runtime config merging supplies the fork's fail-closed semantic policy,
+    while the pre-existing gateway dispatcher remains a mechanical executor.
+    """
+    legacy_user_config = {
+        "kanban": {
+            "auto_decompose": False,
+            "dispatch_in_gateway": True,
+        }
+    }
+    effective = _deep_merge(DEFAULT_CONFIG, legacy_user_config)
+
+    assert effective["kanban"]["auxiliary_planning_enabled"] is False
+    assert auxiliary_planning_enabled(effective) is False
+    assert _resolve_auto_decompose_settings(lambda: effective)[0] is False
+    assert effective["kanban"]["dispatch_in_gateway"] is True
 
 
 def test_explicit_true_enables_auto_decompose():

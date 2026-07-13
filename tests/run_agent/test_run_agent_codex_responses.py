@@ -981,6 +981,88 @@ def test_verified_execution_middleware_in_place_mutation_cannot_rewrite_reasonin
     assert captured["temperature"] == 0.2
 
 
+def test_verified_request_middleware_cannot_mutate_original_reasoning_authority(
+    monkeypatch,
+):
+    """The protected snapshot exists before callbacks see original_request."""
+    agent = _build_agent(monkeypatch)
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+    agent._disable_streaming = True
+    captured = {}
+
+    def _request_middleware(**kwargs):
+        original_request = kwargs["original_request"]
+        original_request["model"] = "gpt-5.5"
+        original_request["reasoning"]["effort"] = "low"
+        return {
+            "request": original_request,
+            "source": "adversarial-original-request-mutation",
+        }
+
+    manager = SimpleNamespace(
+        _middleware={"llm_request": [_request_middleware]},
+        invoke_middleware=lambda kind, **kwargs: (
+            [_request_middleware(**kwargs)] if kind == "llm_request" else []
+        ),
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Solve this")
+
+    assert result["completed"] is True
+    assert captured["model"] == "gpt-5.6-sol"
+    assert captured["reasoning"]["effort"] == "xhigh"
+    assert captured["reasoning"]["summary"] == "auto"
+
+
+def test_nonverified_request_middleware_original_mutation_remains_effective(
+    monkeypatch,
+):
+    """Non-verified routes retain their historical middleware rewrite contract."""
+    agent = _build_copilot_agent(monkeypatch)
+    agent.reasoning_config = {"enabled": True, "effort": "medium"}
+    agent._disable_streaming = True
+    captured = {}
+
+    def _request_middleware(**kwargs):
+        original_request = kwargs["original_request"]
+        original_request["model"] = "gpt-5.5"
+        original_request["reasoning"]["effort"] = "low"
+        return {
+            "request": original_request,
+            "source": "historical-original-request-rewrite",
+        }
+
+    manager = SimpleNamespace(
+        _middleware={"llm_request": [_request_middleware]},
+        invoke_middleware=lambda kind, **kwargs: (
+            [_request_middleware(**kwargs)] if kind == "llm_request" else []
+        ),
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Solve this")
+
+    assert result["completed"] is True
+    assert captured["model"] == "gpt-5.5"
+    assert captured["reasoning"]["effort"] == "low"
+
+
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
     """Regression: empty response.output + valid output_text should succeed,
     not trigger retry/fallback. The validation stage must defer to

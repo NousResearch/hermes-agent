@@ -1179,6 +1179,23 @@ def run_conversation(
                     _xh["x-initiator"] = "user"
                     api_kwargs["extra_headers"] = _xh
                     agent._is_user_initiated_turn = False
+
+                from agent.adaptive_reasoning import (
+                    preserve_verified_reasoning_payload,
+                )
+
+                # Capture the verified model/reasoning authority before any
+                # middleware receives a request object. Request middleware is
+                # intentionally allowed to inspect and mutate its historical
+                # ``original_request`` argument, so that object cannot also be
+                # the authority used to restore the model-authored decision.
+                # The helper deep-copies only the protected fields on the exact
+                # verified route and remains a no-op for every other route.
+                _verified_reasoning_authority = preserve_verified_reasoning_payload(
+                    agent,
+                    api_kwargs,
+                    {},
+                )
                 try:
                     from hermes_cli.middleware import apply_llm_request_middleware
 
@@ -1202,13 +1219,9 @@ def run_conversation(
                     _original_api_kwargs = dict(api_kwargs)
                     _llm_middleware_trace = []
 
-                from agent.adaptive_reasoning import (
-                    preserve_verified_reasoning_payload,
-                )
-
                 api_kwargs = preserve_verified_reasoning_payload(
                     agent,
-                    _original_api_kwargs,
+                    _verified_reasoning_authority,
                     api_kwargs,
                 )
                 # Execution middleware receives ``api_kwargs`` by reference and
@@ -1219,12 +1232,6 @@ def run_conversation(
                 # dispatch boundary.  ``preserve_verified_reasoning_payload``
                 # deep-copies the protected values and is a no-op off the exact
                 # verified GPT-5.6 Codex route.
-                _verified_reasoning_authority = preserve_verified_reasoning_payload(
-                    agent,
-                    api_kwargs,
-                    {},
-                )
-
                 try:
                     from hermes_cli.plugins import (
                         has_hook,

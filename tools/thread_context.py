@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+from contextlib import contextmanager
 from typing import Callable
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,65 @@ def _callback_api():
         set_approval_callback,
         set_sudo_password_callback,
     )
+
+
+def _async_callback_api():
+    """Resolve callback APIs used while submitting work to another loop."""
+    from tools.terminal_tool import (
+        _get_approval_callback,
+        _get_sudo_password_callback,
+        _reset_task_callback_override,
+        _set_task_callback_override,
+    )
+
+    return (
+        _get_approval_callback,
+        _get_sudo_password_callback,
+        _set_task_callback_override,
+        _reset_task_callback_override,
+    )
+
+
+@contextmanager
+def propagate_context_to_async_task():
+    """Expose current thread-local callbacks to a newly submitted async task.
+
+    ``asyncio.run_coroutine_threadsafe()`` copies the caller's ContextVars when
+    it schedules its task on the target loop. Bind the current thread-local
+    approval/sudo callbacks to a temporary ContextVar override around that
+    submission so concurrent tasks on a shared bridge thread remain isolated.
+    """
+    parent_approval_cb = parent_sudo_cb = None
+    set_override = reset_override = None
+    try:
+        get_approval, get_sudo, set_override, reset_override = _async_callback_api()
+        parent_approval_cb = get_approval()
+        parent_sudo_cb = get_sudo()
+    except Exception:
+        logger.debug("Could not capture async-task approval/sudo callbacks", exc_info=True)
+
+    token = None
+    if set_override is not None:
+        try:
+            token = set_override(parent_approval_cb, parent_sudo_cb)
+        except Exception:
+            logger.debug(
+                "Failed to bind async-task approval/sudo callbacks; "
+                "dangerous-command approval will fail closed",
+                exc_info=True,
+            )
+
+    try:
+        yield
+    finally:
+        if token is not None and reset_override is not None:
+            try:
+                reset_override(token)
+            except Exception:
+                logger.debug(
+                    "Failed to reset async-task approval/sudo callbacks",
+                    exc_info=True,
+                )
 
 
 def propagate_context_to_thread(target: Callable) -> Callable:

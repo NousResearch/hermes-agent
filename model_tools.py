@@ -137,8 +137,10 @@ def _run_async_in_oneoff_thread(coro, timeout: float = _ASYNC_BRIDGE_TIMEOUT):
                 finally:
                     done.set()
 
+    from tools.thread_context import propagate_context_to_thread
+
     thread = threading.Thread(
-        target=_target,
+        target=propagate_context_to_thread(_target),
         daemon=True,
         name="model-tools-async-oneoff",
     )
@@ -374,7 +376,10 @@ def _run_async(coro):
             return _run_async_in_oneoff_thread(coro, timeout=_ASYNC_BRIDGE_TIMEOUT)
 
         bridge_loop = _get_async_bridge_loop()
-        future = asyncio.run_coroutine_threadsafe(coro, bridge_loop)
+        from tools.thread_context import propagate_context_to_async_task
+
+        with propagate_context_to_async_task():
+            future = asyncio.run_coroutine_threadsafe(coro, bridge_loop)
         try:
             return future.result(timeout=_ASYNC_BRIDGE_TIMEOUT)
         except TimeoutError:

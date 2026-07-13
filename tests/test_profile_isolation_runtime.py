@@ -200,7 +200,7 @@ class TestThreadContextPropagation:
             return str(get_hermes_home())
 
         async def driver():
-            # Inside a running loop, _run_async spawns a worker thread + loop.
+            # Inside a running loop, _run_async submits to its persistent bridge.
             return model_tools._run_async(reads_home())
 
         seen = _under_override(prof_b, lambda: asyncio.run(driver()))

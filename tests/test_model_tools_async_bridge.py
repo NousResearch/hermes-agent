@@ -522,6 +522,157 @@ class TestRunAsyncWithRunningLoop:
             "async clients become orphaned and leak descriptors in gateway mode"
         )
 
+    def test_concurrent_submissions_isolate_profile_and_callbacks(self, tmp_path):
+        """Shared bridge tasks must retain each caller's profile and callbacks."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        import model_tools
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from tools.terminal_tool import (
+            _get_approval_callback,
+            _get_sudo_password_callback,
+            set_approval_callback,
+            set_sudo_password_callback,
+        )
+
+        profiles = {
+            "a": tmp_path / "profile-a",
+            "b": tmp_path / "profile-b",
+        }
+        callbacks = {
+            "a": (object(), object()),
+            "b": (object(), object()),
+        }
+        caller_barrier = threading.Barrier(2)
+        bridge_barrier = asyncio.Barrier(2)
+
+        async def _observe_context():
+            def _snapshot():
+                return (
+                    str(get_hermes_home()),
+                    _get_approval_callback(),
+                    _get_sudo_password_callback(),
+                    asyncio.get_running_loop(),
+                    threading.get_ident(),
+                )
+
+            before = _snapshot()
+            await asyncio.wait_for(bridge_barrier.wait(), timeout=2)
+            await asyncio.sleep(0)
+            return before, _snapshot()
+
+        async def _driver():
+            return model_tools._run_async(_observe_context())
+
+        def _submit(key):
+            approval_cb, sudo_cb = callbacks[key]
+            token = set_hermes_home_override(profiles[key])
+            set_approval_callback(approval_cb)
+            set_sudo_password_callback(sudo_cb)
+            try:
+                caller_barrier.wait(timeout=2)
+                observed = asyncio.run(_driver())
+                caller_callbacks = (
+                    _get_approval_callback(),
+                    _get_sudo_password_callback(),
+                )
+                return observed, caller_callbacks
+            finally:
+                set_approval_callback(None)
+                set_sudo_password_callback(None)
+                reset_hermes_home_override(token)
+
+        model_tools.shutdown_async_bridge_loop()
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                submitted = {key: pool.submit(_submit, key) for key in profiles}
+                results = {key: future.result(timeout=5) for key, future in submitted.items()}
+
+            bridge_loops = set()
+            bridge_threads = set()
+            for key, (observed, caller_callbacks) in results.items():
+                approval_cb, sudo_cb = callbacks[key]
+                expected = (str(profiles[key]), approval_cb, sudo_cb)
+                before, after = observed
+                assert before[:3] == expected
+                assert after[:3] == expected
+                assert caller_callbacks == (approval_cb, sudo_cb)
+                bridge_loops.add(id(before[3]))
+                bridge_threads.add(before[4])
+                assert before[3] is after[3]
+                assert before[4] == after[4]
+
+            assert len(bridge_loops) == 1
+            assert len(bridge_threads) == 1
+
+            previous_approval = _get_approval_callback()
+            previous_sudo = _get_sudo_password_callback()
+            set_approval_callback(None)
+            set_sudo_password_callback(None)
+
+            async def _read_unbound_callbacks():
+                return _get_approval_callback(), _get_sudo_password_callback()
+
+            async def _unbound_driver():
+                return model_tools._run_async(_read_unbound_callbacks())
+
+            try:
+                assert asyncio.run(_unbound_driver()) == (None, None)
+            finally:
+                set_approval_callback(previous_approval)
+                set_sudo_password_callback(previous_sudo)
+        finally:
+            model_tools.shutdown_async_bridge_loop()
+
+    def test_nested_bridge_fallback_preserves_profile_and_callbacks(self, tmp_path):
+        """The one-off nested fallback must inherit the bridge task's context."""
+        import model_tools
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from tools.terminal_tool import (
+            _get_approval_callback,
+            _get_sudo_password_callback,
+            set_approval_callback,
+            set_sudo_password_callback,
+        )
+
+        profile = tmp_path / "nested-profile"
+        approval_cb = object()
+        sudo_cb = object()
+
+        async def _inner():
+            return (
+                str(get_hermes_home()),
+                _get_approval_callback(),
+                _get_sudo_password_callback(),
+            )
+
+        async def _outer():
+            return model_tools._run_async(_inner())
+
+        async def _driver():
+            return model_tools._run_async(_outer())
+
+        previous_approval = _get_approval_callback()
+        previous_sudo = _get_sudo_password_callback()
+        token = set_hermes_home_override(profile)
+        set_approval_callback(approval_cb)
+        set_sudo_password_callback(sudo_cb)
+        try:
+            assert asyncio.run(_driver()) == (str(profile), approval_cb, sudo_cb)
+        finally:
+            set_approval_callback(previous_approval)
+            set_sudo_password_callback(previous_sudo)
+            reset_hermes_home_override(token)
+            model_tools.shutdown_async_bridge_loop()
+
     def test_nested_call_from_bridge_loop_uses_worker_loop(self, monkeypatch):
         """Calling _run_async from the bridge loop itself must not deadlock."""
         import concurrent.futures as _cf

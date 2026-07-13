@@ -4386,6 +4386,13 @@ def cmd_import(args):
     run_import(args)
 
 
+def cmd_sync(args):
+    """Portable profile sync export/import."""
+    from hermes_cli.sync import run_sync
+
+    run_sync(args)
+
+
 def _print_version_info(*, check_updates: bool = True) -> None:
     from hermes_cli.config import detect_install_method
     from hermes_cli.banner import format_banner_version_label
@@ -12313,7 +12320,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
+        "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -12960,10 +12967,16 @@ def main():
 
     migrate_parser = subparsers.add_parser(
         "migrate",
-        help="Migrate configuration for retired models or deprecated settings",
+        help="Migrate configs for retired models, or move portable profile "
+        "state between machines",
         description=(
-            "Diagnose and (optionally) rewrite the active config.yaml to "
-            "replace references to retired models or deprecated settings."
+            "Migration workflows. `migrate xai` diagnoses and (optionally) "
+            "rewrites the active config.yaml to replace references to retired "
+            "models or deprecated settings. `migrate export/import/verify` "
+            "move portable Hermes profile state between machines using the "
+            "same safe structured bundle format as `hermes sync`: plaintext "
+            "secrets and runtime state are excluded, and bundles are "
+            "validated before import."
         ),
     )
     migrate_subparsers = migrate_parser.add_subparsers(dest="migrate_type")
@@ -12989,6 +13002,60 @@ def main():
         help="Skip the timestamped backup of config.yaml when applying",
     )
     migrate_xai.set_defaults(func=cmd_migrate_xai)
+
+    migrate_export = migrate_subparsers.add_parser(
+        "export",
+        help="Export portable profile state to a migration bundle directory",
+    )
+    migrate_export.add_argument(
+        "--out",
+        required=True,
+        help="Output directory for the structured migration bundle",
+    )
+    migrate_export.add_argument(
+        "--device-id",
+        help="Device identifier for device-local config (default: derived from host)",
+    )
+
+    migrate_import = migrate_subparsers.add_parser(
+        "import",
+        help="Import portable profile state from a migration bundle directory",
+    )
+    migrate_import.add_argument(
+        "--from",
+        dest="source_dir",
+        required=True,
+        help="Migration bundle directory to import from",
+    )
+    migrate_import.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the exact local write plan without changing files",
+    )
+    migrate_import.add_argument(
+        "--device-id",
+        help="Device identifier for device-local config (default: derived from host)",
+    )
+
+    migrate_verify = migrate_subparsers.add_parser(
+        "verify",
+        help="Validate a migration bundle before import",
+    )
+    migrate_verify.add_argument(
+        "--repo",
+        required=True,
+        help="Migration bundle directory to validate",
+    )
+
+    migrate_doctor = migrate_subparsers.add_parser(
+        "doctor",
+        help="Alias for `hermes migrate verify`",
+    )
+    migrate_doctor.add_argument(
+        "--repo",
+        required=True,
+        help="Migration bundle directory to validate",
+    )
     migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================
@@ -13154,6 +13221,63 @@ def main():
     # import command  (parser built in hermes_cli/subcommands/import_cmd.py)
     # =========================================================================
     build_import_cmd_parser(subparsers, cmd_import=cmd_import)
+
+    # =========================================================================
+    # sync command
+    # =========================================================================
+    sync_parser = subparsers.add_parser(
+        "sync",
+        help="Export/import portable profile sync state",
+        description="Manage the local, structured Hermes profile sync format. "
+        "This does not sync the entire Hermes home directory and never exports "
+        "plaintext secrets.",
+    )
+    sync_subparsers = sync_parser.add_subparsers(dest="sync_action")
+
+    sync_export = sync_subparsers.add_parser(
+        "export",
+        help="Export portable profile state to a directory",
+    )
+    sync_export.add_argument(
+        "--out",
+        required=True,
+        help="Output directory for the structured sync repo",
+    )
+    sync_export.add_argument(
+        "--device-id",
+        help="Device identifier for device-local config (default: derived from host)",
+    )
+
+    sync_import = sync_subparsers.add_parser(
+        "import",
+        help="Import portable profile state from a directory",
+    )
+    sync_import.add_argument(
+        "--from",
+        dest="source_dir",
+        required=True,
+        help="Sync repo directory to import from",
+    )
+    sync_import.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the exact local write plan without changing files",
+    )
+    sync_import.add_argument(
+        "--device-id",
+        help="Device identifier for device-local config (default: derived from host)",
+    )
+
+    sync_doctor = sync_subparsers.add_parser(
+        "doctor",
+        help="Validate a local sync repo",
+    )
+    sync_doctor.add_argument(
+        "--repo",
+        required=True,
+        help="Sync repo directory to validate",
+    )
+    sync_parser.set_defaults(func=cmd_sync)
 
     # =========================================================================
     # config command  (parser built in hermes_cli/subcommands/config.py)

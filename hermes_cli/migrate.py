@@ -1,7 +1,12 @@
 """CLI handlers for ``hermes migrate ...``.
 
-Currently exposes only ``hermes migrate xai`` — diagnoses and (with --apply)
-rewrites references to xAI models retired on May 15, 2026.
+Exposes:
+
+* ``hermes migrate xai`` — diagnoses and (with --apply) rewrites references
+  to xAI models retired on May 15, 2026.
+* ``hermes migrate export/import/verify/doctor`` — move portable Hermes
+  profile state between machines via structured migration bundles
+  (implemented in :mod:`hermes_cli.sync`).
 """
 from __future__ import annotations
 
@@ -12,14 +17,24 @@ from typing import Any
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import load_config
 
+_PROFILE_TRANSFER_ACTIONS = frozenset({"export", "import", "verify", "doctor"})
+
 
 def cmd_migrate(args: Any) -> int:
     """Dispatcher for ``hermes migrate <subtype>``."""
     sub = getattr(args, "migrate_type", None)
     if sub == "xai":
         return cmd_migrate_xai(args)
+    if sub in _PROFILE_TRANSFER_ACTIONS:
+        from hermes_cli.sync import run_migrate
 
-    print("usage: hermes migrate xai [--apply] [--no-backup]", file=sys.stderr)
+        run_migrate(args)
+        return 0
+
+    print(
+        "usage: hermes migrate {xai,export,import,verify,doctor} ...",
+        file=sys.stderr,
+    )
     return 2
 
 

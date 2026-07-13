@@ -126,6 +126,7 @@ class TurnController {
   private activeTools: ActiveTool[] = []
   private activeReasoningText = ''
   private reasoningSegmentIndex: null | number = null
+  private reasoningSegmentIndices = new Set<number>()
   private activityId = 0
   private reasoningStreamingTimer: Timer = null
   private reasoningTimer: Timer = null
@@ -275,6 +276,7 @@ class TurnController {
     this.bufRef = ''
     this.pendingSegmentTools = []
     this.segmentMessages = []
+    this.reasoningSegmentIndices.clear()
 
     patchTurnState({
       streamPendingTools: [],
@@ -376,6 +378,7 @@ class TurnController {
 
     if (this.reasoningSegmentIndex === null) {
       this.reasoningSegmentIndex = this.segmentMessages.length
+      this.reasoningSegmentIndices.add(this.reasoningSegmentIndex)
       this.segmentMessages = [...this.segmentMessages, msg]
     } else {
       this.segmentMessages = this.segmentMessages.map((item, i) => (i === this.reasoningSegmentIndex ? msg : item))
@@ -550,6 +553,7 @@ class TurnController {
     this.clearStatusTimer()
     this.pendingSegmentTools = []
     this.segmentMessages = []
+    this.reasoningSegmentIndices.clear()
     this.turnTools = []
     this.persistedToolLabels.clear()
 
@@ -560,6 +564,29 @@ class TurnController {
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
     this.closeReasoningSegment()
 
+    // When display.show_reasoning is off, drop any saved/streamed/payload
+    // reasoning so finalized assistant messages don't render `thinking`. The
+    // visible text is still split out of `<think>` tags below. See #22894.
+    const showReasoning = getUiState().showReasoning
+
+    // Reasoning captured while show_reasoning was still on lives in committed
+    // trail segments (closed/synced just above). Honour the setting at
+    // completion time: strip `thinking` from those segments and drop any that
+    // end up empty. MoA reference segments are not reasoning and stay put.
+    if (!showReasoning && this.reasoningSegmentIndices.size) {
+      this.segmentMessages = this.segmentMessages
+        .map((msg, i) => {
+          if (!this.reasoningSegmentIndices.has(i)) {
+            return msg
+          }
+
+          const { thinking, thinkingTokens, ...redacted } = msg
+
+          return redacted
+        })
+        .filter(msg => msg.text || hasDetails(msg))
+    }
+
     // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
     // (`payload.rendered`) is for terminals that can't.  Prioritising
     // `rendered` here garbles output whenever a user opts into
@@ -569,10 +596,6 @@ class TurnController {
     const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = finalTail(split.text, this.segmentMessages)
-    // When display.show_reasoning is off, drop any saved/streamed/payload
-    // reasoning so finalized assistant messages don't render `thinking`. The
-    // visible text is still split out of `<think>` tags above. See #22894.
-    const showReasoning = getUiState().showReasoning
 
     const existingReasoning = showReasoning
       ? this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
@@ -901,6 +924,7 @@ class TurnController {
     this.protocolWarned = false
     this.reasoningSegmentIndex = null
     this.segmentMessages = []
+    this.reasoningSegmentIndices.clear()
     this.turnTools = []
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()

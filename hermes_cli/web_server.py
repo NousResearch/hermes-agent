@@ -503,7 +503,12 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
     the enabled/disabled check for a request that auth already let through.
     """
     path = request.url.path
-    if path.startswith("/api/plugins/"):
+    # ``inventory`` is a core Hermes endpoint, not a plugin-owned router.
+    # Keep only this authenticated route outside the runtime plugin-name gate.
+    if path.startswith("/api/plugins/") and path not in {
+        "/api/plugins/inventory",
+        "/api/plugins/inventory/",
+    }:
         # Only gate authenticated requests. Unauthenticated ones fall
         # through so auth_middleware / the OAuth gate return 401 first and
         # this route can't be used as a plugin-name oracle.
@@ -16528,6 +16533,19 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             "context_options": context_engines,
         },
     }
+
+
+@app.get("/api/plugins/inventory")
+async def get_plugin_inventory(request: Request):
+    """Stable read-only agent plugin inventory contract (session protected)."""
+    _require_token(request)
+    from hermes_cli.plugins import list_plugin_inventory
+
+    try:
+        return list_plugin_inventory()
+    except Exception as exc:
+        _log.warning("plugins/inventory failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to build plugin inventory.") from exc
 
 
 @app.get("/api/dashboard/plugins/hub")

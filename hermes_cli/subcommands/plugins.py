@@ -79,7 +79,12 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_list.add_argument(
         "--json",
         action="store_true",
-        help="Print machine-readable JSON",
+        help="Emit backwards-compatible plugin list JSON",
+    )
+    plugins_list.add_argument(
+        "--inventory-json",
+        action="store_true",
+        help="Emit stable schema-v1 plugin inventory JSON",
     )
 
     plugins_enable = plugins_subparsers.add_parser(

@@ -38,6 +38,7 @@ import importlib.metadata
 import importlib.util
 import inspect
 import logging
+import math
 import os
 import sys
 import threading
@@ -268,6 +269,39 @@ def _get_enabled_plugins() -> Optional[set]:
         return set(enabled)
     except Exception:
         return None
+
+
+PLUGIN_INVENTORY_SCHEMA_VERSION = 1
+
+
+def _as_manifest_list(value: Any) -> List[Any]:
+    """Normalize manifest fields that may be absent, scalar, tuple, or list."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def _append_inventory_warning(
+    warnings: Optional[List[Dict[str, Any]]],
+    *,
+    code: str,
+    message: str,
+    key: str = "",
+    path: str = "",
+) -> None:
+    """Append a structured inventory warning when a collector is present."""
+    if warnings is None:
+        return
+    entry: Dict[str, Any] = {"code": code, "message": message}
+    if key:
+        entry["key"] = key
+    if path:
+        entry["path"] = path
+    warnings.append(entry)
 
 
 # ---------------------------------------------------------------------------
@@ -1566,6 +1600,7 @@ class PluginManager:
         plugin_dir: Path,
         source: str,
         prefix: str,
+        warnings: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[PluginManifest]:
         """Parse a single ``plugin.yaml`` into a :class:`PluginManifest`.
 
@@ -1585,9 +1620,18 @@ class PluginManager:
                 raw_kind = "standalone"
             kind = raw_kind.strip().lower()
             if kind not in _VALID_PLUGIN_KINDS:
-                logger.warning(
-                    "Plugin %s: unknown kind '%s' (valid: %s); treating as 'standalone'",
-                    key, raw_kind, ", ".join(sorted(_VALID_PLUGIN_KINDS)),
+                message = (
+                    f"Plugin {key}: unknown kind '{raw_kind}' "
+                    f"(valid: {', '.join(sorted(_VALID_PLUGIN_KINDS))}); "
+                    "treating as 'standalone'"
+                )
+                logger.warning(message)
+                _append_inventory_warning(
+                    warnings,
+                    code="unknown_kind",
+                    message=message,
+                    key=key,
+                    path=str(manifest_file),
                 )
                 kind = "standalone"
 
@@ -1637,17 +1681,26 @@ class PluginManager:
                 version=str(data.get("version", "")),
                 description=data.get("description", ""),
                 author=data.get("author", ""),
-                requires_env=data.get("requires_env", []),
-                provides_tools=data.get("provides_tools", []),
-                provides_hooks=data.get("provides_hooks", []),
+                requires_env=_as_manifest_list(data.get("requires_env")),
+                provides_tools=_as_manifest_list(data.get("provides_tools")),
+                provides_hooks=_as_manifest_list(
+                    data.get("provides_hooks", data.get("hooks"))
+                ),
                 source=source,
                 path=str(plugin_dir),
                 kind=kind,
                 key=key,
             )
         except Exception as exc:
+            message = f"Failed to parse {manifest_file}: {exc}"
             logger.warning(
-                "Failed to parse %s: %s", manifest_file, exc, exc_info=_PLUGINS_DEBUG,
+                message, exc_info=_PLUGINS_DEBUG,
+            )
+            _append_inventory_warning(
+                warnings,
+                code="manifest_parse_failed",
+                message=message,
+                path=str(manifest_file),
             )
             return None
 
@@ -2020,6 +2073,446 @@ class PluginManager:
     def remove_plugin_skill(self, qualified_name: str) -> None:
         """Remove a stale registry entry (silently ignores missing keys)."""
         self._plugin_skills.pop(qualified_name, None)
+
+
+# ---------------------------------------------------------------------------
+# Read-only inventory contract
+# ---------------------------------------------------------------------------
+
+
+def _inventory_manifest_file(plugin_dir: Path) -> Optional[Path]:
+    yaml_file = plugin_dir / "plugin.yaml"
+    if yaml_file.exists():
+        return yaml_file
+    yml_file = plugin_dir / "plugin.yml"
+    if yml_file.exists():
+        return yml_file
+    return None
+
+
+def _scan_inventory_directory(
+    manager: PluginManager,
+    root: Path,
+    *,
+    source: str,
+    warnings: List[Dict[str, Any]],
+    skip_names: Optional[Set[str]] = None,
+) -> List[PluginManifest]:
+    """Scan manifests for inventory without importing plugin modules."""
+    manifests: List[PluginManifest] = []
+    try:
+        root_is_dir = root.is_dir()
+    except OSError as exc:
+        _append_inventory_warning(
+            warnings,
+            code="scan_error",
+            message=f"{exc.__class__.__name__}: {exc}",
+            path=str(root),
+        )
+        return manifests
+    if not root_is_dir:
+        return manifests
+
+    def visit(path: Path, *, prefix: str, depth: int) -> None:
+        if depth > 1:
+            return
+        try:
+            children = sorted(path.iterdir())
+        except OSError as exc:
+            _append_inventory_warning(
+                warnings,
+                code="scan_error",
+                message=f"{exc.__class__.__name__}: {exc}",
+                path=str(path),
+            )
+            return
+        for child in children:
+            try:
+                child_is_dir = child.is_dir()
+            except OSError as exc:
+                _append_inventory_warning(
+                    warnings,
+                    code="scan_error",
+                    message=f"{exc.__class__.__name__}: {exc}",
+                    path=str(child),
+                )
+                continue
+            if not child_is_dir:
+                continue
+            if depth == 0 and skip_names and child.name in skip_names:
+                continue
+            try:
+                manifest_file = _inventory_manifest_file(child)
+            except OSError as exc:
+                _append_inventory_warning(
+                    warnings,
+                    code="scan_error",
+                    message=f"{exc.__class__.__name__}: {exc}",
+                    path=str(child),
+                )
+                continue
+            if manifest_file is not None:
+                manifest = manager._parse_manifest(
+                    manifest_file,
+                    child,
+                    source,
+                    prefix,
+                    warnings,
+                )
+                if manifest is not None:
+                    manifests.append(manifest)
+                continue
+            if depth < 1:
+                sub_prefix = f"{prefix}/{child.name}" if prefix else child.name
+                visit(child, prefix=sub_prefix, depth=depth + 1)
+
+    visit(root, prefix="", depth=0)
+    return manifests
+
+
+def _scan_inventory_entry_points() -> List[PluginManifest]:
+    """Return entry-point plugin metadata without calling EntryPoint.load()."""
+    manifests: List[PluginManifest] = []
+    try:
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+        for ep in group_eps:
+            manifests.append(
+                PluginManifest(
+                    name=ep.name,
+                    source="entrypoint",
+                    path=getattr(ep, "value", ""),
+                    kind="standalone",
+                    key=ep.name,
+                )
+            )
+    except Exception as exc:
+        logger.debug("Entry-point inventory scan failed: %s", exc)
+    return manifests
+
+
+def _runtime_config_aliases(manifest: PluginManifest) -> Set[str]:
+    """Aliases runtime PluginManager honors for plugins.enabled/disabled."""
+    return {
+        alias
+        for alias in {
+            _inventory_str(manifest.key or manifest.name),
+            _inventory_str(manifest.name),
+        }
+        if alias
+    }
+
+
+def _provider_selection_aliases(manifest: PluginManifest) -> Set[str]:
+    key = _inventory_str(manifest.key or manifest.name)
+    aliases = _runtime_config_aliases(manifest)
+    if key:
+        aliases.add(key.split("/")[-1])
+    if manifest.path:
+        aliases.add(Path(_inventory_str(manifest.path)).name)
+    name = _inventory_str(manifest.name)
+    if name.endswith("-provider"):
+        aliases.add(name[: -len("-provider")])
+    return {alias for alias in aliases if alias}
+
+
+def _selected_provider_for_manifest(manifest: PluginManifest, config: Dict[str, Any]) -> str:
+    key = _inventory_str(manifest.key or manifest.name)
+    category = key.split("/", 1)[0] if "/" in key else ""
+    if category == "memory" or manifest.kind == "exclusive":
+        provider = cfg_get(config, "memory", "provider", default="") or ""
+        return str(provider)
+    if category == "context_engine":
+        provider = cfg_get(config, "context", "engine", default="compressor") or "compressor"
+        return str(provider)
+    if manifest.kind == "model-provider" or category == "model-providers":
+        provider = cfg_get(config, "model", "provider", default="") or ""
+        return str(provider)
+    return ""
+
+
+def _inventory_status(
+    manifest: PluginManifest,
+    *,
+    enabled: Optional[Set[str]],
+    disabled: Set[str],
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    key = manifest.key or manifest.name
+    config_aliases = _runtime_config_aliases(manifest)
+    provider_aliases = _provider_selection_aliases(manifest)
+    disabled_match = sorted(config_aliases & disabled)
+
+    selected_provider = _selected_provider_for_manifest(manifest, config)
+    if manifest.kind == "exclusive":
+        if selected_provider and selected_provider in provider_aliases:
+            return {
+                "enabled": True,
+                "config_status": "provider_selected",
+                "effective_status": "provider_selected",
+                "activation_hint": "selected by provider config",
+                "selected_provider": selected_provider,
+            }
+        return {
+            "enabled": False,
+            "config_status": "provider_not_selected",
+            "effective_status": "inactive",
+            "activation_hint": "select via provider config",
+            "selected_provider": selected_provider,
+        }
+
+    if manifest.kind == "model-provider":
+        if selected_provider and selected_provider in provider_aliases:
+            effective_status = "provider_selected"
+            config_status = "provider_selected"
+            hint = "selected by model.provider"
+        else:
+            effective_status = "provider_managed"
+            config_status = "provider_managed"
+            hint = "managed by model provider discovery"
+        return {
+            "enabled": True,
+            "config_status": config_status,
+            "effective_status": effective_status,
+            "activation_hint": hint,
+            "selected_provider": selected_provider,
+        }
+
+    if disabled_match:
+        return {
+            "enabled": False,
+            "config_status": "disabled",
+            "effective_status": "disabled",
+            "activation_hint": "disabled via plugins.disabled",
+            "matched_config_key": disabled_match[0],
+        }
+
+    if manifest.source == "bundled" and manifest.kind in {"backend", "platform"}:
+        return {
+            "enabled": True,
+            "config_status": "auto_active",
+            "effective_status": "auto_active",
+            "activation_hint": "bundled backend/platform auto-loads",
+        }
+
+    enabled_match = sorted(config_aliases & enabled) if enabled is not None else []
+    if enabled_match:
+        return {
+            "enabled": True,
+            "config_status": "explicitly_enabled",
+            "effective_status": "active",
+            "activation_hint": "enabled via plugins.enabled",
+            "matched_config_key": enabled_match[0],
+        }
+
+    return {
+        "enabled": False,
+        "config_status": "not_enabled",
+        "effective_status": "inactive",
+        "activation_hint": f"run `hermes plugins enable {key}` to activate",
+    }
+
+
+def _inventory_str(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _inventory_json_safe(value: Any) -> Any:
+    """Coerce manifest data to JSON-safe primitive values for schema v1."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return [_inventory_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            _inventory_str(key): _inventory_json_safe(item)
+            for key, item in value.items()
+        }
+    return str(value)
+
+
+def _inventory_list(value: Any) -> List[Any]:
+    if not isinstance(value, list):
+        return []
+    return [_inventory_json_safe(item) for item in value]
+
+
+def _inventory_entry(manifest: PluginManifest, status: Dict[str, Any]) -> Dict[str, Any]:
+    path = _inventory_str(manifest.path)
+    source = _inventory_str(manifest.source)
+    entrypoint = path if source == "entrypoint" else ""
+    entry: Dict[str, Any] = {
+        "key": _inventory_str(manifest.key or manifest.name),
+        "name": _inventory_str(manifest.name),
+        "version": _inventory_str(manifest.version),
+        "description": _inventory_str(manifest.description),
+        "author": _inventory_str(manifest.author),
+        "kind": _inventory_str(manifest.kind),
+        "source": source,
+        "path": path,
+        "entrypoint": entrypoint,
+        "requires_env": _inventory_list(manifest.requires_env),
+        "provides_tools": _inventory_list(manifest.provides_tools),
+        "provides_hooks": _inventory_list(manifest.provides_hooks),
+        "enabled": bool(status.get("enabled")),
+        "config_status": _inventory_str(status.get("config_status", "not_enabled")),
+        "effective_status": _inventory_str(status.get("effective_status", "inactive")),
+        "activation_hint": _inventory_str(status.get("activation_hint", "")),
+        "error": _inventory_json_safe(status.get("error")),
+    }
+    for optional_key in ("matched_config_key", "selected_provider"):
+        if optional_key in status:
+            entry[optional_key] = _inventory_json_safe(status[optional_key])
+    return entry
+
+
+def list_plugin_inventory(
+    *,
+    include_project: Optional[bool] = None,
+    schema_version: int = PLUGIN_INVENTORY_SCHEMA_VERSION,
+) -> Dict[str, Any]:
+    """Return a stable, read-only plugin manifest inventory.
+
+    This public contract is intended for non-Python consumers such as Hermes Web
+    UI. It scans plugin manifests and entry-point metadata only; it never imports
+    directory plugin modules or calls plugin ``register()`` functions.
+    """
+    if schema_version != PLUGIN_INVENTORY_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported plugin inventory schema version: {schema_version}"
+        )
+
+    warnings: List[Dict[str, Any]] = []
+    manager = PluginManager()
+    manifests: List[PluginManifest] = []
+
+    bundled_dir = get_bundled_plugins_dir()
+    user_dir = get_hermes_home() / "plugins"
+    project_enabled = (
+        _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS")
+        if include_project is None
+        else bool(include_project)
+    )
+
+    manifests.extend(
+        _scan_inventory_directory(
+            manager,
+            bundled_dir,
+            source="bundled",
+            warnings=warnings,
+            skip_names={"platforms"},
+        )
+    )
+    manifests.extend(
+        _scan_inventory_directory(
+            manager,
+            bundled_dir / "platforms",
+            source="bundled",
+            warnings=warnings,
+        )
+    )
+    manifests.extend(
+        _scan_inventory_directory(manager, user_dir, source="user", warnings=warnings)
+    )
+    if project_enabled:
+        manifests.extend(
+            _scan_inventory_directory(
+                manager,
+                Path.cwd() / ".hermes" / "plugins",
+                source="project",
+                warnings=warnings,
+            )
+        )
+    manifests.extend(_scan_inventory_entry_points())
+
+    # Later general sources override earlier ones by key, matching the general
+    # plugin manager. Inventory keeps only the effective manifest per key.
+    winners: Dict[str, PluginManifest] = {}
+    for manifest in manifests:
+        winners[_inventory_str(manifest.key or manifest.name)] = manifest
+
+    # Memory-provider runtime discovery gives bundled providers precedence by
+    # provider directory name. Their inventory keys are namespaced
+    # (``memory/<name>``), while user providers use ``<name>``; plain key
+    # deduplication therefore cannot model that precedence on its own.
+    bundled_memory_manifests = {
+        Path(_inventory_str(manifest.path)).name: manifest
+        for manifest in manifests
+        if manifest.source == "bundled"
+        and _inventory_str(manifest.key or manifest.name).startswith("memory/")
+    }
+    for provider_name, bundled_manifest in bundled_memory_manifests.items():
+        for key, manifest in list(winners.items()):
+            manifest_key = _inventory_str(manifest.key or manifest.name)
+            if (
+                manifest.source != "bundled"
+                and Path(_inventory_str(manifest.path)).name == provider_name
+                and (manifest.kind == "exclusive" or manifest_key.startswith("memory/"))
+            ):
+                del winners[key]
+        bundled_key = _inventory_str(bundled_manifest.key or bundled_manifest.name)
+        winners[bundled_key] = bundled_manifest
+
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        if not isinstance(config, dict):
+            config = {}
+    except Exception:
+        config = {}
+
+    disabled = _get_disabled_plugins()
+    enabled = _get_enabled_plugins()
+    plugins: List[Dict[str, Any]] = []
+    for manifest in sorted(
+        winners.values(), key=lambda item: _inventory_str(item.key or item.name)
+    ):
+        status = _inventory_status(
+            manifest,
+            enabled=enabled,
+            disabled=disabled,
+            config=config,
+        )
+        plugins.append(_inventory_entry(manifest, status))
+
+    summary = {
+        "total": len(plugins),
+        "enabled": sum(1 for plugin in plugins if plugin["enabled"]),
+        "disabled": sum(1 for plugin in plugins if plugin["effective_status"] == "disabled"),
+        "inactive": sum(1 for plugin in plugins if plugin["effective_status"] == "inactive"),
+        "auto_active": sum(1 for plugin in plugins if plugin["effective_status"] == "auto_active"),
+        "provider_managed": sum(
+            1
+            for plugin in plugins
+            if plugin["effective_status"] in {"provider_managed", "provider_selected"}
+        ),
+        "warnings": len(warnings),
+    }
+
+    return {
+        "schema_version": PLUGIN_INVENTORY_SCHEMA_VERSION,
+        "metadata": {
+            "bundled_plugins_dir": str(bundled_dir),
+            "user_plugins_dir": str(user_dir),
+            "cwd": str(Path.cwd()),
+            "project_plugins_enabled": project_enabled,
+            "entry_points_group": ENTRY_POINTS_GROUP,
+        },
+        "summary": summary,
+        "plugins": plugins,
+        "warnings": _inventory_json_safe(warnings),
+    }
 
 
 # ---------------------------------------------------------------------------

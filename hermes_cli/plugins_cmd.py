@@ -1095,8 +1095,33 @@ def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set
     return filtered
 
 
+def _print_legacy_plugins_json(entries: list, enabled: set, disabled: set) -> None:
+    """Emit the backwards-compatible ``hermes plugins list --json`` payload."""
+    payload = [
+        {
+            "name": name,
+            "status": _plugin_status(name, enabled, disabled, key=key),
+            "version": str(version),
+            "description": description,
+            "source": source,
+        }
+        for name, version, description, source, _dir, key in entries
+    ]
+    print(json.dumps(payload, indent=2))
+
+
 def cmd_list(args: Any | None = None) -> None:
-    """List all plugins (bundled + user) with enabled/disabled state."""
+    """List all plugins.
+
+    ``--inventory-json`` emits the stable schema-v1 contract. The legacy
+    ``--json`` flag keeps its existing shallow array payload for scripts.
+    """
+    if getattr(args, "inventory_json", False) is True:
+        from hermes_cli.plugins import list_plugin_inventory
+
+        print(json.dumps(list_plugin_inventory(), indent=2))
+        return
+
     from rich.console import Console
     from rich.table import Table
 
@@ -1112,17 +1137,7 @@ def cmd_list(args: Any | None = None) -> None:
     entries = _filter_plugin_entries(entries, args, enabled, disabled)
 
     if getattr(args, "json", False):
-        payload = [
-            {
-                "name": name,
-                "status": _plugin_status(name, enabled, disabled, key=key),
-                "version": str(version),
-                "description": description,
-                "source": source,
-            }
-            for name, version, description, source, _dir, key in entries
-        ]
-        print(json.dumps(payload, indent=2))
+        _print_legacy_plugins_json(entries, enabled, disabled)
         return
 
     if getattr(args, "plain", False):

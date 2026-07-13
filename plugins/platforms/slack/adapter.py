@@ -112,6 +112,23 @@ def check_slack_requirements() -> bool:
     return ensure_and_bind("platform.slack", _import, globals(), prompt=False)
 
 
+def _rewrite_known_bang_command(text: str) -> str:
+    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form."""
+    if not text.startswith("!"):
+        return text
+
+    try:
+        from hermes_cli.commands import is_gateway_known_command
+
+        first_token = text[1:].split(maxsplit=1)[0]
+        cmd_name = first_token.split("@", 1)[0].lower()
+        if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
+            return "/" + text[1:]
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return text
+
+
 def _extract_text_from_slack_blocks(blocks: list) -> str:
     """Extract readable text from Slack Block Kit blocks, including quoted/forwarded content.
 
@@ -2628,22 +2645,7 @@ class SlackAdapter(BasePlatformAdapter):
         # gateway dispatcher) handles it like a normal slash command.  Only
         # rewrite when the first token resolves to a known gateway command
         # so casual messages like "!nice work" pass through unchanged.
-        if original_text.startswith("!"):
-            try:
-                from hermes_cli.commands import is_gateway_known_command
-
-                first_token = original_text[1:].split(maxsplit=1)[0]
-                # Strip "@suffix" the same way get_command() does, so
-                # forms like ``!stop@hermes`` still resolve.
-                cmd_name = first_token.split("@", 1)[0].lower()
-                if (
-                    cmd_name
-                    and "/" not in cmd_name
-                    and is_gateway_known_command(cmd_name)
-                ):
-                    original_text = "/" + original_text[1:]
-            except Exception:  # pragma: no cover - defensive
-                pass
+        original_text = _rewrite_known_bang_command(original_text)
 
         text = original_text
 
@@ -2870,6 +2872,14 @@ class SlackAdapter(BasePlatformAdapter):
         if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
+            # Re-run command normalization against the canonical Slack text,
+            # not the block-augmented agent text. Otherwise quoted/forwarded
+            # rich-text payload can become accidental command arguments.
+            mention_stripped = original_text.replace(f"<@{bot_uid}>", "").strip()
+            command_text = _rewrite_known_bang_command(mention_stripped)
+            if command_text != mention_stripped:
+                original_text = command_text
+                text = command_text
             # Register this thread so all future messages auto-trigger the bot.
             # Skipped in strict mode: strict_mention=true bots must be
             # re-mentioned every turn, so remembering the thread would
@@ -2885,10 +2895,14 @@ class SlackAdapter(BasePlatformAdapter):
 
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
-        if is_thread_reply and not self._has_active_session_for_thread(
-            channel_id=channel_id,
-            thread_ts=event_thread_ts,
-            user_id=user_id,
+        if (
+            is_thread_reply
+            and not text.startswith("/")
+            and not self._has_active_session_for_thread(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+            )
         ):
             thread_context = await self._fetch_thread_context(
                 channel_id=channel_id,

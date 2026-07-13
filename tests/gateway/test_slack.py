@@ -1200,6 +1200,107 @@ class TestBangPrefixCommands:
         assert msg_event.text.startswith("/queue")
         assert msg_event.message_type == MessageType.COMMAND
 
+    @pytest.mark.asyncio
+    async def test_mention_prefixed_bang_is_rewritten(self, adapter):
+        evt = self._make_event(
+            "<@U_BOT> !new",
+            thread_ts="1111111111.000001",
+            channel_type="channel",
+            channel="C123",
+        )
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/new"
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_mention_prefixed_bang_no_space(self, adapter):
+        evt = self._make_event(
+            "<@U_BOT>!new",
+            thread_ts="1111111111.000001",
+            channel_type="channel",
+            channel="C123",
+        )
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/new"
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_mention_prefixed_unknown_bang_passes_through(self, adapter):
+        evt = self._make_event(
+            "<@U_BOT> !nice work",
+            channel_type="channel",
+            channel="C123",
+        )
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "!nice work"
+        assert msg_event.message_type != MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_thread_command_skips_context_prefix(self, adapter):
+        adapter._has_active_session_for_thread = MagicMock(return_value=False)
+        adapter._fetch_thread_context = AsyncMock(
+            side_effect=AssertionError(
+                "_fetch_thread_context must not be called for slash commands"
+            )
+        )
+        evt = self._make_event(
+            "<@U_BOT> !new",
+            thread_ts="1111111111.000001",
+            channel_type="channel",
+            channel="C123",
+        )
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/new"
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_mention_command_drops_rich_text_command_arguments(self, adapter):
+        evt = self._make_event(
+            "<@U_BOT> !model",
+            thread_ts="1111111111.000001",
+            channel_type="channel",
+            channel="C123",
+        )
+        evt["blocks"] = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "user", "user_id": "U_BOT"},
+                            {"type": "text", "text": " !model"},
+                        ],
+                    },
+                    {
+                        "type": "rich_text_quote",
+                        "elements": [
+                            {
+                                "type": "rich_text_section",
+                                "elements": [
+                                    {"type": "text", "text": "quoted context"}
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model"
+        assert "quoted context" not in msg_event.text
+        assert msg_event.message_type == MessageType.COMMAND
+
 
 # ---------------------------------------------------------------------------
 # TestIncomingDocumentHandling

@@ -1,5 +1,6 @@
 import pytest
 from agent.model_metadata import (
+    compute_safe_output_tokens,
     is_output_cap_error,
     parse_available_output_tokens_from_error,
 )
@@ -166,3 +167,26 @@ class TestParseVllmTokenBasedOutputCap:
                "least 140000 input tokens, for a total of at least 141024 "
                "tokens.")
         assert parse_available_output_tokens_from_error(msg) is None
+
+class TestOutputCapRecoveryMargin:
+    """The retry reserve must survive vLLM reporting modest prompt growth."""
+
+    def test_base_margin_survives_65_token_growth(self):
+        context = 131_072
+        first_input = 65_537
+        available = context - first_input
+
+        retry_cap = compute_safe_output_tokens(available)
+
+        assert retry_cap + first_input + 65 < context
+
+    def test_observed_growth_increases_the_next_reserve(self):
+        previous_available = 65_535
+        current_available = previous_available - 65
+
+        retry_cap = compute_safe_output_tokens(
+            current_available,
+            previous_available_out=previous_available,
+        )
+
+        assert retry_cap == current_available - (65 + 128)

@@ -1048,3 +1048,129 @@ class TestOverflowWithCompactionDisabled:
         mock_compress.assert_called_once()
         assert result["completed"] is True
         assert result.get("compaction_disabled") is not True
+
+# ---------------------------------------------------------------------------
+# Output-cap recovery (input fits; requested output does not)
+# ---------------------------------------------------------------------------
+
+
+def _make_vllm_output_cap_error(*, context: int, input_tokens: int, max_tokens: int):
+    """Create the vLLM 400 whose available output Hermes can parse."""
+    total = input_tokens + max_tokens
+    err = Exception(
+        f"This model's maximum context length is {context} tokens. However, "
+        f"you requested {max_tokens} output tokens and your prompt contains at least "
+        f"{input_tokens} input tokens, for a total of at least {total} tokens. "
+        "Please reduce the length of the input prompt or the number of requested "
+        "output tokens."
+    )
+    err.status_code = 400
+    return err
+
+
+class TestOutputCapRecovery:
+    def test_retries_inside_inner_loop_without_compression_or_outer_rebuild(self, agent):
+        """A parsed output-cap error keeps messages stable and only lowers output."""
+        context = 131_072
+        initial_input = 65_537
+        agent.max_tokens = 65_536
+        agent.step_callback = MagicMock()
+        payloads = []
+
+        def _provider(**kwargs):
+            payloads.append(kwargs)
+            if len(payloads) == 1:
+                raise _make_vllm_output_cap_error(
+                    context=context,
+                    input_tokens=initial_input,
+                    max_tokens=kwargs["max_tokens"],
+                )
+            return _mock_response(content="Recovered with a smaller output cap")
+
+        agent.client.chat.completions.create.side_effect = _provider
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert mock_compress.call_count == 0
+        assert len(payloads) == 2
+        assert payloads[0]["max_tokens"] == 65_536
+        # 65,535 available - 128 base reserve.
+        assert payloads[1]["max_tokens"] == 65_407
+        assert payloads[1]["messages"] == payloads[0]["messages"]
+        # An outer-loop restart would invoke the step callback a second time.
+        assert agent.step_callback.call_count == 1
+
+    def test_repeated_output_cap_error_has_its_own_terminal_result(self, agent):
+        """Output-cap exhaustion must not masquerade as failed compression."""
+        context = 131_072
+        agent.max_tokens = 65_536
+        payloads = []
+
+        def _provider(**kwargs):
+            payloads.append(kwargs)
+            input_tokens = 65_537 + (65 * (len(payloads) - 1))
+            raise _make_vllm_output_cap_error(
+                context=context,
+                input_tokens=input_tokens,
+                max_tokens=kwargs["max_tokens"],
+            )
+
+        agent.client.chat.completions.create.side_effect = _provider
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert mock_compress.call_count == 0
+        assert len(payloads) == 4
+        assert result["output_cap_exhausted"] is True
+        assert "Output token budget recovery failed" in result["final_response"]
+        assert "compression" not in result["final_response"].lower()
+
+    def test_output_cap_retries_when_compaction_disabled(self, agent):
+        """Parsed vLLM output-cap errors must retry even when auto-compaction is off."""
+        agent.compression_enabled = False
+        context = 131_072
+        initial_input = 65_537
+        agent.max_tokens = 65_536
+        payloads = []
+
+        def _provider(**kwargs):
+            payloads.append(kwargs)
+            if len(payloads) == 1:
+                raise _make_vllm_output_cap_error(
+                    context=context,
+                    input_tokens=initial_input,
+                    max_tokens=kwargs["max_tokens"],
+                )
+            return _mock_response(content="Recovered with compaction disabled")
+
+        agent.client.chat.completions.create.side_effect = _provider
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result.get("compaction_disabled") is not True
+        mock_compress.assert_not_called()
+        assert len(payloads) == 2
+        assert payloads[0]["max_tokens"] == 65_536
+        # 65,535 available - 128 base reserve.
+        assert payloads[1]["max_tokens"] == 65_407
+        assert payloads[1]["messages"] == payloads[0]["messages"]

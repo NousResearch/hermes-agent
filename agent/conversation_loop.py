@@ -52,6 +52,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
+    compute_safe_output_tokens,
     is_output_cap_error,
     parse_available_output_tokens_from_error,
     save_context_length,
@@ -1095,6 +1096,9 @@ def run_conversation(
         max_retries = agent._api_max_retries
         _retry = TurnRetryState()
         max_compression_attempts = 3
+        output_cap_attempts = 0
+        max_output_cap_attempts = 3
+        previous_available_out = None
 
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
@@ -3061,14 +3065,21 @@ def run_conversation(
                 # (``/new``), switch to a larger-context model, or reduce
                 # attachments.  Forced compaction via ``/compress``
                 # (``force=True``) is unaffected — it never reaches this loop.
+                # Parsed output-cap errors are exempt: the input already fits and
+                # recovery only lowers max_tokens — no compaction required.
                 _overflow_reasons = {
                     FailoverReason.long_context_tier,
                     FailoverReason.payload_too_large,
                     FailoverReason.context_overflow,
                 }
+                _is_recoverable_output_cap = (
+                    classified.reason == FailoverReason.context_overflow
+                    and parse_available_output_tokens_from_error(error_msg) is not None
+                )
                 if (
                     classified.reason in _overflow_reasons
                     and not getattr(agent, "compression_enabled", True)
+                    and not _is_recoverable_output_cap
                 ):
                     agent._flush_status_buffer()
                     agent._vprint(
@@ -3473,25 +3484,43 @@ def run_conversation(
                     available_out = parse_available_output_tokens_from_error(error_msg)
                     if available_out is not None:
                         # Error is purely about the output cap being too large.
-                        # Cap output to the available space and retry without
-                        # touching context_length or triggering compression.
-                        safe_out = max(1, available_out - 64)  # small safety margin
+                        # Rebuild only the request kwargs in the inner retry loop:
+                        # the conversation itself already fits and must not be
+                        # compacted or reprocessed through the outer agent loop.
+                        safe_out = compute_safe_output_tokens(
+                            available_out,
+                            previous_available_out=previous_available_out,
+                        )
                         agent._ephemeral_max_output_tokens = safe_out
+                        previous_available_out = available_out
+                        output_cap_attempts += 1
                         agent._buffer_vprint(
                             f"⚠️  Output cap too large for current prompt — "
                             f"retrying with max_tokens={safe_out:,} "
                             f"(available_tokens={available_out:,}; context_length unchanged at {old_ctx:,})"
                         )
-                        # Still count against compression_attempts so we don't
-                        # loop forever if the error keeps recurring.
-                        compression_attempts += 1
-                        if compression_attempts > max_compression_attempts:
+                        if output_cap_attempts > max_output_cap_attempts:
                             agent._flush_status_buffer()
-                            agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
-                            agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
-                            logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+                            agent._vprint(
+                                f"{agent.log_prefix}❌ Output token budget recovery failed after "
+                                f"{max_output_cap_attempts} attempts.",
+                                force=True,
+                            )
+                            agent._vprint(
+                                f"{agent.log_prefix}   💡 Lower model.max_tokens or check whether "
+                                "the provider is changing the rendered prompt between retries.",
+                                force=True,
+                            )
+                            logger.error(
+                                "%sOutput token budget recovery failed after %s attempts.",
+                                agent.log_prefix,
+                                max_output_cap_attempts,
+                            )
                             agent._persist_session(messages, conversation_history)
-                            _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
+                            _final_response = (
+                                "Output token budget recovery failed: max attempts "
+                                f"({max_output_cap_attempts}) reached."
+                            )
                             return {
                                 "final_response": _final_response,
                                 "messages": messages,
@@ -3500,10 +3529,17 @@ def run_conversation(
                                 "error": _final_response,
                                 "partial": True,
                                 "failed": True,
-                                "compression_exhausted": True,
+                                "output_cap_exhausted": True,
                             }
-                        _retry.restart_with_compressed_messages = True
-                        break
+                        # This error class has its own bounded recovery policy.
+                        # It was counted by the generic exception handler before
+                        # classification, so refund that count and let
+                        # output_cap_attempts control the retry budget.
+                        retry_count -= 1
+                        # Keep the same api_messages snapshot. The next inner-loop
+                        # attempt consumes the one-shot cap while avoiding a full
+                        # outer-loop rebuild and its hooks/middleware.
+                        continue
 
                     # The error is output-cap-shaped (about max_tokens being
                     # too large) but the provider's wording didn't let us parse

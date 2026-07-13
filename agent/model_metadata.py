@@ -1220,6 +1220,32 @@ def get_context_length_from_provider_error(
     return None
 
 
+OUTPUT_CAP_BASE_MARGIN = 128
+
+
+def compute_safe_output_tokens(
+    available_out: int,
+    *,
+    previous_available_out: Optional[int] = None,
+) -> int:
+    """Reserve space for request growth when retrying an output-cap error.
+
+    Providers normally report ``available_out`` from the request they just
+    rejected.  Some OpenAI-compatible servers can report a slightly larger
+    input on the next request even when Hermes preserves the message payload.
+    Keep a base reserve, and grow it when the reported available output shrinks
+    between retries.
+    """
+    margin = OUTPUT_CAP_BASE_MARGIN
+    if (
+        previous_available_out is not None
+        and previous_available_out > available_out
+    ):
+        observed_input_growth = previous_available_out - available_out
+        margin = max(margin, observed_input_growth + OUTPUT_CAP_BASE_MARGIN)
+    return max(1, available_out - margin)
+
+
 def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     """Detect an "output cap too large" error and return how many output tokens are available.
 

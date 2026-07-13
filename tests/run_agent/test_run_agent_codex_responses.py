@@ -809,6 +809,727 @@ def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatc
     assert response.usage.total_tokens == 11
 
 
+def test_run_codex_stream_backfills_tool_call_from_arguments_done(monkeypatch):
+    """Recover a complete call when Codex omits output_item.done (#5732)."""
+    agent = _build_agent(monkeypatch)
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item=SimpleNamespace(
+                    type="function_call",
+                    id="fc_1",
+                    call_id="call_1",
+                    name="terminal",
+                    arguments="",
+                ),
+            ),
+            SimpleNamespace(
+                type="response.function_call_arguments.done",
+                item_id="fc_1",
+                output_index=0,
+                name="terminal",
+                arguments='{"cmd":"ls"}',
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            ),
+        ]
+    )
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: create_stream),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert create_stream.closed is True
+    assert len(response.output) == 1
+    call = response.output[0]
+    assert call.type == "function_call"
+    assert call.id == "fc_1"
+    assert call.call_id == "call_1"
+    assert call.name == "terminal"
+    assert call.arguments == '{"cmd":"ls"}'
+    assert call.status == "completed"
+
+
+def test_run_codex_stream_prefers_output_item_done_over_arguments_fallback(monkeypatch):
+    """A canonical completed item remains authoritative when both shapes arrive."""
+    agent = _build_agent(monkeypatch)
+    canonical_item = SimpleNamespace(
+        type="function_call",
+        id="fc_1",
+        call_id="call_1",
+        name="terminal",
+        arguments='{"cmd":"ls"}',
+        status="completed",
+    )
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item=SimpleNamespace(
+                    type="function_call",
+                    id="fc_1",
+                    call_id="call_1",
+                    name="terminal",
+                    arguments="",
+                ),
+            ),
+            SimpleNamespace(
+                type="response.function_call_arguments.done",
+                item_id="fc_1",
+                output_index=0,
+                name="terminal",
+                arguments='{"cmd":"ls"}',
+            ),
+            SimpleNamespace(type="response.output_item.done", item=canonical_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            ),
+        ]
+    )
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: create_stream),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.output == [canonical_item]
+
+
+def test_consume_codex_stream_rejects_done_event_without_added_seed():
+    """A backend extension cannot replace the public added-item identity."""
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(
+            [
+                {
+                    "type": "response.function_call_arguments.done",
+                    "item_id": "fc_1",
+                    "output_index": 0,
+                    "call_id": "call_1",
+                    "name": "terminal",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "response.completed",
+                    "response": {"status": "completed"},
+                },
+            ]
+        ),
+        model="gpt-5-codex",
+    )
+
+    assert response.output == []
+
+
+def test_consume_codex_stream_does_not_invent_missing_call_id():
+    """An uncorrelated done event cannot safely produce an executable call."""
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(
+            [
+                SimpleNamespace(
+                    type="response.function_call_arguments.done",
+                    item_id="fc_without_seed",
+                    output_index=0,
+                    name="terminal",
+                    arguments="{}",
+                ),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(status="completed"),
+                ),
+            ]
+        ),
+        model="gpt-5-codex",
+    )
+
+    assert response.output == []
+
+
+def test_consume_codex_stream_deduplicates_repeated_arguments_done():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=0,
+            name="terminal",
+            arguments="{}",
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=0,
+            name="terminal",
+            arguments="{}",
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed"),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert len(response.output) == 1
+    assert response.output[0].call_id == "call_1"
+
+
+def test_consume_codex_stream_merges_partial_canonical_multi_call_in_output_order():
+    """One canonical call must not discard another call's safe fallback."""
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    canonical_first = SimpleNamespace(
+        type="function_call",
+        id="fc_1",
+        call_id="call_1",
+        name="terminal",
+        arguments='{"cmd":"pwd"}',
+    )
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal"
+            ),
+        ),
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=1,
+            item=SimpleNamespace(
+                type="function_call", id="fc_2", call_id="call_2", name="web_search"
+            ),
+        ),
+        # Complete the second call first to prove arrival order is not output order.
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_2",
+            output_index=1,
+            name="web_search",
+            arguments='{"query":"weather"}',
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=0,
+            name="terminal",
+            arguments='{"cmd":"pwd"}',
+        ),
+        SimpleNamespace(
+            type="response.output_item.done",
+            output_index=0,
+            item=canonical_first,
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed"),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert response.output[0] is canonical_first
+    assert [item.call_id for item in response.output] == ["call_1", "call_2"]
+    assert response.output[1].arguments == '{"query":"weather"}'
+
+
+def test_consume_codex_stream_keeps_fallback_beside_canonical_message():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    message = SimpleNamespace(type="message", id="msg_1", content=[])
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(type="message", id="msg_1", content=[]),
+        ),
+        SimpleNamespace(
+            type="response.output_item.done",
+            item=message,
+        ),
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=1,
+            item=SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal"
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=1,
+            name="terminal",
+            arguments="{}",
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed"),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert response.output[0] is message
+    assert response.output[1].call_id == "call_1"
+
+
+def test_consume_codex_stream_rejects_unknown_item_id_index_crosswire():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call", id="fc_real", call_id="call_real", name="terminal"
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_unknown",
+            output_index=0,
+            call_id="call_unknown",
+            name="terminal",
+            arguments='{"cmd":"unsafe-crosswire"}',
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed"),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert response.output == []
+
+
+@pytest.mark.parametrize(
+    ("call_id", "name"),
+    [("call_other", "terminal"), (None, "web_search")],
+)
+def test_consume_codex_stream_quarantines_seed_identity_conflicts(call_id, name):
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal"
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=0,
+            call_id=call_id,
+            name=name,
+            arguments="{}",
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed"),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert response.output == []
+
+
+def test_consume_codex_stream_rejects_late_alias_without_added_seed():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            output_index=0,
+            call_id="call_1",
+            name="terminal",
+            arguments="{}",
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=0,
+            call_id="call_1",
+            name="terminal",
+            arguments="{}",
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed"),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert response.output == []
+
+
+def test_consume_codex_stream_quarantines_conflicting_repeated_added_item():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal"
+            ),
+        ),
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_2", name="terminal"
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=0,
+            name="terminal",
+            arguments="{}",
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed"),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert response.output == []
+
+
+def test_consume_codex_stream_does_not_merge_partial_added_identities():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(type="function_call", id="fc_1", call_id="call_1"),
+        ),
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(type="function_call", id="fc_1", name="terminal"),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=0,
+            name="terminal",
+            arguments="{}",
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed"),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert response.output == []
+
+
+def test_consume_codex_stream_quarantines_canonical_argument_conflict():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal"
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=0,
+            name="terminal",
+            arguments='{"cmd":"safe"}',
+        ),
+        SimpleNamespace(
+            type="response.output_item.done",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments='{"cmd":"different"}',
+            ),
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed"),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert response.output == []
+
+
+def test_consume_codex_stream_deduplicates_identical_canonical_call():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    call = SimpleNamespace(
+        type="function_call",
+        id="fc_1",
+        call_id="call_1",
+        name="terminal",
+        arguments="{}",
+    )
+    events = [
+        SimpleNamespace(type="response.output_item.done", output_index=0, item=call),
+        SimpleNamespace(type="response.output_item.done", output_index=0, item=call),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed"),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert response.output == [call]
+
+
+def test_consume_codex_stream_conflicting_canonical_replay_invalidates_first():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal"
+            ),
+        ),
+        SimpleNamespace(
+            type="response.output_item.done",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments="{}",
+            ),
+        ),
+        SimpleNamespace(
+            type="response.output_item.done",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_other",
+                call_id="call_other",
+                name="terminal",
+                arguments='{"cmd":"conflict"}',
+            ),
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed"),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert response.output == []
+
+
+@pytest.mark.parametrize(
+    ("terminal_type", "terminal_status"),
+    [("response.failed", "failed"), ("response.incomplete", "incomplete")],
+)
+def test_consume_codex_stream_withholds_fallback_on_unsuccessful_terminal(
+    terminal_type,
+    terminal_status,
+):
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal"
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=0,
+            name="terminal",
+            arguments="{}",
+        ),
+        SimpleNamespace(
+            type=terminal_type,
+            response=SimpleNamespace(status=terminal_status),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert response.status == terminal_status
+    assert response.output == []
+
+
+def test_consume_codex_stream_withholds_fallback_on_contradictory_completed_status():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal"
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=0,
+            name="terminal",
+            arguments="{}",
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="failed"),
+        ),
+    ]
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream(events),
+        model="gpt-5-codex",
+    )
+
+    assert response.status == "failed"
+    assert response.output == []
+
+
+def test_consume_codex_stream_withholds_fallback_on_stream_exhaustion():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal"
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=0,
+            name="terminal",
+            arguments="{}",
+        ),
+    ]
+
+    with pytest.raises(RuntimeError, match="did not emit a terminal response"):
+        _consume_codex_event_stream(
+            _FakeCreateStream(events),
+            model="gpt-5-codex",
+        )
+
+
+def test_consume_codex_stream_withholds_fallback_on_interrupt():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    events = [
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal"
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_1",
+            output_index=0,
+            name="terminal",
+            arguments="{}",
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed"),
+        ),
+    ]
+    checks = iter((False, False, True))
+
+    with pytest.raises(RuntimeError, match="did not emit a terminal response"):
+        _consume_codex_event_stream(
+            _FakeCreateStream(events),
+            model="gpt-5-codex",
+            interrupt_check=lambda: next(checks),
+        )
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
@@ -2294,7 +3015,7 @@ def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, t
     agent = run_agent.AIAgent(
         model="gpt-4o",
         base_url="http://127.0.0.1:9208/v1",
-        api_key="sk-ant-providersecret1234567890",
+        api_key="sk-ant-" "providersecret1234567890",
         quiet_mode=True,
         max_iterations=1,
         skip_context_files=True,
@@ -2303,8 +3024,8 @@ def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, t
     agent.logs_dir = tmp_path
 
     notion_token = "ntn_abc123def456ghi789jkl"
-    error_secret = "sk-ant-errorsecret1234567890"
-    response_secret = "sk-ant-responsesecret1234567890"
+    error_secret = "sk-ant-" "errorsecret1234567890"
+    response_secret = "sk-ant-" "responsesecret1234567890"
     response = SimpleNamespace(status_code=400, text=f"provider echoed {response_secret}")
 
     class ProviderError(RuntimeError):

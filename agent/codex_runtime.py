@@ -654,8 +654,16 @@ def _consume_codex_event_stream(
       Used for watchdog activity, debug logging, anything wire-shape-agnostic.
     * ``interrupt_check()`` — returns True to break the loop early.
     """
-    collected_output_items: List[Any] = []
+    collected_output_records: List[dict[str, Any]] = []
     collected_text_deltas: List[str] = []
+    fallback_tool_calls: dict[str, dict[str, Any]] = {}
+    output_item_seeds_by_id: dict[str, dict[str, Any]] = {}
+    output_item_seeds_by_index: dict[int, dict[str, Any]] = {}
+    output_item_seeds_by_call_id: dict[str, dict[str, Any]] = {}
+    invalid_item_ids: set[str] = set()
+    invalid_output_indexes: set[int] = set()
+    invalid_call_ids: set[str] = set()
+    stream_order = 0
     has_tool_calls = False
     first_delta_fired = False
     active_message_phase: str | None = None
@@ -665,8 +673,85 @@ def _consume_codex_event_stream(
     terminal_incomplete_details: Any = None
     terminal_error: Any = None
     saw_terminal = False
+    saw_completed_terminal = False
+
+    def _quarantine_seed(seed: dict[str, Any] | None, *extra_call_ids: Any) -> None:
+        if seed is not None:
+            item_id = seed.get("item_id")
+            output_index = seed.get("output_index")
+            call_id = seed.get("call_id")
+            if isinstance(item_id, str) and item_id:
+                invalid_item_ids.add(item_id)
+            if isinstance(output_index, int):
+                invalid_output_indexes.add(output_index)
+            if isinstance(call_id, str) and call_id:
+                invalid_call_ids.add(call_id)
+        for call_id in extra_call_ids:
+            if isinstance(call_id, str) and call_id:
+                invalid_call_ids.add(call_id)
+
+    def _seed_is_quarantined(seed: dict[str, Any] | None) -> bool:
+        if seed is None:
+            return False
+        return (
+            seed.get("item_id") in invalid_item_ids
+            or seed.get("output_index") in invalid_output_indexes
+            or seed.get("call_id") in invalid_call_ids
+        )
+
+    def _register_output_item_seed(item: Any, output_index: Any) -> dict[str, Any] | None:
+        item_id = _item_field(item, "id")
+        item_type = _item_field(item, "type", "")
+        call_id = _item_field(item, "call_id")
+        name = _item_field(item, "name")
+        seed = {
+            "item_id": item_id if isinstance(item_id, str) and item_id else None,
+            "output_index": output_index if isinstance(output_index, int) else None,
+            "item_type": item_type if isinstance(item_type, str) and item_type else None,
+            "call_id": call_id if isinstance(call_id, str) and call_id else None,
+            "name": name if isinstance(name, str) and name else None,
+        }
+
+        existing: list[dict[str, Any]] = []
+        for mapping, key in (
+            (output_item_seeds_by_id, seed["item_id"]),
+            (output_item_seeds_by_index, seed["output_index"]),
+            (output_item_seeds_by_call_id, seed["call_id"]),
+        ):
+            if (
+                key is not None
+                and key in mapping
+                and all(mapping[key] is not prior for prior in existing)
+            ):
+                existing.append(mapping[key])
+
+        if len(existing) > 1:
+            for prior in existing:
+                _quarantine_seed(prior, seed.get("call_id"))
+            _quarantine_seed(seed)
+            return None
+
+        if existing:
+            prior = existing[0]
+            for field in ("item_id", "output_index", "item_type", "call_id", "name"):
+                if prior.get(field) != seed.get(field):
+                    _quarantine_seed(prior, seed.get("call_id"))
+                    _quarantine_seed(seed)
+                    return None
+            seed = prior
+
+        if _seed_is_quarantined(seed):
+            return None
+        if seed.get("item_id") is not None:
+            output_item_seeds_by_id[seed["item_id"]] = seed
+        if seed.get("output_index") is not None:
+            output_item_seeds_by_index[seed["output_index"]] = seed
+        if seed.get("call_id") is not None:
+            output_item_seeds_by_call_id[seed["call_id"]] = seed
+        return seed
 
     for event in event_iter:
+        stream_order += 1
         if on_event is not None:
             try:
                 on_event(event)
@@ -700,6 +785,8 @@ def _consume_codex_event_stream(
         if event_type == "response.output_item.added":
             item = _event_field(event, "item")
             item_type = _item_field(item, "type", "")
+            output_index = _event_field(event, "output_index")
+            _register_output_item_seed(item, output_index)
             if item_type == "message":
                 phase = _item_field(item, "phase", None)
                 active_message_phase = phase.strip().lower() if isinstance(phase, str) else None
@@ -737,6 +824,86 @@ def _consume_codex_event_stream(
                             logger.debug("Codex stream on_text_delta raised", exc_info=True)
             continue
 
+        if event_type == "response.function_call_arguments.done":
+            has_tool_calls = True
+            item_id = _event_field(event, "item_id")
+            output_index = _event_field(event, "output_index")
+            # The public event schema requires item_id + output_index. Resolve
+            # only through the exact added item: an index-only or extension-only
+            # match is too weak for an executable call.
+            seed = (
+                output_item_seeds_by_id.get(item_id)
+                if isinstance(item_id, str) and item_id
+                else None
+            )
+            indexed_seed = (
+                output_item_seeds_by_index.get(output_index)
+                if isinstance(output_index, int)
+                else None
+            )
+            event_call_id = _event_field(event, "call_id")
+            if seed is None:
+                _quarantine_seed(indexed_seed, event_call_id)
+                direct_seed = (
+                    output_item_seeds_by_call_id.get(event_call_id)
+                    if isinstance(event_call_id, str) and event_call_id
+                    else None
+                )
+                _quarantine_seed(direct_seed, event_call_id)
+                continue
+            if indexed_seed is not None and indexed_seed is not seed:
+                _quarantine_seed(seed, event_call_id)
+                _quarantine_seed(indexed_seed, event_call_id)
+                continue
+            if _seed_is_quarantined(seed):
+                continue
+
+            seed_call_id = seed.get("call_id")
+            seed_name = seed.get("name")
+            event_name = _event_field(event, "name")
+            arguments = _event_field(event, "arguments")
+            valid_done = (
+                seed.get("item_type") == "function_call"
+                and isinstance(seed_call_id, str)
+                and seed_call_id
+                and isinstance(seed_name, str)
+                and seed_name
+                and isinstance(output_index, int)
+                and output_index == seed.get("output_index")
+                and isinstance(event_name, str)
+                and event_name == seed_name
+                and (
+                    not isinstance(event_call_id, str)
+                    or not event_call_id
+                    or event_call_id == seed_call_id
+                )
+                and isinstance(arguments, str)
+            )
+            if not valid_done:
+                _quarantine_seed(seed, event_call_id)
+                fallback_tool_calls.pop(seed_call_id, None)
+                continue
+
+            existing = fallback_tool_calls.get(seed_call_id)
+            record = {
+                "call_id": seed_call_id,
+                "item_id": seed["item_id"],
+                "name": seed_name,
+                "arguments": arguments,
+                "output_index": seed["output_index"],
+                "stream_order": stream_order,
+                "seed": seed,
+            }
+            if existing is not None and any(
+                existing[field] != record[field]
+                for field in ("item_id", "name", "arguments", "output_index")
+            ):
+                _quarantine_seed(seed, seed_call_id)
+                fallback_tool_calls.pop(seed_call_id, None)
+                continue
+            fallback_tool_calls.setdefault(seed_call_id, record)
+            continue
+
         if "function_call" in event_type:
             has_tool_calls = True
             # fall through — function_call items still get added on output_item.done
@@ -753,7 +920,14 @@ def _consume_codex_event_stream(
         if event_type == "response.output_item.done":
             done_item = _event_field(event, "item")
             if done_item is not None:
-                collected_output_items.append(done_item)
+                output_index = _event_field(event, "output_index")
+                collected_output_records.append(
+                    {
+                        "item": done_item,
+                        "output_index": output_index if isinstance(output_index, int) else None,
+                        "stream_order": stream_order,
+                    }
+                )
             continue
 
         if event_type in _TERMINAL_EVENT_TYPES:
@@ -781,6 +955,7 @@ def _consume_codex_event_stream(
                     if terminal_error is None and isinstance(resp_obj, dict):
                         terminal_error = resp_obj.get("error")
             if event_type == "response.completed":
+                saw_completed_terminal = True
                 terminal_status = terminal_status or "completed"
             elif event_type == "response.incomplete":
                 terminal_status = terminal_status or "incomplete"
@@ -789,11 +964,243 @@ def _consume_codex_event_stream(
             # Stop on terminal event.
             break
 
-    # Build the final output list.  Prefer items observed via output_item.done;
-    # if none arrived but we streamed plain text deltas (no tool calls), synthesize
-    # a single message item so downstream normalization has something to work with.
-    if collected_output_items:
-        output = list(collected_output_items)
+    # Validate completed items against any earlier output_item.added identity.
+    # A canonical item may stand alone, but once it intersects an added item all
+    # supplied aliases must describe that one seed. This keeps malformed mixed
+    # event streams from cross-wiring executable calls.
+    output_records: list[dict[str, Any]] = []
+    canonical_item_ids: set[str] = set()
+    canonical_call_ids: set[str] = set()
+    canonical_output_indexes: set[int] = set()
+    for record in collected_output_records:
+        item = record["item"]
+        item_id = _item_field(item, "id")
+        item_type = _item_field(item, "type")
+        call_id = _item_field(item, "call_id")
+        name = _item_field(item, "name")
+        output_index = record.get("output_index")
+
+        alias_lookups = (
+            (
+                isinstance(item_id, str) and bool(item_id),
+                output_item_seeds_by_id.get(item_id),
+            ),
+            (
+                isinstance(output_index, int),
+                output_item_seeds_by_index.get(output_index),
+            ),
+            (
+                isinstance(call_id, str) and bool(call_id),
+                output_item_seeds_by_call_id.get(call_id),
+            ),
+        )
+        seed_candidates: list[dict[str, Any]] = []
+        has_unknown_alias = False
+        for supplied, candidate in alias_lookups:
+            if not supplied:
+                continue
+            if candidate is None:
+                has_unknown_alias = True
+            elif all(candidate is not prior for prior in seed_candidates):
+                seed_candidates.append(candidate)
+
+        seed: dict[str, Any] | None = None
+        if len(seed_candidates) > 1 or (seed_candidates and has_unknown_alias):
+            for candidate in seed_candidates:
+                _quarantine_seed(candidate, call_id)
+            if isinstance(item_id, str) and item_id:
+                invalid_item_ids.add(item_id)
+            if isinstance(output_index, int):
+                invalid_output_indexes.add(output_index)
+            if isinstance(call_id, str) and call_id:
+                invalid_call_ids.add(call_id)
+            continue
+        if seed_candidates:
+            seed = seed_candidates[0]
+
+        if _seed_is_quarantined(seed):
+            continue
+        if (
+            isinstance(item_id, str)
+            and item_id in invalid_item_ids
+            or isinstance(output_index, int)
+            and output_index in invalid_output_indexes
+            or isinstance(call_id, str)
+            and call_id in invalid_call_ids
+        ):
+            continue
+
+        if seed is not None:
+            seed_item_id = seed.get("item_id")
+            seed_output_index = seed.get("output_index")
+            seed_call_id = seed.get("call_id")
+            seed_name = seed.get("name")
+            valid_seed_match = (
+                (
+                    not isinstance(item_id, str)
+                    or not item_id
+                    or item_id == seed_item_id
+                )
+                and (
+                    not isinstance(output_index, int)
+                    or output_index == seed_output_index
+                )
+                and (
+                    not isinstance(item_type, str)
+                    or not item_type
+                    or item_type == seed.get("item_type")
+                )
+                and (
+                    not isinstance(call_id, str)
+                    or not call_id
+                    or call_id == seed_call_id
+                )
+            )
+            if item_type == "function_call":
+                valid_seed_match = valid_seed_match and (
+                    isinstance(seed_item_id, str)
+                    and bool(seed_item_id)
+                    and item_id == seed_item_id
+                    and isinstance(seed_call_id, str)
+                    and bool(seed_call_id)
+                    and call_id == seed_call_id
+                    and isinstance(seed_name, str)
+                    and bool(seed_name)
+                    and name == seed_name
+                )
+                fallback = fallback_tool_calls.get(seed_call_id)
+                if fallback is not None:
+                    valid_seed_match = valid_seed_match and (
+                        _item_field(item, "arguments") == fallback["arguments"]
+                    )
+            if not valid_seed_match:
+                _quarantine_seed(seed, call_id)
+                continue
+            if not isinstance(output_index, int) and isinstance(seed_output_index, int):
+                output_index = seed_output_index
+                record["output_index"] = output_index
+
+        record["seed"] = seed
+        output_records.append(record)
+
+    # Replayed canonical events are harmless only when they are byte-for-byte
+    # equivalent at the Python object boundary. Conflicting records that share
+    # any identity invalidate the whole slot, including a canonical record that
+    # was seen earlier in the stream.
+    canonical_owners: dict[tuple[str, Any], dict[str, Any]] = {}
+    invalid_record_ids: set[int] = set()
+    deduplicated_records: list[dict[str, Any]] = []
+    for record in output_records:
+        item = record["item"]
+        item_id = _item_field(item, "id")
+        call_id = _item_field(item, "call_id")
+        output_index = record.get("output_index")
+        identities: list[tuple[str, Any]] = []
+        if isinstance(item_id, str) and item_id:
+            identities.append(("item_id", item_id))
+        if isinstance(call_id, str) and call_id:
+            identities.append(("call_id", call_id))
+        if isinstance(output_index, int):
+            identities.append(("output_index", output_index))
+
+        owners: list[dict[str, Any]] = []
+        for identity in identities:
+            owner = canonical_owners.get(identity)
+            if owner is not None and all(owner is not prior for prior in owners):
+                owners.append(owner)
+        if owners:
+            if (
+                len(owners) == 1
+                and owners[0]["item"] == item
+                and owners[0].get("output_index") == output_index
+            ):
+                continue
+            for conflicting in (*owners, record):
+                invalid_record_ids.add(id(conflicting))
+                conflicting_item = conflicting["item"]
+                conflicting_item_id = _item_field(conflicting_item, "id")
+                conflicting_call_id = _item_field(conflicting_item, "call_id")
+                conflicting_index = conflicting.get("output_index")
+                _quarantine_seed(conflicting.get("seed"), conflicting_call_id)
+                if isinstance(conflicting_item_id, str) and conflicting_item_id:
+                    invalid_item_ids.add(conflicting_item_id)
+                if isinstance(conflicting_call_id, str) and conflicting_call_id:
+                    invalid_call_ids.add(conflicting_call_id)
+                if isinstance(conflicting_index, int):
+                    invalid_output_indexes.add(conflicting_index)
+            continue
+
+        deduplicated_records.append(record)
+        for identity in identities:
+            canonical_owners[identity] = record
+
+    output_records = []
+    for record in deduplicated_records:
+        item = record["item"]
+        item_id = _item_field(item, "id")
+        call_id = _item_field(item, "call_id")
+        output_index = record.get("output_index")
+        if (
+            id(record) in invalid_record_ids
+            or _seed_is_quarantined(record.get("seed"))
+            or isinstance(item_id, str)
+            and item_id in invalid_item_ids
+            or isinstance(call_id, str)
+            and call_id in invalid_call_ids
+            or isinstance(output_index, int)
+            and output_index in invalid_output_indexes
+        ):
+            continue
+        output_records.append(record)
+        if isinstance(item_id, str) and item_id:
+            canonical_item_ids.add(item_id)
+        if isinstance(call_id, str) and call_id:
+            canonical_call_ids.add(call_id)
+        if isinstance(output_index, int):
+            canonical_output_indexes.add(output_index)
+
+    # arguments.done is only a fallback after a successful terminal frame. A
+    # failed, incomplete, interrupted, or truncated stream must never create an
+    # executable call from a partial event sequence.
+    if saw_completed_terminal and terminal_status == "completed":
+        for call_id, record in fallback_tool_calls.items():
+            seed = record["seed"]
+            if _seed_is_quarantined(seed):
+                continue
+            if (
+                call_id in canonical_call_ids
+                or record.get("item_id") in canonical_item_ids
+                or record.get("output_index") in canonical_output_indexes
+            ):
+                continue
+            fields = {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": record["name"],
+                "arguments": record["arguments"],
+                "status": "completed",
+            }
+            if record.get("item_id") is not None:
+                fields["id"] = record["item_id"]
+            output_records.append(
+                {
+                    "item": SimpleNamespace(**fields),
+                    "output_index": record.get("output_index"),
+                    "stream_order": record["stream_order"],
+                }
+            )
+
+    if output_records:
+        output_records.sort(
+            key=lambda record: (
+                0 if isinstance(record.get("output_index"), int) else 1,
+                record.get("output_index")
+                if isinstance(record.get("output_index"), int)
+                else record["stream_order"],
+                record["stream_order"],
+            )
+        )
+        output = [record["item"] for record in output_records]
     elif collected_text_deltas and not has_tool_calls:
         assembled = "".join(collected_text_deltas)
         output = [SimpleNamespace(

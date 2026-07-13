@@ -101,6 +101,14 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   українська: "uk",
   日本語: "ja",
   한국어: "ko",
+};
+
+// Protocol and historical inputs are normalized at this boundary only. They
+// are not product locales and must not enter TRANSLATIONS or LOCALE_META.
+const INTERNAL_COMPATIBILITY_ALIASES: Record<
+  string,
+  Extract<Locale, "zh" | "zh-hant">
+> = {
   "zh-cn": "zh",
   "zh-hans": "zh",
   "zh-hk": "zh-hant",
@@ -124,6 +132,8 @@ export function normalizeLocale(value: unknown): Locale | null {
   if (isLocale(normalized)) return normalized;
   const alias = LOCALE_ALIASES[normalized];
   if (alias) return alias;
+  const compatibilityAlias = INTERNAL_COMPATIBILITY_ALIASES[normalized];
+  if (compatibilityAlias) return compatibilityAlias;
   if (normalized.startsWith("zh-")) return null;
   const primary = normalized.split("-")[0];
   return isLocale(primary) ? primary : null;

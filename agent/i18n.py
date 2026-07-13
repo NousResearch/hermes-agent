@@ -49,16 +49,10 @@ DEFAULT_LANGUAGE = "en"
 # get the right catalog instead of silently falling back to English.
 _LANGUAGE_ALIASES: dict[str, str] = {
     "english": "en", "en-us": "en", "en-gb": "en",
-    # Chinese is handled as two explicit language choices here:
-    # Simplified Chinese and Traditional Chinese.
-    # Bare "chinese" / "mandarin"
-    # also default to Simplified since that's the larger user base.
+    # Chinese is exposed as two independent product language choices:
+    # Simplified Chinese and Traditional Chinese. Neither is region-bound.
     "chinese": "zh", "mandarin": "zh", "simplified-chinese": "zh",
-    # BCP-47 compatibility stays internal; user-facing choices remain
-    # "Simplified Chinese" and "Traditional Chinese".
-    "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",
     "traditional-chinese": "zh-hant",
-    "zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-mo": "zh-hant",
     "japanese": "ja", "日本語": "ja", "jp": "ja", "ja-jp": "ja",
     "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
     "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",
@@ -81,6 +75,14 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "russian": "ru", "русский": "ru", "ru-ru": "ru",
     # Hungarian
     "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
+}
+
+# External protocols and historical configuration may supply region-tagged
+# locale values. Keep that compatibility isolated from the canonical product
+# language registry and user-facing language choices.
+_INTERNAL_COMPATIBILITY_ALIASES: dict[str, str] = {
+    "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",
+    "zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-mo": "zh-hant",
 }
 
 _catalog_cache: dict[str, dict[str, str]] = {}
@@ -157,6 +159,8 @@ def normalize_language(value: Any) -> str:
         return key
     if key in _LANGUAGE_ALIASES:
         return _LANGUAGE_ALIASES[key]
+    if key in _INTERNAL_COMPATIBILITY_ALIASES:
+        return _INTERNAL_COMPATIBILITY_ALIASES[key]
     # Chinese is limited to two explicit language choices here. Do not collapse
     # extra zh-* values to Simplified/Traditional.
     if key.startswith("zh-"):

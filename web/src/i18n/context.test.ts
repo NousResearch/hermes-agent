@@ -74,13 +74,7 @@ describe("Dashboard i18n framework", () => {
 
   it("normalizes explicit language names and compatible BCP-47 inputs", () => {
     expect(normalizeLocale("Simplified Chinese")).toBe("zh");
-    expect(normalizeLocale("zh-CN")).toBe("zh");
-    expect(normalizeLocale("zh_Hans")).toBe("zh");
-    expect(normalizeLocale("zh-SG")).toBe("zh");
     expect(normalizeLocale("traditional-chinese")).toBe("zh-hant");
-    expect(normalizeLocale("zh-TW")).toBe("zh-hant");
-    expect(normalizeLocale("zh_HK")).toBe("zh-hant");
-    expect(normalizeLocale("zh-MO")).toBe("zh-hant");
     expect(normalizeLocale("zh-extra")).toBeNull();
     expect(normalizeLocale("pt_BR")).toBe("pt");
     expect(normalizeLocale("jp")).toBe("ja");
@@ -90,6 +84,15 @@ describe("Dashboard i18n framework", () => {
     expect(normalizeLocale("francais")).toBe("fr");
     expect(normalizeLocale("brazilian")).toBe("pt");
     expect(normalizeLocale("ua")).toBe("uk");
+  });
+
+  it("keeps protocol compatibility internal to the two Chinese language options", () => {
+    expect(normalizeLocale("zh-CN")).toBe("zh");
+    expect(normalizeLocale("zh_Hans")).toBe("zh");
+    expect(normalizeLocale("zh-SG")).toBe("zh");
+    expect(normalizeLocale("zh-TW")).toBe("zh-hant");
+    expect(normalizeLocale("zh_HK")).toBe("zh-hant");
+    expect(normalizeLocale("zh-MO")).toBe("zh-hant");
   });
 
   it("deep-merges locale overrides onto the complete English source", () => {

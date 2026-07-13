@@ -87,13 +87,7 @@ def test_normalize_lang_accepts_aliases():
     assert i18n.normalize_language("chinese") == "zh"
     assert i18n._normalize_lang("simplified-chinese") == "zh"
     assert i18n._normalize_lang("Simplified Chinese") == "zh"
-    assert i18n._normalize_lang("zh-CN") == "zh"
-    assert i18n._normalize_lang("zh_Hans") == "zh"
-    assert i18n._normalize_lang("zh-SG") == "zh"
     assert i18n._normalize_lang("traditional-chinese") == "zh-hant"
-    assert i18n._normalize_lang("zh-TW") == "zh-hant"
-    assert i18n._normalize_lang("zh_HK") == "zh-hant"
-    assert i18n._normalize_lang("zh-MO") == "zh-hant"
     assert i18n._normalize_lang("Deutsch") == "de"
     assert i18n._normalize_lang("español") == "es"
     assert i18n._normalize_lang("jp") == "ja"
@@ -109,6 +103,15 @@ def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("francais") == "fr"
     assert i18n._normalize_lang("brazilian") == "pt"
     assert i18n._normalize_lang("pt_BR") == "pt"
+
+
+def test_normalize_lang_keeps_protocol_compatibility_internal_to_chinese_language_options():
+    assert i18n._normalize_lang("zh-CN") == "zh"
+    assert i18n._normalize_lang("zh_Hans") == "zh"
+    assert i18n._normalize_lang("zh-SG") == "zh"
+    assert i18n._normalize_lang("zh-TW") == "zh-hant"
+    assert i18n._normalize_lang("zh_HK") == "zh-hant"
+    assert i18n._normalize_lang("zh-MO") == "zh-hant"
 
 
 def test_normalize_lang_does_not_infer_chinese_language_from_extra_zh_values():

@@ -123,10 +123,14 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   ukrainian: 'uk',
   ukrainisch: 'uk',
   'uk-ua': 'uk',
-  українська: 'uk',
+  українська: 'uk'
+}
+
+// Protocol and historical inputs are normalized at this boundary only. They
+// are not product locales and must not enter LOCALES or user-facing metadata.
+const INTERNAL_COMPATIBILITY_ALIASES: Record<string, Extract<Locale, 'zh' | 'zh-hant'>> = {
   'zh-cn': 'zh',
   'zh-hans': 'zh',
-  'zh-hant': 'zh-hant',
   'zh-hk': 'zh-hant',
   'zh-mo': 'zh-hant',
   'zh-sg': 'zh',
@@ -171,6 +175,12 @@ export const normalizeLocale = (value: unknown): Locale => {
 
   if (alias) {
     return alias
+  }
+
+  const compatibilityAlias = INTERNAL_COMPATIBILITY_ALIASES[raw]
+
+  if (compatibilityAlias) {
+    return compatibilityAlias
   }
 
   // Chinese is limited to two explicit language choices here. Do not collapse

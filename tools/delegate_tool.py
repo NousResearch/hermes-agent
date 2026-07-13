@@ -2817,10 +2817,11 @@ def delegate_task(
             _sync_result = _execute_and_aggregate()
             if isinstance(_sync_result, dict):
                 _sync_result["note"] = (
-                    "background=true is not available on this endpoint (stateless "
-                    "HTTP API — no channel to deliver a detached subagent result "
-                    "after the turn ends), so the subagent(s) ran SYNCHRONOUSLY and "
-                    "the result is included above."
+                    "background=true is not available in this session — it cannot "
+                    "receive a detached subagent result after the turn ends (a "
+                    "one-shot runner such as `hermes -z` or a cron job, or a "
+                    "stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY "
+                    "and the result is included above."
                 )
             return json.dumps(_sync_result, ensure_ascii=False)
 

@@ -1866,6 +1866,12 @@ def init_agent(
     agent.compression_in_place = compression_in_place
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
 
+    # Maximum number of tool-result images to keep in the outgoing request.
+    # Older images are replaced with a text placeholder to prevent token
+    # bloat and local-model OOM from accumulating browser_vision screenshots.
+    # See agent/context_compressor.py:_evict_old_screenshots_openai
+    agent.max_tool_images = int(_agent_cfg.get("max_tool_images", 3))
+
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
     _ctx = getattr(agent.context_compressor, "context_length", 0)

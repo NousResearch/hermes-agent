@@ -28,6 +28,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.context_compressor import _evict_old_screenshots_openai
 from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -955,6 +956,16 @@ def run_conversation(
         # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
+
+        # Evict old tool-result images on the OpenAI-compatible path.
+        # Keeps the most recent N (default 3) screenshots and replaces
+        # older ones with a text placeholder.  Only touches the per-call
+        # api_messages copy — stored history is never mutated.
+        # Configurable via ``agent.max_tool_images`` (default 3).
+        # See: agent/context_compressor.py:_evict_old_screenshots_openai
+        _max_tool_imgs = getattr(agent, "max_tool_images", 3)
+        if _max_tool_imgs and _max_tool_imgs > 0:
+            _evict_old_screenshots_openai(api_messages, max_keep=_max_tool_imgs)
 
         # Calculate approximate request size for logging and pressure checks.
         # estimate_messages_tokens_rough(api_messages) includes the system

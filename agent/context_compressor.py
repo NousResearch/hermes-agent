@@ -529,35 +529,86 @@ def _strip_images_from_content(content: Any) -> Any:
     return new_parts
 
 
+def _evict_old_screenshots_openai(
+    messages: List[Dict[str, Any]],
+    max_keep: int = 3,
+) -> None:
+    """Keep only the most recent ``max_keep`` tool-result images on the
+    OpenAI-compatible request path.
+
+    Base-64 images cost ~1,465 tokens each and accumulate across tool
+    calls.  Walk backward through ``messages``, keep the most recent N
+    tool-result images, and replace older ones with a short text
+    placeholder.
+
+    Port of ``_evict_old_screenshots`` (agent/anthropic_adapter.py) for
+    the chat_completions wire format where tool-role images are flat
+    ``image_url`` / ``input_image`` parts in the message ``content``
+    list — not nested inside Anthropic ``tool_result`` blocks.
+
+    Mutates ``messages`` in place.  Stored conversation history must
+    never be passed here; only the per-call ``api_messages`` copy.
+    """
+    if not max_keep or max_keep <= 0:
+        return
+    _Placeholder = {"type": "text", "text": "[screenshot removed to save context]"}
+    image_count = 0
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        # Check whether this tool message carries any image parts.
+        has_image = any(_is_image_part(p) for p in content)
+        if not has_image:
+            continue
+        image_count += 1
+        if image_count > max_keep:
+            msg["content"] = [
+                p if not _is_image_part(p) else _Placeholder
+                for p in content
+            ]
+
+
 def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Replace image parts in older messages with placeholder text.
 
-    The anchor is the *last* user message that has any image content. Every
-    message before that anchor gets its image parts replaced with a short
-    placeholder so the outgoing request stops re-shipping the same multi-MB
-    base-64 image blobs on every turn.
+    The anchor is the *last* message (user or tool role) that has any
+    image content.  Every message before that anchor gets its image parts
+    replaced with a short placeholder so the outgoing request stops
+    re-shipping the same multi-MB base-64 image blobs on every turn.
 
-    If no user message carries images, the list is returned unchanged.
-    If the only user message with images is the very first one (nothing
+    If no message carries images, the list is returned unchanged.
+    If the only image-bearing message is the very first one (nothing
     earlier to strip), the list is returned unchanged.
 
     Shallow copies of touched messages only; input is never mutated.
     Port of Kilo-Org/kilocode#9434 (adapted for the OpenAI-style message
     shape the hermes compressor emits).
+
+    .. note::
+
+       The anchor search now includes ``tool``-role messages so that
+       tool-result screenshots (e.g. from ``browser_vision``) are also
+       covered — previously only ``user``-role images anchored the strip,
+       leaving tool-role screenshots untouched in the typical
+       ``user → assistant(tool_calls) → tool(results)`` flow.
     """
     if not messages:
         return messages
 
-    # Find the newest user message that carries at least one image part.
-    # We anchor on image-bearing user messages (not all user messages) so
-    # a plain text follow-up after a big-image turn still strips the old
-    # image — matching the problem kilocode#9434 set out to solve.
+    # Find the newest message (user or tool) that carries at least one
+    # image part.  Including tool-role messages covers the typical
+    # browser_vision flow where no user message carries images.
     anchor = -1
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if not isinstance(msg, dict):
             continue
-        if msg.get("role") != "user":
+        if msg.get("role") not in ("user", "tool"):
             continue
         if _content_has_images(msg.get("content")):
             anchor = i

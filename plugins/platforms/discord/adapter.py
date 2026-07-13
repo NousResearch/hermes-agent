@@ -5496,6 +5496,17 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name = (name or "handoff").strip()[:80] or "handoff"
         reason = "Hermes session handoff"
 
+        def _track_created_thread(thread: Any) -> str:
+            thread_id = str(thread.id)
+            try:
+                self._threads.mark(thread_id)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Handoff thread %s created but participation tracking failed: %s",
+                    self.name, thread_id, exc,
+                )
+            return thread_id
+
         seed_error: Exception | None = None
 
         # Preferred path: create the thread from a visible parent message. A
@@ -5511,7 +5522,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_archive_duration=1440,
                     reason=reason,
                 )
-                return str(thread.id)
+                return _track_created_thread(thread)
         except Exception as exc:
             seed_error = exc
             logger.debug(
@@ -5531,7 +5542,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 auto_archive_duration=1440,
                 reason=reason,
             )
-            return str(thread.id)
+            return _track_created_thread(thread)
         except Exception as direct_error:
             logger.warning(
                 "[%s] Handoff thread: seed and direct create failed for "

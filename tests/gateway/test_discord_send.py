@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import sys
@@ -449,7 +450,10 @@ async def test_typing_stop_cleans_up():
 
 class TestCreateHandoffThread:
     @pytest.mark.asyncio
-    async def test_creates_thread_from_visible_parent_seed(self):
+    async def test_creates_thread_from_visible_parent_seed(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
         events = []
         thread = SimpleNamespace(id=9001)
@@ -476,11 +480,16 @@ class TestCreateHandoffThread:
         thread_id = await adapter.create_handoff_thread("123", "Daily brief")
 
         assert thread_id == "9001"
+        assert "9001" in adapter._threads
+        assert json.loads((tmp_path / "discord_threads.json").read_text()) == ["9001"]
         assert events == ["send-seed", "create-from-seed"]
         parent.create_thread.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_cron_brief_is_distinct_child_in_created_thread(self):
+    async def test_cron_brief_is_distinct_child_in_created_thread(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
         thread = SimpleNamespace(
             id=9001,
@@ -533,7 +542,10 @@ class TestCreateHandoffThread:
         parent.create_thread.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_direct_channel_create_remains_fallback_when_seed_fails(self):
+    async def test_direct_channel_create_remains_fallback_when_seed_fails(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
         thread = SimpleNamespace(id=9001)
         seed = SimpleNamespace(
@@ -553,6 +565,67 @@ class TestCreateHandoffThread:
         thread_id = await adapter.create_handoff_thread("123", "Daily brief")
 
         assert thread_id == "9001"
+        assert "9001" in adapter._threads
+        assert json.loads((tmp_path / "discord_threads.json").read_text()) == ["9001"]
         parent.send.assert_awaited_once()
         seed.create_thread.assert_awaited_once()
         parent.create_thread.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_seed_create_does_not_duplicate_thread_when_tracking_fails(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        adapter._threads.mark = MagicMock(side_effect=OSError("disk full"))
+        thread = SimpleNamespace(id=9001)
+        seed = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
+        parent = SimpleNamespace(
+            send=AsyncMock(return_value=seed),
+            create_thread=AsyncMock(),
+        )
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _channel_id: parent,
+            fetch_channel=AsyncMock(),
+        )
+
+        thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+
+        assert thread_id == "9001"
+        parent.create_thread.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_direct_create_still_returns_thread_when_tracking_fails(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        adapter._threads.mark = MagicMock(side_effect=OSError("disk full"))
+        thread = SimpleNamespace(id=9001)
+        parent = SimpleNamespace(
+            send=AsyncMock(side_effect=RuntimeError("seed denied")),
+            create_thread=AsyncMock(return_value=thread),
+        )
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _channel_id: parent,
+            fetch_channel=AsyncMock(),
+        )
+
+        thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+
+        assert thread_id == "9001"
+
+    @pytest.mark.asyncio
+    async def test_failed_thread_creation_remains_untracked(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        seed = SimpleNamespace(
+            create_thread=AsyncMock(side_effect=RuntimeError("seed denied"))
+        )
+        parent = SimpleNamespace(
+            send=AsyncMock(return_value=seed),
+            create_thread=AsyncMock(side_effect=RuntimeError("direct denied")),
+        )
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _channel_id: parent,
+            fetch_channel=AsyncMock(),
+        )
+
+        thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+
+        assert thread_id is None
+        assert not (tmp_path / "discord_threads.json").exists()

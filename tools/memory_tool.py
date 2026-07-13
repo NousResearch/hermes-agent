@@ -877,9 +877,9 @@ class MemoryStore:
         concurrent readers see an empty file. Atomic rename avoids this:
         readers always see either the old complete file or the new one.
 
-        Preserves existing file permissions so group-shared deployments
-        (e.g. NixOS, Docker volumes) don't lose their permission bits
-        after every memory update (#22889).
+        Preserves existing file permissions and ownership so group-shared
+        deployments (e.g. NixOS, Docker volumes) don't lose access after
+        every memory update (#22889).
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:

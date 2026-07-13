@@ -125,7 +125,7 @@ class TestFeishuStreamEditRotation(unittest.TestCase):
     def test_should_rotate_stream_edit_failure_on_raw_response_code(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.base import SendResult
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         result = SendResult(
@@ -137,17 +137,15 @@ class TestFeishuStreamEditRotation(unittest.TestCase):
         self.assertTrue(adapter.should_rotate_stream_edit_failure(result))
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_should_rotate_stream_edit_failure_on_error_code_text(self):
+    def test_should_rotate_stream_edit_failure_on_result_error_code(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.base import SendResult
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         result = SendResult(
             success=False,
-            raw_response=SimpleNamespace(
-                msg="[230072] The message has reached the number of times it can be edited."
-            ),
+            error="[230072] The message has reached the number of times it can be edited.",
         )
 
         self.assertTrue(adapter.should_rotate_stream_edit_failure(result))
@@ -156,7 +154,7 @@ class TestFeishuStreamEditRotation(unittest.TestCase):
     def test_should_rotate_stream_edit_failure_on_english_text(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.base import SendResult
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         result = SendResult(
@@ -169,10 +167,24 @@ class TestFeishuStreamEditRotation(unittest.TestCase):
         self.assertTrue(adapter.should_rotate_stream_edit_failure(result))
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_should_rotate_stream_edit_failure_on_chinese_result_error(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import SendResult
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        result = SendResult(
+            success=False,
+            error="消息已超过最大可编辑次数 20 次",
+        )
+
+        self.assertTrue(adapter.should_rotate_stream_edit_failure(result))
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_should_not_rotate_on_unrelated_failure(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.base import SendResult
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         result = SendResult(

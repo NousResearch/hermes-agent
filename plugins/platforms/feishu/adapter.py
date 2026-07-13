@@ -1980,11 +1980,25 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def should_rotate_stream_edit_failure(result: SendResult) -> bool:
         raw_response = getattr(result, "raw_response", None)
-        if getattr(raw_response, "code", None) == 230072:
+        if str(getattr(raw_response, "code", "") or "") == "230072":
             return True
 
-        error_text = str(getattr(raw_response, "msg", "") or "")
-        return "number of times it can be edited" in error_text.lower()
+        error_text = " ".join(
+            str(value)
+            for value in (
+                getattr(raw_response, "msg", ""),
+                getattr(result, "error", ""),
+            )
+            if value
+        )
+        error_lower = error_text.lower()
+        return (
+            re.search(r"(?:^|\D)230072(?:\D|$)", error_text) is not None
+            or "number of times it can be edited" in error_lower
+            or "超过最大可编辑次数" in error_text
+            or "达到可编辑次数上限" in error_text
+            or "已达可编辑次数上限" in error_text
+        )
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,

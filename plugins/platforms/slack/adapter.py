@@ -440,7 +440,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
-        self._user_name_cache: Dict[str, str] = {}  # user_id → display name
+        # Slack user IDs are workspace-local. Cache names by workspace as well
+        # so a multi-workspace Socket Mode process never reuses another
+        # tenant's display name.
+        self._user_name_cache: Dict[Tuple[str, str], str] = {}
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
@@ -460,11 +463,10 @@ class SlackAdapter(BasePlatformAdapter):
         # respond to ALL subsequent messages in that thread automatically.
         self._mentioned_threads: set = set()
         self._MENTIONED_THREADS_MAX = 5000
-        # Assistant thread metadata keyed by (channel_id, thread_ts). Slack's
-        # AI Assistant lifecycle events can arrive before/alongside message
-        # events, and they carry the user/thread identity needed for stable
-        # session + memory scoping.
-        self._assistant_threads: Dict[Tuple[str, str], Dict[str, str]] = {}
+        # Assistant thread metadata keyed by (team_id, channel_id, thread_ts).
+        # Slack's AI Assistant lifecycle events can arrive before/alongside
+        # message events, and carry identity needed for stable session scoping.
+        self._assistant_threads: Dict[Tuple[str, str, str], Dict[str, str]] = {}
         self._ASSISTANT_THREADS_MAX = 5000
         # Agent-view context is per workspace/user (not global): a context
         # change for one person's Slack split view must never appear in another
@@ -477,11 +479,9 @@ class SlackAdapter(BasePlatformAdapter):
         self._THREAD_CACHE_TTL = 60.0
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
         self._reacting_message_ids: set = set()
-        # Track active assistant thread status indicators so stop_typing can
-        # clear them ((chat_id, thread_ts) → {"thread_ts": str, "team_id": str}).
-        # Keeping team_id avoids clearing via the wrong WebClient in
-        # multi-workspace Socket Mode installs.
-        self._active_status_threads: Dict[Any, Dict[str, str]] = {}
+        # Track active Assistant statuses by (team_id, channel_id, thread_ts)
+        # so cleanup cannot clear an overlapping Slack Connect workspace.
+        self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, str]] = {}
         # Best-effort guard so automatic Slack AI thread titles are set once
         # per visible DM thread instead of on every reply.
         self._titled_assistant_threads: set = set()
@@ -1376,11 +1376,6 @@ class SlackAdapter(BasePlatformAdapter):
             or ""
         )
 
-    @staticmethod
-    def _active_status_key(chat_id: str, thread_ts: str) -> Tuple[str, str]:
-        """Return the per-thread key for active Slack AI status tracking."""
-        return (str(chat_id), str(thread_ts))
-
     def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
         """Return the workspace-specific WebClient for a channel."""
         if team_id and team_id in self._team_clients:
@@ -1586,10 +1581,12 @@ class SlackAdapter(BasePlatformAdapter):
         if not team_id:
             team_id = self._channel_team.get(chat_id, "")
 
-        self._active_status_threads[self._active_status_key(chat_id, str(thread_ts))] = {
-            "thread_ts": str(thread_ts),
-            "team_id": str(team_id) if team_id else "",
-        }
+        status_key = self._workspace_thread_key(team_id, chat_id, str(thread_ts))
+        if status_key:
+            self._active_status_threads[status_key] = {
+                "thread_ts": str(thread_ts),
+                "team_id": str(team_id) if team_id else "",
+            }
         try:
             await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
                 channel_id=chat_id,
@@ -1610,19 +1607,26 @@ class SlackAdapter(BasePlatformAdapter):
             requested_thread_ts = str(
                 metadata.get("thread_id") or metadata.get("thread_ts") or ""
             )
-        active_key = (
-            self._active_status_key(chat_id, requested_thread_ts)
-            if requested_thread_ts
-            else chat_id
-        )
-        active = self._active_status_threads.pop(active_key, None)
-        if active is None and requested_thread_ts:
-            active = self._active_status_threads.pop(chat_id, None)
-        if active is None and not requested_thread_ts:
+        requested_team_id = self._metadata_team_id(metadata)
+        if not requested_team_id:
+            requested_team_id = self._channel_team.get(chat_id, "")
+        active = None
+        if requested_thread_ts:
+            active_key = self._workspace_thread_key(
+                requested_team_id, chat_id, requested_thread_ts
+            )
+            if active_key:
+                active = self._active_status_threads.pop(active_key, None)
+        else:
+            # Metadata-free cleanup is safe only if exactly one status exists
+            # for this channel; otherwise it may clear another Slack Connect
+            # workspace's Assistant status.
             matching_keys = [
                 key
                 for key in self._active_status_threads
-                if isinstance(key, tuple) and key[0] == str(chat_id)
+                if isinstance(key, tuple)
+                and len(key) == 3
+                and key[1] == str(chat_id)
             ]
             if len(matching_keys) == 1:
                 active = self._active_status_threads.pop(matching_keys[0], None)
@@ -2218,18 +2222,27 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- User identity resolution -----
 
-    async def _resolve_user_name(self, user_id: str, chat_id: str = "") -> str:
-        """Resolve a Slack user ID to a display name, with caching."""
+    async def _resolve_user_name(
+        self, user_id: str, chat_id: str = "", team_id: str = ""
+    ) -> str:
+        """Resolve a workspace-local Slack user ID to a display name."""
         if not user_id:
             return ""
-        if user_id in self._user_name_cache:
-            return self._user_name_cache[user_id]
+        team_id = str(team_id or self._channel_team.get(chat_id, ""))
+        cache_key = (team_id, str(user_id))
+        cached_name = self._user_name_cache.get(cache_key)
+        if cached_name is not None:
+            return cached_name
 
         if not self._app:
             return user_id
 
         try:
-            client = self._get_client(chat_id) if chat_id else self._app.client
+            client = (
+                self._get_client(chat_id, team_id=team_id or None)
+                if chat_id
+                else self._app.client
+            )
             result = await client.users_info(user=user_id)
             user = result.get("user", {})
             # Prefer display_name → real_name → user_id
@@ -2241,11 +2254,11 @@ class SlackAdapter(BasePlatformAdapter):
                 or user.get("name")
                 or user_id
             )
-            self._user_name_cache[user_id] = name
+            self._user_name_cache[cache_key] = name
             return name
         except Exception as e:
             logger.debug("[Slack] users.info failed for %s: %s", user_id, e)
-            self._user_name_cache[user_id] = user_id
+            self._user_name_cache[cache_key] = user_id
             return user_id
 
     async def send_image_file(
@@ -2525,13 +2538,19 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Internal handlers -----
 
-    def _assistant_thread_key(
-        self, channel_id: str, thread_ts: str
-    ) -> Optional[Tuple[str, str]]:
-        """Return a stable cache key for Slack assistant thread metadata."""
+    @staticmethod
+    def _workspace_thread_key(
+        team_id: str, channel_id: str, thread_ts: str
+    ) -> Optional[Tuple[str, str, str]]:
+        """Return a workspace-scoped key for Slack thread-local state.
+
+        Slack Connect can expose the same channel/thread IDs in more than one
+        workspace. Keys for cached thread data and Assistant status therefore
+        need the workspace identity as well as Slack's channel/thread pair.
+        """
         if not channel_id or not thread_ts:
             return None
-        return (str(channel_id), str(thread_ts))
+        return (str(team_id or ""), str(channel_id), str(thread_ts))
 
     @staticmethod
     def _agent_view_context_key(team_id: str, user_id: str) -> Optional[Tuple[str, str]]:
@@ -2665,10 +2684,11 @@ class SlackAdapter(BasePlatformAdapter):
         }
 
     def _cache_assistant_thread_metadata(self, metadata: Dict[str, str]) -> None:
-        """Remember assistant thread identity data for later message events."""
+        """Remember workspace-local assistant identity for later message events."""
         channel_id = metadata.get("channel_id", "")
         thread_ts = metadata.get("thread_ts", "")
-        key = self._assistant_thread_key(channel_id, thread_ts)
+        team_id = metadata.get("team_id", "")
+        key = self._workspace_thread_key(team_id, channel_id, thread_ts)
         if not key:
             return
 
@@ -2677,30 +2697,35 @@ class SlackAdapter(BasePlatformAdapter):
         merged.update({k: v for k, v in metadata.items() if v})
         self._assistant_threads[key] = merged
 
-        # Evict oldest entries when the cache exceeds the limit
+        # Evict oldest entries when the cache exceeds the limit.
         if len(self._assistant_threads) > self._ASSISTANT_THREADS_MAX:
             excess = len(self._assistant_threads) - self._ASSISTANT_THREADS_MAX // 2
             for old_key in list(self._assistant_threads)[:excess]:
                 del self._assistant_threads[old_key]
 
-        team_id = merged.get("team_id", "")
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
     def _lookup_assistant_thread_metadata(
         self,
         event: dict,
+        *,
         channel_id: str = "",
         thread_ts: str = "",
+        team_id: str = "",
+        body: Optional[dict] = None,
     ) -> Dict[str, str]:
-        """Load cached assistant-thread metadata that matches the current event."""
-        metadata = self._extract_assistant_thread_metadata(event)
+        """Load workspace-scoped assistant metadata for the current event."""
+        metadata = self._extract_assistant_thread_metadata(event, body)
         if channel_id and not metadata.get("channel_id"):
             metadata["channel_id"] = channel_id
         if thread_ts and not metadata.get("thread_ts"):
             metadata["thread_ts"] = thread_ts
+        if team_id and not metadata.get("team_id"):
+            metadata["team_id"] = str(team_id)
 
-        key = self._assistant_thread_key(
+        key = self._workspace_thread_key(
+            metadata.get("team_id", ""),
             metadata.get("channel_id", ""),
             metadata.get("thread_ts", ""),
         )
@@ -2799,7 +2824,7 @@ class SlackAdapter(BasePlatformAdapter):
         ):
             return
 
-        key = self._assistant_thread_key(channel_id, thread_ts)
+        key = self._workspace_thread_key(team_id, channel_id, thread_ts)
         if not key or key in self._titled_assistant_threads:
             return
 
@@ -3192,15 +3217,18 @@ class SlackAdapter(BasePlatformAdapter):
 
         channel_id = event.get("channel", "")
         ts = event.get("ts", "")
+        outer_team_id = self._event_team_id(event, payload)
         assistant_meta = self._lookup_assistant_thread_metadata(
             event,
             channel_id=channel_id,
             thread_ts=event.get("thread_ts", ""),
+            team_id=outer_team_id,
+            body=payload,
         )
         user_id = event.get("user") or assistant_meta.get("user_id", "")
         if not channel_id:
             channel_id = assistant_meta.get("channel_id", "")
-        team_id = self._event_team_id(event, payload) or assistant_meta.get("team_id", "")
+        team_id = outer_team_id or assistant_meta.get("team_id", "")
         agent_context = self._agent_view_context_for_event(
             event, str(team_id or ""), str(user_id or "")
         )
@@ -3613,7 +3641,9 @@ class SlackAdapter(BasePlatformAdapter):
                 msg_type = MessageType.DOCUMENT
 
         # Resolve user display name (cached after first lookup)
-        user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
+        user_name = await self._resolve_user_name(
+            user_id, chat_id=channel_id, team_id=team_id
+        )
 
         # Slack's AI Agent Messages tab shows visible app threads; title the
         # first DM thread turn from the user's prompt when Slack AI APIs are
@@ -4314,7 +4344,9 @@ class SlackAdapter(BasePlatformAdapter):
                 # Prefer the bot's own name when the message is a bot post.
                 if is_bot and not display_user:
                     display_user = msg.get("username") or "bot"
-                name = await self._resolve_user_name(display_user, chat_id=channel_id)
+                name = await self._resolve_user_name(
+                    display_user, chat_id=channel_id, team_id=team_id
+                )
 
                 # Mark senders not on the allowlist as [unverified] so the LLM
                 # treats their content as background reference rather than

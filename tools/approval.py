@@ -120,6 +120,53 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
         logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc)
 
 
+def _prepare_smart_approval_observer(
+    *,
+    command: str,
+    description: str,
+    pattern_key: str,
+    pattern_keys: list[str],
+    session_key: str,
+) -> dict | None:
+    """Redact and emit the pre-decision smart approval observer hook.
+
+    Redaction is part of observer payload preparation, not approval policy. If
+    it fails, skip all observability rather than leaking raw data or preventing
+    the auxiliary LLM from making its decision.
+    """
+    try:
+        from agent.redact import redact_sensitive_text
+
+        hook_command = redact_sensitive_text(command, force=True)
+        hook_description = redact_sensitive_text(description, force=True)
+    except Exception as exc:
+        logger.debug("Smart approval hook redaction failed: %s", exc)
+        return
+
+    payload = {
+        "command": hook_command,
+        "description": hook_description,
+        "pattern_key": pattern_key,
+        "pattern_keys": list(pattern_keys),
+        "session_key": session_key,
+        "surface": "smart",
+    }
+    _fire_approval_hook("pre_approval_request", **payload)
+    return payload
+
+
+def _observe_smart_approval_verdict(payload: dict | None, verdict: str) -> None:
+    """Emit a smart verdict after the auxiliary LLM decision, if safe."""
+    if payload is None or verdict not in {"approve", "deny"}:
+        return
+    _fire_approval_hook(
+        "post_approval_response",
+        **payload,
+        choice=f"smart_{verdict}",
+        decided_by="aux_llm",
+    )
+
+
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
     """Bind the active approval session key to the current context."""
@@ -2493,15 +2540,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         _drop_entry()
         return {"resolved": False, "choice": None, "notify_failed": True}
 
-    # Block until the user responds or timeout (default 5 min). Poll in short
-    # slices so we can fire activity heartbeats every ~10s to the agent's
-    # inactivity tracker — otherwise the gateway watchdog kills the agent
-    # while the user is still responding. Mirrors _wait_for_process() cadence.
-    timeout = _get_approval_config().get("gateway_timeout", 300)
-    try:
-        timeout = int(timeout)
-    except (ValueError, TypeError):
-        timeout = 300
+    # Block until the user responds or the canonical approval timeout elapses
+    # (default 60s). Poll in short slices so we can fire activity heartbeats
+    # every ~10s to the agent's inactivity tracker — otherwise the gateway
+    # watchdog kills the agent while the user is still responding. Mirrors
+    # _wait_for_process() cadence.
+    timeout = _get_approval_timeout()
 
     try:
         from tools.environments.base import touch_activity_if_due
@@ -2768,7 +2812,15 @@ def check_all_command_guards(command: str, env_type: str,
     # (openai/codex#13860).
     if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+        observer_payload = _prepare_smart_approval_observer(
+            command=command,
+            description=combined_desc_for_llm,
+            pattern_key=warnings[0][0],
+            pattern_keys=[key for key, _, _ in warnings],
+            session_key=session_key,
+        )
         verdict = _smart_approve(command, combined_desc_for_llm)
+        _observe_smart_approval_verdict(observer_payload, verdict)
         if verdict == "approve":
             # Approve this command only. Pattern-level persistence would let one
             # benign command suppress review of later commands that happen to
@@ -3051,17 +3103,6 @@ def check_execute_code_guard(code: str, env_type: str,
     # paths don't pay to copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
 
-    # Redacted copies for user-visible rendering only. An execute_code script
-    # can embed credentials (e.g. api_key = "sk-..."), and the gateway renders
-    # this payload directly to Discord/Slack — those messages are
-    # screenshottable. The raw `command`/`code` are still what get assessed by
-    # smart approval and executed; redaction is display-only. Approval
-    # persistence keys off pattern_key, so the allowlist is unaffected.
-    from agent.redact import redact_sensitive_text
-    display_command = redact_sensitive_text(command)
-    display_code = redact_sensitive_text(code)
-    display_description = redact_sensitive_text(description)
-
     # Check session/permanent approval — same gate as check_all_command_guards.
     # Without this, "Approve session" / "Always" choices are stored but never
     # consulted, so every execute_code call re-prompts the user (#39275).
@@ -3072,7 +3113,15 @@ def check_execute_code_guard(code: str, env_type: str,
     # suppresses the redundant whole-script prompt; the per-call terminal()
     # guards (restored by context propagation) still run independently.
     if approval_mode == "smart":
+        observer_payload = _prepare_smart_approval_observer(
+            command=command,
+            description=description,
+            pattern_key=pattern_key,
+            pattern_keys=[pattern_key],
+            session_key=session_key,
+        )
         verdict = _smart_approve(command, description)
+        _observe_smart_approval_verdict(observer_payload, verdict)
         if verdict == "approve":
             logger.debug("Smart approval: auto-approved execute_code for session %s",
                          session_key)
@@ -3091,6 +3140,17 @@ def check_execute_code_guard(code: str, env_type: str,
                 "user_consent": False,
             }
         # verdict == "escalate" → fall through to manual approval
+
+    # Redacted copies for user-visible rendering only. An execute_code script
+    # can embed credentials (e.g. api_key = "sk-..."), and the gateway renders
+    # this payload directly to Discord/Slack — those messages are
+    # screenshottable. The raw `command`/`code` are still what get assessed by
+    # smart approval and executed; redaction is display-only. Approval
+    # persistence keys off pattern_key, so the allowlist is unaffected.
+    from agent.redact import redact_sensitive_text
+    display_command = redact_sensitive_text(command)
+    display_code = redact_sensitive_text(code)
+    display_description = redact_sensitive_text(description)
 
     notify_cb = None
     with _lock:

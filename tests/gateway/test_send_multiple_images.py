@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 def _run(coro):
@@ -170,6 +170,140 @@ class TestTelegramMultiImage:
         assert adapter._bot.send_media_group.await_count == 1
         photos = adapter._bot.send_media_group.await_args.kwargs["media"]
         assert len(photos) == 2
+
+    def test_local_file_gif_uses_readable_animation_upload(self, adapter, tmp_path):
+        """A URL-encoded local GIF is uploaded as animation, never as photo."""
+        gif_path = tmp_path / "animated image.gif"
+        payload = b"GIF89a" + b"\x00" * 32
+        gif_path.write_bytes(payload)
+        uploaded = {}
+
+        async def send_animation(**kwargs):
+            animation = kwargs["animation"]
+            uploaded["file"] = animation
+            uploaded["payload"] = animation.read()
+            return MagicMock(message_id=91)
+
+        adapter._bot.send_animation = AsyncMock(side_effect=send_animation)
+        adapter._bot.send_photo = AsyncMock()
+
+        _run(
+            adapter.send_multiple_images(
+                "12345", [(gif_path.resolve().as_uri(), "animated caption")]
+            )
+        )
+
+        adapter._bot.send_animation.assert_awaited_once()
+        adapter._bot.send_photo.assert_not_awaited()
+        adapter._bot.send_media_group.assert_not_awaited()
+        assert uploaded["payload"] == payload
+        assert uploaded["file"].closed is True
+
+    def test_mixed_local_gif_and_png_separates_animation_from_album(
+        self, adapter, tmp_path
+    ):
+        """GIF + PNG sends one animation and a one-photo media group."""
+        import telegram
+
+        gif_path = tmp_path / "animated.gif"
+        gif_path.write_bytes(b"GIF89a")
+        png_path = tmp_path / "still.png"
+        png_path.write_bytes(b"\x89PNG")
+        telegram.InputMediaPhoto = MagicMock(
+            side_effect=lambda media, caption=None: {
+                "media": media,
+                "caption": caption,
+            }
+        )
+        adapter._bot.send_animation = AsyncMock(
+            return_value=MagicMock(message_id=92)
+        )
+        adapter._bot.send_photo = AsyncMock()
+
+        _run(
+            adapter.send_multiple_images(
+                "12345",
+                [
+                    (gif_path.resolve().as_uri(), "moving"),
+                    (png_path.resolve().as_uri(), "still"),
+                ],
+            )
+        )
+
+        adapter._bot.send_animation.assert_awaited_once()
+        adapter._bot.send_media_group.assert_awaited_once()
+        media = adapter._bot.send_media_group.await_args.kwargs["media"]
+        assert len(media) == 1
+        adapter._bot.send_photo.assert_not_awaited()
+
+    def test_missing_local_gif_returns_error_without_provider_send(
+        self, adapter, tmp_path
+    ):
+        missing = tmp_path / "missing animation.gif"
+        adapter._bot.send_animation = AsyncMock()
+        adapter._bot.send_photo = AsyncMock()
+        adapter._bot.send_document = AsyncMock()
+
+        result = _run(
+            adapter.send_animation("12345", missing.resolve().as_uri())
+        )
+
+        assert result.success is False
+        assert "not found" in result.error.lower()
+        adapter._bot.send_animation.assert_not_awaited()
+        adapter._bot.send_photo.assert_not_awaited()
+        adapter._bot.send_document.assert_not_awaited()
+
+    def test_https_gif_stays_on_animation_path(self, adapter):
+        adapter._bot.send_animation = AsyncMock(
+            return_value=MagicMock(message_id=93)
+        )
+        adapter._bot.send_photo = AsyncMock()
+        adapter.send_image = AsyncMock(
+            return_value=SendResult(success=True, message_id="photo")
+        )
+
+        _run(
+            adapter.send_multiple_images(
+                "12345", [("https://example.test/animated.gif?size=large", "")]
+            )
+        )
+
+        adapter._bot.send_animation.assert_awaited_once()
+        adapter._bot.send_photo.assert_not_awaited()
+        adapter._bot.send_media_group.assert_not_awaited()
+        adapter.send_image.assert_not_awaited()
+
+    def test_local_animation_failure_falls_back_to_document(self, adapter, tmp_path):
+        gif_path = tmp_path / "fallback.gif"
+        gif_path.write_bytes(b"GIF89a")
+        adapter._bot.send_animation = AsyncMock(side_effect=Exception("bad animation"))
+        adapter.send_document = AsyncMock(
+            return_value=SendResult(success=True, message_id="document")
+        )
+        adapter.send_image = AsyncMock(
+            return_value=SendResult(success=True, message_id="photo")
+        )
+
+        result = _run(
+            adapter.send_animation(
+                "12345",
+                gif_path.resolve().as_uri(),
+                caption="keep caption",
+                metadata={"thread_id": "77"},
+            )
+        )
+
+        assert result.success is True
+        adapter.send_document.assert_awaited_once()
+        assert adapter.send_document.await_args.kwargs["file_path"] == str(
+            gif_path.resolve()
+        )
+        assert adapter.send_document.await_args.kwargs["caption"] == "keep caption"
+        assert adapter.send_document.await_args.kwargs["metadata"] == {
+            "thread_id": "77"
+        }
+        adapter.send_image.assert_not_awaited()
 
     def test_fallback_to_per_image_on_send_media_group_failure(self, adapter):
         """If send_media_group raises, each photo falls back to send_image."""

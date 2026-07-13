@@ -985,6 +985,57 @@ async def test_animation_dm_topic_reply_not_found_retry_drops_thread_id():
 
 
 @pytest.mark.asyncio
+async def test_local_animation_retry_rewinds_file_and_drops_thread_id(tmp_path):
+    adapter = _make_adapter()
+    animation_path = tmp_path / "animated file.gif"
+    payload = b"GIF89a-local-animation"
+    animation_path.write_bytes(payload)
+    call_log = []
+    uploaded_files = []
+
+    async def mock_send_animation(**kwargs):
+        uploaded_files.append(kwargs["animation"])
+        call_log.append(
+            {
+                "reply_to_message_id": kwargs["reply_to_message_id"],
+                "message_thread_id": kwargs.get("message_thread_id"),
+                "payload": kwargs["animation"].read(),
+            }
+        )
+        if len(call_log) == 1:
+            raise FakeBadRequest("Message to be replied not found")
+        return SimpleNamespace(message_id=787)
+
+    adapter._bot = SimpleNamespace(send_animation=mock_send_animation)
+
+    result = await adapter.send_animation(
+        chat_id="123",
+        animation_url=animation_path.resolve().as_uri(),
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "462",
+        },
+    )
+
+    assert result.success is True
+    assert call_log == [
+        {
+            "reply_to_message_id": 462,
+            "message_thread_id": 20197,
+            "payload": payload,
+        },
+        {
+            "reply_to_message_id": None,
+            "message_thread_id": None,
+            "payload": payload,
+        },
+    ]
+    assert uploaded_files[0] is uploaded_files[1]
+    assert uploaded_files[0].closed is True
+
+
+@pytest.mark.asyncio
 async def test_media_group_dm_topic_reply_not_found_retry_drops_thread_id(tmp_path):
     adapter = _make_adapter()
     image_path = tmp_path / "photo.png"

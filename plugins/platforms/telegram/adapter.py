@@ -22,6 +22,21 @@ from typing import Dict, List, Optional, Set, Any
 logger = logging.getLogger(__name__)
 
 
+def _file_url_to_path(file_url: str) -> str:
+    """Decode a file URI into a native local path, including Windows drives."""
+    from urllib.parse import unquote, urlsplit
+    from urllib.request import url2pathname
+
+    parsed = urlsplit(file_url)
+    if parsed.scheme.lower() != "file":
+        return file_url
+
+    path = unquote(parsed.path)
+    if parsed.netloc and parsed.netloc.lower() != "localhost":
+        path = f"//{parsed.netloc}{path}"
+    return url2pathname(path)
+
+
 def _redact_telegram_error_text(error: object) -> str:
     """Redact secrets from Telegram transport errors before logging or returning them."""
     text = "" if error is None else str(error)
@@ -5930,7 +5945,7 @@ class TelegramAdapter(BasePlatformAdapter):
         Telegram's ``send_media_group`` bundles up to 10 photos/videos into
         a single album. Larger batches are chunked. Animated GIFs cannot
         go into a media group (they require ``send_animation``), so they
-        are peeled off and sent individually via the base default path.
+        are peeled off and sent directly through this adapter's animation path.
 
         URL-based photos go into the group directly; local files are
         opened as byte streams. On failure the whole batch falls back to
@@ -5955,21 +5970,38 @@ class TelegramAdapter(BasePlatformAdapter):
         animations: List[tuple] = []
         photos: List[tuple] = []
         for image_url, alt_text in images:
-            if not image_url.startswith("file://") and self._is_animation_url(image_url):
+            if self._is_animation_url(image_url):
                 animations.append((image_url, alt_text))
             else:
                 photos.append((image_url, alt_text))
 
-        # Animations: route through the base default (per-image send_animation)
-        if animations:
-            await super().send_multiple_images(
-                chat_id, animations, metadata, human_delay=human_delay,
-            )
+        for animation_url, alt_text in animations:
+            if human_delay > 0:
+                await asyncio.sleep(human_delay)
+            try:
+                result = await self.send_animation(
+                    chat_id=chat_id,
+                    animation_url=animation_url,
+                    caption=alt_text if alt_text else None,
+                    metadata=metadata,
+                )
+                if not result.success:
+                    logger.error(
+                        "[%s] Failed to send animation: %s",
+                        self.name,
+                        result.error,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "[%s] Error sending animation: %s",
+                    self.name,
+                    exc,
+                    exc_info=True,
+                )
 
         if not photos:
             return
 
-        from urllib.parse import unquote as _unquote
         _thread = self._metadata_thread_id(metadata)
 
         # Chunk into groups of 10 (Telegram's album limit)
@@ -5986,7 +6018,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 for image_url, alt_text in chunk:
                     caption = alt_text[:1024] if alt_text else None
                     if image_url.startswith("file://"):
-                        local_path = _unquote(image_url[7:])
+                        local_path = _file_url_to_path(image_url)
                         if not os.path.exists(local_path):
                             logger.warning(
                                 "[%s] Skipping missing image in media group: %s",
@@ -6065,6 +6097,27 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a local image file natively as a Telegram photo."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        local_image_path = (
+            _file_url_to_path(image_path)
+            if image_path.lower().startswith("file://")
+            else image_path
+        )
+        if os.path.splitext(local_image_path)[1].lower() == ".gif":
+            from pathlib import Path
+
+            animation_url = (
+                image_path
+                if image_path.lower().startswith("file://")
+                else Path(local_image_path).resolve().as_uri()
+            )
+            return await self.send_animation(
+                chat_id=chat_id,
+                animation_url=animation_url,
+                caption=caption,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
 
         try:
             if not os.path.exists(image_path):
@@ -6352,44 +6405,91 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
+        """Send a remote or local GIF as a Telegram animation."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
+        is_local = animation_url.lower().startswith("file://")
+        local_path = _file_url_to_path(animation_url) if is_local else None
+        if local_path is not None and not os.path.exists(local_path):
+            return SendResult(
+                success=False,
+                error=self._missing_media_path_error("Animation", local_path),
+            )
+
         try:
             _anim_thread = self._metadata_thread_id(metadata)
-            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
+            reply_to_id = self._reply_to_message_id_for_send(
+                reply_to,
+                metadata,
+                reply_to_mode=self._reply_to_mode,
+            )
             animation_thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
                 _anim_thread,
                 metadata,
                 reply_to_message_id=reply_to_id,
-                reply_to_mode=self._reply_to_mode
+                reply_to_mode=self._reply_to_mode,
             )
-            msg = await self._send_with_dm_topic_reply_anchor_retry(
-                self._bot.send_animation,
-                {
-                    "chat_id": normalize_telegram_chat_id(chat_id),
-                    "animation": animation_url,
-                    "caption": caption[:1024] if caption else None,
-                    "reply_to_message_id": reply_to_id,
-                    **animation_thread_kwargs,
-                    **self._notification_kwargs(metadata),
-                },
-                metadata,
-                reply_to_id,
-                "animation",
-            )
+            send_kwargs = {
+                "chat_id": normalize_telegram_chat_id(chat_id),
+                "caption": caption[:1024] if caption else None,
+                "reply_to_message_id": reply_to_id,
+                **animation_thread_kwargs,
+                **self._notification_kwargs(metadata),
+            }
+            if local_path is not None:
+                with open(local_path, "rb") as animation_file:
+                    send_kwargs["animation"] = animation_file
+                    msg = await self._send_with_dm_topic_reply_anchor_retry(
+                        self._bot.send_animation,
+                        send_kwargs,
+                        metadata,
+                        reply_to_id,
+                        "animation",
+                        reset_media=lambda: animation_file.seek(0),
+                    )
+            else:
+                send_kwargs["animation"] = animation_url
+                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                    self._bot.send_animation,
+                    send_kwargs,
+                    metadata,
+                    reply_to_id,
+                    "animation",
+                )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            if local_path is not None:
+                logger.warning(
+                    "[%s] Failed to send Telegram local animation, "
+                    "trying document fallback: %s",
+                    self.name,
+                    e,
+                    exc_info=True,
+                )
+                return await self.send_document(
+                    chat_id=chat_id,
+                    file_path=local_path,
+                    caption=caption,
+                    file_name=os.path.basename(local_path),
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+
             logger.error(
                 "[%s] Failed to send Telegram animation, falling back to photo: %s",
                 self.name,
                 e,
                 exc_info=True,
             )
-            # Fallback: try as a regular photo
-            return await self.send_image(chat_id, animation_url, caption, reply_to, metadata=metadata)
+            return await self.send_image(
+                chat_id,
+                animation_url,
+                caption,
+                reply_to,
+                metadata=metadata,
+            )
 
     @staticmethod
     def _is_transient_typing_error(exc: Exception) -> bool:

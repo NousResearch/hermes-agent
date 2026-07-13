@@ -102,6 +102,17 @@ class FixtureClient:
             "search_results": [search_result(result) for result in case.get("search", [])],
         }
 
+    def search_memories(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        container_tag: str | None = None,
+        search_mode: str | None = None,
+    ) -> list[dict[str, Any]]:
+        del container_tag, search_mode
+        return self.get_profile(query=query)["search_results"][:limit]
+
 
 def load_fixture(path: Path = DEFAULT_FIXTURE) -> dict[str, Any]:
     fixture = json.loads(path.read_text(encoding="utf-8"))

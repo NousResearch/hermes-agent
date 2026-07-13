@@ -813,10 +813,10 @@ class SupermemoryMemoryProvider(MemoryProvider):
         if not self._active or not self._auto_recall or not self._client or _is_trivial_message(query):
             return ""
         try:
-            profile = self._client.get_profile(query=query[:200])
             include_profile = self._prefetch_include_profile and (
                 self._turn_count <= 1 or (self._turn_count % self._profile_frequency == 0)
             )
+            profile = self._client.get_profile(query=query[:200]) if include_profile else {}
             static_facts = [
                 fact for fact in (profile.get("static") or [])
                 if not _is_transient_recall(fact)
@@ -826,7 +826,16 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 if not _is_transient_recall(fact)
             ] if include_profile else []
             search_results = []
-            for item in profile.get("search_results") or []:
+            # Profile search is tuned for profile synthesis and returns a very
+            # different score distribution. Auto-recall needs the same direct
+            # semantic search path as the explicit search tool, with extra
+            # candidates so provenance/score filtering can still fill the
+            # small final context budget.
+            candidates = self._client.search_memories(
+                query[:200],
+                limit=min(50, max(12, self._max_recall_results * 4)),
+            )
+            for item in candidates:
                 memory = item.get("memory", "")
                 if _is_transient_recall(memory, item.get("metadata")):
                     continue

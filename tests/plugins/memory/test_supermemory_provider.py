@@ -28,6 +28,7 @@ class FakeClient:
         self.base_url = base_url
         self.add_calls = []
         self.search_results = []
+        self.search_calls = []
         self.profile_response = {"static": [], "dynamic": [], "search_results": []}
         self.profile_calls = []
         self.ingest_calls = []
@@ -46,7 +47,14 @@ class FakeClient:
         return {"id": "mem_123"}
 
     def search_memories(self, query, *, limit=5, container_tag=None, search_mode=None):
-        return self.search_results
+        self.search_calls.append({
+            "query": query,
+            "limit": limit,
+            "container_tag": container_tag,
+            "search_mode": search_mode,
+        })
+        results = self.search_results or self.profile_response.get("search_results", [])
+        return results[:limit]
 
     def get_profile(self, query=None, *, container_tag=None):
         self.profile_calls.append({"query": query, "container_tag": container_tag})
@@ -228,6 +236,8 @@ def test_prefetch_does_not_include_profile_on_first_turn_by_default(provider):
     assert "Relevant Memories" in result
     assert "User Profile (Persistent)" not in result
     assert "Recent Context" not in result
+    assert provider._client.profile_calls == []
+    assert provider._client.search_calls
 
 
 def test_prefetch_includes_static_profile_only_when_opted_in(monkeypatch, tmp_path):
@@ -257,6 +267,7 @@ def test_prefetch_skips_trivial_queries_without_calling_client(provider, query):
     }
     assert provider.prefetch(query) == ""
     assert provider._client.profile_calls == []
+    assert provider._client.search_calls == []
 
 
 def test_prefetch_applies_similarity_boundary_and_suppresses_transient_material(provider):

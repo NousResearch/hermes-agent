@@ -239,6 +239,7 @@ AUTHOR_MAP = {
     "w31rdm4ch1n3z@protonmail.com": "w31rdm4ch1nZ",
     "xtpeeps@gmail.com": "x7peeps",
     "ahmad@madsgency.com": "ahmadashfq",
+    "182213728+yinkev@users.noreply.github.com": "yinkev",  # scratch artifact preservation salvage
     "rratmansky@gmail.com": "rratmansky",
     "lkz-de@users.noreply.github.com": "lkz-de",
     "charles@salesondemand.io": "salesondemandio",

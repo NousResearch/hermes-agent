@@ -1571,9 +1571,18 @@ class ContextCompressor(ContextEngine):
             full_parts.append(self._serialize_msg_full(msg))
 
         # ── Apply total budget ────────────────────────────────────────
-        # Full-tier parts are never trimmed; only compact-tier parts are
-        # dropped from the front (oldest first) when over budget.
+        # If the full tier alone exceeds the budget, drop its oldest
+        # messages (front) until it fits; always keep at least one.
+        # Only then consider fitting compact-tier parts into what remains.
         full_text = "\n\n".join(full_parts)
+        if len(full_text) > _SERIALIZATION_BUDGET:
+            total_full = len(full_text)
+            trim_idx = 0
+            while trim_idx < len(full_parts) - 1 and total_full > _SERIALIZATION_BUDGET:
+                total_full -= len(full_parts[trim_idx]) + 2
+                trim_idx += 1
+            return "\n\n".join(full_parts[trim_idx:])
+
         remaining = _SERIALIZATION_BUDGET - len(full_text)
 
         if remaining > 0 and compact_parts:
@@ -1609,10 +1618,16 @@ class ContextCompressor(ContextEngine):
             content = raw_content
         content = redact_sensitive_text(content)
         content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
+        # Strip inline reasoning traces (<think>, <reasoning>, etc.) so
+        # transient scratch work never leaks into the summary input.
+        if role == "assistant" and content:
+            from agent.agent_runtime_helpers import strip_think_blocks
+            content = strip_think_blocks(None, content)
 
         if role == "tool":
             tool_id = msg.get("tool_call_id", "")
             tool_name, tool_args = call_index.get(tool_id, ("unknown", ""))
+            tool_args = redact_sensitive_text(tool_args)
             return _summarize_tool_result(tool_name, tool_args, content)
 
         if role == "assistant":
@@ -1624,7 +1639,7 @@ class ContextCompressor(ContextEngine):
                     if isinstance(tc, dict):
                         fn = tc.get("function", {})
                         name = fn.get("name", "?")
-                        args = fn.get("arguments", "")
+                        args = redact_sensitive_text(fn.get("arguments", ""))
                         brief = args[:80] + "..." if len(args) > 80 else args
                         sigs.append(f"{name}({brief})")
                     else:
@@ -1660,6 +1675,11 @@ class ContextCompressor(ContextEngine):
             content = raw_content
         content = redact_sensitive_text(content)
         content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
+        # Strip inline reasoning traces (<think>, <reasoning>, etc.) so
+        # transient scratch work never leaks into the summary input.
+        if role == "assistant" and content:
+            from agent.agent_runtime_helpers import strip_think_blocks
+            content = strip_think_blocks(None, content)
 
         if role == "tool":
             tool_id = msg.get("tool_call_id", "")

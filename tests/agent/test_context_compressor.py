@@ -3581,3 +3581,63 @@ class TestSerializeForSummaryProgressive:
         result = comp._serialize_for_summary(turns)
         assert "write_file(" in result
         assert "final answer" in result
+
+    def test_oversized_full_tier_is_capped(self, comp):
+        """When the recent tier alone exceeds the budget, oldest full-tier msgs are dropped."""
+        from agent.context_compressor import _SERIALIZATION_BUDGET, _RECENT_TIER_RATIO
+
+        # Each message is 6 000 chars.  With 60 turns and RECENT_TIER_RATIO=0.30
+        # the full tier has 18 messages → 18 × 6 000 ≈ 108 K > 80 K budget.
+        big = "Z" * 6000
+        turns = [{"role": "user", "content": f"msg_{i}_{big}"} for i in range(60)]
+
+        result = comp._serialize_for_summary(turns)
+
+        assert len(result) <= _SERIALIZATION_BUDGET + 200  # allow separator overshoot
+        assert "msg_59_" in result  # most recent must survive
+
+    def test_compact_tier_redacts_tool_call_args(self, comp):
+        """Secrets embedded in tool-call arguments are redacted in the compact tier."""
+        # Build a session where the tool pair lands in the compact (earlier) tier.
+        turns = []
+        for i in range(8):
+            turns.append({"role": "user", "content": f"step {i}"})
+        # Tool call whose arguments contain an API key.
+        turns.extend(self._make_tool_pair(
+            "sec1", "terminal",
+            '{"command": "curl", "api_key": "sk-supersecret-testvalue-12345"}',
+            '{"exit_code": 0, "stdout": "ok"}',
+        ))
+        # Recent turns to push the above into compact tier.
+        for i in range(4):
+            turns.append({"role": "user", "content": f"follow-up {i}"})
+        turns.append({"role": "assistant", "content": "all done"})
+
+        result = comp._serialize_for_summary(turns)
+        assert "sk-supersecret-testvalue-12345" not in result
+        assert "all done" in result
+
+    def test_think_blocks_stripped_in_full_tier(self, comp):
+        """Think blocks are stripped from assistant content in the full (recent) tier."""
+        turns = [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "<think>internal scratch</think>The answer is 42."},
+        ]
+        result = comp._serialize_for_summary(turns)
+        assert "internal scratch" not in result
+        assert "The answer is 42" in result
+
+    def test_think_blocks_stripped_in_compact_tier(self, comp):
+        """Think blocks are stripped from assistant content in the compact (earlier) tier."""
+        turns = []
+        # Push an assistant message with think blocks into the compact tier.
+        turns.append({"role": "assistant", "content": "<think>private reasoning</think>Compact answer."})
+        for i in range(8):
+            turns.append({"role": "user", "content": f"fill {i}"})
+        turns.append({"role": "user", "content": "recent"})
+        turns.append({"role": "assistant", "content": "recent answer"})
+
+        result = comp._serialize_for_summary(turns)
+        assert "private reasoning" not in result
+        assert "Compact answer" in result
+        assert "recent answer" in result

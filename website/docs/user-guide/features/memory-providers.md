@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Memori, Mnemosyne"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, plus the community-installed Mnemosyne provider"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. A 10th community provider (Mnemosyne) is supported via the plugin-discovery system. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 8 bundled external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Additional **community providers** (such as Mnemosyne) can be installed separately and are picked up through the plugin-discovery system. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -561,6 +561,8 @@ pip install mnemosyne-memory
 # Symlink the plugin into $HERMES_HOME so Hermes plugin discovery picks it up.
 # We symlink the hermes_memory_provider package (not the core mnemosyne package)
 # because that's where the register_memory_provider() entry point lives.
+# HERMES_HOME is optional; when unset Hermes falls back to ~/.hermes.
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 mkdir -p "$HERMES_HOME/plugins"
 ln -s "$(python3 -c 'import hermes_memory_provider, os; print(os.path.dirname(hermes_memory_provider.__file__))')" \
       "$HERMES_HOME/plugins/mnemosyne"

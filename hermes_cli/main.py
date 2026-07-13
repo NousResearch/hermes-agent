@@ -62,6 +62,7 @@ except ModuleNotFoundError:
     pass
 
 import os
+import sqlite3
 import sys
 
 
@@ -13726,13 +13727,46 @@ def main():
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )
 
+    sessions_finalize_stale = sessions_subparsers.add_parser(
+        "finalize-stale",
+        help="Finalize a bounded batch of idle open sessions (DB only)",
+    )
+    sessions_finalize_stale.add_argument(
+        "--idle-for",
+        required=True,
+        metavar="AGE",
+        help="Only finalize sessions idle longer than AGE (e.g. 7d, 12h)",
+    )
+    sessions_finalize_stale.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Maximum sessions to finalize (default 100; hard cap 1000)",
+    )
+    sessions_finalize_stale.add_argument(
+        "--reason",
+        default="stale_open_cleanup",
+        help="End reason to record (default: stale_open_cleanup)",
+    )
+    sessions_finalize_stale.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Observe candidates without changing the database",
+    )
+    sessions_finalize_stale.add_argument(
+        "--yes", "-y", action="store_true", help="Apply without prompting"
+    )
+    sessions_finalize_stale.add_argument(
+        "--json", action="store_true", help="Emit one structured JSON receipt"
+    )
+
     sessions_prune = sessions_subparsers.add_parser(
         "prune",
         help="Delete old sessions (filterable by time window, source, title, ...)",
     )
     _add_session_filter_args(
         sessions_prune,
-        "Delete sessions older than AGE — days if bare number, or a duration "
+        "Delete ended sessions whose started_at is older than AGE — days if bare number, or a duration "
         "like '5h'/'2d'/'1w', or an ISO timestamp (bare prune with no filters "
         "defaults to 90 days; any filter matches all ages)",
     )
@@ -13740,6 +13774,15 @@ def main():
         "--include-archived",
         action="store_true",
         help="Also delete archived sessions (excluded by default)",
+    )
+    sessions_prune.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Maximum sessions to prune (default 100; hard cap 1000)",
+    )
+    sessions_prune.add_argument(
+        "--json", action="store_true", help="Emit one structured JSON receipt"
     )
 
     sessions_archive = sessions_subparsers.add_parser(
@@ -13808,6 +13851,21 @@ def main():
         import json as _json
 
         action = args.sessions_action
+        cleanup_action = action in {"finalize-stale", "prune"}
+
+        def _cleanup_error(error: str) -> int:
+            """Emit a machine-readable cleanup error when requested."""
+            if getattr(args, "json", False):
+                print(_json.dumps({
+                    "operation": action,
+                    "mode": "dry-run" if getattr(args, "dry_run", False) else "apply",
+                    "status": "error",
+                    "error": error,
+                    "transaction_committed": False,
+                }, sort_keys=True))
+            else:
+                print(f"Error: {error}")
+            return 1
 
         # 'repair' must run BEFORE opening SessionDB(): a malformed schema is
         # exactly the case where SessionDB() can't open, so it operates on the
@@ -13859,7 +13917,10 @@ def main():
 
             db = SessionDB()
         except Exception as e:
-            print(f"Error: Could not open session database: {e}")
+            error = f"Could not open session database: {e}"
+            if cleanup_action:
+                return _cleanup_error(error)
+            print(f"Error: {error}")
             return
 
         # Hide third-party tool sessions by default, but honour explicit --source
@@ -14364,6 +14425,69 @@ def main():
             else:
                 print(f"Session '{args.session_id}' not found.")
 
+        elif action == "finalize-stale":
+            from hermes_cli.session_filters import parse_duration_seconds
+
+            idle_for_seconds = parse_duration_seconds(args.idle_for)
+            if idle_for_seconds is None or idle_for_seconds <= 0:
+                payload = {
+                    "operation": "finalize-stale",
+                    "mode": "dry-run" if args.dry_run else "apply",
+                    "status": "error",
+                    "error": "--idle-for must be a positive duration such as 7d or 12h",
+                    "transaction_committed": False,
+                }
+            elif not args.dry_run and not args.yes:
+                payload = {
+                    "operation": "finalize-stale",
+                    "mode": "apply",
+                    "status": "error",
+                    "error": "apply requires --yes (or use --dry-run)",
+                    "transaction_committed": False,
+                }
+            else:
+                try:
+                    payload = (
+                        db.list_stale_open_candidates(
+                            idle_for_seconds=idle_for_seconds, limit=args.limit
+                        )
+                        if args.dry_run
+                        else db.finalize_stale_sessions(
+                            idle_for_seconds=idle_for_seconds,
+                            limit=args.limit,
+                            reason=args.reason,
+                        )
+                    )
+                    payload.update(
+                        operation="finalize-stale",
+                        mode="dry-run" if args.dry_run else "apply",
+                        status="ok",
+                        error=None,
+                    )
+                except (ValueError, sqlite3.Error) as exc:
+                    payload = {
+                        "operation": "finalize-stale",
+                        "mode": "dry-run" if args.dry_run else "apply",
+                        "status": "error",
+                        "error": str(exc),
+                        "transaction_committed": False,
+                        "mutated_ids": [],
+                    }
+            if args.json:
+                print(_json.dumps(payload, sort_keys=True))
+            elif payload["status"] == "ok":
+                if args.dry_run:
+                    print(
+                        f"Would finalize {payload['observed_candidates']} stale open session(s); "
+                        "nothing changed."
+                    )
+                else:
+                    print(f"Finalized {len(payload['mutated_ids'])} stale open session(s).")
+            else:
+                print(f"Error: {payload['error']}")
+            db.close()
+            return 0 if payload["status"] == "ok" else 1
+
         elif action in ("prune", "archive"):
             from hermes_cli.session_filters import (
                 build_prune_filters,
@@ -14399,8 +14523,11 @@ def main():
 
             try:
                 filters = build_prune_filters(args)
-            except ValueError as e:
-                print(f"Error: {e}")
+            except ValueError as exc:
+                if action == "prune":
+                    db.close()
+                    return _cleanup_error(str(exc))
+                print(f"Error: {exc}")
                 return
 
             if action == "archive" and not any(
@@ -14421,10 +14548,33 @@ def main():
             else:
                 filters["archived"] = False
 
-            candidates = db.list_prune_candidates(**filters)
+            if action == "prune" and args.json and not args.dry_run and not args.yes:
+                db.close()
+                return _cleanup_error("apply requires --yes (or use --dry-run)")
+            try:
+                candidates = db.list_prune_candidates(
+                    **filters,
+                    limit=args.limit if action == "prune" else None,
+                )
+            except (ValueError, sqlite3.Error) as exc:
+                if action == "prune":
+                    db.close()
+                    return _cleanup_error(str(exc))
+                print(f"Error: {exc}")
+                return
             verb = "Delete" if action == "prune" else "Archive"
             if not candidates:
-                print(f"No sessions match ({describe_filters(filters)}).")
+                if action == "prune" and args.json:
+                    print(_json.dumps({
+                        "operation": "prune", "mode": "dry-run" if args.dry_run else "apply",
+                        "status": "ok", "error": None, "limit": args.limit,
+                        "observed_candidates": 0, "observed_ids": [],
+                        "db_pruned_count": 0, "db_pruned_ids": [],
+                        "filesystem_cleanup_status": "best_effort_unverified",
+                        "transaction_committed": False,
+                    }, sort_keys=True))
+                else:
+                    print(f"No sessions match ({describe_filters(filters)}).")
                 return
 
             # Candidates are ordered oldest-first — surface the age span so
@@ -14436,6 +14586,17 @@ def main():
             )
 
             if args.dry_run or not args.yes:
+                if action == "prune" and args.json and args.dry_run:
+                    print(_json.dumps({
+                        "operation": "prune", "mode": "dry-run", "status": "ok",
+                        "error": None, "limit": args.limit,
+                        "observed_candidates": len(candidates),
+                        "observed_ids": [row["id"] for row in candidates],
+                        "db_pruned_count": 0, "db_pruned_ids": [],
+                        "filesystem_cleanup_status": "best_effort_unverified",
+                        "transaction_committed": False,
+                    }, sort_keys=True))
+                    return
                 shown = candidates if args.dry_run else candidates[:15]
                 print(
                     f"{len(candidates)} session(s) match "
@@ -14464,8 +14625,27 @@ def main():
 
             if action == "prune":
                 sessions_dir = get_hermes_home() / "sessions"
-                count = db.prune_sessions(sessions_dir=sessions_dir, **filters)
-                print(f"Pruned {count} session(s).")
+                try:
+                    receipt = db.prune_sessions_with_receipt(
+                        sessions_dir=sessions_dir, limit=args.limit, **filters
+                    )
+                except (ValueError, sqlite3.Error) as exc:
+                    db.close()
+                    return _cleanup_error(str(exc))
+                if args.json:
+                    receipt.update(
+                        operation="prune",
+                        mode="apply",
+                        status="ok",
+                        error=None,
+                        limit=args.limit,
+                        observed_candidates=len(candidates),
+                        observed_ids=[row["id"] for row in candidates],
+                        transaction_committed=True,
+                    )
+                    print(_json.dumps(receipt, sort_keys=True))
+                else:
+                    print(f"Pruned {receipt['db_pruned_count']} session(s).")
             else:
                 count = db.archive_sessions(**filters)
                 print(
@@ -14778,10 +14958,10 @@ def main():
 
     # Execute the command
     if hasattr(args, "func"):
-        args.func(args)
-    else:
-        parser.print_help()
+        return args.func(args)
+    parser.print_help()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

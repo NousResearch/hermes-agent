@@ -6082,6 +6082,156 @@ class SessionDB:
             self._remove_session_files(sessions_dir, sid)
         return count
 
+    # The CLI exposes the same bounds for stale finalization and bulk prune.
+    # Keep the cap in this storage layer too: callers outside argparse must not
+    # turn a bounded maintenance operation into an unbounded one.
+    _DEFAULT_MAINTENANCE_LIMIT = 100
+    _MAX_MAINTENANCE_LIMIT = 1000
+
+    @classmethod
+    def _bounded_maintenance_limit(
+        cls, limit: Optional[int], *, default: int = _DEFAULT_MAINTENANCE_LIMIT
+    ) -> int:
+        """Validate a bounded maintenance batch size for use inside SQLite."""
+        value = default if limit is None else limit
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= cls._MAX_MAINTENANCE_LIMIT:
+            raise ValueError(
+                f"limit must be an integer between 1 and {cls._MAX_MAINTENANCE_LIMIT}"
+            )
+        return value
+
+    @staticmethod
+    def _stale_open_activity_sql() -> str:
+        """Return the authoritative last-activity expression for stale opens."""
+        return (
+            "COALESCE((SELECT MAX(m.timestamp) FROM messages m "
+            "WHERE m.session_id = s.id), s.started_at)"
+        )
+
+    def list_stale_open_candidates(
+        self,
+        *,
+        idle_for_seconds: float,
+        limit: Optional[int] = None,
+        now: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Observe bounded, still-open sessions idle before a cutoff.
+
+        This is deliberately a read-only preview.  Callers must not reuse its
+        IDs for mutation; :meth:`finalize_stale_sessions` reselects under its
+        own ``BEGIN IMMEDIATE`` transaction.
+        """
+        if idle_for_seconds <= 0:
+            raise ValueError("idle_for_seconds must be greater than zero")
+        batch_limit = self._bounded_maintenance_limit(limit)
+        cutoff = (time.time() if now is None else now) - idle_for_seconds
+        activity = self._stale_open_activity_sql()
+        with self._lock:
+            rows = self._conn.execute(
+                f"""SELECT s.id, {activity} AS last_activity
+                    FROM sessions s
+                    WHERE s.ended_at IS NULL
+                      AND s.end_reason IS NULL
+                      AND {activity} < ?
+                    ORDER BY last_activity ASC, s.id ASC
+                    LIMIT ?""",
+                (cutoff, batch_limit),
+            ).fetchall()
+        observed_ids = [row["id"] for row in rows]
+        return {
+            "cutoff": cutoff,
+            "limit": batch_limit,
+            "observed_candidates": len(observed_ids),
+            "observed_ids": observed_ids,
+            "mutated_ids": [],
+            "skipped_after_revalidation": [],
+            "transaction_committed": False,
+        }
+
+    def _finalize_stale_session(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        session_id: str,
+        cutoff: float,
+        ended_at: float,
+        reason: str,
+    ) -> bool:
+        """Finalize one still-stale row, preserving concurrent finalization."""
+        activity = self._stale_open_activity_sql()
+        cursor = conn.execute(
+            f"""UPDATE sessions AS s
+                SET ended_at = ?, end_reason = ?
+                WHERE id = ?
+                  AND ended_at IS NULL
+                  AND end_reason IS NULL
+                  AND {activity} < ?""",
+            (ended_at, reason, session_id, cutoff),
+        )
+        return cursor.rowcount == 1
+
+    def finalize_stale_sessions(
+        self,
+        *,
+        idle_for_seconds: float,
+        reason: str = "stale_open_cleanup",
+        limit: Optional[int] = None,
+        now: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Monotonically finalize one bounded batch of stale open sessions.
+
+        The candidate query and guarded per-row update run under one
+        :meth:`_execute_write` transaction, which starts with ``BEGIN
+        IMMEDIATE``.  Existing end metadata is never overwritten; an exception
+        rolls back the entire local SQLite transaction before propagating.
+        """
+        if idle_for_seconds <= 0:
+            raise ValueError("idle_for_seconds must be greater than zero")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason must be a non-empty string")
+        batch_limit = self._bounded_maintenance_limit(limit)
+        cutoff = (time.time() if now is None else now) - idle_for_seconds
+        activity = self._stale_open_activity_sql()
+
+        def _do(conn):
+            rows = conn.execute(
+                f"""SELECT s.id, {activity} AS last_activity
+                    FROM sessions s
+                    WHERE s.ended_at IS NULL
+                      AND s.end_reason IS NULL
+                      AND {activity} < ?
+                    ORDER BY last_activity ASC, s.id ASC
+                    LIMIT ?""",
+                (cutoff, batch_limit),
+            ).fetchall()
+            observed_ids = [row["id"] for row in rows]
+            mutated_ids: list[str] = []
+            skipped_ids: list[str] = []
+            for row in rows:
+                if self._finalize_stale_session(
+                    conn,
+                    session_id=row["id"],
+                    cutoff=cutoff,
+                    ended_at=row["last_activity"],
+                    reason=reason,
+                ):
+                    mutated_ids.append(row["id"])
+                else:
+                    skipped_ids.append(row["id"])
+            return observed_ids, mutated_ids, skipped_ids
+
+        observed_ids, mutated_ids, skipped_ids = self._execute_write(_do)
+        return {
+            "cutoff": cutoff,
+            "limit": batch_limit,
+            "reason": reason,
+            "observed_candidates": len(observed_ids),
+            "observed_ids": observed_ids,
+            "mutated_ids": mutated_ids,
+            "skipped_after_revalidation": skipped_ids,
+            "transaction_committed": True,
+        }
+
     @staticmethod
     def _prune_filter_where(
         *,
@@ -6206,6 +6356,7 @@ class SessionDB:
         self,
         older_than_days: Optional[float] = None,
         source: str = None,
+        limit: Optional[int] = None,
         **filters,
     ) -> List[Dict[str, Any]]:
         """Return the sessions a matching :meth:`prune_sessions` /
@@ -6219,13 +6370,17 @@ class SessionDB:
         """
         if filters.get("started_before") is None and older_than_days is not None:
             filters["started_before"] = time.time() - (older_than_days * 86400)
+        batch_limit = self._bounded_maintenance_limit(limit) if limit is not None else None
         where, params = self._prune_filter_where(source=source, **filters)
+        limit_sql = " LIMIT ?" if batch_limit is not None else ""
+        if batch_limit is not None:
+            params.append(batch_limit)
         with self._lock:
             cursor = self._conn.execute(
                 f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
                            s.ended_at, s.message_count, s.archived
                     FROM sessions s WHERE {where}
-                    ORDER BY s.started_at ASC""",
+                    ORDER BY s.started_at ASC, s.id ASC{limit_sql}""",
                 params,
             )
             return [dict(row) for row in cursor.fetchall()]
@@ -6259,10 +6414,61 @@ class SessionDB:
     def prune_sessions(
         self,
         older_than_days: Optional[float] = 90,
-        source: str = None,
+        source: Optional[str] = None,
         sessions_dir: Optional[Path] = None,
+        limit: Optional[int] = None,
         **filters,
     ) -> int:
+        """Delete ended sessions matching filters and return the DB row count.
+
+        Temporal filters are always evaluated against ``started_at``.  An
+        optional limit is applied by the transactional candidate query, not by
+        the CLI display layer.
+        """
+        count, _ = self._prune_sessions_impl(
+            older_than_days=older_than_days,
+            source=source,
+            sessions_dir=sessions_dir,
+            limit=limit,
+            **filters,
+        )
+        return count
+
+    def prune_sessions_with_receipt(
+        self,
+        older_than_days: Optional[float] = 90,
+        source: Optional[str] = None,
+        sessions_dir: Optional[Path] = None,
+        limit: Optional[int] = None,
+        **filters,
+    ) -> Dict[str, Any]:
+        """Prune with an auditable DB receipt for non-interactive callers.
+
+        The filesystem pass runs after commit and deliberately remains marked
+        unverified: ``_remove_session_files`` is best effort and does not prove
+        every unlink to this caller.
+        """
+        count, removed_ids = self._prune_sessions_impl(
+            older_than_days=older_than_days,
+            source=source,
+            sessions_dir=sessions_dir,
+            limit=limit,
+            **filters,
+        )
+        return {
+            "db_pruned_count": count,
+            "db_pruned_ids": removed_ids,
+            "filesystem_cleanup_status": "best_effort_unverified",
+        }
+
+    def _prune_sessions_impl(
+        self,
+        older_than_days: Optional[float] = 90,
+        source: Optional[str] = None,
+        sessions_dir: Optional[Path] = None,
+        limit: Optional[int] = None,
+        **filters,
+    ) -> Tuple[int, List[str]]:
         """Delete sessions matching the filters. Returns count deleted.
 
         Default behavior (no keyword filters) is unchanged: delete ended
@@ -6297,14 +6503,20 @@ class SessionDB:
         """
         if filters.get("started_before") is None and older_than_days is not None:
             filters["started_before"] = time.time() - (older_than_days * 86400)
+        batch_limit = self._bounded_maintenance_limit(limit) if limit is not None else None
         where, where_params = self._prune_filter_where(source=source, **filters)
+        limit_sql = " LIMIT ?" if batch_limit is not None else ""
+        if batch_limit is not None:
+            where_params.append(batch_limit)
         removed_ids: list[str] = []
 
         def _do(conn):
             cursor = conn.execute(
-                f"SELECT s.id FROM sessions s WHERE {where}", where_params
+                f"""SELECT s.id FROM sessions s WHERE {where}
+                    ORDER BY s.started_at ASC, s.id ASC{limit_sql}""",
+                where_params,
             )
-            session_ids = {row["id"] for row in cursor.fetchall()}
+            session_ids = [row["id"] for row in cursor.fetchall()]
 
             if not session_ids:
                 return 0
@@ -6314,7 +6526,7 @@ class SessionDB:
             conn.execute(
                 f"UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({placeholders})",
-                list(session_ids),
+                session_ids,
             )
 
             for sid in session_ids:
@@ -6324,10 +6536,11 @@ class SessionDB:
             return len(session_ids)
 
         count = self._execute_write(_do)
-        # Clean up on-disk files outside the DB transaction
+        # Files are removed after the committed DB transaction. Their outcome
+        # remains best-effort because the historical helper swallows OSErrors.
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        return count
+        return count, removed_ids
 
     # ── Meta key/value (for scheduler bookkeeping) ──
 

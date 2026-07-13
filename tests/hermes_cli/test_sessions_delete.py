@@ -1,4 +1,9 @@
+import json
+import os
+import sqlite3
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -165,8 +170,13 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None):
             seen.update(kwargs)
             return rows
 
-        def prune_sessions(self, **kwargs):
-            return len(rows)
+        def prune_sessions_with_receipt(self, **kwargs):
+            seen["apply"] = kwargs
+            return {
+                "db_pruned_count": len(rows),
+                "db_pruned_ids": [row["id"] for row in rows],
+                "filesystem_cleanup_status": "best_effort_unverified",
+            }
 
         def close(self):
             pass
@@ -220,3 +230,175 @@ def test_sessions_prune_preview_shows_oldest_newest(monkeypatch, capsys):
     assert "2 session(s) match" in out
     assert f"oldest {format_epoch(1_600_000_000.0)}" in out
     assert f"newest {format_epoch(1_700_000_000.0)}" in out
+
+
+def test_sessions_finalize_stale_json_dry_run_is_observation_only(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    class FakeDB:
+        def list_stale_open_candidates(self, **kwargs):
+            assert kwargs == {"idle_for_seconds": 7 * 86400, "limit": 100}
+            return {
+                "cutoff": 1.0,
+                "limit": 100,
+                "observed_candidates": 1,
+                "observed_ids": ["old"],
+                "mutated_ids": [],
+                "skipped_after_revalidation": [],
+                "transaction_committed": False,
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "sessions", "finalize-stale", "--idle-for", "7d", "--dry-run", "--json"],
+    )
+
+    main_mod.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["operation"] == "finalize-stale"
+    assert payload["mode"] == "dry-run"
+    assert payload["status"] == "ok"
+    assert payload["mutated_ids"] == []
+    assert payload["transaction_committed"] is False
+
+
+def test_sessions_prune_json_passes_limit_and_reports_filesystem_uncertainty(monkeypatch, capsys):
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    row = {
+        "id": "old", "source": "cli", "title": "old", "model": None,
+        "started_at": 1.0, "ended_at": 2.0, "message_count": 1, "archived": 0,
+    }
+
+    class FakeDB:
+        def list_prune_candidates(self, **kwargs):
+            assert kwargs["limit"] == 1
+            assert kwargs["end_reason"] == "stale_open_cleanup"
+            return [row]
+
+        def prune_sessions_with_receipt(self, **kwargs):
+            assert kwargs["limit"] == 1
+            return {
+                "db_pruned_count": 1,
+                "db_pruned_ids": ["old"],
+                "filesystem_cleanup_status": "best_effort_unverified",
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes", "sessions", "prune", "--end-reason", "stale_open_cleanup",
+            "--limit", "1", "--yes", "--json",
+        ],
+    )
+
+    main_mod.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["db_pruned_ids"] == ["old"]
+    assert payload["filesystem_cleanup_status"] == "best_effort_unverified"
+    assert payload["transaction_committed"] is True
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _run_sessions_entrypoint(tmp_path, *argv):
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(tmp_path)
+    return subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "sessions", *argv],
+        cwd=_PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("argv", "operation"),
+    [
+        (
+            ("finalize-stale", "--idle-for", "nope", "--dry-run", "--json"),
+            "finalize-stale",
+        ),
+        (("finalize-stale", "--idle-for", "1d", "--json"), "finalize-stale"),
+        (
+            (
+                "finalize-stale",
+                "--idle-for",
+                "1d",
+                "--dry-run",
+                "--limit",
+                "1001",
+                "--json",
+            ),
+            "finalize-stale",
+        ),
+        (("prune", "--limit", "1001", "--dry-run", "--json"), "prune"),
+        (
+            ("prune", "--older-than", "nonsense", "--dry-run", "--json"),
+            "prune",
+        ),
+        (("prune", "--source", "cli", "--json"), "prune"),
+    ],
+)
+def test_sessions_cleanup_entrypoint_errors_are_json_and_nonzero(
+    tmp_path, argv, operation
+):
+    result = _run_sessions_entrypoint(tmp_path, *argv)
+
+    assert result.returncode != 0
+    payload = json.loads(result.stdout)
+    assert result.stdout == json.dumps(payload, sort_keys=True) + "\n"
+    assert payload["operation"] == operation
+    assert payload["status"] == "error"
+
+
+def test_sessions_cleanup_entrypoint_sqlite_contention_is_json_and_nonzero(tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path)
+    db.close()
+    setup = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        setup.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        setup.close()
+    blocker = sqlite3.connect(db_path, isolation_level=None, timeout=0.01)
+    try:
+        blocker.execute("BEGIN EXCLUSIVE")
+        result = _run_sessions_entrypoint(
+            tmp_path,
+            "finalize-stale",
+            "--idle-for",
+            "1d",
+            "--dry-run",
+            "--json",
+        )
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+    assert result.returncode != 0
+    payload = json.loads(result.stdout)
+    assert result.stdout == json.dumps(payload, sort_keys=True) + "\n"
+    assert payload["operation"] == "finalize-stale"
+    assert payload["status"] == "error"
+    assert payload["transaction_committed"] is False

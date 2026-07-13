@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
@@ -311,11 +312,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
         except Exception:
             _compact_cats = frozenset()
+        _skill_index_start = time.perf_counter()
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
             compact_categories=_compact_cats or None,
         )
+        request_budget = getattr(agent, "_request_budget", None)
+        if request_budget is not None:
+            request_budget.record_skill_index(
+                skills_prompt,
+                build_ms=(time.perf_counter() - _skill_index_start) * 1000,
+            )
     else:
         skills_prompt = ""
     if skills_prompt:

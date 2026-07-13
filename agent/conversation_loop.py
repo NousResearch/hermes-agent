@@ -16,6 +16,7 @@ resolved through :func:`_ra` so those patches keep working.
 
 from __future__ import annotations
 
+from functools import wraps
 import json
 import logging
 import os
@@ -58,6 +59,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
+from agent.request_budget import RequestBudget
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
@@ -520,7 +522,7 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     return sp
 
 
-def run_conversation(
+def _run_conversation_impl(
     agent,
     user_message: str,
     system_message: str = None,
@@ -595,6 +597,8 @@ def run_conversation(
     messages = _ctx.messages
     conversation_history = _ctx.conversation_history
     active_system_prompt = _ctx.active_system_prompt
+    if agent._request_budget is not None:
+        agent._request_budget.record_skill_index(active_system_prompt)
     effective_task_id = _ctx.effective_task_id
     turn_id = _ctx.turn_id
     current_turn_user_idx = _ctx.current_turn_user_idx
@@ -1155,6 +1159,8 @@ def run_conversation(
 
             try:
                 agent._reset_stream_delivery_tracking()
+                if agent._request_budget is not None:
+                    agent._request_budget.record_tool_schema(agent.tools or [])
                 # api_messages is built once, before this retry loop, while the
                 # primary provider is active.  A mid-conversation fallback can
                 # switch to a require-side provider (DeepSeek / Kimi / MiMo) that
@@ -1324,11 +1330,25 @@ def run_conversation(
                             allow_stream=False,
                             is_github_responses=agent._is_copilot_url(),
                         )
-                    if _use_streaming:
-                        return agent._interruptible_streaming_api_call(
-                            next_api_kwargs, on_first_delta=_stop_spinner
-                        )
-                    return agent._interruptible_api_call(next_api_kwargs)
+                    request_budget = agent._request_budget
+                    if request_budget is not None:
+                        request_budget.mark_model_request_start()
+
+                    def _mark_first_model_byte():
+                        if request_budget is not None:
+                            request_budget.mark_model_first_byte()
+                        _stop_spinner()
+
+                    try:
+                        if _use_streaming:
+                            return agent._interruptible_streaming_api_call(
+                                next_api_kwargs,
+                                on_first_delta=_mark_first_model_byte,
+                            )
+                        return agent._interruptible_api_call(next_api_kwargs)
+                    finally:
+                        if request_budget is not None:
+                            request_budget.mark_model_request_end()
 
                 from hermes_cli.middleware import run_llm_execution_middleware
 
@@ -5349,6 +5369,88 @@ def run_conversation(
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
     )
+
+
+def _request_budget_reason(agent, result: Any) -> str:
+    detailed_reason = getattr(agent, "_request_budget_reason", None)
+    if detailed_reason:
+        return str(detailed_reason)
+    if isinstance(result, dict):
+        if result.get("interrupted"):
+            return "interrupted"
+        if result.get("failed"):
+            return "failed"
+        if result.get("completed"):
+            return "completed"
+        if result.get("error"):
+            return "error"
+    return "returned"
+
+
+@wraps(_run_conversation_impl)
+def run_conversation(
+    agent,
+    user_message: str,
+    system_message: str = None,
+    conversation_history: List[Dict[str, Any]] = None,
+    task_id: str = None,
+    stream_callback: Optional[callable] = None,
+    persist_user_message: Optional[str] = None,
+    persist_user_timestamp: Optional[float] = None,
+    moa_config: Optional[dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Run one turn and finalize request diagnostics for every return path."""
+    budget = RequestBudget(
+        session_id=getattr(agent, "session_id", "") or "",
+        turn_id=str(getattr(agent, "_user_turn_count", 0) + 1),
+        model=getattr(agent, "model", "") or "",
+        provider=getattr(agent, "provider", "") or "",
+        platform=getattr(agent, "platform", "") or "cli",
+    )
+    agent._request_budget = budget
+    agent._request_budget_reason = None
+    result = None
+    raised = None
+    try:
+        result = _run_conversation_impl(
+            agent,
+            user_message,
+            system_message,
+            conversation_history,
+            task_id,
+            stream_callback,
+            persist_user_message,
+            persist_user_timestamp=persist_user_timestamp,
+            moa_config=moa_config,
+        )
+        return result
+    except BaseException as exc:
+        raised = exc
+        raise
+    finally:
+        reason = (
+            f"exception:{type(raised).__name__}"
+            if raised is not None
+            else _request_budget_reason(agent, result)
+        )
+        api_calls = (
+            int(result.get("api_calls", budget.model_call_count))
+            if isinstance(result, dict)
+            else budget.model_call_count
+        )
+        try:
+            payload = budget.log_agent_turn(
+                logger=logger,
+                reason=reason,
+                api_calls=api_calls,
+            )
+        except Exception:
+            logger.debug("request budget finalization failed", exc_info=True)
+            payload = budget.snapshot(reason=reason, api_calls=api_calls)
+        if isinstance(result, dict):
+            result["request_budget"] = payload
+        agent._last_request_budget = payload
+        agent._request_budget = None
 
 
 

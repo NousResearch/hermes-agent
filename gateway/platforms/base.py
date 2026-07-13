@@ -42,6 +42,43 @@ def _platform_name(platform) -> str:
     return str(value or "").lower()
 
 
+async def _timed_gateway_delivery(
+    *,
+    sender,
+    platform,
+    chat_id: str | None,
+    session_key: str | None,
+    delivery_kind: str,
+    response_chars: int = 0,
+):
+    """Run one final delivery and emit a bounded diagnostic for its outcome."""
+    started_at = time.perf_counter()
+    try:
+        result = await sender()
+    except Exception:
+        delivery_succeeded = False
+        raise
+    else:
+        delivery_succeeded = bool(getattr(result, "success", True))
+        return result
+    finally:
+        try:
+            from agent.request_budget import log_gateway_delivery_budget
+
+            log_gateway_delivery_budget(
+                logger=logger,
+                platform=_platform_name(platform),
+                chat_id=chat_id,
+                session_key=session_key,
+                gateway_delivery_ms=(time.perf_counter() - started_at) * 1000,
+                response_chars=response_chars,
+                delivery_succeeded=delivery_succeeded,
+                delivery_kind=delivery_kind,
+            )
+        except Exception:
+            logger.debug("request budget delivery log failed", exc_info=True)
+
+
 def _float_env(name: str, default: float) -> float:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -5007,11 +5044,18 @@ class BasePlatformAdapter(ABC):
                             and text_content[:1024] == text_content
                         ):
                             telegram_tts_caption = text_content
-                        tts_result = await self.play_tts(
+                        tts_result = await _timed_gateway_delivery(
+                            sender=lambda: self.play_tts(
+                                chat_id=event.source.chat_id,
+                                audio_path=_tts_path,
+                                caption=telegram_tts_caption,
+                                metadata=_final_thread_metadata,
+                            ),
+                            platform=self.platform,
                             chat_id=event.source.chat_id,
-                            audio_path=_tts_path,
-                            caption=telegram_tts_caption,
-                            metadata=_final_thread_metadata,
+                            session_key=session_key,
+                            delivery_kind="tts",
+                            response_chars=len(telegram_tts_caption or ""),
                         )
                         _tts_caption_delivered = bool(
                             telegram_tts_caption and getattr(tts_result, "success", False)
@@ -5026,11 +5070,18 @@ class BasePlatformAdapter(ABC):
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
-                    result = await self._send_with_retry(
+                    result = await _timed_gateway_delivery(
+                        sender=lambda: self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=text_content,
+                            reply_to=_reply_anchor,
+                            metadata=_final_thread_metadata,
+                        ),
+                        platform=self.platform,
                         chat_id=event.source.chat_id,
-                        content=text_content,
-                        reply_to=_reply_anchor,
-                        metadata=_final_thread_metadata,
+                        session_key=session_key,
+                        delivery_kind="text",
+                        response_chars=len(text_content),
                     )
                     _record_delivery(result)
 
@@ -5056,11 +5107,17 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
-                        await self.send_multiple_images(
+                        await _timed_gateway_delivery(
+                            sender=lambda: self.send_multiple_images(
+                                chat_id=event.source.chat_id,
+                                images=images,
+                                metadata=_final_thread_metadata,
+                                human_delay=human_delay,
+                            ),
+                            platform=self.platform,
                             chat_id=event.source.chat_id,
-                            images=images,
-                            metadata=_final_thread_metadata,
-                            human_delay=human_delay,
+                            session_key=session_key,
+                            delivery_kind="image",
                         )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
@@ -5098,11 +5155,17 @@ class BasePlatformAdapter(ABC):
                 if _image_paths:
                     try:
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
-                        await self.send_multiple_images(
+                        await _timed_gateway_delivery(
+                            sender=lambda: self.send_multiple_images(
+                                chat_id=event.source.chat_id,
+                                images=_batch,
+                                metadata=_final_thread_metadata,
+                                human_delay=human_delay,
+                            ),
+                            platform=self.platform,
                             chat_id=event.source.chat_id,
-                            images=_batch,
-                            metadata=_final_thread_metadata,
-                            human_delay=human_delay,
+                            session_key=session_key,
+                            delivery_kind="image",
                         )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
@@ -5113,23 +5176,34 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(media_path).suffix.lower()
                         if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-                            media_result = await self.send_voice(
+                            delivery_kind = "voice"
+                            sender = lambda: self.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
                                 metadata=_final_thread_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
-                            media_result = await self.send_video(
+                            delivery_kind = "video"
+                            sender = lambda: self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
                                 metadata=_final_thread_metadata,
                             )
                         else:
-                            media_result = await self.send_document(
+                            delivery_kind = "document"
+                            sender = lambda: self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
                                 metadata=_final_thread_metadata,
                             )
+
+                        media_result = await _timed_gateway_delivery(
+                            sender=sender,
+                            platform=self.platform,
+                            chat_id=event.source.chat_id,
+                            session_key=session_key,
+                            delivery_kind=delivery_kind,
+                        )
 
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
@@ -5143,17 +5217,26 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(file_path).suffix.lower()
                         if ext in _VIDEO_EXTS:
-                            await self.send_video(
+                            delivery_kind = "video"
+                            sender = lambda: self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
                         else:
-                            await self.send_document(
+                            delivery_kind = "document"
+                            sender = lambda: self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
+                        await _timed_gateway_delivery(
+                            sender=sender,
+                            platform=self.platform,
+                            chat_id=event.source.chat_id,
+                            session_key=session_key,
+                            delivery_kind=delivery_kind,
+                        )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
 

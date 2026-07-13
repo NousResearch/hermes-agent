@@ -534,4 +534,5 @@ def finalize_turn(
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
 
+    agent._request_budget_reason = str(_turn_exit_reason)
     return result

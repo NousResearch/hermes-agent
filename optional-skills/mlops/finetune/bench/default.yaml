@@ -1,11 +1,18 @@
 env:
   enabled_toolsets: ["terminal", "file"]
-  # Docker backend is REQUIRED — Tier 3 cases scaffold/refactor files and
-  # would otherwise scribble in the host filesystem. The bench env mounts
-  # /tmp/finetune-bench from host into the container at the same path so
-  # the per-case working dirs created by _rollout_case are visible inside
-  # the sandbox.
+  # Docker backend is REQUIRED and ENFORCED — setup() preflights the
+  # daemon (`docker info`) and hard-exits with code 4 if it is unusable,
+  # instead of letting every case fail as a bogus quality zero. Tier 3
+  # cases scaffold/refactor files and would otherwise scribble in the
+  # host filesystem. The bench env mounts /tmp/finetune-bench from host
+  # into the container at the same path so the per-case working dirs
+  # created by _rollout_case are visible inside the sandbox.
+  #
+  # Any non-docker backend executes agent-generated commands DIRECTLY ON
+  # THE HOST; the bench refuses to start unless you opt in explicitly with
+  # `allow_unsandboxed: true` here or FINETUNE_BENCH_ALLOW_UNSANDBOXED=1.
   terminal_backend: docker
+  allow_unsandboxed: false
   max_agent_turns: 15
   agent_temperature: 0.1
   # Fixed sampling seed sent with every request. Without it, run-to-run

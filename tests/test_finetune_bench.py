@@ -102,16 +102,32 @@ def case_result(**kw):
 
 
 # ============================================================================
-# Finding 1 — empty expected_value must NOT auto-pass
+# Finding 1 — empty expected_value is a MALFORMED case, never a vacuous pass
 # ============================================================================
 
 class TestEmptyExpectedValue:
-    def test_successful_tool_output_passes(self, tmp_path):
+    def test_successful_tool_output_does_not_pass_empty_assertion(self, tmp_path):
+        """A case asserting nothing must not award execution credit for
+        arbitrary successful output ('echo ok' must never score)."""
         env = make_env(tmp_path)
         msgs = [tc_msg(), tool_msg(OK_TOOL), asst("done")]
         res = env.compute_reward(tier2_output_case(), msgs, 2, 0, SpyCtx())
-        assert res.tool_args_valid is True
-        assert res.reward == pytest.approx(1.0)  # 0.4 selection + 0.6 execution
+        assert res.tool_args_valid is False
+        assert res.reward == pytest.approx(0.4)  # selection only
+
+    def test_empty_assertion_recorded_as_malformed(self, tmp_path):
+        env = make_env(tmp_path)
+        msgs = [tc_msg(), tool_msg(OK_TOOL)]
+        env.compute_reward(tier2_output_case("te-vac"), msgs, 1, 0, SpyCtx())
+        assert "te-vac" in env.malformed_case_ids
+        assert env._aggregate_metrics()["malformed_cases"] == 1
+
+    def test_malformed_count_zero_for_real_assertions(self, tmp_path):
+        env = make_env(tmp_path)
+        case = tier2_output_case("te-ok", expected_value="file1")
+        env.compute_reward(case, [tc_msg(), tool_msg(OK_TOOL)], 1, 0, SpyCtx())
+        assert env.malformed_case_ids == set()
+        assert env._aggregate_metrics()["malformed_cases"] == 0
 
     def test_garbage_tool_output_fails(self, tmp_path):
         env = make_env(tmp_path)
@@ -237,41 +253,59 @@ class TestSkillInvocationScoring:
 # ============================================================================
 
 class TestTier3OutputMatch:
-    def test_successful_tool_run_completes(self, tmp_path):
+    def test_matching_value_completes(self, tmp_path):
         env = make_env(tmp_path)
-        msgs = [tc_msg(name="web_search", args='{"query": "frameworks"}'),
-                tool_msg("Django 82k stars, Flask 68k, FastAPI 75k"),
+        case = tier3_output_case(expected_value="Django")
+        msgs = [tc_msg(args='{"command": "cat frameworks.csv"}'),
+                tool_msg('{"exit_code": 0, "output": "Django 82k stars"}'),
                 asst("Here is the comparison table: Django | Flask | FastAPI")]
-        res = env.compute_reward(tier3_output_case(), msgs, 2, 0, SpyCtx())
+        res = env.compute_reward(case, msgs, 2, 0, SpyCtx())
         assert res.task_completed is True
         assert res.tool_args_valid is True
         assert res.reward == pytest.approx(1.0)
 
-    def test_no_tool_use_fails(self, tmp_path):
+    def test_no_tool_use_and_no_match_fails(self, tmp_path):
         env = make_env(tmp_path)
-        res = env.compute_reward(tier3_output_case(), [asst("no idea")], 1, 0, SpyCtx())
+        case = tier3_output_case(expected_value="Django")
+        res = env.compute_reward(case, [asst("no idea")], 1, 0, SpyCtx())
         assert res.task_completed is False
 
     def test_expected_value_checked_against_final_answer(self, tmp_path):
         env = make_env(tmp_path)
         case = tier3_output_case(expected_value="Liskov")
-        msgs = [tc_msg(name="web_search"), tool_msg("SOLID overview..."),
+        msgs = [tc_msg(), tool_msg("SOLID overview..."),
                 asst("S: single resp... L: Liskov substitution principle ...")]
         assert env.compute_reward(case, msgs, 2, 0, SpyCtx()).task_completed is True
 
-        msgs_bad = [tc_msg(name="web_search"), tool_msg("SOLID overview..."),
+        msgs_bad = [tc_msg(), tool_msg("SOLID overview..."),
                     asst("SOLID means five principles.")]
         env.results.clear()
         assert env.compute_reward(case, msgs_bad, 2, 0, SpyCtx()).task_completed is False
 
-    def test_functional_test_with_empty_checks_uses_output_path(self, tmp_path):
+    def test_functional_test_with_empty_checks_is_malformed(self, tmp_path):
+        """A functional_test without checks AND without an expected value
+        asserts nothing — it must be malformed, not a vacuous pass."""
         env = make_env(tmp_path)
         case = tier3_output_case()
         case["verification"] = {"method": "functional_test", "test_commands": [], "checks": []}
         ctx = SpyCtx()
         res = env.compute_reward(case, [tc_msg(), tool_msg(OK_TOOL)], 1, 0, ctx)
-        assert res.task_completed is True
+        assert res.task_completed is False
         assert ctx.calls == []  # nothing to execute
+        assert case["id"] in env.malformed_case_ids
+
+    def test_match_scope_final_answer_ignores_tool_output(self, tmp_path):
+        env = make_env(tmp_path)
+        case = tier3_output_case(expected_value="Tornado")
+        case["verification"]["match_scope"] = "final_answer"
+        # Value visible in a tool result (e.g. `cat` of the data file) but
+        # never stated in the model's conclusion → no credit.
+        msgs = [tc_msg(), tool_msg('{"exit_code": 0, "output": "Tornado,91500"}'),
+                asst("I looked at the file.")]
+        assert env.compute_reward(case, msgs, 2, 0, SpyCtx()).task_completed is False
+        env.results.clear()
+        msgs_ok = msgs[:-1] + [asst("The top framework is Tornado.")]
+        assert env.compute_reward(case, msgs_ok, 2, 0, SpyCtx()).task_completed is True
 
 
 # ============================================================================
@@ -302,6 +336,232 @@ class TestSingleFunctionalExecution:
         assert res.tool_args_valid is True
         assert res.task_completed is True
         assert res.tool_args_valid == res.task_completed
+
+
+# ============================================================================
+# expect_failure — error-recovery cases must reward FAILING trajectories
+# ============================================================================
+
+def expect_failure_case(case_id="te-ef", regex="(permission|denied|read-?only)"):
+    return {
+        "id": case_id,
+        "tier": 2,
+        "category": "error_recovery",
+        "prompt": "try something impossible and explain the failure",
+        "expected": {"tool_name": "terminal", "should_call_tool": True},
+        "verification": {
+            "method": "output_match",
+            "expect_failure": True,
+            "expected_regex": regex,
+        },
+    }
+
+
+class TestExpectFailure:
+    def test_perfect_failing_trajectory_scores_full(self, tmp_path):
+        """The correct behavior IS a failing command plus an explanation —
+        it must earn full execution credit, not 0.4."""
+        env = make_env(tmp_path)
+        msgs = [
+            tc_msg(args='{"command": "cat /etc/shadow"}'),
+            tool_msg(json.dumps({"exit_code": 1, "output": "cat: /etc/shadow: Permission denied"})),
+            asst("The read failed: permission denied — the file is root-only."),
+        ]
+        res = env.compute_reward(expect_failure_case(), msgs, 2, 1, SpyCtx())
+        assert res.tool_args_valid is True
+        assert res.reward == pytest.approx(1.0)
+
+    def test_padding_with_successful_command_scores_zero_execution(self, tmp_path):
+        """The old inverted incentive: an irrelevant successful command must
+        NOT outscore the correct failing trajectory."""
+        env = make_env(tmp_path)
+        msgs = [
+            tc_msg(args='{"command": "echo ok"}'),
+            tool_msg(json.dumps({"exit_code": 0, "output": "ok"})),
+            asst("Done! Everything went fine, no permission problems."),
+        ]
+        res = env.compute_reward(expect_failure_case(), msgs, 2, 0, SpyCtx())
+        assert res.tool_args_valid is False
+        assert res.reward == pytest.approx(0.4)  # selection only
+
+    def test_failure_without_acknowledgment_fails(self, tmp_path):
+        env = make_env(tmp_path)
+        msgs = [
+            tc_msg(),
+            tool_msg(json.dumps({"exit_code": 1, "output": "Permission denied"})),
+            asst("All done."),  # never explains the failure
+        ]
+        res = env.compute_reward(expect_failure_case(), msgs, 2, 1, SpyCtx())
+        assert res.tool_args_valid is False
+
+    def test_acknowledgment_match_is_case_insensitive(self, tmp_path):
+        env = make_env(tmp_path)
+        msgs = [
+            tc_msg(),
+            tool_msg(json.dumps({"exit_code": 1, "output": "boom"})),
+            asst("It failed because the filesystem is READ-ONLY."),
+        ]
+        assert env._verify_output(msgs, {"expect_failure": True,
+                                         "expected_regex": "read-?only"}) is True
+
+    def test_fail_then_recover_trajectory_passes(self, tmp_path):
+        """Cases like 'run it, fix it, rerun' have a failed call followed by
+        a successful one — still a valid expect_failure trajectory."""
+        env = make_env(tmp_path)
+        msgs = [
+            tc_msg(args='{"command": "python3 broken.py"}'),
+            tool_msg(json.dumps({"exit_code": 1, "output": "SyntaxError: invalid syntax"})),
+            tc_msg(args='{"command": "python3 broken.py"}'),
+            tool_msg(json.dumps({"exit_code": 0, "output": "5"})),
+            asst("broken.py was missing a colon — a syntax error. Fixed and reran: prints 5."),
+        ]
+        res = env.compute_reward(expect_failure_case(regex="(syntax|colon|fix)"),
+                                 msgs, 3, 1, SpyCtx())
+        assert res.tool_args_valid is True
+
+
+# ============================================================================
+# Functional check hardening — file_exists quoting and command_index bounds
+# ============================================================================
+
+class TestFunctionalCheckHardening:
+    def test_file_exists_works_with_zero_test_commands(self, tmp_path):
+        """A checks-only case (no test_commands) must be able to pass."""
+        env = make_env(tmp_path)
+        verification = {
+            "method": "functional_test",
+            "test_commands": [],
+            "checks": [{"type": "file_exists", "path": "/tmp/finetune-bench/x/app.py"}],
+        }
+        ctx = SpyCtx(default={"exit_code": 0, "output": "EXISTS"})
+        assert env._verify_functional(ctx, {}, verification) is True
+        assert len(ctx.calls) == 1  # the probe itself
+
+    def test_file_exists_path_is_shell_quoted(self, tmp_path):
+        env = make_env(tmp_path)
+        verification = {
+            "method": "functional_test",
+            "test_commands": [],
+            "checks": [{"type": "file_exists",
+                        "path": "/tmp/finetune-bench/my dir/$(rm -rf ~)/app.py"}],
+        }
+        ctx = SpyCtx(default={"exit_code": 1, "output": ""})
+        env._verify_functional(ctx, {}, verification)
+        probe = ctx.calls[0]
+        # The path must be a single quoted token — no live substitution.
+        assert "'" in probe
+        assert "$(rm" in probe  # still present, but inside quotes
+        import shlex as _shlex
+        tokens = _shlex.split(probe.split("&&")[0])
+        assert tokens[-1].endswith("app.py")
+
+    def test_out_of_range_command_index_counts_as_failed(self, tmp_path):
+        env = make_env(tmp_path)
+        verification = {
+            "method": "functional_test",
+            "test_commands": [],
+            "checks": [{"type": "output_contains", "command_index": 0,
+                        "expected": ["anything"]}],
+        }
+        assert env._verify_functional(SpyCtx(), {}, verification) is False
+
+
+# ============================================================================
+# Docker enforcement — preflight, unsandboxed refusal, mid-run infra errors
+# ============================================================================
+
+class TestSandboxEnforcement:
+    class _Proc:
+        def __init__(self, rc, stderr=b""):
+            self.returncode = rc
+            self.stderr = stderr
+
+    def test_docker_preflight_passes_when_daemon_up(self, monkeypatch, capsys):
+        monkeypatch.setattr(fbe.subprocess, "run", lambda *a, **k: self._Proc(0))
+        env = make_env()
+        env._preflight_docker_check()  # must not raise
+        assert "Docker daemon is responsive" in capsys.readouterr().out
+
+    def test_docker_preflight_hard_exits_when_daemon_down(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            fbe.subprocess, "run",
+            lambda *a, **k: self._Proc(1, b"Cannot connect to the Docker daemon"),
+        )
+        env = make_env()
+        with pytest.raises(SystemExit) as ei:
+            env._preflight_docker_check()
+        assert ei.value.code == fbe.FinetuneBenchEnv.EXIT_SANDBOX_UNAVAILABLE
+        assert "daemon" in capsys.readouterr().out.lower()
+
+    def test_docker_preflight_hard_exits_when_cli_missing(self, monkeypatch):
+        def no_cli(*a, **k):
+            raise FileNotFoundError("docker")
+
+        monkeypatch.setattr(fbe.subprocess, "run", no_cli)
+        with pytest.raises(SystemExit) as ei:
+            make_env()._preflight_docker_check()
+        assert ei.value.code == fbe.FinetuneBenchEnv.EXIT_SANDBOX_UNAVAILABLE
+
+    def test_enforce_uses_docker_preflight(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        called = []
+        env = make_env()
+        monkeypatch.setattr(env, "_preflight_docker_check", lambda: called.append(1))
+        env._enforce_sandbox_backend()
+        assert called == [1]
+
+    def test_non_docker_backend_refused_without_override(self, monkeypatch, capsys):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.delenv("FINETUNE_BENCH_ALLOW_UNSANDBOXED", raising=False)
+        env = make_env(terminal_backend="local")
+        with pytest.raises(SystemExit) as ei:
+            env._enforce_sandbox_backend()
+        assert ei.value.code == fbe.FinetuneBenchEnv.EXIT_SANDBOX_UNAVAILABLE
+        assert "FINETUNE_BENCH_ALLOW_UNSANDBOXED" in capsys.readouterr().out
+
+    def test_non_docker_backend_allowed_with_env_override(self, monkeypatch, capsys):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("FINETUNE_BENCH_ALLOW_UNSANDBOXED", "1")
+        make_env(terminal_backend="local")._enforce_sandbox_backend()  # no raise
+        assert "UNSANDBOXED" in capsys.readouterr().out
+
+    def test_non_docker_backend_allowed_with_config_override(self, monkeypatch, capsys):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.delenv("FINETUNE_BENCH_ALLOW_UNSANDBOXED", raising=False)
+        env = make_env(terminal_backend="local", allow_unsandboxed=True)
+        env._enforce_sandbox_backend()  # no raise
+        assert "UNSANDBOXED" in capsys.readouterr().out
+
+    def test_mid_run_docker_death_is_infra_error(self, tmp_path):
+        """A tool result showing the daemon died must be classified as an
+        infra error, not a model-quality zero."""
+        env = make_env(tmp_path)
+        msgs = [
+            tc_msg(),
+            tool_msg("Error: Cannot connect to the Docker daemon at "
+                     "unix:///var/run/docker.sock. Is the docker daemon running?"),
+        ]
+        res = env.compute_reward(tier2_output_case("te-dd", "x"), msgs, 1, 1, SpyCtx())
+        assert res.infra_error is True
+        assert res.reward == 0.0
+        m = env._aggregate_metrics()
+        assert m["infra_errors"] == 1
+        assert m["scored_cases"] == 0
+
+    def test_in_container_docker_not_found_is_not_infra(self, tmp_path):
+        """te-034 runs `docker ps` INSIDE the sandbox; 'command not found'
+        must stay a normal (expected) tool failure."""
+        env = make_env(tmp_path)
+        msgs = [
+            tc_msg(args='{"command": "docker ps"}'),
+            tool_msg(json.dumps({"exit_code": 127,
+                                 "output": "bash: docker: command not found"})),
+            asst("Docker is not installed in this environment."),
+        ]
+        case = expect_failure_case("te-034x", regex="not (installed|found)")
+        res = env.compute_reward(case, msgs, 2, 1, SpyCtx())
+        assert res.infra_error is False
+        assert res.tool_args_valid is True
 
 
 # ============================================================================
@@ -563,6 +823,124 @@ class TestVerifyFunctionalRemap:
         assert "/tmp/finetune-bench/foo" not in " ".join(ctx.calls)
 
 
+class TestWorkingDirGuard:
+    """The setup phase rmtree-s the case working dir — it must refuse any
+    path that does not resolve under this run's scratch base."""
+
+    def _case_with_wd(self, wd):
+        case = dict(ROLLOUT_CASE)
+        case["setup"] = {"working_dir": wd}
+        return case
+
+    def test_outside_working_dir_skips_case(self, tmp_path, fake_agent_modules):
+        state, _ = fake_agent_modules
+        env = make_env(tmp_path)
+        target = tmp_path / "precious"
+        target.mkdir()
+        (target / "keep.txt").write_text("do not delete")
+
+        res = env._rollout_case(self._case_with_wd(str(target)))
+        assert res is None                      # case skipped, not scored
+        assert env.results == []                # no bogus result recorded
+        assert (target / "keep.txt").exists()   # nothing was wiped
+        assert state["prompts"] == []           # the agent never ran
+        assert "ts-001" in env.malformed_case_ids
+        assert env._aggregate_metrics()["malformed_cases"] == 1
+
+    def test_home_working_dir_skips_case(self, tmp_path, fake_agent_modules,
+                                          monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
+        env = make_env(tmp_path)
+        res = env._rollout_case(self._case_with_wd("~/projects"))
+        assert res is None
+        assert not (tmp_path / "fakehome" / "projects").exists()
+
+    def test_dotdot_escape_skips_case(self, tmp_path, fake_agent_modules):
+        env = make_env(tmp_path)
+        wd = str(env.run_base / ".." / ".." / "escape")
+        assert env._rollout_case(self._case_with_wd(wd)) is None
+
+    def test_working_dir_under_run_base_is_allowed(self, tmp_path,
+                                                   fake_agent_modules):
+        state, _ = fake_agent_modules
+        env = make_env(tmp_path)
+        res = env._rollout_case(self._case_with_wd("/tmp/finetune-bench/ok-dir"))
+        assert res is not None
+        assert (env.run_base / "ok-dir").is_dir()
+
+
+class TestVerdictFailClosed:
+    def test_empty_intersection_fails(self, tmp_path):
+        env = make_env(tmp_path)
+        checks = env._verdict({})
+        assert checks["overall"] is False
+
+    def test_missing_metric_is_skipped_not_passed(self, tmp_path):
+        """A metric absent from the baseline must not silently pass its
+        gate (the old `.get("delta", 0) >= -threshold` fail-open bug)."""
+        env = make_env(tmp_path)
+        comparison = {
+            "tool_selection_accuracy": {"baseline": 0.9, "candidate": 0.5,
+                                        "delta": -0.4},
+        }
+        checks = env._verdict(comparison)
+        assert checks["tool_selection"] is False
+        # Gates whose metrics are missing don't appear at all.
+        for name in ("tool_execution", "task_completion", "format_compliance",
+                     "no_hallucinations", "canary"):
+            assert name not in checks
+        assert checks["overall"] is False
+
+    def test_all_present_and_healthy_passes(self, tmp_path):
+        env = make_env(tmp_path)
+        comparison = {
+            "tool_selection_accuracy": {"baseline": 0.9, "candidate": 0.91, "delta": 0.01},
+            "tool_execution_success": {"baseline": 0.8, "candidate": 0.82, "delta": 0.02},
+            "task_completion_rate": {"baseline": 0.7, "candidate": 0.7, "delta": 0.0},
+            "format_compliance": {"baseline": 0.99, "candidate": 0.99, "delta": 0.0},
+            "hallucination_rate": {"baseline": 0.0, "candidate": 0.0, "delta": 0.0},
+            "canary_pass_rate": {"baseline": 1.0, "candidate": 1.0, "delta": 0.0},
+        }
+        checks = env._verdict(comparison)
+        assert checks["overall"] is True
+
+
+class TestEvaluateExitCode:
+    def _run_evaluate(self, tmp_path, monkeypatch, baseline):
+        env = make_env(tmp_path)
+        monkeypatch.setattr(fbe, "BENCH_STATE_DIR", tmp_path / "state")
+        env.prompt_bank = [dict(ROLLOUT_CASE)]
+        env.baseline = baseline
+
+        def fake_rollout(item):
+            env.results.append(case_result(case_id=item["id"], tier=1,
+                                           tool_selection_correct=False))
+
+        monkeypatch.setattr(env, "_rollout_case", fake_rollout)
+        rc = env.evaluate()
+        results = sorted((tmp_path / "state" / "results").glob("bench_*.json"))
+        data = json.loads(results[-1].read_text())
+        return rc, data
+
+    def test_fail_verdict_returns_nonzero_and_saves_verdict(self, tmp_path, monkeypatch):
+        baseline = {"metrics": {
+            "tool_selection_accuracy": 1.0, "tool_execution_success": 1.0,
+            "task_completion_rate": 1.0, "format_compliance": 1.0,
+            "hallucination_rate": 0.0, "canary_pass_rate": 1.0,
+        }}
+        rc, data = self._run_evaluate(tmp_path, monkeypatch, baseline)
+        assert rc == fbe.FinetuneBenchEnv.EXIT_VERDICT_FAIL
+        assert data["verdict"]["overall"] is False
+        # Existing consumers' keys stay intact.
+        assert "metrics" in data and "cases" in data and "timestamp" in data
+        assert data["metrics"]["total_cases"] == 1
+
+    def test_no_baseline_returns_zero_without_verdict_key(self, tmp_path, monkeypatch):
+        rc, data = self._run_evaluate(tmp_path, monkeypatch, baseline=None)
+        assert rc == 0
+        assert "verdict" not in data
+
+
 # ============================================================================
 # Finding 10 — preflight auth header and HTTPError handling
 # ============================================================================
@@ -618,12 +996,23 @@ class TestPreflight:
 # ============================================================================
 
 VALID_CHECK_TYPES = {"exit_code", "output_contains", "output_regex", "file_exists"}
+VALID_MATCH_SCOPES = {None, "transcript", "final_answer"}
 
 
 @pytest.fixture(scope="module")
 def prompt_bank():
     with open(Path(_bench_dir) / "prompt_bank.yaml") as f:
         return yaml.safe_load(f)["cases"]
+
+
+@pytest.fixture(scope="module")
+def served_tools():
+    """Tool names actually served by the toolsets the bench enables."""
+    import toolsets
+
+    with open(Path(_bench_dir) / "default.yaml") as f:
+        enabled = yaml.safe_load(f)["env"]["enabled_toolsets"]
+    return set(toolsets.resolve_multiple_toolsets(enabled))
 
 
 class TestPromptBank:
@@ -646,6 +1035,18 @@ class TestPromptBank:
                 f"{c['id']}: tier-1 scoring needs should_call_tool or tool_name"
             )
 
+    def test_no_case_expects_an_unserved_tool(self, prompt_bank, served_tools):
+        """Pin for finding #3: a case must never demand a tool that the
+        bench's enabled_toolsets don't serve (e.g. web_search) — such cases
+        are unwinnable and count correct answers as hallucinations."""
+        for c in prompt_bank:
+            expected_tool = (c.get("expected") or {}).get("tool_name")
+            if expected_tool:
+                assert expected_tool in served_tools, (
+                    f"{c['id']}: expects tool {expected_tool!r} which is not "
+                    f"served by the bench toolsets {sorted(served_tools)}"
+                )
+
     def test_tier2_plus_verification_well_formed(self, prompt_bank):
         for c in prompt_bank:
             if c["tier"] < 2:
@@ -653,6 +1054,11 @@ class TestPromptBank:
             v = c.get("verification")
             assert v, f"{c['id']}: tier>=2 requires verification"
             assert v.get("method") in ("output_match", "functional_test"), c["id"]
+            assert v.get("match_scope") in VALID_MATCH_SCOPES, c["id"]
+            regex = v.get("expected_regex")
+            if regex:
+                import re as _re
+                _re.compile(regex)  # must be a valid pattern
             for chk in v.get("checks") or []:
                 assert chk.get("type") in VALID_CHECK_TYPES, c["id"]
                 if chk["type"] == "exit_code":
@@ -663,10 +1069,50 @@ class TestPromptBank:
                     assert chk.get("pattern"), c["id"]
                 elif chk["type"] == "file_exists":
                     assert chk.get("path"), c["id"]
-                idx = chk.get("command_index", 0)
-                assert 0 <= idx < max(len(v.get("test_commands") or []), 1), c["id"]
+                if chk["type"] != "file_exists":
+                    idx = chk.get("command_index", 0)
+                    assert 0 <= idx < len(v.get("test_commands") or []), c["id"]
 
-    def test_every_case_scorable_without_raising(self, prompt_bank, tmp_path):
+    def test_no_output_match_case_asserts_nothing(self, prompt_bank):
+        """Pin for finding #1: every output_match verification must carry a
+        real assertion. Empty expected_value used to reduce 'execution
+        success' to 'any tool exited 0' across 84 cases."""
+        for c in prompt_bank:
+            if c["tier"] < 2:
+                continue
+            v = c["verification"]
+            if v["method"] == "functional_test" and v.get("checks"):
+                continue  # functional checks are the assertion
+            expected = str(v.get("expected_value") or "").strip()
+            regex = str(v.get("expected_regex") or "").strip()
+            assert expected or regex, (
+                f"{c['id']}: output_match with no expected_value/expected_regex "
+                "is vacuous — it would score any successful command as a pass"
+            )
+
+    def test_expect_failure_cases_have_acknowledgment_assertion(self, prompt_bank):
+        for c in prompt_bank:
+            v = c.get("verification") or {}
+            if not v.get("expect_failure"):
+                continue
+            assert c["category"] == "error_recovery", c["id"]
+            assert str(v.get("expected_regex") or v.get("expected_value") or "").strip(), (
+                f"{c['id']}: expect_failure needs a final-answer assertion"
+            )
+
+    def test_functional_cases_stay_inside_bench_scratch_root(self, prompt_bank):
+        """Hermeticity pin: setup working_dirs and file_exists paths must
+        live under /tmp/finetune-bench so the per-run remap applies."""
+        for c in prompt_bank:
+            wd = (c.get("setup") or {}).get("working_dir")
+            if wd:
+                assert wd.startswith("/tmp/finetune-bench/"), c["id"]
+            v = c.get("verification") or {}
+            for chk in v.get("checks") or []:
+                if chk.get("type") == "file_exists":
+                    assert str(chk["path"]).startswith("/tmp/finetune-bench/"), c["id"]
+
+    def test_every_case_scorable_without_raising(self, prompt_bank, served_tools, tmp_path):
         env = make_env(tmp_path)
         transcripts = [
             [tc_msg(), tool_msg(OK_TOOL), asst("All done.")],   # normal run
@@ -680,14 +1126,18 @@ class TestPromptBank:
                 res = env.compute_reward(
                     case, list(msgs), 1, 0,
                     SpyCtx(default={"exit_code": 1, "output": ""}),
-                    available_tools={"terminal", "web_search"},
+                    available_tools=served_tools,
                 )
                 assert isinstance(res, fbe.CaseResult), case["id"]
                 assert 0.0 <= res.reward <= 1.0, case["id"]
+        # No bank case may be flagged malformed by the scorer.
+        assert env.malformed_case_ids == set()
 
     def test_no_output_match_case_autopasses_on_garbage(self, prompt_bank, tmp_path):
-        """The regression guard for finding #1: a tool call whose execution
-        failed must never satisfy an output_match verification."""
+        """The regression guard for finding #1: a padded transcript (one
+        failing command, no real answer) must never satisfy an output_match
+        verification — including the expect_failure cases, which demand an
+        explanatory final answer."""
         env = make_env(tmp_path)
         garbage = [tc_msg(), tool_msg(ERR_TOOL)]
         swept = 0
@@ -700,7 +1150,24 @@ class TestPromptBank:
             assert res.tool_args_valid is False, case["id"]
             assert res.task_completed is False, case["id"]
             swept += 1
-        assert swept >= 80  # the bank's output_match population
+        assert swept >= 60  # the bank's output_match population
+
+    def test_no_output_match_case_autopasses_on_echo_ok(self, prompt_bank, tmp_path):
+        """A model that runs `echo ok` and says 'done' must score zero
+        execution credit on every output_match case."""
+        env = make_env(tmp_path)
+        padded = [
+            tc_msg(args='{"command": "echo ok"}'),
+            tool_msg(json.dumps({"exit_code": 0, "output": "ok"})),
+            asst("Done."),
+        ]
+        for case in prompt_bank:
+            v = case.get("verification") or {}
+            if case["tier"] < 2 or v.get("method") != "output_match":
+                continue
+            env.results.clear()
+            res = env.compute_reward(case, list(padded), 2, 0, SpyCtx())
+            assert res.tool_args_valid is False, case["id"]
 
 
 # ============================================================================

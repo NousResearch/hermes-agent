@@ -25,7 +25,9 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
+import subprocess
 import sys
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -98,6 +100,10 @@ class FinetuneBenchConfig:
     # Agent / sandbox
     enabled_toolsets: List[str] = field(default_factory=lambda: ["terminal", "file"])
     terminal_backend: str = "docker"
+    # The bench executes agent-generated commands. Any backend other than
+    # docker runs them directly on the host — refuse unless this flag (or
+    # the FINETUNE_BENCH_ALLOW_UNSANDBOXED=1 env var) makes that explicit.
+    allow_unsandboxed: bool = False
     max_agent_turns: int = 15
     agent_temperature: float = 0.1
     terminal_timeout: int = 60
@@ -234,11 +240,28 @@ class FinetuneBenchEnv:
     # cases were skipped for the metrics to be trustworthy.
     MAX_INFRA_ERROR_FRACTION = 0.05
 
+    # Process exit codes (also documented in the bench spec):
+    #   1 — baseline comparison verdict is FAIL
+    #   2 — configured LLM endpoint unreachable
+    #   3 — run invalid (too many infrastructure errors)
+    #   4 — sandbox unavailable (Docker daemon down) or an unsandboxed
+    #       terminal backend was configured without an explicit override
+    EXIT_VERDICT_FAIL = 1
+    EXIT_ENDPOINT_UNREACHABLE = 2
+    EXIT_RUN_INVALID = 3
+    EXIT_SANDBOX_UNAVAILABLE = 4
+
     def __init__(self, config: FinetuneBenchConfig):
         self.config = config
         self.prompt_bank: List[Dict[str, Any]] = []
         self.baseline: Optional[Dict[str, Any]] = None
         self.results: List[CaseResult] = []
+        # Case ids with authoring errors (e.g. an output_match verification
+        # without an expected_value/expected_regex, or a working_dir outside
+        # the bench scratch root). Malformed cases are scored as failed
+        # checks — never as vacuous passes — and their count is surfaced in
+        # the metrics so they can't silently inflate anything.
+        self.malformed_case_ids: set = set()
         # Unique per-run scratch base: every case works under this directory,
         # and case-authored /tmp/finetune-bench/... paths are remapped into it,
         # so stale artifacts from a previous run can never satisfy this run's
@@ -275,6 +298,12 @@ class FinetuneBenchEnv:
             os.environ["TERMINAL_ENV"] = self.config.terminal_backend
         os.environ["TERMINAL_TIMEOUT"] = str(self.config.terminal_timeout)
         os.environ["TERMINAL_LIFETIME_SECONDS"] = str(self.config.terminal_lifetime)
+
+        # Enforce the sandbox contract BEFORE any rollout. "Docker is
+        # required" must be more than a config default: with the daemon
+        # down, every case would fail as a bogus QUALITY failure and the
+        # run would "validly" poison the baseline.
+        self._enforce_sandbox_backend()
 
         # Pre-flight: confirm the configured LLM endpoint is reachable BEFORE
         # we start the rollout loop. Without this check, a dead llama-server
@@ -403,7 +432,74 @@ class FinetuneBenchEnv:
         # If we reach here, the server is unreachable. Exit with a non-zero
         # code so the parent dispatcher (manage.py / cli.py) sees a real
         # failure instead of waiting hours for a hung run.
-        raise SystemExit(2)
+        raise SystemExit(self.EXIT_ENDPOINT_UNREACHABLE)
+
+    def _enforce_sandbox_backend(self) -> None:
+        """Verify the sandbox contract before any case runs.
+
+        docker backend  → the daemon must actually answer ``docker info``.
+        anything else   → refuse unless FINETUNE_BENCH_ALLOW_UNSANDBOXED=1
+                          (or config ``allow_unsandboxed: true``) explicitly
+                          accepts running agent-generated commands on the
+                          host.
+        """
+        backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+        if backend == "docker":
+            self._preflight_docker_check()
+            return
+
+        allowed = (
+            os.environ.get("FINETUNE_BENCH_ALLOW_UNSANDBOXED") == "1"
+            or self.config.allow_unsandboxed
+        )
+        if not allowed:
+            print(
+                f"[finetune-bench] ✗ refusing terminal_backend={backend!r}: "
+                "the bench executes agent-generated shell commands, and any "
+                "non-docker backend runs them DIRECTLY ON THIS HOST."
+            )
+            print(
+                "  If you really want that, set FINETUNE_BENCH_ALLOW_UNSANDBOXED=1 "
+                "(or allow_unsandboxed: true in the bench config) and re-run."
+            )
+            raise SystemExit(self.EXIT_SANDBOX_UNAVAILABLE)
+        print(
+            f"[finetune-bench] ⚠ UNSANDBOXED RUN: terminal_backend={backend!r} "
+            "executes agent-generated commands directly on this host. "
+            "You accepted this via FINETUNE_BENCH_ALLOW_UNSANDBOXED/allow_unsandboxed."
+        )
+
+    def _preflight_docker_check(self) -> None:
+        """Hard-fail (distinct exit code) when the Docker daemon is unusable."""
+        try:
+            proc = subprocess.run(
+                ["docker", "info"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+        except FileNotFoundError:
+            print(
+                "[finetune-bench] ✗ Docker backend is configured but the "
+                "'docker' CLI was not found on PATH. Install Docker or point "
+                "the bench at a different sandbox."
+            )
+            raise SystemExit(self.EXIT_SANDBOX_UNAVAILABLE)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            print(f"[finetune-bench] ✗ 'docker info' failed to run: {e}")
+            raise SystemExit(self.EXIT_SANDBOX_UNAVAILABLE)
+
+        if proc.returncode != 0:
+            stderr = (proc.stderr or b"").decode("utf-8", "replace").strip()
+            print(
+                "[finetune-bench] ✗ the Docker daemon is not usable "
+                f"(docker info exited {proc.returncode}). Start it and re-run."
+            )
+            if stderr:
+                print(f"  docker info: {stderr.splitlines()[-1]}")
+            raise SystemExit(self.EXIT_SANDBOX_UNAVAILABLE)
+
+        print("[finetune-bench] pre-flight: ✓ Docker daemon is responsive")
 
     def format_prompt(self, item):
         return item["prompt"]
@@ -425,6 +521,19 @@ class FinetuneBenchEnv:
             turns_used=turns_used,
             tool_errors=tool_errors,
         )
+
+        # A tool result showing the bench's own Docker daemon went away
+        # mid-run is an infrastructure failure, not model quality. Record
+        # it as infra (excluded from quality denominators, counted toward
+        # run invalidation) instead of a bogus quality zero.
+        if self._docker_infra_failure(messages):
+            logger.error(
+                "Case %s: Docker daemon failure in tool results — "
+                "recording as infra error", item.get("id"),
+            )
+            case.infra_error = True
+            self.results.append(case)
+            return case
 
         # Format compliance
         case.format_valid = self._check_format(messages)
@@ -467,7 +576,7 @@ class FinetuneBenchEnv:
             else:
                 # output_match — or a functional_test with no checks, which
                 # can only be scored against the transcript.
-                ok = self._verify_output(messages, v)
+                ok = self._verify_output(messages, v, case_id=item.get("id"))
                 case.tool_args_valid = ok
                 if item["tier"] >= 3:
                     case.task_completed = ok
@@ -535,6 +644,28 @@ class FinetuneBenchEnv:
         "fatal:",
     )
 
+    # Markers of the BENCH's own Docker sandbox dying mid-run. These come
+    # from the host-side docker client, never from commands the agent runs
+    # inside the container (there is no docker CLI in the sandbox image, so
+    # an in-container `docker ...` prints "command not found" instead).
+    _DOCKER_INFRA_MARKERS = (
+        "cannot connect to the docker daemon",
+        "is the docker daemon running",
+        "error during connect",
+        "docker daemon is not running",
+        "docker is not available",
+    )
+
+    @classmethod
+    def _docker_infra_failure(cls, messages: List[Dict]) -> bool:
+        """True if any tool result shows the bench's Docker backend failed."""
+        for msg in messages:
+            if msg.get("role") == "tool" and isinstance(msg.get("content"), str):
+                low = msg["content"].lower()
+                if any(m in low for m in cls._DOCKER_INFRA_MARKERS):
+                    return True
+        return False
+
     def _tool_output_ok(self, content: Any) -> bool:
         """True if a tool result looks like a successful execution: non-empty
         and free of error signatures (nonzero exit codes, tracebacks, ...)."""
@@ -583,12 +714,44 @@ class FinetuneBenchEnv:
         "7" appears in timestamps, sizes, ...) — they need word boundaries."""
         return bool(re.fullmatch(r"-?\d+(\.\d+)?", expected)) or len(expected) <= 3
 
-    def _verify_output(self, messages: List[Dict], verification: Dict) -> bool:
+    def _verify_output(self, messages: List[Dict], verification: Dict,
+                       case_id: Optional[str] = None) -> bool:
+        """Score an ``output_match`` verification against the transcript.
+
+        Verification fields:
+          expected_value   substring (word-boundary matched when short/numeric)
+          expected_regex   regex alternative/complement to expected_value
+          match_scope      "transcript" (default: final answer + successful
+                           tool results) or "final_answer" (the model's
+                           conclusion must state the value itself)
+          expect_failure   error-recovery semantics — execution credit
+                           requires (a) at least one FAILED tool call and
+                           (b) the final assistant answer acknowledging /
+                           explaining the failure (matched case-insensitively
+                           via expected_regex/expected_value)
+
+        A case that asserts nothing (no expected_value and no expected_regex)
+        is a case-authoring error: it is logged, counted in the
+        ``malformed_cases`` metric, and scored as FAILED — it can never be a
+        vacuous pass.
+        """
         expected = verification.get("expected_value", "")
         expected = "" if expected is None else str(expected).strip()
+        expected_regex = str(verification.get("expected_regex") or "").strip()
+
+        if not expected and not expected_regex:
+            logger.error(
+                "Case %s: output_match verification without expected_value/"
+                "expected_regex — malformed case, check scored as FAILED",
+                case_id,
+            )
+            if case_id:
+                self.malformed_case_ids.add(str(case_id))
+            return False
 
         tool_texts: List[str] = []
         ok_tool_texts: List[str] = []
+        failed_tool_texts: List[str] = []
         for msg in messages:
             if msg.get("role") == "tool":
                 content = msg.get("content", "")
@@ -596,14 +759,25 @@ class FinetuneBenchEnv:
                     tool_texts.append(content)
                     if self._tool_output_ok(content):
                         ok_tool_texts.append(content)
-
-        if not expected:
-            # No content assertion: the case still requires at least one
-            # successful tool execution. (An empty expected_value must never
-            # mean "match anything".)
-            return bool(ok_tool_texts)
+                    else:
+                        failed_tool_texts.append(content)
 
         final_answer = self._final_assistant_text(messages)
+
+        if verification.get("expect_failure"):
+            # The correct trajectory INCLUDES a failing command. Nonzero
+            # exits must not be penalized here — they are the point.
+            if not failed_tool_texts:
+                return False  # nothing failed: the scenario never happened
+            if expected_regex:
+                return bool(re.search(expected_regex, final_answer, re.IGNORECASE))
+            return expected.lower() in final_answer.lower()
+
+        final_only = verification.get("match_scope") == "final_answer"
+
+        if expected_regex:
+            candidates = [final_answer] if final_only else [final_answer] + ok_tool_texts
+            return any(re.search(expected_regex, c) for c in candidates if c)
 
         if self._is_short_expectation(expected):
             # Word-boundary match, restricted to the final assistant answer
@@ -611,10 +785,14 @@ class FinetuneBenchEnv:
             pattern = re.compile(
                 r"(?<![\w.])" + re.escape(expected) + r"(?![\w.])"
             )
-            candidates = [final_answer] + (ok_tool_texts[-1:] if ok_tool_texts else [])
+            candidates = [final_answer] if final_only else (
+                [final_answer] + (ok_tool_texts[-1:] if ok_tool_texts else [])
+            )
             return any(pattern.search(c) for c in candidates if c)
 
-        candidates = [final_answer] + tool_texts
+        # Long values: substring over the final answer plus SUCCESSFUL tool
+        # results only — error output must not satisfy a content assertion.
+        candidates = [final_answer] if final_only else [final_answer] + ok_tool_texts
         return any(expected in c for c in candidates if c)
 
     def _verify_functional(self, ctx: VerifyContext, item: Dict, verification: Dict) -> bool:
@@ -635,12 +813,34 @@ class FinetuneBenchEnv:
 
         passed = 0
         for check in checks:
+            check_type = check.get("type")
+
+            # file_exists runs its own probe — it does not consume a
+            # test_commands output, so it must work with zero test_commands.
+            if check_type == "file_exists":
+                try:
+                    path = self._remap_case_path(str(check.get("path", "")))
+                    result = ctx.terminal(
+                        f"test -f {shlex.quote(path)} && echo EXISTS", timeout=10
+                    )
+                    if "EXISTS" in result.get("output", ""):
+                        passed += 1
+                except Exception:
+                    pass
+                continue
+
             idx = check.get("command_index", 0)
             if idx >= len(outputs):
+                # Authoring error: the check references a command that was
+                # never defined. Count it as FAILED (loudly), never skip it.
+                logger.warning(
+                    "Case %s: check %r references command_index %d but only "
+                    "%d test command(s) exist — counting the check as failed",
+                    item.get("id"), check_type, idx, len(outputs),
+                )
                 continue
 
             output = outputs[idx]
-            check_type = check["type"]
 
             if check_type == "exit_code":
                 if output.get("exit_code") == check["expected"]:
@@ -653,14 +853,6 @@ class FinetuneBenchEnv:
                 content = output.get("output", "")
                 if re.search(check["pattern"], content):
                     passed += 1
-            elif check_type == "file_exists":
-                try:
-                    path = self._remap_case_path(str(check.get("path", "")))
-                    result = ctx.terminal(f"test -f {path} && echo EXISTS", timeout=10)
-                    if "EXISTS" in result.get("output", ""):
-                        passed += 1
-                except Exception:
-                    pass
 
         return passed == len(checks) if checks else False
 
@@ -691,6 +883,11 @@ class FinetuneBenchEnv:
             "bad gateway",
             "service unavailable",
             "gateway timeout",
+            # The bench's own Docker sandbox went away mid-run.
+            "cannot connect to the docker daemon",
+            "is the docker daemon running",
+            "docker daemon is not running",
+            "docker is not available",
         )
         return any(m in msg for m in markers)
 
@@ -740,6 +937,29 @@ class FinetuneBenchEnv:
             working_dir = str(self.run_base / str(item.get("id", task_id[:8])))
 
         wd = Path(working_dir).expanduser()
+
+        # Safety guard: the setup phase rmtree-s the working dir. Only paths
+        # under this run's scratch base are legitimate — a custom case with
+        # e.g. ``working_dir: ~/projects`` must never be wiped. Skip such
+        # cases loudly instead of touching the path.
+        try:
+            resolved = wd.resolve()
+            base = self.run_base.resolve()
+            inside_base = resolved == base or base in resolved.parents
+        except OSError as e:
+            logger.error("Case %s: cannot resolve working_dir %s: %s",
+                         item.get("id"), wd, e)
+            inside_base = False
+        if not inside_base:
+            logger.error(
+                "Case %s: working_dir %s does not resolve under the bench "
+                "scratch root %s — SKIPPING case (authoring error). Use a "
+                "path under %s in custom cases.",
+                item.get("id"), wd, self.run_base, RUN_ROOT,
+            )
+            self.malformed_case_ids.add(str(item.get("id")))
+            return None
+
         if wd.exists():
             try:
                 shutil.rmtree(wd)
@@ -857,14 +1077,19 @@ class FinetuneBenchEnv:
     # Evaluation & reporting
     # =========================================================================
 
-    def evaluate(self):
-        """Iterate the prompt bank, score each case, then aggregate."""
+    def evaluate(self) -> int:
+        """Iterate the prompt bank, score each case, then aggregate.
+
+        Returns a process exit code: 0 on success (or when there is no
+        baseline to compare against), EXIT_VERDICT_FAIL when the baseline
+        comparison verdict is FAIL. Invalid runs raise SystemExit instead.
+        """
         if not self.prompt_bank:
             self.setup()
 
         if not self.prompt_bank:
             print("[finetune-bench] No test cases loaded — check prompt_bank_path")
-            return
+            return self.EXIT_VERDICT_FAIL
 
         try:
             from tqdm import tqdm
@@ -895,17 +1120,29 @@ class FinetuneBenchEnv:
 
         metrics = self._aggregate_metrics()
 
+        # Compare against the baseline BEFORE saving so the verdict lands
+        # in the results JSON (additive key — consumers of the metrics/cases
+        # keys are unaffected).
+        baseline_metrics = comparison = checks = None
+        if self.baseline:
+            baseline_metrics = self.baseline.get("metrics", {})
+            comparison = self._compare(metrics, baseline_metrics)
+            checks = self._verdict(comparison)
+
         # Save results
         results_dir = BENCH_STATE_DIR / "results"
         results_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         result_path = results_dir / f"bench_{ts}.json"
+        payload = {
+            "metrics": metrics,
+            "cases": [asdict(r) for r in self.results],
+            "timestamp": datetime.now().isoformat(),
+        }
+        if checks is not None:
+            payload["verdict"] = checks
         with open(result_path, "w") as f:
-            json.dump({
-                "metrics": metrics,
-                "cases": [asdict(r) for r in self.results],
-                "timestamp": datetime.now().isoformat(),
-            }, f, indent=2)
+            json.dump(payload, f, indent=2)
 
         logger.info("Results saved to %s", result_path)
 
@@ -923,13 +1160,13 @@ class FinetuneBenchEnv:
         self._validate_run(metrics)
 
         # Print report
-        if self.baseline:
-            baseline_metrics = self.baseline.get("metrics", {})
-            comparison = self._compare(metrics, baseline_metrics)
-            checks = self._verdict(comparison)
+        if checks is not None:
             self._print_report(metrics, baseline_metrics, comparison, checks)
+            if not checks.get("overall", False):
+                return self.EXIT_VERDICT_FAIL
         else:
             self._print_report(metrics)
+        return 0
 
     def _aggregate_metrics(self) -> Dict[str, float]:
         # Infra-error cases (endpoint timeouts, connection resets) say
@@ -979,6 +1216,9 @@ class FinetuneBenchEnv:
             "scored_cases": len(scored),
             "infra_errors": infra_errors,
             "infra_error_rate": safe_ratio(infra_errors, len(self.results)),
+            # Case-authoring errors (empty output_match assertions, unsafe
+            # working_dirs). These score as failures/skips, never as passes.
+            "malformed_cases": len(self.malformed_case_ids),
         }
 
     def _validate_run(self, metrics: Dict[str, float]) -> None:
@@ -994,7 +1234,7 @@ class FinetuneBenchEnv:
                 "The metrics are not trustworthy — fix the endpoint/network "
                 "and re-run the benchmark."
             )
-            raise SystemExit(3)
+            raise SystemExit(self.EXIT_RUN_INVALID)
 
     def _compare(self, current: Dict, baseline: Dict) -> Dict:
         comparison = {}
@@ -1008,30 +1248,51 @@ class FinetuneBenchEnv:
         return comparison
 
     def _verdict(self, comparison: Dict) -> Dict:
+        """Gate the run on baseline comparison — fail CLOSED.
+
+        Consistent with ``eval.py``: a gate only applies to metrics present
+        in the candidate/baseline intersection (``comparison``). A missing
+        gate metric is skipped with a printed warning — it never auto-passes.
+        If NO gate metric is comparable at all, the verdict is FAIL: an
+        empty intersection means the baseline says nothing about this run.
+        """
         cfg = self.config
+
+        # (metric key, check name, pass predicate over the comparison entry)
+        gates = [
+            ("tool_selection_accuracy", "tool_selection",
+             lambda c: c["delta"] >= -cfg.regression_threshold_tool_selection),
+            ("tool_execution_success", "tool_execution",
+             lambda c: c["delta"] >= -cfg.regression_threshold_execution),
+            ("task_completion_rate", "task_completion",
+             lambda c: c["delta"] >= -cfg.regression_threshold_completion),
+            ("format_compliance", "format_compliance",
+             lambda c: c["candidate"] >= cfg.format_compliance_minimum),
+            # Small tolerance instead of an exact-zero gate: a single flaky
+            # case must not auto-FAIL the whole run.
+            ("hallucination_rate", "no_hallucinations",
+             lambda c: c["candidate"] <= max(0.01, c["baseline"] + 0.01)),
+            ("canary_pass_rate", "canary",
+             lambda c: c["delta"] >= -0.05),
+        ]
+
         checks = {}
+        for metric, name, predicate in gates:
+            if metric in comparison:
+                checks[name] = bool(predicate(comparison[metric]))
+            else:
+                print(
+                    f"[finetune-bench] ⚠ gate '{name}' skipped: metric "
+                    f"'{metric}' missing from candidate/baseline intersection"
+                )
 
-        ts = comparison.get("tool_selection_accuracy", {})
-        checks["tool_selection"] = ts.get("delta", 0) >= -cfg.regression_threshold_tool_selection
-
-        te = comparison.get("tool_execution_success", {})
-        checks["tool_execution"] = te.get("delta", 0) >= -cfg.regression_threshold_execution
-
-        tc = comparison.get("task_completion_rate", {})
-        checks["task_completion"] = tc.get("delta", 0) >= -cfg.regression_threshold_completion
-
-        fc = comparison.get("format_compliance", {})
-        checks["format_compliance"] = fc.get("candidate", 0) >= cfg.format_compliance_minimum
-
-        # Small tolerance instead of an exact-zero gate: a single flaky case
-        # must not auto-FAIL the whole run.
-        hr = comparison.get("hallucination_rate", {})
-        checks["no_hallucinations"] = hr.get("candidate", 0) <= max(
-            0.01, hr.get("baseline", 0.0) + 0.01
-        )
-
-        cr = comparison.get("canary_pass_rate", {})
-        checks["canary"] = cr.get("delta", 0) >= -0.05
+        if not checks:
+            print(
+                "[finetune-bench] ✗ no gate metric is comparable between "
+                "candidate and baseline — verdict FAIL (empty intersection)"
+            )
+            checks["overall"] = False
+            return checks
 
         checks["overall"] = all(v for k, v in checks.items() if k != "overall")
         return checks
@@ -1146,8 +1407,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     config = FinetuneBenchConfig.load(Path(args.config).expanduser(), overrides)
     env = FinetuneBenchEnv(config)
     env.setup()
-    env.evaluate()
-    return 0
+    # A FAIL verdict against the configured baseline is a real failure —
+    # propagate it as a nonzero exit code so dispatchers can't miss it.
+    return int(env.evaluate() or 0)
 
 
 if __name__ == "__main__":

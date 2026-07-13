@@ -447,37 +447,45 @@ cases:
   - id: te-002
     tier: 2
     category: bash_correctness
-    prompt: "Find all files larger than 1KB in the current directory"
+    prompt: "Find all files larger than 1KB in the current directory and tell me which ones they are."
+    setup:
+      files:
+        data_large.bin: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+        data_small.txt: "tiny\n"
+        readme.txt: "a short readme\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "data_large.bin"
+      match_scope: final_answer
     tags: [terminal, file-ops]
 
   - id: te-010
     tier: 2
     category: error_recovery
-    prompt: "Install the Python package 'nonexistent-pkg-xyz-12345' and if it fails, tell me what happened"
+    prompt: "Install the Python package 'nonexistent-pkg-xyz-12345' and if it fails, tell me what happened."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(no matching|not (be )?found|does ?n[o'']t exist|could ?n[o'']t|unable|fail)'
     tags: [terminal, error-handling]
 
   - id: te-020
     tier: 2
     category: output_interpretation
-    prompt: "Check the current git status and tell me if there are any uncommitted changes"
+    prompt: "Initialize a git repository in the current directory, create a file called notes.txt, then check git status and tell me whether there are any uncommitted or untracked changes."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_regex: '(?i)(untracked|uncommitted|yes)'
+      match_scope: final_answer
     tags: [terminal, git]
 
   # ============================================================
@@ -643,38 +651,37 @@ cases:
   - id: ts-049
     tier: 1
     category: correct_tool_ambiguous
-    prompt: "Find recent news about Python 3.13 features"
+    prompt: "Which version of the tar utility is installed on this machine?"
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
-    tags: [web, current-events]
+    tags: [terminal, version-check]
 
   - id: ts-050
     tier: 1
     category: correct_tool_ambiguous
-    prompt: "What's the weather in Tokyo right now?"
+    prompt: "You have no internet access in this session. What is the current weather in Tokyo? If you can't find out, say so plainly instead of guessing."
     expected:
-      tool_name: web_search
-      should_call_tool: true
-    tags: [web, current-events]
+      should_call_tool: false
+    tags: [no-web-access, honesty]
 
   - id: ts-051
     tier: 1
     category: correct_tool_ambiguous
-    prompt: "Look up the official documentation for asyncio.gather"
+    prompt: "Show me the built-in documentation for Python's os.path.join function, using the tools installed on this machine."
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
-    tags: [web, docs]
+    tags: [terminal, docs]
 
   - id: ts-052
     tier: 1
     category: correct_tool_ambiguous
-    prompt: "What's the latest stable version of Node.js?"
+    prompt: "What version of Node.js is installed on this machine, if any? Check rather than guessing."
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
-    tags: [web, version-check]
+    tags: [terminal, version-check]
 
   - id: ts-053
     tier: 1
@@ -715,11 +722,10 @@ cases:
   - id: ts-057
     tier: 1
     category: correct_tool_ambiguous
-    prompt: "Search for the GitHub repository for the requests library"
+    prompt: "You have no internet access in this session. What is the current top story on Hacker News? If you can't determine it, say so plainly instead of guessing."
     expected:
-      tool_name: web_search
-      should_call_tool: true
-    tags: [web, search]
+      should_call_tool: false
+    tags: [no-web-access, honesty]
 
   # -- multi_tool_sequence (+12 to reach 15) --
   - id: ts-063
@@ -1055,922 +1061,1403 @@ cases:
   - id: te-003
     tier: 2
     category: bash_correctness
-    prompt: "Show disk usage of subdirectories sorted by size, largest first"
+    prompt: "Show the disk usage of each subdirectory of the current directory, sorted largest first, and tell me which subdirectory uses the most space."
+    setup:
+      files:
+        bulk/part1.dat: "bulk data part one\n"
+        bulk/part2.dat: "bulk data part two\n"
+        bulk/part3.dat: "bulk data part three\n"
+        light/note.txt: "just a few bytes\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "bulk"
+      match_scope: final_answer
     tags: [terminal, disk]
 
   - id: te-004
     tier: 2
     category: bash_correctness
-    prompt: "Print the 10 largest files in the current directory tree"
+    prompt: "Print the largest files in the current directory tree (top 10 is fine) and tell me which single file is the biggest."
+    setup:
+      files:
+        src/main.py: "print('hi')\n"
+        assets/big_archive.bin: "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n"
+        docs/readme.md: "# readme\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "big_archive"
+      match_scope: final_answer
     tags: [terminal, file-ops]
 
   - id: te-005
     tier: 2
     category: bash_correctness
-    prompt: "Count the unique values in the second column of /etc/passwd"
+    prompt: "Count how many unique values appear in the second column of data.csv (comma-separated, no header) and report the number."
+    setup:
+      files:
+        data.csv: "1,red,10\n2,blue,20\n3,red,30\n4,green,40\n5,blue,50\n6,red,60\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "3"
+      match_scope: final_answer
     tags: [terminal, text-processing]
 
   - id: te-006
     tier: 2
     category: bash_correctness
-    prompt: "List all processes using more than 100MB of memory"
+    prompt: "The file ps_snapshot.txt contains a `ps aux` snapshot with RSS in KB in the sixth column. List the processes using more than 100MB of memory and tell me which command uses the most."
+    setup:
+      files:
+        ps_snapshot.txt: |
+          USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+          root 1 0.0 0.1 16932 8412 ? Ss 09:00 0:01 /sbin/init
+          app 214 1.2 2.1 812340 88210 ? Sl 09:01 0:12 redis-server
+          app 377 4.5 9.8 2214000 412884 ? Sl 09:01 1:03 mongod
+          app 512 0.4 3.0 604112 129024 ? Sl 09:02 0:05 node server.js
+          root 640 0.0 0.2 21500 9800 pts/0 Ss 09:03 0:00 bash
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "mongod"
+      match_scope: final_answer
     tags: [terminal, system]
 
   - id: te-007
     tier: 2
     category: bash_correctness
-    prompt: "Find the file with the most recent modification time in /tmp"
+    prompt: "Find the most recently modified file in the current directory and show its contents."
+    setup:
+      files:
+        first.log: "older entry alpha\n"
+        second.log: "older entry beta\n"
+        third.log: "freshest entry SENTINEL-ZULU-7719\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "SENTINEL-ZULU-7719"
     tags: [terminal, file-ops]
 
   - id: te-008
     tier: 2
     category: bash_correctness
-    prompt: "Sum the sizes of all .log files in /var/log in megabytes"
+    prompt: "Sum the sizes in bytes of all .log files in the current directory and report the total."
+    setup:
+      files:
+        # 10 lines x 10 bytes = exactly 100 bytes
+        a.log: "123456789\n123456789\n123456789\n123456789\n123456789\n123456789\n123456789\n123456789\n123456789\n123456789\n"
+        # 15 lines x 10 bytes = exactly 150 bytes
+        b.log: "abcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\n"
+        decoy.txt: "not a log file\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "250"
+      match_scope: final_answer
     tags: [terminal, file-ops]
 
   - id: te-009
     tier: 2
     category: bash_correctness
-    prompt: "Print every 5th line of a file"
+    prompt: "Print every 5th line of lines.txt — that is, lines 5, 10, 15, and 20 — and tell me what they are."
+    setup:
+      files:
+        lines.txt: "line-001\nline-002\nline-003\nline-004\nline-005\nline-006\nline-007\nline-008\nline-009\nline-010\nline-011\nline-012\nline-013\nline-014\nline-015\nline-016\nline-017\nline-018\nline-019\nline-020\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "line-015"
+      match_scope: final_answer
     tags: [terminal, text-processing]
 
   - id: te-011
     tier: 2
     category: bash_correctness
-    prompt: "Replace tabs with 4 spaces in a Python file"
+    prompt: "Replace every tab character in code.py with 4 spaces, editing the file in place."
+    setup:
+      working_dir: /tmp/finetune-bench/te-011
+      files:
+        code.py: "def f():\n\treturn 1\n\ndef g():\n\treturn 2\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-011 && if grep -qP '\\t' code.py; then echo HAS_TABS; else echo NO_TABS; fi; grep -q 'return 1' code.py && echo CONTENT_OK"
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["NO_TABS", "CONTENT_OK"]
     tags: [terminal, text-processing]
 
   - id: te-012
     tier: 2
     category: bash_correctness
-    prompt: "Remove trailing whitespace from every line in a file"
+    prompt: "Remove all trailing whitespace from every line of notes.txt, editing the file in place."
+    setup:
+      working_dir: /tmp/finetune-bench/te-012
+      files:
+        notes.txt: "first line   \nsecond line\t\nthird line \n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-012 && if grep -qP '[ \\t]+$' notes.txt; then echo HAS_TRAILING; else echo CLEAN; fi; grep -q 'second line' notes.txt && echo CONTENT_OK"
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["CLEAN", "CONTENT_OK"]
     tags: [terminal, text-processing]
 
   - id: te-013
     tier: 2
     category: bash_correctness
-    prompt: "Convert a file from CRLF line endings to LF"
+    prompt: "Convert dos.txt from CRLF (Windows) line endings to LF (Unix), editing the file in place."
+    setup:
+      working_dir: /tmp/finetune-bench/te-013
+      files:
+        dos.txt: "alpha\r\nbravo\r\ncharlie\r\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-013 && if od -c dos.txt | grep -q '\\\\r'; then echo HAS_CR; else echo NO_CR; fi; grep -q charlie dos.txt && echo CONTENT_OK"
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["NO_CR", "CONTENT_OK"]
     tags: [terminal, text-processing]
 
   - id: te-014
     tier: 2
     category: bash_correctness
-    prompt: "Pretty-print a JSON file with 2-space indentation"
+    prompt: "Reformat config.json in place so it is pretty-printed with 2-space indentation, keeping the data identical."
+    setup:
+      working_dir: /tmp/finetune-bench/te-014
+      files:
+        config.json: "{\"name\":\"demo\",\"items\":[1,2,3],\"debug\":false}"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-014 && python3 -c \"import json; d = json.load(open('config.json')); assert d['items'] == [1, 2, 3] and d['name'] == 'demo' and d['debug'] is False; print('JSON_OK'); print('NLINES', sum(1 for _ in open('config.json')))\""
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["JSON_OK"]
+        - type: output_regex
+          command_index: 0
+          pattern: "NLINES [2-9]"
     tags: [terminal, json]
 
   - id: te-015
     tier: 2
     category: bash_correctness
-    prompt: "Extract unique IP addresses from a log file"
+    prompt: "Extract the unique IP addresses from access.log and tell me how many distinct IPs appear."
+    setup:
+      files:
+        access.log: |
+          10.0.0.1 - GET /index.html
+          10.0.0.2 - GET /about.html
+          10.0.0.1 - POST /login
+          192.168.4.9 - GET /index.html
+          10.0.0.2 - GET /static/app.js
+          10.0.0.1 - GET /favicon.ico
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "3"
+      match_scope: final_answer
     tags: [terminal, text-processing]
 
   - id: te-016
     tier: 2
     category: bash_correctness
-    prompt: "Find the most common word in a text file"
+    prompt: "Find the most common word in words.txt and tell me what it is."
+    setup:
+      files:
+        words.txt: "apple banana pomegranate\npomegranate cherry pomegranate\nbanana pomegranate apple\npomegranate\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "pomegranate"
+      match_scope: final_answer
     tags: [terminal, text-processing]
 
   - id: te-017
     tier: 2
     category: bash_correctness
-    prompt: "Show the last 100 lines of a log file matching ERROR"
+    prompt: "Show the lines matching ERROR in the last 100 lines of app.log and tell me which error code they mention."
+    setup:
+      files:
+        app.log: |
+          INFO startup complete
+          INFO listening on port 8080
+          ERROR request failed with code ERR-5501
+          INFO heartbeat
+          ERROR retry failed with code ERR-5501
+          INFO heartbeat
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "ERR-5501"
+      match_scope: final_answer
     tags: [terminal, logs]
 
   - id: te-018
     tier: 2
     category: bash_correctness
-    prompt: "Calculate the average of numbers in the second column of a CSV"
+    prompt: "Calculate the average of the numbers in the second column of scores.csv and report it."
+    setup:
+      files:
+        scores.csv: "alice,10\nbob,20\ncarol,30\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      # 20, tolerating "20.0" formatting from awk/python
+      expected_regex: '(?<![\w.])20(\.0+)?(?![\w.5-9])'
+      match_scope: final_answer
     tags: [terminal, text-processing]
 
   - id: te-019
     tier: 2
     category: bash_correctness
-    prompt: "Generate a random 16-byte hexadecimal string"
+    prompt: "Generate a random 16-byte value encoded as a 32-character hexadecimal string and show it."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_regex: '[0-9a-fA-F]{32}'
     tags: [terminal, crypto]
 
   - id: te-021
     tier: 2
     category: bash_correctness
-    prompt: "Show the size of each top-level directory in /home in human-readable form"
+    prompt: "Count how many regular files exist under the current directory tree, including files inside subdirectories, and report the number."
+    setup:
+      files:
+        one.txt: "1\n"
+        two.txt: "2\n"
+        sub/three.txt: "3\n"
+        sub/deep/four.txt: "4\n"
+        sub/deep/five.txt: "5\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "5"
+      match_scope: final_answer
     tags: [terminal, file-ops]
 
   - id: te-022
     tier: 2
     category: bash_correctness
-    prompt: "Print all unique file extensions in the current directory tree"
+    prompt: "List the unique file extensions present in the current directory tree and tell me how many distinct extensions there are."
+    setup:
+      files:
+        app.py: "pass\n"
+        util.py: "pass\n"
+        readme.md: "# hi\n"
+        data.csv: "a,b\n"
+        sub/mod.rs: "fn main() {}\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "4"
+      match_scope: final_answer
     tags: [terminal, file-ops]
 
   # -- error_recovery (+14 to reach 15) --
   - id: te-023
     tier: 2
     category: error_recovery
-    prompt: "Try to read /etc/shadow and explain why it failed"
+    # The sandbox runs as root, so classic EACCES cases (/etc/shadow) do
+    # not fail. Docker mounts /proc/sys read-only regardless of user.
+    prompt: "Try to change this machine's hostname by writing to /proc/sys/kernel/hostname, and explain why it fails."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(read-?only|permission|denied|not (allowed|permitted)|sandbox|container|restrict)'
     tags: [terminal, errors]
 
   - id: te-024
     tier: 2
     category: error_recovery
-    prompt: "Run a command that doesn't exist and recover by suggesting an alternative"
+    prompt: "Run the command 'frobnicate --version'. It doesn't exist — tell me what went wrong and suggest how one might accomplish something similar."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(not (found|installed|available|recognized)|no such command|does ?n[o'']t exist|missing|unavailable)'
     tags: [terminal, errors]
 
   - id: te-025
     tier: 2
     category: error_recovery
-    prompt: "Try to cd to /nonexistent-dir-xyz and handle the failure"
+    prompt: "Try to cd into /nonexistent-dir-xyz and handle the failure — explain what happened."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(no such|does ?n[o'']t exist|not (found|exist)|missing|invalid (path|directory))'
     tags: [terminal, errors]
 
   - id: te-026
     tier: 2
     category: error_recovery
-    prompt: "Run a Python script with a syntax error, then fix it and rerun"
+    prompt: "Run broken.py with python3 — it fails. Fix the file so it runs, rerun it, and tell me what was wrong."
+    setup:
+      files:
+        broken.py: "def add(a, b)\n    return a + b\n\nprint(add(2, 3))\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(syntax|colon|missing|fix|corrected|repair)'
     tags: [terminal, python, errors]
 
   - id: te-027
     tier: 2
     category: error_recovery
-    prompt: "Try to delete a non-empty directory without -r and handle the error"
+    prompt: "The directory stuff/ is not empty. Try deleting it with rmdir, then explain the error and how it should actually be removed."
+    setup:
+      files:
+        stuff/file.txt: "keep me\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(not empty|non-?empty|contains|recursive|rm -r)'
     tags: [terminal, errors]
 
   - id: te-028
     tier: 2
     category: error_recovery
-    prompt: "Curl a URL that returns 500, retry up to 3 times, then report the failure"
+    # Offline-safe: nothing listens on 127.0.0.1:9 inside the sandbox.
+    prompt: "Fetch http://127.0.0.1:9/status with curl, retrying up to 3 times. Nothing is listening on that port — report the failure and what it means."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(refus|fail|unable|could ?n[o'']t|unreachable|not (listening|running|reachable)|no (server|service)|connect)'
     tags: [terminal, network, errors]
 
   - id: te-029
     tier: 2
     category: error_recovery
-    prompt: "Try to read a binary file as text, recognize the issue, and use a hex dump instead"
+    prompt: "Decode data.b64 with 'base64 -d'. The file is corrupted — report the decode error and show the file's raw content instead."
+    setup:
+      files:
+        data.b64: "!!this-is-not-valid-base64-data!!\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(invalid|corrupt|not valid|malformed|decode|fail)'
     tags: [terminal, errors]
 
   - id: te-030
     tier: 2
     category: error_recovery
-    prompt: "Try to bind to port 80 without sudo and handle the permission error"
+    # The sandbox runs as root, so "bind port 80 without sudo" would
+    # succeed. /sys is a read-only mount in the container regardless.
+    prompt: "Try to create a file at /sys/kernel/bench-test.txt and explain why the write fails."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
-    tags: [terminal, network, errors]
+      expect_failure: true
+      expected_regex: '(read-?only|permission|denied|not (allowed|permitted)|sandbox|container|restrict|cannot)'
+    tags: [terminal, errors]
 
   - id: te-031
     tier: 2
     category: error_recovery
-    prompt: "Try to git push without a remote, then add the remote and retry"
+    prompt: "Initialize a fresh git repository here, then try to 'git push'. Explain why the push fails."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(no (remote|upstream|push destination)|remote.{0,40}(not|missing|configured)|origin|destination)'
     tags: [terminal, git, errors]
 
   - id: te-032
     tier: 2
     category: error_recovery
-    prompt: "Try to access a file in a permission-denied directory and report it"
+    prompt: "Run broken_import.py with python3 and report why it fails."
+    setup:
+      files:
+        broken_import.py: "import nonexistent_module_xyz\nprint('unreachable')\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
-    tags: [terminal, errors]
+      expect_failure: true
+      expected_regex: '(no module|modulenotfound|module.{0,40}not|not installed|import ?error|missing (module|dependency))'
+    tags: [terminal, python, errors]
 
   - id: te-033
     tier: 2
     category: error_recovery
-    prompt: "Run python on a missing file, then create it and retry"
+    prompt: "Run 'python3 hello.py' in the current directory. If the file is missing, create it so it prints a greeting, run it again, and tell me what the initial problem was."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(did ?n[o'']t exist|does ?n[o'']t exist|no such file|missing|not (found|present|exist)|had to create|was absent)'
     tags: [terminal, python, errors]
 
   - id: te-034
     tier: 2
     category: error_recovery
-    prompt: "Run docker without docker installed, fall back to a polite message"
+    prompt: "Check whether the docker CLI works inside this environment by running 'docker ps', and if it doesn't, tell me why politely."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(not (installed|found|available)|no docker|does ?n[o'']t (exist|have|appear)|missing|unavailable|command not found)'
     tags: [terminal, errors]
 
   - id: te-035
     tier: 2
     category: error_recovery
-    prompt: "Try to install a package without pip available, fall back to apt"
+    # pip exists in the sandbox image, so "no pip, fall back to apt" would
+    # not fail. A nonexistent apt package fails deterministically.
+    prompt: "Try to install the system package 'libfrobnicate-dev-xyz' with apt-get and report what happened."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(unable to locate|not (found|available|exist)|no (such|installation candidate)|could ?n[o'']t|fail)'
     tags: [terminal, errors]
 
   - id: te-036
     tier: 2
     category: error_recovery
-    prompt: "Try to extract a corrupted tar file and report the error"
+    prompt: "Extract corrupted.tar.gz with tar and report the error you get."
+    setup:
+      files:
+        corrupted.tar.gz: "this is definitely not a gzip archive\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expect_failure: true
+      expected_regex: '(not in gzip|corrupt|invalid|damaged|unexpected|format|fail|error)'
     tags: [terminal, errors]
 
   # -- output_interpretation (+14 to reach 15) --
   - id: te-040
     tier: 2
     category: output_interpretation
-    prompt: "Run df -h and tell me which mount has the least free space"
+    prompt: "Run df -h and tell me which mounted filesystem has the least free space available."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      # df's header is stable in any Linux sandbox; the least-free mount
+      # itself varies by host, so only the correct command is pinned.
+      expected_regex: 'Filesystem|Mounted on'
     tags: [terminal, system]
 
   - id: te-041
     tier: 2
     category: output_interpretation
-    prompt: "Run ps aux and identify which process is using the most CPU"
+    prompt: "The file cpu_snapshot.txt contains a ps aux snapshot. Which process is using the most CPU according to it?"
+    setup:
+      files:
+        cpu_snapshot.txt: |
+          USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+          root 1 0.0 0.1 16932 8412 ? Ss 09:00 0:01 /sbin/init
+          app 233 12.4 2.0 401220 81020 ? Sl 09:01 3:12 postgres
+          app 388 87.3 1.4 355200 56230 ? Rl 09:01 9:44 ffmpeg -i input.mp4
+          app 512 3.1 0.9 254112 36012 ? Sl 09:02 0:22 nginx
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "ffmpeg"
+      match_scope: final_answer
     tags: [terminal, system]
 
   - id: te-042
     tier: 2
     category: output_interpretation
-    prompt: "Run git status and tell me how many files are modified"
+    prompt: "Initialize a git repository here, create two new files in it, then run git status and tell me how many untracked files it reports."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "2"
+      match_scope: final_answer
     tags: [terminal, git]
 
   - id: te-043
     tier: 2
     category: output_interpretation
-    prompt: "Run free -m and tell me the available memory in gigabytes"
+    prompt: "Read /proc/meminfo and tell me the total amount of memory (MemTotal) on this machine."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_regex: 'MemTotal:?\s*[0-9]+'
     tags: [terminal, system]
 
   - id: te-044
     tier: 2
     category: output_interpretation
-    prompt: "Run uptime and tell me how long the system has been running"
+    prompt: "Read /proc/uptime and tell me how long the system has been up."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      # /proc/uptime is two space-separated decimals
+      expected_regex: '[0-9]+\.[0-9]+ [0-9]+\.[0-9]+'
     tags: [terminal, system]
 
   - id: te-045
     tier: 2
     category: output_interpretation
-    prompt: "Run lscpu and tell me the CPU model name"
+    prompt: "Read /proc/cpuinfo and tell me the CPU model name."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      # x86 exposes "model name"; ARM images expose CPU part/vendor lines.
+      expected_regex: 'model name|CPU part|vendor_id|Processor'
     tags: [terminal, system]
 
   - id: te-046
     tier: 2
     category: output_interpretation
-    prompt: "Run du -sh /tmp/* and tell me which entry is largest"
+    prompt: "Look at the files in the current directory and tell me which single file is the largest in bytes."
+    setup:
+      files:
+        big_report.txt: "report line one with plenty of padding text\nreport line two with plenty of padding text\nreport line three with plenty of padding text\nreport line four with plenty of padding text\nreport line five with plenty of padding text\nreport line six with plenty of padding text\nreport line seven with plenty of padding text\nreport line eight with plenty of padding text\n"
+        note1.txt: "short\n"
+        note2.txt: "also short\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "big_report"
+      match_scope: final_answer
     tags: [terminal, file-ops]
 
   - id: te-047
     tier: 2
     category: output_interpretation
-    prompt: "Read /etc/os-release and tell me the distro name and version"
+    prompt: "Read /etc/os-release and tell me which Linux distribution and version this environment is running."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_regex: 'PRETTY_NAME=|VERSION_ID='
     tags: [terminal, system]
 
   - id: te-048
     tier: 2
     category: output_interpretation
-    prompt: "Parse a CSV file and tell me the row count excluding the header"
+    prompt: "How many data rows (excluding the header line) does inventory.csv contain?"
+    setup:
+      files:
+        inventory.csv: "sku,name,qty\n101,bolt,50\n102,nut,80\n103,washer,15\n104,screw,22\n105,nail,90\n106,rivet,7\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "6"
+      match_scope: final_answer
     tags: [terminal, csv]
 
   - id: te-049
     tier: 2
     category: output_interpretation
-    prompt: "Read git log -1 and tell me the most recent commit hash"
+    prompt: "The file commits.log contains the output of git log. What is the hash of the most recent commit?"
+    setup:
+      files:
+        commits.log: |
+          commit 9f3ab21c44de07aa310cf1745cabc63297d1a044
+          Author: Dev One <dev1@example.com>
+          Date:   Tue Jul 1 10:02:11 2026 +0000
+
+              fix: harden the parser
+
+          commit 4b7de901aa23c5f01b3d2ce00871f22e19c00b31
+          Author: Dev Two <dev2@example.com>
+          Date:   Mon Jun 30 16:44:03 2026 +0000
+
+              feat: add exporter
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "9f3ab21c"
+      match_scope: final_answer
     tags: [terminal, git]
 
   - id: te-050
     tier: 2
     category: output_interpretation
-    prompt: "Run pip list and tell me whether pandas is installed"
+    # The default sandbox image (python + node) does not ship pandas.
+    prompt: "Using pip, check whether the 'pandas' package is installed in this environment and tell me the answer."
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_regex: '(?i)(not installed|is ?n[o'']t installed|not (present|found|available)|no pandas)'
+      match_scope: final_answer
     tags: [terminal, python]
 
   - id: te-051
     tier: 2
     category: output_interpretation
-    prompt: "Run docker ps and tell me how many containers are running"
+    prompt: "The file containers.txt holds the output of 'docker ps'. How many containers are currently running according to it?"
+    setup:
+      files:
+        containers.txt: |
+          CONTAINER ID   IMAGE          COMMAND        CREATED        STATUS        PORTS     NAMES
+          a1b2c3d4e5f6   nginx:latest   "nginx -g"     2 hours ago    Up 2 hours    80/tcp    web
+          f6e5d4c3b2a1   redis:7        "redis-serve"  3 hours ago    Up 3 hours    6379/tcp  cache
+          0192a3b4c5d6   postgres:16    "postgres"     5 hours ago    Up 5 hours    5432/tcp  db
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "3"
+      match_scope: final_answer
     tags: [terminal, docker]
 
   - id: te-052
     tier: 2
     category: output_interpretation
-    prompt: "Read a JSON config file and report the database host setting"
+    prompt: "Read config.json and tell me the configured database host."
+    setup:
+      files:
+        config.json: "{\"database\": {\"host\": \"db7.internal.example\", \"port\": 5432}, \"cache\": {\"host\": \"redis.local\"}}"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "db7.internal.example"
+      match_scope: final_answer
     tags: [terminal, json]
 
   - id: te-053
     tier: 2
     category: output_interpretation
-    prompt: "Run systemctl status sshd and tell me if it's active"
+    # No systemd inside the sandbox — interpret a captured status dump.
+    prompt: "The file services.txt contains a systemctl status dump. Based on it, is the sshd service active?"
+    setup:
+      files:
+        services.txt: |
+          nginx.service - A high performance web server
+             Loaded: loaded (/lib/systemd/system/nginx.service; enabled)
+             Active: active (running) since Tue 2026-07-07 09:00:12 UTC
+          sshd.service - OpenSSH server daemon
+             Loaded: loaded (/lib/systemd/system/sshd.service; enabled)
+             Active: inactive (dead) since Tue 2026-07-07 08:12:44 UTC
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_regex: '(?i)(inactive|not active|dead|not running)'
+      match_scope: final_answer
     tags: [terminal, system]
 
   - id: te-054
     tier: 2
     category: output_interpretation
-    prompt: "Run netstat -tlnp and tell me which port nginx is using"
+    prompt: "The file netstat_snapshot.txt contains 'netstat -tlnp' output. Which port is nginx listening on?"
+    setup:
+      files:
+        netstat_snapshot.txt: |
+          Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name
+          tcp        0      0 0.0.0.0:5432            0.0.0.0:*               LISTEN      212/postgres
+          tcp        0      0 0.0.0.0:8443            0.0.0.0:*               LISTEN      388/nginx
+          tcp        0      0 127.0.0.1:6379          0.0.0.0:*               LISTEN      401/redis-server
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "8443"
+      match_scope: final_answer
     tags: [terminal, network]
 
-  # -- web_search_quality (+10 new) --
+  # -- docs_lookup (+10; offline rewrite of the old web_search_quality
+  #    set — the bench never serves the web toolset) --
   - id: te-060
     tier: 2
-    category: web_search_quality
-    prompt: "Find the current stable version of the Rust toolchain"
+    category: docs_lookup
+    prompt: "Determine which version of Python 3 is installed in this environment and report the full version string."
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
-    tags: [web, version-check]
+      expected_regex: 'Python 3\.[0-9]+\.[0-9]+'
+    tags: [terminal, version-check]
 
   - id: te-061
     tier: 2
-    category: web_search_quality
-    prompt: "Look up the official Python documentation page for pathlib"
+    category: docs_lookup
+    prompt: "Using the documentation tools available locally (for example pydoc), find out which class pathlib.Path inherits from and tell me its name."
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
-    tags: [web, docs]
+      expected_value: "PurePath"
+      match_scope: final_answer
+    tags: [terminal, docs]
 
   - id: te-062
     tier: 2
-    category: web_search_quality
-    prompt: "What are the top 3 Python web frameworks by GitHub stars?"
+    category: docs_lookup
+    # Star counts are deliberately counterfactual so the answer must come
+    # from the file, not from the model's prior knowledge.
+    prompt: "The file frameworks.csv lists Python web frameworks with their GitHub star counts. Based only on the file, which framework has the most stars?"
+    setup:
+      files:
+        frameworks.csv: "framework,stars\nDjango,79400\nFlask,68200\nFastAPI,76800\nTornado,91500\nBottle,8600\nPyramid,3900\n"
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
-    tags: [web, research]
+      expected_value: "Tornado"
+      match_scope: final_answer
+    tags: [terminal, csv, research]
 
   - id: te-063
     tier: 2
-    category: web_search_quality
-    prompt: "Find the GitHub URL for the FastAPI project"
+    category: docs_lookup
+    prompt: "Somewhere under the src/ directory there is a function named parse_config. Find the file that defines it and tell me the filename."
+    setup:
+      files:
+        src/main.py: "from config_loader import parse_config\n\nif __name__ == '__main__':\n    parse_config('app.yaml')\n"
+        src/config_loader.py: "def parse_config(path):\n    return {'path': path}\n"
+        src/utils.py: "def helper():\n    return 1\n"
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
-    tags: [web, search]
+      expected_value: "config_loader"
+      match_scope: final_answer
+    tags: [terminal, search]
 
   - id: te-064
     tier: 2
-    category: web_search_quality
-    prompt: "Look up the most recent CVE for OpenSSL"
+    category: docs_lookup
+    prompt: "Read CHANGELOG.md and tell me the version number of the most recent release."
+    setup:
+      files:
+        CHANGELOG.md: |
+          # Changelog
+
+          ## 2.4.1 — 2026-06-30
+          - fix: handle empty payloads
+
+          ## 2.3.0 — 2026-05-12
+          - feat: add retry logic
+
+          ## 2.2.5 — 2026-04-02
+          - fix: memory leak in worker
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
-    tags: [web, security]
+      expected_value: "2.4.1"
+      match_scope: final_answer
+    tags: [terminal, docs, version-check]
 
   - id: te-065
     tier: 2
-    category: web_search_quality
-    prompt: "Find the official Docker image tag for postgres latest stable"
+    category: docs_lookup
+    prompt: "Check requirements.txt and tell me which exact version of the postgres driver (psycopg2) it pins."
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
+    setup:
+      files:
+        requirements.txt: "flask==3.0.3\npsycopg2-binary==2.9.9\nrequests==2.32.2\n"
     verification:
       method: output_match
-      expected_value: ""
-    tags: [web, docker]
+      expected_value: "2.9.9"
+      match_scope: final_answer
+    tags: [terminal, python, version-check]
 
   - id: te-066
     tier: 2
-    category: web_search_quality
-    prompt: "Search for tutorials on QLoRA fine-tuning"
+    category: docs_lookup
+    prompt: "One of the markdown files under docs/ covers QLoRA fine-tuning. Find it and tell me its filename."
+    setup:
+      files:
+        docs/training.md: "# Training\nFull-parameter training guide. Mentions LoRA briefly.\n"
+        docs/adapters.md: "# Adapters\nThis guide covers QLoRA fine-tuning with 4-bit quantization.\n"
+        docs/data.md: "# Data\nDataset preparation guide.\n"
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
-    tags: [web, ml]
+      expected_value: "adapters.md"
+      match_scope: final_answer
+    tags: [terminal, search, ml]
 
   - id: te-067
     tier: 2
-    category: web_search_quality
-    prompt: "Find the official changelog for Node.js 22"
+    category: docs_lookup
+    prompt: "Read versions.json and tell me which Node.js version is listed under the 'lts' key."
+    setup:
+      files:
+        versions.json: "{\"latest\": \"22.4.1\", \"lts\": \"20.15.0\", \"minimum\": \"18.0.0\"}"
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
-    tags: [web, version-check]
+      expected_value: "20.15.0"
+      match_scope: final_answer
+    tags: [terminal, json, version-check]
 
   - id: te-068
     tier: 2
-    category: web_search_quality
-    prompt: "Look up the syntax for kubectl get pods with a label selector"
+    category: docs_lookup
+    prompt: "The file k8s-cheatsheet.md documents kubectl usage. Find the exact command it gives for listing pods filtered by a label and show it to me."
+    setup:
+      files:
+        k8s-cheatsheet.md: |
+          # kubectl cheat sheet
+
+          List all pods:      kubectl get pods
+          Filter by label:    kubectl get pods -l app=nginx
+          Describe a pod:     kubectl describe pod NAME
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
-    tags: [web, docs]
+      expected_value: "kubectl get pods -l app=nginx"
+      match_scope: final_answer
+    tags: [terminal, docs]
 
   - id: te-069
     tier: 2
-    category: web_search_quality
-    prompt: "Find the documentation page for the Anthropic Python SDK"
+    category: docs_lookup
+    prompt: "Using Python itself, find the filesystem path where the standard-library json module is installed and report it."
     expected:
-      tool_name: web_search
+      tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
-    tags: [web, docs]
+      expected_regex: 'json/__init__\.py'
+    tags: [terminal, python, docs]
 
   # -- file_operations (+10 new) --
   - id: te-070
     tier: 2
     category: file_operations
-    prompt: "Create a Python file with a class that has __init__ and one method"
+    prompt: "Create a Python file shape.py defining a class Circle whose __init__ stores a radius, with an area() method returning 3.14159 * radius ** 2."
+    setup:
+      working_dir: /tmp/finetune-bench/te-070
     expected:
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-070 && python3 -c \"from shape import Circle; c = Circle(2); print('AREA', round(c.area(), 2))\""
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["AREA 12.57"]
     tags: [file-ops, python]
 
   - id: te-071
     tier: 2
     category: file_operations
-    prompt: "Add a docstring to the main function in app.py"
+    prompt: "Add a docstring to the main function in app.py without changing its behavior."
+    setup:
+      working_dir: /tmp/finetune-bench/te-071
+      files:
+        app.py: "def main():\n    return 42\n"
     expected:
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-071 && python3 -c \"import app; assert app.main() == 42; print('HAS_DOC' if app.main.__doc__ else 'MISSING_DOC')\""
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["HAS_DOC"]
     tags: [file-ops, python]
 
   - id: te-072
     tier: 2
     category: file_operations
-    prompt: "Insert a new import statement at the top of a Python file"
+    prompt: "script.py fails because of a missing import. Add the missing import statement at the top of the file so it runs."
+    setup:
+      working_dir: /tmp/finetune-bench/te-072
+      files:
+        script.py: "print('joined:', os.path.join('a', 'b'))\nprint('SCRIPT_OK')\n"
     expected:
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-072 && python3 script.py"
+      checks:
+        - type: exit_code
+          command_index: 0
+          expected: 0
+        - type: output_contains
+          command_index: 0
+          expected: ["SCRIPT_OK"]
     tags: [file-ops, python]
 
   - id: te-073
     tier: 2
     category: file_operations
-    prompt: "Replace a function definition in a file with an updated version"
+    prompt: "In mathlib.py the function square(n) is wrong — replace the function definition with a correct version that returns n * n, leaving the rest of the file intact."
+    setup:
+      working_dir: /tmp/finetune-bench/te-073
+      files:
+        mathlib.py: "def square(n):\n    return n + n\n\ndef cube(n):\n    return n ** 3\n"
     expected:
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-073 && python3 -c \"import mathlib; assert mathlib.square(5) == 25; assert mathlib.cube(3) == 27; print('MATH_OK')\""
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["MATH_OK"]
     tags: [file-ops, python]
 
   - id: te-074
     tier: 2
     category: file_operations
-    prompt: "Append a new entry to a JSON config file preserving formatting"
+    prompt: "Add \"gamma\" to the end of the plugins list in settings.json, keeping the file valid JSON and everything else unchanged."
+    setup:
+      working_dir: /tmp/finetune-bench/te-074
+      files:
+        settings.json: "{\n  \"plugins\": [\"alpha\", \"beta\"],\n  \"debug\": false\n}\n"
     expected:
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-074 && python3 -c \"import json; d = json.load(open('settings.json')); assert d['plugins'] == ['alpha', 'beta', 'gamma']; assert d['debug'] is False; print('JSON_OK')\""
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["JSON_OK"]
     tags: [file-ops, json]
 
   - id: te-075
     tier: 2
     category: file_operations
-    prompt: "Read a YAML file and modify a nested key value"
+    prompt: "In app.yaml, change the nested key logging.level from info to debug, leaving everything else untouched."
+    setup:
+      working_dir: /tmp/finetune-bench/te-075
+      files:
+        app.yaml: "server:\n  host: localhost\n  port: 8080\nlogging:\n  level: info\n  format: json\n"
     expected:
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-075 && grep -q 'level: debug' app.yaml && ! grep -q 'level: info' app.yaml && grep -q 'port: 8080' app.yaml && echo YAML_OK"
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["YAML_OK"]
     tags: [file-ops, yaml]
 
   - id: te-076
     tier: 2
     category: file_operations
-    prompt: "Create a multi-file Python package structure with __init__.py"
+    prompt: "Create a Python package named toolkit containing an __init__.py and a module strings.py with a function shout(s) that returns s.upper() + '!'."
+    setup:
+      working_dir: /tmp/finetune-bench/te-076
     expected:
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-076 && python3 -c \"from toolkit.strings import shout; assert shout('hi') == 'HI!'; print('PKG_OK')\""
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["PKG_OK"]
+        - type: file_exists
+          path: /tmp/finetune-bench/te-076/toolkit/__init__.py
     tags: [file-ops, python]
 
   - id: te-077
     tier: 2
     category: file_operations
-    prompt: "Move all .py files from the current directory into a src subdirectory"
+    prompt: "Move all .py files from the current directory into a new src/ subdirectory, leaving other files where they are."
+    setup:
+      working_dir: /tmp/finetune-bench/te-077
+      files:
+        one.py: "print(1)\n"
+        two.py: "print(2)\n"
+        notes.txt: "keep me here\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-077 && test -f src/one.py && test -f src/two.py && test -f notes.txt && ! test -f one.py && ! test -f two.py && echo MOVED_OK"
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["MOVED_OK"]
     tags: [file-ops]
 
   - id: te-078
     tier: 2
     category: file_operations
-    prompt: "Rename all .txt files in a directory to .md"
+    prompt: "Rename every .txt file in the current directory to have a .md extension instead, keeping the base names."
+    setup:
+      working_dir: /tmp/finetune-bench/te-078
+      files:
+        alpha.txt: "alpha\n"
+        beta.txt: "beta\n"
+        keep.py: "pass\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-078 && test -f alpha.md && test -f beta.md && ! test -f alpha.txt && ! test -f beta.txt && test -f keep.py && echo RENAMED_OK"
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["RENAMED_OK"]
     tags: [file-ops]
 
   - id: te-079
     tier: 2
     category: file_operations
-    prompt: "Find and replace a string across multiple files in a directory"
+    prompt: "Replace every occurrence of the word 'Widget' with 'Gadget' across all .txt files in the current directory."
+    setup:
+      working_dir: /tmp/finetune-bench/te-079
+      files:
+        f1.txt: "The Widget spins. A Widget never sleeps.\n"
+        f2.txt: "Widget factory output normal.\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-079 && ! grep -q Widget f1.txt && ! grep -q Widget f2.txt && grep -q Gadget f1.txt && grep -q Gadget f2.txt && echo REPLACED_OK"
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["REPLACED_OK"]
     tags: [file-ops]
 
   # -- multi_turn_coherence (+10 new) --
   - id: te-080
     tier: 2
     category: multi_turn_coherence
-    prompt: "Step 1: Create a file called data.txt with three lines. Step 2: Count the lines. Step 3: Add another line and count again."
+    prompt: "Step 1: create data.txt containing exactly three lines. Step 2: count its lines. Step 3: append one more line, count again, and tell me the final count."
+    setup:
+      working_dir: /tmp/finetune-bench/te-080
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "wc -l < /tmp/finetune-bench/te-080/data.txt"
+      checks:
+        - type: output_regex
+          command_index: 0
+          pattern: "\\b4\\b"
+        - type: file_exists
+          path: /tmp/finetune-bench/te-080/data.txt
     tags: [multi-turn]
 
   - id: te-081
     tier: 2
     category: multi_turn_coherence
-    prompt: "Get the latest commit hash, then show its diff, then count the changed lines"
+    prompt: "Compute the sha256 hash of the exact string 'hermes' (no trailing newline), write the 64-character hex digest into hash.txt, then read the file back and tell me the first 8 characters of the digest."
+    setup:
+      working_dir: /tmp/finetune-bench/te-081
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
-    tags: [multi-turn, git]
+      method: functional_test
+      test_commands:
+        - "cat /tmp/finetune-bench/te-081/hash.txt"
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["8cfde6ef"]
+    tags: [multi-turn]
 
   - id: te-082
     tier: 2
     category: multi_turn_coherence
-    prompt: "List Python files, pick the smallest one, then show its first 5 lines"
+    prompt: "List the Python files in the current directory, identify the smallest one by size, then show its first 5 lines."
+    setup:
+      files:
+        tiny.py: "# SENTINEL-SMALL-2210\npass\n"
+        medium.py: "# filler line for sizing\n# filler line for sizing\n# filler line for sizing\n# filler line for sizing\n# filler line for sizing\n# filler line for sizing\n# filler line for sizing\n# filler line for sizing\ndef medium():\n    return 'medium'\n"
+        large.py: "# padding line for the large module\n# padding line for the large module\n# padding line for the large module\n# padding line for the large module\n# padding line for the large module\n# padding line for the large module\n# padding line for the large module\n# padding line for the large module\n# padding line for the large module\n# padding line for the large module\n# padding line for the large module\n# padding line for the large module\n# padding line for the large module\n# padding line for the large module\ndef large():\n    return 'large'\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      expected_value: "SENTINEL-SMALL-2210"
     tags: [multi-turn]
 
   - id: te-083
     tier: 2
     category: multi_turn_coherence
-    prompt: "Create a directory called test, cd into it, run git init, then check status"
+    prompt: "Create a directory called workdir, initialize a git repository inside it, then run git status there and tell me what it says."
+    setup:
+      working_dir: /tmp/finetune-bench/te-083
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-083/workdir && git status"
+      checks:
+        - type: exit_code
+          command_index: 0
+          expected: 0
+        - type: file_exists
+          path: /tmp/finetune-bench/te-083/workdir/.git/HEAD
     tags: [multi-turn, git]
 
   - id: te-084
     tier: 2
     category: multi_turn_coherence
-    prompt: "Find all .log files, get their total size, then archive them into one tarball"
+    prompt: "Find all .log files in the current directory, report their total size, then archive them into logs.tar.gz."
+    setup:
+      working_dir: /tmp/finetune-bench/te-084
+      files:
+        one.log: "first log\n"
+        two.log: "second log\n"
+        skip.txt: "not a log\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-084 && tar -tzf logs.tar.gz"
+      checks:
+        - type: exit_code
+          command_index: 0
+          expected: 0
+        - type: output_contains
+          command_index: 0
+          expected: ["one.log", "two.log"]
+        - type: file_exists
+          path: /tmp/finetune-bench/te-084/logs.tar.gz
     tags: [multi-turn]
 
   - id: te-085
     tier: 2
     category: multi_turn_coherence
-    prompt: "Get the current branch, list the last 3 commits on it, then count the total commits"
+    prompt: "Read version.txt to get the current version, append a line 'released <version>' (with the actual version substituted) to changelog.txt, then tell me how many lines changelog.txt has now."
+    setup:
+      working_dir: /tmp/finetune-bench/te-085
+      files:
+        version.txt: "3.2.0\n"
+        changelog.txt: "released 3.0.0\nreleased 3.1.0\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
-    tags: [multi-turn, git]
+      method: functional_test
+      test_commands:
+        - "cat /tmp/finetune-bench/te-085/changelog.txt"
+        - "wc -l < /tmp/finetune-bench/te-085/changelog.txt"
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["released 3.2.0"]
+        - type: output_regex
+          command_index: 1
+          pattern: "\\b3\\b"
+    tags: [multi-turn]
 
   - id: te-086
     tier: 2
     category: multi_turn_coherence
-    prompt: "Run a command, capture its exit code, then act based on whether it succeeded"
+    prompt: "Run 'test -f /etc/hostname' and capture its exit code. If it succeeded, write the word 'present' into result.txt; otherwise write 'absent'."
+    setup:
+      working_dir: /tmp/finetune-bench/te-086
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cat /tmp/finetune-bench/te-086/result.txt"
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["present"]
     tags: [multi-turn]
 
   - id: te-087
     tier: 2
     category: multi_turn_coherence
-    prompt: "Read a config file, modify a value, write it back, and verify the change"
+    prompt: "Read config.ini, change the port value to 9090, write the file back, then read it again to verify the change."
+    setup:
+      working_dir: /tmp/finetune-bench/te-087
+      files:
+        config.ini: "[server]\nhost = localhost\nport = 8080\n\n[client]\nretries = 3\n"
     expected:
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-087 && grep -q 'port = 9090' config.ini && grep -q 'host = localhost' config.ini && grep -q 'retries = 3' config.ini && echo INI_OK"
+      checks:
+        - type: output_contains
+          command_index: 0
+          expected: ["INI_OK"]
     tags: [multi-turn]
 
   - id: te-088
     tier: 2
     category: multi_turn_coherence
-    prompt: "Download a file, check its sha256 hash, then process its content"
+    prompt: "Create a file payload.txt containing the text 'hermes-bench', compute its sha256 digest, save the digest line to payload.sha in the format sha256sum expects, then verify it with 'sha256sum -c payload.sha'."
+    setup:
+      working_dir: /tmp/finetune-bench/te-088
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-088 && sha256sum -c payload.sha"
+      checks:
+        - type: exit_code
+          command_index: 0
+          expected: 0
+        - type: file_exists
+          path: /tmp/finetune-bench/te-088/payload.txt
     tags: [multi-turn]
 
   - id: te-089
     tier: 2
     category: multi_turn_coherence
-    prompt: "Check disk space, create a backup if there is enough room, then verify it"
+    prompt: "Check the free disk space on the current filesystem; if at least 10MB are free, create a gzip archive notes.txt.gz from notes.txt while keeping the original file, then verify the archive with 'gzip -t'."
+    setup:
+      working_dir: /tmp/finetune-bench/te-089
+      files:
+        notes.txt: "important notes that must survive\n"
     expected:
       tool_name: terminal
       should_call_tool: true
     verification:
-      method: output_match
-      expected_value: ""
+      method: functional_test
+      test_commands:
+        - "cd /tmp/finetune-bench/te-089 && gzip -t notes.txt.gz"
+      checks:
+        - type: exit_code
+          command_index: 0
+          expected: 0
+        - type: file_exists
+          path: /tmp/finetune-bench/te-089/notes.txt
+        - type: file_exists
+          path: /tmp/finetune-bench/te-089/notes.txt.gz
     tags: [multi-turn]
 
   # ============================================================
@@ -2295,45 +2782,57 @@ cases:
   - id: e2e-031
     tier: 3
     category: research_and_summarize
-    prompt: "Research current best practices for API authentication and write a 3-paragraph summary"
+    prompt: "Research current best practices for API authentication and write a 3-paragraph summary."
     expected:
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      # Any competent summary of API auth best practices names OAuth, JWTs
+      # or bearer tokens — none of these terms appear in the prompt.
+      expected_regex: '(?i)(oauth|jwt|bearer)'
+      match_scope: final_answer
     tags: [research, security]
 
   - id: e2e-032
     tier: 3
     category: research_and_summarize
-    prompt: "Compare the syntax of for loops in Python, JavaScript, Rust, and Go"
+    prompt: "Compare the syntax of for loops in Python, JavaScript, Rust, and Go, with a short example of each."
     expected:
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      # A real comparison must show actual loop syntax: Python's range(),
+      # Rust's 0..n ranges, or Go's := initializer.
+      expected_regex: 'range\s*\(|in 0\.\.|:='
+      match_scope: final_answer
     tags: [research, comparison]
 
   - id: e2e-033
     tier: 3
     category: research_and_summarize
-    prompt: "Find the official changelog for Python 3.12 and list the major new features"
+    prompt: "List the major new features introduced in Python 3.12 and cite the associated PEP numbers where you can."
     expected:
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      # A correct answer names concrete features/PEPs that are not in the
+      # prompt (PEP 695 type parameters, f-string grammar, subinterpreters).
+      expected_regex: '(?i)(PEP ?[0-9]{3}|f-string|per-interpreter|type parameter)'
+      match_scope: final_answer
     tags: [research, version-check]
 
   - id: e2e-034
     tier: 3
     category: research_and_summarize
-    prompt: "Look up the differences between AWS Lambda and Google Cloud Functions"
+    prompt: "Explain the key differences between AWS Lambda and Google Cloud Functions for someone choosing between them."
     expected:
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: ""
+      # Any real comparison of the two FaaS platforms uses these terms;
+      # none of them appear in the prompt.
+      expected_regex: '(?i)(serverless|cold start|faas|function.as.a.service)'
+      match_scope: final_answer
     tags: [research, cloud]
 
   - id: e2e-035

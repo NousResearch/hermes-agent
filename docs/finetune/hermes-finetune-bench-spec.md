@@ -61,11 +61,19 @@ Does the model pick the correct tool? This is binary, cheap to run, and catches 
 | Category | Count | What it tests | Example |
 |---|---|---|---|
 | Correct tool, simple | 25 | Basic tool routing | "List files in the current directory" → `terminal` with `ls` |
-| Correct tool, ambiguous | 15 | Disambiguation between similar tools | "Search for recent news about Rust" → `web_search` not `terminal` |
+| Correct tool, ambiguous | 15 | Disambiguation, incl. recognizing missing capabilities | "Which version of tar is installed?" → check, don't guess; "What's the weather in Tokyo?" (no web access) → no tool, say so |
 | No tool needed | 20 | Knowing when NOT to call a tool | "What is a monad?" → text response, no tool call |
 | Multi-tool sequence | 15 | Chaining tools in the right order | "Find the largest file in /tmp and show its contents" → `terminal` × 2 |
 | Tool with complex args | 15 | Argument construction quality | "Create a Python virtualenv named 'test' and install requests" → correct bash |
 | Skill invocation | 10 | Recognizing when a skill should be loaded | "Help me fine-tune my model" → `/finetune` skill activation |
+
+The bench is **offline and hermetic**: the only toolsets served are those in
+the bench config (`terminal`, `file` by default). No case may expect a tool
+outside that set — a case expecting e.g. `web_search` would be unwinnable and
+would count a correct model answer as a hallucination. This invariant is
+pinned by `tests/test_finetune_bench.py::TestPromptBank::test_no_case_expects_an_unserved_tool`.
+A small minority of tier-1 cases deliberately state "you have no internet
+access" and expect the model to abstain and say so.
 
 **Ground truth format:**
 
@@ -94,12 +102,23 @@ The model picked the right tool — but does it use it well? This tier checks ar
 
 | Category | Count | What it tests | Example |
 |---|---|---|---|
-| Bash correctness | 20 | Valid, idiomatic shell commands | "Find all files modified in the last 24 hours" → correct `find` syntax |
-| Error recovery | 15 | Handling tool failures gracefully | First command fails → model diagnoses and retries with fix |
-| Output interpretation | 15 | Reading tool output and drawing correct conclusions | Terminal returns JSON → model extracts the right field |
-| Web search quality | 10 | Query formulation and result synthesis | "What's the current Rust stable version?" → well-formed query, correct extraction |
-| File operations | 10 | Read/write/edit file sequences | "Add a docstring to the main function in app.py" → correct read-edit-write |
+| Bash correctness | 20 | Valid, idiomatic shell commands | "Sum the sizes of all .log files" over seeded fixtures → exact total |
+| Error recovery | 15 | Handling tool failures gracefully | Command fails by design → model diagnoses and explains (see `expect_failure` below) |
+| Output interpretation | 16 | Reading tool output and drawing correct conclusions | Seeded `ps aux` snapshot → model names the right process |
+| Docs lookup | 10 | Interrogating local docs/config/metadata (offline replacement for the old "web search quality" set) | "Which class does pathlib.Path inherit from?" → `pydoc`, answer `PurePath` |
+| File operations | 10 | Read/write/edit file sequences | "Add a docstring to the main function in app.py" → verified by importing the module |
 | Multi-turn coherence | 10 | Maintaining context across tool calls | 3-step task where each step depends on the previous result |
+
+Every tier-2 case carries a **real, deterministic assertion**. Cases either
+seed fixture files (`setup.files`) whose contents pin the correct answer
+(often with values a model cannot guess from the prompt, e.g. sentinel
+tokens or counterfactual data), assert patterns that are stable inside the
+sandbox image (`python3 --version` → `Python 3\.`), or use
+`functional_test` checks against artifacts the task creates. An
+`output_match` verification with no `expected_value`/`expected_regex` is a
+**case-authoring error**: the scorer logs it, scores the check as failed,
+and reports the case in the `malformed_cases` metric — it can never be a
+vacuous pass.
 
 **Ground truth format:**
 
@@ -129,6 +148,42 @@ The model picked the right tool — but does it use it well? This tier checks ar
 ```
 
 **Scoring:** Uses `ToolContext` to verify actual outcomes in the sandbox. The reward function runs the model's command, checks exit code, and validates output against expected patterns. Scored 0.0–1.0 with partial credit for correct approach but wrong result.
+
+#### `output_match` verification semantics
+
+An `output_match` verification supports these fields:
+
+| Field | Meaning |
+|---|---|
+| `expected_value` | Substring assertion. Short/numeric values (≤3 chars or pure numbers) are word-boundary matched against the final assistant answer and the *last successful* tool result only; longer values substring-match the final answer plus *successful* tool results (error output never satisfies a content assertion). |
+| `expected_regex` | Regex alternative/complement to `expected_value` (e.g. `Python 3\.[0-9]+\.[0-9]+`, or a random-hex shape check). |
+| `match_scope` | `transcript` (default) or `final_answer`. With `final_answer`, only the model's concluding message is searched — used for interpretation tasks where merely `cat`-ing a fixture file must not count as answering. |
+| `expect_failure` | Error-recovery semantics; see below. |
+
+At least one of `expected_value` / `expected_regex` is **required**. A case
+with neither is malformed: logged, scored as failed, counted in
+`malformed_cases`.
+
+#### Error-recovery cases: `expect_failure`
+
+For 15 error-recovery cases the *correct* trajectory includes a failing
+command ("try to write to /proc/sys/…, explain why it fails"). Naive
+exit-code scoring inverts the incentive: a perfect run would score worse
+than padding with an irrelevant successful command. With
+`expect_failure: true`, execution credit instead requires **both**:
+
+1. at least one tool call in the transcript that FAILED (nonzero exit /
+   error output), and
+2. the final assistant answer acknowledging/explaining the failure —
+   matched case-insensitively against the case's `expected_regex`
+   (or `expected_value`).
+
+A run that only executes successful commands scores zero execution credit
+on these cases, and a failing command with no explanation also scores zero.
+Note: the sandbox runs as root, so the failures these cases provoke are
+chosen to be user-independent (read-only mounts, nonexistent
+commands/paths/packages, corrupt inputs) rather than classic EACCES
+scenarios.
 
 ### Tier 3: End-to-End Task Completion (judge-scored, ~40 cases)
 
@@ -224,7 +279,56 @@ The `evaluate()` method computes aggregate metrics that map directly to the prom
 | **No-Tool Accuracy** | % of "no tool needed" cases where model correctly abstained | Must not regress > 5% |
 | **Efficiency** | Mean turns used normalized by task complexity | Informational (no gate) |
 | **Error Rate** | Mean tool errors per case | Informational (no gate) |
-| **Hallucination Rate** | % of cases where model called a non-existent tool | Must be 0% |
+| **Hallucination Rate** | % of cases where model called a tool that was never served | ≤ max(1%, baseline + 1%) — a single flaky case must not auto-FAIL the run |
+| **Infra Error Rate** | % of cases lost to infrastructure (endpoint/Docker daemon failures) | > 5% invalidates the whole run (exit 3) |
+| **Malformed Cases** | Count of case-authoring errors (empty assertions, unsafe working_dirs) | Informational; malformed checks always score as failed |
+
+### Verdict semantics (fail closed)
+
+The verdict gates only apply to metrics present in **both** candidate and
+baseline (the intersection — same semantics as `eval.py`). A gate whose
+metric is missing is skipped with a printed warning; it never auto-passes.
+If *no* gate metric is comparable at all, the verdict is FAIL: an empty
+intersection means the baseline says nothing about the run.
+
+### Results JSON
+
+Each run writes `~/.hermes/finetune/bench/results/bench_<ts>.json` with the
+stable keys `metrics`, `cases`, and `timestamp`. When a baseline comparison
+was performed, the additive key `verdict` records the per-gate booleans and
+`overall`. `metrics` additionally carries `scored_cases`, `infra_errors`,
+`infra_error_rate`, and `malformed_cases` alongside the headline rates.
+
+### Sandbox enforcement and exit codes
+
+The Docker backend is required and **verified**, not merely defaulted:
+
+- `setup()` preflights the daemon with `docker info` and hard-exits when it
+  is unusable — with the daemon down, every case would otherwise fail as a
+  bogus *quality* zero and the run would silently poison the baseline.
+- Any non-docker terminal backend executes agent-generated commands
+  directly on the host. The bench refuses to start unless the operator
+  opts in explicitly via `FINETUNE_BENCH_ALLOW_UNSANDBOXED=1` (or
+  `allow_unsandboxed: true` in the config), and prints a loud warning when
+  they do.
+- Tool results showing the daemon died mid-run ("Cannot connect to the
+  Docker daemon…") are classified as **infrastructure errors** for that
+  case — excluded from quality denominators and counted toward run
+  invalidation — never as model-quality failures.
+- Case `working_dir`s are wiped between runs; a working dir that does not
+  resolve under the bench scratch root (`/tmp/finetune-bench`) is refused
+  and the case is skipped with a loud warning, so a custom case with
+  `working_dir: ~/projects` can never delete user data.
+
+Process exit codes:
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Run completed; verdict PASS or no baseline configured |
+| 1 | Run completed but the baseline-comparison verdict is FAIL |
+| 2 | Configured LLM endpoint unreachable (preflight) |
+| 3 | Run invalid: infra error rate above 5% — metrics untrustworthy |
+| 4 | Sandbox unavailable: Docker daemon down/missing, or unsandboxed backend refused |
 
 ### Comparison Report
 
@@ -283,7 +387,10 @@ cases:
     category: "rust-toolchain"
     prompt: "Create a new Rust project with tokio and serde as dependencies"
     setup:
-      working_dir: "/workspace/rust-test"
+      # Must live under /tmp/finetune-bench — the bench wipes the case
+      # working dir between runs and refuses (skips the case) any path
+      # outside its scratch root.
+      working_dir: "/tmp/finetune-bench/rust-test"
     verification:
       method: functional_test
       test_commands:
@@ -762,7 +869,10 @@ cases:
       should_call_tool: true
     verification:
       method: output_match
-      expected_value: "not found"
+      # The correct trajectory FAILS: credit requires a failed tool call
+      # plus a final answer explaining it (matched case-insensitively).
+      expect_failure: true
+      expected_regex: '(no matching|not (be )?found|could ?n[o'']t|unable|fail)'
     tags: [terminal, error-handling]
 
   # ============================================================
@@ -854,7 +964,7 @@ To summarize: when reviewing eval results, these are the signals that tell you t
 
 **Clear wins:** Tool selection accuracy goes up (the model better understands when to use tools and which ones). No-tool accuracy stays stable or improves (the model hasn't learned to over-use tools). Task completion rate increases on Tier 3 cases that match the user's domain.
 
-**Clear regressions:** Format compliance drops (the fine-tune corrupted the model's output structure — this is fatal). Hallucination rate goes above zero (the model is inventing tools). No-tool accuracy drops significantly (the model is over-indexing on tool use from training data). Canary set regresses (catastrophic forgetting).
+**Clear regressions:** Format compliance drops (the fine-tune corrupted the model's output structure — this is fatal). Hallucination rate rises past the ~1% flake tolerance (the model is inventing tools). No-tool accuracy drops significantly (the model is over-indexing on tool use from training data). Canary set regresses (catastrophic forgetting).
 
 **Ambiguous signals:** Small fluctuations (±1–2%) in any metric are noise, not signal. Efficiency improvements (fewer turns) are nice but not sufficient alone. Improved performance on custom cases but regression on standard cases suggests overfitting.
 

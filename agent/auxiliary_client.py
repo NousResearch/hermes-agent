@@ -390,14 +390,23 @@ def _fixed_temperature_for_model(
 
     Returns:
         ``OMIT_TEMPERATURE`` — caller must remove the ``temperature`` key so the
-            provider chooses its own default.  Used for all Kimi / Moonshot
-            models whose gateway selects temperature server-side.
+        provider chooses its own default.  Used for models whose gateway
+            selects temperature server-side, including Kimi / Moonshot and
+            OpenAI GPT-5 Responses routes.
         ``float`` — a specific value the caller must use (reserved for future
             models with fixed-temperature contracts).
         ``None`` — no override; caller should use its own default.
     """
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
+        return OMIT_TEMPERATURE
+    # LiteLLM sends this model family through OpenAI's Responses API. That
+    # route rejects non-default temperature values, so auxiliary callers must
+    # use the same request contract as the main route instead of relying on a
+    # title-specific retry/fallback.
+    bare_model = (model or "").strip().lower().rsplit("/", 1)[-1]
+    if bare_model == "gpt-5" or bare_model.startswith("gpt-5-") or bare_model.startswith("gpt-5."):
+        logger.debug("Omitting temperature for GPT-5 Responses model %r", model)
         return OMIT_TEMPERATURE
     if _is_arcee_trinity_thinking(model):
         return 0.5

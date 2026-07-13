@@ -1126,6 +1126,13 @@ The current model and provider are displayed at the top. All navigation happens 
 If you know the exact model name, type `/model <name>` directly to skip the picker. You can also type `/model <name> --global` to persist the change across sessions.
 :::
 
+## Interactive Reasoning and Fast Pickers
+
+In Telegram DMs, sending `/reasoning` or `/fast` with no arguments opens an
+inline keyboard. Reasoning effort is session-scoped unless `--global` is used;
+fast mode applies gateway-wide. Typed forms such as `/reasoning high --global`
+and `/fast normal` remain available when you want to set a value directly.
+
 ## DNS-over-HTTPS Fallback IPs
 
 In some restricted networks, `api.telegram.org` may resolve to an IP that is unreachable. The Telegram adapter includes a **fallback IP** mechanism that transparently retries connections against alternative IPs while preserving the correct TLS hostname and SNI.

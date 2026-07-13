@@ -206,7 +206,11 @@ export default function UserStoriesCollage(): JSX.Element {
               onClick={() => setActiveCategory(key)}
               style={
                 activeCategory === key
-                  ? { background: meta.solid, borderColor: meta.solid, color: '#0f172a' }
+                  ? ({
+                      '--filter-active-bg': meta.solid,
+                      '--filter-active-border': meta.solid,
+                      '--filter-active-fg': '#0f172a',
+                    } as React.CSSProperties)
                   : undefined
               }
             >
@@ -234,12 +238,18 @@ export default function UserStoriesCollage(): JSX.Element {
               type="button"
               className={`${styles.filterBtn} ${activeSource === key ? styles.filterActive : ''}`}
               onClick={() => setActiveSource(key)}
-              style={{
-                fontSize: '0.72rem',
-                ...(activeSource === key
-                  ? { background: sourceColor(key), borderColor: sourceColor(key), color: '#fff' }
-                  : {}),
-              }}
+              style={
+                {
+                  fontSize: '0.72rem',
+                  ...(activeSource === key
+                    ? {
+                        '--filter-active-bg': sourceColor(key),
+                        '--filter-active-border': sourceColor(key),
+                        '--filter-active-fg': '#fff',
+                      }
+                    : {}),
+                } as React.CSSProperties
+              }
             >
               {label}
               <span className={styles.filterCount}>{sourceCounts[key]}</span>

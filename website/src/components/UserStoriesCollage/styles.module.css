@@ -67,14 +67,14 @@
   transform: translateY(-1px);
 }
 .filterActive {
-  background: rgba(139, 101, 8, 0.10);
-  color: #5A4100;
-  border-color: rgba(139, 101, 8, 0.40);
+  background: var(--filter-active-bg, rgba(139, 101, 8, 0.10));
+  color: var(--filter-active-fg, #5A4100);
+  border-color: var(--filter-active-border, rgba(139, 101, 8, 0.40));
 }
 [data-theme='dark'] .filterActive {
-  background: rgba(255, 215, 0, 0.10);
-  color: #FFD700;
-  border-color: rgba(255, 215, 0, 0.40);
+  background: var(--filter-active-bg, rgba(255, 215, 0, 0.10));
+  color: var(--filter-active-fg, #FFD700);
+  border-color: var(--filter-active-border, rgba(255, 215, 0, 0.40));
 }
 .filterCount {
   margin-left: 0.35rem;

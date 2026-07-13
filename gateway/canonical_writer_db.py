@@ -89,6 +89,9 @@ CANONICAL_EVENT_LOG_COLUMNS = (
     "payload:jsonb:t::",
 )
 CANONICAL_PRIVATE_WRITER_TABLES = (
+    "writer_canary_scope_claims",
+    "writer_canary_scope_preapproval_retirements",
+    "writer_canary_scope_preapprovals",
     "writer_capability_consumptions",
     "writer_capability_grants",
     "writer_capability_revocation_scopes",

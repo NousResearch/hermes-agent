@@ -1762,12 +1762,28 @@ def revoke_session_capabilities_durably(
             f"{session_hash}:{capability_epoch_sha256}"
         ),
     )
+    revocation_event_id = result.get("revocation_event_id")
+    try:
+        parsed_event_id = uuid.UUID(str(revocation_event_id))
+        canonical_event_id = str(parsed_event_id)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise RuntimeError(
+            "privileged writer did not confirm the exact session-epoch tombstone"
+        ) from exc
+    inserted = result.get("inserted")
+    deduped = result.get("deduped")
     if (
         result.get("success") is not True
         or result.get("session_key_sha256") != session_hash
         or result.get("capability_epoch_sha256") != capability_epoch_sha256
         or result.get("scope_type") != "session"
         or result.get("scope_revoked") is not True
+        or result.get("authority_active") is not False
+        or parsed_event_id.int == 0
+        or str(revocation_event_id) != canonical_event_id
+        or type(inserted) is not bool
+        or type(deduped) is not bool
+        or inserted is deduped
     ):
         raise RuntimeError(
             "privileged writer did not confirm the exact session-epoch tombstone"

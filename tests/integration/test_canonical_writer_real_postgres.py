@@ -24,10 +24,15 @@ import uuid
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from gateway.canonical_canary_bootstrap import (
+    CanaryScopeBootstrapRequest,
+    CanaryScopePreclaimRetirementRequest,
+)
 from gateway.canonical_writer_db import (
     CanonicalWriterDB,
     CredentialSource,
     ManagedCloudSQLAdminHBAReceipt,
+    PostgresServerError,
     RoutineIdentity,
     WriterDBConfig,
     WriterPrivilegePolicy,
@@ -42,12 +47,16 @@ from gateway.canonical_writer_handlers import (
     RuntimeContext,
 )
 from gateway.canonical_writer_postgres_backend import (
+    CANONICAL_CANARY_BOOTSTRAP_LOGIN,
+    CANONICAL_CANARY_BOOTSTRAP_ROLE,
     CANONICAL_WRITER_MIGRATION_OWNER,
     CANONICAL_WRITER_ROLE,
     CANONICAL_WRITER_SCHEMA,
     EXPECTED_HELPER_ROUTINE_SIGNATURES,
     EXPECTED_ROUTINE_SIGNATURES,
     PRODUCTION_STATEMENT_CATALOG,
+    PostgresCanaryScopeBootstrapBackend,
+    PostgresCanaryScopePreclaimRetirementBackend,
     PostgresCanonicalWriterBackend,
 )
 from gateway.canonical_writer_protocol import CanonicalWriterOperation
@@ -67,6 +76,12 @@ pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ROOT / "scripts" / "sql" / "canonical_writer_v1.sql"
+CANARY_BOOTSTRAP = (
+    ROOT / "scripts" / "sql" / "canonical_writer_canary_bootstrap_v1.sql"
+)
+CANARY_BOOTSTRAP_RETIRE = (
+    ROOT / "scripts" / "sql" / "canonical_writer_canary_bootstrap_retire_v1.sql"
+)
 LEGACY_RECONCILIATION = (
     ROOT / "scripts" / "sql" / "canonical_writer_legacy_reconcile_v1.sql"
 )
@@ -198,8 +213,11 @@ def _generate_tls(directory: Path) -> tuple[Path, Path, Path]:
 class RealWriterStack:
     name: str
     backend: PostgresCanonicalWriterBackend
+    bootstrap_backend: PostgresCanaryScopeBootstrapBackend
+    preclaim_retirement_backend: PostgresCanaryScopePreclaimRetirementBackend
     handlers: CanonicalWriterHandlers
     migration_runs: int
+    canary_preapproval: dict[str, object]
 
 
 def _psql(name: str, database: str, sql: str, *, secrets_: tuple[str, ...] = ()) -> None:
@@ -280,6 +298,135 @@ def _migration_invocation(
             f"'{('e' * 64)}';\n"
         )
     return prefix + migration_sql
+
+
+def _canary_bootstrap_invocation(
+    database: str,
+    bootstrap_sql: str,
+    request: dict[str, object],
+) -> str:
+    settings = {
+        "database": database,
+        "grant_id": request["grant_id"],
+        "case_id": request["case_id"],
+        "release_sha256": request["release_sha256"],
+        "fixture_sha256": request["fixture_sha256"],
+        "run_id": request["run_id"],
+        "session_key_sha256": request["session_key_sha256"],
+        "expires_at": request["expires_at"],
+        "approved_by": request["approved_by"],
+        "approval_source_sha256": request["approval_source_sha256"],
+        "provisioning_receipt_sha256": request[
+            "provisioning_receipt_sha256"
+        ],
+    }
+    prefix = "".join(
+        "SET muncho.canonical_canary_bootstrap_"
+        + name
+        + " = '"
+        + str(value).replace("'", "''")
+        + "';\n"
+        for name, value in settings.items()
+    )
+    return prefix + bootstrap_sql
+
+
+def _canary_bootstrap_retire_invocation(
+    database: str,
+    retirement_sql: str,
+    request: dict[str, object],
+    *,
+    plan_sha256: str,
+    owner_approval_sha256: str,
+    executor_session_identity_sha256: str,
+) -> str:
+    settings = {
+        "database": database,
+        "grant_id": request["grant_id"],
+        "case_id": request["case_id"],
+        "release_sha256": request["release_sha256"],
+        "fixture_sha256": request["fixture_sha256"],
+        "run_id": request["run_id"],
+        "session_key_sha256": request["session_key_sha256"],
+        "expires_at": request["expires_at"],
+        "approved_by": request["approved_by"],
+        "approval_source_sha256": request["approval_source_sha256"],
+        "provisioning_receipt_sha256": request[
+            "provisioning_receipt_sha256"
+        ],
+        "plan_sha256": plan_sha256,
+        "owner_approval_sha256": owner_approval_sha256,
+        "executor_session_identity_sha256": (
+            executor_session_identity_sha256
+        ),
+    }
+    prefix = "".join(
+        "SET muncho.canonical_canary_bootstrap_"
+        + name
+        + " = '"
+        + str(value).replace("'", "''")
+        + "';\n"
+        for name, value in settings.items()
+    )
+    return prefix + retirement_sql
+
+
+def _canary_bootstrap_request(
+    request: dict[str, object],
+) -> CanaryScopeBootstrapRequest:
+    return CanaryScopeBootstrapRequest(
+        grant_id=str(request["grant_id"]),
+        case_id=str(request["case_id"]),
+        release_sha256=str(request["release_sha256"]),
+        fixture_sha256=str(request["fixture_sha256"]),
+        run_id=str(request["run_id"]),
+        session_key_sha256=str(request["session_key_sha256"]),
+        expires_at=dt.datetime.fromisoformat(str(request["expires_at"])),
+        approved_by=str(request["approved_by"]),
+        approval_source_sha256=str(request["approval_source_sha256"]),
+        provisioning_receipt_sha256=str(
+            request["provisioning_receipt_sha256"]
+        ),
+    )
+
+
+def _canary_preclaim_retirement_request(
+    request: dict[str, object],
+) -> CanaryScopePreclaimRetirementRequest:
+    return CanaryScopePreclaimRetirementRequest(
+        grant_id=str(request["grant_id"]),
+        case_id=str(request["case_id"]),
+        release_sha256=str(request["release_sha256"]),
+        fixture_sha256=str(request["fixture_sha256"]),
+        run_id=str(request["run_id"]),
+        session_key_sha256=str(request["session_key_sha256"]),
+        expires_at=dt.datetime.fromisoformat(str(request["expires_at"])),
+        approved_by=str(request["approved_by"]),
+        approval_source_sha256=str(request["approval_source_sha256"]),
+        provisioning_receipt_sha256=str(
+            request["provisioning_receipt_sha256"]
+        ),
+    )
+
+
+def _isolated_canary_scope(label: str) -> dict[str, object]:
+    digest = lambda suffix: hashlib.sha256(
+        f"{label}:{suffix}".encode("utf-8")
+    ).hexdigest()
+    return {
+        "grant_id": f"canary-grant:{label}",
+        "case_id": f"case:canary-preclaim:{label}",
+        "release_sha256": digest("release"),
+        "fixture_sha256": digest("fixture"),
+        "run_id": f"canary-run:{label}",
+        "session_key_sha256": digest("session"),
+        "expires_at": (
+            dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=30)
+        ).isoformat(),
+        "approved_by": "owner-e2e",
+        "approval_source_sha256": digest("approval"),
+        "provisioning_receipt_sha256": digest("provisioning"),
+    }
 
 
 def _test_managed_hba_receipt(config: WriterDBConfig) -> ManagedCloudSQLAdminHBAReceipt:
@@ -378,9 +525,13 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
     ca_cert, server_cert, server_key = _generate_tls(directory)
     admin_password = secrets.token_hex(32)
     writer_password = secrets.token_hex(32)
+    bootstrap_password = secrets.token_hex(32)
     credential = directory / "writer-password"
     credential.write_text(writer_password + "\n", encoding="utf-8")
     credential.chmod(0o600)
+    bootstrap_credential = directory / "canary-bootstrap-password"
+    bootstrap_credential.write_text(bootstrap_password + "\n", encoding="utf-8")
+    bootstrap_credential.chmod(0o600)
     name = "hermes-canonical-writer-e2e-" + uuid.uuid4().hex[:12]
     environment = dict(os.environ)
     environment["POSTGRES_PASSWORD"] = admin_password
@@ -432,6 +583,7 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
         _wait_ready(name)
 
         escaped_password = writer_password.replace("'", "''")
+        escaped_bootstrap_password = bootstrap_password.replace("'", "''")
         _psql(
             name,
             "postgres",
@@ -441,6 +593,14 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
             "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
             f"CREATE ROLE {CANONICAL_WRITER_ROLE} NOLOGIN "
             "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
+            f"CREATE ROLE {CANONICAL_CANARY_BOOTSTRAP_ROLE} NOLOGIN NOINHERIT "
+            "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
+            f"CREATE ROLE {CANONICAL_CANARY_BOOTSTRAP_LOGIN} LOGIN INHERIT "
+            f"PASSWORD '{escaped_bootstrap_password}' NOSUPERUSER NOCREATEDB "
+            "NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
+            f"GRANT {CANONICAL_CANARY_BOOTSTRAP_ROLE} TO "
+            f"{CANONICAL_CANARY_BOOTSTRAP_LOGIN} "
+            "WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;\n"
             f"CREATE ROLE {LOGIN} LOGIN INHERIT PASSWORD '{escaped_password}' "
             "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
             f"GRANT {CANONICAL_WRITER_ROLE} TO {LOGIN};\n"
@@ -451,8 +611,10 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
             "CREATE DATABASE cloudsqladmin OWNER cloudsqladmin;\n"
             f"CREATE DATABASE {DATABASE};\n"
             f"REVOKE ALL ON DATABASE {DATABASE} FROM PUBLIC;\n"
-            f"GRANT CONNECT ON DATABASE {DATABASE} TO {CANONICAL_WRITER_ROLE};\n",
-            secrets_=(writer_password,),
+            f"GRANT CONNECT ON DATABASE {DATABASE} TO {CANONICAL_WRITER_ROLE};\n"
+            f"GRANT CONNECT ON DATABASE {DATABASE} TO "
+            f"{CANONICAL_CANARY_BOOTSTRAP_ROLE};\n",
+            secrets_=(writer_password, bootstrap_password),
         )
         # Cloud SQL PostgreSQL 18 currently represents the provider-owned
         # cloudsqladmin database with a NULL datacl.  PostgreSQL defines that
@@ -501,6 +663,96 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
         ) == ["t", "0"]
         _psql(name, DATABASE, _migration_invocation(DATABASE, migration_sql))
         _psql(name, DATABASE, _migration_invocation(DATABASE, migration_sql))
+        canary_preapproval: dict[str, object] = {
+            "grant_id": "canary-grant:real-pg",
+            "case_id": "case:real-pg-canary-scope",
+            "release_sha256": "9" * 64,
+            "fixture_sha256": "a" * 64,
+            "run_id": "canary-run:real-pg",
+            "session_key_sha256": "c" * 64,
+            "expires_at": (
+                dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=30)
+            ).isoformat(),
+            "approved_by": "owner-e2e",
+            "approval_source_sha256": "b" * 64,
+            "provisioning_receipt_sha256": "8" * 64,
+        }
+        _psql(
+            name,
+            DATABASE,
+            _canary_bootstrap_invocation(
+                DATABASE,
+                CANARY_BOOTSTRAP.read_text(encoding="utf-8"),
+                canary_preapproval,
+            ),
+        )
+        mapping = _run(["docker", "port", name, "5432/tcp"]).stdout.strip()
+        port = int(mapping.rsplit(":", 1)[1])
+        bootstrap_config = WriterDBConfig(
+            host="127.0.0.1",
+            tls_server_name="localhost",
+            port=port,
+            database=DATABASE,
+            user=CANONICAL_CANARY_BOOTSTRAP_LOGIN,
+            ca_file=ca_cert,
+            credential=CredentialSource(
+                expected_uid=os.getuid(),
+                path=bootstrap_credential,
+            ),
+        )
+        bootstrap_backend = PostgresCanaryScopeBootstrapBackend(
+            config=bootstrap_config,
+        )
+        bootstrap_result = bootstrap_backend.preapprove(
+            _canary_bootstrap_request(canary_preapproval),
+            RuntimeContext(
+                request_id="real-pg-canary-preapprove",
+                platform="writer_service",
+                session_key_sha256=str(
+                    canary_preapproval["session_key_sha256"]
+                ),
+                service_internal=True,
+            ),
+        )
+        assert bootstrap_result["bootstrap_acl_revoked"] is True
+        with pytest.raises(
+            PostgresServerError,
+            match="database_error_sqlstate:42501",
+        ):
+            bootstrap_backend.preapprove(
+                _canary_bootstrap_request(canary_preapproval),
+                RuntimeContext(
+                    request_id="real-pg-canary-preapprove-replay",
+                    platform="writer_service",
+                    session_key_sha256=str(
+                        canary_preapproval["session_key_sha256"]
+                    ),
+                    service_internal=True,
+                ),
+            )
+        assert _psql_fields(
+            name,
+            DATABASE,
+            "SELECT has_schema_privilege("
+            "'canonical_brain_canary_bootstrap','canonical_brain','USAGE'),"
+            "has_function_privilege('canonical_brain_canary_bootstrap',"
+            "'canonical_brain.writer_canary_scope_preapprove(jsonb,jsonb)',"
+            "'EXECUTE'),has_function_privilege('canonical_brain_writer',"
+            "'canonical_brain.writer_canary_scope_preapprove(jsonb,jsonb)',"
+            "'EXECUTE');",
+        ) == ["f", "f", "f"]
+        # A base migration rerun remains inert after consumption and cannot
+        # recreate the one-shot bootstrap ACL.
+        _psql(name, DATABASE, _migration_invocation(DATABASE, migration_sql))
+        assert _psql_fields(
+            name,
+            DATABASE,
+            "SELECT has_schema_privilege("
+            "'canonical_brain_canary_bootstrap','canonical_brain','USAGE'),"
+            "has_function_privilege('canonical_brain_canary_bootstrap',"
+            "'canonical_brain.writer_canary_scope_preapprove(jsonb,jsonb)',"
+            "'EXECUTE');",
+        ) == ["f", "f"]
         _psql(
             name,
             DATABASE,
@@ -509,8 +761,6 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
             f"('{PUBLIC_CHANNEL}','public_channel','real-pg-e2e',clock_timestamp(),true);\n",
         )
 
-        mapping = _run(["docker", "port", name, "5432/tcp"]).stdout.strip()
-        port = int(mapping.rsplit(":", 1)[1])
         config = WriterDBConfig(
             host="127.0.0.1",
             tls_server_name="localhost",
@@ -531,9 +781,14 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
         )
         database.startup_attest()
         backend = PostgresCanonicalWriterBackend(database)
+        preclaim_retirement_backend = (
+            PostgresCanaryScopePreclaimRetirementBackend(config=config)
+        )
         yield RealWriterStack(
             name=name,
             backend=backend,
+            bootstrap_backend=bootstrap_backend,
+            preclaim_retirement_backend=preclaim_retirement_backend,
             handlers=CanonicalWriterHandlers(
                 backend,
                 discord_edge_authority=CanonicalWriterDiscordAuthority(
@@ -543,7 +798,8 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
                     ),
                 ),
             ),
-            migration_runs=2,
+            migration_runs=3,
+            canary_preapproval=canary_preapproval,
         )
     finally:
         subprocess.run(
@@ -604,6 +860,53 @@ def _dispatch(
     return response["result"]
 
 
+def _provision_and_consume_isolated_canary(
+    stack: RealWriterStack,
+    request: dict[str, object],
+    *,
+    request_id: str,
+) -> dict[str, object]:
+    _psql(
+        stack.name,
+        DATABASE,
+        _canary_bootstrap_invocation(
+            DATABASE,
+            CANARY_BOOTSTRAP.read_text(encoding="utf-8"),
+            request,
+        ),
+    )
+    return dict(
+        stack.bootstrap_backend.preapprove(
+            _canary_bootstrap_request(request),
+            RuntimeContext(
+                request_id=request_id,
+                platform="writer_service",
+                session_key_sha256=str(request["session_key_sha256"]),
+                service_internal=True,
+            ),
+        )
+    )
+
+
+def _retire_isolated_canary(
+    stack: RealWriterStack,
+    request: dict[str, object],
+    *,
+    request_id: str,
+) -> dict[str, object]:
+    return dict(
+        stack.preclaim_retirement_backend.retire(
+            _canary_preclaim_retirement_request(request),
+            RuntimeContext(
+                request_id=request_id,
+                platform="writer_service",
+                session_key_sha256=str(request["session_key_sha256"]),
+                service_internal=True,
+            ),
+        )
+    )
+
+
 def _verified_discord_receipt(edge_request: dict[str, object]) -> dict[str, object]:
     request = parse_request_for_reconciliation(edge_request)
     capability = verify_request_capability_for_reconciliation(
@@ -647,7 +950,527 @@ def _seed_plan(
     )
 
 
-def test_migration_twice_and_all_seventeen_production_routines(
+def test_consumed_canary_bootstrap_is_never_falsely_retired(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    stack = real_writer_stack
+    request = stack.canary_preapproval
+    retirement_sql = CANARY_BOOTSTRAP_RETIRE.read_text(encoding="utf-8")
+    plan_sha256 = "1" * 64
+    owner_approval_sha256 = "2" * 64
+    executor_sha256 = "3" * 64
+
+    result = _psql_fields(
+        stack.name,
+        DATABASE,
+        _canary_bootstrap_retire_invocation(
+            DATABASE,
+            retirement_sql,
+            request,
+            plan_sha256=plan_sha256,
+            owner_approval_sha256=owner_approval_sha256,
+            executor_session_identity_sha256=executor_sha256,
+        ),
+    )
+
+    assert len(result) == 13
+    assert result[0:3] == ["consumed", request["grant_id"], request["case_id"]]
+    assert uuid.UUID(result[3])
+    assert uuid.UUID(result[4])
+    assert result[5:] == [
+        "",
+        "f",
+        plan_sha256,
+        owner_approval_sha256,
+        executor_sha256,
+        "bootstrap_consumed",
+        "t",
+        "t",
+    ]
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM public.canonical_event_log AS event "
+        "WHERE event.event_type = 'canary.scope.bootstrap_retired' "
+        f"AND event.case_id = '{request['case_id']}';",
+    ) == ["0"]
+
+
+def test_failed_canary_provision_reconciles_as_not_authorized_noop(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    stack = real_writer_stack
+    request: dict[str, object] = {
+        "grant_id": "canary-grant:not-authorized-real-pg",
+        "case_id": "case:real-pg-canary-not-authorized",
+        "release_sha256": "a" * 64,
+        "fixture_sha256": "b" * 64,
+        "run_id": "canary-run:not-authorized-real-pg",
+        "session_key_sha256": "c" * 64,
+        "expires_at": (
+            dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=30)
+        ).isoformat(),
+        "approved_by": "owner-e2e-not-authorized",
+        "approval_source_sha256": "d" * 64,
+        "provisioning_receipt_sha256": "e" * 64,
+    }
+    plan_sha256 = "f" * 64
+    owner_approval_sha256 = "0" * 64
+    executor_sha256 = "1" * 64
+    _psql(
+        stack.name,
+        DATABASE,
+        "GRANT USAGE ON SCHEMA canonical_brain "
+        "TO canonical_brain_canary_bootstrap; "
+        "GRANT EXECUTE ON FUNCTION "
+        "canonical_brain.writer_canary_scope_preapprove(jsonb,jsonb) "
+        "TO canonical_brain_canary_bootstrap;",
+    )
+
+    result = _psql_fields(
+        stack.name,
+        DATABASE,
+        _canary_bootstrap_retire_invocation(
+            DATABASE,
+            CANARY_BOOTSTRAP_RETIRE.read_text(encoding="utf-8"),
+            request,
+            plan_sha256=plan_sha256,
+            owner_approval_sha256=owner_approval_sha256,
+            executor_session_identity_sha256=executor_sha256,
+        ),
+    )
+
+    assert result == [
+        "not_authorized",
+        request["grant_id"],
+        request["case_id"],
+        "",
+        "",
+        "",
+        "f",
+        plan_sha256,
+        owner_approval_sha256,
+        executor_sha256,
+        "provisioning_not_committed",
+        "t",
+        "t",
+    ]
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM public.canonical_event_log AS event "
+        f"WHERE event.case_id = '{request['case_id']}' "
+        "AND event.event_type IN ('canary.scope.bootstrap_authorized', "
+        "'canary.scope.bootstrap_consumed', "
+        "'canary.scope.bootstrap_retired');",
+    ) == ["0"]
+
+
+def test_unconsumed_canary_bootstrap_retirement_is_exact_and_idempotent(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    stack = real_writer_stack
+    request: dict[str, object] = {
+        "grant_id": "canary-grant:retire-real-pg",
+        "case_id": "case:real-pg-canary-retire",
+        "release_sha256": "1" * 64,
+        "fixture_sha256": "2" * 64,
+        "run_id": "canary-run:retire-real-pg",
+        "session_key_sha256": "3" * 64,
+        "expires_at": (
+            dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=30)
+        ).isoformat(),
+        "approved_by": "owner-e2e-retire",
+        "approval_source_sha256": "4" * 64,
+        "provisioning_receipt_sha256": "5" * 64,
+    }
+    plan_sha256 = "6" * 64
+    owner_approval_sha256 = "7" * 64
+    executor_sha256 = "8" * 64
+    retirement_sql = CANARY_BOOTSTRAP_RETIRE.read_text(encoding="utf-8")
+    retirement_invocation = _canary_bootstrap_retire_invocation(
+        DATABASE,
+        retirement_sql,
+        request,
+        plan_sha256=plan_sha256,
+        owner_approval_sha256=owner_approval_sha256,
+        executor_session_identity_sha256=executor_sha256,
+    )
+    _psql(
+        stack.name,
+        DATABASE,
+        _canary_bootstrap_invocation(
+            DATABASE,
+            CANARY_BOOTSTRAP.read_text(encoding="utf-8"),
+            request,
+        ),
+    )
+
+    first = _psql_fields(stack.name, DATABASE, retirement_invocation)
+
+    assert len(first) == 13
+    assert first[0:3] == ["retired", request["grant_id"], request["case_id"]]
+    authorization_event_id = str(uuid.UUID(first[3]))
+    assert first[4] == ""
+    retirement_event_id = str(uuid.UUID(first[5]))
+    assert first[6:] == [
+        "t",
+        plan_sha256,
+        owner_approval_sha256,
+        executor_sha256,
+        "activation_failed_before_consumption",
+        "t",
+        "t",
+    ]
+    exact_truth = _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT event.event_id::text, provenance.origin, "
+        "event.payload->>'idempotency_key', retirement->>'grant_id', "
+        "retirement->>'case_id', retirement->>'release_sha256', "
+        "retirement->>'fixture_sha256', retirement->>'run_id', "
+        "retirement->>'session_key_sha256', retirement->>'expires_at', "
+        "retirement->>'approved_by', retirement->>'approval_source_sha256', "
+        "retirement->>'provisioning_receipt_sha256', "
+        "retirement->>'authorization_event_id', retirement->>'plan_sha256', "
+        "retirement->>'owner_approval_sha256', "
+        "retirement->>'executor_session_identity_sha256', "
+        "retirement->>'reason', retirement->>'acl_revoked' "
+        "FROM public.canonical_event_log AS event "
+        "JOIN canonical_brain.writer_event_provenance AS provenance "
+        "ON provenance.event_id = event.event_id "
+        "CROSS JOIN LATERAL (SELECT event.payload->"
+        "'canary_scope_bootstrap_retirement' AS retirement) AS payload "
+        "WHERE event.event_type = 'canary.scope.bootstrap_retired' "
+        f"AND event.case_id = '{request['case_id']}';",
+    )
+    assert exact_truth[:9] == [
+        retirement_event_id,
+        "canary_scope_bootstrap_retire",
+        f"canary-bootstrap-retire:{request['grant_id']}",
+        request["grant_id"],
+        request["case_id"],
+        request["release_sha256"],
+        request["fixture_sha256"],
+        request["run_id"],
+        request["session_key_sha256"],
+    ]
+    assert dt.datetime.fromisoformat(exact_truth[9]) == dt.datetime.fromisoformat(
+        str(request["expires_at"])
+    )
+    assert exact_truth[10:] == [
+        request["approved_by"],
+        request["approval_source_sha256"],
+        request["provisioning_receipt_sha256"],
+        authorization_event_id,
+        plan_sha256,
+        owner_approval_sha256,
+        executor_sha256,
+        "activation_failed_before_consumption",
+        "true",
+    ]
+
+    replay_executor_sha256 = "9" * 64
+    second = _psql_fields(
+        stack.name,
+        DATABASE,
+        _canary_bootstrap_retire_invocation(
+            DATABASE,
+            retirement_sql,
+            request,
+            plan_sha256=plan_sha256,
+            owner_approval_sha256=owner_approval_sha256,
+            executor_session_identity_sha256=replay_executor_sha256,
+        ),
+    )
+    assert second[0:6] == [
+        "retired",
+        request["grant_id"],
+        request["case_id"],
+        authorization_event_id,
+        "",
+        retirement_event_id,
+    ]
+    assert second[6:] == [
+        "f",
+        plan_sha256,
+        owner_approval_sha256,
+        replay_executor_sha256,
+        "activation_failed_before_consumption",
+        "t",
+        "t",
+    ]
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM public.canonical_event_log AS event "
+        "WHERE event.event_type = 'canary.scope.bootstrap_retired' "
+        f"AND event.case_id = '{request['case_id']}';",
+    ) == ["1"]
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT event.payload->'canary_scope_bootstrap_retirement'->>"
+        "'executor_session_identity_sha256' "
+        "FROM public.canonical_event_log AS event "
+        "WHERE event.event_id = "
+        f"'{retirement_event_id}'::uuid;",
+    ) == [executor_sha256]
+
+    _psql(
+        stack.name,
+        DATABASE,
+        "GRANT USAGE ON SCHEMA canonical_brain "
+        "TO canonical_brain_canary_bootstrap; "
+        "GRANT EXECUTE ON FUNCTION "
+        "canonical_brain.writer_canary_scope_preapprove(jsonb,jsonb) "
+        "TO canonical_brain_canary_bootstrap;",
+    )
+    try:
+        with pytest.raises(CanonicalWriterError) as failure:
+            stack.bootstrap_backend.preapprove(
+                _canary_bootstrap_request(request),
+                RuntimeContext(
+                    request_id="real-pg-retired-bootstrap-denial",
+                    platform="writer_service",
+                    session_key_sha256=str(request["session_key_sha256"]),
+                    service_internal=True,
+                ),
+            )
+        assert failure.value.code == "bootstrap_authorization_missing"
+    finally:
+        cleanup = _psql_fields(stack.name, DATABASE, retirement_invocation)
+        assert cleanup[0] == "retired"
+        assert cleanup[6] == "f"
+        assert cleanup[-2:] == ["t", "t"]
+
+
+def test_real_postgres_preclaim_retire_first_is_one_durable_tombstone(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    stack = real_writer_stack
+    request = _isolated_canary_scope("retire-first")
+    preapproved = _provision_and_consume_isolated_canary(
+        stack,
+        request,
+        request_id="real-pg-preclaim-bootstrap-retire-first",
+    )
+
+    first = _retire_isolated_canary(
+        stack,
+        request,
+        request_id="real-pg-preclaim-retire-first",
+    )
+    replay = _retire_isolated_canary(
+        stack,
+        request,
+        request_id="real-pg-preclaim-retire-replay",
+    )
+    rejected_claim = stack.handlers.dispatch(
+        CanonicalWriterOperation.CANARY_SCOPE_CLAIM.value,
+        {
+            key: request[key]
+            for key in (
+                "grant_id",
+                "case_id",
+                "release_sha256",
+                "fixture_sha256",
+                "run_id",
+                "approval_source_sha256",
+            )
+        },
+        runtime=RuntimeContext(
+            request_id="real-pg-preclaim-rejected-claim",
+            platform="api_server",
+            session_key_sha256=str(request["session_key_sha256"]),
+            capability_epoch_sha256="7" * 64,
+            chat_id="real-pg-preclaim-retire-first",
+            thread_id="real-pg-preclaim-retire-first",
+        ),
+    )
+
+    assert first["outcome"] == "retired"
+    assert first["authority_active"] is False
+    assert first["scope_retired"] is True
+    assert first["inserted"] is True
+    assert first["deduped"] is False
+    assert first["preapproval_event_id"] == preapproved["receipt_event_id"]
+    assert first["bootstrap_consumption_event_id"] == preapproved[
+        "bootstrap_consumption_event_id"
+    ]
+    assert str(uuid.UUID(str(first["retirement_event_id"]))) == first[
+        "retirement_event_id"
+    ]
+    assert replay["retirement_event_id"] == first["retirement_event_id"]
+    assert replay["retired_at"] == first["retired_at"]
+    assert replay["inserted"] is False
+    assert replay["deduped"] is True
+    assert rejected_claim["error"]["code"] == (
+        "canary_scope_preapproval_retired"
+    )
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM public.canonical_event_log "
+        "WHERE event_type = 'canary.scope.preapproval_retired' "
+        f"AND case_id = '{request['case_id']}';",
+    ) == ["1"]
+
+
+def test_real_postgres_claim_first_retires_exact_session_epoch_only(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    stack = real_writer_stack
+    request = _isolated_canary_scope("claim-first")
+    _provision_and_consume_isolated_canary(
+        stack,
+        request,
+        request_id="real-pg-preclaim-bootstrap-claim-first",
+    )
+    epoch = "6" * 64
+    claim_runtime = RuntimeContext(
+        request_id="real-pg-preclaim-claim-first",
+        platform="api_server",
+        session_key_sha256=str(request["session_key_sha256"]),
+        capability_epoch_sha256=epoch,
+        chat_id="real-pg-preclaim-claim-first",
+        thread_id="real-pg-preclaim-claim-first",
+    )
+    claimed = _dispatch(
+        stack,
+        CanonicalWriterOperation.CANARY_SCOPE_CLAIM,
+        {
+            key: request[key]
+            for key in (
+                "grant_id",
+                "case_id",
+                "release_sha256",
+                "fixture_sha256",
+                "run_id",
+                "approval_source_sha256",
+            )
+        },
+        claim_runtime,
+    )
+
+    first = _retire_isolated_canary(
+        stack,
+        request,
+        request_id="real-pg-preclaim-claimed-retire-first",
+    )
+    replay = _retire_isolated_canary(
+        stack,
+        request,
+        request_id="real-pg-preclaim-claimed-retire-replay",
+    )
+
+    assert first["outcome"] == "claimed"
+    assert first["claim_event_id"] == claimed["claim_event_id"]
+    assert first["retirement_event_id"] is None
+    assert first["scope_retired"] is False
+    assert first["authority_active"] is False
+    assert first["inserted"] is True
+    assert first["deduped"] is False
+    assert str(uuid.UUID(str(first["revocation_event_id"]))) == first[
+        "revocation_event_id"
+    ]
+    assert replay["revocation_event_id"] == first["revocation_event_id"]
+    assert replay["inserted"] is False
+    assert replay["deduped"] is True
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM public.canonical_event_log "
+        "WHERE event_type = 'canary.scope.preapproval_retired' "
+        f"AND case_id = '{request['case_id']}';",
+    ) == ["0"]
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM canonical_brain."
+        "writer_capability_revocation_scopes "
+        "WHERE scope_type = 'session' "
+        f"AND session_key_sha256 = '{request['session_key_sha256']}' "
+        f"AND capability_epoch_sha256 = '{epoch}';",
+    ) == ["1"]
+
+
+def test_real_postgres_claim_retire_race_has_one_semantic_winner(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    stack = real_writer_stack
+    request = _isolated_canary_scope("claim-retire-race")
+    _provision_and_consume_isolated_canary(
+        stack,
+        request,
+        request_id="real-pg-preclaim-bootstrap-race",
+    )
+    epoch = "5" * 64
+    barrier = threading.Barrier(2)
+
+    def claim():
+        barrier.wait(timeout=5)
+        return stack.handlers.dispatch(
+            CanonicalWriterOperation.CANARY_SCOPE_CLAIM.value,
+            {
+                key: request[key]
+                for key in (
+                    "grant_id",
+                    "case_id",
+                    "release_sha256",
+                    "fixture_sha256",
+                    "run_id",
+                    "approval_source_sha256",
+                )
+            },
+            runtime=RuntimeContext(
+                request_id="real-pg-preclaim-race-claim",
+                platform="api_server",
+                session_key_sha256=str(request["session_key_sha256"]),
+                capability_epoch_sha256=epoch,
+                chat_id="real-pg-preclaim-race",
+                thread_id="real-pg-preclaim-race",
+            ),
+        )
+
+    def retire():
+        barrier.wait(timeout=5)
+        return _retire_isolated_canary(
+            stack,
+            request,
+            request_id="real-pg-preclaim-race-retire",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claim_future = pool.submit(claim)
+        retire_future = pool.submit(retire)
+        claim_result = claim_future.result(timeout=20)
+        retirement = retire_future.result(timeout=20)
+
+    event_counts = _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FILTER (WHERE event_type = 'canary.scope.claimed'),"
+        "count(*) FILTER (WHERE event_type = "
+        "'canary.scope.preapproval_retired') "
+        "FROM public.canonical_event_log "
+        f"WHERE case_id = '{request['case_id']}';",
+    )
+    assert event_counts in (["1", "0"], ["0", "1"])
+    assert retirement["authority_active"] is False
+    if retirement["outcome"] == "claimed":
+        assert claim_result["ok"] is True
+        assert retirement["revocation_event_id"] is not None
+        assert event_counts == ["1", "0"]
+    else:
+        assert retirement["outcome"] == "retired"
+        assert claim_result["error"]["code"] == (
+            "canary_scope_preapproval_retired"
+        )
+        assert event_counts == ["0", "1"]
+
+
+def test_migration_rerun_and_all_eighteen_public_production_routines(
     real_writer_stack: RealWriterStack,
 ) -> None:
     stack = real_writer_stack
@@ -662,8 +1485,63 @@ def test_migration_twice_and_all_seventeen_production_routines(
         seen.add(operation)
         return _dispatch(stack, operation, payload, rt)
 
-    assert stack.migration_runs == 2
+    assert stack.migration_runs == 3
     call(CanonicalWriterOperation.PING, {})
+    canary_preapproval = stack.canary_preapproval
+    canary_session = str(canary_preapproval["session_key_sha256"])
+    canary_epoch = "d" * 64
+    canary_case = str(canary_preapproval["case_id"])
+    canary_runtime = RuntimeContext(
+        request_id="real-pg-canary-claim",
+        platform="api_server",
+        session_key_sha256=canary_session,
+        capability_epoch_sha256=canary_epoch,
+        chat_id="real-pg-api-session",
+        thread_id="real-pg-api-session",
+    )
+    canary_claim = call(
+        CanonicalWriterOperation.CANARY_SCOPE_CLAIM,
+        {
+            key: canary_preapproval[key]
+            for key in (
+                "grant_id",
+                "case_id",
+                "release_sha256",
+                "fixture_sha256",
+                "run_id",
+                "approval_source_sha256",
+            )
+        },
+        canary_runtime,
+    )
+    assert canary_claim["authority_active"] is True
+    assert canary_claim["expires_at"] is not None
+    canary_claim_retry = call(
+        CanonicalWriterOperation.CANARY_SCOPE_CLAIM,
+        {
+            key: canary_preapproval[key]
+            for key in (
+                "grant_id",
+                "case_id",
+                "release_sha256",
+                "fixture_sha256",
+                "run_id",
+                "approval_source_sha256",
+            )
+        },
+        RuntimeContext(
+            request_id="real-pg-canary-claim-retry",
+            platform="api_server",
+            session_key_sha256=canary_session,
+            capability_epoch_sha256=canary_epoch,
+            chat_id="real-pg-api-session",
+            thread_id="real-pg-api-session",
+        ),
+    )
+    assert canary_claim_retry["deduped"] is True
+    assert canary_claim_retry["claimed_at"] == canary_claim["claimed_at"]
+    assert canary_claim_retry["expires_at"] == canary_claim["expires_at"]
+    assert canary_claim_retry["claim_event_id"] == canary_claim["claim_event_id"]
     call(
         CanonicalWriterOperation.EVENT_APPEND_MODEL,
         {
@@ -852,6 +1730,18 @@ def test_migration_twice_and_all_seventeen_production_routines(
             "limit": 100,
         },
     )
+    canary_retirement = call(
+        CanonicalWriterOperation.CAPABILITY_REVOKE_SESSION,
+        {"reason": "real PostgreSQL canary completed"},
+        canary_runtime,
+    )
+    assert canary_retirement["canary_scopes_revoked"] == 1
+    blocked_canary_read = stack.handlers.dispatch(
+        CanonicalWriterOperation.CASE_QUERY.value,
+        {"case_id": canary_case, "limit": 20},
+        runtime=canary_runtime,
+    )
+    assert blocked_canary_read["error"]["code"] == "scope_mismatch"
 
     assert seen == set(CanonicalWriterOperation)
 
@@ -1243,9 +2133,18 @@ def test_real_postgres_legacy_reconciliation_is_atomic_and_quarantined() -> None
             "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
             f"CREATE ROLE {CANONICAL_WRITER_ROLE} NOLOGIN "
             "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
+            f"CREATE ROLE {CANONICAL_CANARY_BOOTSTRAP_ROLE} NOLOGIN NOINHERIT "
+            "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
+            f"CREATE ROLE {CANONICAL_CANARY_BOOTSTRAP_LOGIN} LOGIN INHERIT "
+            "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
+            f"GRANT {CANONICAL_CANARY_BOOTSTRAP_ROLE} "
+            f"TO {CANONICAL_CANARY_BOOTSTRAP_LOGIN} "
+            "WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;\n"
             f"CREATE DATABASE {database};\n"
             f"REVOKE ALL ON DATABASE {database} FROM PUBLIC;\n"
-            f"GRANT CONNECT ON DATABASE {database} TO {CANONICAL_WRITER_ROLE};\n",
+            f"GRANT CONNECT ON DATABASE {database} TO {CANONICAL_WRITER_ROLE};\n"
+            f"GRANT CONNECT ON DATABASE {database} "
+            f"TO {CANONICAL_CANARY_BOOTSTRAP_ROLE};\n",
         )
         _psql(
             name,

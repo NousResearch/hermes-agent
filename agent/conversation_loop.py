@@ -1211,6 +1211,19 @@ def run_conversation(
                     _original_api_kwargs,
                     api_kwargs,
                 )
+                # Execution middleware receives ``api_kwargs`` by reference and
+                # may mutate it in place before invoking the transport closure.
+                # Keep an independent, minimal authority snapshot so a nested
+                # mutation (for example ``reasoning["effort"] = "low"``) cannot
+                # rewrite the verified model-authored decision before the final
+                # dispatch boundary.  ``preserve_verified_reasoning_payload``
+                # deep-copies the protected values and is a no-op off the exact
+                # verified GPT-5.6 Codex route.
+                _verified_reasoning_authority = preserve_verified_reasoning_payload(
+                    agent,
+                    api_kwargs,
+                    {},
+                )
 
                 try:
                     from hermes_cli.plugins import (
@@ -1329,7 +1342,7 @@ def run_conversation(
                 def _perform_api_call(next_api_kwargs):
                     next_api_kwargs = preserve_verified_reasoning_payload(
                         agent,
-                        api_kwargs,
+                        _verified_reasoning_authority,
                         next_api_kwargs,
                     )
                     if agent.api_mode == "codex_responses":
@@ -5299,6 +5312,7 @@ def run_conversation(
 
             # If we're near the limit, break to avoid infinite loops
             if api_call_count >= agent.max_iterations - 1:
+                failed = True
                 _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
                 final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                 # Append as assistant so the history stays valid for

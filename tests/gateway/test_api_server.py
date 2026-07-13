@@ -37,6 +37,16 @@ from gateway.platforms.api_server import (
 )
 
 
+def _confirmed_local_cleanup_ref() -> list[dict]:
+    return [{
+        "authority_created": True,
+        "durable_revoke_succeeded": True,
+        "local_clear_succeeded": True,
+        "authority_active": False,
+        "writer_required": False,
+    }]
+
+
 # ---------------------------------------------------------------------------
 # check_api_server_requirements
 # ---------------------------------------------------------------------------
@@ -568,11 +578,16 @@ class TestConcurrencyCap:
         assert resp.headers.get("Retry-After")
 
     def test_cap_counts_both_buckets(self):
-        # /v1/runs (tracked by _run_streams) + chat/responses (inflight)
+        # /v1/runs task ownership + chat/responses (inflight).  Optional SSE
+        # subscriber queues are deliberately not an authority/liveness source.
         adapter = _make_adapter()
         adapter._max_concurrent_runs = 4
         adapter._inflight_agent_runs = 2
-        adapter._run_streams = {"r1": object(), "r2": object()}
+        adapter._active_run_tasks = {
+            "r1": MagicMock(done=lambda: False),
+            "r2": MagicMock(done=lambda: False),
+        }
+        adapter._run_streams = {}
         resp = adapter._concurrency_limited_response()
         assert resp is not None
         assert resp.status == 429
@@ -1243,10 +1258,11 @@ class TestChatCompletionsEndpoint:
                 )
                 assert resp.status == 200
 
-            assert len(fake_task.callbacks) == 1
+            assert len(fake_task.callbacks) == 2
             stream_q = mock_write_sse.call_args.args[4]
             assert stream_q.empty()
-            fake_task.callbacks[0](fake_task)
+            for callback in fake_task.callbacks:
+                callback(fake_task)
             assert stream_q.get_nowait() is None
 
     @pytest.mark.asyncio
@@ -2367,10 +2383,11 @@ class TestResponsesStreaming:
                 )
                 assert resp.status == 200
 
-            assert len(fake_task.callbacks) == 1
+            assert len(fake_task.callbacks) == 2
             stream_q = mock_write_sse.call_args.kwargs["stream_q"]
             assert stream_q.empty()
-            fake_task.callbacks[0](fake_task)
+            for callback in fake_task.callbacks:
+                callback(fake_task)
             assert stream_q.get_nowait() is None
 
     @pytest.mark.asyncio
@@ -2534,11 +2551,11 @@ class TestResponsesStreaming:
         assert stored_history.count({"role": "user", "content": "Now add 1 more"}) == 1
 
     @pytest.mark.asyncio
-    async def test_stream_cancelled_persists_incomplete_snapshot(self, adapter):
-        """Server-side asyncio.CancelledError (shutdown, request timeout) must
-        still leave an ``incomplete`` snapshot in ResponseStore so
-        GET /v1/responses/{id} and previous_response_id chaining keep
-        working.  Regression for PR #15171 follow-up.
+    async def test_stream_cancelled_keeps_nonterminal_snapshot(self, adapter):
+        """A cancelled agent wrapper cannot manufacture terminal cleanup truth.
+
+        The partial snapshot remains retrievable but nonterminal until a strong
+        completion owner confirms both durable revoke and local clear.
 
         Calls _write_sse_responses directly so the test can await the
         handler to completion (TestClient disconnection races the server
@@ -2591,14 +2608,14 @@ class TestResponsesStreaming:
                     conversation=None,
                     store=True,
                     session_id=None,
+                    cleanup_ref=_confirmed_local_cleanup_ref(),
                 )
 
-        # The in_progress snapshot was persisted on response.created,
-        # and the CancelledError handler must have updated it to
-        # ``incomplete`` with the partial text it saw.
+        # The in_progress snapshot remains nonterminal, with partial text.
         stored = adapter._response_store.get(response_id)
         assert stored is not None, "snapshot must be retrievable after cancellation"
-        assert stored["response"]["status"] == "incomplete"
+        assert stored["response"]["status"] == "in_progress"
+        assert stored["response"]["hermes"]["terminal"] is False
         # Partial text captured before cancel should be preserved.
         output_text = "".join(
             part.get("text", "")
@@ -2660,6 +2677,7 @@ class TestResponsesStreaming:
                 conversation=None,
                 store=True,
                 session_id=None,
+                cleanup_ref=_confirmed_local_cleanup_ref(),
             )
 
         stored = adapter._response_store.get(response_id)
@@ -3134,6 +3152,7 @@ class TestChatCompletionsAgentIncomplete:
             "final_response": "Here is part one of the answer",
             "completed": False,
             "partial": True,
+            "outcome_code": "output_truncated",
             "error": "Response truncated due to output length limit",
             "messages": [],
             "api_calls": 1,
@@ -4011,6 +4030,27 @@ class TestModelRoutesHandlers:
 
 
 class TestModelRoutesAgentCreation:
+    def test_isolated_runtime_forces_agent_memory_and_context_off(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._isolated_gateway_runtime_active",
+            lambda: True,
+        )
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="isolated")
+
+        assert captured["skip_memory"] is True
+        assert captured["skip_context_files"] is True
+
     def test_route_overrides_model_and_credentials(self, monkeypatch):
         captured = {}
 

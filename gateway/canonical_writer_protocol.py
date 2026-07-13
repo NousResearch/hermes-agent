@@ -45,6 +45,7 @@ class CanonicalWriterOperation(StrEnum):
     """Operations implemented by the privileged writer boundary."""
 
     PING = "ping"
+    CANARY_SCOPE_CLAIM = "canary.scope_claim"
     CASE_QUERY = "case.query"
     ROUTEBACK_CONTEXT = "routeback.context"
     PLAN_ACTIVE_MATCH = "plan.active_match"

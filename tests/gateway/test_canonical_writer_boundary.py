@@ -44,6 +44,13 @@ from gateway.canonical_writer_service import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _tmp_path_uses_process_primary_group(tmp_path):
+    """Keep BSD tmp-path group inheritance aligned with the test process."""
+
+    os.chown(tmp_path, -1, os.getgid())
+
+
 class _StaticMainPidProvider:
     def __init__(self, pid, expected_unit=None):
         self.pid = pid

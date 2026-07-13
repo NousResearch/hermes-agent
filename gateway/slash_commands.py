@@ -29,7 +29,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
@@ -48,6 +47,24 @@ from utils import (
 )
 
 logger = logging.getLogger("gateway.run")
+
+
+# /usage is the only consumer of the account/auth chain. Keep these names at
+# module scope for the established test/patch surface while deferring imports
+# until the command actually runs; privileged gateway bootstrap must be able to
+# validate its sealed environment before optional auth/config modules execute.
+def fetch_account_usage(*args: Any, **kwargs: Any) -> Any:
+    from agent.account_usage import fetch_account_usage as _fetch_account_usage
+
+    return _fetch_account_usage(*args, **kwargs)
+
+
+def render_account_usage_lines(*args: Any, **kwargs: Any) -> Any:
+    from agent.account_usage import (
+        render_account_usage_lines as _render_account_usage_lines,
+    )
+
+    return _render_account_usage_lines(*args, **kwargs)
 
 # Upper bound on the off-loop agent-resource cleanup during a /new or /reset
 # (see _handle_reset_command). A stuck teardown must not block the event loop;

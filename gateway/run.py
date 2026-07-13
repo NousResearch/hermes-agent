@@ -35,6 +35,7 @@ import os
 import re
 import shlex
 import site
+import stat
 import sys
 import signal
 import tempfile
@@ -47,13 +48,39 @@ from pathlib import Path
 from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Union
 
-# account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
-# /usage; we still import it at module top in the gateway because test
-# patches (tests/gateway/test_usage_command.py) target
-# `gateway.run.fetch_account_usage` as a module-level attribute. The
-# gateway is a long-running daemon, so its boot cost matters less than
-# preserving the established test-patch surface.
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
+# The privileged canonical unit passes this exact argv flag.  Detecting the
+# literal switch is a mechanical import-order boundary, not intent routing:
+# argparse remains authoritative and rejects malformed invocations later.
+# The boundary must exist before importing Hermes modules because some of
+# those modules can otherwise discover providers while constructing config UI
+# metadata.
+_REQUIRED_CANONICAL_IMPORT_QUARANTINE = (
+    "--require-canonical-writer" in sys.argv[1:]
+)
+
+# Mark the process before importing configuration helpers.  The same assignment
+# used to happen much later in this module, after ``hermes_cli.config`` had
+# already been imported.
+os.environ["_HERMES_GATEWAY"] = "1"
+
+
+# Keep the historical module-level patch/import surface without importing the
+# OpenAI SDK and auth/config chain during gateway bootstrap.  /usage itself is
+# implemented in gateway.slash_commands and loads these helpers only when used.
+def fetch_account_usage(*args: Any, **kwargs: Any) -> Any:
+    from agent.account_usage import fetch_account_usage as _fetch_account_usage
+
+    return _fetch_account_usage(*args, **kwargs)
+
+
+def render_account_usage_lines(*args: Any, **kwargs: Any) -> Any:
+    from agent.account_usage import (
+        render_account_usage_lines as _render_account_usage_lines,
+    )
+
+    return _render_account_usage_lines(*args, **kwargs)
+
+
 from agent.async_utils import safe_schedule_threadsafe
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
@@ -1308,9 +1335,8 @@ def _clear_planned_restart_notification() -> None:
     _planned_restart_notification_path().unlink(missing_ok=True)
 
 
-# Mark this process as a gateway so cli.py's module-level load_cli_config()
-# knows not to clobber TERMINAL_CWD if lazily imported.
-os.environ["_HERMES_GATEWAY"] = "1"
+# This process was marked as a gateway above, before Hermes module imports, so
+# lazy CLI imports cannot clobber TERMINAL_CWD.
 
 _ensure_ssl_certs()
 
@@ -1327,7 +1353,11 @@ _hermes_home = get_hermes_home()
 from dotenv import load_dotenv  # noqa: F401  # backward-compat for tests that monkeypatch this symbol
 from hermes_cli.env_loader import load_hermes_dotenv
 _env_path = _hermes_home / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+if not _REQUIRED_CANONICAL_IMPORT_QUARANTINE:
+    load_hermes_dotenv(
+        hermes_home=_hermes_home,
+        project_env=Path(__file__).resolve().parents[1] / '.env',
+    )
 
 
 def _reload_runtime_env_preserving_config_authority() -> None:
@@ -1469,7 +1499,7 @@ _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
 _config_path = _hermes_home / 'config.yaml'
-if _config_path.exists():
+if not _REQUIRED_CANONICAL_IMPORT_QUARANTINE and _config_path.exists():
     try:
         import yaml as _yaml
         with open(_config_path, encoding="utf-8") as _f:
@@ -1701,27 +1731,30 @@ if _config_path.exists():
         )
 
 # Apply IPv4 preference if configured (before any HTTP clients are created).
-try:
-    from hermes_constants import apply_ipv4_preference
-    _network_cfg = (_cfg if '_cfg' in dir() else {}).get("network", {})
-    if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
-        apply_ipv4_preference(force=True)
-except Exception as _bootstrap_exc:
-    print(f"  Warning: IPv4 preference application failed: {_bootstrap_exc}", file=sys.stderr)
+if not _REQUIRED_CANONICAL_IMPORT_QUARANTINE:
+    try:
+        from hermes_constants import apply_ipv4_preference
+        _network_cfg = (_cfg if '_cfg' in dir() else {}).get("network", {})
+        if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
+            apply_ipv4_preference(force=True)
+    except Exception as _bootstrap_exc:
+        print(f"  Warning: IPv4 preference application failed: {_bootstrap_exc}", file=sys.stderr)
 
 # Validate config structure early — log warnings so gateway operators see problems
-try:
-    from hermes_cli.config import print_config_warnings
-    print_config_warnings()
-except Exception as _bootstrap_exc:
-    print(f"  Warning: config validation failed: {_bootstrap_exc}", file=sys.stderr)
+if not _REQUIRED_CANONICAL_IMPORT_QUARANTINE:
+    try:
+        from hermes_cli.config import print_config_warnings
+        print_config_warnings()
+    except Exception as _bootstrap_exc:
+        print(f"  Warning: config validation failed: {_bootstrap_exc}", file=sys.stderr)
 
 # Warn if user has deprecated MESSAGING_CWD / TERMINAL_CWD in .env
-try:
-    from hermes_cli.config import warn_deprecated_cwd_env_vars
-    warn_deprecated_cwd_env_vars()
-except Exception as _bootstrap_exc:
-    print(f"  Warning: deprecation check failed: {_bootstrap_exc}", file=sys.stderr)
+if not _REQUIRED_CANONICAL_IMPORT_QUARANTINE:
+    try:
+        from hermes_cli.config import warn_deprecated_cwd_env_vars
+        warn_deprecated_cwd_env_vars()
+    except Exception as _bootstrap_exc:
+        print(f"  Warning: deprecation check failed: {_bootstrap_exc}", file=sys.stderr)
 
 # Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
 os.environ["HERMES_QUIET"] = "1"
@@ -2603,6 +2636,31 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+def _isolated_gateway_runtime_active() -> bool:
+    """Return the explicit clean-room runtime state of the active gateway.
+
+    The default is deliberately false and there is no environment override.
+    Sealed runtimes opt in through ``gateway.isolated_runtime`` in config.yaml.
+    """
+
+    try:
+        runner = _gateway_runner_ref()
+        return bool(runner is not None and runner._isolated_runtime is True)
+    except Exception:
+        return False
+
+
+def _configure_gateway_provider_discovery(isolated_runtime: Any) -> bool:
+    """Apply the one-way provider-registry pin for an isolated gateway."""
+
+    if isolated_runtime is not True:
+        return False
+    from providers import configure_isolated_provider_discovery
+
+    configure_isolated_provider_discovery(frozenset({"openai-codex"}))
+    return True
+
+
 def _legacy_handoff_forbidden_by_writer_policy() -> bool:
     """Fail closed when handoffs require a typed Canonical lifecycle."""
 
@@ -2853,6 +2911,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     _startup_restore_in_progress: bool = False
+    _isolated_runtime: bool = False
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -2862,6 +2921,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         harden_gateway_process_for_writer_boundary()
         self.config = config or load_gateway_config()
+        self._isolated_runtime = self.config.isolated_runtime is True
+        # One-way clean-room pin. This must precede every provider lookup; the
+        # registry raises if broad discovery already happened.
+        _configure_gateway_provider_discovery(self._isolated_runtime)
         # Mark the process as a profile multiplexer when configured. This flips
         # agent.secret_scope.get_secret() to fail-closed on any unscoped
         # credential read, so a missed migration crashes loudly instead of
@@ -3067,12 +3130,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
-        # Ensure tirith security scanner is available (downloads if needed)
-        try:
-            from tools.tirith_security import ensure_installed
-            ensure_installed(log_failures=False)
-        except Exception:
-            pass  # Non-fatal — fail-open at scan time if unavailable
+        # Ensure the optional scanner is available for continuity runtimes.
+        # Its installer may perform network/package mutations, so a sealed
+        # single-task runtime never invokes it during construction.
+        if not self._isolated_runtime:
+            try:
+                from tools.tirith_security import ensure_installed
+
+                ensure_installed(log_failures=False)
+            except Exception:
+                pass  # Non-fatal — fail-open at scan time if unavailable
 
         # Startup heads-up (#30882): a gateway in manual approval mode with no
         # automated risk assessor (tirith disabled AND no auxiliary.approval
@@ -6688,6 +6755,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         agent is already running are skipped regardless, so a session
         scheduled at startup is never resumed a second time.
         """
+        # Reconnect paths call this method with a platform scope, so an
+        # isolated runtime enforces the invariant here rather than relying on
+        # the initial startup call site.  No prior session may synthesize a
+        # model turn in the clean-room process.
+        if self._isolated_runtime:
+            return 0
         window = _auto_continue_freshness_window()
         try:
             with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
@@ -6836,6 +6909,130 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 service_restart=self._restart_via_service,
             )
         return True
+
+    def _load_gateway_startup_hooks(self) -> bool:
+        """Load configured startup hooks unless clean-room isolation is active."""
+
+        if self._isolated_runtime:
+            logger.info("Gateway startup hooks disabled by isolated runtime policy")
+            return False
+        # Gateway has no TTY, so consent is resolved from the established
+        # shell-hook config channels. Event hooks are discovered only after
+        # that registration completes.
+        try:
+            from hermes_cli.config import load_config
+            from agent.shell_hooks import register_from_config
+
+            register_from_config(load_config(), accept_hooks=False)
+        except Exception:
+            logger.debug(
+                "shell-hook registration failed at gateway startup",
+                exc_info=True,
+            )
+        self.hooks.discover_and_load()
+        return True
+
+    def _agent_startup_isolation_kwargs(self) -> Dict[str, bool]:
+        """Return mechanical AIAgent startup-source gates for this process."""
+
+        isolated = self._isolated_runtime is True
+        return {
+            "skip_memory": isolated,
+            "skip_context_files": isolated,
+        }
+
+    def _recover_gateway_process_checkpoint(self) -> int:
+        """Recover prior background processes only in continuity runtimes."""
+
+        if self._isolated_runtime:
+            return 0
+        try:
+            from tools.process_registry import process_registry
+
+            recovered = process_registry.recover_from_checkpoint()
+            if recovered:
+                logger.info(
+                    "Recovered %s background process(es) from previous run",
+                    recovered,
+                )
+            return int(recovered or 0)
+        except Exception as exc:
+            logger.warning("Process checkpoint recovery: %s", exc)
+            return 0
+
+    def _start_gateway_continuity_watchers(self) -> tuple[asyncio.Task, ...]:
+        """Start prior-state/background watchers outside isolated runtimes."""
+
+        if self._isolated_runtime:
+            logger.info("Gateway continuity watchers disabled by isolated runtime policy")
+            return ()
+
+        if self._failed_platforms:
+            logger.info(
+                "Starting reconnection watcher for %d failed platform(s): %s",
+                len(self._failed_platforms),
+                ", ".join(platform.value for platform in self._failed_platforms),
+            )
+        tasks = [
+            asyncio.create_task(self._session_expiry_watcher()),
+            asyncio.create_task(self._kanban_notifier_watcher()),
+            asyncio.create_task(self._kanban_dispatcher_watcher()),
+            asyncio.create_task(self._platform_reconnect_watcher()),
+            asyncio.create_task(self._handoff_watcher()),
+            asyncio.create_task(self._async_delegation_watcher()),
+            asyncio.create_task(self._drain_control_watcher()),
+        ]
+        try:
+            if self._scale_to_zero_should_arm():
+                logger.info(
+                    "scale-to-zero: armed (idle timeout %.0fs) — watching for idle",
+                    self._scale_to_zero_idle_timeout_seconds(),
+                )
+                tasks.append(asyncio.create_task(self._scale_to_zero_watcher()))
+            else:
+                self._log_scale_to_zero_not_armed_reason()
+        except Exception:  # noqa: BLE001 - arming must never block startup
+            logger.debug("scale-to-zero: arm check failed at startup", exc_info=True)
+        return tuple(tasks)
+
+    async def _prepare_gateway_startup_restore(self) -> None:
+        """Initialize startup serialization without stale-state mutation."""
+
+        if not self._isolated_runtime:
+            _clean_marker = _hermes_home / ".clean_shutdown"
+            if _clean_marker.exists():
+                logger.info("Previous gateway exited cleanly — skipping session suspension")
+                try:
+                    _clean_marker.unlink()
+                except Exception:
+                    pass
+            else:
+                try:
+                    exact_marked = self._mark_runtime_status_active_sessions_resume_pending()
+                    heuristic_marked = await self.async_session_store.suspend_recently_active()
+                    total_marked = exact_marked + heuristic_marked
+                    if total_marked:
+                        logger.info(
+                            "Marked %d in-flight session(s) as resumable from previous run "
+                            "(exact=%d, heuristic=%d)",
+                            total_marked,
+                            exact_marked,
+                            heuristic_marked,
+                        )
+                except Exception as exc:
+                    logger.warning("Session suspension on startup failed: %s", exc)
+            try:
+                stuck = self._suspend_stuck_loop_sessions()
+                if stuck:
+                    logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
+            except Exception as exc:
+                logger.debug("Stuck-loop detection failed: %s", exc)
+
+        # Keep inbound serialization initialized in both modes. Isolated mode
+        # has no replay tasks, so _finish_startup_restore immediately opens it.
+        self._startup_restore_in_progress = True
+        self._startup_restore_queue = []
+        self._startup_restore_tasks = []
 
     async def start(self) -> bool:
         """
@@ -7043,8 +7240,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # guaranteed to have run by the time we reach this point.
         try:
             from hermes_cli.plugins import discover_plugins
-            discover_plugins()
+            if self._isolated_runtime:
+                allowlist = frozenset(self.config.isolated_plugin_allowlist)
+                if not allowlist:
+                    raise RuntimeError(
+                        "isolated runtime plugin allowlist is empty"
+                    )
+                discover_plugins(isolated_allowlist=allowlist)
+            else:
+                discover_plugins()
         except Exception:
+            if self._isolated_runtime:
+                logger.error(
+                    "isolated plugin discovery failed; gateway remains offline",
+                    exc_info=True,
+                )
+                self._startup_restore_in_progress = False
+                return False
             logger.warning(
                 "plugin discovery failed at gateway startup", exc_info=True,
             )
@@ -7054,116 +7266,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # direct/single-tenant deployments are unaffected. When configured, the
         # adapter dials the connector over a WebSocket, negotiates its capability
         # descriptor at handshake, and bridges inbound/outbound like any platform.
-        try:
-            from gateway.relay import (
-                register_relay_adapter,
-                relay_url,
-                self_provision_relay,
-                send_relay_policy,
-            )
-
-            # Boot-time relay self-provision: resolve the agent's NAS token ->
-            # POST /relay/provision -> set GATEWAY_RELAY_* in os.environ BEFORE
-            # registration reads them. No-op when relay is unconfigured, a secret
-            # is already pinned, or no NAS token resolves (self-hosted, unenrolled).
-            # Never raises.
-            self_provision_relay()
-
-            if register_relay_adapter():
-                logger.info("relay adapter registered (connector at %s)", relay_url())
-                # Declare this gateway's relevance policy (mention-gating /
-                # free-response / allow-bots) to the connector so the SAME
-                # behavior governs relay delivery (Phase 6 Unit ζ). Runs after
-                # the secret is resolved; never raises, never blocks boot.
-                send_relay_policy()
-        except Exception:
-            logger.warning(
-                "relay adapter registration failed at gateway startup", exc_info=True,
-            )
-
-        # Register declarative shell hooks from cli-config.yaml.  Gateway
-        # has no TTY, so consent has to come from one of the three opt-in
-        # channels (--accept-hooks on launch, HERMES_ACCEPT_HOOKS env var,
-        # or hooks_auto_accept: true in config.yaml).  We pass
-        # accept_hooks=False here and let register_from_config resolve
-        # the effective value from env + config itself — the CLI-side
-        # registration already honored --accept-hooks, and re-reading
-        # hooks_auto_accept here would just duplicate that lookup.
-        # Failures are logged but must never block gateway startup.
-        try:
-            from hermes_cli.config import load_config
-            from agent.shell_hooks import register_from_config
-            register_from_config(load_config(), accept_hooks=False)
-        except Exception:
-            logger.debug(
-                "shell-hook registration failed at gateway startup",
-                exc_info=True,
-            )
-
-        # Discover and load event hooks
-        self.hooks.discover_and_load()
-
-        
-        # Recover background processes from checkpoint (crash recovery)
-        try:
-            from tools.process_registry import process_registry
-            recovered = process_registry.recover_from_checkpoint()
-            if recovered:
-                logger.info("Recovered %s background process(es) from previous run", recovered)
-        except Exception as e:
-            logger.warning("Process checkpoint recovery: %s", e)
-
-        # Suspend sessions that were active when the gateway last exited.
-        # This prevents stuck sessions from being blindly resumed on restart,
-        # which can create an unrecoverable loop (#7536).  Suspended sessions
-        # auto-reset on the next incoming message, giving the user a clean start.
-        #
-        # SKIP suspension after a clean (graceful) shutdown — the previous
-        # process already drained active agents, so sessions aren't stuck.
-        # This prevents unwanted auto-resets after `hermes update`,
-        # `hermes gateway restart`, or `/restart`.
-        _clean_marker = _hermes_home / ".clean_shutdown"
-        if _clean_marker.exists():
-            logger.info("Previous gateway exited cleanly — skipping session suspension")
+        if not self._isolated_runtime:
             try:
-                _clean_marker.unlink()
+                from gateway.relay import (
+                    register_relay_adapter,
+                    relay_url,
+                    self_provision_relay,
+                    send_relay_policy,
+                )
+
+                # Boot-time relay self-provision: resolve the agent's NAS token ->
+                # POST /relay/provision -> set GATEWAY_RELAY_* before registration.
+                self_provision_relay()
+
+                if register_relay_adapter():
+                    logger.info("relay adapter registered (connector at %s)", relay_url())
+                    # Declare this gateway's relevance policy after registration.
+                    send_relay_policy()
             except Exception:
-                pass
-        else:
-            try:
-                exact_marked = self._mark_runtime_status_active_sessions_resume_pending()
-                heuristic_marked = await self.async_session_store.suspend_recently_active()
-                total_marked = exact_marked + heuristic_marked
-                if total_marked:
-                    logger.info(
-                        "Marked %d in-flight session(s) as resumable from previous run "
-                        "(exact=%d, heuristic=%d)",
-                        total_marked,
-                        exact_marked,
-                        heuristic_marked,
-                    )
-            except Exception as e:
-                logger.warning("Session suspension on startup failed: %s", e)
+                logger.warning(
+                    "relay adapter registration failed at gateway startup",
+                    exc_info=True,
+                )
 
-        # Stuck-loop detection (#7536): if a session has been active across
-        # 3+ consecutive restarts, it's probably stuck in a loop (the same
-        # history keeps causing the agent to hang).  Auto-suspend it so the
-        # user gets a clean slate on the next message.
-        try:
-            stuck = self._suspend_stuck_loop_sessions()
-            if stuck:
-                logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
-        except Exception as e:
-            logger.debug("Stuck-loop detection failed: %s", e)
+        self._load_gateway_startup_hooks()
 
-        # Serialize startup restore against inbound dispatch.  Platform
-        # adapters can begin receiving messages as soon as they connect, but
-        # restart-interrupted sessions are not auto-resumed until all startup
-        # wiring below completes.  Queue inbound messages until the resume
-        # pass runs and every synthetic resume turn has finished.
-        self._startup_restore_in_progress = True
-        self._startup_restore_queue = []
-        self._startup_restore_tasks = []
+        # Isolated runtimes return before importing the process registry; their
+        # fixed processes.json path is also masked by the service namespace.
+        self._recover_gateway_process_checkpoint()
+
+        await self._prepare_gateway_startup_restore()
 
         connected_count = 0
         enabled_platform_count = 0
@@ -7303,7 +7435,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # profile's home + credential scope and stamp their inbound events with
         # the profile so the agent turn resolves correctly. No-op when off.
         try:
-            _secondary_connected = await self._start_secondary_profile_adapters()
+            _secondary_connected = (
+                0
+                if self._isolated_runtime
+                else await self._start_secondary_profile_adapters()
+            )
             connected_count += _secondary_connected
         except MultiplexConfigError as e:
             # Invalid multiplexer config — abort startup cleanly so the operator
@@ -7321,6 +7457,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return True
         except Exception as e:
             logger.error("Secondary-profile adapter startup failed: %s", e, exc_info=True)
+
+        if self._isolated_runtime and (
+            enabled_platform_count != 1
+            or connected_count != 1
+            or set(self.adapters) != {Platform.API_SERVER}
+        ):
+            reason = "isolated runtime requires its sole API control adapter at startup"
+            logger.error("%s", reason)
+            self._update_runtime_status("startup_failed", exit_reason=reason)
+            self._startup_restore_in_progress = False
+            return False
 
         if connected_count == 0:
             if startup_nonretryable_errors:
@@ -7381,7 +7528,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if await self._abort_startup_if_shutdown_requested():
             return True
         self.delivery_router.adapters = self.adapters
-        self._wire_teams_pipeline_runtime()
+        if not self._isolated_runtime:
+            self._wire_teams_pipeline_runtime()
 
         self._running = True
         self._update_runtime_status("running")
@@ -7397,146 +7545,83 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
         
-        # Build initial channel directory for send_message name resolution
-        try:
-            from gateway.channel_directory import build_channel_directory
-            directory = await build_channel_directory(self.adapters)
-            ch_count = sum(len(chs) for chs in directory.get("platforms", {}).values())
-            logger.info("Channel directory built: %d target(s)", ch_count)
-        except Exception as e:
-            logger.warning("Channel directory build failed: %s", e)
-        
-        # Check if we're restarting after a /update command. If the update is
-        # still running, keep watching so we notify once it actually finishes.
-        notified = await self._send_update_notification()
-        if not notified and any(
-            path.exists()
-            for path in (
-                _hermes_home / ".update_pending.json",
-                _hermes_home / ".update_pending.claimed.json",
-            )
-        ):
-            self._schedule_update_notification_watch()
-
-        # Give freshly connected platform adapters a brief moment to settle
-        # before sending restart/startup lifecycle messages. In practice this
-        # helps Discord thread deliveries right after reconnect.
-        if connected_count > 0:
-            await asyncio.sleep(1.0)
-
-        # Notify the chat that initiated /restart that the gateway is back.
-        planned_restart_notification_pending = _planned_restart_notification_pending()
-        # Capture, before _send_restart_notification() unlinks the marker,
-        # whether this process booted from a chat-originated /restart. Used as
-        # a one-shot signal by the /restart redelivery guard so a missing
-        # dedup marker only suppresses a /restart when we KNOW we just came out
-        # of a restart cycle (see _is_stale_restart_redelivery).
-        if _restart_notification_pending() or planned_restart_notification_pending:
-            self._booted_from_restart = True
-        await self._send_restart_notification()
-
-        # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
+        if not self._isolated_runtime:
+            # Build the continuity channel directory and deliver any pending
+            # update/restart lifecycle notifications.  All of these consume
+            # prior-run state, so clean-room runtimes skip the whole surface.
             try:
-                await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
+                from gateway.channel_directory import build_channel_directory
+
+                directory = await build_channel_directory(self.adapters)
+                ch_count = sum(
+                    len(chs) for chs in directory.get("platforms", {}).values()
                 )
-            finally:
-                _clear_planned_restart_notification()
+                logger.info("Channel directory built: %d target(s)", ch_count)
+            except Exception as e:
+                logger.warning("Channel directory build failed: %s", e)
+
+            notified = await self._send_update_notification()
+            if not notified and any(
+                path.exists()
+                for path in (
+                    _hermes_home / ".update_pending.json",
+                    _hermes_home / ".update_pending.claimed.json",
+                )
+            ):
+                self._schedule_update_notification_watch()
+
+            if connected_count > 0:
+                await asyncio.sleep(1.0)
+
+            planned_restart_notification_pending = (
+                _planned_restart_notification_pending()
+            )
+            if (
+                _restart_notification_pending()
+                or planned_restart_notification_pending
+            ):
+                self._booted_from_restart = True
+            await self._send_restart_notification()
+
+            if planned_restart_notification_pending:
+                try:
+                    await self._send_home_channel_startup_notifications(
+                        skip_targets=None,
+                    )
+                finally:
+                    _clear_planned_restart_notification()
 
         # Automatically continue fresh sessions that were interrupted by the
-        # previous gateway restart/shutdown.  The resume_pending flag is cleared
-        # by the normal successful-turn path, so a failed auto-resume remains
-        # visible for manual recovery on the next user message.
-        self._schedule_resume_pending_sessions()
+        # previous gateway restart/shutdown.  A clean-room runtime must never
+        # synthesize a model turn from pre-existing SessionStore rows; explicit
+        # inbound work remains available without startup replay.
+        if self._isolated_runtime:
+            logger.info("Startup session auto-resume disabled by isolated runtime policy")
+        else:
+            self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
-        try:
-            from tools.process_registry import process_registry
-            # Detach the current batch atomically: reassigning to a fresh list
-            # takes ownership of exactly the watchers present now, so any watcher
-            # appended concurrently during the yield below isn't silently dropped
-            # by a clear() on the shared list.
-            watchers = process_registry.pending_watchers
-            process_registry.pending_watchers = []
-            # Process in batches of 100 with event-loop yield points to avoid
-            # O(n^2) event-loop blocking when recovering thousands of watchers.
-            for i, watcher in enumerate(watchers):
-                asyncio.create_task(self._run_process_watcher(watcher))
-                logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
-                if i % 100 == 99:
-                    await asyncio.sleep(0)
-        except Exception as e:
-            logger.error("Recovered watcher setup error: %s", e)
+        if not self._isolated_runtime:
+            try:
+                from tools.process_registry import process_registry
+                # Detach the current batch atomically: reassigning to a fresh list
+                # takes ownership of exactly the watchers present now, so any watcher
+                # appended concurrently during the yield below isn't silently dropped
+                # by a clear() on the shared list.
+                watchers = process_registry.pending_watchers
+                process_registry.pending_watchers = []
+                # Process in batches of 100 with event-loop yield points to avoid
+                # O(n^2) event-loop blocking when recovering thousands of watchers.
+                for i, watcher in enumerate(watchers):
+                    asyncio.create_task(self._run_process_watcher(watcher))
+                    logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
+                    if i % 100 == 99:
+                        await asyncio.sleep(0)
+            except Exception as e:
+                logger.error("Recovered watcher setup error: %s", e)
 
-        # Start background session expiry watcher to finalize expired sessions
-        asyncio.create_task(self._session_expiry_watcher())
-
-        # Start background kanban notifier — delivers `completed`, `blocked`,
-        # `spawn_auto_blocked`, and `crashed` events to gateway subscribers
-        # so human-in-the-loop workflows hear back without polling.
-        asyncio.create_task(self._kanban_notifier_watcher())
-
-        # Start background kanban dispatcher — spawns workers for ready
-        # tasks. Gated by `kanban.dispatch_in_gateway` (default True).
-        # When false, users run `hermes kanban daemon` externally or
-        # simply don't use kanban; this loop becomes a no-op.
-        asyncio.create_task(self._kanban_dispatcher_watcher())
-
-        # Start background reconnection watcher for platforms that failed at startup
-        if self._failed_platforms:
-            logger.info(
-                "Starting reconnection watcher for %d failed platform(s): %s",
-                len(self._failed_platforms),
-                ", ".join(p.value for p in self._failed_platforms),
-            )
-        asyncio.create_task(self._platform_reconnect_watcher())
-
-        # Start background handoff watcher — picks up CLI sessions marked
-        # handoff_state='pending' in state.db and re-binds them to the
-        # destination platform's home channel, then forges a synthetic user
-        # turn so the agent kicks off the new chat.
-        asyncio.create_task(self._handoff_watcher())
-
-        # Start background async-delegation watcher — drains completion events
-        # from delegate_task(background=true) subagents and injects each
-        # result back into its originating session as a new turn, covering the
-        # idle case where the subagent finishes with no agent turn running.
-        asyncio.create_task(self._async_delegation_watcher())
-
-        # Start the scale-to-zero idle watcher ONLY when this instance is opted
-        # in (the NAS "Labs" HERMES_SCALE_TO_ZERO stamp), messaging is
-        # relay-only/absent, and a wakeUrl is registered (decisions.md D1/D11/
-        # §3.4(1)). A non-opted instance never starts it, so behaviour is exactly
-        # as today. When armed, the watcher drives the relay dormant on sustained
-        # idle so the platform (Fly autostop:"suspend") can suspend the machine.
-        try:
-            if self._scale_to_zero_should_arm():
-                logger.info(
-                    "scale-to-zero: armed (idle timeout %.0fs) — watching for idle",
-                    self._scale_to_zero_idle_timeout_seconds(),
-                )
-                asyncio.create_task(self._scale_to_zero_watcher())
-            else:
-                # Surface WHY an OPTED-IN instance didn't arm (a non-opted instance
-                # not arming is normal — stay silent there). Without this, a failed
-                # arm is invisible and "why won't it suspend/wake?" needs a box-dive.
-                self._log_scale_to_zero_not_armed_reason()
-        except Exception:  # noqa: BLE001 - arming must never block startup
-            logger.debug("scale-to-zero: arm check failed at startup", exc_info=True)
-
-        # Start background drain-control watcher — reconciles the gateway's
-        # new-turn accept-state with the external ``.drain_request.json`` marker
-        # the dashboard begin/cancel-drain endpoint writes (Phase 2). A marker
-        # left behind by a prior instantiation (durable-volume restart, NS-570)
-        # is ignored via its instantiation epoch; only a current-epoch marker
-        # engages drain on the first tick.
-        asyncio.create_task(self._drain_control_watcher())
+        self._start_gateway_continuity_watchers()
 
         logger.info("Press Ctrl+C to stop")
         
@@ -13929,6 +14014,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
+                    **self._agent_startup_isolation_kwargs(),
                 )
                 try:
                     return agent.run_conversation(
@@ -18936,6 +19022,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
+                    **self._agent_startup_isolation_kwargs(),
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
@@ -21052,6 +21139,64 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     logger.info("Gateway housekeeping stopped")
 
 
+def _gateway_cron_scheduler_enabled() -> bool:
+    """Honor only an explicit ``cron.enabled: false`` gateway opt-out.
+
+    Missing, malformed, or unreadable config preserves Hermes' historical
+    default-on scheduler.  The sealed canary validator separately requires the
+    value to be the literal boolean false.
+    """
+
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    except Exception as exc:
+        logger.warning("Could not read cron.enabled; preserving gateway cron: %s", exc)
+        return True
+    cron_config = config.get("cron") if isinstance(config, dict) else None
+    return not (
+        isinstance(cron_config, dict)
+        and cron_config.get("enabled") is False
+    )
+
+
+def _gateway_cron_enabled_for_runtime(isolated_runtime: bool) -> bool:
+    """Apply the clean-room cron invariant before any config/provider read."""
+
+    if type(isolated_runtime) is not bool:
+        raise TypeError("isolated runtime state must be boolean")
+    return False if isolated_runtime else _gateway_cron_scheduler_enabled()
+
+
+def _start_gateway_cron_scheduler(
+    *,
+    enabled: bool,
+    stop_event: threading.Event,
+    adapters: Any,
+    loop: asyncio.AbstractEventLoop,
+) -> tuple[Any, Optional[threading.Thread]]:
+    """Start the resolved cron provider, or return an inert disabled pair."""
+
+    if type(enabled) is not bool:
+        raise TypeError("gateway cron enabled state must be a boolean")
+    if not enabled:
+        logger.info("Gateway cron scheduler disabled by explicit config")
+        return None, None
+    from cron.scheduler_provider import resolve_cron_scheduler
+
+    provider = resolve_cron_scheduler()
+    thread = threading.Thread(
+        target=provider.start,
+        args=(stop_event,),
+        kwargs={"adapters": adapters, "loop": loop},
+        daemon=True,
+        name="cron-scheduler",
+    )
+    thread.start()
+    return provider, thread
+
+
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
     """DEPRECATED shim — preserved for backward compatibility.
 
@@ -21131,6 +21276,9 @@ async def start_gateway(
     """
     if type(require_canonical_writer) is not bool:
         raise TypeError("require_canonical_writer must be boolean")
+    isolated_runtime = bool(
+        config is not None and config.isolated_runtime is True
+    )
     # Snapshot the checkout revision now, while sys.modules still matches disk,
     # so a later `git pull` under this long-lived process can be detected (and
     # risky work like model switching refused) instead of crashing on a stale
@@ -21299,12 +21447,15 @@ async def start_gateway(
             )
             return False
 
-    # Sync bundled skills on gateway start (fast -- skips unchanged)
-    try:
-        from tools.skills_sync import sync_skills
-        sync_skills(quiet=True)
-    except Exception:
-        pass
+    # Sync bundled skills on continuity gateways. A sealed single-task runtime
+    # must not seed persistent user semantics before its first requested turn.
+    if not isolated_runtime:
+        try:
+            from tools.skills_sync import sync_skills
+
+            sync_skills(quiet=True)
+        except Exception:
+            pass
 
     # Centralized logging — agent.log (INFO+), errors.log (WARNING+),
     # and gateway.log (INFO+, gateway-component records only).
@@ -21348,6 +21499,9 @@ async def start_gateway(
             logging.getLogger().setLevel(_stderr_level)
 
     runner = GatewayRunner(config)
+    isolated_runtime = bool(
+        getattr(runner, "_isolated_runtime", isolated_runtime)
+    )
     
     # Track whether an unexpected signal initiated the shutdown. When an
     # unexpected SIGTERM kills the gateway, we exit non-zero so service
@@ -21570,12 +21724,15 @@ async def start_gateway(
         release_gateway_runtime_lock()
         return False
 
-    try:
-        from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+    nous_keepalive_started = False
+    if not isolated_runtime:
+        try:
+            from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
 
-        start_nous_auth_keepalive()
-    except Exception as exc:
-        logger.debug("Nous auth keepalive did not start: %s", exc)
+            start_nous_auth_keepalive()
+            nous_keepalive_started = True
+        except Exception as exc:
+            logger.debug("Nous auth keepalive did not start: %s", exc)
 
     _ensure_windows_gateway_venv_imports()
 
@@ -21585,12 +21742,14 @@ async def start_gateway(
     # internally; calling it from the loop thread would freeze platform
     # heartbeats (Discord shard, Telegram polling) until it returned.
     # See #16856.
-    try:
-        from tools.mcp_tool import discover_mcp_tools
-        _loop = asyncio.get_running_loop()
-        await _loop.run_in_executor(None, discover_mcp_tools)
-    except Exception as e:
-        logger.debug("MCP tool discovery failed: %s", e)
+    if not isolated_runtime:
+        try:
+            from tools.mcp_tool import discover_mcp_tools
+
+            _loop = asyncio.get_running_loop()
+            await _loop.run_in_executor(None, discover_mcp_tools)
+        except Exception as e:
+            logger.debug("MCP tool discovery failed: %s", e)
 
     # Start the gateway
     success = await runner.start()
@@ -21617,11 +21776,13 @@ async def start_gateway(
             if runner.exit_reason:
                 logger.error("Gateway exiting with failure: %s", runner.exit_reason)
             return False
-        try:
-            from tools.mcp_tool import shutdown_mcp_servers
-            shutdown_mcp_servers()
-        except Exception:
-            pass
+        if not isolated_runtime:
+            try:
+                from tools.mcp_tool import shutdown_mcp_servers
+
+                shutdown_mcp_servers()
+            except Exception:
+                pass
         if runner.exit_code is not None:
             raise SystemExit(runner.exit_code)
         return True
@@ -21659,54 +21820,52 @@ async def start_gateway(
             await runner.stop()
             _planned_stop_watcher_stop.set()
             _planned_stop_watcher_thread.join(timeout=2)
-            try:
-                from tools.mcp_tool import shutdown_mcp_servers
+            if not isolated_runtime:
+                try:
+                    from tools.mcp_tool import shutdown_mcp_servers
 
-                shutdown_mcp_servers()
-            except Exception:
-                pass
+                    shutdown_mcp_servers()
+                except Exception:
+                    pass
             remove_pid_file()
             release_gateway_runtime_lock()
             return False
     
-    # Start the background cron scheduler via the resolved provider so
-    # scheduled jobs fire automatically. The built-in provider is the
-    # historical in-process 60s ticker; an external provider (e.g. chronos)
-    # may arm a schedule and return. Pass the event loop so cron delivery can
-    # use live adapters (E2EE support).
-    from cron.scheduler_provider import resolve_cron_scheduler
+    # Start the background cron scheduler unless config explicitly disables
+    # it. The historical default remains on; the sealed single-task runtime
+    # pins literal false so no jobs.json or script can execute before its task.
     cron_stop = threading.Event()
-    cron_provider = resolve_cron_scheduler()
-    cron_thread = threading.Thread(
-        target=cron_provider.start,
-        args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
-        daemon=True,
-        name="cron-scheduler",
+    cron_provider, cron_thread = _start_gateway_cron_scheduler(
+        enabled=_gateway_cron_enabled_for_runtime(isolated_runtime),
+        stop_event=cron_stop,
+        adapters=runner.adapters,
+        loop=asyncio.get_running_loop(),
     )
-    cron_thread.start()
 
     # Gateway-only periodic housekeeping (channel dir, cache cleanup, paste
     # sweep, curator) — runs independently of which cron provider is active.
     # Shares cron_stop as the shutdown signal.
-    housekeeping_thread = threading.Thread(
-        target=_start_gateway_housekeeping,
-        args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
-        daemon=True,
-        name="gateway-housekeeping",
-    )
-    housekeeping_thread.start()
+    housekeeping_thread = None
+    if not isolated_runtime:
+        housekeeping_thread = threading.Thread(
+            target=_start_gateway_housekeeping,
+            args=(cron_stop,),
+            kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+            daemon=True,
+            name="gateway-housekeeping",
+        )
+        housekeeping_thread.start()
     
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
-    try:
-        from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
+    if nous_keepalive_started:
+        try:
+            from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
 
-        stop_nous_auth_keepalive()
-    except Exception:
-        pass
+            stop_nous_auth_keepalive()
+        except Exception:
+            pass
 
     if runner.should_exit_with_failure:
         if runner.exit_reason:
@@ -21723,15 +21882,20 @@ async def start_gateway(
     # silently dropped (#58818). Awaiting keeps the loop alive so the in-flight
     # delivery finishes before we tear down.
     cron_stop.set()
-    try:
-        cron_provider.stop()
-    except Exception as e:
-        logger.debug("Cron provider stop() error: %s", e)
-    if not await _await_thread_exit(cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT):
-        logger.warning(
-            "Cron ticker did not exit within %.0fs of shutdown — an in-flight "
-            "delivery may have been dropped.", _CRON_SHUTDOWN_DRAIN_TIMEOUT,
-        )
+    if cron_provider is not None:
+        try:
+            cron_provider.stop()
+        except Exception as e:
+            logger.debug("Cron provider stop() error: %s", e)
+    if cron_thread is not None:
+        if not await _await_thread_exit(
+            cron_thread,
+            timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT,
+        ):
+            logger.warning(
+                "Cron ticker did not exit within %.0fs of shutdown — an in-flight "
+                "delivery may have been dropped.", _CRON_SHUTDOWN_DRAIN_TIMEOUT,
+            )
     await _await_thread_exit(
         housekeeping_thread, timeout=_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT
     )
@@ -21740,12 +21904,14 @@ async def start_gateway(
     _planned_stop_watcher_stop.set()
     _planned_stop_watcher_thread.join(timeout=2)
 
-    # Close MCP server connections
-    try:
-        from tools.mcp_tool import shutdown_mcp_servers
-        shutdown_mcp_servers()
-    except Exception:
-        pass
+    # Close MCP server connections only when discovery was allowed.
+    if not isolated_runtime:
+        try:
+            from tools.mcp_tool import shutdown_mcp_servers
+
+            shutdown_mcp_servers()
+        except Exception:
+            pass
 
     if runner.exit_code is not None:
         raise SystemExit(runner.exit_code)
@@ -21777,6 +21943,103 @@ async def start_gateway(
     return True
 
 
+def _read_stable_required_canonical_gateway_config(path: Path) -> bytes:
+    """Read the sealed canary YAML once without following replacement links."""
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise RuntimeError("required canonical gateway config is unavailable") from exc
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= 2 * 1024 * 1024:
+            raise RuntimeError("required canonical gateway config metadata is invalid")
+        chunks: list[bytes] = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(fd, min(remaining, 128 * 1024))
+            if not chunk:
+                raise RuntimeError("required canonical gateway config was truncated")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(fd, 1):
+            raise RuntimeError("required canonical gateway config grew during read")
+        after = os.fstat(fd)
+        identity = lambda item: (
+            item.st_dev,
+            item.st_ino,
+            item.st_size,
+            item.st_mtime_ns,
+            item.st_ctime_ns,
+        )
+        if identity(before) != identity(after):
+            raise RuntimeError("required canonical gateway config changed during read")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _load_required_canonical_gateway_config(config_path: str) -> GatewayConfig:
+    """Fail closed on every post-preflight config or environment overlay."""
+
+    from gateway.canonical_full_canary_runtime import (
+        DEFAULT_DISABLED_MANAGED_SCOPE,
+        DEFAULT_GATEWAY_CA_BUNDLE,
+        DEFAULT_GATEWAY_CONFIG,
+        DEFAULT_GATEWAY_HOME,
+        DEFAULT_GATEWAY_PROFILE_HOME,
+        GATEWAY_UNIT_NAME,
+        _validate_gateway_config,
+        gateway_effective_environment_is_sealed,
+    )
+    from hermes_cli import managed_scope
+
+    path = Path(config_path)
+    if path != DEFAULT_GATEWAY_CONFIG or path != _gateway_config_home() / "config.yaml":
+        raise RuntimeError("required canonical gateway config path is not exact")
+    if managed_scope.get_managed_dir() is not None:
+        raise RuntimeError("required canonical gateway managed scope is not disabled")
+    if not gateway_effective_environment_is_sealed(sorted(os.environ)):
+        raise RuntimeError("required canonical gateway environment is not sealed")
+    expected_environment = {
+        "CREDENTIALS_DIRECTORY": f"/run/credentials/{GATEWAY_UNIT_NAME}",
+        "HERMES_CONFIG": str(DEFAULT_GATEWAY_CONFIG),
+        "HERMES_EXEC_ASK": "1",
+        "HERMES_HOME": str(DEFAULT_GATEWAY_PROFILE_HOME),
+        "HERMES_MANAGED_DIR": str(DEFAULT_DISABLED_MANAGED_SCOPE),
+        "HERMES_MAX_ITERATIONS": "90",
+        "HERMES_QUIET": "1",
+        "HOME": str(DEFAULT_GATEWAY_HOME),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": "/usr/bin:/bin",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+        "SHELL": "/usr/sbin/nologin",
+        "SSL_CERT_FILE": str(DEFAULT_GATEWAY_CA_BUNDLE),
+        "TERMINAL_CWD": str(DEFAULT_GATEWAY_HOME),
+        "TZ": "UTC",
+        "_HERMES_GATEWAY": "1",
+    }
+    if any(os.environ.get(name) != value for name, value in expected_environment.items()):
+        raise RuntimeError("required canonical gateway environment values drifted")
+    if (
+        not os.environ.get("NOTIFY_SOCKET")
+        or not os.environ.get("USER")
+        or os.environ.get("USER") != os.environ.get("LOGNAME")
+    ):
+        raise RuntimeError("required canonical gateway runtime environment is incomplete")
+
+    first_raw = _read_stable_required_canonical_gateway_config(path)
+    sealed = _validate_gateway_config(first_raw)
+    effective = _load_gateway_config()
+    second_raw = _read_stable_required_canonical_gateway_config(path)
+    if second_raw != first_raw or effective != sealed:
+        raise RuntimeError("required canonical gateway effective config drifted")
+    return GatewayConfig.from_dict(dict(sealed))
+
+
 def main():
     """CLI entry point for the gateway."""
     # Force UTF-8 stdio on Windows — gateway logs and startup banner would
@@ -21801,7 +22064,9 @@ def main():
     args = parser.parse_args()
     
     config = None
-    if args.config:
+    if args.config and args.require_canonical_writer:
+        config = _load_required_canonical_gateway_config(args.config)
+    elif args.config:
         import yaml
         with open(args.config, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}

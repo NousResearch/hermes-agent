@@ -1,9 +1,9 @@
-"""Tests for SSE client disconnect → agent task cancellation.
+"""Tests for SSE client disconnect → interrupt plus cleanup ownership.
 
 When a streaming /v1/chat/completions client disconnects mid-stream
 (network drop, browser tab close), the agent is interrupted via
-agent.interrupt() so it stops making LLM API calls, and the asyncio
-task wrapper is cancelled.
+agent.interrupt() so it stops making LLM API calls.  Its asyncio wrapper
+remains alive or strongly tracked until exact cleanup confirms.
 """
 
 import asyncio
@@ -33,6 +33,16 @@ def _make_request():
     return req
 
 
+def _confirmed_cleanup_ref():
+    return [{
+        "authority_created": True,
+        "durable_revoke_succeeded": True,
+        "local_clear_succeeded": True,
+        "authority_active": False,
+        "writer_required": False,
+    }]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -40,9 +50,9 @@ def _make_request():
 class TestSSEAgentCancelOnDisconnect:
     """gateway/platforms/api_server.py — _write_sse_chat_completion()"""
 
-    def test_agent_task_cancelled_on_client_disconnect(self):
+    def test_agent_task_interrupted_not_cancelled_on_client_disconnect(self):
         """When response.write raises ConnectionResetError (client dropped),
-        the agent task must be cancelled."""
+        the agent task must unwind without wrapper cancellation."""
         adapter = _make_adapter()
 
         stream_q = queue.Queue()
@@ -59,6 +69,8 @@ class TestSSEAgentCancelOnDisconnect:
             from aiohttp import web
 
             agent_task = asyncio.ensure_future(fake_agent())
+            mock_agent = MagicMock()
+            mock_agent.interrupt.side_effect = lambda _reason: agent_done.set()
 
             # Mock response that raises ConnectionResetError on second write
             mock_response = AsyncMock(spec=web.StreamResponse)
@@ -80,13 +92,12 @@ class TestSSEAgentCancelOnDisconnect:
                            return_value=mock_response):
                     await adapter._write_sse_chat_completion(
                         _make_request(), "cmpl-123", "gpt-4", 1234567890,
-                        stream_q, agent_task,
+                        stream_q, agent_task, [mock_agent],
+                        cleanup_ref=_confirmed_cleanup_ref(),
                     )
 
-            # The critical assertion: agent_task must be cancelled
-            assert agent_task.cancelled() or agent_task.done()
-            # Clean up
-            agent_done.set()
+            assert agent_task.done()
+            assert not agent_task.cancelled()
 
         asyncio.run(run())
 
@@ -116,6 +127,7 @@ class TestSSEAgentCancelOnDisconnect:
                 await adapter._write_sse_chat_completion(
                     _make_request(), "cmpl-456", "gpt-4", 1234567890,
                     stream_q, agent_task,
+                    cleanup_ref=_confirmed_cleanup_ref(),
                 )
 
             # Agent should have completed normally, not been cancelled
@@ -124,20 +136,24 @@ class TestSSEAgentCancelOnDisconnect:
 
         asyncio.run(run())
 
-    def test_broken_pipe_also_cancels_agent(self):
-        """BrokenPipeError (another disconnect variant) also cancels the task."""
+    def test_broken_pipe_also_interrupts_without_cancelling_agent(self):
+        """BrokenPipeError uses the same cleanup-preserving interrupt path."""
         adapter = _make_adapter()
 
         stream_q = queue.Queue()
 
+        agent_done = asyncio.Event()
+
         async def fake_agent():
-            await asyncio.sleep(999)  # Never completes
+            await agent_done.wait()
             return {}, {}
 
         async def run():
             from aiohttp import web
 
             agent_task = asyncio.ensure_future(fake_agent())
+            mock_agent = MagicMock()
+            mock_agent.interrupt.side_effect = lambda _reason: agent_done.set()
 
             mock_response = AsyncMock(spec=web.StreamResponse)
             mock_response.write = AsyncMock(side_effect=BrokenPipeError("pipe broken"))
@@ -147,10 +163,12 @@ class TestSSEAgentCancelOnDisconnect:
                        return_value=mock_response):
                 await adapter._write_sse_chat_completion(
                     _make_request(), "cmpl-789", "gpt-4", 1234567890,
-                    stream_q, agent_task,
+                    stream_q, agent_task, [mock_agent],
+                    cleanup_ref=_confirmed_cleanup_ref(),
                 )
 
-            assert agent_task.cancelled() or agent_task.done()
+            assert agent_task.done()
+            assert not agent_task.cancelled()
 
         asyncio.run(run())
 
@@ -187,6 +205,7 @@ class TestSSEAgentCancelOnDisconnect:
                 await adapter._write_sse_chat_completion(
                     _make_request(), "cmpl-done", "gpt-4", 1234567890,
                     stream_q, agent_task,
+                    cleanup_ref=_confirmed_cleanup_ref(),
                 )
 
             # Task was already done — should not be cancelled
@@ -211,7 +230,9 @@ class TestSSEAgentCancelOnDisconnect:
 
         # Mock agent with an interrupt method
         mock_agent = MagicMock()
-        mock_agent.interrupt = MagicMock()
+        mock_agent.interrupt = MagicMock(
+            side_effect=lambda _reason: agent_done.set()
+        )
 
         async def run():
             from aiohttp import web
@@ -236,18 +257,18 @@ class TestSSEAgentCancelOnDisconnect:
                 await adapter._write_sse_chat_completion(
                     _make_request(), "cmpl-int", "gpt-4", 1234567890,
                     stream_q, agent_task, agent_ref,
+                    cleanup_ref=_confirmed_cleanup_ref(),
                 )
 
             # agent.interrupt() must have been called
             mock_agent.interrupt.assert_called_once_with("SSE client disconnected")
-            # Clean up
-            agent_done.set()
+            assert agent_task.done()
+            assert not agent_task.cancelled()
 
         asyncio.run(run())
 
-    def test_agent_ref_none_still_cancels_task(self):
-        """When agent_ref is not provided (None), the task is still cancelled
-        on disconnect — just without the interrupt() call."""
+    def test_agent_ref_none_keeps_unfinished_task_strongly_tracked(self):
+        """Without an interrupt target, ownership remains tracked, not cancelled."""
         adapter = _make_adapter()
 
         stream_q = queue.Queue()
@@ -266,14 +287,24 @@ class TestSSEAgentCancelOnDisconnect:
             mock_response.prepare = AsyncMock()
 
             with patch("gateway.platforms.api_server.web.StreamResponse",
-                       return_value=mock_response):
+                       return_value=mock_response), patch(
+                "gateway.platforms.api_server.API_CLEANUP_SHIELD_TIMEOUT_SECONDS",
+                0.01,
+            ):
                 # No agent_ref passed — should still handle disconnect cleanly
                 await adapter._write_sse_chat_completion(
                     _make_request(), "cmpl-noref", "gpt-4", 1234567890,
                     stream_q, agent_task,
+                    cleanup_ref=_confirmed_cleanup_ref(),
                 )
 
-            assert agent_task.cancelled() or agent_task.done()
+            assert not agent_task.done()
+            assert agent_task in adapter._api_cleanup_tasks
+            agent_task.cancel()
+            try:
+                await agent_task
+            except asyncio.CancelledError:
+                pass
 
         asyncio.run(run())
 
@@ -331,6 +362,7 @@ class TestSSEAgentFailureFinishReason:
                 await adapter._write_sse_chat_completion(
                     _make_request(), "cmpl-fail", "gpt-4", 1234567890,
                     stream_q, agent_task,
+                    cleanup_ref=_confirmed_cleanup_ref(),
                 )
             return _finish_reason(chunks)
 
@@ -361,6 +393,7 @@ class TestSSEAgentFailureFinishReason:
         async def trunc():
             return (
                 {"final_response": "half", "partial": True, "completed": False,
+                 "outcome_code": "output_truncated",
                  "error": "output was truncated"},
                 {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
             )

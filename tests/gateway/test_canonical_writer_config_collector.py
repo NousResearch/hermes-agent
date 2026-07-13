@@ -38,6 +38,13 @@ from gateway.canonical_writer_postgres_backend import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _tmp_path_uses_process_primary_group(tmp_path):
+    """Keep BSD tmp-path group inheritance aligned with the test process."""
+
+    os.chown(tmp_path, -1, os.getgid())
+
+
 TLS_NAME = "14-11111111-1111-4111-8111-111111111111.europe-west3.sql.goog"
 REVISION = "a" * 40
 

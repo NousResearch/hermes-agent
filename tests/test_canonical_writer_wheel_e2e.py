@@ -25,6 +25,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _PACKAGED_MODULES = {
+    "gateway/canonical_canary_bootstrap.py",
+    "gateway/canonical_full_canary_e2e.py",
+    "gateway/canonical_full_canary_live_driver.py",
+    "gateway/canonical_full_canary_runtime.py",
     "gateway/canonical_writer_activation.py",
     "gateway/canonical_writer_bootstrap.py",
     "gateway/canonical_writer_config_collector.py",
@@ -36,6 +40,9 @@ _PACKAGED_MODULES = {
     "gateway/canonical_writer_release_contract.py",
     "gateway/canonical_writer_root_collector.py",
     "gateway/canonical_writer_service.py",
+    "gateway/full_canary_discord_edge_bootstrap.py",
+    "plugins/muncho_canary_evidence/__init__.py",
+    "plugins/muncho_canary_evidence/plugin.yaml",
 }
 _FORBIDDEN_SCRIPT_MODULES = {
     "scripts/canonical_writer_bootstrap.py",

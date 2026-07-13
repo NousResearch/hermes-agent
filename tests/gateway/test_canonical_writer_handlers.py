@@ -427,7 +427,13 @@ def test_session_retirement_wins_shared_lock_before_waiting_stale_mutation():
     assert revoked["ok"] is True
     assert stale_result["ok"] is False
     assert stale_result["error"]["code"] == "session_epoch_retired"
-    assert backend.store.events == []
+    assert len(backend.store.events) == 1
+    assert backend.store.events[0]["event_type"] == (
+        "approval.capability.session_revoked"
+    )
+    assert revoked["result"]["authority_active"] is False
+    assert revoked["result"]["inserted"] is True
+    assert revoked["result"]["deduped"] is False
 
 
 @pytest.mark.parametrize(
@@ -1311,7 +1317,12 @@ def test_session_revoke_and_projection_read_are_bounded_typed_ops():
         "capability_epoch_sha256": CAPABILITY_EPOCH_HASH,
         "scope_type": "session",
         "scope_revoked": True,
+        "authority_active": False,
+        "revocation_event_id": revoked["result"]["revocation_event_id"],
+        "inserted": True,
+        "deduped": False,
         "revoked": 1,
+        "canary_scopes_revoked": 0,
     }
     assert projected["ok"] is True
     assert 1 <= len(projected["result"]["events"]) <= 10

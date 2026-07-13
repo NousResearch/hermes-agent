@@ -1,0 +1,11 @@
+name: muncho_canary_evidence
+version: 0.1.0
+description: "Collect sealed, non-semantic Muncho canary evidence."
+author: "SkyVision / Adventico"
+kind: standalone
+hooks:
+  - pre_api_request
+  - post_api_request
+  - post_tool_call
+  - on_session_start
+  - on_session_end

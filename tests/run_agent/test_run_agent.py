@@ -5810,6 +5810,34 @@ class TestRetryExhaustion:
         assert "UnboundLocalError" not in result.get("error", "")
         assert "bad messages" in result["error"]
 
+    def test_outer_error_at_max_minus_one_is_terminal_failure(self, agent):
+        """A repeated outer-loop error must never be published as completed."""
+
+        self._setup_agent(agent)
+        agent.max_iterations = 2
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="unusable response",
+            finish_reason="stop",
+        )
+        with (
+            patch.object(
+                agent,
+                "_build_assistant_message",
+                side_effect=RuntimeError("assistant assembly failed"),
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["api_calls"] == agent.max_iterations - 1
+        assert result["failed"] is True
+        assert result["completed"] is False
+        assert result["turn_exit_reason"].startswith(
+            "error_near_max_iterations("
+        )
+
 
 # ---------------------------------------------------------------------------
 # Conversation history mutation

@@ -72,7 +72,14 @@ def test_catalog_covers_every_enum_once_with_one_fixed_routine():
         CanonicalWriterOperation
     )
     assert len(PRODUCTION_STATEMENT_CATALOG.names) == len(CanonicalWriterOperation)
-    assert len(EXPECTED_ROUTINE_SIGNATURES) == len(CanonicalWriterOperation)
+    assert len(EXPECTED_ROUTINE_SIGNATURES) == len(CanonicalWriterOperation) + 1
+    assert (
+        "canonical_brain.writer_canary_scope_preapproval_retire(jsonb, jsonb)"
+        in EXPECTED_ROUTINE_SIGNATURES
+    )
+    assert "writer_canary_scope_preapproval_retire" not in (
+        POSTGRES_ROUTINE_BY_OPERATION.values()
+    )
     assert len(EXPECTED_HELPER_ROUTINE_SIGNATURES) == 12
     assert not set(EXPECTED_HELPER_ROUTINE_SIGNATURES).intersection(
         EXPECTED_ROUTINE_SIGNATURES

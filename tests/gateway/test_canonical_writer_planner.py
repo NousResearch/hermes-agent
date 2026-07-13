@@ -526,6 +526,49 @@ def test_stager_rejects_nonproduction_output_path(tmp_path, monkeypatch):
         planner._write_atomic_root_staged_file(tmp_path / "plan.json", b"{}")
 
 
+def test_stager_blocks_existing_fixed_path_without_overwrite_or_cleanup(
+    tmp_path,
+    monkeypatch,
+):
+    staging = tmp_path / "staged"
+    staging.mkdir(mode=0o700)
+    target = staging / "activation-plan.json"
+    target.write_bytes(b"stale-but-unclassified")
+
+    monkeypatch.setattr(planner, "DEFAULT_STAGED_PLAN_PATH", target)
+    monkeypatch.setattr(planner, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(
+        planner,
+        "_validate_root_parent_chain",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        planner.os,
+        "lstat",
+        lambda _path: SimpleNamespace(
+            st_mode=0o040700,
+            st_uid=0,
+            st_gid=0,
+        ),
+    )
+    monkeypatch.setattr(
+        planner.os,
+        "listxattr",
+        lambda _path: [],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        planner.os.path,
+        "lexists",
+        lambda path: Path(path) == target,
+    )
+
+    with pytest.raises(FileExistsError):
+        planner._write_atomic_root_staged_file(target, b'{"new":true}')
+
+    assert target.read_bytes() == b"stale-but-unclassified"
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [

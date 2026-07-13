@@ -485,18 +485,6 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "ollama.com": "ollama-cloud",
 }
 
-# Auto-extend with hostnames derived from provider profiles.
-# Any provider with a base_url not already in the map gets added automatically.
-try:
-    from providers import list_providers as _list_providers
-    for _pp in _list_providers():
-        _host = _pp.get_hostname()
-        if _host and _host not in _URL_TO_PROVIDER:
-            _URL_TO_PROVIDER[_host] = _pp.name
-except Exception:
-    pass
-
-
 def _infer_provider_from_url(base_url: str) -> Optional[str]:
     """Infer the models.dev provider name from a base URL.
 
@@ -512,6 +500,25 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
     for url_part, provider in _URL_TO_PROVIDER.items():
         if url_part in host:
             return provider
+
+    # Provider discovery can import executable user plugins.  Keep that work
+    # off this module's import path and only consult profiles for an endpoint
+    # that the static table could not identify.  Isolated runtimes can pin the
+    # provider registry before reaching this fallback.
+    provider_registry = None
+    try:
+        import providers as provider_registry
+
+        for profile in provider_registry.list_providers():
+            profile_host = str(profile.get_hostname() or "").strip().lower()
+            if profile_host and profile_host in host:
+                return profile.name
+    except Exception as exc:
+        if provider_registry is not None and isinstance(
+            exc, provider_registry.ProviderDiscoveryIsolationError
+        ):
+            raise
+        pass
     return None
 
 

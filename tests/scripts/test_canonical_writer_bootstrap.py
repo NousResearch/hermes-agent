@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import socket
@@ -17,8 +18,10 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from gateway import canonical_writer_db as writer_db
+from gateway import canonical_writer_bootstrap as writer_bootstrap
 from gateway.canonical_writer_db import CanonicalWriterDB, QueryResult
 from gateway.canonical_writer_postgres_backend import (
+    CANONICAL_CANARY_BOOTSTRAP_LOGIN,
     CANONICAL_WRITER_MIGRATION_OWNER,
     CANONICAL_WRITER_ROLE,
     EXPECTED_HELPER_ROUTINE_SIGNATURES,
@@ -33,12 +36,18 @@ from gateway.discord_edge_protocol import ed25519_public_key_id
 from gateway.discord_edge_writer_authority import CanonicalWriterDiscordAuthority
 from scripts.canonical_brain_event_projector import read_events
 from gateway.canonical_writer_bootstrap import (
+    CANARY_PRECLAIM_RECONCILIATION_VERSION,
+    CANARY_SCOPE_BOOTSTRAP_CONSUMPTION_VERSION,
     WRITER_RUNTIME_ATTESTATION_VERSION,
+    CanaryScopePreapprovalConfig,
+    _canary_scope_bootstrap_consumption_receipt,
     build_service,
     export_projection_events,
     load_service_config,
     publish_writer_runtime_readiness,
+    reconcile_configured_canary_preclaim,
 )
+from gateway.canonical_writer_readiness import readiness_receipt_sha256
 from gateway.canonical_writer_service import (
     DispatchContext,
     PeerCredentials,
@@ -49,6 +58,13 @@ from gateway.canonical_writer_service import (
 EVENT_ID_1 = "11111111-1111-4111-8111-111111111111"
 EVENT_ID_2 = "22222222-2222-4222-8222-222222222222"
 EVENT_ID_3 = "33333333-3333-4333-8333-333333333333"
+
+
+@pytest.fixture(autouse=True)
+def _tmp_path_uses_process_primary_group(tmp_path):
+    """Keep BSD tmp-path group inheritance aligned with the test process."""
+
+    os.chown(tmp_path, -1, os.getgid())
 
 
 class _ProjectionScopeMixin:
@@ -90,7 +106,7 @@ class _ProjectionProtocolSession:
         self.closed = True
 
 
-def _managed_hba_receipt(*, observed_at=None):
+def _managed_hba_receipt(*, observed_at=None, user="canonical_writer"):
     observed_at = int(time.time()) if observed_at is None else observed_at
     return {
         "version": "managed-cloudsqladmin-hba-rejection-v2",
@@ -99,13 +115,13 @@ def _managed_hba_receipt(*, observed_at=None):
         "port": 5432,
         "server_certificate_sha256": "d" * 64,
         "database": "cloudsqladmin",
-        "user": "canonical_writer",
+        "user": user,
         "observed_at_unix": observed_at,
         "expires_at_unix": observed_at + 300,
         "sqlstate": "28000",
         "server_message": (
             'no pg_hba.conf entry for host "10.0.0.8", user '
-            '"canonical_writer", database "cloudsqladmin", SSL encryption'
+            f'"{user}", database "cloudsqladmin", SSL encryption'
         ),
         "result": "pg_hba_rejected",
         "tls_peer_verified": True,
@@ -208,6 +224,42 @@ def _config_value(tmp_path):
     }
 
 
+def _config_value_with_canary(tmp_path, *, expires_at):
+    value = _config_value(tmp_path)
+    bootstrap_receipt = _managed_hba_receipt(
+        user=CANONICAL_CANARY_BOOTSTRAP_LOGIN
+    )
+    bootstrap_receipt_sha256 = (
+        writer_db.managed_cloudsqladmin_hba_receipt_from_mapping(
+            bootstrap_receipt
+        ).sha256
+    )
+    bootstrap_credential = tmp_path / "canary-bootstrap-password"
+    bootstrap_credential.write_text("not-a-real-secret\n", encoding="utf-8")
+    bootstrap_credential.chmod(0o400)
+    value["canary_scope_preapproval"] = {
+        "grant_id": "canary-grant-expiry-test",
+        "case_id": "case:canary-expiry-test",
+        "release_sha256": "1" * 64,
+        "fixture_sha256": "2" * 64,
+        "run_id": "canary-run-expiry-test",
+        "session_key_sha256": "3" * 64,
+        "expires_at": expires_at.isoformat(),
+        "approved_by": "owner-1",
+        "approval_source_sha256": "4" * 64,
+        "provisioning_receipt_sha256": "5" * 64,
+        "bootstrap_database_user": CANONICAL_CANARY_BOOTSTRAP_LOGIN,
+        "bootstrap_credential_file": str(bootstrap_credential),
+        "bootstrap_managed_cloudsqladmin_hba_rejection_receipt": (
+            bootstrap_receipt
+        ),
+        "bootstrap_managed_cloudsqladmin_hba_rejection_sha256": (
+            bootstrap_receipt_sha256
+        ),
+    }
+    return value
+
+
 def _write_config(tmp_path, value, *, mode=0o400):
     path = tmp_path / "writer.json"
     if path.exists():
@@ -265,6 +317,93 @@ def test_loads_explicit_secret_free_config_and_pins_routine_catalog(tmp_path):
         )
     )
     assert config.discord_edge_authority.request_timeout_seconds == 15
+
+
+def test_expired_canary_scope_is_only_loadable_for_reconciliation(tmp_path):
+    expired_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
+    path = _write_config(
+        tmp_path,
+        _config_value_with_canary(tmp_path, expires_at=expired_at),
+    )
+
+    with pytest.raises(ValueError, match="within the next hour"):
+        _load(path)
+
+    reconciler_config = load_service_config(
+        path,
+        _expected_owner_uid=os.getuid(),
+        _require_root_owned_parents=False,
+        _allow_expired_canary_scope=True,
+    )
+
+    assert reconciler_config.canary_scope_preapproval is not None
+    assert reconciler_config.canary_scope_preapproval.expires_at == expired_at
+    assert reconciler_config.source_config_path == path
+
+
+def test_expired_canary_scope_explicit_cli_writes_terminal_receipt(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    expired_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
+    path = _write_config(
+        tmp_path,
+        _config_value_with_canary(tmp_path, expires_at=expired_at),
+    )
+    receipt_path = tmp_path / "expired-preclaim-reconciliation.json"
+    real_load = writer_bootstrap.load_service_config
+    real_reconcile = writer_bootstrap.reconcile_configured_canary_preclaim
+
+    def load_config(observed_path, **kwargs):
+        assert kwargs == {"_allow_expired_canary_scope": True}
+        return real_load(
+            observed_path,
+            _expected_owner_uid=os.getuid(),
+            _require_root_owned_parents=False,
+            **kwargs,
+        )
+
+    def reconcile(config, *, receipt_path):
+        scope = config.canary_scope_preapproval
+        assert scope is not None
+        assert scope.expires_at == expired_at
+        return real_reconcile(
+            config,
+            backend=_FakePreclaimRetirementBackend([
+                _preclaim_result(scope, "retired", inserted=True),
+            ]),
+            receipt_path=receipt_path,
+            _now_unix=lambda: 1_800_000_000,
+        )
+
+    monkeypatch.setattr(
+        writer_bootstrap,
+        "harden_current_process_against_dumping",
+        lambda: None,
+    )
+    monkeypatch.setattr(writer_bootstrap, "load_service_config", load_config)
+    monkeypatch.setattr(
+        writer_bootstrap,
+        "reconcile_configured_canary_preclaim",
+        reconcile,
+    )
+    monkeypatch.setattr(
+        writer_bootstrap,
+        "DEFAULT_CANARY_PRECLAIM_RECONCILIATION_RECEIPT_PATH",
+        receipt_path,
+    )
+
+    assert writer_bootstrap.main([
+        "--config",
+        str(path),
+        "--reconcile-canary-preclaim",
+    ]) == 0
+
+    emitted = json.loads(capsys.readouterr().out)
+    assert emitted["result"]["outcome"] == "retired"
+    assert emitted["result"]["authority_active"] is False
+    assert emitted == json.loads(receipt_path.read_text(encoding="utf-8"))
 
 
 def test_loaded_runtime_config_rejects_writer_writable_database_credential(tmp_path):
@@ -782,6 +921,392 @@ def test_build_service_keeps_routeback_fail_closed_when_authority_disabled(
     assert bootstrap.handlers.discord_edge_authority is None
 
 
+def _canary_consumption_bootstrap(*, receipt_updates=None):
+    expires_at = dt.datetime(2026, 7, 13, 12, 30, tzinfo=dt.timezone.utc)
+    scope = CanaryScopePreapprovalConfig(
+        grant_id="canary-grant-1",
+        case_id="case:canary-1",
+        release_sha256="1" * 64,
+        fixture_sha256="2" * 64,
+        run_id="canary-run-1",
+        session_key_sha256="3" * 64,
+        expires_at=expires_at,
+        approved_by="1279454038731264061",
+        approval_source_sha256="4" * 64,
+        provisioning_receipt_sha256="5" * 64,
+        bootstrap_database=SimpleNamespace(
+            user=CANONICAL_CANARY_BOOTSTRAP_LOGIN,
+        ),
+        bootstrap_managed_hba_receipt=None,
+        bootstrap_managed_hba_receipt_sha256="",
+    )
+    receipt = {
+        "success": True,
+        "grant_id": scope.grant_id,
+        "case_id": scope.case_id,
+        "release_sha256": scope.release_sha256,
+        "fixture_sha256": scope.fixture_sha256,
+        "run_id": scope.run_id,
+        "session_key_sha256": scope.session_key_sha256,
+        "expires_at": expires_at.isoformat(),
+        "approved_by": scope.approved_by,
+        "approval_source_sha256": scope.approval_source_sha256,
+        "preapproved_at": "2026-07-13T12:00:00+00:00",
+        "event_id": "11111111-1111-4111-8111-111111111111",
+        "receipt_event_id": "11111111-1111-4111-8111-111111111111",
+        "bootstrap_consumption_event_id": (
+            "22222222-2222-4222-8222-222222222222"
+        ),
+        "bootstrap_acl_revoked": True,
+        "inserted": True,
+        "deduped": False,
+    }
+    receipt.update(receipt_updates or {})
+    return SimpleNamespace(
+        config=SimpleNamespace(canary_scope_preapproval=scope),
+        canary_scope_preapproval_receipt=receipt,
+    )
+
+
+def _preclaim_result(scope, outcome, *, inserted=False, deduped=False):
+    result = {
+        "success": True,
+        "outcome": outcome,
+        "grant_id": scope.grant_id,
+        "case_id": scope.case_id,
+        "release_sha256": scope.release_sha256,
+        "fixture_sha256": scope.fixture_sha256,
+        "run_id": scope.run_id,
+        "session_key_sha256": scope.session_key_sha256,
+        "expires_at": scope.expires_at.isoformat(),
+        "approved_by": scope.approved_by,
+        "approval_source_sha256": scope.approval_source_sha256,
+        "provisioning_receipt_sha256": scope.provisioning_receipt_sha256,
+        "preapproval_event_id": None,
+        "bootstrap_consumption_event_id": None,
+        "claim_event_id": None,
+        "retirement_event_id": None,
+        "revocation_event_id": None,
+        "claimed_at": None,
+        "retired_at": None,
+        "reason": "preapproval_not_committed",
+        "scope_retired": False,
+        "authority_active": False,
+        "inserted": inserted,
+        "deduped": deduped,
+    }
+    if outcome == "retired":
+        result.update({
+            "preapproval_event_id": "11111111-1111-4111-8111-111111111111",
+            "bootstrap_consumption_event_id": (
+                "22222222-2222-4222-8222-222222222222"
+            ),
+            "retirement_event_id": "33333333-3333-4333-8333-333333333333",
+            "retired_at": "2026-07-13T12:01:00+00:00",
+            "reason": "activation_failed_before_first_claim",
+            "scope_retired": True,
+        })
+    elif outcome == "claimed":
+        result.update({
+            "preapproval_event_id": "11111111-1111-4111-8111-111111111111",
+            "bootstrap_consumption_event_id": (
+                "22222222-2222-4222-8222-222222222222"
+            ),
+            "claim_event_id": "33333333-3333-4333-8333-333333333333",
+            "revocation_event_id": "44444444-4444-4444-8444-444444444444",
+            "claimed_at": "2026-07-13T12:00:30+00:00",
+            "reason": "claim_already_committed_session_retired",
+        })
+    return result
+
+
+class _FakePreclaimRetirementBackend:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    def retire(self, request, runtime):
+        self.calls.append((request, runtime))
+        if not self.results:
+            pytest.fail("unexpected extra preclaim retirement call")
+        return deepcopy(self.results.pop(0))
+
+
+class _FakeCanaryBootstrapBackend:
+    def __init__(self, receipt):
+        self.receipt = receipt
+        self.calls = []
+
+    def preapprove(self, request, runtime):
+        self.calls.append((request, runtime))
+        return deepcopy(self.receipt)
+
+
+def test_preclaim_reconciliation_receipt_binds_exact_source_and_database(
+    tmp_path,
+):
+    source_path = _write_config(tmp_path, _config_value(tmp_path))
+    config = _load(source_path)
+    scope = _canary_consumption_bootstrap().config.canary_scope_preapproval
+    config = replace(config, canary_scope_preapproval=scope)
+    backend = _FakePreclaimRetirementBackend([
+        _preclaim_result(scope, "retired", inserted=True),
+    ])
+    receipt_path = tmp_path / "preclaim-reconciliation.json"
+
+    receipt = reconcile_configured_canary_preclaim(
+        config,
+        backend=backend,
+        receipt_path=receipt_path,
+        _now_unix=lambda: 1_800_000_000,
+    )
+
+    assert receipt["version"] == CANARY_PRECLAIM_RECONCILIATION_VERSION
+    assert receipt["observed_at_unix"] == 1_800_000_000
+    assert receipt["source_config_path"] == str(source_path)
+    assert receipt["source_config_sha256"] == config.source_config_sha256
+    assert receipt["database_identity"] == {
+        "host": config.database.host,
+        "tls_server_name": config.database.tls_server_name,
+        "port": config.database.port,
+        "database": config.database.database,
+        "user": config.database.user,
+    }
+    body = dict(receipt)
+    digest = body.pop("receipt_sha256")
+    assert digest == readiness_receipt_sha256(body)
+    assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o600
+    assert backend.calls[0][1].service_internal is True
+
+
+def test_build_service_reconciles_before_bootstrap_and_retains_shutdown_backend(
+    tmp_path,
+):
+    config = _load(_write_config(tmp_path, _config_value(tmp_path)))
+    canary = _canary_consumption_bootstrap()
+    scope = canary.config.canary_scope_preapproval
+    config = replace(config, canary_scope_preapproval=scope)
+    retirement = _FakePreclaimRetirementBackend([
+        _preclaim_result(scope, "not_preapproved"),
+    ])
+    bootstrap_backend = _FakeCanaryBootstrapBackend(
+        canary.canary_scope_preapproval_receipt
+    )
+
+    built = build_service(
+        config,
+        _database_factory=_FakeDatabase,
+        _canary_bootstrap_factory=lambda **_kwargs: bootstrap_backend,
+        _canary_retirement_factory=lambda **_kwargs: retirement,
+    )
+
+    assert len(retirement.calls) == 1
+    assert len(bootstrap_backend.calls) == 1
+    assert built.canary_preclaim_retirement_backend is retirement
+    assert built.canary_scope_preapproval_receipt == (
+        canary.canary_scope_preapproval_receipt
+    )
+
+
+def test_build_failure_after_consumption_durably_retires_preclaim(tmp_path):
+    config = _load(_write_config(tmp_path, _config_value(tmp_path)))
+    canary = _canary_consumption_bootstrap()
+    scope = canary.config.canary_scope_preapproval
+    config = replace(config, canary_scope_preapproval=scope)
+    retirement = _FakePreclaimRetirementBackend([
+        _preclaim_result(scope, "not_preapproved"),
+        _preclaim_result(scope, "retired", inserted=True),
+    ])
+    bootstrap_backend = _FakeCanaryBootstrapBackend(
+        canary.canary_scope_preapproval_receipt
+    )
+
+    class _FailingDatabase(_FakeDatabase):
+        def startup_attest(self):
+            raise RuntimeError("attestation failed")
+
+    with pytest.raises(RuntimeError, match="attestation failed"):
+        build_service(
+            config,
+            _database_factory=_FailingDatabase,
+            _canary_bootstrap_factory=lambda **_kwargs: bootstrap_backend,
+            _canary_retirement_factory=lambda **_kwargs: retirement,
+        )
+
+    assert len(bootstrap_backend.calls) == 1
+    assert len(retirement.calls) == 2
+    assert retirement.results == []
+
+
+def test_build_service_rejects_stale_scope_after_prestart_reconciliation(
+    tmp_path,
+):
+    config = _load(_write_config(tmp_path, _config_value(tmp_path)))
+    canary = _canary_consumption_bootstrap()
+    scope = canary.config.canary_scope_preapproval
+    config = replace(config, canary_scope_preapproval=scope)
+    retirement = _FakePreclaimRetirementBackend([
+        _preclaim_result(scope, "retired", deduped=True),
+    ])
+    bootstrap_backend = _FakeCanaryBootstrapBackend(
+        canary.canary_scope_preapproval_receipt
+    )
+
+    with pytest.raises(RuntimeError, match="config is stale"):
+        build_service(
+            config,
+            _database_factory=_FakeDatabase,
+            _canary_bootstrap_factory=lambda **_kwargs: bootstrap_backend,
+            _canary_retirement_factory=lambda **_kwargs: retirement,
+        )
+
+    assert len(retirement.calls) == 1
+    assert bootstrap_backend.calls == []
+
+
+def test_main_start_failure_blocks_until_preclaim_reconciliation(monkeypatch):
+    calls = []
+
+    class _Server:
+        def start(self):
+            calls.append("start")
+            raise RuntimeError("listener failed")
+
+        def shutdown(self):
+            calls.append("shutdown")
+
+    retirement_backend = object()
+    config = SimpleNamespace()
+    bootstrap = SimpleNamespace(
+        server=_Server(),
+        canary_preclaim_retirement_backend=retirement_backend,
+    )
+    monkeypatch.setattr(
+        writer_bootstrap,
+        "harden_current_process_against_dumping",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        writer_bootstrap,
+        "load_service_config",
+        lambda _path, **_kwargs: config,
+    )
+    monkeypatch.setattr(writer_bootstrap, "build_service", lambda _config: bootstrap)
+
+    def reconcile(observed_config, *, backend, receipt_path):
+        assert observed_config is config
+        assert backend is retirement_backend
+        assert receipt_path == (
+            writer_bootstrap.DEFAULT_CANARY_PRECLAIM_RECONCILIATION_RECEIPT_PATH
+        )
+        calls.append("reconciled")
+        return {"success": True}
+
+    monkeypatch.setattr(
+        writer_bootstrap,
+        "reconcile_configured_canary_preclaim",
+        reconcile,
+    )
+
+    with pytest.raises(RuntimeError, match="listener failed"):
+        writer_bootstrap.main(["--config", "/etc/muncho/writer.json"])
+
+    assert calls == ["start", "shutdown", "reconciled"]
+
+
+def test_explicit_preclaim_reconciliation_requires_preserved_scope(monkeypatch):
+    config = SimpleNamespace(writer_uid=os.getuid(), writer_gid=os.getgid())
+    monkeypatch.setattr(
+        writer_bootstrap,
+        "harden_current_process_against_dumping",
+        lambda: None,
+    )
+    load_calls = []
+
+    def load_config(_path, **kwargs):
+        load_calls.append(kwargs)
+        return config
+
+    monkeypatch.setattr(writer_bootstrap, "load_service_config", load_config)
+    monkeypatch.setattr(
+        writer_bootstrap,
+        "reconcile_configured_canary_preclaim",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(RuntimeError, match="requires sealed scope"):
+        writer_bootstrap.main([
+            "--config",
+            "/etc/muncho/full-canary/staged/writer.json",
+            "--reconcile-canary-preclaim",
+        ])
+    assert load_calls == [{"_allow_expired_canary_scope": True}]
+
+
+def test_canary_consumption_readiness_receipt_is_exact_secret_free_and_bound():
+    receipt = _canary_scope_bootstrap_consumption_receipt(
+        _canary_consumption_bootstrap()
+    )
+
+    assert receipt is not None
+    assert set(receipt) == {
+        "version",
+        "grant_id",
+        "case_id",
+        "release_sha256",
+        "fixture_sha256",
+        "run_id",
+        "session_key_sha256",
+        "expires_at",
+        "approved_by",
+        "approval_source_sha256",
+        "provisioning_receipt_sha256",
+        "bootstrap_database_user",
+        "preapproval_event_id",
+        "consumption_event_id",
+        "preapproved_at",
+        "acl_revoked",
+        "inserted",
+        "receipt_sha256",
+    }
+    assert receipt["version"] == CANARY_SCOPE_BOOTSTRAP_CONSUMPTION_VERSION
+    assert receipt["bootstrap_database_user"] == CANONICAL_CANARY_BOOTSTRAP_LOGIN
+    assert receipt["acl_revoked"] is True
+    assert receipt["inserted"] is True
+    digest_body = dict(receipt)
+    digest = digest_body.pop("receipt_sha256")
+    assert digest == readiness_receipt_sha256(digest_body)
+    serialized = json.dumps(receipt, sort_keys=True)
+    assert "credential" not in serialized
+    assert "password" not in serialized
+    assert "managed_cloudsqladmin" not in serialized
+
+
+def test_canary_consumption_readiness_is_null_without_one_shot_scope():
+    assert _canary_scope_bootstrap_consumption_receipt(
+        SimpleNamespace(
+            config=SimpleNamespace(canary_scope_preapproval=None),
+            canary_scope_preapproval_receipt=None,
+        )
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "updates,match",
+    [
+        ({"bootstrap_acl_revoked": False}, "not freshly consumed"),
+        ({"case_id": "case:other"}, "binding mismatch"),
+        ({"unexpected": "field"}, "fields are not exact"),
+        ({"bootstrap_consumption_event_id": "not-a-uuid"}, "event ID"),
+    ],
+)
+def test_canary_consumption_readiness_rejects_unproven_receipts(updates, match):
+    with pytest.raises(RuntimeError, match=match):
+        _canary_scope_bootstrap_consumption_receipt(
+            _canary_consumption_bootstrap(receipt_updates=updates)
+        )
+
+
 def test_writer_runtime_readiness_binds_socket_process_and_systemd_status(
     tmp_path,
 ):
@@ -791,6 +1316,7 @@ def test_writer_runtime_readiness_binds_socket_process_and_systemd_status(
     os.chown(socket_path, -1, os.getgid())
     socket_path.chmod(0o660)
     notifications = []
+    canary_bootstrap = _canary_consumption_bootstrap()
     bootstrap = SimpleNamespace(
         server=SimpleNamespace(fileno=listener.fileno()),
         config=SimpleNamespace(
@@ -803,8 +1329,14 @@ def test_writer_runtime_readiness_binds_socket_process_and_systemd_status(
                 managed_cloudsqladmin_hba_rejection_sha256="d" * 64,
             ),
             discord_edge_authority=SimpleNamespace(enabled=False),
+            canary_scope_preapproval=(
+                canary_bootstrap.config.canary_scope_preapproval
+            ),
         ),
         database=SimpleNamespace(statement_catalog_sha256="e" * 64),
+        canary_scope_preapproval_receipt=(
+            canary_bootstrap.canary_scope_preapproval_receipt
+        ),
     )
     receipt_path = tmp_path / "writer-runtime-attestation.json"
 
@@ -844,6 +1376,9 @@ def test_writer_runtime_readiness_binds_socket_process_and_systemd_status(
     assert receipt["socket_group_gid"] == os.getgid()
     assert receipt["socket_mode"] == "0660"
     assert receipt["discord_edge_authority_enabled"] is False
+    assert receipt["canary_scope_bootstrap_consumption"] == (
+        _canary_scope_bootstrap_consumption_receipt(canary_bootstrap)
+    )
     assert receipt["writer_dumpable"] is False
     assert receipt["writer_core_soft_limit"] == 0
     assert receipt["writer_core_hard_limit"] == 0

@@ -450,7 +450,7 @@ class TestRunEvents:
 class TestStopRun:
     @pytest.mark.asyncio
     async def test_stop_running_agent(self, adapter):
-        """Stop should interrupt the agent and cancel the task."""
+        """Stop interrupts but leaves the task owning exact cleanup."""
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_create_agent") as mock_create:
@@ -483,7 +483,8 @@ class TestStopRun:
                 status_resp = await cli.get(f"/v1/runs/{run_id}")
                 assert status_resp.status == 200
                 status_data = await status_resp.json()
-                assert status_data["status"] in {"stopping", "cancelled"}
+                assert status_data["status"] in {"stopping", "completed"}
+                assert status_data["status"] != "cancelled"
 
                 # Refs should be cleaned up
                 await asyncio.sleep(0.5)

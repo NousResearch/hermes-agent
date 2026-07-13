@@ -36,6 +36,13 @@ from scripts import discord_edge_bootstrap as compatibility_bootstrap
 from scripts import discord_edge_service as compatibility_service
 
 
+@pytest.fixture(autouse=True)
+def _tmp_path_uses_process_primary_group(tmp_path):
+    """Keep BSD tmp-path group inheritance aligned with the test process."""
+
+    os.chown(tmp_path, -1, os.getgid())
+
+
 class _FakeAdapter:
     def __init__(self) -> None:
         self.closed = False

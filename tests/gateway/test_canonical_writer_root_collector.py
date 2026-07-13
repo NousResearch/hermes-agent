@@ -1327,7 +1327,7 @@ def test_runtime_readiness_is_bound_to_exact_systemd_main_pids_and_digests(
         },
     }
     writer_receipt = {
-        "version": "canonical-writer-runtime-attestation-v1",
+        "version": "canonical-writer-runtime-attestation-v2",
         "observed_at_unix": NOW,
         "observed_at_boottime_ns": 49_000_000_000,
         "boot_id_sha256": BOOT,
@@ -1349,6 +1349,7 @@ def test_runtime_readiness_is_bound_to_exact_systemd_main_pids_and_digests(
         "managed_hba_baseline_sha256": snapshot["database"]["policy"][
             "managed_cloudsqladmin_hba_rejection_sha256"
         ],
+        "canary_scope_bootstrap_consumption": None,
         "discord_edge_authority_enabled": False,
         "socket_path": "/run/muncho-canonical-writer/writer.sock",
         "socket_inode": 99,
@@ -1381,7 +1382,7 @@ def test_runtime_readiness_is_bound_to_exact_systemd_main_pids_and_digests(
         ),
         "writer": _systemd_evidence(
             "muncho-canonical-writer.service",
-            "canonical-writer-runtime-attestation-v1",
+            "canonical-writer-runtime-attestation-v2",
             writer_receipt,
             4343,
             654321,
@@ -1407,7 +1408,7 @@ def test_runtime_readiness_is_bound_to_exact_systemd_main_pids_and_digests(
     assert binding.writer_sha256 == collector._sha256_json(writer_receipt)
 
     snapshot["runtime_readiness"]["writer"]["status_text"] = (
-        "canonical-writer-runtime-attestation-v1:" + "f" * 64
+        "canonical-writer-runtime-attestation-v2:" + "f" * 64
     )
     with pytest.raises(RuntimeError, match="unauthenticated"):
         collector._validate_runtime_readiness(

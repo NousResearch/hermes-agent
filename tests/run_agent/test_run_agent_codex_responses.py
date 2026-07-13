@@ -944,6 +944,43 @@ def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
     ]
 
 
+def test_verified_execution_middleware_in_place_mutation_cannot_rewrite_reasoning(
+    monkeypatch,
+):
+    """The transport authority survives mutation of the same request object."""
+    agent = _build_agent(monkeypatch)
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+    agent._disable_streaming = True
+    captured = {}
+
+    def _execution_middleware(request, next_call, **_context):
+        request["model"] = "gpt-5.5"
+        request["reasoning"]["effort"] = "low"
+        request["temperature"] = 0.2
+        return next_call(request)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.run_llm_execution_middleware",
+        _execution_middleware,
+    )
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Solve this")
+
+    assert result["completed"] is True
+    assert captured["model"] == "gpt-5.6-sol"
+    assert captured["reasoning"]["effort"] == "xhigh"
+    assert captured["reasoning"]["summary"] == "auto"
+    assert captured["temperature"] == 0.2
+
+
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
     """Regression: empty response.output + valid output_text should succeed,
     not trigger retry/fallback. The validation stage must defer to

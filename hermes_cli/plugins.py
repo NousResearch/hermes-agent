@@ -1256,6 +1256,8 @@ class PluginManager:
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._discovered: bool = False
+        self._isolated_allowlist: Optional[frozenset[str]] = None
+        self._isolated_discovery_failure: Optional[str] = None
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
@@ -1274,16 +1276,51 @@ class PluginManager:
     # Public
     # -----------------------------------------------------------------------
 
-    def discover_and_load(self, force: bool = False) -> None:
+    def discover_and_load(
+        self,
+        force: bool = False,
+        *,
+        isolated_allowlist: Optional[frozenset[str]] = None,
+    ) -> None:
         """Scan all plugin sources and load each plugin found.
 
         When ``force`` is true, clear cached discovery state first so config
         changes or newly-added bundled backends become visible in long-lived
         sessions without requiring a full agent restart.
         """
-        if self._discovered and not force:
-            return
+        if isolated_allowlist is not None and (
+            type(isolated_allowlist) is not frozenset
+            or any(not isinstance(item, str) or not item for item in isolated_allowlist)
+        ):
+            raise TypeError("isolated plugin allowlist must be a frozenset of names")
+        if self._isolated_discovery_failure is not None:
+            raise RuntimeError(
+                "isolated plugin discovery previously failed: "
+                + self._isolated_discovery_failure
+            )
+        if self._discovered:
+            if self._isolated_allowlist is not None:
+                if isolated_allowlist in {None, self._isolated_allowlist} and not force:
+                    # Once a process enters strict discovery it cannot be
+                    # broadened by a later generic discovery call.
+                    return
+                raise RuntimeError("isolated plugin discovery mode cannot be changed")
+            if isolated_allowlist is not None:
+                if any(plugin.enabled for plugin in self._plugins.values()):
+                    raise RuntimeError(
+                        "general plugins loaded before isolated discovery"
+                    )
+                force = True
+            elif not force:
+                return
         if env_var_enabled("HERMES_SAFE_MODE"):
+            if isolated_allowlist is not None:
+                self._isolated_discovery_failure = (
+                    "safe mode cannot satisfy isolated plugin allowlist"
+                )
+                raise RuntimeError(
+                    "safe mode cannot satisfy isolated plugin allowlist"
+                )
             logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
             self._discovered = True
             return
@@ -1306,13 +1343,30 @@ class PluginManager:
         # permanently stranded on the early-return above (the "No web provider
         # configured" class of failures).
         self._discovered = True
+        self._isolated_allowlist = isolated_allowlist
         try:
-            self._discover_and_load_inner()
-        except BaseException:
+            if isolated_allowlist is None:
+                self._discover_and_load_inner()
+            else:
+                self._discover_and_load_inner(
+                    isolated_allowlist=isolated_allowlist,
+                )
+        except BaseException as exc:
             self._discovered = False
+            if isolated_allowlist is None:
+                self._isolated_allowlist = None
+            else:
+                self._isolated_allowlist = isolated_allowlist
+                self._isolated_discovery_failure = (
+                    f"{type(exc).__name__}: {exc}"
+                )
             raise
 
-    def _discover_and_load_inner(self) -> None:
+    def _discover_and_load_inner(
+        self,
+        *,
+        isolated_allowlist: Optional[frozenset[str]] = None,
+    ) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
         manifests: List[PluginManifest] = []
 
@@ -1338,35 +1392,61 @@ class PluginManager:
         )
         logger.debug("  bundled (top-level): %d manifest(s)", len(bundled))
         manifests.extend(bundled)
-        bundled_platforms = self._scan_directory(
-            repo_plugins / "platforms", source="bundled"
-        )
-        logger.debug("  bundled/platforms: %d manifest(s)", len(bundled_platforms))
-        manifests.extend(bundled_platforms)
-
-        # 2. User plugins (~/.hermes/plugins/)
-        user_dir = get_hermes_home() / "plugins"
-        logger.debug("Scanning user plugins: %s", user_dir)
-        user_manifests = self._scan_directory(user_dir, source="user")
-        logger.debug("  user: %d manifest(s)", len(user_manifests))
-        manifests.extend(user_manifests)
-
-        # 3. Project plugins (./.hermes/plugins/)
-        if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
-            project_dir = Path.cwd() / ".hermes" / "plugins"
-            logger.debug("Scanning project plugins: %s", project_dir)
-            project_manifests = self._scan_directory(project_dir, source="project")
-            logger.debug("  project: %d manifest(s)", len(project_manifests))
-            manifests.extend(project_manifests)
+        if isolated_allowlist is not None:
+            # Clean-room discovery scans only immutable top-level bundled
+            # manifests, then retains the exact explicit allowlist. It never
+            # enumerates platform categories, user/project paths, entrypoints,
+            # or auto-loaded backend categories.
+            manifests = [
+                manifest
+                for manifest in manifests
+                if (manifest.key or manifest.name) in isolated_allowlist
+            ]
+            resolved = {
+                manifest.key or manifest.name
+                for manifest in manifests
+            }
+            missing = sorted(isolated_allowlist - resolved)
+            if missing:
+                raise RuntimeError(
+                    "isolated bundled plugin allowlist is unavailable: "
+                    + ", ".join(missing)
+                )
         else:
-            logger.debug(
-                "Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)"
+            bundled_platforms = self._scan_directory(
+                repo_plugins / "platforms", source="bundled"
             )
+            logger.debug(
+                "  bundled/platforms: %d manifest(s)", len(bundled_platforms)
+            )
+            manifests.extend(bundled_platforms)
 
-        # 4. Pip / entry-point plugins
-        ep_manifests = self._scan_entry_points()
-        logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
-        manifests.extend(ep_manifests)
+            # 2. User plugins (~/.hermes/plugins/)
+            user_dir = get_hermes_home() / "plugins"
+            logger.debug("Scanning user plugins: %s", user_dir)
+            user_manifests = self._scan_directory(user_dir, source="user")
+            logger.debug("  user: %d manifest(s)", len(user_manifests))
+            manifests.extend(user_manifests)
+
+            # 3. Project plugins (./.hermes/plugins/)
+            if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+                project_dir = Path.cwd() / ".hermes" / "plugins"
+                logger.debug("Scanning project plugins: %s", project_dir)
+                project_manifests = self._scan_directory(
+                    project_dir, source="project"
+                )
+                logger.debug("  project: %d manifest(s)", len(project_manifests))
+                manifests.extend(project_manifests)
+            else:
+                logger.debug(
+                    "Project plugins disabled "
+                    "(set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)"
+                )
+
+            # 4. Pip / entry-point plugins
+            ep_manifests = self._scan_entry_points()
+            logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
+            manifests.extend(ep_manifests)
 
         # Load each manifest (skip user-disabled plugins).
         # Later sources override earlier ones on key collision — user
@@ -1375,8 +1455,12 @@ class PluginManager:
         # winner. Keys are path-derived (``image_gen/openai``,
         # ``disk-cleanup``) so ``tts/openai`` and ``image_gen/openai``
         # don't collide even when both manifests say ``name: openai``.
-        disabled = _get_disabled_plugins()
-        enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
+        disabled = set() if isolated_allowlist is not None else _get_disabled_plugins()
+        enabled = (
+            set(isolated_allowlist)
+            if isolated_allowlist is not None
+            else _get_enabled_plugins()
+        )  # None = opt-in default (nothing enabled)
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
             winners[manifest.key or manifest.name] = manifest
@@ -1390,6 +1474,28 @@ class PluginManager:
                 loaded.error = "disabled via config"
                 self._plugins[lookup_key] = loaded
                 logger.debug("Skipping disabled plugin '%s'", lookup_key)
+                continue
+
+            if isolated_allowlist is not None:
+                if manifest.source != "bundled" or manifest.kind != "standalone":
+                    raise RuntimeError(
+                        "isolated plugin must be a bundled standalone plugin: "
+                        + lookup_key
+                    )
+                self._load_plugin(manifest)
+                loaded = self._plugins.get(lookup_key)
+                if (
+                    not isinstance(loaded, LoadedPlugin)
+                    or loaded.manifest is not manifest
+                    or loaded.enabled is not True
+                    or loaded.error is not None
+                    or loaded.deferred is not False
+                    or loaded.module is None
+                ):
+                    error = getattr(loaded, "error", None) or "not enabled"
+                    raise RuntimeError(
+                        f"isolated bundled plugin failed to load: {lookup_key}: {error}"
+                    )
                 continue
 
             # Exclusive plugins (memory providers) have their own
@@ -1465,6 +1571,11 @@ class PluginManager:
                 )
                 continue
             self._load_plugin(manifest)
+
+        if isolated_allowlist is not None and set(self._plugins) != set(
+            isolated_allowlist
+        ):
+            raise RuntimeError("isolated loaded plugin set is not exact")
 
         if manifests:
             logger.info(
@@ -2035,13 +2146,20 @@ def get_plugin_manager() -> PluginManager:
     return _plugin_manager
 
 
-def discover_plugins(force: bool = False) -> None:
+def discover_plugins(
+    force: bool = False,
+    *,
+    isolated_allowlist: Optional[frozenset[str]] = None,
+) -> None:
     """Discover and load all plugins.
 
     Default behavior is idempotent. Pass ``force=True`` to rescan plugin
     manifests and reload state in the current process.
     """
-    get_plugin_manager().discover_and_load(force=force)
+    get_plugin_manager().discover_and_load(
+        force=force,
+        isolated_allowlist=isolated_allowlist,
+    )
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:

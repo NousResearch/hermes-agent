@@ -13,8 +13,16 @@ from gateway.canonical_writer_postgres_backend import (
 
 ROOT = Path(__file__).resolve().parents[2]
 SQL_PATH = ROOT / "scripts" / "sql" / "canonical_writer_v1.sql"
+BOOTSTRAP_SQL_PATH = (
+    ROOT / "scripts" / "sql" / "canonical_writer_canary_bootstrap_v1.sql"
+)
+BOOTSTRAP_RETIRE_SQL_PATH = (
+    ROOT / "scripts" / "sql" / "canonical_writer_canary_bootstrap_retire_v1.sql"
+)
 HELPERS_PATH = ROOT / "scripts" / "sql" / "canonical_writer_v1_helpers.json"
 SQL = SQL_PATH.read_text(encoding="utf-8")
+BOOTSTRAP_SQL = BOOTSTRAP_SQL_PATH.read_text(encoding="utf-8")
+BOOTSTRAP_RETIRE_SQL = BOOTSTRAP_RETIRE_SQL_PATH.read_text(encoding="utf-8")
 
 
 def _writer_names() -> set[str]:
@@ -60,12 +68,12 @@ def _dollar_block(name: str) -> str:
     return SQL.split(start, 1)[1].split(f"${name}$;", 1)[0]
 
 
-def test_fixed_catalog_defines_exactly_the_backend_seventeen_routines():
+def test_fixed_catalog_has_eighteen_public_routines_and_private_bootstrap():
     expected = set(POSTGRES_ROUTINE_BY_OPERATION.values())
 
-    assert len(expected) == 17
-    assert _writer_names() == expected
-    assert SQL.count("-- Fixed public routine ") == 17
+    assert len(expected) == 18
+    assert _writer_names() == expected | {"writer_canary_scope_preapprove"}
+    assert SQL.count("-- Fixed public routine ") == 18
 
 
 def test_private_writer_tables_have_exact_ordered_columns_without_duplicates():
@@ -113,6 +121,18 @@ def test_private_writer_tables_have_exact_ordered_columns_without_duplicates():
             "capability_epoch_sha256", "idempotency_key", "request_sha256",
             "remaining_uses", "consumed_at", "receipt_event_id", "response",
         ),
+        "writer_canary_scope_preapprovals": (
+            "grant_id", "case_id", "release_sha256", "fixture_sha256",
+            "run_id", "session_key_sha256", "expires_at", "approved_by",
+            "approval_source_sha256", "request_sha256", "preapproved_at",
+            "receipt_event_id",
+        ),
+        "writer_canary_scope_claims": (
+            "grant_id", "case_id", "release_sha256", "fixture_sha256",
+            "run_id", "approval_source_sha256", "session_key_sha256",
+            "capability_epoch_sha256", "expires_at", "request_sha256",
+            "claimed_at", "claim_event_id",
+        ),
     }
 
     for table, columns in expected.items():
@@ -148,11 +168,11 @@ def test_public_routines_reraise_only_retryable_transaction_aborts():
         assert definition.count(retry_clause) == 1
         assert "RETURN canonical_brain._fail('database_failure'" in definition
 
-    assert SQL.count(retry_clause) == 17
+    assert SQL.count(retry_clause) == 19
 
 
 def test_owner_and_execute_acl_cover_exactly_public_catalog():
-    expected = _writer_names()
+    expected = set(POSTGRES_ROUTINE_BY_OPERATION.values())
     owners = set(
         re.findall(
             r"ALTER FUNCTION canonical_brain\.(writer_[a-z_]+)\(jsonb,jsonb\)\s+"
@@ -162,14 +182,18 @@ def test_owner_and_execute_acl_cover_exactly_public_catalog():
     )
     grants = set(
         re.findall(
-            r"GRANT EXECUTE ON FUNCTION canonical_brain\.(writer_[a-z_]+)"
+            r"GRANT EXECUTE ON FUNCTION\s+canonical_brain\.(writer_[a-z_]+)"
             r"\(jsonb,jsonb\)\s+TO canonical_brain_writer;",
             SQL,
         )
     )
 
-    assert owners == expected
-    assert grants == expected
+    assert owners == expected | {
+        "writer_canary_scope_preapprove",
+        "writer_canary_scope_preapproval_retire",
+    }
+    assert grants == expected | {"writer_canary_scope_preapproval_retire"}
+    assert "writer_canary_scope_preapproval_retire" not in expected
     retire_acl = _dollar_block("retire_canonical_acl")
     direct_acl = _dollar_block("canonical_direct_acl_contract")
     assert "namespace.nspname = 'canonical_brain'" in retire_acl
@@ -179,12 +203,108 @@ def test_owner_and_execute_acl_cover_exactly_public_catalog():
     assert "REVOKE ALL PRIVILEGES ON %s %s FROM %s CASCADE" in retire_acl
     assert "(SELECT * FROM actual EXCEPT SELECT * FROM expected)" in direct_acl
     assert "(SELECT * FROM expected EXCEPT SELECT * FROM actual)" in direct_acl
+    assert "namespace.nspname::text" in direct_acl
     assert not re.search(
         r"GRANT EXECUTE ON FUNCTION canonical_brain\._", SQL
     )
     assert not re.search(
         r"GRANT EXECUTE[\s\S]{0,120}\bTO PUBLIC\b", SQL
     )
+
+
+def test_canary_preapproval_acl_is_separate_one_shot_and_base_rerun_inert():
+    assert not re.search(
+        r"GRANT EXECUTE ON FUNCTION canonical_brain\."
+        r"writer_canary_scope_preapprove\(jsonb,jsonb\)\s+"
+        r"TO canonical_brain_writer;",
+        SQL,
+    )
+    assert "DO $retire_canonical_acl$" in SQL
+    assert "canonical_brain_canary_bootstrap" not in _dollar_block(
+        "canonical_direct_acl_contract"
+    )
+    assert BOOTSTRAP_SQL.count(
+        "GRANT EXECUTE ON FUNCTION\n"
+        "    canonical_brain.writer_canary_scope_preapprove(jsonb,jsonb)"
+    ) == 1
+    assert "TO canonical_brain_canary_bootstrap" in BOOTSTRAP_SQL
+    assert "canary.scope.bootstrap_authorized" in BOOTSTRAP_SQL
+    assert "canary.scope.bootstrap_retired" in BOOTSTRAP_SQL
+    assert (
+        "event.payload->'canary_scope_bootstrap_retirement'->>'grant_id'"
+        in BOOTSTRAP_SQL
+    )
+    assert re.search(
+        r"event\.payload->'canary_scope_bootstrap_retirement'\s*"
+        r"->>'provisioning_receipt_sha256'",
+        BOOTSTRAP_SQL,
+    )
+    assert "canary_scope_bootstrap_provision" in BOOTSTRAP_SQL
+    assert "stale canary bootstrap ACL already exists" in BOOTSTRAP_SQL
+
+
+def test_canary_bootstrap_retirement_is_exact_idempotent_canonical_truth():
+    expected_gucs = {
+        "database",
+        "grant_id",
+        "case_id",
+        "release_sha256",
+        "fixture_sha256",
+        "run_id",
+        "session_key_sha256",
+        "expires_at",
+        "approved_by",
+        "approval_source_sha256",
+        "provisioning_receipt_sha256",
+        "plan_sha256",
+        "owner_approval_sha256",
+        "executor_session_identity_sha256",
+    }
+    observed_gucs = set(re.findall(
+        r"muncho\.canonical_canary_bootstrap_([a-z0-9_]+)",
+        BOOTSTRAP_RETIRE_SQL,
+    )) - {
+        "retire_admin",
+        "retire_outcome",
+        "retire_authorization_event_id",
+        "retire_consumption_event_id",
+        "retire_retirement_event_id",
+        "retire_inserted",
+        "retire_reason",
+    }
+    assert observed_gucs == expected_gucs
+    assert "canary.scope.bootstrap_retired" in BOOTSTRAP_RETIRE_SQL
+    assert "canary_scope_bootstrap_retirement" in BOOTSTRAP_RETIRE_SQL
+    assert "canary-bootstrap-retire:" in BOOTSTRAP_RETIRE_SQL
+    assert "canary_scope_bootstrap_retire" in BOOTSTRAP_RETIRE_SQL
+    assert BOOTSTRAP_RETIRE_SQL.count(
+        "activation_failed_before_consumption"
+    ) >= 3
+    assert "canonical_canary_bootstrap_reason" not in BOOTSTRAP_RETIRE_SQL
+    assert "consumption_count = 1" in BOOTSTRAP_RETIRE_SQL
+    assert "retirement_count = 1" in BOOTSTRAP_RETIRE_SQL
+    assert "consumption_count = 1 AND retirement_count = 1" in (
+        BOOTSTRAP_RETIRE_SQL
+    )
+    assert "authorization_count = 0" in BOOTSTRAP_RETIRE_SQL
+    assert "'not_authorized', true" in BOOTSTRAP_RETIRE_SQL
+    assert "'provisioning_not_committed', true" in BOOTSTRAP_RETIRE_SQL
+    assert "'bootstrap_consumed', true" in BOOTSTRAP_RETIRE_SQL
+    assert (
+        "unauthorized canary bootstrap has contradictory durable truth"
+        in BOOTSTRAP_RETIRE_SQL
+    )
+    assert "retirement_record - 'executor_session_identity_sha256'" in (
+        BOOTSTRAP_RETIRE_SQL
+    )
+    assert "retirement_payload - 'executor_session_identity_sha256'" in (
+        BOOTSTRAP_RETIRE_SQL
+    )
+    assert "unconsumed canary bootstrap unexpectedly has a preapproval row" in (
+        BOOTSTRAP_RETIRE_SQL
+    )
+    assert "REVOKE EXECUTE ON FUNCTION" in BOOTSTRAP_RETIRE_SQL
+    assert "REVOKE USAGE ON SCHEMA canonical_brain" in BOOTSTRAP_RETIRE_SQL
 
 
 def test_helper_manifest_is_complete_owned_pinned_and_non_executable():
@@ -441,6 +561,8 @@ def test_rerun_attestation_uses_exact_default_check_and_index_templates():
         ("writer_capability_revocation_scopes", "revoked_at", "clock_timestamp()"),
         ("writer_capability_revocations", "revoked_at", "clock_timestamp()"),
         ("writer_capability_consumptions", "consumed_at", "clock_timestamp()"),
+        ("writer_canary_scope_preapprovals", "preapproved_at", "clock_timestamp()"),
+        ("writer_canary_scope_claims", "claimed_at", "clock_timestamp()"),
     }
 
     checks = contract.split(
@@ -480,7 +602,26 @@ def test_rerun_attestation_uses_exact_default_check_and_index_templates():
         ("writer_capability_consumptions", "idempotency_key"),
         ("writer_capability_consumptions", "request_sha256"),
         ("writer_capability_consumptions", "remaining_uses"),
-    }
+        ("writer_canary_scope_preapprovals", "release_sha256"),
+        ("writer_canary_scope_preapprovals", "fixture_sha256"),
+        ("writer_canary_scope_preapprovals", "session_key_sha256"),
+        ("writer_canary_scope_preapprovals", "approval_source_sha256"),
+        ("writer_canary_scope_preapprovals", "request_sha256"),
+        ("writer_canary_scope_claims", "release_sha256"),
+        ("writer_canary_scope_claims", "fixture_sha256"),
+        ("writer_canary_scope_claims", "approval_source_sha256"),
+        ("writer_canary_scope_claims", "session_key_sha256"),
+        ("writer_canary_scope_claims", "capability_epoch_sha256"),
+            ("writer_canary_scope_claims", "request_sha256"),
+            ("writer_canary_scope_preapproval_retirements", "release_sha256"),
+            ("writer_canary_scope_preapproval_retirements", "fixture_sha256"),
+            (
+                "writer_canary_scope_preapproval_retirements",
+                "session_key_sha256",
+            ),
+            ("writer_canary_scope_preapproval_retirements", "request_sha256"),
+            ("writer_canary_scope_preapproval_retirements", "reason"),
+        }
     assert "CREATE TEMPORARY TABLE canonical_writer_check_contract" in SQL
     assert "pg_catalog.pg_get_constraintdef(constraint_row.oid, false)" in contract
     assert "preexisting writer table CHECK contract mismatch" in contract
@@ -502,6 +643,12 @@ def test_rerun_attestation_uses_exact_default_check_and_index_templates():
         ("writer_capability_scope_idx", "contract_capability_scope_idx"),
         ("writer_capability_command_idx", "contract_capability_command_idx"),
         ("writer_capability_use_idx", "contract_capability_use_idx"),
+        ("writer_canary_preapproval_scope_idx", "contract_canary_preapproval_scope_idx"),
+        ("writer_canary_claim_scope_idx", "contract_canary_claim_scope_idx"),
+        (
+            "writer_canary_preapproval_retirement_scope_idx",
+            "contract_canary_preapproval_retirement_scope_idx",
+        ),
     }
     assert "CREATE TEMPORARY TABLE canonical_writer_index_contract" in SQL
     for property_name in (
@@ -814,7 +961,7 @@ def test_capabilities_are_bound_to_exact_runtime_epoch_across_all_sql_paths():
 
     assert "'capability_epoch_sha256'" in runtime
     assert "runtime->>'capability_epoch_sha256' ~ '^[0-9a-f]{64}$'" in runtime
-    assert SQL.count("capability_epoch_sha256 text NOT NULL") == 5
+    assert SQL.count("capability_epoch_sha256 text NOT NULL") == 6
     assert (
         "UNIQUE (session_key_sha256, capability_epoch_sha256, idempotency_key)"
         in SQL
@@ -1028,6 +1175,9 @@ def test_resume_bundle_support_is_bounded_explicit_and_no_unsafe_uuid_cast():
         "route_back.sent",
         "route_back.blocked",
         "lease.shadow.recorded",
+        "canary.scope.preapproved",
+        "canary.scope.claimed",
+        "canary.scope.revoked",
     ):
         assert event_type in query
     assert "CASE\n                        WHEN required.event_id ~" in query
@@ -1053,6 +1203,66 @@ def test_projection_read_is_case_scoped_or_internal_and_strictly_paginated():
     assert "writer_event_provenance" in projection
 
 
+def test_isolated_canary_scope_is_preapproved_claimed_and_retired_mechanically():
+    preapprove = _function_definition("writer_canary_scope_preapprove")
+    claim = _function_definition("writer_canary_scope_claim")
+    scope = _function_definition("_case_scope_authorized")
+    revoke_session = _function_definition("writer_capability_revoke_session")
+
+    assert "runtime->>'service_internal' <> 'true'" in preapprove
+    assert "runtime->>'platform' <> 'writer_service'" in preapprove
+    assert "SESSION_USER <> 'canonical_brain_canary_bootstrap_login'" in preapprove
+    assert "canary.scope.bootstrap_authorized" in preapprove
+    assert "provisioning_receipt_sha256" in preapprove
+    assert "canary.scope.bootstrap_consumed" in preapprove
+    assert "canary.scope.bootstrap_retired" in preapprove
+    assert "REVOKE EXECUTE ON FUNCTION" in preapprove
+    assert "REVOKE USAGE ON SCHEMA canonical_brain" in preapprove
+    assert "INTERVAL '1 hour'" in preapprove
+    assert "writer_canary_scope_preapprovals" in preapprove
+    assert "'canary.scope.preapproved'" in preapprove
+    assert "preapproved_value := pg_catalog.clock_timestamp()" in preapprove
+    assert "request_sha256, preapproved_at, receipt_event_id" in preapprove
+    assert "'preapproved_at', preapproved_value" in preapprove
+
+    assert "runtime->>'platform' <> 'api_server'" in claim
+    assert "writer_canary_scope_preapprovals" in claim
+    assert "FOR UPDATE" in claim
+    assert "writer_canary_scope_claims" in claim
+    assert "'canary.scope.claimed'" in claim
+    assert "'canary_scope_replayed'" in claim
+    assert "'expires_at', existing_claim.expires_at" in claim
+    assert "'expires_at', preapproval_record.expires_at" in claim
+    assert "claimed_value := pg_catalog.clock_timestamp()" in claim
+    assert "expires_at, request_sha256, claimed_at" in claim
+    assert "'claimed_at', claimed_value" in claim
+
+    assert "runtime_value->>'platform' = 'api_server'" in scope
+    assert "writer_canary_scope_preapprovals" in scope
+    assert "writer_canary_scope_claims" in scope
+    assert "writer_capability_revocation_scopes" in scope
+    assert "preapproval.expires_at > pg_catalog.statement_timestamp()" in scope
+
+    assert "writer_canary_scope_claims" in revoke_session
+    assert "'canary.scope.revoked'" in revoke_session
+    assert "'canary_scopes_revoked', canary_scope_count" in revoke_session
+    assert "LIMIT 64" in revoke_session
+
+
+def test_thread_only_reads_recheck_each_candidate_case_scope():
+    query = _function_definition("writer_case_query")
+    routeback_context = _function_definition("writer_routeback_context")
+
+    assert len(re.findall(
+        r"canonical_brain\._case_scope_authorized\(\s*"
+        r"event\.case_id, runtime, false\s*\)",
+        query,
+    )) == 2
+    assert routeback_context.count(
+        "canonical_brain._case_scope_authorized("
+    ) == 2
+
+
 def test_model_append_reserves_the_complete_privileged_writer_event_catalog():
     model_append = _function_definition("writer_event_append_model")
     reserved_clause = model_append.split("IF event_type_value IN (", 1)[1].split(
@@ -1067,8 +1277,15 @@ def test_model_append_reserves_the_complete_privileged_writer_event_catalog():
         "approval.capability.recorded",
         "approval.capability.revoked",
         "approval.capability.session_revoked",
-        "capability.check.recorded",
-        "lease.shadow.recorded",
+            "capability.check.recorded",
+            "lease.shadow.recorded",
+            "canary.scope.bootstrap_authorized",
+            "canary.scope.bootstrap_consumed",
+                "canary.scope.bootstrap_retired",
+                "canary.scope.preapproved",
+                "canary.scope.preapproval_retired",
+            "canary.scope.claimed",
+        "canary.scope.revoked",
     }
     assert "privileged_event_forbidden" in model_append
     assert "event type requires its fixed privileged routine" in model_append

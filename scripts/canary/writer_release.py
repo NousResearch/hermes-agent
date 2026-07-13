@@ -88,6 +88,17 @@ _PACKAGED_DISCORD_EDGE_MODULES = (
     Path("gateway/discord_edge_bootstrap.py"),
     Path("gateway/discord_edge_service.py"),
 )
+CANARY_BOOTSTRAP_SQL_RELATIVE_PATH = Path(
+    "scripts/sql/canonical_writer_canary_bootstrap_v1.sql"
+)
+CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH = Path(
+    "scripts/sql/canonical_writer_canary_bootstrap_retire_v1.sql"
+)
+_TRACKED_RELEASE_ARTIFACTS = (
+    CANARY_BOOTSTRAP_SQL_RELATIVE_PATH,
+    CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH,
+)
+_MAX_TRACKED_RELEASE_ARTIFACT_BYTES = 1024 * 1024
 
 
 def _effective_uid() -> int:
@@ -965,6 +976,155 @@ def _copy_built_wheel(spec: ReleaseBuildSpec, source: Path) -> Path:
     return destination
 
 
+def _copy_tracked_release_artifact(
+    spec: ReleaseBuildSpec,
+    relative_path: Path,
+) -> Path:
+    """Copy one revision-snapshot file into the manifest-bound release tree."""
+
+    if (
+        relative_path.is_absolute()
+        or relative_path.as_posix() != str(relative_path)
+        or not relative_path.parts
+        or ".." in relative_path.parts
+    ):
+        raise ValueError("tracked release artifact path is invalid")
+    source = spec.build_project_root / relative_path
+    destination = spec.release_root / relative_path
+    source_before = os.lstat(source)
+    if (
+        not stat.S_ISREG(source_before.st_mode)
+        or stat.S_ISLNK(source_before.st_mode)
+        or source_before.st_uid != _BUILD_OWNER_UID
+        or source_before.st_gid != _BUILD_OWNER_GID
+        or source_before.st_nlink != 1
+        or stat.S_IMODE(source_before.st_mode) & 0o022
+        or not 0 < source_before.st_size <= _MAX_TRACKED_RELEASE_ARTIFACT_BYTES
+        or _list_xattrs(source)
+    ):
+        raise PermissionError("tracked release artifact source is not exact")
+
+    current = spec.release_root
+    for part in relative_path.parent.parts:
+        current = current / part
+        try:
+            os.mkdir(current, _BUILD_DIRECTORY_MODE)
+        except FileExistsError:
+            _validate_root_directory(current, exact_mode=_BUILD_DIRECTORY_MODE)
+
+    read_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    write_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        read_flags |= os.O_NOFOLLOW
+        write_flags |= os.O_NOFOLLOW
+    source_fd = os.open(source, read_flags)
+    destination_fd: int | None = None
+    copied_digest = hashlib.sha256()
+    copied_size = 0
+    try:
+        source_opened = os.fstat(source_fd)
+        if (
+            source_opened.st_dev,
+            source_opened.st_ino,
+            source_opened.st_mode,
+            source_opened.st_nlink,
+            source_opened.st_uid,
+            source_opened.st_gid,
+            source_opened.st_size,
+            source_opened.st_mtime_ns,
+            source_opened.st_ctime_ns,
+        ) != (
+            source_before.st_dev,
+            source_before.st_ino,
+            source_before.st_mode,
+            source_before.st_nlink,
+            source_before.st_uid,
+            source_before.st_gid,
+            source_before.st_size,
+            source_before.st_mtime_ns,
+            source_before.st_ctime_ns,
+        ):
+            raise RuntimeError("tracked release artifact changed during open")
+        destination_fd = os.open(destination, write_flags, 0o400)
+        os.fchown(destination_fd, _BUILD_OWNER_UID, _BUILD_OWNER_GID)
+        while chunk := os.read(source_fd, 64 * 1024):
+            copied_size += len(chunk)
+            if copied_size > _MAX_TRACKED_RELEASE_ARTIFACT_BYTES:
+                raise RuntimeError("tracked release artifact became oversized")
+            copied_digest.update(chunk)
+            offset = 0
+            while offset < len(chunk):
+                written = os.write(destination_fd, chunk[offset:])
+                if written <= 0:
+                    raise OSError("tracked release artifact copy made no progress")
+                offset += written
+        os.fchmod(destination_fd, _SEALED_FILE_MODE)
+        os.fsync(destination_fd)
+        source_after = os.fstat(source_fd)
+    finally:
+        if destination_fd is not None:
+            os.close(destination_fd)
+        os.close(source_fd)
+
+    source_reachable = os.lstat(source)
+    source_identity = (
+        source_before.st_dev,
+        source_before.st_ino,
+        source_before.st_mode,
+        source_before.st_nlink,
+        source_before.st_uid,
+        source_before.st_gid,
+        source_before.st_size,
+        source_before.st_mtime_ns,
+        source_before.st_ctime_ns,
+    )
+    if source_identity != (
+        source_after.st_dev,
+        source_after.st_ino,
+        source_after.st_mode,
+        source_after.st_nlink,
+        source_after.st_uid,
+        source_after.st_gid,
+        source_after.st_size,
+        source_after.st_mtime_ns,
+        source_after.st_ctime_ns,
+    ) or source_identity != (
+        source_reachable.st_dev,
+        source_reachable.st_ino,
+        source_reachable.st_mode,
+        source_reachable.st_nlink,
+        source_reachable.st_uid,
+        source_reachable.st_gid,
+        source_reachable.st_size,
+        source_reachable.st_mtime_ns,
+        source_reachable.st_ctime_ns,
+    ):
+        raise RuntimeError("tracked release artifact changed during copy")
+
+    copied = os.lstat(destination)
+    if (
+        not stat.S_ISREG(copied.st_mode)
+        or stat.S_ISLNK(copied.st_mode)
+        or copied.st_uid != _BUILD_OWNER_UID
+        or copied.st_gid != _BUILD_OWNER_GID
+        or copied.st_nlink != 1
+        or stat.S_IMODE(copied.st_mode) != _SEALED_FILE_MODE
+        or copied.st_size != source_before.st_size
+        or (copied.st_dev, copied.st_ino)
+        == (source_before.st_dev, source_before.st_ino)
+        or _hash_file(destination) != copied_digest.hexdigest()
+    ):
+        raise RuntimeError("tracked release artifact copy does not match source")
+    return destination
+
+
+def _copy_tracked_release_artifacts(spec: ReleaseBuildSpec) -> tuple[Path, ...]:
+    return tuple(
+        _copy_tracked_release_artifact(spec, relative_path)
+        for relative_path in _TRACKED_RELEASE_ARTIFACTS
+    )
+
+
 def _validate_scratch_provenance(
     spec: ReleaseBuildSpec,
     *,
@@ -1462,6 +1622,7 @@ def build_release(
         )
         _validate_root_source_tree(spec.build_project_root)
         _validate_build_constraints(spec)
+        _copy_tracked_release_artifacts(spec)
         install_steps = install_commands(spec, managed_python)
         _run_checked(
             install_steps[0],
@@ -1537,6 +1698,8 @@ def build_release(
 __all__ = [
     "BUILD_CONSTRAINTS_RELATIVE_PATH",
     "BUILD_SCRATCH_NAME",
+    "CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH",
+    "CANARY_BOOTSTRAP_SQL_RELATIVE_PATH",
     "BuildCommand",
     "GATEWAY_MODULE",
     "GATEWAY_UNIT_NAME",

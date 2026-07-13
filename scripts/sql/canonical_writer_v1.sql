@@ -6,11 +6,13 @@
 --
 --   canonical_brain_migration_owner  NOLOGIN, owns this contract
 --   canonical_brain_writer           NOLOGIN, granted only to the service login
+--   canonical_brain_canary_bootstrap NOLOGIN, inert one-shot bootstrap role
+--   canonical_brain_canary_bootstrap_login LOGIN, member only of that role
 --
 -- The existing public.canonical_event_log and PostgreSQL's core
 -- pg_catalog.sha256(bytea) routine are explicit prerequisites.  The runtime
 -- writer role receives no table privileges and no
--- general SQL surface: only the seventeen fixed (jsonb, jsonb) routines at the
+-- general SQL surface: only the eighteen fixed (jsonb, jsonb) routines at the
 -- end of this file are executable by it.
 --
 -- Applying the contract is an owner-approved operation.  The invoking session
@@ -171,6 +173,65 @@ BEGIN
     ) THEN
         RAISE EXCEPTION
             'prerequisite missing: canonical_brain_writer must be a least-privilege NOLOGIN role';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles
+        WHERE rolname = 'canonical_brain_canary_bootstrap'
+          AND rolcanlogin IS FALSE
+          AND rolinherit IS FALSE
+          AND rolsuper IS FALSE
+          AND rolcreatedb IS FALSE
+          AND rolcreaterole IS FALSE
+          AND rolreplication IS FALSE
+          AND rolbypassrls IS FALSE
+    ) OR NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles
+        WHERE rolname = 'canonical_brain_canary_bootstrap_login'
+          AND rolcanlogin IS TRUE
+          AND rolinherit IS TRUE
+          AND rolsuper IS FALSE
+          AND rolcreatedb IS FALSE
+          AND rolcreaterole IS FALSE
+          AND rolreplication IS FALSE
+          AND rolbypassrls IS FALSE
+    ) THEN
+        RAISE EXCEPTION
+            'prerequisite missing: exact least-privilege canary bootstrap role/login';
+    END IF;
+    IF (
+        SELECT pg_catalog.count(*)
+          FROM pg_catalog.pg_auth_members AS membership
+          JOIN pg_catalog.pg_roles AS granted_role
+            ON granted_role.oid = membership.roleid
+          JOIN pg_catalog.pg_roles AS member_role
+            ON member_role.oid = membership.member
+         WHERE granted_role.rolname = 'canonical_brain_canary_bootstrap'
+           AND member_role.rolname = 'canonical_brain_canary_bootstrap_login'
+           AND NOT membership.admin_option
+           AND membership.inherit_option
+           AND membership.set_option
+    ) <> 1 OR EXISTS (
+        SELECT 1
+          FROM pg_catalog.pg_auth_members AS membership
+          JOIN pg_catalog.pg_roles AS granted_role
+            ON granted_role.oid = membership.roleid
+          JOIN pg_catalog.pg_roles AS member_role
+            ON member_role.oid = membership.member
+         WHERE (
+                granted_role.rolname = 'canonical_brain_canary_bootstrap'
+                OR member_role.rolname = 'canonical_brain_canary_bootstrap_login'
+                OR member_role.rolname = 'canonical_brain_canary_bootstrap'
+               )
+           AND NOT (
+                granted_role.rolname = 'canonical_brain_canary_bootstrap'
+                AND member_role.rolname = 'canonical_brain_canary_bootstrap_login'
+                AND NOT membership.admin_option
+                AND membership.inherit_option
+                AND membership.set_option
+           )
+    ) THEN
+        RAISE EXCEPTION
+            'canary bootstrap role/login membership is not exact';
     END IF;
     IF pg_catalog.pg_has_role(
         'canonical_brain_writer',
@@ -718,7 +779,10 @@ BEGIN
         'writer_capability_grants',
         'writer_capability_revocation_scopes',
         'writer_capability_revocations',
-        'writer_capability_consumptions'
+        'writer_capability_consumptions',
+        'writer_canary_scope_preapprovals',
+        'writer_canary_scope_preapproval_retirements',
+        'writer_canary_scope_claims'
     ]
     LOOP
         SELECT pg_catalog.pg_get_userbyid(class.relowner)
@@ -752,7 +816,10 @@ BEGIN
             'writer_capability_grants',
             'writer_capability_revocation_scopes',
             'writer_capability_revocations',
-            'writer_capability_consumptions'
+            'writer_capability_consumptions',
+            'writer_canary_scope_preapprovals',
+            'writer_canary_scope_preapproval_retirements',
+            'writer_canary_scope_claims'
        ]);
     IF unexpected_tables IS NOT NULL THEN
         RAISE EXCEPTION
@@ -905,6 +972,70 @@ CREATE TABLE IF NOT EXISTS canonical_brain.writer_capability_consumptions (
     UNIQUE (session_key_sha256, capability_epoch_sha256, idempotency_key)
 );
 
+-- A canary scope exists only after an owner-bound, root-configured bootstrap
+-- preapproval.  Runtime/model callers cannot create or broaden this row.
+CREATE TABLE IF NOT EXISTS canonical_brain.writer_canary_scope_preapprovals (
+    grant_id text PRIMARY KEY,
+    case_id text NOT NULL UNIQUE,
+    release_sha256 text NOT NULL CHECK (release_sha256 ~ '^[0-9a-f]{64}$'),
+    fixture_sha256 text NOT NULL CHECK (fixture_sha256 ~ '^[0-9a-f]{64}$'),
+    run_id text NOT NULL UNIQUE,
+    session_key_sha256 text NOT NULL CHECK (session_key_sha256 ~ '^[0-9a-f]{64}$'),
+    expires_at timestamptz NOT NULL,
+    approved_by text NOT NULL,
+    approval_source_sha256 text NOT NULL UNIQUE
+        CHECK (approval_source_sha256 ~ '^[0-9a-f]{64}$'),
+    request_sha256 text NOT NULL CHECK (request_sha256 ~ '^[0-9a-f]{64}$'),
+    preapproved_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(),
+    receipt_event_id uuid NOT NULL
+);
+
+-- A writer shutdown/recovery that wins the preclaim lock records one durable
+-- terminal.  The row is append-only; later retries return its first-writer
+-- event/provenance instead of authoring a second semantic outcome.
+CREATE TABLE IF NOT EXISTS canonical_brain.writer_canary_scope_preapproval_retirements (
+    grant_id text PRIMARY KEY
+        REFERENCES canonical_brain.writer_canary_scope_preapprovals(grant_id),
+    case_id text NOT NULL,
+    release_sha256 text NOT NULL CHECK (release_sha256 ~ '^[0-9a-f]{64}$'),
+    fixture_sha256 text NOT NULL CHECK (fixture_sha256 ~ '^[0-9a-f]{64}$'),
+    run_id text NOT NULL,
+    session_key_sha256 text NOT NULL CHECK (session_key_sha256 ~ '^[0-9a-f]{64}$'),
+    expires_at timestamptz NOT NULL,
+    approved_by text NOT NULL,
+    approval_source_sha256 text NOT NULL
+        CHECK (approval_source_sha256 ~ '^[0-9a-f]{64}$'),
+    provisioning_receipt_sha256 text NOT NULL
+        CHECK (provisioning_receipt_sha256 ~ '^[0-9a-f]{64}$'),
+    preapproval_event_id uuid NOT NULL,
+    bootstrap_consumption_event_id uuid NOT NULL,
+    request_sha256 text NOT NULL CHECK (request_sha256 ~ '^[0-9a-f]{64}$'),
+    reason text NOT NULL
+        CHECK (reason = 'activation_failed_before_first_claim'),
+    retired_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(),
+    retirement_event_id uuid NOT NULL
+);
+
+-- The claim is append-only and one-shot by grant_id.  Its epoch comes only
+-- from the authenticated gateway RuntimeContext, never from request payload.
+CREATE TABLE IF NOT EXISTS canonical_brain.writer_canary_scope_claims (
+    grant_id text PRIMARY KEY
+        REFERENCES canonical_brain.writer_canary_scope_preapprovals(grant_id),
+    case_id text NOT NULL UNIQUE,
+    release_sha256 text NOT NULL CHECK (release_sha256 ~ '^[0-9a-f]{64}$'),
+    fixture_sha256 text NOT NULL CHECK (fixture_sha256 ~ '^[0-9a-f]{64}$'),
+    run_id text NOT NULL UNIQUE,
+    approval_source_sha256 text NOT NULL
+        CHECK (approval_source_sha256 ~ '^[0-9a-f]{64}$'),
+    session_key_sha256 text NOT NULL CHECK (session_key_sha256 ~ '^[0-9a-f]{64}$'),
+    capability_epoch_sha256 text NOT NULL
+        CHECK (capability_epoch_sha256 ~ '^[0-9a-f]{64}$'),
+    expires_at timestamptz NOT NULL,
+    request_sha256 text NOT NULL CHECK (request_sha256 ~ '^[0-9a-f]{64}$'),
+    claimed_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(),
+    claim_event_id uuid NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS writer_routeback_target_idx
     ON canonical_brain.writer_routeback_authorizations
     ((COALESCE(target_ref->>'thread_id', target_ref->>'channel_id')));
@@ -923,6 +1054,15 @@ CREATE INDEX IF NOT EXISTS writer_capability_command_idx
 CREATE INDEX IF NOT EXISTS writer_capability_use_idx
     ON canonical_brain.writer_capability_consumptions
     (approval_id, command_sha256);
+CREATE INDEX IF NOT EXISTS writer_canary_preapproval_scope_idx
+    ON canonical_brain.writer_canary_scope_preapprovals
+    (case_id, session_key_sha256, expires_at);
+CREATE INDEX IF NOT EXISTS writer_canary_preapproval_retirement_scope_idx
+    ON canonical_brain.writer_canary_scope_preapproval_retirements
+    (case_id, session_key_sha256, retired_at);
+CREATE INDEX IF NOT EXISTS writer_canary_claim_scope_idx
+    ON canonical_brain.writer_canary_scope_claims
+    (case_id, session_key_sha256, capability_epoch_sha256);
 
 ALTER TABLE canonical_brain.writer_routeback_authorizations
     OWNER TO canonical_brain_migration_owner;
@@ -942,6 +1082,12 @@ ALTER TABLE canonical_brain.writer_capability_revocations
     OWNER TO canonical_brain_migration_owner;
 ALTER TABLE canonical_brain.writer_capability_consumptions
     OWNER TO canonical_brain_migration_owner;
+ALTER TABLE canonical_brain.writer_canary_scope_preapprovals
+    OWNER TO canonical_brain_migration_owner;
+ALTER TABLE canonical_brain.writer_canary_scope_preapproval_retirements
+    OWNER TO canonical_brain_migration_owner;
+ALTER TABLE canonical_brain.writer_canary_scope_claims
+    OWNER TO canonical_brain_migration_owner;
 
 -- PostgreSQL itself parses and deparses the exact CHECK expressions used by
 -- this artifact.  Comparing the real tables to this transaction-local template
@@ -953,6 +1099,8 @@ CREATE TEMPORARY TABLE canonical_writer_check_contract (
     idempotency_key text
         CHECK (pg_catalog.octet_length(idempotency_key) BETWEEN 1 AND 256),
     request_sha256 text CHECK (request_sha256 ~ '^[0-9a-f]{64}$'),
+    release_sha256 text CHECK (release_sha256 ~ '^[0-9a-f]{64}$'),
+    fixture_sha256 text CHECK (fixture_sha256 ~ '^[0-9a-f]{64}$'),
     outcome text CHECK (outcome IN ('sent', 'blocked')),
     target_type text CHECK (target_type IN ('public_channel', 'public_thread')),
     canonical_content_sha256 text
@@ -965,13 +1113,16 @@ CREATE TEMPORARY TABLE canonical_writer_check_contract (
         CHECK (capability_epoch_sha256 ~ '^[0-9a-f]{64}$'),
     approval_source_sha256 text
         CHECK (approval_source_sha256 ~ '^[0-9a-f]{64}$'),
+    provisioning_receipt_sha256 text
+        CHECK (provisioning_receipt_sha256 ~ '^[0-9a-f]{64}$'),
     command_hashes jsonb
         CHECK (pg_catalog.jsonb_typeof(command_hashes) = 'array'),
     max_uses integer CHECK (max_uses BETWEEN 1 AND 1000),
     revoked_by_session_sha256 text
         CHECK (revoked_by_session_sha256 ~ '^[0-9a-f]{64}$'),
     command_sha256 text CHECK (command_sha256 ~ '^[0-9a-f]{64}$'),
-    remaining_uses integer CHECK (remaining_uses >= 0)
+    remaining_uses integer CHECK (remaining_uses >= 0),
+    reason text CHECK (reason = 'activation_failed_before_first_claim')
 ) ON COMMIT DROP;
 
 CREATE TEMPORARY TABLE canonical_writer_index_contract (
@@ -984,7 +1135,9 @@ CREATE TEMPORARY TABLE canonical_writer_index_contract (
     plan_revision integer,
     command_hashes jsonb,
     approval_id text,
-    command_sha256 text
+    command_sha256 text,
+    expires_at timestamptz,
+    retired_at timestamptz
 ) ON COMMIT DROP;
 CREATE INDEX contract_routeback_target_idx
     ON canonical_writer_index_contract
@@ -1003,6 +1156,13 @@ CREATE INDEX contract_capability_command_idx
     ON canonical_writer_index_contract USING gin (command_hashes);
 CREATE INDEX contract_capability_use_idx
     ON canonical_writer_index_contract (approval_id, command_sha256);
+CREATE INDEX contract_canary_preapproval_scope_idx
+    ON canonical_writer_index_contract (case_id, session_key_sha256, expires_at);
+CREATE INDEX contract_canary_preapproval_retirement_scope_idx
+    ON canonical_writer_index_contract (case_id, session_key_sha256, retired_at);
+CREATE INDEX contract_canary_claim_scope_idx
+    ON canonical_writer_index_contract
+    (case_id, session_key_sha256, capability_epoch_sha256);
 
 DO $table_contract$
 DECLARE
@@ -1023,7 +1183,10 @@ BEGIN
             'writer_capability_grants',
             'writer_capability_revocation_scopes',
             'writer_capability_revocations',
-            'writer_capability_consumptions'
+            'writer_capability_consumptions',
+            'writer_canary_scope_preapprovals',
+            'writer_canary_scope_preapproval_retirements',
+            'writer_canary_scope_claims'
        )
        AND (
             class.relkind <> 'r'
@@ -1134,6 +1297,25 @@ BEGIN
               'consume_id','approval_id','command_sha256','session_key_sha256',
               'capability_epoch_sha256','idempotency_key','request_sha256',
               'remaining_uses','consumed_at','receipt_event_id','response'
+          ]),
+          ('writer_canary_scope_preapprovals', ARRAY[
+              'grant_id','case_id','release_sha256','fixture_sha256','run_id',
+              'session_key_sha256','expires_at','approved_by',
+              'approval_source_sha256','request_sha256','preapproved_at',
+              'receipt_event_id'
+          ]),
+          ('writer_canary_scope_preapproval_retirements', ARRAY[
+              'grant_id','case_id','release_sha256','fixture_sha256','run_id',
+              'session_key_sha256','expires_at','approved_by',
+              'approval_source_sha256','provisioning_receipt_sha256',
+              'preapproval_event_id','bootstrap_consumption_event_id',
+              'request_sha256','reason','retired_at','retirement_event_id'
+          ]),
+          ('writer_canary_scope_claims', ARRAY[
+              'grant_id','case_id','release_sha256','fixture_sha256','run_id',
+              'approval_source_sha256','session_key_sha256',
+              'capability_epoch_sha256','expires_at','request_sha256',
+              'claimed_at','claim_event_id'
           ])
     ), actual AS (
         SELECT class.relname AS table_name,
@@ -1157,7 +1339,10 @@ BEGIN
                 'writer_capability_grants',
                 'writer_capability_revocation_scopes',
                 'writer_capability_revocations',
-                'writer_capability_consumptions'
+                'writer_capability_consumptions',
+                'writer_canary_scope_preapprovals',
+                'writer_canary_scope_preapproval_retirements',
+                'writer_canary_scope_claims'
            )
          GROUP BY class.relname
     ), difference AS (
@@ -1200,7 +1385,10 @@ BEGIN
             'writer_capability_grants',
             'writer_capability_revocation_scopes',
             'writer_capability_revocations',
-            'writer_capability_consumptions'
+            'writer_capability_consumptions',
+            'writer_canary_scope_preapprovals',
+            'writer_canary_scope_preapproval_retirements',
+            'writer_canary_scope_claims'
        )
        AND pg_catalog.format_type(attribute.atttypid, attribute.atttypmod)
            <> CASE
@@ -1210,11 +1398,14 @@ BEGIN
                 ) THEN 'jsonb'
                 WHEN attribute.attname IN (
                     'intent_event_id','terminal_event_id','grant_event_id',
-                    'consume_id','receipt_event_id','event_id'
+                    'consume_id','receipt_event_id','claim_event_id','event_id',
+                    'preapproval_event_id','bootstrap_consumption_event_id',
+                    'retirement_event_id'
                 ) THEN 'uuid'
                 WHEN attribute.attname IN (
                     'created_at','finalized_at','approved_at','expires_at',
-                    'granted_at','revoked_at','consumed_at','appended_at'
+                    'granted_at','revoked_at','consumed_at','appended_at',
+                    'preapproved_at','claimed_at','retired_at'
                 ) THEN 'timestamp with time zone'
                 WHEN attribute.attname IN (
                     'plan_revision','max_uses','remaining_uses'
@@ -1250,7 +1441,10 @@ BEGIN
             'writer_capability_grants',
             'writer_capability_revocation_scopes',
             'writer_capability_revocations',
-            'writer_capability_consumptions'
+            'writer_capability_consumptions',
+            'writer_canary_scope_preapprovals',
+            'writer_canary_scope_preapproval_retirements',
+            'writer_canary_scope_claims'
        )
        AND NOT attribute.attnotnull;
     IF mismatch IS NOT NULL THEN
@@ -1281,7 +1475,10 @@ BEGIN
             'writer_capability_grants',
             'writer_capability_revocation_scopes',
             'writer_capability_revocations',
-            'writer_capability_consumptions'
+            'writer_capability_consumptions',
+            'writer_canary_scope_preapprovals',
+            'writer_canary_scope_preapproval_retirements',
+            'writer_canary_scope_claims'
        )
        AND (
             attribute.attidentity <> ''
@@ -1312,7 +1509,11 @@ BEGIN
           ('writer_capability_grants','granted_at','clock_timestamp()'),
           ('writer_capability_revocation_scopes','revoked_at','clock_timestamp()'),
           ('writer_capability_revocations','revoked_at','clock_timestamp()'),
-          ('writer_capability_consumptions','consumed_at','clock_timestamp()')
+          ('writer_capability_consumptions','consumed_at','clock_timestamp()'),
+          ('writer_canary_scope_preapprovals','preapproved_at','clock_timestamp()'),
+          ('writer_canary_scope_preapproval_retirements','retired_at',
+              'clock_timestamp()'),
+          ('writer_canary_scope_claims','claimed_at','clock_timestamp()')
     ), actual AS (
         SELECT class.relname AS table_name,
                attribute.attname AS column_name,
@@ -1339,7 +1540,10 @@ BEGIN
                 'writer_capability_grants',
                 'writer_capability_revocation_scopes',
                 'writer_capability_revocations',
-                'writer_capability_consumptions'
+                'writer_capability_consumptions',
+                'writer_canary_scope_preapprovals',
+                'writer_canary_scope_preapproval_retirements',
+                'writer_canary_scope_claims'
            )
     ), difference AS (
         (SELECT * FROM expected EXCEPT SELECT * FROM actual)
@@ -1390,7 +1594,27 @@ BEGIN
           ('writer_capability_consumptions','capability_epoch_sha256'),
           ('writer_capability_consumptions','idempotency_key'),
           ('writer_capability_consumptions','request_sha256'),
-          ('writer_capability_consumptions','remaining_uses')
+          ('writer_capability_consumptions','remaining_uses'),
+          ('writer_canary_scope_preapprovals','release_sha256'),
+          ('writer_canary_scope_preapprovals','fixture_sha256'),
+          ('writer_canary_scope_preapprovals','session_key_sha256'),
+          ('writer_canary_scope_preapprovals','approval_source_sha256'),
+          ('writer_canary_scope_preapprovals','request_sha256'),
+          ('writer_canary_scope_preapproval_retirements','release_sha256'),
+          ('writer_canary_scope_preapproval_retirements','fixture_sha256'),
+          ('writer_canary_scope_preapproval_retirements','session_key_sha256'),
+          ('writer_canary_scope_preapproval_retirements',
+              'approval_source_sha256'),
+          ('writer_canary_scope_preapproval_retirements',
+              'provisioning_receipt_sha256'),
+          ('writer_canary_scope_preapproval_retirements','request_sha256'),
+          ('writer_canary_scope_preapproval_retirements','reason'),
+          ('writer_canary_scope_claims','release_sha256'),
+          ('writer_canary_scope_claims','fixture_sha256'),
+          ('writer_canary_scope_claims','approval_source_sha256'),
+          ('writer_canary_scope_claims','session_key_sha256'),
+          ('writer_canary_scope_claims','capability_epoch_sha256'),
+          ('writer_canary_scope_claims','request_sha256')
     ), template AS (
         SELECT attribute.attname AS column_name,
                pg_catalog.pg_get_constraintdef(constraint_row.oid, false)
@@ -1433,7 +1657,10 @@ BEGIN
                 'writer_capability_grants',
                 'writer_capability_revocation_scopes',
                 'writer_capability_revocations',
-                'writer_capability_consumptions'
+                'writer_capability_consumptions',
+                'writer_canary_scope_preapprovals',
+                'writer_canary_scope_preapproval_retirements',
+                'writer_canary_scope_claims'
            )
            AND constraint_row.contype = 'c'
     ), actual AS (
@@ -1471,6 +1698,9 @@ BEGIN
               ARRAY['scope_type','session_key_sha256','capability_epoch_sha256','plan_id']),
           ('writer_capability_revocations','p',ARRAY['approval_id']),
           ('writer_capability_consumptions','p',ARRAY['consume_id']),
+          ('writer_canary_scope_preapprovals','p',ARRAY['grant_id']),
+          ('writer_canary_scope_preapproval_retirements','p',ARRAY['grant_id']),
+          ('writer_canary_scope_claims','p',ARRAY['grant_id']),
           ('writer_routeback_authorizations','u',
               ARRAY['case_id','idempotency_key']),
           ('writer_routeback_lifecycle_terminals','u',
@@ -1478,9 +1708,16 @@ BEGIN
           ('writer_capability_grants','u',ARRAY['approval_source_sha256']),
           ('writer_capability_consumptions','u',
               ARRAY['session_key_sha256','capability_epoch_sha256','idempotency_key']),
+          ('writer_canary_scope_preapprovals','u',ARRAY['case_id']),
+          ('writer_canary_scope_preapprovals','u',ARRAY['run_id']),
+          ('writer_canary_scope_preapprovals','u',ARRAY['approval_source_sha256']),
+          ('writer_canary_scope_claims','u',ARRAY['case_id']),
+          ('writer_canary_scope_claims','u',ARRAY['run_id']),
           ('writer_routeback_terminals','f',ARRAY['authorization_id']),
           ('writer_capability_revocations','f',ARRAY['approval_id']),
-          ('writer_capability_consumptions','f',ARRAY['approval_id'])
+          ('writer_capability_consumptions','f',ARRAY['approval_id']),
+          ('writer_canary_scope_preapproval_retirements','f',ARRAY['grant_id']),
+          ('writer_canary_scope_claims','f',ARRAY['grant_id'])
     ), expected AS (
         SELECT expected_rows.*, 1::bigint AS occurrences
           FROM expected_rows
@@ -1509,7 +1746,10 @@ BEGIN
                 'writer_capability_grants',
                 'writer_capability_revocation_scopes',
                 'writer_capability_revocations',
-                'writer_capability_consumptions'
+                'writer_capability_consumptions',
+                'writer_canary_scope_preapprovals',
+                'writer_canary_scope_preapproval_retirements',
+                'writer_canary_scope_claims'
            )
          GROUP BY class.relname, constraint_row.oid, constraint_row.contype
     ), actual AS (
@@ -1546,7 +1786,9 @@ BEGIN
        AND class.relname IN (
             'writer_routeback_terminals',
             'writer_capability_revocations',
-            'writer_capability_consumptions'
+            'writer_capability_consumptions',
+            'writer_canary_scope_preapproval_retirements',
+            'writer_canary_scope_claims'
        )
        AND (
             constraint_row.condeferrable
@@ -1564,6 +1806,12 @@ BEGIN
                     )
                     AND constraint_row.confrelid =
                         'canonical_brain.writer_capability_grants'::regclass)
+                OR (class.relname IN (
+                        'writer_canary_scope_claims',
+                        'writer_canary_scope_preapproval_retirements'
+                    )
+                    AND constraint_row.confrelid =
+                        'canonical_brain.writer_canary_scope_preapprovals'::regclass)
             )
             OR constraint_row.confkey <> ARRAY[
                 (
@@ -1573,6 +1821,11 @@ BEGIN
                        AND attribute.attname = CASE
                            WHEN class.relname = 'writer_routeback_terminals'
                                THEN 'authorization_id'
+                           WHEN class.relname IN (
+                               'writer_canary_scope_claims',
+                               'writer_canary_scope_preapproval_retirements'
+                           )
+                               THEN 'grant_id'
                            ELSE 'approval_id'
                        END
                 )::smallint
@@ -1612,7 +1865,10 @@ BEGIN
             'writer_capability_grants',
             'writer_capability_revocation_scopes',
             'writer_capability_revocations',
-            'writer_capability_consumptions'
+            'writer_capability_consumptions',
+            'writer_canary_scope_preapprovals',
+            'writer_canary_scope_preapproval_retirements',
+            'writer_canary_scope_claims'
        )
        AND (
             NOT index.indisunique
@@ -1690,7 +1946,10 @@ BEGIN
             'writer_capability_grants',
             'writer_capability_revocation_scopes',
             'writer_capability_revocations',
-            'writer_capability_consumptions'
+            'writer_capability_consumptions',
+            'writer_canary_scope_preapprovals',
+            'writer_canary_scope_preapproval_retirements',
+            'writer_canary_scope_claims'
        )
        AND (
             -- PostgreSQL 18 adds ``contype = 'n'`` rows for NOT NULL.  Their
@@ -1723,7 +1982,12 @@ BEGIN
               'contract_event_provenance_thread_idx'),
           ('writer_capability_scope_idx','contract_capability_scope_idx'),
           ('writer_capability_command_idx','contract_capability_command_idx'),
-          ('writer_capability_use_idx','contract_capability_use_idx')
+          ('writer_capability_use_idx','contract_capability_use_idx'),
+          ('writer_canary_preapproval_scope_idx',
+              'contract_canary_preapproval_scope_idx'),
+          ('writer_canary_preapproval_retirement_scope_idx',
+              'contract_canary_preapproval_retirement_scope_idx'),
+          ('writer_canary_claim_scope_idx','contract_canary_claim_scope_idx')
     ), template AS (
         SELECT index_class.relname AS template_name,
                access_method.amname,
@@ -1810,7 +2074,10 @@ BEGIN
                 'writer_capability_grants',
                 'writer_capability_revocation_scopes',
                 'writer_capability_revocations',
-                'writer_capability_consumptions'
+                'writer_capability_consumptions',
+                'writer_canary_scope_preapprovals',
+                'writer_canary_scope_preapproval_retirements',
+                'writer_canary_scope_claims'
            )
            AND NOT EXISTS (
                 SELECT 1 FROM pg_catalog.pg_constraint AS constraint_row
@@ -1847,7 +2114,10 @@ BEGIN
             'writer_capability_grants',
             'writer_capability_revocation_scopes',
             'writer_capability_revocations',
-            'writer_capability_consumptions'
+            'writer_capability_consumptions',
+            'writer_canary_scope_preapprovals',
+            'writer_canary_scope_preapproval_retirements',
+            'writer_canary_scope_claims'
        )
        AND (
             NOT index.indisvalid OR NOT index.indisready OR NOT index.indislive
@@ -2004,7 +2274,13 @@ BEGIN
                 'route_back.blocked', 'approval.capability.recorded',
                 'approval.capability.revoked',
                 'approval.capability.session_revoked',
-                'capability.check.recorded', 'lease.shadow.recorded'
+                'capability.check.recorded', 'lease.shadow.recorded',
+                'canary.scope.bootstrap_authorized',
+                'canary.scope.bootstrap_consumed',
+                'canary.scope.bootstrap_retired',
+                'canary.scope.preapproved',
+                'canary.scope.preapproval_retired', 'canary.scope.claimed',
+                'canary.scope.revoked'
             ) THEN 'privileged_writer_receipt'
             ELSE 'model_authored'
         END
@@ -2532,6 +2808,58 @@ BEGIN
        AND runtime_value->>'owner_authenticated' = 'true' THEN
         RETURN true;
     END IF;
+    -- Isolated-canary API cases never inherit ordinary session/thread
+    -- provenance.  Their sole authority is the exact one-shot claim and its
+    -- current, non-retired session generation.  This branch is deliberately
+    -- absent for ordinary cases and for Discord handoff continuation.
+    IF runtime_value->>'platform' = 'api_server'
+       AND EXISTS (
+            SELECT 1
+              FROM canonical_brain.writer_canary_scope_preapprovals AS marker
+             WHERE marker.case_id = case_id_value
+       ) THEN
+        RETURN COALESCE(runtime_value->>'session_key_sha256', '')
+                   ~ '^[0-9a-f]{64}$'
+           AND COALESCE(runtime_value->>'capability_epoch_sha256', '')
+                   ~ '^[0-9a-f]{64}$'
+           AND EXISTS (
+                SELECT 1
+                  FROM canonical_brain.writer_canary_scope_preapprovals AS preapproval
+                  JOIN canonical_brain.writer_canary_scope_claims AS claim
+                    ON claim.grant_id = preapproval.grant_id
+                   AND claim.case_id = preapproval.case_id
+                   AND claim.release_sha256 = preapproval.release_sha256
+                   AND claim.fixture_sha256 = preapproval.fixture_sha256
+                   AND claim.run_id = preapproval.run_id
+                   AND claim.approval_source_sha256
+                       = preapproval.approval_source_sha256
+                   AND claim.session_key_sha256
+                       = preapproval.session_key_sha256
+                   AND claim.expires_at = preapproval.expires_at
+                 WHERE preapproval.case_id = case_id_value
+                   AND preapproval.expires_at > pg_catalog.statement_timestamp()
+                   AND claim.session_key_sha256
+                       = runtime_value->>'session_key_sha256'
+                   AND claim.capability_epoch_sha256
+                       = runtime_value->>'capability_epoch_sha256'
+                   AND NOT EXISTS (
+                        SELECT 1
+                          FROM canonical_brain.
+                               writer_canary_scope_preapproval_retirements
+                               AS terminal
+                         WHERE terminal.grant_id = preapproval.grant_id
+                   )
+                   AND NOT EXISTS (
+                        SELECT 1
+                          FROM canonical_brain.writer_capability_revocation_scopes AS scope
+                         WHERE scope.scope_type = 'session'
+                           AND scope.session_key_sha256
+                               = claim.session_key_sha256
+                           AND scope.capability_epoch_sha256
+                               = claim.capability_epoch_sha256
+                   )
+           );
+    END IF;
     SELECT EXISTS (
         SELECT 1 FROM public.canonical_event_log AS event
          WHERE event.case_id = case_id_value
@@ -2592,7 +2920,7 @@ BEGIN
 END
 $function$;
 
--- Fixed public routine 1/17.
+-- Fixed public routine 1/18.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_ping(request jsonb, runtime jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -2618,7 +2946,1123 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 2/17.  This is an exact bounded event query, never a
+-- Private one-shot bootstrap routine.  It is never granted to the ordinary
+-- writer role and is deliberately absent from the public wire catalog.
+CREATE OR REPLACE FUNCTION canonical_brain.writer_canary_scope_preapprove(request jsonb, runtime jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog, canonical_brain
+AS $function$
+DECLARE
+    expires_value timestamptz;
+    request_hash text;
+    existing_record canonical_brain.writer_canary_scope_preapprovals%ROWTYPE;
+    append_result jsonb;
+    consume_result jsonb;
+    authorization_record jsonb;
+    authorization_count bigint;
+    preapproved_value timestamptz;
+BEGIN
+    IF NOT canonical_brain._runtime_valid(runtime)
+       OR runtime->>'service_internal' <> 'true'
+       OR runtime->>'platform' <> 'writer_service'
+       OR NOT canonical_brain._keys_valid(
+            request,
+            ARRAY['grant_id','case_id','release_sha256','fixture_sha256',
+                  'run_id','session_key_sha256','expires_at','approved_by',
+                  'approval_source_sha256','provisioning_receipt_sha256'],
+            ARRAY['grant_id','case_id','release_sha256','fixture_sha256',
+                  'run_id','session_key_sha256','expires_at','approved_by',
+                  'approval_source_sha256','provisioning_receipt_sha256']
+       )
+       OR request->>'grant_id' !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
+       OR request->>'case_id' !~ '^case:[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
+       OR request->>'run_id' !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
+       OR request->>'approved_by' !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
+       OR request->>'release_sha256' !~ '^[0-9a-f]{64}$'
+       OR request->>'fixture_sha256' !~ '^[0-9a-f]{64}$'
+       OR request->>'session_key_sha256' !~ '^[0-9a-f]{64}$'
+       OR request->>'approval_source_sha256' !~ '^[0-9a-f]{64}$'
+       OR request->>'provisioning_receipt_sha256' !~ '^[0-9a-f]{64}$'
+       OR runtime->>'session_key_sha256' IS DISTINCT FROM
+            request->>'session_key_sha256' THEN
+        RETURN canonical_brain._fail(
+            'invalid_request',
+            'canary scope preapproval is invalid or not service-internal'
+        );
+    END IF;
+    BEGIN
+        expires_value := (request->>'expires_at')::timestamptz;
+    EXCEPTION WHEN OTHERS THEN
+        RETURN canonical_brain._fail(
+            'invalid_request', 'canary scope expiry is invalid'
+        );
+    END;
+    IF expires_value <= pg_catalog.clock_timestamp()
+       OR expires_value > pg_catalog.clock_timestamp() + INTERVAL '1 hour' THEN
+        RETURN canonical_brain._fail(
+            'invalid_expiry', 'canary scope must expire within one hour'
+        );
+    END IF;
+    request_hash := canonical_brain._sha256_json(
+        request || pg_catalog.jsonb_build_object(
+            'expires_at', pg_catalog.to_char(
+                expires_value AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+            )
+        )
+    );
+    PERFORM pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended(
+            'canary-preapproval:' || (request->>'grant_id'), 0
+        )
+    );
+    IF SESSION_USER <> 'canonical_brain_canary_bootstrap_login'
+       OR CURRENT_USER <> 'canonical_brain_migration_owner'
+       OR NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles AS role
+             WHERE role.rolname = 'canonical_brain_canary_bootstrap_login'
+               AND role.rolcanlogin AND role.rolinherit
+               AND NOT role.rolsuper AND NOT role.rolcreatedb
+               AND NOT role.rolcreaterole AND NOT role.rolreplication
+               AND NOT role.rolbypassrls
+       ) OR NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles AS role
+             WHERE role.rolname = 'canonical_brain_canary_bootstrap'
+               AND NOT role.rolcanlogin AND NOT role.rolinherit
+               AND NOT role.rolsuper AND NOT role.rolcreatedb
+               AND NOT role.rolcreaterole AND NOT role.rolreplication
+               AND NOT role.rolbypassrls
+       ) OR (
+            SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_auth_members AS membership
+              JOIN pg_catalog.pg_roles AS granted_role
+                ON granted_role.oid = membership.roleid
+              JOIN pg_catalog.pg_roles AS member_role
+                ON member_role.oid = membership.member
+             WHERE granted_role.rolname = 'canonical_brain_canary_bootstrap'
+               AND member_role.rolname =
+                   'canonical_brain_canary_bootstrap_login'
+               AND NOT membership.admin_option
+               AND membership.inherit_option
+               AND membership.set_option
+       ) <> 1 OR EXISTS (
+            SELECT 1
+              FROM pg_catalog.pg_auth_members AS membership
+              JOIN pg_catalog.pg_roles AS granted_role
+                ON granted_role.oid = membership.roleid
+              JOIN pg_catalog.pg_roles AS member_role
+                ON member_role.oid = membership.member
+             WHERE (
+                    granted_role.rolname = 'canonical_brain_canary_bootstrap'
+                    OR member_role.rolname =
+                        'canonical_brain_canary_bootstrap_login'
+                    OR member_role.rolname = 'canonical_brain_canary_bootstrap'
+                   )
+               AND NOT (
+                    granted_role.rolname = 'canonical_brain_canary_bootstrap'
+                    AND member_role.rolname =
+                        'canonical_brain_canary_bootstrap_login'
+                    AND NOT membership.admin_option
+                    AND membership.inherit_option
+                    AND membership.set_option
+               )
+       ) THEN
+        RETURN canonical_brain._fail(
+            'bootstrap_authority_mismatch',
+            'canary bootstrap role/login authority is not exact'
+        );
+    END IF;
+    IF (
+        WITH actual AS (
+            SELECT 'schema'::text AS object_kind, namespace.nspname AS identity,
+                   acl.privilege_type, acl.is_grantable,
+                   pg_catalog.pg_get_userbyid(acl.grantor) AS grantor
+              FROM pg_catalog.pg_namespace AS namespace
+              CROSS JOIN LATERAL pg_catalog.aclexplode(
+                  COALESCE(
+                      namespace.nspacl,
+                      pg_catalog.acldefault('n', namespace.nspowner)
+                  )
+              ) AS acl
+             WHERE namespace.nspname = 'canonical_brain'
+               AND acl.grantee = (
+                    SELECT oid FROM pg_catalog.pg_roles
+                     WHERE rolname = 'canonical_brain_canary_bootstrap'
+               )
+            UNION ALL
+            SELECT 'function',
+                   pg_catalog.format(
+                       '%I.%I(%s)', namespace.nspname, routine.proname,
+                       pg_catalog.oidvectortypes(routine.proargtypes)
+                   ), acl.privilege_type, acl.is_grantable,
+                   pg_catalog.pg_get_userbyid(acl.grantor)
+              FROM pg_catalog.pg_proc AS routine
+              JOIN pg_catalog.pg_namespace AS namespace
+                ON namespace.oid = routine.pronamespace
+              CROSS JOIN LATERAL pg_catalog.aclexplode(
+                  COALESCE(
+                      routine.proacl,
+                      pg_catalog.acldefault('f', routine.proowner)
+                  )
+              ) AS acl
+             WHERE namespace.nspname = 'canonical_brain'
+               AND acl.grantee = (
+                    SELECT oid FROM pg_catalog.pg_roles
+                     WHERE rolname = 'canonical_brain_canary_bootstrap'
+               )
+            UNION ALL
+            SELECT CASE WHEN class.relkind = 'S' THEN 'sequence' ELSE 'table' END,
+                   namespace.nspname || '.' || class.relname,
+                   acl.privilege_type, acl.is_grantable,
+                   pg_catalog.pg_get_userbyid(acl.grantor)
+              FROM pg_catalog.pg_class AS class
+              JOIN pg_catalog.pg_namespace AS namespace
+                ON namespace.oid = class.relnamespace
+              CROSS JOIN LATERAL pg_catalog.aclexplode(
+                  COALESCE(
+                      class.relacl,
+                      pg_catalog.acldefault(
+                          CASE WHEN class.relkind = 'S'
+                               THEN 'S'::"char" ELSE 'r'::"char" END,
+                          class.relowner
+                      )
+                  )
+              ) AS acl
+             WHERE namespace.nspname = 'canonical_brain'
+               AND class.relkind IN ('r','p','S')
+               AND acl.grantee = (
+                    SELECT oid FROM pg_catalog.pg_roles
+                     WHERE rolname = 'canonical_brain_canary_bootstrap'
+               )
+        ), expected(object_kind, identity, privilege_type, is_grantable, grantor)
+        AS (
+            VALUES
+              ('schema','canonical_brain','USAGE',false,
+               'canonical_brain_migration_owner'),
+              ('function',
+               'canonical_brain.writer_canary_scope_preapprove(jsonb, jsonb)',
+               'EXECUTE',false,'canonical_brain_migration_owner')
+        )
+        SELECT EXISTS (
+            (SELECT * FROM actual EXCEPT SELECT * FROM expected)
+            UNION ALL
+            (SELECT * FROM expected EXCEPT SELECT * FROM actual)
+        )
+    ) THEN
+        RETURN canonical_brain._fail(
+            'bootstrap_acl_mismatch',
+            'canary bootstrap ACL is not the exact one-shot grant'
+        );
+    END IF;
+    SELECT pg_catalog.count(*),
+           pg_catalog.max(
+               (event.payload->'canary_scope_bootstrap_authorization')::text
+           )::jsonb
+      INTO authorization_count, authorization_record
+      FROM public.canonical_event_log AS event
+      JOIN canonical_brain.writer_event_provenance AS provenance
+        ON provenance.event_id = event.event_id
+     WHERE event.event_type = 'canary.scope.bootstrap_authorized'
+       AND event.case_id = request->>'case_id'
+       AND provenance.origin = 'canary_scope_bootstrap_provision'
+       AND event.payload->'canary_scope_bootstrap_authorization'->>'grant_id'
+           = request->>'grant_id';
+    IF authorization_count <> 1
+       OR NOT canonical_brain._keys_valid(
+            authorization_record,
+            ARRAY['grant_id','case_id','release_sha256','fixture_sha256',
+                  'run_id','session_key_sha256','expires_at','approved_by',
+                  'approval_source_sha256','provisioning_receipt_sha256',
+                  'bootstrap_login','state'],
+            ARRAY['grant_id','case_id','release_sha256','fixture_sha256',
+                  'run_id','session_key_sha256','expires_at','approved_by',
+                  'approval_source_sha256','provisioning_receipt_sha256',
+                  'bootstrap_login','state']
+       )
+       OR authorization_record->>'grant_id' <> request->>'grant_id'
+       OR authorization_record->>'case_id' <> request->>'case_id'
+       OR authorization_record->>'release_sha256' <> request->>'release_sha256'
+       OR authorization_record->>'fixture_sha256' <> request->>'fixture_sha256'
+       OR authorization_record->>'run_id' <> request->>'run_id'
+       OR authorization_record->>'session_key_sha256'
+            <> request->>'session_key_sha256'
+       OR authorization_record->>'approved_by' <> request->>'approved_by'
+       OR authorization_record->>'approval_source_sha256'
+            <> request->>'approval_source_sha256'
+       OR authorization_record->>'provisioning_receipt_sha256'
+            <> request->>'provisioning_receipt_sha256'
+       OR authorization_record->>'bootstrap_login'
+            <> 'canonical_brain_canary_bootstrap_login'
+       OR authorization_record->>'state' <> 'authorized'
+       OR (authorization_record->>'expires_at')::timestamptz
+            IS DISTINCT FROM expires_value
+       OR EXISTS (
+            SELECT 1
+              FROM public.canonical_event_log AS event
+              JOIN canonical_brain.writer_event_provenance AS provenance
+                ON provenance.event_id = event.event_id
+             WHERE event.event_type = 'canary.scope.bootstrap_consumed'
+               AND event.case_id = request->>'case_id'
+               AND provenance.origin = 'canary_scope_bootstrap_consume'
+               AND event.payload->'canary_scope_bootstrap_consumption'->>'grant_id'
+                   = request->>'grant_id'
+       ) OR EXISTS (
+            SELECT 1
+              FROM public.canonical_event_log AS event
+              JOIN canonical_brain.writer_event_provenance AS provenance
+                ON provenance.event_id = event.event_id
+             WHERE event.event_type = 'canary.scope.bootstrap_retired'
+               AND event.case_id = request->>'case_id'
+               AND provenance.origin = 'canary_scope_bootstrap_retire'
+               AND event.payload->'canary_scope_bootstrap_retirement'->>'grant_id'
+                   = request->>'grant_id'
+       ) THEN
+        RETURN canonical_brain._fail(
+            'bootstrap_authorization_missing',
+            'exact one-shot canary bootstrap authorization is unavailable'
+        );
+    END IF;
+    SELECT * INTO existing_record
+      FROM canonical_brain.writer_canary_scope_preapprovals AS preapproval
+     WHERE preapproval.grant_id = request->>'grant_id';
+    IF FOUND THEN
+        IF existing_record.request_sha256 <> request_hash
+           OR existing_record.case_id <> request->>'case_id'
+           OR existing_record.session_key_sha256
+                <> request->>'session_key_sha256' THEN
+            RETURN canonical_brain._fail(
+                'idempotency_conflict',
+                'canary grant identity is bound to another preapproval'
+            );
+        END IF;
+        IF existing_record.expires_at <= pg_catalog.clock_timestamp() THEN
+            RETURN canonical_brain._fail(
+                'canary_scope_expired', 'canary scope preapproval has expired'
+            );
+        END IF;
+        RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
+            'success', true,
+            'grant_id', existing_record.grant_id,
+            'case_id', existing_record.case_id,
+            'release_sha256', existing_record.release_sha256,
+            'fixture_sha256', existing_record.fixture_sha256,
+            'run_id', existing_record.run_id,
+            'session_key_sha256', existing_record.session_key_sha256,
+            'expires_at', existing_record.expires_at,
+            'approved_by', existing_record.approved_by,
+            'approval_source_sha256', existing_record.approval_source_sha256,
+            'preapproved_at', existing_record.preapproved_at,
+            'event_id', existing_record.receipt_event_id::text,
+            'receipt_event_id', existing_record.receipt_event_id::text,
+            'inserted', false,
+            'deduped', true
+        ));
+    END IF;
+    IF EXISTS (
+        SELECT 1
+          FROM canonical_brain.writer_canary_scope_preapprovals AS preapproval
+         WHERE preapproval.case_id = request->>'case_id'
+            OR preapproval.run_id = request->>'run_id'
+            OR preapproval.approval_source_sha256
+                = request->>'approval_source_sha256'
+    ) THEN
+        RETURN canonical_brain._fail(
+            'idempotency_conflict',
+            'canary case, run, or approval receipt is already preapproved'
+        );
+    END IF;
+    preapproved_value := pg_catalog.clock_timestamp();
+    append_result := canonical_brain._append_event(
+        'canary.scope.preapproved',
+        request->>'case_id',
+        'Owner-bound isolated canary execution scope preapproved',
+        pg_catalog.jsonb_build_object(
+            'manual_ref', 'canary-preapproval:' || (request->>'grant_id')
+        ),
+        pg_catalog.jsonb_build_object(
+            'actor', pg_catalog.jsonb_build_object(
+                'type', 'owner_approval', 'id', request->>'approved_by'
+            ),
+            'subject', pg_catalog.jsonb_build_object(
+                'type', 'canary_scope', 'id', request->>'grant_id'
+            )
+        ),
+        pg_catalog.jsonb_build_object(
+            'canary_scope_preapproval', pg_catalog.jsonb_build_object(
+                'grant_id', request->>'grant_id',
+                'case_id', request->>'case_id',
+                'release_sha256', request->>'release_sha256',
+                'fixture_sha256', request->>'fixture_sha256',
+                'run_id', request->>'run_id',
+                'session_key_sha256', request->>'session_key_sha256',
+                'expires_at', expires_value,
+                'approved_by', request->>'approved_by',
+                'approval_source_sha256', request->>'approval_source_sha256',
+                'state', 'preapproved'
+            )
+        ),
+        pg_catalog.jsonb_build_object(
+            'isolated_canary', true,
+            'service_internal_preapproval', true
+        ),
+        'canary-preapprove:' || (request->>'grant_id'),
+        'canary_scope_preapprove',
+        runtime
+    );
+    IF NOT (append_result->>'ok')::boolean THEN
+        RETURN append_result;
+    END IF;
+    INSERT INTO canonical_brain.writer_canary_scope_preapprovals (
+        grant_id, case_id, release_sha256, fixture_sha256, run_id,
+        session_key_sha256, expires_at, approved_by, approval_source_sha256,
+        request_sha256, preapproved_at, receipt_event_id
+    ) VALUES (
+        request->>'grant_id', request->>'case_id', request->>'release_sha256',
+        request->>'fixture_sha256', request->>'run_id',
+        request->>'session_key_sha256', expires_value, request->>'approved_by',
+        request->>'approval_source_sha256', request_hash,
+        preapproved_value,
+        (append_result->'result'->>'event_id')::uuid
+    );
+    consume_result := canonical_brain._append_event(
+        'canary.scope.bootstrap_consumed',
+        request->>'case_id',
+        'One-shot isolated canary bootstrap authority consumed',
+        pg_catalog.jsonb_build_object(
+            'manual_ref', 'canary-bootstrap-consume:' || (request->>'grant_id')
+        ),
+        pg_catalog.jsonb_build_object(
+            'actor', pg_catalog.jsonb_build_object(
+                'type', 'writer_bootstrap', 'id', SESSION_USER
+            ),
+            'subject', pg_catalog.jsonb_build_object(
+                'type', 'canary_scope', 'id', request->>'grant_id'
+            )
+        ),
+        pg_catalog.jsonb_build_object(
+            'canary_scope_bootstrap_consumption',
+            pg_catalog.jsonb_build_object(
+                'grant_id', request->>'grant_id',
+                'case_id', request->>'case_id',
+                'provisioning_receipt_sha256',
+                    request->>'provisioning_receipt_sha256',
+                'preapproval_event_id', append_result->'result'->>'event_id',
+                'state', 'consumed'
+            )
+        ),
+        pg_catalog.jsonb_build_object(
+            'isolated_canary', true,
+            'one_shot_bootstrap_consumed', true
+        ),
+        'canary-bootstrap-consume:' || (request->>'grant_id'),
+        'canary_scope_bootstrap_consume',
+        runtime
+    );
+    IF NOT (consume_result->>'ok')::boolean THEN
+        RAISE EXCEPTION 'canary bootstrap consumption receipt append failed';
+    END IF;
+    EXECUTE
+        'REVOKE EXECUTE ON FUNCTION '
+        'canonical_brain.writer_canary_scope_preapprove(jsonb,jsonb) '
+        'FROM canonical_brain_canary_bootstrap';
+    EXECUTE
+        'REVOKE USAGE ON SCHEMA canonical_brain '
+        'FROM canonical_brain_canary_bootstrap';
+    RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
+        'success', true,
+        'grant_id', request->>'grant_id',
+        'case_id', request->>'case_id',
+        'release_sha256', request->>'release_sha256',
+        'fixture_sha256', request->>'fixture_sha256',
+        'run_id', request->>'run_id',
+        'session_key_sha256', request->>'session_key_sha256',
+        'expires_at', expires_value,
+        'approved_by', request->>'approved_by',
+        'approval_source_sha256', request->>'approval_source_sha256',
+        'preapproved_at', preapproved_value,
+        'event_id', append_result->'result'->>'event_id',
+        'receipt_event_id', append_result->'result'->>'event_id',
+        'bootstrap_consumption_event_id',
+            consume_result->'result'->>'event_id',
+        'bootstrap_acl_revoked', true,
+        'inserted', true,
+        'deduped', false
+    ));
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
+    RETURN canonical_brain._fail('database_failure', 'canary scope preapproval failed');
+END
+$function$;
+
+-- Private writer-UID routine.  It is absent from the 18-operation protocol
+-- catalog and may be called only by in-process shutdown, ExecStopPost, or
+-- next-start reconciliation through a fixed statement.  Claim and retirement
+-- serialize on the same preapproval lock.  When a claim already committed,
+-- cleanup retires its exact session epoch instead of fabricating a preclaim
+-- terminal.
+CREATE OR REPLACE FUNCTION canonical_brain.writer_canary_scope_preapproval_retire(
+    request jsonb, runtime jsonb
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog, canonical_brain
+AS $function$
+DECLARE
+    request_hash text;
+    expires_value timestamptz;
+    preapproval_record canonical_brain.writer_canary_scope_preapprovals%ROWTYPE;
+    retirement_record
+        canonical_brain.writer_canary_scope_preapproval_retirements%ROWTYPE;
+    observed_claim canonical_brain.writer_canary_scope_claims%ROWTYPE;
+    locked_claim canonical_brain.writer_canary_scope_claims%ROWTYPE;
+    claim_observed boolean := false;
+    consumption_count bigint;
+    consumption_event_id text;
+    consumption_record jsonb;
+    append_result jsonb;
+    revoke_response jsonb;
+    revoke_result jsonb;
+    retired_value timestamptz;
+BEGIN
+    IF NOT canonical_brain._runtime_valid(runtime)
+       OR runtime->>'platform' <> 'writer_service'
+       OR runtime->>'service_internal' <> 'true'
+       OR NOT canonical_brain._keys_valid(
+            request,
+            ARRAY['grant_id','case_id','release_sha256','fixture_sha256',
+                  'run_id','session_key_sha256','expires_at','approved_by',
+                  'approval_source_sha256','provisioning_receipt_sha256'],
+            ARRAY['grant_id','case_id','release_sha256','fixture_sha256',
+                  'run_id','session_key_sha256','expires_at','approved_by',
+                  'approval_source_sha256','provisioning_receipt_sha256']
+       )
+       OR request->>'grant_id' !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
+       OR request->>'case_id' !~ '^case:[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
+       OR request->>'run_id' !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
+       OR request->>'approved_by' !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
+       OR request->>'release_sha256' !~ '^[0-9a-f]{64}$'
+       OR request->>'fixture_sha256' !~ '^[0-9a-f]{64}$'
+       OR request->>'session_key_sha256' !~ '^[0-9a-f]{64}$'
+       OR request->>'approval_source_sha256' !~ '^[0-9a-f]{64}$'
+       OR request->>'provisioning_receipt_sha256' !~ '^[0-9a-f]{64}$' THEN
+        RETURN canonical_brain._fail(
+            'invalid_request', 'canary preclaim retirement request is invalid'
+        );
+    END IF;
+    BEGIN
+        expires_value := (request->>'expires_at')::timestamptz;
+    EXCEPTION WHEN OTHERS THEN
+        RETURN canonical_brain._fail(
+            'invalid_request', 'canary preclaim retirement expiry is invalid'
+        );
+    END;
+    IF expires_value IS NULL THEN
+        RETURN canonical_brain._fail(
+            'invalid_request', 'canary preclaim retirement expiry is missing'
+        );
+    END IF;
+    request_hash := canonical_brain._sha256_json(request);
+
+    -- An unlocked append-only claim observation determines lock order.  A
+    -- claim that appears after this read triggers SQLSTATE 40001 below so the
+    -- retry can acquire capability -> preapproval in canonical order.
+    SELECT * INTO observed_claim
+      FROM canonical_brain.writer_canary_scope_claims AS claim
+     WHERE claim.grant_id = request->>'grant_id';
+    claim_observed := FOUND;
+    IF claim_observed THEN
+        PERFORM pg_catalog.pg_advisory_xact_lock(
+            pg_catalog.hashtextextended(
+                'capability-scope:' || observed_claim.session_key_sha256 || ':'
+                    || observed_claim.capability_epoch_sha256,
+                0
+            )
+        );
+    END IF;
+    PERFORM pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended(
+            'canary-preapproval:' || (request->>'grant_id'), 0
+        )
+    );
+    SELECT * INTO preapproval_record
+      FROM canonical_brain.writer_canary_scope_preapprovals AS preapproval
+     WHERE preapproval.grant_id = request->>'grant_id'
+     FOR UPDATE;
+    SELECT * INTO locked_claim
+      FROM canonical_brain.writer_canary_scope_claims AS claim
+     WHERE claim.grant_id = request->>'grant_id';
+    IF NOT claim_observed AND FOUND THEN
+        RAISE EXCEPTION USING
+            ERRCODE = '40001',
+            MESSAGE = 'canary claim committed during preclaim reconciliation';
+    END IF;
+    IF claim_observed AND (
+        NOT FOUND
+        OR locked_claim.claim_event_id <> observed_claim.claim_event_id
+        OR locked_claim.session_key_sha256 <> observed_claim.session_key_sha256
+        OR locked_claim.capability_epoch_sha256
+            <> observed_claim.capability_epoch_sha256
+    ) THEN
+        RAISE EXCEPTION 'canary claim changed during preclaim reconciliation';
+    END IF;
+
+    SELECT * INTO retirement_record
+      FROM canonical_brain.writer_canary_scope_preapproval_retirements AS terminal
+     WHERE terminal.grant_id = request->>'grant_id';
+    IF claim_observed AND FOUND THEN
+        RAISE EXCEPTION 'canary preclaim terminal truth is contradictory';
+    END IF;
+    IF preapproval_record.grant_id IS NULL THEN
+        IF claim_observed OR retirement_record.grant_id IS NOT NULL THEN
+            RAISE EXCEPTION 'canary preclaim truth exists without preapproval';
+        END IF;
+        RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
+            'success', true,
+            'outcome', 'not_preapproved',
+            'grant_id', request->>'grant_id',
+            'case_id', request->>'case_id',
+            'release_sha256', request->>'release_sha256',
+            'fixture_sha256', request->>'fixture_sha256',
+            'run_id', request->>'run_id',
+            'session_key_sha256', request->>'session_key_sha256',
+            'expires_at', expires_value,
+            'approved_by', request->>'approved_by',
+            'approval_source_sha256', request->>'approval_source_sha256',
+            'provisioning_receipt_sha256',
+                request->>'provisioning_receipt_sha256',
+            'preapproval_event_id', NULL,
+            'bootstrap_consumption_event_id', NULL,
+            'claim_event_id', NULL,
+            'retirement_event_id', NULL,
+            'revocation_event_id', NULL,
+            'claimed_at', NULL,
+            'retired_at', NULL,
+            'reason', 'preapproval_not_committed',
+            'scope_retired', false,
+            'authority_active', false,
+            'inserted', false,
+            'deduped', false
+        ));
+    END IF;
+    IF preapproval_record.case_id <> request->>'case_id'
+       OR preapproval_record.release_sha256 <> request->>'release_sha256'
+       OR preapproval_record.fixture_sha256 <> request->>'fixture_sha256'
+       OR preapproval_record.run_id <> request->>'run_id'
+       OR preapproval_record.session_key_sha256 <> request->>'session_key_sha256'
+       OR preapproval_record.expires_at IS DISTINCT FROM expires_value
+       OR preapproval_record.approved_by <> request->>'approved_by'
+       OR preapproval_record.approval_source_sha256
+            <> request->>'approval_source_sha256' THEN
+        RETURN canonical_brain._fail(
+            'scope_mismatch',
+            'canary preclaim retirement differs from the sealed preapproval'
+        );
+    END IF;
+    SELECT pg_catalog.count(*), pg_catalog.max(event.event_id::text),
+           pg_catalog.max(
+               (event.payload->'canary_scope_bootstrap_consumption')::text
+           )::jsonb
+      INTO consumption_count, consumption_event_id, consumption_record
+      FROM public.canonical_event_log AS event
+      JOIN canonical_brain.writer_event_provenance AS provenance
+        ON provenance.event_id = event.event_id
+     WHERE event.event_type = 'canary.scope.bootstrap_consumed'
+       AND provenance.origin = 'canary_scope_bootstrap_consume'
+       AND (
+            event.case_id = request->>'case_id'
+            OR event.payload->'canary_scope_bootstrap_consumption'->>'grant_id'
+                = request->>'grant_id'
+       );
+    IF consumption_count <> 1
+       OR NOT canonical_brain._keys_valid(
+            consumption_record,
+            ARRAY['grant_id','case_id','provisioning_receipt_sha256',
+                  'preapproval_event_id','state'],
+            ARRAY['grant_id','case_id','provisioning_receipt_sha256',
+                  'preapproval_event_id','state']
+       )
+       OR consumption_record->>'grant_id' <> request->>'grant_id'
+       OR consumption_record->>'case_id' <> request->>'case_id'
+       OR consumption_record->>'provisioning_receipt_sha256'
+            <> request->>'provisioning_receipt_sha256'
+       OR consumption_record->>'preapproval_event_id'
+            <> preapproval_record.receipt_event_id::text
+       OR consumption_record->>'state' <> 'consumed' THEN
+        RAISE EXCEPTION 'canary bootstrap consumption truth is invalid';
+    END IF;
+
+    IF claim_observed THEN
+        IF locked_claim.case_id <> preapproval_record.case_id
+           OR locked_claim.release_sha256 <> preapproval_record.release_sha256
+           OR locked_claim.fixture_sha256 <> preapproval_record.fixture_sha256
+           OR locked_claim.run_id <> preapproval_record.run_id
+           OR locked_claim.approval_source_sha256
+                <> preapproval_record.approval_source_sha256
+           OR locked_claim.session_key_sha256
+                <> preapproval_record.session_key_sha256
+           OR locked_claim.expires_at IS DISTINCT FROM preapproval_record.expires_at
+        THEN
+            RAISE EXCEPTION 'claimed canary scope binding is invalid';
+        END IF;
+        revoke_response := canonical_brain.writer_capability_revoke_session(
+            pg_catalog.jsonb_build_object(
+                'session_key_sha256', locked_claim.session_key_sha256,
+                'reason', 'preclaim_reconciliation_after_claim'
+            ),
+            runtime || pg_catalog.jsonb_build_object(
+                'session_key_sha256', locked_claim.session_key_sha256,
+                'capability_epoch_sha256',
+                    locked_claim.capability_epoch_sha256
+            )
+        );
+        IF NOT COALESCE((revoke_response->>'ok')::boolean, false) THEN
+            RAISE EXCEPTION 'claimed canary session retirement failed';
+        END IF;
+        revoke_result := revoke_response->'result';
+        IF NOT canonical_brain._keys_valid(
+                revoke_result,
+                ARRAY['success','session_key_sha256',
+                      'capability_epoch_sha256','scope_type','scope_revoked',
+                      'authority_active','revocation_event_id','inserted',
+                      'deduped','revoked','canary_scopes_revoked'],
+                ARRAY['success','session_key_sha256',
+                      'capability_epoch_sha256','scope_type','scope_revoked',
+                      'authority_active','revocation_event_id','inserted',
+                      'deduped','revoked','canary_scopes_revoked']
+           )
+           OR revoke_result->>'success' <> 'true'
+           OR revoke_result->>'session_key_sha256'
+                <> locked_claim.session_key_sha256
+           OR revoke_result->>'capability_epoch_sha256'
+                <> locked_claim.capability_epoch_sha256
+           OR revoke_result->>'scope_type' <> 'session'
+           OR revoke_result->>'scope_revoked' <> 'true'
+           OR revoke_result->>'authority_active' <> 'false'
+           OR revoke_result->>'revocation_event_id' !~
+                '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+           OR revoke_result->>'inserted' NOT IN ('true','false')
+           OR revoke_result->>'deduped' NOT IN ('true','false')
+           OR (revoke_result->>'inserted')::boolean
+                = (revoke_result->>'deduped')::boolean THEN
+            RAISE EXCEPTION 'claimed canary session receipt is invalid';
+        END IF;
+        RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
+            'success', true,
+            'outcome', 'claimed',
+            'grant_id', preapproval_record.grant_id,
+            'case_id', preapproval_record.case_id,
+            'release_sha256', preapproval_record.release_sha256,
+            'fixture_sha256', preapproval_record.fixture_sha256,
+            'run_id', preapproval_record.run_id,
+            'session_key_sha256', preapproval_record.session_key_sha256,
+            'expires_at', preapproval_record.expires_at,
+            'approved_by', preapproval_record.approved_by,
+            'approval_source_sha256', preapproval_record.approval_source_sha256,
+            'provisioning_receipt_sha256',
+                request->>'provisioning_receipt_sha256',
+            'preapproval_event_id', preapproval_record.receipt_event_id::text,
+            'bootstrap_consumption_event_id', consumption_event_id,
+            'claim_event_id', locked_claim.claim_event_id::text,
+            'retirement_event_id', NULL,
+            'revocation_event_id', revoke_result->>'revocation_event_id',
+            'claimed_at', locked_claim.claimed_at,
+            'retired_at', NULL,
+            'reason', 'claim_already_committed_session_retired',
+            'scope_retired', false,
+            'authority_active', false,
+            'inserted', (revoke_result->>'inserted')::boolean,
+            'deduped', (revoke_result->>'deduped')::boolean
+        ));
+    END IF;
+
+    IF retirement_record.grant_id IS NOT NULL THEN
+        IF retirement_record.case_id <> preapproval_record.case_id
+           OR retirement_record.release_sha256 <> preapproval_record.release_sha256
+           OR retirement_record.fixture_sha256 <> preapproval_record.fixture_sha256
+           OR retirement_record.run_id <> preapproval_record.run_id
+           OR retirement_record.session_key_sha256
+                <> preapproval_record.session_key_sha256
+           OR retirement_record.expires_at
+                IS DISTINCT FROM preapproval_record.expires_at
+           OR retirement_record.approved_by <> preapproval_record.approved_by
+           OR retirement_record.approval_source_sha256
+                <> preapproval_record.approval_source_sha256
+           OR retirement_record.provisioning_receipt_sha256
+                <> request->>'provisioning_receipt_sha256'
+           OR retirement_record.preapproval_event_id
+                <> preapproval_record.receipt_event_id
+           OR retirement_record.bootstrap_consumption_event_id::text
+                <> consumption_event_id
+           OR retirement_record.request_sha256 <> request_hash
+           OR retirement_record.reason
+                <> 'activation_failed_before_first_claim' THEN
+            RAISE EXCEPTION 'existing canary preclaim retirement is invalid';
+        END IF;
+        RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
+            'success', true,
+            'outcome', 'retired',
+            'grant_id', retirement_record.grant_id,
+            'case_id', retirement_record.case_id,
+            'release_sha256', retirement_record.release_sha256,
+            'fixture_sha256', retirement_record.fixture_sha256,
+            'run_id', retirement_record.run_id,
+            'session_key_sha256', retirement_record.session_key_sha256,
+            'expires_at', retirement_record.expires_at,
+            'approved_by', retirement_record.approved_by,
+            'approval_source_sha256',
+                retirement_record.approval_source_sha256,
+            'provisioning_receipt_sha256',
+                retirement_record.provisioning_receipt_sha256,
+            'preapproval_event_id',
+                retirement_record.preapproval_event_id::text,
+            'bootstrap_consumption_event_id',
+                retirement_record.bootstrap_consumption_event_id::text,
+            'claim_event_id', NULL,
+            'retirement_event_id',
+                retirement_record.retirement_event_id::text,
+            'revocation_event_id', NULL,
+            'claimed_at', NULL,
+            'retired_at', retirement_record.retired_at,
+            'reason', retirement_record.reason,
+            'scope_retired', true,
+            'authority_active', false,
+            'inserted', false,
+            'deduped', true
+        ));
+    END IF;
+
+    retired_value := pg_catalog.clock_timestamp();
+    append_result := canonical_brain._append_event(
+        'canary.scope.preapproval_retired',
+        preapproval_record.case_id,
+        'Unclaimed isolated canary preapproval durably retired',
+        pg_catalog.jsonb_build_object(
+            'manual_ref', 'canary-preapproval-retire:'
+                || preapproval_record.grant_id
+        ),
+        pg_catalog.jsonb_build_object(
+            'actor', pg_catalog.jsonb_build_object(
+                'type', 'writer_reconciliation', 'id', SESSION_USER
+            ),
+            'subject', pg_catalog.jsonb_build_object(
+                'type', 'canary_scope', 'id', preapproval_record.grant_id
+            )
+        ),
+        pg_catalog.jsonb_build_object(
+            'canary_scope_preapproval_retirement',
+            pg_catalog.jsonb_build_object(
+                'grant_id', preapproval_record.grant_id,
+                'case_id', preapproval_record.case_id,
+                'release_sha256', preapproval_record.release_sha256,
+                'fixture_sha256', preapproval_record.fixture_sha256,
+                'run_id', preapproval_record.run_id,
+                'session_key_sha256', preapproval_record.session_key_sha256,
+                'expires_at', preapproval_record.expires_at,
+                'approved_by', preapproval_record.approved_by,
+                'approval_source_sha256',
+                    preapproval_record.approval_source_sha256,
+                'provisioning_receipt_sha256',
+                    request->>'provisioning_receipt_sha256',
+                'preapproval_event_id',
+                    preapproval_record.receipt_event_id::text,
+                'bootstrap_consumption_event_id', consumption_event_id,
+                'reason', 'activation_failed_before_first_claim',
+                'state', 'retired'
+            )
+        ),
+        pg_catalog.jsonb_build_object(
+            'isolated_canary', true,
+            'preclaim_tombstone_recorded', true,
+            'authority_active', false
+        ),
+        'canary-preapproval-retire:' || preapproval_record.grant_id,
+        'canary_scope_preapproval_retire',
+        runtime
+    );
+    IF NOT (append_result->>'ok')::boolean THEN
+        RAISE EXCEPTION 'canary preclaim retirement receipt append failed';
+    END IF;
+    INSERT INTO canonical_brain.writer_canary_scope_preapproval_retirements (
+        grant_id, case_id, release_sha256, fixture_sha256, run_id,
+        session_key_sha256, expires_at, approved_by, approval_source_sha256,
+        provisioning_receipt_sha256, preapproval_event_id,
+        bootstrap_consumption_event_id, request_sha256, reason, retired_at,
+        retirement_event_id
+    ) VALUES (
+        preapproval_record.grant_id, preapproval_record.case_id,
+        preapproval_record.release_sha256, preapproval_record.fixture_sha256,
+        preapproval_record.run_id, preapproval_record.session_key_sha256,
+        preapproval_record.expires_at, preapproval_record.approved_by,
+        preapproval_record.approval_source_sha256,
+        request->>'provisioning_receipt_sha256',
+        preapproval_record.receipt_event_id, consumption_event_id::uuid,
+        request_hash, 'activation_failed_before_first_claim', retired_value,
+        (append_result->'result'->>'event_id')::uuid
+    );
+    RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
+        'success', true,
+        'outcome', 'retired',
+        'grant_id', preapproval_record.grant_id,
+        'case_id', preapproval_record.case_id,
+        'release_sha256', preapproval_record.release_sha256,
+        'fixture_sha256', preapproval_record.fixture_sha256,
+        'run_id', preapproval_record.run_id,
+        'session_key_sha256', preapproval_record.session_key_sha256,
+        'expires_at', preapproval_record.expires_at,
+        'approved_by', preapproval_record.approved_by,
+        'approval_source_sha256', preapproval_record.approval_source_sha256,
+        'provisioning_receipt_sha256',
+            request->>'provisioning_receipt_sha256',
+        'preapproval_event_id', preapproval_record.receipt_event_id::text,
+        'bootstrap_consumption_event_id', consumption_event_id,
+        'claim_event_id', NULL,
+        'retirement_event_id', append_result->'result'->>'event_id',
+        'revocation_event_id', NULL,
+        'claimed_at', NULL,
+        'retired_at', retired_value,
+        'reason', 'activation_failed_before_first_claim',
+        'scope_retired', true,
+        'authority_active', false,
+        'inserted', true,
+        'deduped', false
+    ));
+END
+$function$;
+
+-- Fixed public routine 2/18.  Gateway-callable exact one-shot claim.
+CREATE OR REPLACE FUNCTION canonical_brain.writer_canary_scope_claim(request jsonb, runtime jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog, canonical_brain
+AS $function$
+DECLARE
+    session_value text := COALESCE(runtime->>'session_key_sha256', '');
+    epoch_value text := COALESCE(runtime->>'capability_epoch_sha256', '');
+    request_hash text;
+    preapproval_record canonical_brain.writer_canary_scope_preapprovals%ROWTYPE;
+    existing_claim canonical_brain.writer_canary_scope_claims%ROWTYPE;
+    append_result jsonb;
+    authority_active boolean;
+    claimed_value timestamptz;
+BEGIN
+    IF NOT canonical_brain._runtime_valid(runtime)
+       OR runtime->>'platform' <> 'api_server'
+       OR runtime->>'service_internal' = 'true'
+       OR session_value !~ '^[0-9a-f]{64}$'
+       OR epoch_value !~ '^[0-9a-f]{64}$'
+       OR NOT canonical_brain._keys_valid(
+            request,
+            ARRAY['grant_id','case_id','release_sha256','fixture_sha256',
+                  'run_id','approval_source_sha256'],
+            ARRAY['grant_id','case_id','release_sha256','fixture_sha256',
+                  'run_id','approval_source_sha256']
+       )
+       OR request->>'grant_id' !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
+       OR request->>'case_id' !~ '^case:[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
+       OR request->>'run_id' !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
+       OR request->>'release_sha256' !~ '^[0-9a-f]{64}$'
+       OR request->>'fixture_sha256' !~ '^[0-9a-f]{64}$'
+       OR request->>'approval_source_sha256' !~ '^[0-9a-f]{64}$' THEN
+        RETURN canonical_brain._fail(
+            'invalid_request', 'canary scope claim is invalid'
+        );
+    END IF;
+    request_hash := canonical_brain._sha256_json(
+        request || pg_catalog.jsonb_build_object(
+            'session_key_sha256', session_value,
+            'capability_epoch_sha256', epoch_value
+        )
+    );
+    PERFORM pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended(
+            'capability-scope:' || session_value || ':' || epoch_value, 0
+        )
+    );
+    IF EXISTS (
+        SELECT 1
+          FROM canonical_brain.writer_capability_revocation_scopes AS scope
+         WHERE scope.scope_type = 'session'
+           AND scope.session_key_sha256 = session_value
+           AND scope.capability_epoch_sha256 = epoch_value
+    ) THEN
+        RETURN canonical_brain._fail(
+            'session_epoch_retired',
+            'session authority epoch has been durably retired'
+        );
+    END IF;
+    PERFORM pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended(
+            'canary-preapproval:' || (request->>'grant_id'), 0
+        )
+    );
+    SELECT * INTO preapproval_record
+     FROM canonical_brain.writer_canary_scope_preapprovals AS preapproval
+     WHERE preapproval.grant_id = request->>'grant_id'
+     FOR UPDATE;
+    IF NOT FOUND THEN
+        RETURN canonical_brain._fail(
+            'canary_scope_missing', 'canary scope has no owner preapproval'
+        );
+    END IF;
+    IF EXISTS (
+        SELECT 1
+          FROM canonical_brain.writer_canary_scope_preapproval_retirements
+               AS terminal
+         WHERE terminal.grant_id = request->>'grant_id'
+    ) THEN
+        RETURN canonical_brain._fail(
+            'canary_scope_preapproval_retired',
+            'canary scope preapproval was durably retired before claim'
+        );
+    END IF;
+    IF preapproval_record.case_id <> request->>'case_id'
+       OR preapproval_record.release_sha256 <> request->>'release_sha256'
+       OR preapproval_record.fixture_sha256 <> request->>'fixture_sha256'
+       OR preapproval_record.run_id <> request->>'run_id'
+       OR preapproval_record.approval_source_sha256
+            <> request->>'approval_source_sha256'
+       OR preapproval_record.session_key_sha256 <> session_value THEN
+        RETURN canonical_brain._fail(
+            'scope_mismatch',
+            'canary scope claim differs from its exact preapproval'
+        );
+    END IF;
+    SELECT * INTO existing_claim
+      FROM canonical_brain.writer_canary_scope_claims AS claim
+     WHERE claim.grant_id = request->>'grant_id';
+    IF FOUND THEN
+        IF existing_claim.request_sha256 <> request_hash
+           OR existing_claim.session_key_sha256 <> session_value
+           OR existing_claim.capability_epoch_sha256 <> epoch_value THEN
+            RETURN canonical_brain._fail(
+                'canary_scope_replayed',
+                'one-shot canary scope was already claimed by another session generation'
+            );
+        END IF;
+        authority_active := existing_claim.expires_at
+                > pg_catalog.clock_timestamp()
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM canonical_brain.writer_capability_revocation_scopes AS scope
+                 WHERE scope.scope_type = 'session'
+                   AND scope.session_key_sha256 = session_value
+                   AND scope.capability_epoch_sha256 = epoch_value
+            );
+        RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
+            'success', true,
+            'grant_id', existing_claim.grant_id,
+            'case_id', existing_claim.case_id,
+            'release_sha256', existing_claim.release_sha256,
+            'fixture_sha256', existing_claim.fixture_sha256,
+            'run_id', existing_claim.run_id,
+            'approval_source_sha256', existing_claim.approval_source_sha256,
+            'session_key_sha256', existing_claim.session_key_sha256,
+            'capability_epoch_sha256', existing_claim.capability_epoch_sha256,
+            'expires_at', existing_claim.expires_at,
+            'claimed_at', existing_claim.claimed_at,
+            'event_id', existing_claim.claim_event_id::text,
+            'claim_event_id', existing_claim.claim_event_id::text,
+            'authority_active', authority_active,
+            'inserted', false,
+            'deduped', true
+        ));
+    END IF;
+    IF preapproval_record.expires_at <= pg_catalog.clock_timestamp() THEN
+        RETURN canonical_brain._fail(
+            'canary_scope_expired', 'canary scope preapproval has expired'
+        );
+    END IF;
+    claimed_value := pg_catalog.clock_timestamp();
+    append_result := canonical_brain._append_event(
+        'canary.scope.claimed',
+        preapproval_record.case_id,
+        'Exact isolated canary API session scope claimed',
+        pg_catalog.jsonb_build_object(
+            'manual_ref', 'canary-claim:' || preapproval_record.grant_id
+        ),
+        pg_catalog.jsonb_build_object(
+            'actor', pg_catalog.jsonb_build_object(
+                'type', 'service', 'id', 'api_server'
+            ),
+            'subject', pg_catalog.jsonb_build_object(
+                'type', 'canary_scope', 'id', preapproval_record.grant_id
+            )
+        ),
+        pg_catalog.jsonb_build_object(
+            'canary_scope_claim', pg_catalog.jsonb_build_object(
+                'grant_id', preapproval_record.grant_id,
+                'case_id', preapproval_record.case_id,
+                'release_sha256', preapproval_record.release_sha256,
+                'fixture_sha256', preapproval_record.fixture_sha256,
+                'run_id', preapproval_record.run_id,
+                'approval_source_sha256',
+                    preapproval_record.approval_source_sha256,
+                'session_key_sha256', session_value,
+                'capability_epoch_sha256', epoch_value,
+                'expires_at', preapproval_record.expires_at,
+                'state', 'claimed'
+            )
+        ),
+        pg_catalog.jsonb_build_object(
+            'isolated_canary', true,
+            'one_shot_scope', true
+        ),
+        'canary-claim:' || preapproval_record.grant_id,
+        'canary_scope_claim',
+        runtime
+    );
+    IF NOT (append_result->>'ok')::boolean THEN
+        RETURN append_result;
+    END IF;
+    INSERT INTO canonical_brain.writer_canary_scope_claims (
+        grant_id, case_id, release_sha256, fixture_sha256, run_id,
+        approval_source_sha256, session_key_sha256,
+        capability_epoch_sha256, expires_at, request_sha256, claimed_at,
+        claim_event_id
+    ) VALUES (
+        preapproval_record.grant_id, preapproval_record.case_id,
+        preapproval_record.release_sha256, preapproval_record.fixture_sha256,
+        preapproval_record.run_id, preapproval_record.approval_source_sha256,
+        session_value, epoch_value, preapproval_record.expires_at, request_hash,
+        claimed_value,
+        (append_result->'result'->>'event_id')::uuid
+    );
+    RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
+        'success', true,
+        'grant_id', preapproval_record.grant_id,
+        'case_id', preapproval_record.case_id,
+        'release_sha256', preapproval_record.release_sha256,
+        'fixture_sha256', preapproval_record.fixture_sha256,
+        'run_id', preapproval_record.run_id,
+        'approval_source_sha256', preapproval_record.approval_source_sha256,
+        'session_key_sha256', session_value,
+        'capability_epoch_sha256', epoch_value,
+        'expires_at', preapproval_record.expires_at,
+        'claimed_at', claimed_value,
+        'event_id', append_result->'result'->>'event_id',
+        'claim_event_id', append_result->'result'->>'event_id',
+        'authority_active', true,
+        'inserted', true,
+        'deduped', false
+    ));
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
+    RETURN canonical_brain._fail('database_failure', 'canary scope claim failed');
+END
+$function$;
+
+-- Fixed public routine 3/18.  This is an exact bounded event query, never a
 -- semantic classifier.  The model chooses case/thread and requested view.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_case_query(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -2708,6 +4152,9 @@ BEGIN
             SELECT 1
               FROM canonical_brain.writer_event_provenance AS trusted_event
              WHERE trusted_event.event_id = event.event_id
+       )
+       AND canonical_brain._case_scope_authorized(
+            event.case_id, runtime, false
        );
 
     WITH candidates AS (
@@ -2734,6 +4181,9 @@ BEGIN
                 SELECT 1
                   FROM canonical_brain.writer_event_provenance AS trusted_event
                  WHERE trusted_event.event_id = event.event_id
+           )
+           AND canonical_brain._case_scope_authorized(
+                event.case_id, runtime, false
            )
          ORDER BY event.occurred_at DESC, event.event_id DESC
          LIMIT limit_value
@@ -2838,6 +4288,25 @@ BEGIN
                   ) AS latest
                  ORDER BY latest.occurred_at, latest.event_id
                  LIMIT 16
+            )
+            UNION
+            (
+                SELECT event.event_id
+                  FROM public.canonical_event_log AS event
+                  JOIN canonical_brain.writer_event_provenance AS provenance
+                    ON provenance.event_id = event.event_id
+                 WHERE event.case_id = case_value
+                   AND event.event_type IN (
+                        'canary.scope.bootstrap_authorized',
+                        'canary.scope.bootstrap_consumed',
+                        'canary.scope.bootstrap_retired',
+                        'canary.scope.preapproved',
+                        'canary.scope.preapproval_retired',
+                        'canary.scope.claimed',
+                        'canary.scope.revoked'
+                   )
+                 ORDER BY event.occurred_at DESC, event.event_id DESC
+                 LIMIT 64
             )
             UNION
             (
@@ -3024,7 +4493,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 3/17.  Only exact sent authorizations are projected
+-- Fixed public routine 4/18.  Only exact sent authorizations are projected
 -- back to their source thread, and the result is hard bounded to three cases.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_routeback_context(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -3059,7 +4528,10 @@ BEGIN
        AND COALESCE(
             authorization_row.source_thread_id,
             ''
-       ) NOT IN ('', thread_value);
+       ) NOT IN ('', thread_value)
+       AND canonical_brain._case_scope_authorized(
+            authorization_row.case_id, runtime, false
+       );
 
     SELECT COALESCE(pg_catalog.jsonb_agg(item ORDER BY item->>'case_id'), '[]'::jsonb)
       INTO cases_value
@@ -3078,6 +4550,9 @@ BEGIN
                 ''
            )
            AND authorization_row.source_thread_id NOT IN ('', thread_value)
+           AND canonical_brain._case_scope_authorized(
+                authorization_row.case_id, runtime, false
+           )
          ORDER BY terminal.finalized_at DESC, authorization_row.authorization_id DESC
          LIMIT 3
       ) AS bounded;
@@ -3094,7 +4569,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 4/17.
+-- Fixed public routine 5/18.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_plan_active_match(request jsonb, runtime jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -3148,7 +4623,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 5/17.  Privileged receipt types and task CAS events are
+-- Fixed public routine 6/18.  Privileged receipt types and task CAS events are
 -- unavailable through this model-authored append entry point.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_event_append_model(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -3182,7 +4657,10 @@ BEGIN
         'route_back.intent.created', 'route_back.sent', 'route_back.blocked',
         'approval.capability.recorded', 'approval.capability.revoked',
         'approval.capability.session_revoked', 'capability.check.recorded',
-        'lease.shadow.recorded'
+        'lease.shadow.recorded', 'canary.scope.bootstrap_authorized',
+        'canary.scope.bootstrap_consumed', 'canary.scope.bootstrap_retired',
+        'canary.scope.preapproved', 'canary.scope.preapproval_retired',
+        'canary.scope.claimed', 'canary.scope.revoked'
     ) THEN
         RETURN canonical_brain._fail(
             'privileged_event_forbidden',
@@ -3240,7 +4718,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 6/17.  Plan revision validation and the append share a
+-- Fixed public routine 7/18.  Plan revision validation and the append share a
 -- case-scoped transaction advisory lock, providing the canonical CAS point.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_plan_transition(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -3582,7 +5060,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 7/17.  Verification is bound to the exact canonical
+-- Fixed public routine 8/18.  Verification is bound to the exact canonical
 -- plan head; the model remains the author of the structured outcome.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_verification_append(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -3746,7 +5224,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 8/17.  Claiming is an atomic, durable authorization for
+-- Fixed public routine 9/18.  Claiming is an atomic, durable authorization for
 -- one exact public target and one exact rendered-content digest.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_routeback_claim(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -4036,7 +5514,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 9/17.  Epoch-only restart recovery is a separate typed
+-- Fixed public routine 10/18.  Epoch-only restart recovery is a separate typed
 -- operation.  It never creates a lifecycle and can cross only the capability
 -- epoch of the exact same session/platform/source lane.  Signed edge evidence
 -- may recover terminal truth after an ACL change; only authenticated no-record
@@ -4227,7 +5705,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 10/17.
+-- Fixed public routine 11/18.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_routeback_finalize_sent(request jsonb, runtime jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -4413,7 +5891,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 11/17.
+-- Fixed public routine 12/18.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_routeback_finalize_blocked(request jsonb, runtime jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -4851,7 +6329,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 12/17.
+-- Fixed public routine 13/18.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_lease_shadow_record(request jsonb, runtime jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -4918,7 +6396,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 13/17.  Approval-source uniqueness is the replay
+-- Fixed public routine 14/18.  Approval-source uniqueness is the replay
 -- boundary.  Grant insertion, receipt append, and exact active-plan check are
 -- serialized by source, approval, routing epoch, and case advisory locks.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_capability_grant(request jsonb, runtime jsonb)
@@ -5219,7 +6697,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 14/17.  Idempotency lookup, exact session/command/plan
+-- Fixed public routine 15/18.  Idempotency lookup, exact session/command/plan
 -- checks, decrement, durable use row, and audit receipt are one transaction.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_capability_consume(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -5491,7 +6969,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 15/17.
+-- Fixed public routine 16/18.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_capability_revoke(request jsonb, runtime jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -5612,7 +7090,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 16/17.  The request's session digest must exactly equal
+-- Fixed public routine 17/18.  The request's session digest must exactly equal
 -- the authenticated runtime digest; callers cannot revoke another session.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_capability_revoke_session(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -5631,6 +7109,10 @@ DECLARE
     inserted_now integer;
     revoked_ids text[];
     revocation_set_sha256 text;
+    scope_reason text;
+    scope_receipt_result jsonb;
+    canary_claim record;
+    canary_scope_count integer := 0;
 BEGIN
     IF NOT canonical_brain._runtime_valid(runtime)
        OR session_value !~ '^[0-9a-f]{64}$'
@@ -5658,6 +7140,50 @@ BEGIN
     ) ON CONFLICT (
         scope_type, session_key_sha256, capability_epoch_sha256, plan_id
     ) DO NOTHING;
+    SELECT scope.reason INTO scope_reason
+      FROM canonical_brain.writer_capability_revocation_scopes AS scope
+     WHERE scope.scope_type = 'session'
+       AND scope.session_key_sha256 = session_value
+       AND scope.capability_epoch_sha256 = epoch_value
+       AND scope.plan_id = '';
+    scope_receipt_result := canonical_brain._append_event(
+        'approval.capability.session_revoked',
+        'case:session-authority:' || session_value,
+        'Session capability authority durably retired',
+        pg_catalog.jsonb_build_object(
+            'manual_ref', 'session-scope-revoke:' || session_value || ':'
+                || epoch_value
+        ),
+        pg_catalog.jsonb_build_object(
+            'actor', pg_catalog.jsonb_build_object(
+                'type', 'service', 'id', 'canonical_writer'
+            ),
+            'subject', pg_catalog.jsonb_build_object(
+                'type', 'session_authority',
+                'id', session_value || ':' || epoch_value
+            )
+        ),
+        pg_catalog.jsonb_build_object(
+            'session_scope_revocation', pg_catalog.jsonb_build_object(
+                'session_key_sha256', session_value,
+                'capability_epoch_sha256', epoch_value,
+                'scope_type', 'session',
+                'reason', scope_reason,
+                'scope_revoked', true,
+                'authority_active', false
+            )
+        ),
+        pg_catalog.jsonb_build_object(
+            'session_tombstone_recorded', true,
+            'authority_active', false
+        ),
+        'session-scope-revoke:' || session_value || ':' || epoch_value,
+        'capability_revoke_session',
+        runtime
+    );
+    IF NOT (scope_receipt_result->>'ok')::boolean THEN
+        RAISE EXCEPTION 'session scope revocation receipt append failed';
+    END IF;
     FOR case_record IN
         SELECT DISTINCT grant_row.case_id
           FROM canonical_brain.writer_capability_grants AS grant_row
@@ -5716,13 +7242,73 @@ BEGIN
             END IF;
         END IF;
     END LOOP;
+    SELECT pg_catalog.count(*) INTO canary_scope_count
+      FROM canonical_brain.writer_canary_scope_claims AS claim
+     WHERE claim.session_key_sha256 = session_value
+       AND claim.capability_epoch_sha256 = epoch_value;
+    IF canary_scope_count > 64 THEN
+        RAISE EXCEPTION 'claimed canary scope retirement exceeds bounded receipt set';
+    END IF;
+    FOR canary_claim IN
+        SELECT claim.grant_id, claim.case_id
+          FROM canonical_brain.writer_canary_scope_claims AS claim
+         WHERE claim.session_key_sha256 = session_value
+           AND claim.capability_epoch_sha256 = epoch_value
+         ORDER BY claim.case_id, claim.grant_id
+         LIMIT 64
+    LOOP
+        append_result := canonical_brain._append_event(
+            'canary.scope.revoked',
+            canary_claim.case_id,
+            'Exact isolated canary API session scope revoked',
+            pg_catalog.jsonb_build_object(
+                'manual_ref', 'canary-scope-revoke:' || canary_claim.grant_id
+            ),
+            pg_catalog.jsonb_build_object(
+                'actor', pg_catalog.jsonb_build_object(
+                    'type', 'service', 'id', 'canonical_writer'
+                ),
+                'subject', pg_catalog.jsonb_build_object(
+                    'type', 'canary_scope', 'id', canary_claim.grant_id
+                )
+            ),
+            pg_catalog.jsonb_build_object(
+                'canary_scope_revocation', pg_catalog.jsonb_build_object(
+                    'grant_id', canary_claim.grant_id,
+                    'session_key_sha256', session_value,
+                    'capability_epoch_sha256', epoch_value,
+                    'reason', scope_reason,
+                    'state', 'revoked'
+                )
+            ),
+            pg_catalog.jsonb_build_object(
+                'isolated_canary', true,
+                'session_tombstone_recorded', true
+            ),
+            'canary-scope-revoke:' || canary_claim.grant_id || ':'
+                || epoch_value,
+            'capability_revoke_session',
+            runtime
+        );
+        IF NOT (append_result->>'ok')::boolean THEN
+            RAISE EXCEPTION 'canary scope revocation receipt append failed';
+        END IF;
+    END LOOP;
     RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
         'success', true,
         'session_key_sha256', session_value,
         'capability_epoch_sha256', epoch_value,
         'scope_type', 'session',
         'scope_revoked', true,
-        'revoked', inserted_total
+        'authority_active', false,
+        'revocation_event_id',
+            scope_receipt_result->'result'->>'event_id',
+        'inserted',
+            (scope_receipt_result->'result'->>'inserted')::boolean,
+        'deduped',
+            (scope_receipt_result->'result'->>'deduped')::boolean,
+        'revoked', inserted_total,
+        'canary_scopes_revoked', canary_scope_count
     ));
 EXCEPTION
 WHEN serialization_failure OR deadlock_detected THEN
@@ -5732,7 +7318,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 17/17.  Ordinary calls are exact-case scoped.  Only an
+-- Fixed public routine 18/18.  Ordinary calls are exact-case scoped.  Only an
 -- in-process writer job may set trusted runtime.service_internal=true and read
 -- the global append log.  Cursor order is (occurred_at,event_id), never UUID
 -- alone, and every non-empty page advances to its last returned event.
@@ -5912,6 +7498,12 @@ ALTER FUNCTION canonical_brain._plan_head(text)
 
 ALTER FUNCTION canonical_brain.writer_ping(jsonb,jsonb)
     OWNER TO canonical_brain_migration_owner;
+ALTER FUNCTION canonical_brain.writer_canary_scope_preapprove(jsonb,jsonb)
+    OWNER TO canonical_brain_migration_owner;
+ALTER FUNCTION canonical_brain.writer_canary_scope_preapproval_retire(jsonb,jsonb)
+    OWNER TO canonical_brain_migration_owner;
+ALTER FUNCTION canonical_brain.writer_canary_scope_claim(jsonb,jsonb)
+    OWNER TO canonical_brain_migration_owner;
 ALTER FUNCTION canonical_brain.writer_case_query(jsonb,jsonb)
     OWNER TO canonical_brain_migration_owner;
 ALTER FUNCTION canonical_brain.writer_routeback_context(jsonb,jsonb)
@@ -6065,6 +7657,11 @@ GRANT USAGE ON SCHEMA canonical_brain TO canonical_brain_writer;
 
 GRANT EXECUTE ON FUNCTION canonical_brain.writer_ping(jsonb,jsonb)
     TO canonical_brain_writer;
+GRANT EXECUTE ON FUNCTION
+    canonical_brain.writer_canary_scope_preapproval_retire(jsonb,jsonb)
+    TO canonical_brain_writer;
+GRANT EXECUTE ON FUNCTION canonical_brain.writer_canary_scope_claim(jsonb,jsonb)
+    TO canonical_brain_writer;
 GRANT EXECUTE ON FUNCTION canonical_brain.writer_case_query(jsonb,jsonb)
     TO canonical_brain_writer;
 GRANT EXECUTE ON FUNCTION canonical_brain.writer_routeback_context(jsonb,jsonb)
@@ -6106,7 +7703,7 @@ BEGIN
         object_kind, object_identity, column_name, grantor_name,
         grantee_name, privilege_type, is_grantable
     ) AS (
-        SELECT 'schema', namespace.nspname, ''::text,
+        SELECT 'schema', namespace.nspname::text, ''::text,
                pg_catalog.pg_get_userbyid(acl.grantor),
                CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
                     ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
@@ -6214,7 +7811,9 @@ BEGIN
             ON namespace.oid = routine.pronamespace
          WHERE namespace.nspname = 'canonical_brain'
            AND routine.proname = ANY (ARRAY[
-                'writer_ping','writer_case_query','writer_routeback_context',
+                'writer_ping','writer_canary_scope_preapproval_retire',
+                'writer_canary_scope_claim','writer_case_query',
+                'writer_routeback_context',
                 'writer_plan_active_match','writer_event_append_model',
                 'writer_plan_transition','writer_verification_append',
                 'writer_routeback_claim','writer_routeback_recover',

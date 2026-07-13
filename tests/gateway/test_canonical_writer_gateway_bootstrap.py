@@ -30,6 +30,18 @@ def _allow_acl_query(monkeypatch):
     monkeypatch.setattr(bootstrap.os, "listxattr", lambda _target: [], raising=False)
 
 
+def _set_effective_owner(path: Path) -> None:
+    """Normalize tmp_path ownership across Linux and macOS test runners.
+
+    macOS inherits ``/private/tmp``'s ``wheel`` group for new directories even
+    when the test process has a different effective GID.  The production
+    boundary correctly rejects that mismatch, so fixtures must establish the
+    ownership contract they intend to exercise.
+    """
+
+    os.chown(path, os.geteuid(), os.getegid())
+
+
 def test_strict_managed_policy_loader_accepts_only_exact_stable_file(
     tmp_path,
     monkeypatch,
@@ -37,8 +49,10 @@ def test_strict_managed_policy_loader_accepts_only_exact_stable_file(
     _allow_acl_query(monkeypatch)
     managed = tmp_path / "hermes"
     managed.mkdir(mode=0o755)
+    _set_effective_owner(managed)
     path = managed / "config.yaml"
     path.write_text(_POLICY, encoding="utf-8")
+    _set_effective_owner(path)
     path.chmod(0o444)
 
     loaded = bootstrap.load_strict_managed_writer_only_policy(
@@ -73,8 +87,10 @@ def test_strict_managed_policy_loader_rejects_ambiguous_or_broad_policy(
     _allow_acl_query(monkeypatch)
     managed = tmp_path / "hermes"
     managed.mkdir(mode=0o755)
+    _set_effective_owner(managed)
     path = managed / "config.yaml"
     path.write_text(payload, encoding="utf-8")
+    _set_effective_owner(path)
     path.chmod(0o444)
 
     with pytest.raises(RuntimeError, match="policy"):
@@ -92,6 +108,7 @@ def test_minimal_gateway_binds_entry_identity_and_stops_cleanly(
     _allow_acl_query(monkeypatch)
     runtime = tmp_path / "runtime"
     runtime.mkdir(mode=0o700)
+    _set_effective_owner(runtime)
     runtime.chmod(0o700)
     stop = threading.Event()
     startup_origins = []
@@ -162,6 +179,7 @@ def test_minimal_gateway_fails_closed_when_systemd_does_not_accept_readiness(
     _allow_acl_query(monkeypatch)
     runtime = tmp_path / "runtime"
     runtime.mkdir(mode=0o700)
+    _set_effective_owner(runtime)
     runtime.chmod(0o700)
     removals = []
     isolated = SimpleNamespace(
@@ -195,6 +213,7 @@ def test_minimal_gateway_writes_before_liveness_notify_and_invalidates_failure(
     _allow_acl_query(monkeypatch)
     runtime = tmp_path / "runtime"
     runtime.mkdir(mode=0o700)
+    _set_effective_owner(runtime)
     runtime.chmod(0o700)
     events = []
     isolated = SimpleNamespace(

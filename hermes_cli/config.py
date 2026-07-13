@@ -8361,43 +8361,44 @@ def config_command(args):
 # ── Profile-driven env var injection ─────────────────────────────────────────
 # Any provider registered in providers/ with auth_type="api_key" automatically
 # gets its env_vars exposed in OPTIONAL_ENV_VARS without editing this file.
-# Runs once at import time.
+# Resolution is deliberately lazy: importing config helpers must not execute
+# provider plugins before a privileged runtime has pinned provider discovery.
 
 _profile_env_vars_injected = False
+_optional_env_vars_injection_lock = threading.RLock()
 
 
 def _inject_profile_env_vars() -> None:
     """Populate OPTIONAL_ENV_VARS from provider profiles not already listed.
 
-    Called once at module load time. Idempotent — repeated calls are no-ops.
+    Called on the first read of OPTIONAL_ENV_VARS. Idempotent — repeated calls
+    are no-ops.
     """
     global _profile_env_vars_injected
-    if _profile_env_vars_injected:
-        return
-    _profile_env_vars_injected = True
-    try:
-        from providers import list_providers
-        for _pp in list_providers():
-            if _pp.auth_type not in {"api_key",}:
-                continue
-            for _var in _pp.env_vars:
-                if _var in OPTIONAL_ENV_VARS:
+    with _optional_env_vars_injection_lock:
+        if _profile_env_vars_injected:
+            return
+        _profile_env_vars_injected = True
+        try:
+            from providers import list_providers
+            for _pp in list_providers():
+                if _pp.auth_type not in {"api_key",}:
                     continue
-                _is_key = not _var.endswith("_BASE_URL") and not _var.endswith("_URL")
-                OPTIONAL_ENV_VARS[_var] = {
-                    "description": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL override'}",
-                    "prompt": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL (leave empty for default)'}",
-                    "url": _pp.signup_url or None,
-                    "password": _is_key,
-                    "category": "provider",
-                    "advanced": True,
-                }
-    except Exception:
-        pass
-
-
-# Eagerly inject so that OPTIONAL_ENV_VARS is fully populated at import time.
-_inject_profile_env_vars()
+                for _var in _pp.env_vars:
+                    # Bypass the lazy mapping read hook while populating it.
+                    if dict.__contains__(OPTIONAL_ENV_VARS, _var):
+                        continue
+                    _is_key = not _var.endswith("_BASE_URL") and not _var.endswith("_URL")
+                    OPTIONAL_ENV_VARS[_var] = {
+                        "description": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL override'}",
+                        "prompt": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL (leave empty for default)'}",
+                        "url": _pp.signup_url or None,
+                        "password": _is_key,
+                        "category": "provider",
+                        "advanced": True,
+                    }
+        except Exception:
+            pass
 
 
 # ── Platform-plugin env var injection ────────────────────────────────────────
@@ -8426,7 +8427,8 @@ _platform_plugin_env_vars_injected = False
 def _inject_platform_plugin_env_vars() -> None:
     """Populate OPTIONAL_ENV_VARS from bundled platform plugin manifests.
 
-    Called once at module load time. Idempotent — repeated calls are no-ops.
+    Called on the first read of OPTIONAL_ENV_VARS. Idempotent — repeated calls
+    are no-ops.
     Failures are swallowed so a malformed plugin.yaml can't break CLI import.
     """
     global _platform_plugin_env_vars_injected
@@ -8468,7 +8470,7 @@ def _inject_platform_plugin_env_vars() -> None:
                     meta = entry
                 else:
                     continue
-                if name in OPTIONAL_ENV_VARS:
+                if dict.__contains__(OPTIONAL_ENV_VARS, name):
                     continue  # hardcoded entry wins (back-compat)
                 # Heuristic: anything named *TOKEN, *SECRET, *KEY, *PASSWORD
                 # is a password field unless explicitly overridden.
@@ -8493,5 +8495,61 @@ def _inject_platform_plugin_env_vars() -> None:
         pass
 
 
-# Eagerly inject so that platform plugin env vars show up in the setup wizard.
-_inject_platform_plugin_env_vars()
+def _resolve_optional_env_vars() -> None:
+    """Populate dynamic provider/platform entries on first mapping read."""
+    with _optional_env_vars_injection_lock:
+        _inject_profile_env_vars()
+        _inject_platform_plugin_env_vars()
+
+
+class _LazyOptionalEnvVars(dict):
+    """A dict-compatible mapping whose dynamic entries resolve on first read."""
+
+    def _resolve(self) -> None:
+        _resolve_optional_env_vars()
+
+    def __contains__(self, key: object) -> bool:
+        self._resolve()
+        return dict.__contains__(self, key)
+
+    def __getitem__(self, key: str) -> Any:
+        self._resolve()
+        return dict.__getitem__(self, key)
+
+    def __iter__(self):
+        self._resolve()
+        return dict.__iter__(self)
+
+    def __len__(self) -> int:
+        self._resolve()
+        return dict.__len__(self)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        self._resolve()
+        return dict.get(self, key, default)
+
+    def keys(self):
+        self._resolve()
+        return dict.keys(self)
+
+    def items(self):
+        self._resolve()
+        return dict.items(self)
+
+    def values(self):
+        self._resolve()
+        return dict.values(self)
+
+    def copy(self):
+        self._resolve()
+        return dict.copy(self)
+
+    def __repr__(self) -> str:
+        self._resolve()
+        return dict.__repr__(self)
+
+
+# Preserve the public dict contract while moving executable provider/plugin
+# discovery out of module import. Existing callers transparently resolve the
+# same entries when they actually read OPTIONAL_ENV_VARS.
+OPTIONAL_ENV_VARS = _LazyOptionalEnvVars(OPTIONAL_ENV_VARS)

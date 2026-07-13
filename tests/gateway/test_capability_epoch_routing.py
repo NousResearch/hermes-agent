@@ -832,6 +832,10 @@ def test_durable_session_revoke_requires_positive_exact_tombstone(monkeypatch):
             "capability_epoch_sha256": epoch_sha256,
             "scope_type": "session",
             "scope_revoked": False,
+            "authority_active": False,
+            "revocation_event_id": "11111111-1111-4111-8111-111111111111",
+            "inserted": True,
+            "deduped": False,
             "revoked": 0,
         }
 
@@ -855,6 +859,12 @@ def test_durable_session_revoke_requires_positive_exact_tombstone(monkeypatch):
                 "capability_epoch_sha256": epoch_sha256,
                 "scope_type": "session",
                 "scope_revoked": True,
+                "authority_active": False,
+                "revocation_event_id": (
+                    "11111111-1111-4111-8111-111111111111"
+                ),
+                "inserted": True,
+                "deduped": False,
                 "revoked": 0,
             },
         )
@@ -865,3 +875,61 @@ def test_durable_session_revoke_requires_positive_exact_tombstone(monkeypatch):
     assert result["scope_revoked"] is True
     assert calls[0][1] == {"reason": "gateway_session_boundary"}
     assert session_key not in repr(calls[0][1])
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("authority_active", True),
+        ("revocation_event_id", None),
+        ("revocation_event_id", "00000000-0000-0000-0000-000000000000"),
+        ("revocation_event_id", "11111111-1111-4111-8111-11111111111A"),
+        ("inserted", 1),
+        ("deduped", 0),
+        ("deduped", True),
+    ],
+)
+def test_durable_session_revoke_rejects_ambiguous_writer_receipt(
+    monkeypatch,
+    field,
+    value,
+):
+    from gateway import canonical_writer_boundary as boundary
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import approval
+
+    session_key = "agent:main:discord:thread:channel-1:thread-1"
+    session_sha256 = hashlib.sha256(session_key.encode()).hexdigest()
+    epoch_sha256 = "e" * 64
+    receipt = {
+        "success": True,
+        "session_key_sha256": session_sha256,
+        "capability_epoch_sha256": epoch_sha256,
+        "scope_type": "session",
+        "scope_revoked": True,
+        "authority_active": False,
+        "revocation_event_id": "11111111-1111-4111-8111-111111111111",
+        "inserted": True,
+        "deduped": False,
+        "revoked": 0,
+        "canary_scopes_revoked": 0,
+    }
+    receipt[field] = value
+    monkeypatch.setattr(approval, "_writer_boundary_policy_required", lambda: True)
+    monkeypatch.setattr(boundary, "writer_boundary_configured", lambda: True)
+    monkeypatch.setattr(
+        boundary,
+        "canonical_writer_call",
+        lambda operation, payload, *, idempotency_key=None: dict(receipt),
+    )
+    tokens = set_session_vars(
+        platform="discord",
+        session_key=session_key,
+        session_id="session-1",
+        capability_epoch_sha256=epoch_sha256,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="exact session-epoch tombstone"):
+            approval.revoke_session_capabilities_durably(session_key)
+    finally:
+        clear_session_vars(tokens)

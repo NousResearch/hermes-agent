@@ -366,6 +366,7 @@ _WRITER_RUNTIME_RECEIPT_KEYS = frozenset(
         "database_role",
         "private_schema_identity_sha256",
         "managed_hba_baseline_sha256",
+        "canary_scope_bootstrap_consumption",
         "discord_edge_authority_enabled",
         "socket_path",
         "socket_inode",

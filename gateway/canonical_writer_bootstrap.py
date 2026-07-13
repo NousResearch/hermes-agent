@@ -10,6 +10,8 @@ secret services.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -52,13 +54,20 @@ from gateway.canonical_writer_handlers import (
     RuntimeContext,
 )
 from gateway.canonical_writer_postgres_backend import (
+    CANONICAL_CANARY_BOOTSTRAP_LOGIN,
     CANONICAL_WRITER_MIGRATION_OWNER,
     CANONICAL_WRITER_ROLE,
     CANONICAL_WRITER_SCHEMA,
     EXPECTED_HELPER_ROUTINE_SIGNATURES,
     EXPECTED_ROUTINE_SIGNATURES,
     PRODUCTION_STATEMENT_CATALOG,
+    PostgresCanaryScopeBootstrapBackend,
+    PostgresCanaryScopePreclaimRetirementBackend,
     PostgresCanonicalWriterBackend,
+)
+from gateway.canonical_canary_bootstrap import (
+    CanaryScopeBootstrapRequest,
+    CanaryScopePreclaimRetirementRequest,
 )
 from gateway.discord_edge_protocol import ed25519_public_key_id
 from gateway.discord_edge_writer_authority import CanonicalWriterDiscordAuthority
@@ -81,9 +90,18 @@ import gateway.canonical_writer_service as canonical_writer_service_module
 
 _MAX_CONFIG_BYTES = 64 * 1024
 _MAX_KEY_BYTES = 8 * 1024
-WRITER_RUNTIME_ATTESTATION_VERSION = "canonical-writer-runtime-attestation-v1"
+WRITER_RUNTIME_ATTESTATION_VERSION = "canonical-writer-runtime-attestation-v2"
+CANARY_SCOPE_BOOTSTRAP_CONSUMPTION_VERSION = (
+    "canonical-canary-bootstrap-consumption-v1"
+)
+CANARY_PRECLAIM_RECONCILIATION_VERSION = (
+    "canonical-canary-preclaim-reconciliation-v1"
+)
 DEFAULT_WRITER_RUNTIME_ATTESTATION_PATH = Path(
     "/run/muncho-canonical-writer/runtime-attestation.json"
+)
+DEFAULT_CANARY_PRECLAIM_RECONCILIATION_RECEIPT_PATH = Path(
+    "/run/muncho-canonical-writer/preclaim-reconciliation.json"
 )
 _SYSTEMD_UNIT = re.compile(r"^[A-Za-z0-9_.@:-]+\.service$")
 _FORBIDDEN_SECRET_KEYS = frozenset(
@@ -97,9 +115,14 @@ _FORBIDDEN_SECRET_KEYS = frozenset(
         "credential_value",
     }
 )
-_ROOT_KEYS = frozenset(
-    {"service", "database", "privileges", "discord_edge_authority"}
-)
+_ROOT_KEYS = frozenset({
+    "service",
+    "database",
+    "privileges",
+    "discord_edge_authority",
+    "canary_scope_preapproval",
+})
+_REQUIRED_ROOT_KEYS = _ROOT_KEYS - {"canary_scope_preapproval"}
 _SERVICE_KEYS = frozenset(
     {
         "socket_path",
@@ -149,6 +172,45 @@ _DISCORD_EDGE_AUTHORITY_KEYS = frozenset(
         "request_timeout_seconds",
     }
 )
+_CANARY_SCOPE_PREAPPROVAL_KEYS = frozenset({
+    "grant_id",
+    "case_id",
+    "release_sha256",
+    "fixture_sha256",
+    "run_id",
+    "session_key_sha256",
+    "expires_at",
+    "approved_by",
+    "approval_source_sha256",
+    "provisioning_receipt_sha256",
+    "bootstrap_database_user",
+    "bootstrap_credential_file",
+    "bootstrap_managed_cloudsqladmin_hba_rejection_receipt",
+    "bootstrap_managed_cloudsqladmin_hba_rejection_sha256",
+})
+_CANARY_SCOPE_PREAPPROVAL_REQUIRED_KEYS = _CANARY_SCOPE_PREAPPROVAL_KEYS - {
+    "bootstrap_managed_cloudsqladmin_hba_rejection_receipt",
+    "bootstrap_managed_cloudsqladmin_hba_rejection_sha256",
+}
+_CANARY_SCOPE_BOOTSTRAP_DATABASE_RECEIPT_KEYS = frozenset({
+    "success",
+    "grant_id",
+    "case_id",
+    "release_sha256",
+    "fixture_sha256",
+    "run_id",
+    "session_key_sha256",
+    "expires_at",
+    "approved_by",
+    "approval_source_sha256",
+    "preapproved_at",
+    "event_id",
+    "receipt_event_id",
+    "bootstrap_consumption_event_id",
+    "bootstrap_acl_revoked",
+    "inserted",
+    "deduped",
+})
 
 
 @dataclass(frozen=True)
@@ -169,6 +231,23 @@ class DiscordEdgeWriterAuthorityConfig:
 
 
 @dataclass(frozen=True)
+class CanaryScopePreapprovalConfig:
+    grant_id: str
+    case_id: str
+    release_sha256: str
+    fixture_sha256: str
+    run_id: str
+    session_key_sha256: str
+    expires_at: dt.datetime
+    approved_by: str
+    approval_source_sha256: str
+    provisioning_receipt_sha256: str
+    bootstrap_database: WriterDBConfig
+    bootstrap_managed_hba_receipt: ManagedCloudSQLAdminHBAReceipt | None
+    bootstrap_managed_hba_receipt_sha256: str
+
+
+@dataclass(frozen=True)
 class CanonicalWriterServiceConfig:
     socket_path: Path
     gateway_unit: str
@@ -183,6 +262,9 @@ class CanonicalWriterServiceConfig:
     database: WriterDBConfig
     privileges: WriterPrivilegePolicy
     discord_edge_authority: DiscordEdgeWriterAuthorityConfig
+    canary_scope_preapproval: CanaryScopePreapprovalConfig | None = None
+    source_config_path: Path | None = None
+    source_config_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -192,6 +274,10 @@ class CanonicalWriterBootstrap:
     backend: PostgresCanonicalWriterBackend
     handlers: CanonicalWriterHandlers
     server: CanonicalWriterServer
+    canary_scope_preapproval_receipt: Mapping[str, Any] | None = None
+    canary_preclaim_retirement_backend: (
+        PostgresCanaryScopePreclaimRetirementBackend | None
+    ) = None
 
 
 def _strict_mapping(
@@ -625,13 +711,157 @@ def _load_discord_edge_authority_config(
     )
 
 
+def _load_canary_scope_preapproval_config(
+    value: Any,
+    *,
+    owner_discord_user_ids: frozenset[str],
+    database: WriterDBConfig,
+    writer_uid: int,
+    writer_gid: int,
+    managed_hba_required: bool,
+    allow_expired_for_reconciliation: bool = False,
+) -> CanaryScopePreapprovalConfig:
+    raw = _strict_mapping(
+        value,
+        label="canary_scope_preapproval",
+        allowed=_CANARY_SCOPE_PREAPPROVAL_KEYS,
+    )
+    if not _CANARY_SCOPE_PREAPPROVAL_REQUIRED_KEYS.issubset(raw):
+        missing = sorted(_CANARY_SCOPE_PREAPPROVAL_REQUIRED_KEYS - set(raw))
+        raise ValueError(
+            "canary_scope_preapproval requires exact fields:" + ",".join(missing)
+        )
+    receipt_present = "bootstrap_managed_cloudsqladmin_hba_rejection_receipt" in raw
+    digest_present = "bootstrap_managed_cloudsqladmin_hba_rejection_sha256" in raw
+    if receipt_present != digest_present:
+        raise ValueError(
+            "canary bootstrap managed HBA receipt and digest must be paired"
+        )
+    if managed_hba_required and not receipt_present:
+        raise ValueError(
+            "managed Cloud SQL canary bootstrap requires its own user-bound HBA receipt"
+        )
+
+    def identifier(name: str, *, case: bool = False) -> str:
+        observed = _required_exact_text(raw[name], f"canary_scope_preapproval.{name}")
+        pattern = (
+            r"^case:[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$"
+            if case
+            else r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$"
+        )
+        if re.fullmatch(pattern, observed) is None:
+            raise ValueError(f"canary_scope_preapproval.{name} is invalid")
+        return observed
+
+    def digest(name: str) -> str:
+        observed = _required_exact_text(raw[name], f"canary_scope_preapproval.{name}")
+        if re.fullmatch(r"[0-9a-f]{64}", observed) is None:
+            raise ValueError(
+                f"canary_scope_preapproval.{name} must be lowercase SHA-256"
+            )
+        return observed
+
+    approved_by = identifier("approved_by")
+    if approved_by not in owner_discord_user_ids:
+        raise ValueError(
+            "canary_scope_preapproval.approved_by must be a configured Discord owner"
+        )
+    expires_text = _required_exact_text(
+        raw["expires_at"],
+        "canary_scope_preapproval.expires_at",
+    )
+    try:
+        expires_at = dt.datetime.fromisoformat(expires_text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            "canary_scope_preapproval.expires_at must be ISO-8601"
+        ) from exc
+    if expires_at.tzinfo is None:
+        raise ValueError("canary_scope_preapproval.expires_at requires a timezone")
+    expires_at = expires_at.astimezone(dt.timezone.utc)
+    now = dt.datetime.now(dt.timezone.utc)
+    if expires_at > now + dt.timedelta(hours=1) or (
+        not allow_expired_for_reconciliation and expires_at <= now
+    ):
+        raise ValueError(
+            "canary_scope_preapproval.expires_at must be within the next hour"
+        )
+    bootstrap_user = _required_exact_text(
+        raw["bootstrap_database_user"],
+        "canary_scope_preapproval.bootstrap_database_user",
+    )
+    if bootstrap_user != CANONICAL_CANARY_BOOTSTRAP_LOGIN:
+        raise ValueError("canary bootstrap database user is not pinned")
+    bootstrap_database = WriterDBConfig(
+        host=database.host,
+        tls_server_name=database.tls_server_name,
+        port=database.port,
+        database=database.database,
+        user=bootstrap_user,
+        ca_file=database.ca_file,
+        credential=CredentialSource(
+            path=_absolute_path(
+                raw["bootstrap_credential_file"],
+                "canary_scope_preapproval.bootstrap_credential_file",
+            ),
+            expected_uid=writer_uid,
+            expected_gid=writer_gid,
+            allowed_modes=frozenset({0o400}),
+        ),
+        connect_timeout_seconds=database.connect_timeout_seconds,
+        io_timeout_seconds=database.io_timeout_seconds,
+    )
+    bootstrap_hba_receipt: ManagedCloudSQLAdminHBAReceipt | None = None
+    bootstrap_hba_digest = ""
+    if receipt_present:
+        receipt_value = raw[
+            "bootstrap_managed_cloudsqladmin_hba_rejection_receipt"
+        ]
+        if not isinstance(receipt_value, Mapping):
+            raise ValueError("canary bootstrap managed HBA receipt must be an object")
+        bootstrap_hba_receipt = managed_cloudsqladmin_hba_receipt_from_mapping(
+            receipt_value
+        )
+        bootstrap_hba_digest = digest(
+            "bootstrap_managed_cloudsqladmin_hba_rejection_sha256"
+        )
+        if (
+            bootstrap_hba_receipt.sha256 != bootstrap_hba_digest
+            or bootstrap_hba_receipt.host != bootstrap_database.host
+            or bootstrap_hba_receipt.tls_server_name
+            != bootstrap_database.tls_server_name
+            or bootstrap_hba_receipt.port != bootstrap_database.port
+            or bootstrap_hba_receipt.user != bootstrap_database.user
+        ):
+            raise ValueError("canary bootstrap managed HBA receipt binding is invalid")
+    return CanaryScopePreapprovalConfig(
+        grant_id=identifier("grant_id"),
+        case_id=identifier("case_id", case=True),
+        release_sha256=digest("release_sha256"),
+        fixture_sha256=digest("fixture_sha256"),
+        run_id=identifier("run_id"),
+        session_key_sha256=digest("session_key_sha256"),
+        expires_at=expires_at,
+        approved_by=approved_by,
+        approval_source_sha256=digest("approval_source_sha256"),
+        provisioning_receipt_sha256=digest("provisioning_receipt_sha256"),
+        bootstrap_database=bootstrap_database,
+        bootstrap_managed_hba_receipt=bootstrap_hba_receipt,
+        bootstrap_managed_hba_receipt_sha256=bootstrap_hba_digest,
+    )
+
+
 def load_service_config(
     path: str | os.PathLike[str],
     *,
     _expected_owner_uid: int = 0,
     _require_root_owned_parents: bool = True,
+    _allow_expired_canary_scope: bool = False,
 ) -> CanonicalWriterServiceConfig:
     """Load strict secret-free config from an explicit trusted file."""
+
+    if type(_allow_expired_canary_scope) is not bool:
+        raise ValueError("expired canary scope load policy must be boolean")
 
     config_path = Path(path)
     trusted_stat = _validate_trusted_config_path(
@@ -649,7 +879,7 @@ def load_service_config(
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError("writer config is not strict UTF-8 JSON") from exc
     root = _strict_mapping(value, label="config", allowed=_ROOT_KEYS)
-    if set(root) != _ROOT_KEYS:
+    if not _REQUIRED_ROOT_KEYS.issubset(root):
         raise ValueError(
             "writer config requires service, database, privileges, and "
             "discord_edge_authority"
@@ -713,6 +943,14 @@ def load_service_config(
         and trusted_stat.st_gid != writer_gid
     ):
         raise ValueError("group-readable writer config must use writer GID")
+    owner_discord_user_ids = frozenset(
+        _required_text(value, "service.owner_discord_user_ids item")
+        for value in _strings(
+            service.get("owner_discord_user_ids"),
+            "service.owner_discord_user_ids",
+        )
+    )
+    canary_scope_preapproval_raw = root.get("canary_scope_preapproval")
     discord_edge_authority = _load_discord_edge_authority_config(
         root["discord_edge_authority"],
         writer_uid=writer_uid,
@@ -904,6 +1142,21 @@ def load_service_config(
         raise ValueError(
             "managed cloudsqladmin HBA receipt does not match database coordinates"
         )
+    canary_scope_preapproval = (
+        _load_canary_scope_preapproval_config(
+            canary_scope_preapproval_raw,
+            owner_discord_user_ids=owner_discord_user_ids,
+            database=db_config,
+            writer_uid=writer_uid,
+            writer_gid=writer_gid,
+            managed_hba_required=managed_hba_receipt is not None,
+            allow_expired_for_reconciliation=(
+                _allow_expired_canary_scope
+            ),
+        )
+        if canary_scope_preapproval_raw is not None
+        else None
+    )
     deployment_lock_key = _integer(
         privileges.get("deployment_lock_key"),
         "privileges.deployment_lock_key",
@@ -943,13 +1196,7 @@ def load_service_config(
         writer_gid=writer_gid,
         socket_gid=socket_gid,
         projector_gid=projector_gid,
-        owner_discord_user_ids=frozenset(
-            _required_text(value, "service.owner_discord_user_ids item")
-            for value in _strings(
-                service.get("owner_discord_user_ids"),
-                "service.owner_discord_user_ids",
-            )
-        ),
+        owner_discord_user_ids=owner_discord_user_ids,
         connection_timeout_seconds=_number(
             service.get("connection_timeout_seconds", 30.0),
             "service.connection_timeout_seconds",
@@ -965,10 +1212,17 @@ def load_service_config(
         database=db_config,
         privileges=policy,
         discord_edge_authority=discord_edge_authority,
+        canary_scope_preapproval=canary_scope_preapproval,
+        source_config_path=config_path,
+        source_config_sha256=hashlib.sha256(raw).hexdigest(),
     )
 
 
 DatabaseFactory = Callable[..., CanonicalWriterDB]
+CanaryBootstrapFactory = Callable[..., PostgresCanaryScopeBootstrapBackend]
+CanaryPreclaimRetirementFactory = Callable[
+    ..., PostgresCanaryScopePreclaimRetirementBackend
+]
 
 
 def export_projection_events(
@@ -1124,10 +1378,267 @@ def export_projection_events(
     return count
 
 
+_CANARY_PRECLAIM_RESULT_KEYS = frozenset({
+    "success",
+    "outcome",
+    "grant_id",
+    "case_id",
+    "release_sha256",
+    "fixture_sha256",
+    "run_id",
+    "session_key_sha256",
+    "expires_at",
+    "approved_by",
+    "approval_source_sha256",
+    "provisioning_receipt_sha256",
+    "preapproval_event_id",
+    "bootstrap_consumption_event_id",
+    "claim_event_id",
+    "retirement_event_id",
+    "revocation_event_id",
+    "claimed_at",
+    "retired_at",
+    "reason",
+    "scope_retired",
+    "authority_active",
+    "inserted",
+    "deduped",
+})
+
+
+def _canary_preclaim_request(
+    scope: CanaryScopePreapprovalConfig,
+) -> CanaryScopePreclaimRetirementRequest:
+    return CanaryScopePreclaimRetirementRequest(
+        grant_id=scope.grant_id,
+        case_id=scope.case_id,
+        release_sha256=scope.release_sha256,
+        fixture_sha256=scope.fixture_sha256,
+        run_id=scope.run_id,
+        session_key_sha256=scope.session_key_sha256,
+        expires_at=scope.expires_at,
+        approved_by=scope.approved_by,
+        approval_source_sha256=scope.approval_source_sha256,
+        provisioning_receipt_sha256=scope.provisioning_receipt_sha256,
+    )
+
+
+def _normalize_canary_preclaim_result(
+    raw_result: Mapping[str, Any],
+    scope: CanaryScopePreapprovalConfig,
+) -> Mapping[str, Any]:
+    result = dict(raw_result)
+    if set(result) != _CANARY_PRECLAIM_RESULT_KEYS or result.get("success") is not True:
+        raise RuntimeError("canary preclaim reconciliation fields are not exact")
+
+    def timestamp(value: Any, *, nullable: bool) -> str | None:
+        if value is None and nullable:
+            return None
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise RuntimeError("canary preclaim reconciliation timestamp is invalid")
+        try:
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RuntimeError(
+                "canary preclaim reconciliation timestamp is invalid"
+            ) from exc
+        if parsed.tzinfo is None:
+            raise RuntimeError("canary preclaim reconciliation timestamp lacks timezone")
+        return parsed.astimezone(dt.timezone.utc).isoformat()
+
+    def event_id(value: Any, *, nullable: bool) -> str | None:
+        if value is None and nullable:
+            return None
+        if not isinstance(value, str):
+            raise RuntimeError("canary preclaim reconciliation event ID is invalid")
+        try:
+            parsed = uuid.UUID(value)
+        except ValueError as exc:
+            raise RuntimeError(
+                "canary preclaim reconciliation event ID is invalid"
+            ) from exc
+        if parsed.int == 0 or str(parsed) != value:
+            raise RuntimeError("canary preclaim reconciliation event ID is invalid")
+        return value
+
+    expected = {
+        "grant_id": scope.grant_id,
+        "case_id": scope.case_id,
+        "release_sha256": scope.release_sha256,
+        "fixture_sha256": scope.fixture_sha256,
+        "run_id": scope.run_id,
+        "session_key_sha256": scope.session_key_sha256,
+        "approved_by": scope.approved_by,
+        "approval_source_sha256": scope.approval_source_sha256,
+        "provisioning_receipt_sha256": scope.provisioning_receipt_sha256,
+    }
+    if any(result.get(name) != value for name, value in expected.items()):
+        raise RuntimeError("canary preclaim reconciliation scope binding mismatch")
+    result["expires_at"] = timestamp(result.get("expires_at"), nullable=False)
+    expected_expiry = scope.expires_at.astimezone(dt.timezone.utc).isoformat()
+    if result["expires_at"] != expected_expiry:
+        raise RuntimeError("canary preclaim reconciliation expiry binding mismatch")
+    for name in (
+        "preapproval_event_id",
+        "bootstrap_consumption_event_id",
+        "claim_event_id",
+        "retirement_event_id",
+        "revocation_event_id",
+    ):
+        result[name] = event_id(result.get(name), nullable=True)
+    result["claimed_at"] = timestamp(result.get("claimed_at"), nullable=True)
+    result["retired_at"] = timestamp(result.get("retired_at"), nullable=True)
+    for name in ("scope_retired", "authority_active", "inserted", "deduped"):
+        if type(result.get(name)) is not bool:
+            raise RuntimeError("canary preclaim reconciliation boolean is invalid")
+    if result["authority_active"] is not False:
+        raise RuntimeError("canary preclaim reconciliation left authority active")
+
+    outcome = result.get("outcome")
+    if outcome == "not_preapproved":
+        if (
+            result.get("reason") != "preapproval_not_committed"
+            or result["scope_retired"]
+            or result["inserted"]
+            or result["deduped"]
+            or any(
+                result[name] is not None
+                for name in (
+                    "preapproval_event_id",
+                    "bootstrap_consumption_event_id",
+                    "claim_event_id",
+                    "retirement_event_id",
+                    "revocation_event_id",
+                    "claimed_at",
+                    "retired_at",
+                )
+            )
+        ):
+            raise RuntimeError("not-preapproved reconciliation receipt is invalid")
+    elif outcome == "retired":
+        if (
+            result.get("reason") != "activation_failed_before_first_claim"
+            or result["scope_retired"] is not True
+            or result["preapproval_event_id"] is None
+            or result["bootstrap_consumption_event_id"] is None
+            or result["retirement_event_id"] is None
+            or result["retired_at"] is None
+            or result["claim_event_id"] is not None
+            or result["revocation_event_id"] is not None
+            or result["claimed_at"] is not None
+            or result["inserted"] == result["deduped"]
+        ):
+            raise RuntimeError("retired reconciliation receipt is invalid")
+    elif outcome == "claimed":
+        if (
+            result.get("reason")
+            != "claim_already_committed_session_retired"
+            or result["scope_retired"]
+            or result["preapproval_event_id"] is None
+            or result["bootstrap_consumption_event_id"] is None
+            or result["claim_event_id"] is None
+            or result["revocation_event_id"] is None
+            or result["claimed_at"] is None
+            or result["retirement_event_id"] is not None
+            or result["retired_at"] is not None
+            or result["inserted"] == result["deduped"]
+        ):
+            raise RuntimeError("claimed reconciliation receipt is invalid")
+    else:
+        raise RuntimeError("canary preclaim reconciliation outcome is invalid")
+    return result
+
+
+def reconcile_configured_canary_preclaim(
+    config: CanonicalWriterServiceConfig,
+    *,
+    backend: PostgresCanaryScopePreclaimRetirementBackend | None = None,
+    receipt_path: Path | None = None,
+    _backend_factory: CanaryPreclaimRetirementFactory = (
+        PostgresCanaryScopePreclaimRetirementBackend
+    ),
+    _now_unix: Callable[[], float] = time.time,
+) -> Mapping[str, Any] | None:
+    """Reconcile one sealed canary using a fresh writer-UID DB connection."""
+
+    scope = config.canary_scope_preapproval
+    if scope is None:
+        return None
+    active_backend = backend or _backend_factory(
+        config=config.database,
+        expected_hba_receipt=(
+            config.privileges.managed_cloudsqladmin_hba_rejection_receipt
+        ),
+        expected_hba_receipt_sha256=(
+            config.privileges.managed_cloudsqladmin_hba_rejection_sha256
+        ),
+    )
+    raw_result = active_backend.retire(
+        _canary_preclaim_request(scope),
+        RuntimeContext(
+            request_id="canary-preclaim-reconcile:" + scope.grant_id,
+            platform="writer_service",
+            session_key_sha256=scope.session_key_sha256,
+            service_internal=True,
+        ),
+    )
+    result = _normalize_canary_preclaim_result(raw_result, scope)
+    if receipt_path is None:
+        return result
+    source_path = config.source_config_path
+    if (
+        source_path is None
+        or not source_path.is_absolute()
+        or re.fullmatch(r"[0-9a-f]{64}", config.source_config_sha256) is None
+    ):
+        raise RuntimeError("canary reconciliation source config binding is absent")
+    database_identity = {
+        "host": config.database.host,
+        "tls_server_name": config.database.tls_server_name,
+        "port": config.database.port,
+        "database": config.database.database,
+        "user": config.database.user,
+    }
+    observed_at_unix = int(_now_unix())
+    if observed_at_unix < 0:
+        raise RuntimeError("canary reconciliation receipt clock is invalid")
+    receipt_body = {
+        "version": CANARY_PRECLAIM_RECONCILIATION_VERSION,
+        "observed_at_unix": observed_at_unix,
+        "source_config_path": str(source_path),
+        "source_config_sha256": config.source_config_sha256,
+        "database_identity": database_identity,
+        "database_identity_sha256": readiness_receipt_sha256(
+            database_identity
+        ),
+        "result": result,
+    }
+    receipt = {
+        **receipt_body,
+        "receipt_sha256": readiness_receipt_sha256(receipt_body),
+    }
+    write_runtime_attestation(receipt_path, receipt)
+    observed = receipt_path.lstat()
+    if (
+        not stat.S_ISREG(observed.st_mode)
+        or stat.S_IMODE(observed.st_mode) != 0o600
+        or observed.st_uid != config.writer_uid
+        or observed.st_gid != config.writer_gid
+    ):
+        raise RuntimeError("canary reconciliation receipt identity is invalid")
+    return receipt
+
+
 def build_service(
     config: CanonicalWriterServiceConfig,
     *,
     _database_factory: DatabaseFactory = CanonicalWriterDB,
+    _canary_bootstrap_factory: CanaryBootstrapFactory = (
+        PostgresCanaryScopeBootstrapBackend
+    ),
+    _canary_retirement_factory: CanaryPreclaimRetirementFactory = (
+        PostgresCanaryScopePreclaimRetirementBackend
+    ),
 ) -> CanonicalWriterBootstrap:
     """Assemble and startup-attest the privileged service without serving."""
 
@@ -1160,43 +1671,232 @@ def build_service(
             ),
             request_timeout_seconds=authority_config.request_timeout_seconds,
         )
-    database = _database_factory(
-        config=config.database,
-        privilege_policy=config.privileges,
-        statements=PRODUCTION_STATEMENT_CATALOG,
+    canary_scope_preapproval_receipt: Mapping[str, Any] | None = None
+    canary_preclaim_retirement_backend: (
+        PostgresCanaryScopePreclaimRetirementBackend | None
+    ) = None
+    # Preserve the flat public writer bootstrap contract for callers built
+    # before the optional canary scope was introduced.  The strict service
+    # config loader always materializes this attribute; an absent attribute on
+    # a programmatic legacy config therefore means exactly "no canary scope".
+    canary_preapproval = getattr(config, "canary_scope_preapproval", None)
+    if canary_preapproval is not None:
+        canary_preclaim_retirement_backend = _canary_retirement_factory(
+            config=config.database,
+            expected_hba_receipt=(
+                config.privileges.managed_cloudsqladmin_hba_rejection_receipt
+            ),
+            expected_hba_receipt_sha256=(
+                config.privileges.managed_cloudsqladmin_hba_rejection_sha256
+            ),
+        )
+        try:
+            prior_reconciliation = reconcile_configured_canary_preclaim(
+                config,
+                backend=canary_preclaim_retirement_backend,
+            )
+        except Exception as exc:
+            raise RuntimeError("canary preclaim startup reconciliation failed") from exc
+        if prior_reconciliation is None:
+            raise RuntimeError("canary preclaim startup reconciliation is absent")
+        if prior_reconciliation.get("outcome") != "not_preapproved":
+            raise RuntimeError(
+                "canary scope config is stale after durable reconciliation"
+            )
+        bootstrap_backend = _canary_bootstrap_factory(
+            config=canary_preapproval.bootstrap_database,
+            expected_hba_receipt=(
+                canary_preapproval.bootstrap_managed_hba_receipt
+            ),
+            expected_hba_receipt_sha256=(
+                canary_preapproval.bootstrap_managed_hba_receipt_sha256
+            ),
+        )
+        try:
+            canary_scope_preapproval_receipt = dict(
+                bootstrap_backend.preapprove(
+                    CanaryScopeBootstrapRequest(
+                        grant_id=canary_preapproval.grant_id,
+                        case_id=canary_preapproval.case_id,
+                        release_sha256=canary_preapproval.release_sha256,
+                        fixture_sha256=canary_preapproval.fixture_sha256,
+                        run_id=canary_preapproval.run_id,
+                        session_key_sha256=canary_preapproval.session_key_sha256,
+                        expires_at=canary_preapproval.expires_at,
+                        approved_by=canary_preapproval.approved_by,
+                        approval_source_sha256=(
+                            canary_preapproval.approval_source_sha256
+                        ),
+                        provisioning_receipt_sha256=(
+                            canary_preapproval.provisioning_receipt_sha256
+                        ),
+                    ),
+                    RuntimeContext(
+                        request_id=(
+                            "canary-preapprove:" + canary_preapproval.grant_id
+                        ),
+                        platform="writer_service",
+                        session_key_sha256=(
+                            canary_preapproval.session_key_sha256
+                        ),
+                        service_internal=True,
+                    ),
+                )
+            )
+        except Exception as exc:
+            raise RuntimeError("canary scope bootstrap preapproval failed") from exc
+    try:
+        # The ordinary writer attests only after successful bootstrap
+        # consumption. Any failure after that point durably retires the
+        # unclaimed preapproval before this function can unwind.
+        database = _database_factory(
+            config=config.database,
+            privilege_policy=config.privileges,
+            statements=PRODUCTION_STATEMENT_CATALOG,
+        )
+        database.startup_attest()
+        backend = PostgresCanonicalWriterBackend(database)
+        handlers = CanonicalWriterHandlers(
+            backend,
+            discord_edge_authority=discord_edge_authority,
+        )
+        dispatcher = CanonicalWriterTypedDispatcher(
+            handlers,
+            owner_user_ids=config.owner_discord_user_ids,
+        )
+        authorizer = SystemdMainPidAuthorizer(
+            config.gateway_unit,
+            SystemdCgroupV2MainPidProvider(),
+            expected_uid=config.gateway_uid,
+        )
+        server = CanonicalWriterServer(
+            config.socket_path,
+            authorizer=authorizer,
+            dispatcher=dispatcher,
+            expected_socket_gid=config.socket_gid,
+            recover_stale_socket=True,
+            socket_mode=0o660,
+            connection_timeout_seconds=config.connection_timeout_seconds,
+            max_connections=config.max_connections,
+        )
+        return CanonicalWriterBootstrap(
+            config=config,
+            database=database,
+            backend=backend,
+            handlers=handlers,
+            server=server,
+            canary_scope_preapproval_receipt=canary_scope_preapproval_receipt,
+            canary_preclaim_retirement_backend=(
+                canary_preclaim_retirement_backend
+            ),
+        )
+    except BaseException:
+        if (
+            canary_scope_preapproval_receipt is not None
+            and canary_preclaim_retirement_backend is not None
+        ):
+            reconciliation = reconcile_configured_canary_preclaim(
+                config,
+                backend=canary_preclaim_retirement_backend,
+            )
+            if reconciliation is None:
+                raise RuntimeError(
+                    "canary startup-failure reconciliation is absent"
+                )
+        raise
+
+
+def _canary_scope_bootstrap_consumption_receipt(
+    bootstrap: CanonicalWriterBootstrap,
+) -> Mapping[str, Any] | None:
+    """Build the exact secret-free proof needed to retire one-shot config."""
+
+    scope = getattr(bootstrap.config, "canary_scope_preapproval", None)
+    database_receipt = getattr(
+        bootstrap,
+        "canary_scope_preapproval_receipt",
+        None,
     )
-    database.startup_attest()
-    backend = PostgresCanonicalWriterBackend(database)
-    handlers = CanonicalWriterHandlers(
-        backend,
-        discord_edge_authority=discord_edge_authority,
+    if scope is None and database_receipt is None:
+        return None
+    if not isinstance(scope, CanaryScopePreapprovalConfig) or not isinstance(
+        database_receipt,
+        Mapping,
+    ):
+        raise RuntimeError("canary bootstrap consumption receipt is incomplete")
+    raw = dict(database_receipt)
+    if set(raw) != _CANARY_SCOPE_BOOTSTRAP_DATABASE_RECEIPT_KEYS:
+        raise RuntimeError("canary bootstrap database receipt fields are not exact")
+    if (
+        raw.get("success") is not True
+        or raw.get("bootstrap_acl_revoked") is not True
+        or raw.get("inserted") is not True
+        or raw.get("deduped") is not False
+    ):
+        raise RuntimeError("canary bootstrap was not freshly consumed")
+    if scope.bootstrap_database.user != CANONICAL_CANARY_BOOTSTRAP_LOGIN:
+        raise RuntimeError("canary bootstrap database user binding mismatch")
+
+    def timestamp(value: Any, label: str) -> str:
+        if not isinstance(value, str) or value != value.strip() or not value:
+            raise RuntimeError(f"canary bootstrap {label} is invalid")
+        try:
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RuntimeError(f"canary bootstrap {label} is invalid") from exc
+        if parsed.tzinfo is None:
+            raise RuntimeError(f"canary bootstrap {label} requires timezone")
+        return parsed.astimezone(dt.timezone.utc).isoformat()
+
+    def event_id(value: Any, label: str) -> str:
+        if not isinstance(value, str):
+            raise RuntimeError(f"canary bootstrap {label} is invalid")
+        try:
+            parsed = uuid.UUID(value)
+        except ValueError as exc:
+            raise RuntimeError(f"canary bootstrap {label} is invalid") from exc
+        if parsed.int == 0 or str(parsed) != value:
+            raise RuntimeError(f"canary bootstrap {label} is invalid")
+        return value
+
+    expected = {
+        "grant_id": scope.grant_id,
+        "case_id": scope.case_id,
+        "release_sha256": scope.release_sha256,
+        "fixture_sha256": scope.fixture_sha256,
+        "run_id": scope.run_id,
+        "session_key_sha256": scope.session_key_sha256,
+        "approved_by": scope.approved_by,
+        "approval_source_sha256": scope.approval_source_sha256,
+    }
+    if any(raw.get(name) != value for name, value in expected.items()):
+        raise RuntimeError("canary bootstrap database receipt binding mismatch")
+    expires_at = timestamp(raw.get("expires_at"), "expiry")
+    if expires_at != scope.expires_at.astimezone(dt.timezone.utc).isoformat():
+        raise RuntimeError("canary bootstrap expiry binding mismatch")
+    preapproval_event_id = event_id(
+        raw.get("receipt_event_id"),
+        "preapproval event ID",
     )
-    dispatcher = CanonicalWriterTypedDispatcher(
-        handlers,
-        owner_user_ids=config.owner_discord_user_ids,
+    if raw.get("event_id") != preapproval_event_id:
+        raise RuntimeError("canary bootstrap preapproval event binding mismatch")
+    consumption_event_id = event_id(
+        raw.get("bootstrap_consumption_event_id"),
+        "consumption event ID",
     )
-    authorizer = SystemdMainPidAuthorizer(
-        config.gateway_unit,
-        SystemdCgroupV2MainPidProvider(),
-        expected_uid=config.gateway_uid,
-    )
-    server = CanonicalWriterServer(
-        config.socket_path,
-        authorizer=authorizer,
-        dispatcher=dispatcher,
-        expected_socket_gid=config.socket_gid,
-        recover_stale_socket=True,
-        socket_mode=0o660,
-        connection_timeout_seconds=config.connection_timeout_seconds,
-        max_connections=config.max_connections,
-    )
-    return CanonicalWriterBootstrap(
-        config=config,
-        database=database,
-        backend=backend,
-        handlers=handlers,
-        server=server,
-    )
+    body: dict[str, Any] = {
+        "version": CANARY_SCOPE_BOOTSTRAP_CONSUMPTION_VERSION,
+        **expected,
+        "expires_at": expires_at,
+        "provisioning_receipt_sha256": scope.provisioning_receipt_sha256,
+        "bootstrap_database_user": scope.bootstrap_database.user,
+        "preapproval_event_id": preapproval_event_id,
+        "consumption_event_id": consumption_event_id,
+        "preapproved_at": timestamp(raw.get("preapproved_at"), "timestamp"),
+        "acl_revoked": True,
+        "inserted": True,
+    }
+    return {**body, "receipt_sha256": readiness_receipt_sha256(body)}
 
 
 def publish_writer_runtime_readiness(
@@ -1277,6 +1977,9 @@ def publish_writer_runtime_readiness(
     observed_at_unix = int(_now_unix())
     if observed_at_unix < 0:
         raise RuntimeError("writer runtime attestation clock is invalid")
+    canary_bootstrap_consumption = (
+        _canary_scope_bootstrap_consumption_receipt(bootstrap)
+    )
     receipt = {
         "version": WRITER_RUNTIME_ATTESTATION_VERSION,
         "observed_at_unix": observed_at_unix,
@@ -1301,6 +2004,7 @@ def publish_writer_runtime_readiness(
         "discord_edge_authority_enabled": (
             bootstrap.config.discord_edge_authority.enabled
         ),
+        "canary_scope_bootstrap_consumption": canary_bootstrap_consumption,
         "socket_path": str(bootstrap.config.socket_path),
         "socket_inode": socket_stat.st_ino,
         "socket_device": socket_stat.st_dev,
@@ -1332,30 +2036,96 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="absolute writer-owned atomic event export path instead of serving",
     )
     parser.add_argument("--export-limit", type=int, default=200_000)
+    parser.add_argument(
+        "--reconcile-canary-preclaim",
+        action="store_true",
+        help=(
+            "durably retire one configured preclaim authority using a fresh "
+            "writer database connection"
+        ),
+    )
     arguments = parser.parse_args(argv)
-    config = load_service_config(arguments.config)
+    config = load_service_config(
+        arguments.config,
+        _allow_expired_canary_scope=arguments.reconcile_canary_preclaim,
+    )
+    if arguments.reconcile_canary_preclaim:
+        if arguments.export_events:
+            parser.error(
+                "--reconcile-canary-preclaim cannot be combined with --export-events"
+            )
+        getuid = getattr(os, "getuid", None)
+        getgid = getattr(os, "getgid", None)
+        if not callable(getuid) or not callable(getgid):
+            raise RuntimeError(
+                "canary reconciliation requires a POSIX writer identity"
+            )
+        if getuid() != config.writer_uid or getgid() != config.writer_gid:
+            raise PermissionError(
+                "canary reconciliation process UID/GID does not match config"
+            )
+        receipt = reconcile_configured_canary_preclaim(
+            config,
+            receipt_path=DEFAULT_CANARY_PRECLAIM_RECONCILIATION_RECEIPT_PATH,
+        )
+        if receipt is None:
+            raise RuntimeError(
+                "explicit canary preclaim reconciliation requires sealed scope"
+            )
+        print(
+            json.dumps(
+                receipt,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        return 0
     bootstrap = build_service(config)
     if arguments.export_events:
-        count = export_projection_events(
-            bootstrap,
-            arguments.export_events,
-            limit=arguments.export_limit,
-        )
+        try:
+            count = export_projection_events(
+                bootstrap,
+                arguments.export_events,
+                limit=arguments.export_limit,
+            )
+        finally:
+            if bootstrap.canary_preclaim_retirement_backend is not None:
+                reconciliation = reconcile_configured_canary_preclaim(
+                    config,
+                    backend=bootstrap.canary_preclaim_retirement_backend,
+                    receipt_path=(
+                        DEFAULT_CANARY_PRECLAIM_RECONCILIATION_RECEIPT_PATH
+                    ),
+                )
+                if reconciliation is None:
+                    raise RuntimeError(
+                        "canary export reconciliation is absent"
+                    )
         print(json.dumps({"success": True, "event_count": count}, sort_keys=True))
         return 0
-    bootstrap.server.start()
     try:
+        bootstrap.server.start()
         publish_writer_runtime_readiness(bootstrap)
-    except BaseException:
-        bootstrap.server.shutdown()
-        raise
+        def _shutdown(_signum, _frame):
+            bootstrap.server.shutdown()
 
-    def _shutdown(_signum, _frame):
+        signal.signal(signal.SIGTERM, _shutdown)
+        signal.signal(signal.SIGINT, _shutdown)
+        bootstrap.server.serve_forever()
+    finally:
         bootstrap.server.shutdown()
-
-    signal.signal(signal.SIGTERM, _shutdown)
-    signal.signal(signal.SIGINT, _shutdown)
-    bootstrap.server.serve_forever()
+        if bootstrap.canary_preclaim_retirement_backend is not None:
+            reconciliation = reconcile_configured_canary_preclaim(
+                config,
+                backend=bootstrap.canary_preclaim_retirement_backend,
+                receipt_path=(
+                    DEFAULT_CANARY_PRECLAIM_RECONCILIATION_RECEIPT_PATH
+                ),
+            )
+            if reconciliation is None:
+                raise RuntimeError(
+                    "canary preclaim shutdown reconciliation is absent"
+                )
     return 0
 
 

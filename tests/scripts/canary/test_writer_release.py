@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import stat
@@ -34,6 +35,13 @@ from scripts.canary.writer_release import (
 
 REVISION = "a" * 40
 UNIT_SPEC = WriterOnlyUnitSpec(database_ip_allow=("10.20.30.40/32",))
+
+
+@pytest.fixture(autouse=True)
+def _tmp_path_uses_process_primary_group(tmp_path):
+    """Keep BSD tmp-path group inheritance aligned with the test process."""
+
+    os.chown(tmp_path, -1, os.getgid())
 
 
 def _spec(tmp_path: Path) -> ReleaseBuildSpec:
@@ -698,6 +706,120 @@ def test_failed_build_retains_incomplete_release_and_scratch(tmp_path, monkeypat
     assert sum("rev-parse" in argv for argv in observed) == 2
 
 
+def test_build_release_materializes_bootstrap_sql_before_install_tooling(
+    tmp_path,
+    monkeypatch,
+):
+    spec = _spec(tmp_path)
+    _source(spec)
+    spec.release_base.mkdir()
+    spec.uv_cache_dir.mkdir()
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+    repository_root = Path(writer_release.__file__).resolve().parents[2]
+    relative_paths = (
+        writer_release.CANARY_BOOTSTRAP_SQL_RELATIVE_PATH,
+        writer_release.CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH,
+    )
+    source_raw = {
+        relative_path: (repository_root / relative_path).read_bytes()
+        for relative_path in relative_paths
+    }
+
+    monkeypatch.setattr(writer_release, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(writer_release, "_validate_root_parent_chain", lambda _p: None)
+    monkeypatch.setattr(writer_release, "_validate_root_executable", lambda _p: None)
+    monkeypatch.setattr(writer_release, "_validate_root_source_tree", lambda _p: None)
+    monkeypatch.setattr(writer_release, "_validate_build_constraints", lambda _s: None)
+    _allow_local_materialization_owner(monkeypatch)
+    monkeypatch.setattr(writer_release.os, "fchown", lambda *_args: None)
+
+    def prepare(current):
+        current.build_project_root.mkdir(parents=True)
+        current.wheel_output_root.mkdir()
+        current.wheel_artifact_root.mkdir()
+        item = os.lstat(current.build_scratch_root)
+        return item.st_dev, item.st_ino
+
+    monkeypatch.setattr(writer_release, "_prepare_build_scratch", prepare)
+
+    def runner(command):
+        if "rev-parse" in command.argv:
+            stdout = f"{REVISION}\n"
+        elif command.argv[1:3] == ("python", "find"):
+            stdout = f"{managed}\n"
+        else:
+            stdout = ""
+        if command.argv[1:3] == ("python", "install"):
+            managed.parent.mkdir(parents=True)
+            managed.write_bytes(b"python")
+            managed.chmod(0o755)
+        if "checkout-index" in command.argv:
+            for relative_path, raw in source_raw.items():
+                snapshot = spec.build_project_root / relative_path
+                snapshot.parent.mkdir(parents=True, exist_ok=True)
+                snapshot.write_bytes(raw)
+                snapshot.chmod(0o444)
+        if "venv" in command.argv:
+            return subprocess.CompletedProcess(command.argv, 31, "", "stop after copy")
+        return subprocess.CompletedProcess(command.argv, 0, stdout, "")
+
+    with pytest.raises(RuntimeError, match="release install step 1 failed"):
+        build_release(spec, runner=runner)
+
+    for relative_path, raw in source_raw.items():
+        installed = spec.release_root / relative_path
+        assert installed.read_bytes() == raw
+        assert stat.S_IMODE(os.lstat(installed).st_mode) == 0o444
+
+
+def test_exact_revision_path_is_never_reused_and_other_revisions_coexist(
+    tmp_path,
+    monkeypatch,
+):
+    prior = _spec(tmp_path)
+    following = replace(prior, revision="b" * 40)
+    prior.release_root.mkdir(parents=True)
+    retained = prior.release_root / "historical-evidence"
+    retained.write_bytes(b"sealed-prior-revision")
+    following.release_root.mkdir()
+    following_retained = following.release_root / "release-manifest.json"
+    following_retained.write_bytes(b"sealed-following-revision")
+    runner_calls = []
+
+    monkeypatch.setattr(writer_release, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(
+        writer_release,
+        "_validate_root_parent_chain",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        writer_release,
+        "_validate_root_executable",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        writer_release,
+        "_validate_root_source_tree",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        writer_release,
+        "verify_clean_checkout",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(FileExistsError, match="exact release path already exists"):
+        build_release(prior, runner=lambda command: runner_calls.append(command))
+
+    assert runner_calls == []
+    assert retained.read_bytes() == b"sealed-prior-revision"
+    assert following_retained.read_bytes() == b"sealed-following-revision"
+    assert prior.release_root == prior.release_base / prior.revision
+    assert following.release_root == following.release_base / following.revision
+    assert following.release_root != prior.release_root
+    assert following.release_root.is_dir()
+
+
 @pytest.mark.parametrize(
     "revision",
     ["A" * 40, "a" * 39, "a" * 41, "main", "0x" + "a" * 38],
@@ -810,6 +932,80 @@ def test_tree_manifest_is_canonical_and_binds_installed_module_origins(tmp_path)
     spec.gateway_module_origin.write_text("GATEWAY = False\n", encoding="utf-8")
     changed = create_release_manifest(spec)
     assert changed.artifact_sha256 != first.artifact_sha256
+
+
+def test_sealed_release_carries_exact_manifest_bound_canary_bootstrap_sql(
+    tmp_path,
+    monkeypatch,
+):
+    spec = _spec(tmp_path)
+    repository_root = Path(writer_release.__file__).resolve().parents[2]
+    relative_paths = (
+        writer_release.CANARY_BOOTSTRAP_SQL_RELATIVE_PATH,
+        writer_release.CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH,
+    )
+    source_raw = {
+        relative_path: (repository_root / relative_path).read_bytes()
+        for relative_path in relative_paths
+    }
+    source_sha256 = {
+        relative_path: hashlib.sha256(raw).hexdigest()
+        for relative_path, raw in source_raw.items()
+    }
+
+    spec.release_root.mkdir(parents=True)
+    snapshots = {}
+    for relative_path, raw in source_raw.items():
+        snapshot = spec.build_project_root / relative_path
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_bytes(raw)
+        snapshot.chmod(0o444)
+        snapshots[relative_path] = snapshot
+    _allow_local_materialization_owner(monkeypatch)
+    monkeypatch.setattr(writer_release.os, "chown", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(writer_release.os, "fchown", lambda *_args: None)
+
+    copied = writer_release._copy_tracked_release_artifacts(spec)
+
+    expected_paths = tuple(
+        spec.release_root / relative_path for relative_path in relative_paths
+    )
+    assert copied == expected_paths
+    for relative_path, expected_path in zip(relative_paths, expected_paths, strict=True):
+        assert expected_path.read_bytes() == source_raw[relative_path]
+        assert expected_path.stat().st_ino != snapshots[relative_path].stat().st_ino
+
+    shutil.rmtree(spec.build_scratch_root)
+    spec.interpreter.parent.mkdir(parents=True)
+    spec.interpreter.write_bytes(b"copied-python")
+    spec.interpreter.chmod(0o555)
+    spec.writer_module_origin.parent.mkdir(parents=True, exist_ok=True)
+    spec.writer_module_origin.write_text("WRITER = True\n", encoding="utf-8")
+    spec.gateway_module_origin.write_text("GATEWAY = True\n", encoding="utf-8")
+    writer_release._seal_release_tree(spec.release_root)
+    manifest = create_release_manifest(spec)
+
+    # Root can create the manifest in the production 0555 directory. Restore
+    # owner write only to emulate that step without requiring uid 0 in pytest.
+    spec.release_root.chmod(0o755)
+    writer_release._write_release_manifest(spec.release_root, manifest)
+    spec.release_root.chmod(0o555)
+    installed_manifest = json.loads(
+        (spec.release_root / writer_release.RELEASE_MANIFEST_NAME).read_bytes()
+    )
+    entries = {entry["path"]: entry for entry in installed_manifest["entries"]}
+    for relative_path, expected_path in zip(relative_paths, expected_paths, strict=True):
+        raw = source_raw[relative_path]
+        assert entries[relative_path.as_posix()] == {
+            "path": relative_path.as_posix(),
+            "kind": "file",
+            "mode": "0444",
+            "size": len(raw),
+            "sha256": source_sha256[relative_path],
+        }
+        assert expected_path.read_bytes() == raw
+        assert stat.S_IMODE(os.lstat(expected_path).st_mode) == 0o444
+    assert installed_manifest["artifact_sha256"] == manifest.artifact_sha256
 
 
 def test_tree_manifest_rejects_external_symlink_and_special_file(tmp_path):

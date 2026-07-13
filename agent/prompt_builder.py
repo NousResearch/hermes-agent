@@ -72,10 +72,19 @@ def _find_git_root(start: Path) -> Optional[Path]:
     Returns the directory containing ``.git``, or ``None`` if we hit the
     filesystem root without finding one.
     """
-    current = start.resolve()
+    try:
+        current = start.resolve()
+    except OSError:
+        # Unresolvable path (sandbox / restricted mount): report no git root
+        # so callers fall back to the safe cwd-only discovery path.
+        return None
     for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
-            return parent
+        try:
+            if (parent / ".git").exists():
+                return parent
+        except OSError:
+            # Unreadable parent — skip it rather than crashing the probe.
+            continue
     return None
 
 
@@ -89,8 +98,18 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     including) the git repository root.  Returns the first match, or
     ``None`` if nothing is found.
     """
-    stop_at = _find_git_root(cwd)
-    current = cwd.resolve()
+    try:
+        stop_at = _find_git_root(cwd)
+    except OSError:
+        # Git-root probing hit an unreadable path. Fall back to cwd-only
+        # discovery: never walk parents without a confirmed git root, or a
+        # .hermes.md planted in /tmp, /home, etc. could be injected into the
+        # system prompt on a shared host.
+        stop_at = None
+    try:
+        current = cwd.resolve()
+    except OSError:
+        return None
 
     # When there is no git root, only check cwd itself – walking parents
     # could pick up a .hermes.md planted in /tmp, /home, etc.
@@ -99,8 +118,12 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     for directory in search_dirs:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
-            if candidate.is_file():
-                return candidate
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                # Unreadable candidate — skip and keep searching.
+                continue
         if stop_at and directory == stop_at:
             break
     return None
@@ -1877,18 +1900,19 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     """AGENTS.md — top-level only (no recursive walk)."""
     for name in ["AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(
-                        result, "AGENTS.md", context_length=context_length,
-                        read_path=str(candidate),
-                    )
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
+        try:
+            if not candidate.exists():
+                continue
+            content = candidate.read_text(encoding="utf-8").strip()
+            if content:
+                content = _scan_context_content(content, name)
+                result = f"## {name}\n\n{content}"
+                return _truncate_content(
+                    result, "AGENTS.md", context_length=context_length,
+                    read_path=str(candidate),
+                )
+        except Exception as e:
+            logger.debug("Could not read %s: %s", candidate, e)
     return ""
 
 
@@ -1896,18 +1920,19 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     """CLAUDE.md / claude.md — cwd only."""
     for name in ["CLAUDE.md", "claude.md"]:
         candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(
-                        result, "CLAUDE.md", context_length=context_length,
-                        read_path=str(candidate),
-                    )
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
+        try:
+            if not candidate.exists():
+                continue
+            content = candidate.read_text(encoding="utf-8").strip()
+            if content:
+                content = _scan_context_content(content, name)
+                result = f"## {name}\n\n{content}"
+                return _truncate_content(
+                    result, "CLAUDE.md", context_length=context_length,
+                    read_path=str(candidate),
+                )
+        except Exception as e:
+            logger.debug("Could not read %s: %s", candidate, e)
     return ""
 
 
@@ -1915,17 +1940,21 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
     cursorrules_file = cwd_path / ".cursorrules"
-    if cursorrules_file.exists():
-        try:
+    try:
+        if cursorrules_file.exists():
             content = cursorrules_file.read_text(encoding="utf-8").strip()
             if content:
                 content = _scan_context_content(content, ".cursorrules")
                 cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
-        except Exception as e:
-            logger.debug("Could not read .cursorrules: %s", e)
+    except Exception as e:
+        logger.debug("Could not read .cursorrules: %s", e)
 
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
+    try:
+        cursor_dir_present = cursor_rules_dir.exists() and cursor_rules_dir.is_dir()
+    except OSError:
+        cursor_dir_present = False
+    if cursor_dir_present:
         mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
         for mdc_file in mdc_files:
             try:
@@ -1970,18 +1999,28 @@ def build_context_files_prompt(
     if cwd is None:
         cwd = os.getcwd()
 
-    cwd_path = Path(cwd).resolve()
+    try:
+        cwd_path = Path(cwd).resolve()
+    except OSError:
+        # cwd points into a filesystem the host user cannot read (e.g.
+        # TERMINAL_CWD=/root on a sandbox backend). Skip project-context
+        # discovery entirely rather than crashing prompt construction; SOUL.md
+        # below is independent of cwd and still loads.
+        logger.debug("Could not resolve cwd %r; skipping project context discovery", cwd)
+        cwd_path = None
+
     sections = []
 
     # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path, context_length)
-        or _load_agents_md(cwd_path, context_length)
-        or _load_claude_md(cwd_path, context_length)
-        or _load_cursorrules(cwd_path, context_length)
-    )
-    if project_context:
-        sections.append(project_context)
+    if cwd_path is not None:
+        project_context = (
+            _load_hermes_md(cwd_path, context_length)
+            or _load_agents_md(cwd_path, context_length)
+            or _load_claude_md(cwd_path, context_length)
+            or _load_cursorrules(cwd_path, context_length)
+        )
+        if project_context:
+            sections.append(project_context)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

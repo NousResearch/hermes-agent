@@ -1646,3 +1646,91 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 
 
+
+
+# =========================================================================
+# PermissionError / UnicodeDecodeError resilience (see #6214)
+# =========================================================================
+
+
+class TestFindHermesMdPermissionError:
+    """_find_hermes_md must not crash when cwd is unreadable (sandbox)."""
+
+    def test_returns_none_when_cwd_resolve_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agent.prompt_builder.Path.resolve",
+            lambda self: (_ for _ in ()).throw(PermissionError("sandbox")),
+        )
+        assert _find_hermes_md(tmp_path) is None
+
+    def test_skips_unreadable_candidate_and_finds_next(self, tmp_path, monkeypatch):
+        """First candidate (.hermes.md) raises PermissionError on is_file,
+        second candidate (HERMES.md) succeeds — function must skip the bad
+        one and return the good one."""
+        (tmp_path / ".hermes.md").write_text("lower")
+        (tmp_path / "HERMES.md").write_text("upper")
+        real_is_file = type(tmp_path / ".hermes.md").is_file
+        call_count = {"n": 0}
+
+        def flaky_is_file(self):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise PermissionError("sandbox")
+            return real_is_file(self)
+
+        monkeypatch.setattr("agent.prompt_builder.Path.is_file", flaky_is_file)
+        result = _find_hermes_md(tmp_path)
+        assert result is not None
+        assert result.name == "HERMES.md"
+
+    def test_git_root_probe_raising_stays_cwd_only(self, tmp_path, monkeypatch):
+        """Security regression for #17100: when _find_git_root() raises while a
+        parent holds a .hermes.md, discovery must NOT walk parents — a planted
+        parent file must never be loaded. Falling back to cwd-only preserves
+        the anti-injection guarantee from 306b6615 (limit .hermes.md parent
+        walk to git repos only)."""
+        parent = tmp_path / "workspace"
+        child = parent / "project"
+        child.mkdir(parents=True)
+        (parent / ".hermes.md").write_text("planted parent context")
+
+        def raising_git_root(_start):
+            raise PermissionError("cannot probe parent/.git")
+
+        monkeypatch.setattr("agent.prompt_builder._find_git_root", raising_git_root)
+        # cwd has no .hermes.md; the only one is in the parent.
+        assert _find_hermes_md(child) is None
+
+    def test_git_root_none_stays_cwd_only(self, tmp_path):
+        """Baseline for the same guarantee without an exception: no git root
+        anywhere means parent .hermes.md is not walked into."""
+        parent = tmp_path / "workspace"
+        child = parent / "project"
+        child.mkdir(parents=True)
+        (parent / ".hermes.md").write_text("planted parent context")
+        # No .git anywhere under tmp_path -> _find_git_root returns None.
+        assert _find_hermes_md(child) is None
+
+
+class TestBuildContextFilesPromptPermissionError:
+    """build_context_files_prompt must not crash on unresolvable cwd."""
+
+    def test_unresolvable_cwd_returns_empty_or_soul_only(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agent.prompt_builder.Path.resolve",
+            lambda self: (_ for _ in ()).throw(PermissionError("sandbox")),
+        )
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        assert result == ""
+
+    def test_unicode_error_in_agents_md(self, tmp_path):
+        agents_file = tmp_path / "AGENTS.md"
+        agents_file.write_bytes(b"\xff\xfe invalid utf-8 \x80\x81")
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        assert isinstance(result, str)
+
+    def test_unicode_error_in_cursorrules(self, tmp_path):
+        cr = tmp_path / ".cursorrules"
+        cr.write_bytes(b"\xff\xfe not utf-8 \x80\x81")
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+        assert isinstance(result, str)

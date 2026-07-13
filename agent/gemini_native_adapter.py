@@ -669,6 +669,7 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
     parts = ((cand.get("content") or {}).get("parts") or []) if isinstance(cand, dict) else []
     chunks: List[_GeminiStreamChunk] = []
 
+    function_call_counter = 0
     for part_index, part in enumerate(parts):
         if not isinstance(part, dict):
             continue
@@ -680,14 +681,16 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
         fc = part.get("functionCall")
         if isinstance(fc, dict) and fc.get("name"):
             name = str(fc["name"])
+            function_call_index = function_call_counter
+            function_call_counter += 1
             try:
-                args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False, sort_keys=True)
+                args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False)
             except (TypeError, ValueError):
                 args_str = "{}"
             thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
             call_key = json.dumps(
                 {
-                    "part_index": part_index,
+                    "function_call_index": function_call_index,
                     "name": name,
                     "thought_signature": thought_signature,
                 },
@@ -698,17 +701,44 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 slot = {
                     "index": len(tool_call_indices),
                     "id": f"call_{uuid.uuid4().hex[:12]}",
-                    "last_arguments": "",
+                    "name": name,
+                    "last_stripped": "",
+                    "last_full": "",
+                    "final_emitted": False,
                 }
                 tool_call_indices[call_key] = slot
-            emitted_arguments = args_str
-            last_arguments = str(slot.get("last_arguments") or "")
-            if last_arguments:
-                if args_str == last_arguments:
-                    emitted_arguments = ""
-                elif args_str.startswith(last_arguments):
-                    emitted_arguments = args_str[len(last_arguments):]
-            slot["last_arguments"] = args_str
+
+            # If the current candidate is final, we do not strip the JSON suffix.
+            # Otherwise, we strip it to prevent trailing closures from breaking prefix matching in subsequent stream events.
+            finish_reason_raw = str(cand.get("finishReason") or "")
+            is_final = bool(finish_reason_raw)
+
+            if is_final:
+                stripped = args_str
+            else:
+                stripped = args_str.rstrip(' \t\n\r"}]')
+
+            last_stripped = str(slot.get("last_stripped") or "")
+            emitted_arguments = ""
+
+            if args_str == slot.get("last_full", ""):
+                # Same exact args, emit nothing
+                emitted_arguments = ""
+            elif not last_stripped:
+                emitted_arguments = stripped
+                slot["last_stripped"] = stripped
+            elif stripped.startswith(last_stripped):
+                emitted_arguments = stripped[len(last_stripped):]
+                slot["last_stripped"] = stripped
+            else:
+                # Prefix mismatch fallback (keys reordered, etc.)
+                emitted_arguments = stripped
+                slot["last_stripped"] = stripped
+
+            slot["last_full"] = args_str
+            if is_final:
+                slot["final_emitted"] = True
+
             chunks.append(
                 _make_stream_chunk(
                     model=model,
@@ -724,6 +754,25 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
 
     finish_reason_raw = str(cand.get("finishReason") or "")
     if finish_reason_raw:
+        # Finalize any remaining tool calls before emitting finish reason
+        for call_key, slot in tool_call_indices.items():
+            if not slot.get("final_emitted") and slot.get("last_full"):
+                last_full = slot["last_full"]
+                last_stripped = slot.get("last_stripped", "")
+                suffix = last_full[len(last_stripped):]
+                if suffix:
+                    chunks.append(
+                        _make_stream_chunk(
+                            model=model,
+                            tool_call_delta={
+                                "index": slot["index"],
+                                "id": slot["id"],
+                                "arguments": suffix,
+                            },
+                        )
+                    )
+                slot["final_emitted"] = True
+
         mapped = "tool_calls" if tool_call_indices else _map_gemini_finish_reason(finish_reason_raw)
         finish_chunk = _make_stream_chunk(model=model, finish_reason=mapped)
         # Attach usage from this event's usageMetadata so the streaming
@@ -978,6 +1027,23 @@ class GeminiNativeClient:
                     for event in _iter_sse_events(response):
                         for chunk in translate_stream_event(event, model, tool_call_indices):
                             yield chunk
+
+                    # End of stream: finalize any unfinalized tool call arguments
+                    for call_key, slot in tool_call_indices.items():
+                        if not slot.get("final_emitted") and slot.get("last_full"):
+                            last_full = slot["last_full"]
+                            last_stripped = slot.get("last_stripped", "")
+                            suffix = last_full[len(last_stripped):]
+                            if suffix:
+                                yield _make_stream_chunk(
+                                    model=model,
+                                    tool_call_delta={
+                                        "index": slot["index"],
+                                        "id": slot["id"],
+                                        "arguments": suffix,
+                                    },
+                                )
+                            slot["final_emitted"] = True
             except httpx.HTTPError as exc:
                 raise GeminiAPIError(
                     f"Gemini streaming request failed: {exc}",

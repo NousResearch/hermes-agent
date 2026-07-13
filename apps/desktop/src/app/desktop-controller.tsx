@@ -231,6 +231,15 @@ export function DesktopController() {
 
   const terminalSidebarOpen = chatOpen && terminalTakeover
 
+  const closeSettingsBeforeReconnect = useCallback(() => {
+    // applyConnectionConfig reloads the BrowserWindow from the main process.
+    // Make the HashRouter entry leave Settings synchronously first so the
+    // reload does not land back on the gateway settings tab.
+    const nextHashRoute = `#${NEW_CHAT_ROUTE}`
+    window.history.replaceState(window.history.state, '', nextHashRoute)
+    navigate(NEW_CHAT_ROUTE, { replace: true })
+  }, [navigate])
+
   const titlebarToolGroups = useGroupRegistry<TitlebarTool>()
   const statusbarItemGroups = useGroupRegistry<StatusbarItem>()
   const setTitlebarToolGroup = titlebarToolGroups.set
@@ -1061,6 +1070,7 @@ export function DesktopController() {
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
+            onReconnectApplied={closeSettingsBeforeReconnect}
           />
         </Suspense>
       )}

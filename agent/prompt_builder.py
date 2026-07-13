@@ -1369,6 +1369,77 @@ def _build_snapshot_entry(
 # Skills index
 # =========================================================================
 
+# Character budget for pinned-skill descriptions in the <available_skills>
+# index. Keeps the prompt bounded regardless of how many skills get pinned.
+_PINNED_SKILLS_CHAR_BUDGET = 1200
+
+
+def _skill_usage_epoch() -> int:
+    """Return sidecar mtime_ns so cache keys reflect pin-state changes.
+
+    Returns 0 when the sidecar does not yet exist.
+    """
+    try:
+        sidecar = get_hermes_home() / "skills" / ".usage.json"
+        return sidecar.stat().st_mtime_ns
+    except FileNotFoundError:
+        return 0
+
+
+def _get_pinned_candidates(
+    skills_by_category: "dict[str, list[tuple[str, str]]]",
+) -> "list[tuple[str, str]]":
+    """Return skills that should have their descriptions shown in the index.
+
+    Source of truth is the skill_usage sidecar (``~/.hermes/skills/.usage.json``),
+    reached via ``tools/skill_usage.agent_created_report()`` which merges the
+    on-disk skill list with sidecar fields (``pinned``, ``view_count``,
+    ``use_count``, ``state``, ...). Honours explicit user/agent pin choices.
+
+    Only skills with ``pinned=True`` and ``state != archived`` are returned,
+    ordered by ``activity_count`` descending and trimmed to
+    ``_PINNED_SKILLS_CHAR_BUDGET`` so the description budget stays bounded.
+
+    When nothing qualifies, returns ``[]``: all skills appear as names-only.
+    Non-pinned skills are always visible by name — only their descriptions
+    are omitted to save tokens.
+    """
+    all_skills: dict[str, tuple[str, str]] = {}
+    for entries in skills_by_category.values():
+        for name, desc in entries:
+            all_skills.setdefault(name, (name, desc))
+    if not all_skills:
+        return []
+
+    try:
+        from tools.skill_usage import agent_created_report
+        rows = agent_created_report()
+    except Exception:
+        logger.debug("skill_usage unavailable; no pinned skills will be surfaced", exc_info=True)
+        return []
+
+    pinned_rows = [
+        r for r in rows
+        if r.get("pinned") and r.get("state") != "archived"
+    ]
+    if not pinned_rows:
+        return []
+
+    pinned_rows.sort(key=lambda r: -int(r.get("activity_count") or 0))
+    result: list[tuple[str, str]] = []
+    chars = 0
+    for row in pinned_rows:
+        entry = all_skills.get(row.get("name") or "")
+        if entry is None:
+            continue
+        cost = len(entry[0]) + len(entry[1]) + 6  # "    - name: desc\n"
+        if chars + cost > _PINNED_SKILLS_CHAR_BUDGET:
+            break
+        result.append(entry)
+        chars += cost
+    return result
+
+
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
@@ -1486,6 +1557,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        _skill_usage_epoch(),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1644,6 +1716,11 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
+        # Pinned skills show their descriptions; everything else is names-only
+        # to save tokens while keeping all names visible (demote-never-hide).
+        pinned = _get_pinned_candidates(skills_by_category)
+        pinned_names: set[str] = {name for name, _ in pinned}
+
         index_lines = []
         for category in sorted(skills_by_category.keys()):
             # Deduplicate and sort skills within each category
@@ -1661,7 +1738,7 @@ def build_skills_system_prompt(
                 if name in seen:
                     continue
                 seen.add(name)
-                if desc:
+                if name in pinned_names and desc:
                     index_lines.append(f"    - {name}: {desc}")
                 else:
                     index_lines.append(f"    - {name}")

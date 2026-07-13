@@ -412,8 +412,9 @@ class TestBuildSkillsSystemPrompt:
         )
         result = build_skills_system_prompt()
         assert "python-debug" in result
-        assert "Debug Python scripts" in result
         assert "available_skills" in result
+        # Descriptions are only shown for pinned skills; non-pinned are names-only.
+        assert "Debug Python scripts" not in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -445,8 +446,9 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt(
             compact_categories=frozenset({"social-media"})
         )
-        # Coding-adjacent category keeps its full entry.
-        assert "pr-review" in result and "Does pr-review things" in result
+        # Coding-adjacent category keeps its name visible (non-pinned = names-only).
+        assert "pr-review" in result
+        assert "Does pr-review things" not in result
         # Demoted category: name stays visible, description is dropped.
         assert "tweet-stuff" in result
         assert "Does tweet-stuff things" not in result
@@ -470,9 +472,11 @@ class TestBuildSkillsSystemPrompt:
         )
         assert "thread-writer" in compact
         assert "Write threads" not in compact
-        # Unfiltered call must not be served from the compacted cache entry.
+        # Unfiltered call must not be served from the compacted cache entry;
+        # name visible but description absent (non-pinned).
         full = build_skills_system_prompt()
-        assert "Write threads" in full
+        assert "thread-writer" in full
+        assert "Write threads" not in full
 
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
@@ -519,8 +523,9 @@ class TestBuildSkillsSystemPrompt:
             mock_sys.platform = "darwin"
             result = build_skills_system_prompt()
 
+        # Skill name visible; description absent (non-pinned = names-only).
         assert "imessage" in result
-        assert "Send iMessages" in result
+        assert "Send iMessages" not in result
 
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
@@ -624,6 +629,113 @@ class TestBuildSkillsSystemPrompt:
 
         result = build_skills_system_prompt()
         assert "backend-skill" in result
+
+
+class TestPinnedSkillsInIndex:
+    """Pinned skills show descriptions inline; non-pinned are names-only."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    def test_unpinned_skills_show_names_only(self, monkeypatch, tmp_path):
+        """Non-pinned skill names appear in the index but descriptions are omitted."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "tools" / "plain-skill"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: plain-skill\ndescription: Should not appear\n---\n"
+        )
+
+        from unittest.mock import patch
+
+        with patch("tools.skill_usage.agent_created_report", return_value=[]):
+            result = build_skills_system_prompt()
+
+        assert "plain-skill" in result
+        assert "Should not appear" not in result
+
+    def test_pinned_skill_shows_description_inline(self, monkeypatch, tmp_path):
+        """A pinned skill's description appears inline in <available_skills>."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pinned_dir = tmp_path / "skills" / "tools" / "my-pinned"
+        pinned_dir.mkdir(parents=True)
+        (pinned_dir / "SKILL.md").write_text(
+            "---\nname: my-pinned\ndescription: Pinned skill desc\n---\n"
+        )
+        other_dir = tmp_path / "skills" / "tools" / "other-skill"
+        other_dir.mkdir(parents=True)
+        (other_dir / "SKILL.md").write_text(
+            "---\nname: other-skill\ndescription: Not pinned desc\n---\n"
+        )
+
+        from unittest.mock import patch
+
+        fake_report = [
+            {"name": "my-pinned", "pinned": True, "state": "active", "activity_count": 10},
+            {"name": "other-skill", "pinned": False, "state": "active", "activity_count": 99},
+        ]
+        with patch("tools.skill_usage.agent_created_report", return_value=fake_report):
+            result = build_skills_system_prompt()
+
+        # Pinned skill: description shown.
+        assert "my-pinned: Pinned skill desc" in result
+        # Non-pinned skill: name only, description absent.
+        assert "other-skill" in result
+        assert "Not pinned desc" not in result
+
+    def test_pin_change_invalidates_prompt_cache(self, monkeypatch, tmp_path):
+        """Toggling pinned state in the sidecar surfaces on the next build."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "tools" / "togglable"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: togglable\ndescription: A skill desc\n---\n"
+        )
+
+        from unittest.mock import patch
+
+        # First build: no pins → description absent.
+        with patch("tools.skill_usage.agent_created_report", return_value=[]):
+            first = build_skills_system_prompt()
+        assert "togglable" in first
+        assert "A skill desc" not in first
+
+        # Sidecar rewritten (bumps mtime → cache key differs).
+        sidecar = tmp_path / "skills" / ".usage.json"
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text("{}")
+        pinned_report = [
+            {"name": "togglable", "pinned": True, "state": "active", "activity_count": 1}
+        ]
+        with patch("tools.skill_usage.agent_created_report", return_value=pinned_report):
+            second = build_skills_system_prompt()
+
+        assert "togglable: A skill desc" in second
+
+    def test_archived_pinned_skill_description_hidden(self, monkeypatch, tmp_path):
+        """Archived skills are excluded from pinned candidates."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "tools" / "archived-skill"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: archived-skill\ndescription: Old desc\n---\n"
+        )
+
+        from unittest.mock import patch
+
+        archived_report = [
+            {"name": "archived-skill", "pinned": True, "state": "archived", "activity_count": 5}
+        ]
+        with patch("tools.skill_usage.agent_created_report", return_value=archived_report):
+            result = build_skills_system_prompt()
+
+        # Archived skills are excluded from pinned candidates → names-only.
+        assert "archived-skill" in result
+        assert "Old desc" not in result
 
 
 class TestBuildNousSubscriptionPrompt:

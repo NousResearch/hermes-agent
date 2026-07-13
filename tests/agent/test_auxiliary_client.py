@@ -3730,6 +3730,54 @@ class TestAuxiliaryPoolRotationRetry:
         assert pool.rotate_calls[0]["status_code"] == 429
         mock_fallback.assert_not_called()
 
+    def test_call_llm_rebuilds_auto_cached_client_after_pool_recovery(self):
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create.side_effect = _AuxAuth401("stale pooled token")
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("recovered-auto-sync")
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def try_refresh_current(self):
+                return SimpleNamespace(id="cred-refreshed")
+
+            def mark_exhausted_and_rotate(self, **_kwargs):
+                raise AssertionError("refresh recovery should not exhaust another credential")
+
+        cache_key = ("auto", False, None, None, None)
+        cache = {cache_key: (stale_client, "gpt-5.4", None)}
+
+        def get_cached_client(*_args, **_kwargs):
+            entry = cache.get(cache_key)
+            if entry is not None:
+                return entry[0], entry[1]
+            cache[cache_key] = (fresh_client, "gpt-5.4", None)
+            return fresh_client, "gpt-5.4"
+
+        with (
+            patch("agent.auxiliary_client._client_cache", cache),
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("auto", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=get_cached_client),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False),
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback,
+        ):
+            resp = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "recovered-auto-sync"
+        assert cache[cache_key][0] is fresh_client
+        assert stale_client.chat.completions.create.call_count == 1
+        assert fresh_client.chat.completions.create.call_count == 1
+        mock_fallback.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_async_call_llm_rotates_explicit_codex_pool_on_429(self):
         rate_err = Exception("usage limit reached")
@@ -3778,6 +3826,59 @@ class TestAuxiliaryPoolRotationRetry:
         assert fresh_client.chat.completions.create.await_count == 1
         assert len(pool.rotate_calls) == 1
         assert pool.rotate_calls[0]["status_code"] == 429
+        mock_fallback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_rebuilds_auto_cached_client_after_pool_recovery(self):
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create = AsyncMock(
+            side_effect=_AuxAuth401("stale pooled token")
+        )
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("recovered-auto-async")
+        )
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def try_refresh_current(self):
+                return SimpleNamespace(id="cred-refreshed")
+
+            def mark_exhausted_and_rotate(self, **_kwargs):
+                raise AssertionError("refresh recovery should not exhaust another credential")
+
+        cache_key = ("auto", True, None, None, None)
+        cache = {cache_key: (stale_client, "gpt-5.4", None)}
+
+        def get_cached_client(*_args, **_kwargs):
+            entry = cache.get(cache_key)
+            if entry is not None:
+                return entry[0], entry[1]
+            cache[cache_key] = (fresh_client, "gpt-5.4", None)
+            return fresh_client, "gpt-5.4"
+
+        with (
+            patch("agent.auxiliary_client._client_cache", cache),
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("auto", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=get_cached_client),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False),
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback,
+        ):
+            resp = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "recovered-auto-async"
+        assert cache[cache_key][0] is fresh_client
+        assert stale_client.chat.completions.create.await_count == 1
+        assert fresh_client.chat.completions.create.await_count == 1
         mock_fallback.assert_not_called()
 
 

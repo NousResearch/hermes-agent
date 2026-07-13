@@ -6808,6 +6808,17 @@ def call_llm(
                     "Auxiliary %s: recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
                 )
+                # Provider-level eviction cannot remove a client cached under
+                # the "auto" route. Drop the actual failed instance so retry
+                # rebuilds it with the recovered pool credential. Eviction is
+                # best-effort: successful credential recovery must still retry.
+                try:
+                    _evict_cached_client_instance(client)
+                except Exception:
+                    logger.debug(
+                        "Auxiliary: cache eviction after pool recovery failed",
+                        exc_info=True,
+                    )
                 try:
                     return _retry_same_provider_sync(
                         task=task,
@@ -7351,6 +7362,17 @@ async def async_call_llm(
                     "Auxiliary %s (async): recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
                 )
+                # Provider-level eviction cannot remove a client cached under
+                # the "auto" route. Drop the actual failed instance so retry
+                # rebuilds it with the recovered pool credential. Eviction is
+                # best-effort: successful credential recovery must still retry.
+                try:
+                    _evict_cached_client_instance(client)
+                except Exception:
+                    logger.debug(
+                        "Auxiliary: cache eviction after pool recovery failed",
+                        exc_info=True,
+                    )
                 try:
                     return await _retry_same_provider_async(
                         task=task,

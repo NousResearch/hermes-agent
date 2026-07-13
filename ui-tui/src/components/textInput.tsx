@@ -6,12 +6,15 @@ import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
+  type ChordKey,
   DEFAULT_VOICE_RECORD_KEY,
   isActionMod,
+  isBareCtrl,
   isMac,
   isMacActionFallback,
   isVoiceToggleKey,
-  type ParsedVoiceRecordKey
+  type ParsedVoiceRecordKey,
+  shouldSwallowActionChordText
 } from '../lib/platform.js'
 import { isTermuxTuiMode } from '../lib/termux.js'
 
@@ -469,6 +472,69 @@ export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): 
   }
 
   return true
+}
+
+interface TextSelectionRange {
+  end: number
+  start: number
+}
+
+export interface ReadlineCtrlEditState {
+  cursor: number
+  selection: null | TextSelectionRange
+  value: string
+}
+
+export interface ReadlineCtrlEditResult {
+  changed: boolean
+  cursor: number
+  value: string
+}
+
+/**
+ * Readline-style bare-Ctrl edits: Ctrl+B/F move one grapheme (collapsing an
+ * active selection to its edge), Ctrl+D deletes the selection or the grapheme
+ * under the cursor. Returns ``changed: false`` when the chord is owned but is
+ * a no-op (cursor at the boundary, empty value) so the caller consumes it
+ * instead of letting the literal letter fall through to text insertion.
+ *
+ * Ctrl+B only reaches this path when the user rebinds voice recording — the
+ * default voice key is ctrl+b and the voice pass-through runs first (that
+ * ordering is deliberate and test-pinned; see shouldPassThroughToGlobalHandler).
+ */
+export function applyReadlineCtrlEdit(
+  input: string,
+  key: ChordKey,
+  { cursor, selection, value }: ReadlineCtrlEditState
+): null | ReadlineCtrlEditResult {
+  if (!isBareCtrl(key)) {
+    return null
+  }
+
+  const ch = input.toLowerCase()
+  let nextCursor = cursor
+  let nextValue = value
+
+  if (ch === 'b') {
+    nextCursor = selection ? selection.start : prevPos(value, cursor)
+  } else if (ch === 'f') {
+    nextCursor = selection ? selection.end : nextPos(value, cursor)
+  } else if (ch === 'd') {
+    if (selection) {
+      nextValue = value.slice(0, selection.start) + value.slice(selection.end)
+      nextCursor = selection.start
+    } else if (cursor < value.length) {
+      nextValue = value.slice(0, cursor) + value.slice(nextPos(value, cursor))
+    }
+  } else {
+    return null
+  }
+
+  return {
+    changed: nextValue !== value || nextCursor !== cursor || selection !== null,
+    cursor: nextCursor,
+    value: nextValue
+  }
 }
 
 function renderWithCursor(value: string, cursor: number) {
@@ -1011,6 +1077,10 @@ export function TextInput({
         return
       }
 
+      if (shouldSwallowActionChordText(k, inp)) {
+        return
+      }
+
       if (
         eventRaw === '\x1bv' ||
         eventRaw === '\x1bV' ||
@@ -1094,6 +1164,20 @@ export function TextInput({
 
       if (!isPrintableInput) {
         flushKeyBurst()
+      }
+
+      // Readline bare-Ctrl edits (Ctrl+B/F char motion, Ctrl+D delete-char)
+      // win over the legacy word-motion mappings below. An owned no-op chord
+      // (e.g. Ctrl+D at end of input) is consumed so the literal letter never
+      // falls through to text insertion.
+      const readlineEdit = applyReadlineCtrlEdit(inp, k, { cursor: c, selection: range, value: v })
+
+      if (readlineEdit) {
+        if (!readlineEdit.changed) {
+          return
+        }
+
+        return commit(readlineEdit.value, readlineEdit.cursor)
       }
 
       if (mod && inp === 'z') {

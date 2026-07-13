@@ -11,7 +11,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { type ChordKey, isAction, isBareCtrl, isCopyShortcut, isExplicitAction, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
@@ -81,6 +81,29 @@ export function shouldFallThroughForScroll(key: {
   }
 
   return false
+}
+
+export type ExplicitExitChordAction = 'composer' | 'exit'
+
+export function getExplicitExitChordAction(
+  key: ChordKey,
+  ch: string,
+  composerHasText: boolean,
+  mac = isMac
+): ExplicitExitChordAction | null {
+  // Bare Ctrl+D only on non-macOS: the same modifier shape the composer's
+  // readline delete-char keys off, so global arbitration and composer editing
+  // can never disagree about who owns a Ctrl+D-family event (Ctrl+Shift+D and
+  // Ctrl+Alt+D from CSI-u terminals are neither exit nor delete-char).
+  const explicitActionMod = mac ? key.super === true : isBareCtrl(key)
+
+  if (!explicitActionMod || ch.toLowerCase() !== 'd') {
+    return null
+  }
+
+  // On non-macOS Ctrl+D is both the platform exit chord and readline
+  // delete-char. Let the focused composer own it while it has text.
+  return !mac && composerHasText ? 'composer' : 'exit'
 }
 
 export function applyVoiceRecordResponse(
@@ -562,7 +585,21 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
     }
 
-    if (isAction(key, ch, 'd')) {
+    // ``inputBuf`` (staged multi-line continuation) counts as composer text on
+    // purpose, mirroring the Ctrl+C ladder above: while any draft is staged,
+    // Ctrl+D must not exit and throw it away. Deleting is a no-op when the
+    // editable line is empty; clear the draft with Ctrl+C before exiting.
+    const exitChordAction = getExplicitExitChordAction(key, ch, Boolean(cState.input || cState.inputBuf.length))
+
+    if (exitChordAction) {
+      if (exitChordAction !== 'exit') {
+        // Composer owns the chord (readline delete-char while it has text).
+        return undefined
+      }
+
+      // Preserve upstream's dashboard-mode behavior: an explicit exit chord
+      // should start a new session in the embedded dashboard TUI rather than
+      // killing the process, and only call die() outside dashboard mode.
       return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
         gateway.gw.publishLocalEvent({
           payload: { reason: 'idle_exit_hotkey' },
@@ -572,7 +609,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
     }
 
-    if (isAction(key, ch, 'l')) {
+    // Explicit clear chord (Cmd+L on macOS, Ctrl+L elsewhere) plus readline
+    // Ctrl+L on macOS, where bare Ctrl is not the action modifier. The
+    // composer swallows every Ctrl/action+L shape (shouldSwallowActionChordText)
+    // so redraw stays non-destructive to the draft.
+    if (isExplicitAction(key, ch, 'l') || (isBareCtrl(key) && ch.toLowerCase() === 'l')) {
       clearSelection()
       forceRedraw(terminal.stdout ?? process.stdout)
 

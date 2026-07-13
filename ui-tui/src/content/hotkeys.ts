@@ -15,11 +15,18 @@ const copyHotkeys: [string, string][] = isMac
       ]
     : [['Ctrl+C', 'copy selection / interrupt / clear draft / exit']]
 
+const exitHotkeys: [string, string][] = isMac
+  ? [
+      ['Cmd+D', 'exit'],
+      ['Ctrl+D', 'delete char under cursor']
+    ]
+  : [['Ctrl+D', 'delete char / exit when input is empty']]
+
 export const HOTKEYS: [string, string][] = [
   ...copyHotkeys,
-  [action + '+D', 'exit'],
+  ...exitHotkeys,
   [action + '+G / Alt+G', 'open $EDITOR (Alt+G fallback for VSCode/Cursor)'],
-  [action + '+L', 'redraw / repaint'],
+  [isMac ? 'Cmd+L / Ctrl+L' : 'Ctrl+L', 'redraw / repaint'],
   [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],

@@ -369,6 +369,7 @@ def install_commands(
         BuildCommand(
             (
                 str(managed),
+                "-B",
                 "-I",
                 "-m",
                 "venv",

@@ -46,12 +46,14 @@ def _plan_mapping():
         },
         "gateway_argv": [
             interpreter,
+            "-B",
             "-I",
             "-m",
             "gateway.canonical_writer_gateway_bootstrap",
         ],
         "writer_argv": [
             interpreter,
+            "-B",
             "-I",
             "-m",
             "gateway.canonical_writer_bootstrap",

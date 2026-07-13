@@ -762,6 +762,7 @@ def _snapshot_template(
     native_executable_policy.validate(root)
     writer_exec = [
         release.interpreter,
+        "-B",
         "-I",
         "-m",
         WRITER_MODULE,
@@ -770,6 +771,7 @@ def _snapshot_template(
     ]
     gateway_exec = [
         release.interpreter,
+        "-B",
         "-I",
         "-m",
         GATEWAY_MODULE,
@@ -973,6 +975,7 @@ def build_native_observation_plan(
         raise ValueError("native observation unit digest drifted")
     writer_argv = [
         release.interpreter,
+        "-B",
         "-I",
         "-m",
         WRITER_MODULE,
@@ -981,6 +984,7 @@ def build_native_observation_plan(
     ]
     gateway_argv = [
         release.interpreter,
+        "-B",
         "-I",
         "-m",
         GATEWAY_MODULE,
@@ -1287,6 +1291,7 @@ def build_activation_plan(
     }
     base_collector = (
         release.interpreter,
+        "-B",
         "-I",
         "-m",
         ROOT_COLLECTOR_MODULE,
@@ -1298,6 +1303,7 @@ def build_activation_plan(
     )
     base_validator = (
         release.interpreter,
+        "-B",
         "-I",
         "-m",
         ROOT_COLLECTOR_MODULE,

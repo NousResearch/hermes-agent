@@ -571,6 +571,7 @@ def _writer_deployment_checks(
 
         expected_exec = (
             interpreter or "",
+            "-B",
             "-I",
             "-m",
             _WRITER_BOOTSTRAP_MODULE,
@@ -855,7 +856,7 @@ def _writer_deployment_checks(
         PreflightCheck(
             "writer_deployment.unit_exact",
             policy_valid and unit_exact,
-            "writer unit must use the exact UID/GID, interpreter, -I module invocation, revision, digest, and config with no alternate commands or code-injection environment",
+            "writer unit must use the exact UID/GID, interpreter, -B -I module invocation, revision, digest, and config with no alternate commands or code-injection environment",
         ),
         PreflightCheck(
             "writer_deployment.artifact_exact",
@@ -1127,6 +1128,7 @@ def _gateway_deployment_checks(
             and exec_start
             == (
                 interpreter,
+                "-B",
                 "-I",
                 "-m",
                 _GATEWAY_ENTRY_MODULE,
@@ -1960,6 +1962,7 @@ def _writer_authority_surface_checks(
         )
         expected_exec = (
             interpreter or "",
+            "-B",
             "-I",
             "-m",
             _WRITER_BOOTSTRAP_MODULE,

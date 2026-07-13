@@ -137,7 +137,7 @@ descriptor, but its append-only receipt records only file provenance and
 digests—never credential content or a credential digest:
 
 ```bash
-<sealed-python> -I -m gateway.canonical_writer_config_collector collect \
+<sealed-python> -B -I -m gateway.canonical_writer_config_collector collect \
   --revision <exact-40-character-release-sha> \
   --release-artifact-sha256 <sealed-release-artifact-sha256> \
   --release-manifest-file-sha256 <sealed-manifest-file-sha256> \
@@ -153,7 +153,7 @@ discovery plan at their fixed paths. Output contains digests only and grants
 no approval:
 
 ```bash
-<sealed-python> -I -m gateway.canonical_writer_planner build-native-plan \
+<sealed-python> -B -I -m gateway.canonical_writer_planner build-native-plan \
   --revision <exact-40-character-release-sha> \
   --external-iam-policy-sha256 <exact-reviewed-policy-sha256> \
   --config-collector-receipt-sha256 <receipt-sha256>
@@ -163,7 +163,7 @@ Root then installs that strict staged discovery plan at the only accepted
 path, still without starting a service:
 
 ```bash
-<sealed-python> -I -m gateway.canonical_writer_activation install-native-plan \
+<sealed-python> -B -I -m gateway.canonical_writer_activation install-native-plan \
   --plan /etc/muncho/writer-activation/staged/native-observation-plan.json
 ```
 
@@ -175,9 +175,9 @@ signature was verified. Renewals are installed append-only at
 `approvals/<scope>/<plan-sha>/<receipt-sha>.json`:
 
 ```bash
-<sealed-python> -I -m gateway.canonical_writer_activation install-approval \
+<sealed-python> -B -I -m gateway.canonical_writer_activation install-approval \
   --staged-receipt /etc/muncho/writer-activation/staged/owner-approval.json
-<sealed-python> -I -m gateway.canonical_writer_activation install-external-iam \
+<sealed-python> -B -I -m gateway.canonical_writer_activation install-external-iam \
   --staged-receipt /etc/muncho/writer-activation/staged/external-iam-receipt.json \
   --external-iam-policy-sha256 <exact-reviewed-policy-sha256> \
   --plan /etc/muncho/writer-activation/native-observation-plan.json \
@@ -200,7 +200,7 @@ release file, verifies CA and credential provenance, performs TLS/PostgreSQL
 startup privilege attestation, and proves the services are stopped or absent.
 
 ```bash
-<sealed-python> -I -m gateway.canonical_writer_activation observe-native \
+<sealed-python> -B -I -m gateway.canonical_writer_activation observe-native \
   --plan /etc/muncho/writer-activation/native-observation-plan.json \
   --approved-plan-sha256 <exact-native-plan-sha256> \
   --owner-approval-receipt \
@@ -223,7 +223,7 @@ bindings, and exclusively stages the final plan. It accepts the expected
 receipt digest only; it does not accept or infer owner approval:
 
 ```bash
-<sealed-python> -I -m gateway.canonical_writer_planner build-final-plan \
+<sealed-python> -B -I -m gateway.canonical_writer_planner build-final-plan \
   --native-observation-receipt-sha256 \
     <exact-durable-stopped-native-receipt-sha256>
 ```
@@ -231,7 +231,7 @@ receipt digest only; it does not accept or infer owner approval:
 The final plan is then installed, without starting a service:
 
 ```bash
-<sealed-python> -I -m gateway.canonical_writer_activation install-plan \
+<sealed-python> -B -I -m gateway.canonical_writer_activation install-plan \
   --plan /etc/muncho/writer-activation/staged/activation-plan.json
 ```
 
@@ -241,21 +241,21 @@ receipt must set `source_approval_sha256` to that exact approval receipt SHA;
 the earlier native-scoped IAM receipt cannot authorize final activation:
 
 ```bash
-<sealed-python> -I -m gateway.canonical_writer_activation install-approval \
+<sealed-python> -B -I -m gateway.canonical_writer_activation install-approval \
   --staged-receipt /etc/muncho/writer-activation/staged/owner-approval.json
-<sealed-python> -I -m gateway.canonical_writer_activation install-external-iam \
+<sealed-python> -B -I -m gateway.canonical_writer_activation install-external-iam \
   --staged-receipt /etc/muncho/writer-activation/staged/external-iam-receipt.json \
   --external-iam-policy-sha256 <exact-reviewed-policy-sha256> \
   --plan /etc/muncho/writer-activation/activation-plan.json \
   --approved-plan-sha256 <exact-activation-plan-sha256> \
   --owner-approval-receipt \
     /etc/muncho/writer-activation/approvals/activation/<plan-sha>/<approval-sha>.json
-<sealed-python> -I -m gateway.canonical_writer_activation validate-plan \
+<sealed-python> -B -I -m gateway.canonical_writer_activation validate-plan \
   --plan /etc/muncho/writer-activation/activation-plan.json \
   --approved-plan-sha256 <exact-activation-plan-sha256> \
   --owner-approval-receipt \
     /etc/muncho/writer-activation/approvals/activation/<plan-sha>/<approval-sha>.json
-<sealed-python> -I -m gateway.canonical_writer_activation apply \
+<sealed-python> -B -I -m gateway.canonical_writer_activation apply \
   --plan /etc/muncho/writer-activation/activation-plan.json \
   --approved-plan-sha256 <exact-activation-plan-sha256> \
   --owner-approval-receipt \
@@ -283,7 +283,7 @@ failures do not. No command enables a unit, creates a timer, starts Discord,
 invokes a shell, accepts a secret value, or infers a semantic decision.
 
 The installed systemd units execute the packaged bootstraps directly with
-the sealed interpreter and `-I`. Writer readiness is emitted from inside the
+the sealed interpreter and `-B -I`. Writer readiness is emitted from inside the
 writer process only after database startup attestation, socket creation, and
 runtime/module identity attestation succeed. Gateway readiness is emitted
 only after its in-process writer PING/readiness proof succeeds. A process that

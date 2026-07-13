@@ -47,7 +47,7 @@ socket.
 Exact-PID authorization is useful only when the authorized process cannot load
 mutable code. The deployment preflight therefore requires the gateway and
 writer to run from the same root-owned, read-only, revision- and digest-pinned
-release. It attests exact `python -I -m` entry points, interpreter and import
+release. It attests exact `python -B -I -m` entry points, interpreter and import
 closure, live module origins and executable mappings, systemd `MainPID` plus
 start time, and exact mount carve-outs. Cloud dynamic Python loading must be
 disabled, or every configured discovery path must be complete, immutable, and

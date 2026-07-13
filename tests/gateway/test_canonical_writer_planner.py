@@ -369,6 +369,8 @@ def test_native_plan_is_discovery_only_and_binds_collector_receipt():
     plan = _native_plan()
 
     assert plan.value["config_collector_receipt_sha256"] == "7" * 64
+    assert plan.value["writer_argv"][1:3] == ["-B", "-I"]
+    assert plan.value["gateway_argv"][1:3] == ["-B", "-I"]
     assert plan.value["discord"]["required_absent"] is True
     assert "approved_plan_sha256" not in json.dumps(plan.to_mapping())
     assert "external_native_mappings" not in plan.to_mapping()
@@ -380,6 +382,8 @@ def test_final_plan_is_the_only_deployable_v3_contract():
 
     assert plan.schema == "muncho-writer-only-activation-plan.v3"
     assert plan.digests.native_observation_receipt_sha256 == native_receipt.sha256
+    assert plan.collector_argv[1:3] == ("-B", "-I")
+    assert plan.validator_argv[1:3] == ("-B", "-I")
     assert plan.to_mapping()["activation_plan_sha256"] == plan.sha256
     assert "password" not in json.dumps(plan.to_mapping()).casefold()
 

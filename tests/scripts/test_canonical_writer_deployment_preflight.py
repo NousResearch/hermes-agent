@@ -126,6 +126,7 @@ def _writer_deployment():
     ]
     exec_start = [
         _WRITER_INTERPRETER,
+        "-B",
         "-I",
         "-m",
         "gateway.canonical_writer_bootstrap",
@@ -229,6 +230,7 @@ def _gateway_deployment(writer_deployment):
     policy = writer_deployment["policy"]
     exec_start = [
         _WRITER_INTERPRETER,
+        "-B",
         "-I",
         "-m",
         "gateway.canonical_writer_gateway_bootstrap",
@@ -350,6 +352,7 @@ def _writer_authority_surface(writer_deployment):
     export_limit = 200_000
     export_exec = [
         _WRITER_INTERPRETER,
+        "-B",
         "-I",
         "-m",
         "gateway.canonical_writer_bootstrap",
@@ -1758,6 +1761,12 @@ def test_writer_only_discord_surface_must_be_exactly_absent(mutate, failed):
         (
             lambda value: value["writer_deployment"]["policy"][
                 "exec_start"
+            ].remove("-B"),
+            "writer_deployment.policy_valid",
+        ),
+        (
+            lambda value: value["writer_deployment"]["policy"][
+                "exec_start"
             ].remove("-I"),
             "writer_deployment.policy_valid",
         ),
@@ -2123,6 +2132,12 @@ def test_writer_deployment_failure_report_never_echoes_snapshot_values():
             lambda value: value["gateway_deployment"]["policy"].update(
                 module_origin="/tmp/gateway.py"
             ),
+            "gateway_deployment.shared_immutable_release",
+        ),
+        (
+            lambda value: value["gateway_deployment"]["policy"][
+                "exec_start"
+            ].remove("-B"),
             "gateway_deployment.shared_immutable_release",
         ),
         (

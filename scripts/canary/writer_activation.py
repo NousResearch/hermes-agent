@@ -3,7 +3,7 @@
 
 All planning and staging contracts live in ``gateway.canonical_writer_planner``
 so the exact same reviewed implementation runs from a sealed wheel under
-``python -I``.  This source-tree module intentionally contains no alternate
+``python -B -I``.  This source-tree module intentionally contains no alternate
 preview, routing, approval, or deployment logic.
 """
 

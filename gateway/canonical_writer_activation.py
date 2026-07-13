@@ -974,6 +974,7 @@ class ActivationPlan:
         ]["policy"]["interpreter"]
         expected_collector = (
             interpreter,
+            "-B",
             "-I",
             "-m",
             ROOT_COLLECTOR_MODULE,
@@ -984,9 +985,9 @@ class ActivationPlan:
             str(self.paths.root_receipt_path),
         )
         expected_validator = (
-            *expected_collector[:4],
+            *expected_collector[:5],
             "validate",
-            *expected_collector[5:],
+            *expected_collector[6:],
         )
         if (
             self.collector_argv != expected_collector

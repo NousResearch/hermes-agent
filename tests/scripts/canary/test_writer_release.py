@@ -103,6 +103,7 @@ def test_release_commands_pin_managed_copied_frozen_noneditable_install(tmp_path
     )
     assert venv_command.argv == (
         str(managed),
+        "-B",
         "-I",
         "-m",
         "venv",
@@ -485,6 +486,7 @@ def test_real_uv_build_dirties_only_tracked_index_scratch(tmp_path):
     venv = subprocess.run(
         [
             str(managed_real),
+            "-B",
             "-I",
             "-m",
             "venv",
@@ -510,7 +512,13 @@ def test_real_uv_build_dirties_only_tracked_index_scratch(tmp_path):
     )
     assert installed.returncode == 0, installed.stderr
     imported = subprocess.run(
-        [str(spec.interpreter), "-I", "-c", "import proof; assert proof.PROOF"],
+        [
+            str(spec.interpreter),
+            "-B",
+            "-I",
+            "-c",
+            "import proof; assert proof.PROOF",
+        ],
         check=False,
         capture_output=True,
         text=True,
@@ -908,12 +916,12 @@ def test_hardened_writer_only_units_pin_identity_config_and_readiness():
     assert bundle.gateway_service.count("NotifyAccess=main") == 1
     assert (
         "ExecStart=/opt/muncho-canary-releases/"
-        f"{REVISION}/venv/bin/python -I -m {WRITER_MODULE} --config "
+        f"{REVISION}/venv/bin/python -B -I -m {WRITER_MODULE} --config "
         "/etc/muncho-canonical-writer/writer.json"
     ) in bundle.writer_service
     assert (
         "ExecStart=/opt/muncho-canary-releases/"
-        f"{REVISION}/venv/bin/python -I -m {GATEWAY_MODULE}"
+        f"{REVISION}/venv/bin/python -B -I -m {GATEWAY_MODULE}"
     ) in bundle.gateway_service
     assert "--require-canonical-writer" not in bundle.gateway_service
     assert "--writer-only-canary" not in bundle.gateway_service

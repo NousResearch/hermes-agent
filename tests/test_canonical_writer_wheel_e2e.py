@@ -1,6 +1,6 @@
 """Installed-wheel regression for the privileged Canonical Writer runtime.
 
-The service runs with ``python -I`` and therefore cannot import the repository's
+The service runs with ``python -B -I`` and therefore cannot import the repository's
 unpackaged ``scripts`` namespace.  This test builds the real wheel, installs it
 without the source tree, and reaches the first typed PING dispatch so lazy
 runtime imports are covered as well as bootstrap imports.
@@ -8,8 +8,9 @@ runtime imports are covered as well as bootstrap imports.
 
 from __future__ import annotations
 
-import os
+import hashlib
 import json
+import os
 import runpy
 import shutil
 import subprocess
@@ -40,6 +41,22 @@ _FORBIDDEN_SCRIPT_MODULES = {
     "scripts/canonical_writer_bootstrap.py",
     "scripts/canonical_writer_service.py",
 }
+
+
+def _bytecode_snapshot(root: Path) -> dict[str, str | None]:
+    """Return a content snapshot of every bytecode path below ``root``."""
+
+    snapshot: dict[str, str | None] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if "__pycache__" not in path.parts and path.suffix not in {".pyc", ".pyo"}:
+            continue
+        snapshot[relative] = (
+            hashlib.sha256(path.read_bytes()).hexdigest()
+            if path.is_file()
+            else None
+        )
+    return snapshot
 
 
 @pytest.mark.integration
@@ -135,6 +152,9 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         check=True,
         timeout=300,
     )
+    site_packages_roots = list((venv_dir / "lib").glob("python*/site-packages"))
+    assert len(site_packages_roots) == 1
+    bytecode_before = _bytecode_snapshot(site_packages_roots[0])
 
     probe = textwrap.dedent(
         """
@@ -319,7 +339,7 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
     }
     environment["PACKAGED_ACTIVATION_PLAN"] = str(source_plan_path)
     run = subprocess.run(
-        [str(interpreter), "-I", "-c", probe],
+        [str(interpreter), "-B", "-I", "-c", probe],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -333,6 +353,7 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
     help_run = subprocess.run(
         [
             str(interpreter),
+            "-B",
             "-I",
             "-m",
             "gateway.canonical_writer_activation",
@@ -352,6 +373,7 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
     config_help_run = subprocess.run(
         [
             str(interpreter),
+            "-B",
             "-I",
             "-m",
             "gateway.canonical_writer_config_collector",
@@ -369,6 +391,7 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
     planner_help_run = subprocess.run(
         [
             str(interpreter),
+            "-B",
             "-I",
             "-m",
             "gateway.canonical_writer_planner",
@@ -383,3 +406,4 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
     assert planner_help_run.returncode == 0, planner_help_run.stderr
     assert "build-native-plan" in planner_help_run.stdout
     assert "build-final-plan" in planner_help_run.stdout
+    assert _bytecode_snapshot(site_packages_roots[0]) == bytecode_before

@@ -4,7 +4,7 @@ This is a review template only. It does not create users, keys, credentials,
 journals, units, or services, and it must not be enabled or started until the
 owner-approved canary deployment gate and root preflight both pass.
 
-The executable is `python -I -m scripts.discord_edge_bootstrap`. Normal service
+The executable is `python -B -I -m scripts.discord_edge_bootstrap`. Normal service
 startup opens an existing initialized journal and never creates one. Journal
 creation is a separate one-time owner action:
 
@@ -12,7 +12,7 @@ creation is a separate one-time owner action:
 sudo install -d -o muncho-discord-egress -g muncho-discord-egress -m 0700 \
   /var/lib/muncho-discord-egress
 sudo -u muncho-discord-egress \
-  /opt/muncho-canary-release/venv/bin/python -I \
+  /opt/muncho-canary-release/venv/bin/python -B -I \
   -m scripts.discord_edge_bootstrap \
   --config /etc/muncho/discord-edge.json \
   --bootstrap-journal
@@ -99,7 +99,7 @@ RuntimeDirectory=muncho-discord-egress
 RuntimeDirectoryMode=0750
 StateDirectory=muncho-discord-egress
 StateDirectoryMode=0700
-ExecStart=/opt/muncho-canary-releases/<exact-40-char-sha>/venv/bin/python -I -m scripts.discord_edge_bootstrap --config /etc/muncho/discord-edge.json
+ExecStart=/opt/muncho-canary-releases/<exact-40-char-sha>/venv/bin/python -B -I -m scripts.discord_edge_bootstrap --config /etc/muncho/discord-edge.json
 Restart=on-failure
 RestartSec=5s
 UMask=0077

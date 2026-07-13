@@ -345,7 +345,7 @@ def render_systemd_units(
         f"SupplementaryGroups={spec.projector_group}",
         f"WorkingDirectory={release_root}",
         (
-            f"ExecStart={interpreter} -I -m {WRITER_MODULE} "
+            f"ExecStart={interpreter} -B -I -m {WRITER_MODULE} "
             f"--config {spec.writer_config}"
         ),
         "Restart=on-failure",
@@ -386,7 +386,7 @@ def render_systemd_units(
         f"Group={spec.gateway_group}",
         f"SupplementaryGroups={spec.socket_client_group}",
         f"WorkingDirectory={release_root}",
-        f"ExecStart={interpreter} -I -m {GATEWAY_MODULE}",
+        f"ExecStart={interpreter} -B -I -m {GATEWAY_MODULE}",
         "Restart=on-failure",
         "RestartSec=5s",
         "TimeoutStartSec=60s",
@@ -425,7 +425,7 @@ def render_systemd_units(
         f"SupplementaryGroups={spec.projector_group}",
         f"WorkingDirectory={release_root}",
         (
-            f"ExecStart={interpreter} -I -m {WRITER_MODULE} "
+            f"ExecStart={interpreter} -B -I -m {WRITER_MODULE} "
             f"--config {spec.writer_config} --export-events {export_path} "
             f"--export-limit {DEFAULT_EXPORT_LIMIT}"
         ),

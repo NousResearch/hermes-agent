@@ -6806,11 +6806,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         try:
             from hermes_cli.session_listing import query_session_listing
 
+            # Show sessions from ALL sources (cli + desktop + gateway), not just
+            # "cli". Profiles where the user only used the desktop app would
+            # otherwise show an empty list in /sessions and /resume even though
+            # the sessions exist in state.db. Tool-generated sessions stay
+            # excluded via exclude_sources below.
             return query_session_listing(
                 self._session_db,
-                source="cli",
+                source=None,
                 current_session_id=self.session_id,
-                include_all_sources=False,
+                include_all_sources=True,
                 include_unnamed=True,
                 limit=limit,
                 exclude_sources=["tool"],

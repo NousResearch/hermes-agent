@@ -351,3 +351,46 @@ class TestResumeFlushesBeforeEndSession:
             [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
         )
         cli_obj._session_db.end_session.assert_called_once()
+
+
+class TestListRecentSessionsSourceScope:
+    """_list_recent_sessions must surface sessions from every source, not just
+    'cli'. A profile used only via the desktop app stores sessions with
+    source='desktop'; the old source='cli' filter hid them from /sessions and
+    /resume (reported as 'No previous sessions yet'). See fix in cli.py
+    _list_recent_sessions."""
+
+    def test_list_recent_sessions_queries_all_sources(self):
+        from unittest.mock import patch
+
+        from hermes_cli.session_listing import query_session_listing
+
+        cli_obj = _make_cli()
+        captured = {}
+
+        def fake_query(db, *, source, current_session_id, include_all_sources,
+                       include_unnamed, limit, exclude_sources):
+            captured.update(
+                source=source, include_all_sources=include_all_sources,
+                exclude_sources=exclude_sources,
+            )
+            return [{"id": "desktop_sess", "source": "desktop", "title": "Coding"}]
+
+        with patch(
+            "hermes_cli.session_listing.query_session_listing", side_effect=fake_query
+        ):
+            rows = cli_obj._list_recent_sessions(limit=10)
+
+        # The real method must now query across ALL sources (desktop included).
+        assert captured["source"] is None
+        assert captured["include_all_sources"] is True
+        assert captured["exclude_sources"] == ["tool"]
+        assert rows and rows[0]["source"] == "desktop"
+
+        # And document that the *old* filter would have dropped it.
+        old_rows = query_session_listing(
+            cli_obj._session_db, source="cli",
+            current_session_id=cli_obj.session_id, include_all_sources=False,
+            include_unnamed=True, limit=10, exclude_sources=["tool"],
+        )
+        assert old_rows == []

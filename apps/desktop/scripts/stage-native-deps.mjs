@@ -13,6 +13,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -20,6 +21,24 @@ import {
   rmSync
 } from 'node:fs'
 import { isMain } from './utils.mjs'
+
+/**
+ * Copy a native helper, re-asserting +x on the destination.
+ *
+ * cpSync preserves the source mode, and node-pty's published `spawn-helper`
+ * can arrive from npm without its execute bit. node-pty posix_spawnp()s that
+ * binary on darwin, so a stripped mode surfaces only at runtime, as an opaque
+ * "posix_spawnp failed" the first time a terminal is opened. Re-assert the bit
+ * rather than trusting whatever mode the package manager left behind.
+ */
+function copyExecutable(src, dest) {
+  cpSync(src, dest)
+  try {
+    chmodSync(dest, 0o755)
+  } catch {
+    // Best-effort: a failed chmod is still better than an unhandled throw here.
+  }
+}
 
 const here = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(here, '..')
@@ -71,7 +90,11 @@ function copyBuildRelease(srcDir, destDir) {
       cpSync(join(srcDir, entry.name), join(destDir, entry.name), { recursive: true })
       continue
     }
-    if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
+    if (entry.name === 'spawn-helper') {
+      copyExecutable(join(srcDir, entry.name), join(destDir, entry.name))
+      continue
+    }
+    if (/\.(node|dll|exe)$/.test(entry.name)) {
       cpSync(join(srcDir, entry.name), join(destDir, entry.name))
     }
   }
@@ -114,7 +137,7 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
         continue
       }
       if (entry.name === 'spawn-helper') {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        copyExecutable(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
       }
     }
   } else {

@@ -25,6 +25,117 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _is_escaped(text: str, index: int) -> bool:
+    preceding_backslashes = 0
+    index -= 1
+    while index >= 0 and text[index] == "\\":
+        preceding_backslashes += 1
+        index -= 1
+    return preceding_backslashes % 2 == 1
+
+
+def _has_balanced_markdown_spans(text: str) -> bool:
+    """Return whether truncation left any Markdown span delimiter open."""
+    open_code_run = 0
+    bracket_depth = 0
+    angle_depth = 0
+    link_destination_depth = 0
+    emphasis_stack: list[str] = []
+    i = 0
+    while i < len(text):
+        if _is_escaped(text, i):
+            i += 1
+            continue
+
+        marker = text[i]
+        if marker == "`":
+            end = i + 1
+            while end < len(text) and text[end] == "`":
+                end += 1
+            run_length = end - i
+            if open_code_run == 0:
+                open_code_run = run_length
+            elif run_length == open_code_run:
+                open_code_run = 0
+            i = end
+            continue
+
+        if open_code_run:
+            i += 1
+            continue
+
+        if link_destination_depth:
+            if marker == "(":
+                link_destination_depth += 1
+            elif marker == ")":
+                link_destination_depth -= 1
+            i += 1
+            continue
+
+        if marker == "[":
+            bracket_depth += 1
+        elif marker == "]" and bracket_depth:
+            bracket_depth -= 1
+        elif marker == "(" and i and text[i - 1] == "]":
+            link_destination_depth = 1
+        elif marker == "<" and i + 1 < len(text) and not text[i + 1].isspace():
+            angle_depth += 1
+        elif marker == ">" and angle_depth:
+            angle_depth -= 1
+        elif marker in {"*", "_", "~"}:
+            end = i + 1
+            while end < len(text) and text[end] == marker:
+                end += 1
+            delimiter = text[i:end]
+            if marker == "~" and len(delimiter) < 2:
+                i = end
+                continue
+            previous = text[i - 1] if i else ""
+            following = text[end] if end < len(text) else ""
+            if marker == "_" and previous.isalnum() and following.isalnum():
+                i = end
+                continue
+            can_open = bool(following) and not following.isspace()
+            can_close = bool(previous) and not previous.isspace()
+            if emphasis_stack and emphasis_stack[-1] == delimiter and can_close:
+                emphasis_stack.pop()
+            elif can_open:
+                emphasis_stack.append(delimiter)
+            i = end
+            continue
+        i += 1
+
+    return not (
+        open_code_run
+        or bracket_depth
+        or angle_depth
+        or link_destination_depth
+        or emphasis_stack
+    )
+
+
+def _markdown_safe_first_line_preview(text: str, max_length: int = 200) -> str:
+    """Return a concise first-line preview without splitting words or Markdown spans."""
+    if max_length < 1:
+        raise ValueError("max_length must be at least 1")
+
+    lines = text.strip().splitlines()
+    if not lines:
+        return ""
+    first_line = lines[0]
+    if len(first_line) <= max_length and _has_balanced_markdown_spans(first_line):
+        return first_line
+
+    content_limit = max_length - 1  # Reserve one character for the ellipsis.
+    for cut_at in range(min(content_limit, len(first_line)), -1, -1):
+        if cut_at and cut_at < len(first_line) and not first_line[cut_at].isspace():
+            continue
+        candidate = first_line[:cut_at].rstrip()
+        if candidate and _has_balanced_markdown_spans(candidate):
+            return candidate + "…"
+    return "…"
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -354,12 +465,10 @@ class GatewayKanbanWatchersMixin:
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
                             if payload_summary:
-                                lines = payload_summary.strip().splitlines()
-                                h = lines[0][:200] if lines else payload_summary[:200]
+                                h = _markdown_safe_first_line_preview(payload_summary)
                                 handoff = f"\n{h}"
                             elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
+                                r = _markdown_safe_first_line_preview(task.result, 160)
                                 handoff = f"\n{r}"
                             msg = (
                                 f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"

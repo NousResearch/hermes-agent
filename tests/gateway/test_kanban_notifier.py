@@ -2,9 +2,95 @@ import asyncio
 from pathlib import Path
 
 
+from gateway import kanban_watchers
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
+
+
+REAL_COMPLETION_SUMMARY = (
+    "운영 DB read-only 조사 결과, 구미 구평점과 평택 죽백점 후보는 각각 "
+    "`autostay.stores.id=78`, `79`이며 둘 다 `status=1`, `is_display=0`, "
+    "이미지 0개로 현재 기본 홈페이지 export 조건을 충족하지 않습니다. "
+    "브레인시티·안중 후보는 확인되지 않았고, 데이터 경로·중복·필드·SELECT 근거는 "
+    "`investigation.md`에 정리했습니다."
+)
+
+
+def test_completion_preview_keeps_real_summary_markdown_balanced():
+    preview = kanban_watchers._markdown_safe_first_line_preview(REAL_COMPLETION_SUMMARY)
+
+    assert preview.endswith("근거는…")
+    assert len(preview) <= 200
+    assert preview.count("`") % 2 == 0
+
+
+def test_completion_preview_leaves_short_first_line_unchanged():
+    summary = "Short `inline code` handoff.\nDetails stay out of the notification."
+
+    assert (
+        kanban_watchers._markdown_safe_first_line_preview(summary)
+        == "Short `inline code` handoff."
+    )
+
+
+def test_completion_preview_leaves_intraword_underscore_unchanged():
+    summary = "Status is_display remains visible"
+
+    assert kanban_watchers._markdown_safe_first_line_preview(summary) == summary
+
+
+def test_completion_preview_does_not_split_a_long_plain_word():
+    summary = "Useful prefix " + ("x" * 250)
+
+    assert kanban_watchers._markdown_safe_first_line_preview(summary) == "Useful prefix…"
+
+
+def test_completion_preview_treats_inline_code_with_spaces_as_atomic():
+    prefix = "word " * 37
+    summary = prefix + "`inline code with spaces near boundary` trailing text"
+
+    preview = kanban_watchers._markdown_safe_first_line_preview(summary)
+
+    assert preview == prefix.rstrip() + "…"
+    assert preview.count("`") % 2 == 0
+
+
+def test_completion_preview_treats_fenced_code_as_atomic():
+    prefix = "word " * 37
+    summary = prefix + "```python sample with spaces``` trailing text"
+
+    preview = kanban_watchers._markdown_safe_first_line_preview(summary)
+
+    assert preview == prefix.rstrip() + "…"
+    assert preview.count("```") % 2 == 0
+
+
+def test_completion_preview_treats_markdown_link_as_atomic():
+    prefix = "word " * 37
+    summary = prefix + "[linked words near boundary](https://example.com) trailing text"
+
+    preview = kanban_watchers._markdown_safe_first_line_preview(summary)
+
+    assert preview == prefix.rstrip() + "…"
+
+
+def test_completion_preview_tracks_link_destination_and_title_parentheses():
+    prefix = "word " * 32
+    summary = prefix + '[label](https://example.com "descriptive title words") trailing text'
+
+    preview = kanban_watchers._markdown_safe_first_line_preview(summary)
+
+    assert preview == prefix.rstrip() + "…"
+
+
+def test_completion_preview_treats_emphasis_as_atomic():
+    prefix = "word " * 37
+    summary = prefix + "**emphasized words near boundary** trailing text"
+
+    preview = kanban_watchers._markdown_safe_first_line_preview(summary)
+
+    assert preview == prefix.rstrip() + "…"
 
 
 class RecordingAdapter:
@@ -67,6 +153,21 @@ def _unseen_terminal_events(tid):
         return events
     finally:
         conn.close()
+
+
+def test_kanban_notifier_uses_markdown_safe_completion_preview(tmp_path, monkeypatch):
+    db_path = tmp_path / "markdown-safe-preview.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    _create_completed_subscription(REAL_COMPLETION_SUMMARY)
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    preview = adapter.sent[0]["text"].splitlines()[-1]
+    assert preview.endswith("근거는…")
+    assert len(preview) <= 200
+    assert preview.count("`") % 2 == 0
 
 
 def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monkeypatch):

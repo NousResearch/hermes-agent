@@ -3645,6 +3645,34 @@ class TestBuildSchemaFromConfig:
             assert "options" in entry
             assert "local" in entry["options"]
 
+    def test_memory_provider_field_present_as_select(self):
+        """memory.provider must stay in the config schema.
+
+        Desktop's settings page builds its field list from /api/config/schema —
+        a key excluded here silently vanishes from Desktop's Memory section
+        (regression: the dashboard's dedicated memory-provider UI excluded the
+        key server-side, breaking Desktop's dropdown). The dashboard hides the
+        field client-side instead.
+        """
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        entry = CONFIG_SCHEMA["memory.provider"]
+        assert entry["type"] == "select"
+        assert entry["category"] == "memory"
+        options = entry["options"]
+        # Built-in sentinel first, plus at least one discovered provider.
+        assert options[0] == ""
+        assert "builtin" in options
+        assert len(options) >= 3
+
+    def test_memory_provider_options_cover_discovered_providers(self):
+        """Every provider the /api/memory endpoint can activate is selectable."""
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        from plugins.memory import list_memory_provider_names
+
+        options = set(CONFIG_SCHEMA["memory.provider"]["options"])
+        missing = set(list_memory_provider_names()) - options
+        assert missing == set(), f"discovered providers missing from schema options: {missing}"
+
     def test_approvals_mode_options_match_config_values(self):
         """approvals.mode select options must match the values accepted by config.py.
 

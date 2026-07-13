@@ -1,6 +1,5 @@
-import { defineConfig, TestProjectConfiguration } from 'vitest/config'
-import react from '@vitejs/plugin-react'
-import path from 'path'
+import type { TestProjectConfiguration } from 'vitest/config';
+import { defineConfig } from 'vitest/config'
 
 const reactUi: TestProjectConfiguration = {
   extends: './vite.config.ts',
@@ -17,7 +16,7 @@ const electronNative: TestProjectConfiguration = {
   test: {
     name: 'electron',
     environment: 'node',
-    include: ['electron/**/*.test.ts']
+    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}']
   }
 }
 

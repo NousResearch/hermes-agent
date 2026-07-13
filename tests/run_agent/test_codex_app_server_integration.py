@@ -110,27 +110,32 @@ class TestRunConversationCodexPath:
         with patch.object(agent, "_spawn_background_review", return_value=None):
             result = agent.run_conversation("hello")
 
+        # Codex reports inputTokens (80) INCLUSIVE of cachedInputTokens (20).
+        # The canonical uncached-input bucket is therefore 80 - 20 = 60, and
+        # prompt_tokens (uncached + cache_read) is 60 + 20 = 80 — NOT 100, which
+        # would double-count the cached tokens. total_tokens stays the reported
+        # passthrough (130).
         assert result["api_calls"] == 1
-        assert result["prompt_tokens"] == 100
+        assert result["prompt_tokens"] == 80
         assert result["completion_tokens"] == 25
         assert result["total_tokens"] == 130
-        assert result["input_tokens"] == 80
+        assert result["input_tokens"] == 60
         assert result["output_tokens"] == 25
         assert result["cache_read_tokens"] == 20
         assert result["cache_write_tokens"] == 0
         assert result["reasoning_tokens"] == 5
-        assert result["last_prompt_tokens"] == 100
+        assert result["last_prompt_tokens"] == 80
 
         assert agent.session_api_calls == 1
-        assert agent.session_prompt_tokens == 100
+        assert agent.session_prompt_tokens == 80
         assert agent.session_completion_tokens == 25
         assert agent.session_total_tokens == 130
-        assert agent.session_input_tokens == 80
+        assert agent.session_input_tokens == 60
         assert agent.session_output_tokens == 25
         assert agent.session_cache_read_tokens == 20
         assert agent.session_cache_write_tokens == 0
         assert agent.session_reasoning_tokens == 5
-        assert agent.context_compressor.last_prompt_tokens == 100
+        assert agent.context_compressor.last_prompt_tokens == 80
         assert agent.context_compressor.last_completion_tokens == 25
         assert agent.context_compressor.last_total_tokens == 130
         assert agent.context_compressor.context_length == 200000

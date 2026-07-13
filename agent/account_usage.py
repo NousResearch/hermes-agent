@@ -542,8 +542,11 @@ def _fetch_codex_account_usage(
     )
 
 
-def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
-    token = (resolve_anthropic_token() or "").strip()
+def _fetch_anthropic_account_usage(api_key: Optional[str] = None) -> Optional[AccountUsageSnapshot]:
+    # Prefer the caller-supplied key (the active credential-pool entry, kept in
+    # sync by ``_swap_credential`` on rotation) so ``/usage`` reflects the key
+    # currently in use; fall back to the singleton token store otherwise.
+    token = (api_key or resolve_anthropic_token() or "").strip()
     if not token:
         return None
     if not _is_oauth_token(token):
@@ -688,7 +691,7 @@ def fetch_account_usage(
         if normalized == "openai-codex":
             return _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
         if normalized == "anthropic":
-            return _fetch_anthropic_account_usage()
+            return _fetch_anthropic_account_usage(api_key=api_key)
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
     except Exception:

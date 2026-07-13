@@ -2,12 +2,18 @@ from hermes_cli.moa_config import (
     DEFAULT_MOA_AGGREGATOR,
     DEFAULT_MOA_PRESET_NAME,
     DEFAULT_MOA_REFERENCE_MODELS,
+    _slot_runtime_available,
     build_moa_turn_prompt,
+    classify_moa_auto_route,
     decode_moa_turn,
     exact_moa_preset_name,
+    moa_config_revision,
     normalize_moa_config,
+    resolve_available_moa_preset,
     resolve_moa_preset,
+    resolve_moa_preset_for_messages,
     set_active_moa_preset,
+    validate_moa_config,
 )
 
 
@@ -87,6 +93,21 @@ def test_normalize_moa_config_tolerates_non_list_reference_models():
         {"presets": {"broken": {"reference_models": 2}}}
     )
     assert cfg["presets"]["broken"]["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+
+
+def test_normalize_moa_config_preserves_explicit_empty_reference_models():
+    """Явный пустой список создаёт одиночный маршрут без скрытого fan-out."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "fast": {
+                    "reference_models": [],
+                    "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-luna"},
+                }
+            }
+        }
+    )
+    assert cfg["presets"]["fast"]["reference_models"] == []
 
 
 def test_normalize_moa_config_wraps_bare_dict_reference_models():
@@ -178,6 +199,74 @@ def test_resolve_moa_preset_returns_requested_model_set():
     assert resolve_moa_preset(cfg, "review")["reference_models"] == [
         {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}
     ]
+
+
+def test_classify_moa_auto_route_is_conservative_and_task_aware():
+    cases = {
+        "Переведи эту фразу на английский": "fast",
+        "Проверь актуальные официальные источники и дай ссылки": "research",
+        "Исправь баг в parser.py и запусти тесты": "code_heavy",
+        "Используй режим max, нужна максимальная глубина": "max",
+        "Подготовь план запуска продукта на новый рынок": "balanced",
+    }
+    for prompt, expected in cases.items():
+        assert classify_moa_auto_route([{"role": "user", "content": prompt}]) == expected
+
+
+def test_classify_moa_auto_route_continuation_keeps_previous_task_kind():
+    messages = [
+        {"role": "user", "content": "Исправь архитектурную ошибку в репозитории"},
+        {"role": "assistant", "content": "Начинаю."},
+        {"role": "user", "content": "Продолжай"},
+    ]
+    assert classify_moa_auto_route(messages) == "code_heavy"
+
+
+def test_resolve_moa_preset_for_messages_uses_configured_auto_routes():
+    cfg = {
+        "default_preset": "auto",
+        "presets": {
+            "auto": {
+                "reference_models": [{"provider": "xai-oauth", "model": "grok-4.5"}],
+                "auto_routes": {
+                    "fast": "quick",
+                    "balanced": "normal",
+                    "research": "sources",
+                    "code_heavy": "coding",
+                    "max": "deep",
+                },
+            },
+            "quick": {"reference_models": []},
+            "normal": {"reference_models": []},
+            "sources": {"reference_models": []},
+            "coding": {"reference_models": []},
+            "deep": {"reference_models": []},
+        },
+    }
+    name, preset = resolve_moa_preset_for_messages(
+        cfg,
+        "auto",
+        [{"role": "user", "content": "Реализуй поддержку нового API и тесты"}],
+    )
+    assert name == "coding"
+    assert preset["reference_models"] == []
+
+
+def test_resolve_moa_preset_for_messages_leaves_regular_preset_unchanged():
+    cfg = {
+        "presets": {
+            "balanced": {
+                "reference_models": [{"provider": "xai-oauth", "model": "grok-4.5"}],
+            }
+        }
+    }
+    name, preset = resolve_moa_preset_for_messages(
+        cfg,
+        "balanced",
+        [{"role": "user", "content": "Проверь свежие новости"}],
+    )
+    assert name == "balanced"
+    assert preset["reference_models"] == [{"provider": "xai-oauth", "model": "grok-4.5"}]
 
 
 def test_build_moa_turn_prompt_encodes_one_shot_default_preset():
@@ -281,3 +370,136 @@ def test_reference_max_tokens_in_flattened_view():
     active preset's reference_max_tokens."""
     cfg = normalize_moa_config(_preset(reference_max_tokens=750))
     assert cfg["reference_max_tokens"] == 750
+
+
+def test_context_length_is_normalized_and_exposed_in_flattened_view():
+    cfg = normalize_moa_config(_preset(context_length="450000"))
+    assert cfg["presets"]["p"]["context_length"] == 450000
+    assert cfg["context_length"] == 450000
+
+
+def test_invalid_context_length_falls_back_to_auto_detection():
+    for bad in (0, -1, "invalid", "", None):
+        preset = resolve_moa_preset(_preset(context_length=bad), "p")
+        assert preset["context_length"] is None, bad
+
+
+def test_excluded_provider_is_removed_without_restoring_default_fanout():
+    cfg = normalize_moa_config({
+        "excluded_providers": ["antigravity_cli"],
+        "presets": {
+            "max": {
+                "reference_models": [
+                    {"provider": "antigravity_cli", "model": "legacy"},
+                    {"provider": "openrouter", "model": "z-ai/glm-5.2"},
+                ],
+                "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+            },
+        },
+    })
+
+    assert cfg["excluded_providers"] == ["antigravity_cli"]
+    assert cfg["presets"]["max"]["reference_models"] == [
+        {"provider": "openrouter", "model": "z-ai/glm-5.2"},
+    ]
+
+
+def test_runtime_resolution_uses_available_fallback_and_deduplicates_reference():
+    preset = {
+        "reference_models": [
+            {"provider": "xai-oauth", "model": "grok-4.5"},
+            {"provider": "openrouter", "model": "z-ai/glm-5.2"},
+        ],
+        "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+        "fallback_aggregators": [
+            {"provider": "xai-oauth", "model": "grok-4.5"},
+        ],
+    }
+
+    resolved, status = resolve_available_moa_preset(
+        preset,
+        availability_check=lambda slot: slot["provider"] == "xai-oauth",
+    )
+
+    assert resolved["aggregator"] == {"provider": "xai-oauth", "model": "grok-4.5"}
+    assert resolved["reference_models"] == []
+    assert status["degraded"] is True
+    assert status["aggregator_available"] is True
+    assert status["aggregator"] == "xai-oauth:grok-4.5"
+    assert status["configured_aggregator"] == "openai-codex:gpt-5.6-sol"
+    assert status["fallback_used"] is True
+    assert all("xai-oauth:grok-4.5" not in item for item in status["unavailable"])
+
+
+def test_validator_rejects_excluded_aggregator_and_broken_auto_route():
+    issues = validate_moa_config({
+        "excluded_providers": ["antigravity_cli"],
+        "presets": {
+            "auto": {
+                "reference_models": [],
+                "aggregator": {"provider": "antigravity_cli", "model": "legacy"},
+                "auto_routes": {"research": "missing"},
+            },
+        },
+    })
+
+    error_codes = {
+        item["code"] for item in issues if item["severity"] == "error"
+    }
+    assert error_codes == {"excluded_aggregator_provider", "invalid_auto_route"}
+
+
+def test_runtime_availability_rejects_endpoint_without_credentials(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "",
+        },
+    )
+
+    assert _slot_runtime_available({
+        "provider": "openrouter",
+        "model": "z-ai/glm-5.2",
+    }) is False
+
+
+def test_budget_and_circuit_fields_are_normalized():
+    cfg = normalize_moa_config({
+        "presets": {
+            "bounded": {
+                "reference_models": [],
+                "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+                "max_advisors": "2",
+                "max_reference_cost_usd": "0.25",
+                "max_fanout_latency_seconds": "15",
+                "circuit_breaker_seconds": "45",
+                "quota_cooldown_seconds": "600",
+            },
+        },
+    })
+    preset = cfg["presets"]["bounded"]
+
+    assert preset["max_advisors"] == 2
+    assert preset["max_reference_cost_usd"] == 0.25
+    assert preset["max_fanout_latency_seconds"] == 15.0
+    assert preset["circuit_breaker_seconds"] == 45.0
+    assert preset["quota_cooldown_seconds"] == 600.0
+
+
+def test_revision_is_stable_and_changes_with_config():
+    base = {
+        "presets": {
+            "p": {
+                "reference_models": [],
+                "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+            },
+        },
+    }
+    same = normalize_moa_config(base)
+    changed = normalize_moa_config(base)
+    changed["presets"]["p"]["max_advisors"] = 1
+
+    assert moa_config_revision(base) == moa_config_revision(same)
+    assert moa_config_revision(base) != moa_config_revision(changed)

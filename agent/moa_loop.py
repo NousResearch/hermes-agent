@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -223,6 +224,7 @@ def _run_reference(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    timeout: float | None = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model and return ``(label, text, usage)``.
 
@@ -275,6 +277,7 @@ def _run_reference(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            timeout=timeout,
             **runtime,
         )
         usage = CanonicalUsage()
@@ -339,6 +342,7 @@ def _run_references_parallel(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    timeout: float | None = None,
 ) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
@@ -375,6 +379,7 @@ def _run_references_parallel(
                     ref_messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    timeout=timeout,
                 )
             ] = idx
         # Collect every reference before returning — the aggregator needs the
@@ -383,6 +388,70 @@ def _run_references_parallel(
             results[idx] = future.result()
 
     return [r for r in results if r is not None]
+
+
+def _select_references_for_budget(
+    reference_models: list[dict[str, str]],
+    ref_messages: list[dict[str, Any]],
+    *,
+    max_advisors: int | None,
+    max_cost_usd: float | None,
+    max_tokens: int | None,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Применить детерминированные лимиты числа советников и оценочной стоимости."""
+    selected = list(reference_models)
+    status: dict[str, Any] = {
+        "configured_advisors": len(reference_models),
+        "selected_advisors": len(reference_models),
+        "estimated_reference_cost_usd": 0.0,
+        "skipped_by_budget": [],
+        "exceeded": False,
+    }
+    if max_advisors is not None:
+        selected = selected[: max(0, int(max_advisors))]
+        status["skipped_by_budget"].extend(
+            _slot_label(slot) for slot in reference_models[len(selected):]
+        )
+
+    if max_cost_usd is not None and selected:
+        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+
+        prompt_chars = sum(len(str(message.get("content") or "")) for message in ref_messages)
+        estimated_usage = CanonicalUsage(
+            input_tokens=max(1, prompt_chars // 4),
+            output_tokens=max_tokens or 600,
+        )
+        within_budget: list[dict[str, str]] = []
+        estimated_total = 0.0
+        for slot in selected:
+            try:
+                runtime = _slot_runtime(slot)
+                estimate = estimate_usage_cost(
+                    slot.get("model") or "",
+                    estimated_usage,
+                    provider=runtime.get("provider"),
+                    base_url=runtime.get("base_url"),
+                    api_key=runtime.get("api_key"),
+                )
+                amount = (
+                    float(estimate.amount_usd)
+                    if estimate.amount_usd is not None
+                    else None
+                )
+            except Exception:
+                amount = None
+            if amount is not None and estimated_total + amount > float(max_cost_usd):
+                status["skipped_by_budget"].append(_slot_label(slot))
+                continue
+            within_budget.append(slot)
+            if amount is not None:
+                estimated_total += amount
+        selected = within_budget
+        status["estimated_reference_cost_usd"] = round(estimated_total, 6)
+
+    status["selected_advisors"] = len(selected)
+    status["exceeded"] = bool(status["skipped_by_budget"])
+    return selected, status
 
 
 def _truncate_tool_result(text: str, budget: int = _REFERENCE_TOOL_RESULT_BUDGET) -> str:
@@ -719,6 +788,7 @@ class MoAChatCompletions:
         # create(); read by session cost accounting to price the aggregator's
         # acting turn at its real model instead of the virtual preset name.
         self.last_aggregator_slot: Any = None
+        self.last_runtime_status: dict[str, Any] = {}
         # Full-turn trace parts stashed on a cache-MISS create(), awaiting the
         # caller to stitch in the live session_id + resolved aggregator output
         # and flush to the trace file (only when moa.save_traces is on).
@@ -799,12 +869,31 @@ class MoAChatCompletions:
 
     def create(self, **api_kwargs: Any) -> Any:
         from hermes_cli.config import load_config
-        from hermes_cli.moa_config import resolve_moa_preset
+        from hermes_cli.moa_config import (
+            resolve_available_moa_preset,
+            resolve_moa_preset_for_messages,
+        )
 
-        preset = resolve_moa_preset(load_config().get("moa") or {}, self.preset_name)
         messages = list(api_kwargs.get("messages") or [])
+        turn_started = time.monotonic()
+        resolved_preset_name, preset = resolve_moa_preset_for_messages(
+            load_config().get("moa") or {}, self.preset_name, messages
+        )
+        configured_aggregator = dict(preset.get("aggregator") or {})
+        preset, runtime_status = resolve_available_moa_preset(preset)
+        self.last_runtime_status = runtime_status
+        if runtime_status.get("degraded"):
+            logger.warning(
+                "MoA preset %s is degraded: %s",
+                resolved_preset_name,
+                ", ".join(runtime_status.get("unavailable") or []),
+            )
         reference_models = preset.get("reference_models") or []
         aggregator = preset.get("aggregator") or {}
+        if not runtime_status.get("aggregator_available"):
+            raise RuntimeError(
+                f"MoA preset {resolved_preset_name!r} has no available aggregator"
+            )
         # Expose the resolved aggregator slot so session cost accounting can
         # price the aggregator's acting turn at its REAL model/provider. The
         # agent's model/provider on the MoA path are the virtual preset name
@@ -823,6 +912,8 @@ class MoAChatCompletions:
         # The acting aggregator is never capped here (its output is the
         # user-visible answer).
         reference_max_tokens = preset.get("reference_max_tokens")
+        max_reference_cost_usd = preset.get("max_reference_cost_usd")
+        max_fanout_latency_seconds = preset.get("max_fanout_latency_seconds")
         # None (the default) = don't send temperature; provider default
         # applies, matching single-model agent behavior. Presets may pin
         # explicit values. See _preset_temperature.
@@ -843,6 +934,14 @@ class MoAChatCompletions:
 
         reference_outputs: list[tuple[str, str, Any]] = []
         ref_messages = _reference_messages(messages)
+        reference_models, budget_status = _select_references_for_budget(
+            reference_models,
+            ref_messages,
+            max_advisors=preset.get("max_advisors"),
+            max_cost_usd=max_reference_cost_usd,
+            max_tokens=reference_max_tokens,
+        )
+        self.last_runtime_status["budget"] = budget_status
 
         # Fan-out cadence. "per_iteration" (default): advisors re-run whenever
         # the advisory view changes — i.e. every tool iteration, since the
@@ -881,7 +980,7 @@ class MoAChatCompletions:
                 f"{m.get('role')}:{m.get('content')}" for m in sig_messages
             ).encode("utf-8", "replace")
         ).hexdigest()
-        _cache_key = (self.preset_name, _sig, tuple(_slot_label(s) for s in reference_models))
+        _cache_key = (resolved_preset_name, _sig, tuple(_slot_label(s) for s in reference_models))
         _refs_from_cache = _cache_key == self._ref_cache_key and bool(self._ref_cache_outputs)
 
         if _refs_from_cache:
@@ -902,6 +1001,7 @@ class MoAChatCompletions:
                 ref_messages,
                 temperature=temperature,
                 max_tokens=reference_max_tokens,
+                timeout=max_fanout_latency_seconds,
             )
             self._ref_cache_key = _cache_key
             self._ref_cache_outputs = list(reference_outputs)
@@ -923,13 +1023,20 @@ class MoAChatCompletions:
                         _ref_cost = (_ref_cost or 0) + _acct.cost_usd
             self._pending_reference_usage = _ref_usage
             self._pending_reference_cost = _ref_cost
+            if (
+                max_reference_cost_usd is not None
+                and _ref_cost is not None
+                and float(_ref_cost) > float(max_reference_cost_usd)
+            ):
+                budget_status["exceeded"] = True
+                budget_status["actual_reference_cost_usd"] = round(float(_ref_cost), 6)
             # Stash the full reference fan-out for trace persistence. The
             # aggregator input/label are filled in below once agg_messages is
             # built; the aggregator OUTPUT is stitched in by the caller
             # (consume_and_save_trace) once the response resolves — the caller
             # holds the live session_id and the resolved aggregator response.
             self._pending_trace = {
-                "preset": self.preset_name,
+                "preset": resolved_preset_name,
                 "reference_outputs": list(reference_outputs),
                 "aggregator_slot": aggregator,
                 "aggregator_temperature": aggregator_temperature,
@@ -965,7 +1072,7 @@ class MoAChatCompletions:
             )
             guidance = (
                 "[Mixture of Agents reference context]\n"
-                f"Preset: {self.preset_name}\n"
+                f"Preset: {resolved_preset_name}\n"
                 f"Aggregator/acting model: {_slot_label(aggregator)}\n"
                 f"References: {', '.join(label for label, _, _ in reference_outputs)}\n\n"
                 "Use the reference responses below as private context. You are the aggregator and acting model: "
@@ -1010,16 +1117,122 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
-        _agg_response = call_llm(
-            task="moa_aggregator",
-            messages=agg_messages,
-            temperature=aggregator_temperature,
-            max_tokens=agg_kwargs.get("max_tokens"),
-            tools=agg_kwargs.get("tools"),
-            extra_body=agg_kwargs.get("extra_body"),
-            **stream_kwargs,
-            **_slot_runtime(aggregator),
+        from agent.moa_runtime import (
+            circuit_status,
+            classify_moa_error,
+            mark_slot_failure,
+            mark_slot_success,
+            record_moa_telemetry,
+            should_failover_moa_error,
         )
+
+        initial_aggregator = configured_aggregator or dict(aggregator)
+        candidates: list[dict[str, str]] = []
+        for candidate in [aggregator, *(preset.get("fallback_aggregators") or [])]:
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+
+        _agg_response: Any = None
+        last_error: Exception | None = None
+        attempts: list[dict[str, str]] = []
+        for candidate in candidates:
+            circuit = circuit_status(candidate)
+            if circuit.get("active"):
+                attempts.append({
+                    "slot": _slot_label(candidate),
+                    "status": "cooldown",
+                    "kind": str(circuit.get("reason") or "transient"),
+                })
+                continue
+            try:
+                _agg_response = call_llm(
+                    task="moa_aggregator",
+                    messages=agg_messages,
+                    temperature=aggregator_temperature,
+                    max_tokens=agg_kwargs.get("max_tokens"),
+                    tools=agg_kwargs.get("tools"),
+                    extra_body=agg_kwargs.get("extra_body"),
+                    **stream_kwargs,
+                    **_slot_runtime(candidate),
+                )
+            except Exception as exc:
+                last_error = exc
+                kind = classify_moa_error(exc)
+                attempts.append({
+                    "slot": _slot_label(candidate),
+                    "status": "failed",
+                    "kind": kind,
+                })
+                if not should_failover_moa_error(exc):
+                    record_moa_telemetry({
+                        "preset": resolved_preset_name,
+                        "status": "failed",
+                        "aggregator": _slot_label(candidate),
+                        "attempts": len(attempts),
+                        "latency_ms": int((time.monotonic() - turn_started) * 1000),
+                        "reference_count": len(reference_outputs),
+                        "reference_cost_usd": self._pending_reference_cost,
+                        "budget_exceeded": bool(budget_status.get("exceeded")),
+                        "failure_kind": kind,
+                    })
+                    raise
+                mark_slot_failure(
+                    candidate,
+                    exc,
+                    cooldown_seconds=preset.get("circuit_breaker_seconds"),
+                    quota_cooldown_seconds=preset.get("quota_cooldown_seconds"),
+                )
+                continue
+
+            mark_slot_success(candidate)
+            aggregator = candidate
+            self.last_aggregator_slot = dict(candidate)
+            attempts.append({
+                "slot": _slot_label(candidate),
+                "status": "ok",
+                "kind": "",
+            })
+            break
+
+        if _agg_response is None:
+            failure_kind = classify_moa_error(last_error) if last_error else "cooldown"
+            record_moa_telemetry({
+                "preset": resolved_preset_name,
+                "status": "failed",
+                "aggregator": "",
+                "attempts": len(attempts),
+                "latency_ms": int((time.monotonic() - turn_started) * 1000),
+                "reference_count": len(reference_outputs),
+                "reference_cost_usd": self._pending_reference_cost,
+                "budget_exceeded": bool(budget_status.get("exceeded")),
+                "failure_kind": failure_kind,
+            })
+            if last_error is not None:
+                raise RuntimeError("All MoA aggregators failed") from last_error
+            raise RuntimeError("All MoA aggregators are cooling down")
+
+        fallback_used = aggregator != initial_aggregator
+        self.last_runtime_status.update({
+            "aggregator": _slot_label(aggregator),
+            "fallback_used": fallback_used,
+            "attempts": attempts,
+            "latency_ms": int((time.monotonic() - turn_started) * 1000),
+        })
+        if self._pending_trace is not None:
+            self._pending_trace["aggregator_slot"] = aggregator
+            self._pending_trace["aggregator_label"] = _slot_label(aggregator)
+        record_moa_telemetry({
+            "preset": resolved_preset_name,
+            "status": "stream_started" if stream else "ok",
+            "aggregator": _slot_label(aggregator),
+            "fallback_used": fallback_used,
+            "attempts": len(attempts),
+            "latency_ms": self.last_runtime_status["latency_ms"],
+            "reference_count": len(reference_outputs),
+            "reference_cost_usd": self._pending_reference_cost,
+            "budget_exceeded": bool(budget_status.get("exceeded")),
+            "failure_kind": "",
+        })
         # Non-streaming path (quiet mode / eval / subagents): the aggregator
         # output is available inline, so capture it into the pending trace now.
         # Streaming path: the aggregator's raw token stream is returned to the

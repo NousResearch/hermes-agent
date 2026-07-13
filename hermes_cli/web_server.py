@@ -973,27 +973,69 @@ class MoaModelSlot(BaseModel):
 class MoaPresetPayload(BaseModel):
     reference_models: list[MoaModelSlot] = []
     aggregator: MoaModelSlot = MoaModelSlot()
+    fallback_aggregators: list[MoaModelSlot] = []
     # None = temperature omitted from API calls (provider default), matching
     # single-model agent behavior.
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
+    reference_max_tokens: Optional[int] = None
+    context_length: Optional[int] = None
+    max_advisors: Optional[int] = None
+    max_reference_cost_usd: Optional[float] = None
+    max_fanout_latency_seconds: Optional[float] = None
+    circuit_breaker_seconds: Optional[float] = None
+    quota_cooldown_seconds: Optional[float] = None
+    fanout: str = "per_iteration"
+    auto_routes: dict[str, str] = {}
     enabled: bool = True
 
 
 class MoaConfigPayload(BaseModel):
+    revision: str = ""
     default_preset: str = "default"
     active_preset: str = ""
+    excluded_providers: list[str] = []
     presets: dict[str, MoaPresetPayload] = {}
     # Backward-compatible flat payload fields used by older dashboard/desktop
     # clients during this PR's transition window.
     reference_models: list[MoaModelSlot] = []
     aggregator: MoaModelSlot = MoaModelSlot()
+    fallback_aggregators: list[MoaModelSlot] = []
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
+    reference_max_tokens: Optional[int] = None
+    context_length: Optional[int] = None
+    max_advisors: Optional[int] = None
+    max_reference_cost_usd: Optional[float] = None
+    max_fanout_latency_seconds: Optional[float] = None
+    circuit_breaker_seconds: Optional[float] = None
+    quota_cooldown_seconds: Optional[float] = None
+    fanout: str = "per_iteration"
+    auto_routes: dict[str, str] = {}
     enabled: bool = True
     profile: Optional[str] = None
+
+
+class MoaRouteFeedbackPayload(BaseModel):
+    suggested_route: str
+    chosen_route: str
+    profile: Optional[str] = None
+
+
+def _pydantic_fields_set(model: BaseModel) -> set[str]:
+    """Вернуть явно переданные поля без deprecated API Pydantic v2."""
+    if hasattr(model, "model_fields_set"):
+        return set(model.model_fields_set)
+    return set(getattr(model, "__fields_set__", set()))
+
+
+def _pydantic_dump(model: BaseModel) -> dict[str, Any]:
+    """Сериализовать модель Pydantic v1/v2 через актуальный public API."""
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
 
 
 def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, str]:
@@ -5513,11 +5555,22 @@ def get_auxiliary_models(profile: Optional[str] = None):
 def get_moa_models(profile: Optional[str] = None):
     """Return the configured Mixture-of-Agents provider/model slots."""
     try:
-        from hermes_cli.moa_config import normalize_moa_config
+        from hermes_cli.moa_config import (
+            evaluate_moa_runtime_config,
+            moa_config_revision,
+            normalize_moa_config,
+            validate_moa_config,
+        )
 
         with _profile_scope(profile):
             cfg = load_config()
-            return normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
+            raw = cfg.get("moa") if isinstance(cfg, dict) else {}
+            return {
+                **normalize_moa_config(raw),
+                "revision": moa_config_revision(raw),
+                "runtime_status": evaluate_moa_runtime_config(raw),
+                "validation_issues": validate_moa_config(raw),
+            }
     except HTTPException:
         raise
     except Exception:
@@ -5529,44 +5582,153 @@ def get_moa_models(profile: Optional[str] = None):
 def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     """Persist the Mixture-of-Agents provider/model slots."""
     try:
-        from hermes_cli.moa_config import normalize_moa_config
+        from hermes_cli.moa_config import (
+            evaluate_moa_runtime_config,
+            moa_config_revision,
+            normalize_moa_config,
+            validate_moa_config,
+        )
 
         with _profile_scope(body.profile or profile):
             cfg = load_config()
+            existing_moa = cfg.get("moa") if isinstance(cfg.get("moa"), dict) else {}
+            current_revision = moa_config_revision(existing_moa)
+            if body.revision and body.revision != current_revision:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "moa_revision_conflict",
+                        "message": "MoA config changed since it was loaded; refresh before saving",
+                        "current_revision": current_revision,
+                    },
+                )
+            body_fields = _pydantic_fields_set(body)
+            excluded_providers = (
+                body.excluded_providers
+                if "excluded_providers" in body_fields
+                else existing_moa.get("excluded_providers", [])
+            )
             if body.presets:
+                existing_presets = existing_moa.get("presets") or {}
+                merged_presets: dict[str, dict[str, Any]] = {}
+                for name, preset in body.presets.items():
+                    preset_fields = _pydantic_fields_set(preset)
+                    existing_preset = existing_presets.get(name) or {}
+
+                    def supplied_or_existing(field: str, value: Any) -> Any:
+                        return value if field in preset_fields else existing_preset.get(field, value)
+
+                    fallback_slots = supplied_or_existing(
+                        "fallback_aggregators", preset.fallback_aggregators
+                    )
+                    merged_presets[name] = {
+                        "reference_models": [
+                            _pydantic_dump(slot) for slot in preset.reference_models
+                        ],
+                        "aggregator": _pydantic_dump(preset.aggregator),
+                        "fallback_aggregators": [
+                            _pydantic_dump(slot) if isinstance(slot, BaseModel) else dict(slot)
+                            for slot in fallback_slots
+                        ],
+                        "reference_temperature": preset.reference_temperature,
+                        "aggregator_temperature": preset.aggregator_temperature,
+                        "max_tokens": preset.max_tokens,
+                        "reference_max_tokens": supplied_or_existing(
+                            "reference_max_tokens", preset.reference_max_tokens
+                        ),
+                        "context_length": supplied_or_existing(
+                            "context_length", preset.context_length
+                        ),
+                        "max_advisors": supplied_or_existing(
+                            "max_advisors", preset.max_advisors
+                        ),
+                        "max_reference_cost_usd": supplied_or_existing(
+                            "max_reference_cost_usd", preset.max_reference_cost_usd
+                        ),
+                        "max_fanout_latency_seconds": supplied_or_existing(
+                            "max_fanout_latency_seconds", preset.max_fanout_latency_seconds
+                        ),
+                        "circuit_breaker_seconds": supplied_or_existing(
+                            "circuit_breaker_seconds", preset.circuit_breaker_seconds
+                        ),
+                        "quota_cooldown_seconds": supplied_or_existing(
+                            "quota_cooldown_seconds", preset.quota_cooldown_seconds
+                        ),
+                        "fanout": supplied_or_existing("fanout", preset.fanout),
+                        "auto_routes": supplied_or_existing(
+                            "auto_routes", preset.auto_routes
+                        ),
+                        "enabled": preset.enabled,
+                    }
                 raw = {
                     "default_preset": body.default_preset,
                     "active_preset": body.active_preset,
-                    "presets": {
-                        name: {
-                            "reference_models": [slot.dict() for slot in preset.reference_models],
-                            "aggregator": preset.aggregator.dict(),
-                            "reference_temperature": preset.reference_temperature,
-                            "aggregator_temperature": preset.aggregator_temperature,
-                            "max_tokens": preset.max_tokens,
-                            "enabled": preset.enabled,
-                        }
-                        for name, preset in body.presets.items()
-                    },
+                    "excluded_providers": excluded_providers,
+                    "presets": merged_presets,
                 }
             else:
                 raw = {
-                    "reference_models": [slot.dict() for slot in body.reference_models],
-                    "aggregator": body.aggregator.dict(),
+                    "excluded_providers": excluded_providers,
+                    "reference_models": [_pydantic_dump(slot) for slot in body.reference_models],
+                    "aggregator": _pydantic_dump(body.aggregator),
+                    "fallback_aggregators": [_pydantic_dump(slot) for slot in body.fallback_aggregators],
                     "reference_temperature": body.reference_temperature,
                     "aggregator_temperature": body.aggregator_temperature,
                     "max_tokens": body.max_tokens,
+                    "reference_max_tokens": body.reference_max_tokens,
+                    "context_length": body.context_length,
+                    "max_advisors": body.max_advisors,
+                    "max_reference_cost_usd": body.max_reference_cost_usd,
+                    "max_fanout_latency_seconds": body.max_fanout_latency_seconds,
+                    "circuit_breaker_seconds": body.circuit_breaker_seconds,
+                    "quota_cooldown_seconds": body.quota_cooldown_seconds,
+                    "fanout": body.fanout,
+                    "auto_routes": body.auto_routes,
                     "enabled": body.enabled,
                 }
+            validation_issues = validate_moa_config(raw)
+            errors = [item for item in validation_issues if item.get("severity") == "error"]
+            if errors:
+                raise HTTPException(status_code=422, detail={"issues": errors})
             normalized = normalize_moa_config(raw)
             cfg["moa"] = normalized
             save_config(cfg)
-            return {"ok": True, **normalized}
+            return {
+                "ok": True,
+                **normalized,
+                "revision": moa_config_revision(normalized),
+                "runtime_status": evaluate_moa_runtime_config(normalized),
+                "validation_issues": validation_issues,
+            }
     except HTTPException:
         raise
     except Exception:
         _log.exception("PUT /api/model/moa failed")
         raise HTTPException(status_code=500, detail="Failed to save MoA config")
+
+
+@app.post("/api/model/moa/feedback")
+def record_moa_router_feedback(
+    body: MoaRouteFeedbackPayload, profile: Optional[str] = None,
+):
+    """Записать только route feedback без сохранения prompts и outputs."""
+    try:
+        from agent.moa_runtime import record_route_feedback
+
+        with _profile_scope(body.profile or profile):
+            return {
+                "ok": True,
+                "router_feedback": record_route_feedback(
+                    body.suggested_route, body.chosen_route
+                ),
+            }
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/model/moa/feedback failed")
+        raise HTTPException(status_code=500, detail="Failed to save MoA route feedback")
 
 
 @app.post("/api/model/set")
@@ -5932,7 +6094,9 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
             # frontend can only overwrite what it explicitly sends.
             existing = read_raw_config()
             incoming = _denormalize_config_from_web(body.config)
-            save_config(_deep_merge(existing, incoming))
+            merged = _deep_merge(existing, incoming)
+            _normalize_embedded_moa_config(merged)
+            save_config(merged)
         return {"ok": True}
     except HTTPException:
         raise
@@ -13898,6 +14062,22 @@ class RawConfigUpdate(BaseModel):
     profile: Optional[str] = None
 
 
+def _normalize_embedded_moa_config(config: dict[str, Any]) -> None:
+    """Канонизировать MoA независимо от того, какой config endpoint выполняет запись."""
+    raw = config.get("moa")
+    if not isinstance(raw, dict):
+        return
+    from hermes_cli.moa_config import normalize_moa_config, validate_moa_config
+
+    errors = [
+        issue for issue in validate_moa_config(raw)
+        if issue.get("severity") == "error"
+    ]
+    if errors:
+        raise HTTPException(status_code=422, detail={"issues": errors})
+    config["moa"] = normalize_moa_config(raw)
+
+
 @app.get("/api/config/raw")
 async def get_config_raw(profile: Optional[str] = None):
     """Raw config.yaml text plus its resolved path.
@@ -13921,6 +14101,7 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
         with _profile_scope(body.profile or profile):
+            _normalize_embedded_moa_config(parsed)
             save_config(parsed)
         return {"ok": True}
     except yaml.YAMLError as e:
@@ -17007,6 +17188,21 @@ def start_server(
         start_nous_auth_keepalive()
     except Exception as exc:
         _log.debug("Nous auth keepalive did not start: %s", exc)
+
+    try:
+        from hermes_cli.moa_config import evaluate_moa_runtime_config
+
+        moa_status = evaluate_moa_runtime_config(load_config().get("moa") or {})
+        if moa_status.get("degraded"):
+            degraded = [
+                name for name, status in moa_status.get("presets", {}).items()
+                if status.get("degraded")
+            ]
+            _log.warning("MoA startup validation: degraded presets=%s", ",".join(degraded))
+        else:
+            _log.info("MoA startup validation: all enabled presets ready")
+    except Exception as exc:
+        _log.warning("MoA startup validation failed safely: %s", type(exc).__name__)
 
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5

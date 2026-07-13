@@ -6,6 +6,15 @@ import pytest
 from run_agent import AIAgent
 
 
+@pytest.fixture(autouse=True)
+def _mock_moa_runtime_availability(monkeypatch):
+    """These unit tests mock call_llm, so provider auth is intentionally out of scope."""
+    monkeypatch.setattr(
+        "hermes_cli.moa_config._slot_runtime_available",
+        lambda _slot: True,
+    )
+
+
 def _response(content="done", *, tool_calls=None):
     message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
     choice = SimpleNamespace(message=message, finish_reason="stop")
@@ -1059,3 +1068,119 @@ def test_reference_guidance_merges_into_trailing_user_in_plain_chat():
     assert len(messages) == 2
     assert messages[-1]["role"] == "user"
     assert messages[-1]["content"] == "hello\n\nREFERENCE BLOCK"
+
+
+def test_aggregator_rate_limit_uses_fallback_and_opens_circuit(monkeypatch, tmp_path):
+    from agent.moa_runtime import circuit_status, reset_runtime_state_for_tests
+    from agent.moa_loop import MoAChatCompletions
+
+    class RateLimitError(Exception):
+        status_code = 429
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: resilient
+  presets:
+    resilient:
+      reference_models: []
+      aggregator: {provider: openrouter, model: primary-model}
+      fallback_aggregators:
+        - {provider: openai-codex, model: fallback-model}
+      circuit_breaker_seconds: 30
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    reset_runtime_state_for_tests()
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        if kwargs["model"] == "primary-model":
+            raise RateLimitError("rate limit")
+        return _response("fallback acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    facade = MoAChatCompletions("resilient")
+
+    response = facade.create(messages=[{"role": "user", "content": "solve"}])
+
+    assert response.choices[0].message.content == "fallback acted"
+    assert [call["model"] for call in calls] == ["primary-model", "fallback-model"]
+    assert facade.last_aggregator_slot["model"] == "fallback-model"
+    assert facade.last_runtime_status["fallback_used"] is True
+    assert circuit_status({"provider": "openrouter", "model": "primary-model"})["active"] is True
+    reset_runtime_state_for_tests()
+
+
+def test_reference_budgets_limit_advisors_and_forward_timeout(monkeypatch, tmp_path):
+    from agent.moa_loop import MoAChatCompletions
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: bounded
+  presets:
+    bounded:
+      reference_models:
+        - {provider: openai-codex, model: advisor-one}
+        - {provider: openai-codex, model: advisor-two}
+      aggregator: {provider: openrouter, model: aggregator}
+      max_advisors: 1
+      max_fanout_latency_seconds: 12
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("ok")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    facade = MoAChatCompletions("bounded")
+
+    facade.create(messages=[{"role": "user", "content": "solve"}])
+
+    reference_calls = [call for call in calls if call["task"] == "moa_reference"]
+    assert len(reference_calls) == 1
+    assert reference_calls[0]["model"] == "advisor-one"
+    assert reference_calls[0]["timeout"] == 12.0
+    assert facade.last_runtime_status["budget"]["selected_advisors"] == 1
+    assert facade.last_runtime_status["budget"]["exceeded"] is True
+
+
+def test_reference_cost_budget_uses_known_pricing(monkeypatch):
+    from agent import moa_loop
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "base_url": "https://example.test"},
+    )
+    monkeypatch.setattr(
+        "agent.usage_pricing.estimate_usage_cost",
+        lambda *_args, **_kwargs: SimpleNamespace(amount_usd=0.1),
+    )
+    models = [
+        {"provider": "p", "model": "one"},
+        {"provider": "p", "model": "two"},
+    ]
+
+    selected, status = moa_loop._select_references_for_budget(
+        models,
+        [{"role": "user", "content": "question"}],
+        max_advisors=None,
+        max_cost_usd=0.15,
+        max_tokens=500,
+    )
+
+    assert selected == [models[0]]
+    assert status["estimated_reference_cost_usd"] == 0.1
+    assert status["skipped_by_budget"] == ["p:two"]

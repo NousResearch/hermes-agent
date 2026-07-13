@@ -17,6 +17,15 @@ from unittest.mock import patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _mock_moa_runtime_availability(monkeypatch):
+    """Cost tests mock call_llm and therefore do not exercise provider auth."""
+    monkeypatch.setattr(
+        "hermes_cli.moa_config._slot_runtime_available",
+        lambda _slot: True,
+    )
+
+
 def _response(content="ok"):
     message = SimpleNamespace(content=content, tool_calls=[])
     choice = SimpleNamespace(message=message, finish_reason="stop")

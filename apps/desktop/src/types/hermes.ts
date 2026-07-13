@@ -858,25 +858,91 @@ export interface MoaModelSlot {
 }
 
 export interface MoaConfigResponse {
+  revision?: string
   default_preset: string
   active_preset: string
+  excluded_providers?: string[]
   presets: Record<
     string,
     {
       aggregator: MoaModelSlot
+      fallback_aggregators?: MoaModelSlot[]
       aggregator_temperature: number
       enabled: boolean
       max_tokens: number
+      reference_max_tokens?: number | null
+      context_length?: number | null
+      max_advisors?: number | null
+      max_reference_cost_usd?: number | null
+      max_fanout_latency_seconds?: number | null
+      circuit_breaker_seconds?: number | null
+      quota_cooldown_seconds?: number | null
+      fanout?: 'per_iteration' | 'user_turn'
+      auto_routes?: Partial<Record<'fast' | 'balanced' | 'research' | 'code_heavy' | 'max', string>>
       reference_models: MoaModelSlot[]
       reference_temperature: number
     }
   >
   aggregator: MoaModelSlot
+  fallback_aggregators?: MoaModelSlot[]
   aggregator_temperature: number
   enabled: boolean
   max_tokens: number
+  reference_max_tokens?: number | null
+  context_length?: number | null
+  max_advisors?: number | null
+  max_reference_cost_usd?: number | null
+  max_fanout_latency_seconds?: number | null
+  circuit_breaker_seconds?: number | null
+  quota_cooldown_seconds?: number | null
+  fanout?: 'per_iteration' | 'user_turn'
+  auto_routes?: Partial<Record<'fast' | 'balanced' | 'research' | 'code_heavy' | 'max', string>>
   reference_models: MoaModelSlot[]
   reference_temperature: number
+  runtime_status?: {
+    degraded: boolean
+    presets: Record<
+      string,
+      {
+        degraded: boolean
+        unavailable: string[]
+        reference_count: number
+        aggregator_available: boolean
+        aggregator: string
+        configured_aggregator?: string
+        fallback_used?: boolean
+        cooling_down?: Array<{
+          slot: string
+          retry_after_seconds: number
+          reason: string
+        }>
+      }
+    >
+    telemetry?: {
+      events: number
+      presets: Record<
+        string,
+        {
+          turns: number
+          failures: number
+          fallbacks: number
+          average_latency_ms: number
+          known_reference_cost_usd: number
+          last: {
+            aggregator?: string
+            fallback_used?: boolean
+            latency_ms?: number
+            reference_count?: number
+            reference_cost_usd?: number | null
+            budget_exceeded?: boolean
+            status?: string
+          }
+        }
+      >
+    }
+    router_feedback?: Record<string, { samples: number; effective_route: string }>
+  }
+  validation_issues?: Array<{ severity: 'error' | 'warning'; code: string; message: string }>
 }
 
 export interface ModelAssignmentRequest {

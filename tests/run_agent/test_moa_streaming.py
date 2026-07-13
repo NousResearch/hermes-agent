@@ -10,6 +10,15 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _mock_moa_runtime_availability(monkeypatch):
+    """Streaming tests replace call_llm and must not depend on local credentials."""
+    monkeypatch.setattr(
+        "hermes_cli.moa_config._slot_runtime_available",
+        lambda _slot: True,
+    )
+
+
 def _response(content="done", *, tool_calls=None):
     message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
     choice = SimpleNamespace(message=message, finish_reason="stop")

@@ -4711,22 +4711,12 @@ def _normalize_custom_provider_entry(
         "discover_models", "extra_body", "extra_headers",
         "ssl_ca_cert", "ssl_verify",
     }
+    mapped_aliases: List[Tuple[str, str]] = []
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
-            _warn_once_per_provider(
-                provider_key, f"camel:{camel}",
-                "providers.%s: camelCase key '%s' auto-mapped to '%s' "
-                "(use snake_case to avoid this warning)",
-                provider_key or "?", camel, snake,
-            )
             entry[snake] = entry[camel]
+            mapped_aliases.append((camel, snake))
     unknown = set(entry.keys()) - _KNOWN_KEYS - set(_CAMEL_ALIASES.keys())
-    if unknown:
-        _warn_once_per_provider(
-            provider_key, "unknown:" + ",".join(sorted(unknown)),
-            "providers.%s: unknown config keys ignored: %s",
-            provider_key or "?", ", ".join(sorted(unknown)),
-        )
 
     from urllib.parse import urlparse
 
@@ -4764,6 +4754,25 @@ def _normalize_custom_provider_entry(
         name = provider_key.strip()
     if not name:
         return None
+
+    # ``providers`` contains both custom OpenAI-compatible endpoints and
+    # built-in provider settings. Only entries with a valid endpoint reach
+    # this point, so warn about custom-provider schema here instead of
+    # producing false warnings for built-in-only keys such as ``enabled`` or
+    # ``auth_type`` that are intentionally ignored by this compatibility view.
+    for camel, snake in mapped_aliases:
+        _warn_once_per_provider(
+            provider_key, f"camel:{camel}",
+            "providers.%s: camelCase key '%s' auto-mapped to '%s' "
+            "(use snake_case to avoid this warning)",
+            provider_key or "?", camel, snake,
+        )
+    if unknown:
+        _warn_once_per_provider(
+            provider_key, "unknown:" + ",".join(sorted(unknown)),
+            "providers.%s: unknown config keys ignored: %s",
+            provider_key or "?", ", ".join(sorted(unknown)),
+        )
 
     normalized: Dict[str, Any] = {
         "name": name,

@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
@@ -30,6 +31,7 @@ vi.mock('@/hermes', () => ({
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
+  setApiRequestProfile: vi.fn(),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   getHermesConfigRecord: () => getHermesConfigRecord(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config)
@@ -71,11 +73,78 @@ afterEach(() => {
 
 async function renderModelSettings() {
   const { ModelSettings } = await import('./model-settings')
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } }
+  })
 
-  return render(<ModelSettings />)
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <ModelSettings />
+    </QueryClientProvider>
+  )
 }
 
 describe('ModelSettings', () => {
+  it('shows MoA readiness, telemetry, and budget controls', async () => {
+    getMoaModels.mockResolvedValueOnce({
+      revision: '1234567890abcdef',
+      default_preset: 'balanced',
+      active_preset: 'balanced',
+      presets: {
+        balanced: {
+          aggregator: { provider: 'openai-codex', model: 'gpt-5.6-terra' },
+          aggregator_temperature: 0.2,
+          enabled: true,
+          max_tokens: 4096,
+          max_advisors: 1,
+          max_reference_cost_usd: 0.2,
+          max_fanout_latency_seconds: 45,
+          reference_models: [],
+          reference_temperature: 0.3
+        }
+      },
+      aggregator: { provider: 'openai-codex', model: 'gpt-5.6-terra' },
+      aggregator_temperature: 0.2,
+      enabled: true,
+      max_tokens: 4096,
+      reference_models: [],
+      reference_temperature: 0.3,
+      runtime_status: {
+        degraded: false,
+        presets: {
+          balanced: {
+            degraded: false,
+            unavailable: [],
+            reference_count: 1,
+            aggregator_available: true,
+            aggregator: 'openai-codex:gpt-5.6-terra'
+          }
+        },
+        telemetry: {
+          events: 1,
+          presets: {
+            balanced: {
+              turns: 1,
+              failures: 0,
+              fallbacks: 0,
+              average_latency_ms: 420,
+              known_reference_cost_usd: 0,
+              last: { latency_ms: 420, reference_count: 1 }
+            }
+          }
+        }
+      }
+    })
+
+    await renderModelSettings()
+
+    expect(await screen.findByText('ready')).toBeTruthy()
+    expect(screen.getByText(/openai-codex:gpt-5.6-terra/)).toBeTruthy()
+    expect(screen.getByText('Last: 420 ms')).toBeTruthy()
+    expect(screen.getByText('Max advisors')).toBeTruthy()
+    expect(screen.getByText('Reference budget, USD')).toBeTruthy()
+  })
+
   it('loads the current main model and lists configured providers only', async () => {
     await renderModelSettings()
 

@@ -333,6 +333,22 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     }, 600)
   }, [])
 
+  const currentMoaRuntime = useMemo(() => {
+    if (!moa?.runtime_status) {
+      return null
+    }
+    const name = selectedMoaPreset || moa.default_preset
+    return moa.runtime_status.presets[name] || null
+  }, [moa, selectedMoaPreset])
+
+  const currentMoaTelemetry = useMemo(() => {
+    if (!moa?.runtime_status?.telemetry) {
+      return null
+    }
+    const name = selectedMoaPreset || moa.default_preset
+    return moa.runtime_status.telemetry.presets[name] || null
+  }, [moa, selectedMoaPreset])
+
   const updateMoaPreset = useCallback(
     (updater: (preset: NonNullable<typeof currentMoaPreset>) => NonNullable<typeof currentMoaPreset>) => {
       const prev = moaRef.current
@@ -380,7 +396,21 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
       setMoa(saved)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      const message = err instanceof Error ? err.message : String(err)
+      if (message.includes('moa_revision_conflict') || message.includes('409')) {
+        try {
+          const current = await getMoaModels()
+          if (profileEpoch.current === epoch) {
+            setMoa(current)
+            setSelectedMoaPreset(prev => (prev && current.presets[prev] ? prev : current.default_preset))
+          }
+        } catch {
+          // Исходная ошибка конфликта важнее вторичной ошибки refresh.
+        }
+        setError('MoA config changed in another client. The latest revision was loaded; review and save again.')
+      } else {
+        setError(message)
+      }
     } finally {
       setApplying(false)
     }
@@ -971,6 +1001,28 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           <div className="mb-2 text-xs text-muted-foreground">
             Default: <span className="font-mono">{moa.default_preset}</span>
           </div>
+          {currentMoaRuntime && (
+            <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <Pill>{currentMoaRuntime.degraded ? 'degraded' : 'ready'}</Pill>
+              <span>
+                Aggregator: <span className="font-mono">{currentMoaRuntime.aggregator || 'unavailable'}</span>
+              </span>
+              <span>Advisors: {currentMoaRuntime.reference_count}</span>
+              {!!currentMoaRuntime.cooling_down?.length && (
+                <Pill>{currentMoaRuntime.cooling_down.length} cooling down</Pill>
+              )}
+              {currentMoaTelemetry && (
+                <>
+                  <span>Last: {currentMoaTelemetry.last.latency_ms ?? 0} ms</span>
+                  <span>Fallbacks: {currentMoaTelemetry.fallbacks}</span>
+                  {currentMoaTelemetry.last.reference_cost_usd != null && (
+                    <span>References: ${currentMoaTelemetry.last.reference_cost_usd.toFixed(4)}</span>
+                  )}
+                  {currentMoaTelemetry.last.budget_exceeded && <Pill>budget capped</Pill>}
+                </>
+              )}
+            </div>
+          )}
           <div className="grid gap-1">
             {currentMoaPreset.reference_models.map((slot, index) => (
               <ListRow
@@ -1109,6 +1161,51 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               }
               title="Aggregator"
             />
+            <div className="mt-2 grid gap-2 sm:grid-cols-3">
+              <label className="grid gap-1 text-xs text-muted-foreground">
+                Max advisors
+                <Input
+                  min={1}
+                  onChange={event =>
+                    updateMoaPreset(prev => ({
+                      ...prev,
+                      max_advisors: event.target.value ? Number(event.target.value) : null
+                    }))
+                  }
+                  type="number"
+                  value={currentMoaPreset.max_advisors ?? ''}
+                />
+              </label>
+              <label className="grid gap-1 text-xs text-muted-foreground">
+                Reference budget, USD
+                <Input
+                  min={0.0001}
+                  onChange={event =>
+                    updateMoaPreset(prev => ({
+                      ...prev,
+                      max_reference_cost_usd: event.target.value ? Number(event.target.value) : null
+                    }))
+                  }
+                  step="0.01"
+                  type="number"
+                  value={currentMoaPreset.max_reference_cost_usd ?? ''}
+                />
+              </label>
+              <label className="grid gap-1 text-xs text-muted-foreground">
+                Fan-out timeout, sec
+                <Input
+                  min={1}
+                  onChange={event =>
+                    updateMoaPreset(prev => ({
+                      ...prev,
+                      max_fanout_latency_seconds: event.target.value ? Number(event.target.value) : null
+                    }))
+                  }
+                  type="number"
+                  value={currentMoaPreset.max_fanout_latency_seconds ?? ''}
+                />
+              </label>
+            </div>
           </div>
         </section>
       )}

@@ -186,6 +186,25 @@ class TestNormalizeCustomProviderEntry:
         result = _normalize_custom_provider_entry(entry, provider_key="test")
         assert result is None
 
+    def test_builtin_provider_entry_without_url_does_not_warn(self, caplog):
+        """Built-in settings are not malformed custom-provider entries."""
+        entry = {
+            "enabled": True,
+            "auth_type": "oauth",
+            "max_concurrency": 2,
+            "timeout_sec": 30,
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(
+                entry,
+                provider_key="antigravity_cli",
+            )
+        assert result is None
+        assert not any(
+            "unknown config keys" in record.message.lower()
+            for record in caplog.records
+        )
+
     def test_no_name_returns_none(self):
         """Entry with no name and no provider_key should return None."""
         entry = {

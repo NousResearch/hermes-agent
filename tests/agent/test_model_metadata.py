@@ -296,6 +296,30 @@ class TestDefaultContextLengths:
             assert get_model_context_length("glm-5") == 202752
             assert get_model_context_length("glm-5.1") == 202752
 
+    def test_moa_preset_context_length_overrides_aggregator_window(self):
+        """MoA использует рабочий бюджет пресета, а не максимум агрегатора."""
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        config = {
+            "moa": {
+                "presets": {
+                    "balanced": {
+                        "reference_models": [
+                            {"provider": "xai-oauth", "model": "grok-4.5"}
+                        ],
+                        "aggregator": {
+                            "provider": "openai-codex",
+                            "model": "gpt-5.6-terra",
+                        },
+                        "context_length": 372000,
+                    }
+                }
+            }
+        }
+        with mock_patch("hermes_cli.config.load_config", return_value=config):
+            assert get_model_context_length("balanced", provider="moa") == 372000
+
     def test_openrouter_live_metadata_beats_hardcoded_catchall(self):
         """OpenRouter-routed slugs resolve via the live OR catalog before the
         hardcoded family catch-all.

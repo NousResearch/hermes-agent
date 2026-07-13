@@ -789,6 +789,8 @@ class TestWebServerEndpoints:
         assert data["reference_models"]
         assert all(set(slot) == {"provider", "model"} for slot in data["reference_models"])
         assert set(data["aggregator"]) == {"provider", "model"}
+        assert len(data["revision"]) == 16
+        assert "telemetry" in data["runtime_status"]
 
     def test_put_moa_models_persists_provider_model_slots(self):
         from hermes_cli.config import load_config
@@ -811,6 +813,179 @@ class TestWebServerEndpoints:
         cfg = load_config()
         assert cfg["moa"]["reference_models"] == payload["reference_models"]
         assert cfg["moa"]["aggregator"] == payload["aggregator"]
+
+    def test_put_named_moa_presets_round_trips_routing_and_context_fields(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "default_preset": "auto",
+            "active_preset": "auto",
+            "excluded_providers": ["antigravity_cli"],
+            "presets": {
+                "auto": {
+                    "reference_models": [{"provider": "xai-oauth", "model": "grok-4.5"}],
+                    "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+                    "fallback_aggregators": [
+                        {"provider": "xai-oauth", "model": "grok-4.5"},
+                    ],
+                    "reference_temperature": 0.35,
+                    "aggregator_temperature": 0.2,
+                    "max_tokens": 4096,
+                    "reference_max_tokens": 500,
+                    "context_length": 450000,
+                    "max_advisors": 2,
+                    "max_reference_cost_usd": 0.2,
+                    "max_fanout_latency_seconds": 15,
+                    "circuit_breaker_seconds": 45,
+                    "quota_cooldown_seconds": 600,
+                    "fanout": "user_turn",
+                    "auto_routes": {
+                        "fast": "fast",
+                    },
+                    "enabled": True,
+                },
+                "fast": {
+                    "reference_models": [],
+                    "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-luna"},
+                    "reference_max_tokens": 250,
+                    "context_length": 128000,
+                    "fanout": "user_turn",
+                    "enabled": True,
+                },
+            },
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+        saved = resp.json()
+        assert saved["presets"]["auto"]["auto_routes"] == payload["presets"]["auto"]["auto_routes"]
+        assert saved["presets"]["auto"]["context_length"] == 450000
+        assert saved["presets"]["auto"]["max_advisors"] == 2
+        assert saved["presets"]["auto"]["max_reference_cost_usd"] == 0.2
+        assert saved["excluded_providers"] == ["antigravity_cli"]
+        assert saved["presets"]["auto"]["fallback_aggregators"] == [
+            {"provider": "xai-oauth", "model": "grok-4.5"},
+        ]
+        assert saved["presets"]["fast"]["reference_models"] == []
+
+        persisted = load_config()["moa"]["presets"]
+        assert persisted["auto"]["fanout"] == "user_turn"
+        assert persisted["auto"]["reference_max_tokens"] == 500
+        assert persisted["fast"]["context_length"] == 128000
+
+    def test_put_moa_rejects_stale_revision(self):
+        current = self.client.get("/api/model/moa").json()
+        stale = dict(current)
+        stale["revision"] = "0" * 16
+
+        response = self.client.put("/api/model/moa", json=stale)
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["code"] == "moa_revision_conflict"
+        assert detail["current_revision"] == current["revision"]
+
+    def test_moa_route_feedback_is_content_free(self):
+        for _ in range(3):
+            response = self.client.post("/api/model/moa/feedback", json={
+                "suggested_route": "balanced",
+                "chosen_route": "research",
+            })
+            assert response.status_code == 200
+
+        feedback = response.json()["router_feedback"]
+        assert feedback["balanced"] == {
+            "samples": 3,
+            "effective_route": "research",
+        }
+
+    def test_generic_config_save_canonicalizes_excluded_moa_references(self):
+        from hermes_cli.config import load_config
+
+        response = self.client.put("/api/config", json={"config": {
+            "moa": {
+                "excluded_providers": ["antigravity_cli"],
+                "presets": {
+                    "safe": {
+                        "reference_models": [
+                            {"provider": "antigravity_cli", "model": "legacy"},
+                        ],
+                        "aggregator": {
+                            "provider": "openai-codex",
+                            "model": "gpt-5.6-terra",
+                        },
+                    },
+                },
+            },
+        }})
+
+        assert response.status_code == 200
+        assert load_config()["moa"]["presets"]["safe"]["reference_models"] == []
+
+    def test_put_from_stale_client_preserves_provider_exclusions_and_fallbacks(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["moa"] = {
+            "default_preset": "default",
+            "excluded_providers": ["antigravity_cli"],
+            "presets": {
+                "default": {
+                    "reference_models": [],
+                    "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+                    "fallback_aggregators": [
+                        {"provider": "xai-oauth", "model": "grok-4.5"},
+                    ],
+                    "reference_max_tokens": 500,
+                    "context_length": 450000,
+                    "fanout": "user_turn",
+                    "auto_routes": {"research": "default"},
+                },
+            },
+        }
+        save_config(cfg)
+
+        stale_payload = {
+            "default_preset": "default",
+            "presets": {
+                "default": {
+                    "reference_models": [
+                        {"provider": "antigravity_cli", "model": "legacy"},
+                    ],
+                    "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+                },
+            },
+        }
+        response = self.client.put("/api/model/moa", json=stale_payload)
+
+        assert response.status_code == 200
+        saved = response.json()
+        assert saved["excluded_providers"] == ["antigravity_cli"]
+        assert saved["presets"]["default"]["reference_models"] == []
+        assert saved["presets"]["default"]["fallback_aggregators"] == [
+            {"provider": "xai-oauth", "model": "grok-4.5"},
+        ]
+        assert saved["presets"]["default"]["reference_max_tokens"] == 500
+        assert saved["presets"]["default"]["context_length"] == 450000
+        assert saved["presets"]["default"]["fanout"] == "user_turn"
+        assert saved["presets"]["default"]["auto_routes"] == {
+            "research": "default",
+        }
+
+    def test_put_moa_rejects_invalid_auto_route(self):
+        response = self.client.put("/api/model/moa", json={
+            "default_preset": "auto",
+            "presets": {
+                "auto": {
+                    "reference_models": [],
+                    "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+                    "auto_routes": {"research": "missing"},
+                },
+            },
+        })
+
+        assert response.status_code == 422
+        assert response.json()["detail"]["issues"][0]["code"] == "invalid_auto_route"
 
     # ── GET /api/media (remote image display) ───────────────────────────
 

@@ -2054,10 +2054,10 @@ def get_model_context_length(
 
     # 0a. MoA virtual provider — ``model`` is a preset name, not a real model,
     # and ``base_url`` is the local virtual endpoint, so every probe below would
-    # miss and fall through to the 256K default. The aggregator is the acting
-    # model, so resolve the context window from the aggregator slot's real
-    # provider+model instead. References are advisory-only and never bound the
-    # acting context, so they're ignored here.
+    # miss and fall through to the 256K default. Prefer an explicit per-preset
+    # working budget: reference models receive the same conversation view and
+    # the narrowest one can therefore bound a safe MoA window. Without a preset
+    # budget, fall back to the acting aggregator's real provider+model window.
     if (provider or "").strip().lower() == "moa":
         try:
             from hermes_cli.config import load_config
@@ -2065,6 +2065,12 @@ def get_model_context_length(
             from hermes_cli.runtime_provider import resolve_runtime_provider
 
             preset = resolve_moa_preset(load_config().get("moa") or {}, model)
+            preset_context_length = preset.get("context_length")
+            if (
+                isinstance(preset_context_length, int)
+                and preset_context_length > 0
+            ):
+                return preset_context_length
             agg = preset.get("aggregator") or {}
             agg_provider = str(agg.get("provider") or "").strip()
             agg_model = str(agg.get("model") or "").strip()

@@ -108,6 +108,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
+      const markSessionNeedsInput = (): string | null => {
+        if (!sessionId) {
+          return null
+        }
+
+        return updateSessionState(sessionId, state => ({ ...state, needsInput: true })).storedSessionId
+      }
+
       if (event.type === 'gateway.ready') {
         return
       } else if (event.type === 'session.info') {
@@ -454,12 +462,15 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const question = typeof payload?.question === 'string' ? payload.question : ''
 
         if (requestId && question) {
+          const storedSessionId = markSessionNeedsInput()
+
           setClarifyRequest({
             profile,
             requestId,
             question,
             choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,
-            sessionId: sessionId ?? null
+            sessionId: sessionId ?? null,
+            storedSessionId
           })
 
           // The transcript only renders the active session, so a background
@@ -467,10 +478,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           // it's working). Flag the session so the sidebar shows a persistent
           // "needs input" indicator on its row — works for the active session
           // too, and survives alt-tab / window blur (unlike a toast).
-          if (sessionId) {
-            updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
-          }
-
           dispatchNativeNotification({
             body: question,
             kind: 'input',
@@ -488,21 +495,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // surfaces once the user focuses that chat.
         const command = typeof payload?.command === 'string' ? payload.command : ''
         const description = typeof payload?.description === 'string' ? payload.description : 'dangerous command'
+        const storedSessionId = markSessionNeedsInput()
 
         setApprovalRequest({
           // false only when a tirith warning forbids it; backend omits the field otherwise.
           allowPermanent: payload?.allow_permanent !== false,
-          choices: Array.isArray(payload?.choices) ? payload.choices.filter(choice => typeof choice === 'string') : undefined,
+          choices: Array.isArray(payload?.choices)
+            ? payload.choices.filter(choice => typeof choice === 'string')
+            : undefined,
           command,
           description,
           profile,
           sessionId: sessionId ?? null,
+          storedSessionId,
           smartDenied: payload?.smart_denied === true
         })
-
-        if (sessionId) {
-          updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
-        }
 
         dispatchNativeNotification({
           actions: [
@@ -521,11 +528,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
         if (requestId) {
-          setSudoRequest({ profile, requestId, sessionId: sessionId ?? null })
+          const storedSessionId = markSessionNeedsInput()
 
-          if (sessionId) {
-            updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
-          }
+          setSudoRequest({ profile, requestId, sessionId: sessionId ?? null, storedSessionId })
 
           dispatchNativeNotification({
             body: translateNow('notifications.native.inputBody'),
@@ -543,18 +548,16 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (requestId) {
           const envVar = typeof payload?.env_var === 'string' ? payload.env_var : ''
           const promptText = typeof payload?.prompt === 'string' ? payload.prompt : ''
+          const storedSessionId = markSessionNeedsInput()
 
           setSecretRequest({
             requestId,
             envVar,
             profile,
             prompt: promptText,
-            sessionId: sessionId ?? null
+            sessionId: sessionId ?? null,
+            storedSessionId
           })
-
-          if (sessionId) {
-            updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
-          }
 
           dispatchNativeNotification({
             body: promptText || envVar || translateNow('notifications.native.inputBody'),

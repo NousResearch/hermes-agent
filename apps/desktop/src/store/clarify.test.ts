@@ -43,6 +43,18 @@ describe('clarify store', () => {
     ])
   })
 
+  it('stamps a stable local request identity and receive time at ingest', () => {
+    const before = Date.now()
+
+    setClarifyRequest(clarify('runtime', 'backend-request'))
+
+    const stored = Object.values($clarifyRequests.get())[0]
+
+    expect(stored?.receivedAt).toBeGreaterThanOrEqual(before)
+    expect(stored?.requestIdentity).toEqual(expect.any(String))
+    expect(stored?.requestIdentity).not.toBe('backend-request')
+  })
+
   it('derives and clears requests by exact active profile, session, and request id', () => {
     setClarifyRequest({ ...clarify('shared', 'default-request'), profile: 'default' })
     setClarifyRequest({ ...clarify('shared', 'work-request'), profile: 'work' })

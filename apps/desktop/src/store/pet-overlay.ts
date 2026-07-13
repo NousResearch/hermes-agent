@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import { $petActivity, $petInfo, $petUnread, clearPetUnread, type PetActivity, type PetInfo } from '@/store/pet'
+import { $petActionCenter, type PetActionCenterState } from '@/store/pet-action-center'
 import { $awaitingResponse, $busy } from '@/store/session'
 
 /**
@@ -40,6 +41,7 @@ export interface PetOverlayOpenRequest {
 
 /** Everything the overlay needs to reproduce the live mascot. */
 export interface PetOverlayStatePayload {
+  actionCenter: PetActionCenterState
   info: PetInfo
   activity: PetActivity
   busy: boolean
@@ -82,8 +84,7 @@ export interface PetReaction {
 
 export const $petReaction = atom<PetReaction | null>(null)
 
-export const forwardPetReaction = (kind: string) =>
-  $petReaction.set({ id: ($petReaction.get()?.id ?? 0) + 1, kind })
+export const forwardPetReaction = (kind: string) => $petReaction.set({ id: ($petReaction.get()?.id ?? 0) + 1, kind })
 
 function loadSavedBounds(): null | PetOverlayBounds {
   try {
@@ -143,6 +144,7 @@ let scaleHandler: ((scale: number) => void) | null = null
 
 function currentPayload(): PetOverlayStatePayload {
   return {
+    actionCenter: $petActionCenter.get(),
     info: $petInfo.get(),
     activity: $petActivity.get(),
     busy: $busy.get(),
@@ -185,7 +187,8 @@ function openOverlay(request: PetOverlayOpenRequest): void {
     $busy.subscribe(pushNow),
     $awaitingResponse.subscribe(pushNow),
     $petUnread.subscribe(pushNow),
-    $petReaction.subscribe(pushNow)
+    $petReaction.subscribe(pushNow),
+    $petActionCenter.subscribe(pushNow)
   ]
 }
 

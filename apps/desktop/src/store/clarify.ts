@@ -1,7 +1,13 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { $activeGatewayProfile } from './profile'
-import { normalizePromptIdentity, promptIdentityKey, type PromptTarget } from './prompt-identity'
+import {
+  promptIdentityKey,
+  type PromptRequestInput,
+  type PromptTarget,
+  stampPromptRequest,
+  type StoredPromptRequest
+} from './prompt-identity'
 import { $activeSessionId } from './session'
 
 export interface ClarifyRequest {
@@ -12,8 +18,8 @@ export interface ClarifyRequest {
   sessionId: string | null
 }
 
-const $allClarifyRequests = atom<Record<string, ClarifyRequest>>({})
-export const $clarifyRequests: ReadableAtom<Record<string, ClarifyRequest>> = $allClarifyRequests
+const $allClarifyRequests = atom<Record<string, StoredPromptRequest<ClarifyRequest>>>({})
+export const $clarifyRequests: ReadableAtom<Record<string, StoredPromptRequest<ClarifyRequest>>> = $allClarifyRequests
 
 // The clarify request for the currently-viewed session. The inline ClarifyTool
 // only ever mounts inside the active session's transcript, so it reads this
@@ -23,11 +29,11 @@ export const $clarifyRequest = computed(
   (requests, activeProfile, activeId) => requests[promptIdentityKey(activeProfile, activeId)] ?? null
 )
 
-export function setClarifyRequest(request: ClarifyRequest): void {
-  const normalized = normalizePromptIdentity(request)
+export function setClarifyRequest(request: PromptRequestInput<ClarifyRequest>): void {
+  const stamped = stampPromptRequest('clarify', request)
   $allClarifyRequests.set({
     ...$allClarifyRequests.get(),
-    [promptIdentityKey(normalized.profile, normalized.sessionId)]: normalized
+    [promptIdentityKey(stamped.profile, stamped.sessionId)]: stamped
   })
 }
 
@@ -50,7 +56,7 @@ export function clearClarifyRequest(target?: PromptTarget | string): void {
   }
 
   // Preserve the global reset and legacy request-id sweep used by teardown.
-  const next: Record<string, ClarifyRequest> = {}
+  const next: Record<string, StoredPromptRequest<ClarifyRequest>> = {}
   let changed = false
 
   for (const [key, value] of Object.entries(requests)) {

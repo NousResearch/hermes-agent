@@ -34,6 +34,18 @@ afterEach(() => {
 })
 
 describe('profile-safe prompt identity', () => {
+  it('stamps a stable local request identity and receive time at ingest', () => {
+    const before = Date.now()
+
+    setApprovalRequest({ command: 'test', description: 'metadata', profile: 'default', sessionId: 'runtime' })
+
+    const stored = Object.values($approvalRequests.get())[0]
+
+    expect(stored?.receivedAt).toBeGreaterThanOrEqual(before)
+    expect(stored?.requestIdentity).toEqual(expect.any(String))
+    expect(stored?.requestIdentity).not.toBe('')
+  })
+
   it('keeps the same runtime session id independent across profiles', () => {
     setApprovalRequest({ command: 'default command', description: 'default', profile: 'default', sessionId: 'shared' })
     setApprovalRequest({ command: 'work command', description: 'work', profile: ' work ', sessionId: 'shared' })
@@ -80,14 +92,21 @@ describe('profile-safe prompt identity', () => {
 
 describe('approval prompt store', () => {
   it('holds the active session-keyed approval request', () => {
-    setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'recursive delete', profile: 'default', sessionId: 's1' })
-
-    expect($approvalRequest.get()).toEqual({
+    setApprovalRequest({
       command: 'rm -rf /tmp/x',
       description: 'recursive delete',
       profile: 'default',
       sessionId: 's1'
     })
+
+    expect($approvalRequest.get()).toEqual(
+      expect.objectContaining({
+        command: 'rm -rf /tmp/x',
+        description: 'recursive delete',
+        profile: 'default',
+        sessionId: 's1'
+      })
+    )
   })
 
   it('parks a background session prompt out of the active view', () => {
@@ -129,7 +148,9 @@ describe('sudo prompt store', () => {
     // otherwise a late response to a prior sudo ask would dismiss the current
     // one and leave the agent blocked.
     clearSudoRequest({ profile: 'default', requestId: 'stale', sessionId: 's1' })
-    expect($sudoRequest.get()).toEqual({ profile: 'default', requestId: 'abc', sessionId: 's1' })
+    expect($sudoRequest.get()).toEqual(
+      expect.objectContaining({ profile: 'default', requestId: 'abc', sessionId: 's1' })
+    )
 
     clearSudoRequest({ profile: 'default', requestId: 'abc', sessionId: 's1' })
     expect($sudoRequest.get()).toBeNull()
@@ -153,13 +174,15 @@ describe('secret prompt store', () => {
       sessionId: 's1'
     })
 
-    expect($secretRequest.get()).toEqual({
-      requestId: 'r1',
-      envVar: 'OPENAI_API_KEY',
-      profile: 'default',
-      prompt: 'Paste your key',
-      sessionId: 's1'
-    })
+    expect($secretRequest.get()).toEqual(
+      expect.objectContaining({
+        requestId: 'r1',
+        envVar: 'OPENAI_API_KEY',
+        profile: 'default',
+        prompt: 'Paste your key',
+        sessionId: 's1'
+      })
+    )
 
     clearSecretRequest({ profile: 'default', requestId: 'mismatch', sessionId: 's1' })
     expect($secretRequest.get()).not.toBeNull()

@@ -2,7 +2,14 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { $clarifyRequest } from './clarify'
 import { $activeGatewayProfile } from './profile'
-import { normalizePromptIdentity, type PromptIdentity, promptIdentityKey, type PromptTarget } from './prompt-identity'
+import {
+  type PromptIdentity,
+  promptIdentityKey,
+  type PromptRequestInput,
+  type PromptTarget,
+  stampPromptRequest,
+  type StoredPromptRequest
+} from './prompt-identity'
 import { $activeSessionId } from './session'
 
 // Blocking interactive prompts the gateway raises mid-turn. Each maps to a
@@ -15,19 +22,19 @@ import { $activeSessionId } from './session'
 // identities, so a background prompt never hijacks the foreground.
 
 interface PromptStore<T extends PromptIdentity> {
-  $active: ReadableAtom<null | T>
-  $all: ReadableAtom<Record<string, T>>
+  $active: ReadableAtom<null | StoredPromptRequest<T>>
+  $all: ReadableAtom<Record<string, StoredPromptRequest<T>>>
   clear: (target?: PromptTarget) => void
   reset: () => void
-  set: (request: T) => void
+  set: (request: PromptRequestInput<T>) => void
 }
 
 // One per-profile/session prompt kind, plus an active-identity view for the
 // overlays. A request-id mismatch is a no-op so a stale resolve cannot wipe a
 // replacement. Calling clear without a target preserves the global reset path.
-function keyedPromptStore<T extends PromptIdentity>(): PromptStore<T> {
-  const $all = atom<Record<string, T>>({})
-  const idOf = (value: T): string | undefined => (value as { requestId?: string }).requestId
+function keyedPromptStore<T extends PromptIdentity>(kind: string): PromptStore<T> {
+  const $all = atom<Record<string, StoredPromptRequest<T>>>({})
+  const idOf = (value: StoredPromptRequest<T>): string | undefined => (value as { requestId?: string }).requestId
 
   return {
     $active: computed(
@@ -37,8 +44,8 @@ function keyedPromptStore<T extends PromptIdentity>(): PromptStore<T> {
     $all,
     reset: () => $all.set({}),
     set(request) {
-      const normalized = normalizePromptIdentity(request)
-      $all.set({ ...$all.get(), [promptIdentityKey(normalized.profile, normalized.sessionId)]: normalized })
+      const stamped = stampPromptRequest(kind, request)
+      $all.set({ ...$all.get(), [promptIdentityKey(stamped.profile, stamped.sessionId)]: stamped })
     },
     clear(target) {
       if (!target) {
@@ -84,9 +91,9 @@ export interface SecretRequest extends PromptIdentity {
   requestId: string
 }
 
-const approval = keyedPromptStore<ApprovalRequest>()
-const sudo = keyedPromptStore<SudoRequest>()
-const secret = keyedPromptStore<SecretRequest>()
+const approval = keyedPromptStore<ApprovalRequest>('approval')
+const sudo = keyedPromptStore<SudoRequest>('sudo')
+const secret = keyedPromptStore<SecretRequest>('secret')
 const $approvalInlineAnchorCount = atom(0)
 
 export const $approvalRequest = approval.$active

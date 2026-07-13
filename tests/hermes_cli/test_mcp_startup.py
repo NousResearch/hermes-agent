@@ -220,6 +220,11 @@ def _mock_mcp_modules(monkeypatch, calls):
     )
     monkeypatch.setitem(
         sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
         "tools.mcp_tool",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1)
@@ -227,24 +232,67 @@ def _mock_mcp_modules(monkeypatch, calls):
     )
 
 
-def test_prepare_agent_startup_runs_inline_mcp_for_quiet_flag(monkeypatch):
-    """chat -Q (quiet flag) must run MCP discovery synchronously."""
+def test_prepare_agent_startup_backgrounds_mcp_for_quiet_flag(monkeypatch):
+    """chat -Q (quiet flag) is output suppression, not non-interactive mode.
+
+    It should still use the normal background MCP optimization, not block
+    on synchronous discovery.
+    """
+    stop = threading.Event()
     calls = {"mcp": 0}
-    _mock_mcp_modules(monkeypatch, calls)
 
-    main_mod._prepare_agent_startup(_agent_args(quiet=True))
+    def _blocking_discover():
+        calls["mcp"] += 1
+        stop.wait()
 
-    assert calls["mcp"] == 1
-    assert mcp_startup._mcp_discovery_thread is None
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
+            load_config=lambda: {},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=_blocking_discover),
+    )
+
+    try:
+        start = time.monotonic()
+        main_mod._prepare_agent_startup(_agent_args(quiet=True))
+        elapsed = time.monotonic() - start
+        # Should return quickly (background optimization), not block.
+        assert elapsed < 0.5
+        # Background thread was spawned, discovery is in-flight.
+        assert mcp_startup._mcp_discovery_thread is not None
+    finally:
+        stop.set()
 
 
-def test_prepare_agent_startup_runs_inline_mcp_for_query_mode(monkeypatch):
-    """chat -q "prompt" (query mode) must run MCP discovery synchronously.
+def test_prepare_agent_startup_runs_bounded_mcp_for_query_mode(monkeypatch):
+    """chat -q "prompt" (query mode) must wait for MCP discovery with a cap.
 
     Kanban workers and cron jobs use -q (--query), not -Q (--quiet).
-    The 750ms background timeout is too short for slow MCP servers
-    (e.g. mcp-atlassian via uvx takes 12+ seconds). Synchronous discovery
-    ensures all tools are visible before the first turn.
+    The fix uses background discovery + join_mcp_discovery(timeout=30)
+    so all servers register before the first turn, but a dead server
+    cannot hang the process indefinitely.
     """
     calls = {"mcp": 0}
     _mock_mcp_modules(monkeypatch, calls)
@@ -252,7 +300,119 @@ def test_prepare_agent_startup_runs_inline_mcp_for_query_mode(monkeypatch):
     main_mod._prepare_agent_startup(_agent_args(query="work kanban task t_abc"))
 
     assert calls["mcp"] == 1
-    assert mcp_startup._mcp_discovery_thread is None
+    # Discovery ran on a background thread that was joined, so it completed
+    # and the thread is no longer alive.
+    assert mcp_startup._mcp_discovery_thread is not None
+    assert not mcp_startup._mcp_discovery_thread.is_alive()
+
+
+def test_query_mode_delayed_mcp_server_tools_visible(monkeypatch):
+    """Integration test: a slow MCP server's tools must be visible after
+    query-mode startup completes.
+
+    Simulates a server that takes 200ms to register (well within the 30s
+    cap) and verifies discovery completed before _prepare_agent_startup
+    returns, proving the tool snapshot will include the late server.
+    """
+    registry = {"tools_registered": False}
+
+    def _slow_discover():
+        time.sleep(0.2)
+        registry["tools_registered"] = True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"slow_server": {"transport": "stdio"}}},
+            load_config=lambda: {},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=_slow_discover),
+    )
+
+    main_mod._prepare_agent_startup(_agent_args(query="work kanban task t_abc"))
+
+    # The slow server's tools must be registered by the time startup returns.
+    assert registry["tools_registered"] is True
+    # Discovery thread completed (joined within the 30s bound).
+    assert mcp_startup._mcp_discovery_thread is not None
+    assert not mcp_startup._mcp_discovery_thread.is_alive()
+
+
+def test_query_mode_blocked_server_bounded_by_timeout(monkeypatch):
+    """A completely blocked MCP server must not hang query-mode startup forever.
+
+    Simulates a server that never finishes and verifies startup returns
+    within a reasonable time (we use a short timeout override for testing).
+    """
+    block = threading.Event()
+
+    def _hanging_discover():
+        block.wait()  # blocks forever unless set
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"stuck": {"transport": "stdio"}}},
+            load_config=lambda: {},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=_hanging_discover),
+    )
+    # Override the 30s production timeout to 0.3s for fast testing.
+    monkeypatch.setattr(
+        main_mod, "_QUERY_MODE_MCP_TIMEOUT", 0.3
+    )
+
+    try:
+        start = time.monotonic()
+        main_mod._prepare_agent_startup(_agent_args(query="work kanban task t_abc"))
+        elapsed = time.monotonic() - start
+        # Must return within the timeout, not hang.
+        assert elapsed < 2.0
+        # Thread is still alive (server never completed).
+        assert mcp_startup._mcp_discovery_thread is not None
+        assert mcp_startup._mcp_discovery_thread.is_alive()
+    finally:
+        block.set()
 
 
 def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):

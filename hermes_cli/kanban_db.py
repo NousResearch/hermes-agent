@@ -5982,6 +5982,14 @@ _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
 
+# PIDs of workers WE spawned via _default_spawn. reap_worker_zombies() reaps
+# ONLY these (targeted waitpid), never wildcard waitpid(-1). A wildcard reap
+# in a process that also runs asyncio-managed stdio MCP subprocesses (the
+# gateway) steals those children's exit statuses, breaking MCP transport
+# setup with "unhandled errors in a TaskGroup (1 sub-exception)". Carry patch
+# — report upstream so this scoping lands in mainline.
+_spawned_worker_pids: "set[int]" = set()
+
 
 def _record_worker_exit(pid: int, raw_status: int) -> None:
     """Record a reaped child's exit status for later classification.
@@ -6057,18 +6065,24 @@ def reap_worker_zombies() -> "list[int]":
     """
     reaped: "list[int]" = []
     if os.name != "nt":
-        try:
-            while True:
-                try:
-                    pid, status = os.waitpid(-1, os.WNOHANG)
-                except ChildProcessError:
-                    break
-                if pid == 0:
-                    break
-                _record_worker_exit(pid, status)
-                reaped.append(pid)
-        except Exception:
-            pass
+        # Targeted reap: only pids WE spawned. NEVER waitpid(-1) — that would
+        # steal exit statuses of unrelated children (asyncio stdio MCP
+        # servers), breaking their transport. See _spawned_worker_pids.
+        for pid in list(_spawned_worker_pids):
+            try:
+                wpid, status = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                # Not our child anymore (already reaped) — stop tracking.
+                _spawned_worker_pids.discard(pid)
+                continue
+            except Exception:
+                continue
+            if wpid == 0:
+                # Still running; keep tracking.
+                continue
+            _record_worker_exit(wpid, status)
+            _spawned_worker_pids.discard(wpid)
+            reaped.append(wpid)
     return reaped
 
 
@@ -8087,6 +8101,9 @@ def _default_spawn(
     # handle is kept alive by the child's inheritance.  The parent's
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
+    # Track this pid so reap_worker_zombies() reaps it by targeted waitpid
+    # (never wildcard -1, which would break sibling asyncio MCP subprocesses).
+    _spawned_worker_pids.add(proc.pid)
     return proc.pid
 
 

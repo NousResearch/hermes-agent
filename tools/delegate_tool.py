@@ -19,6 +19,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 import os
@@ -71,6 +72,43 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
 # Both emit a logger.warning for audit; gateway sessions are unaffected
 # because they resolve approvals via tools/approval.py's per-session queue,
 # not through these TLS callbacks.
+
+# Goal-to-toolset capability precheck (Issue #63887)
+def _check_goal_capability(
+    goal: str, child_toolsets: List[str]
+) -> Optional[str]:
+    """Check if goal requires toolsets the child doesn't have.
+
+    Returns an error message if the goal implies capabilities not in child_toolsets,
+    or None if the goal appears compatible.
+
+    This is a simple heuristic check that catches obvious mismatches (e.g. "write a file"
+    without the 'file' toolset). It is not exhaustive and may produce false negatives,
+    but it's better than silent failure + fabricated success.
+    """
+    # Define toolset requirement patterns
+    # Pattern format: (regex, required_toolset, description)
+    _CAPABILITY_PATTERNS = [
+        (r"(?i)(?:write|create|save|generate).*\bfile\b", "file", "write/create file"),
+        (r"(?i)(?:write|save|generate).*\b(?:to|at)\s+[~./]", "file", "write to path"),
+        (r"(?i)(?:run|execute).*\b(?:command|script|program)\b", "terminal", "run commands"),
+        (r"(?i)(?:install|pip install|npm install)", "terminal", "install packages"),
+    ]
+
+    goal_lower = goal.lower()
+
+    for pattern, required_toolset, description in _CAPABILITY_PATTERNS:
+        if re.search(pattern, goal_lower):
+            if required_toolset not in child_toolsets:
+                return (
+                    f"Goal requires {description} capability, but child toolset "
+                    f"does not include '{required_toolset}'. Either add '{required_toolset}' "
+                    f"to toolsets or rephrase the goal to avoid this requirement."
+                )
+
+    return None
+
+
 def _subagent_auto_deny(command: str, description: str, **kwargs) -> str:
     """Auto-deny dangerous commands in subagent threads (safe default).
 
@@ -1135,6 +1173,21 @@ def _build_child_agent(
         child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+
+    # Capability precheck: fail fast if goal requires toolsets the child lacks
+    # Issue #63887: child fabricated success when goal required file tools it didn't have
+    if goal:
+        capability_error = _check_goal_capability(goal, child_toolsets)
+        if capability_error:
+            logger.error(
+                "Delegation capability precheck failed: %s (goal=%r, toolsets=%s)",
+                capability_error, goal, child_toolsets
+            )
+            raise ValueError(
+                f"Cannot spawn subagent: {capability_error} "
+                f"Goal: {goal[:100]}{'...' if len(goal) > 100 else ''}, "
+                f"Available toolsets: {child_toolsets}"
+            )
 
     # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
     # removed.  The re-add is unconditional on parent-toolset membership because

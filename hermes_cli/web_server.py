@@ -671,7 +671,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "approvals.mode": {
         "type": "select",
         "description": "Dangerous command approval mode",
-        "options": ["manual", "smart", "off"],
+        "options": ["ask", "yolo", "deny"],
     },
     "context.engine": {
         "type": "select",
@@ -2336,6 +2336,7 @@ async def get_calendar_month(year: int, month: int):
     2. Cron job run count per day (if user has active cron jobs)
     """
     import calendar as _calendar
+    from datetime import datetime as _datetime
 
     # ── Session and cron counts ──
     last_day = _calendar.monthrange(year, month)[1]
@@ -2351,8 +2352,11 @@ async def get_calendar_month(year: int, month: int):
         sessions_by_day: dict[str, list[dict]] = {}
         cron_by_day: dict[str, int] = {}
         for s in sessions:
-            created = s.get("created_at") or ""
-            sdate = created[:10] if len(created) >= 10 else ""
+            # started_at is a Unix timestamp
+            started = s.get("started_at")
+            if not started:
+                continue
+            sdate = _datetime_fromtimestamp(started).strftime("%Y-%m-%d")
             if sdate and start_date <= sdate <= end_date:
                 sid = (s.get("id") or "").lower()
                 if sid.startswith("cron_") or s.get("source") == "cron":

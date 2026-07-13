@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -10,6 +11,7 @@ import secrets
 import shlex
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -45,30 +47,45 @@ def production_delivery_guard(command: str) -> Optional[str]:
     ):
         return None
 
-    raw = command.lower()
-    local_or_preview = bool(re.search(
-        r"(?:^|\s)--local(?:\s|$)|--target(?:=|\s+)preview\b",
-        raw,
-    ))
-    prod_flag = any(
-        token in {
-            "--prod", "--production", "--target=production",
-            "--environment=production",
-        }
-        for token in lowered
-    ) or bool(re.search(
-        r"--prod(?:uction)?\b|--(?:target|environment)(?:=|\s+)production\b",
-        raw,
-    ))
-    production_mutation = (
-        (bool(re.search(r"\bvercel\b", raw)) and prod_flag)
-        or (bool(re.search(r"\bsupabase\s+db\s+push\b", raw)) and not local_or_preview)
-        or (bool(re.search(r"\bsupabase\s+migration\s+up\b", raw)) and not local_or_preview)
-        or bool(re.search(r"\bprisma\s+migrate\s+deploy\b", raw))
-        or bool(re.search(r"\bgh\s+pr\s+merge\b", raw))
-        or bool(re.search(r"\bgit\s+push\b[^\n;&|]*\bmain\b", raw))
-        or (prod_flag and any(part in raw for part in ("deploy", "migrat")))
-    )
+    segments = []
+    segment = []
+    for token in lowered:
+        if token and set(token) <= {";", "&", "|"}:
+            if segment:
+                segments.append(" ".join(segment))
+                segment = []
+        else:
+            segment.append(token)
+    if segment:
+        segments.append(" ".join(segment))
+    segments = [
+        part
+        for raw in segments
+        for part in re.split(r"\s*(?:&&|\|\||[;|])\s*", raw)
+        if part
+    ]
+
+    production_mutation = False
+    for raw in segments:
+        local_or_preview = bool(re.search(
+            r"(?:^|\s)--local(?:\s|$)|--target(?:=|\s+)preview\b",
+            raw,
+        ))
+        prod_flag = bool(re.search(
+            r"--prod(?:uction)?\b|--(?:target|environment)(?:=|\s+)production\b",
+            raw,
+        ))
+        production_mutation = (
+            (bool(re.search(r"\bvercel\b", raw)) and prod_flag)
+            or (bool(re.search(r"\bsupabase\s+db\s+push\b", raw)) and not local_or_preview)
+            or (bool(re.search(r"\bsupabase\s+migration\s+up\b", raw)) and not local_or_preview)
+            or bool(re.search(r"\bprisma\s+migrate\s+deploy\b", raw))
+            or bool(re.search(r"\bgh\b.*\bpr\b.*\bmerge\b", raw))
+            or bool(re.search(r"\bgit\b.*\bpush\b.*\bmain\b", raw))
+            or (prod_flag and any(part in raw for part in ("deploy", "migrat")))
+        )
+        if production_mutation:
+            break
     if not production_mutation:
         return None
     return (
@@ -146,19 +163,57 @@ def project_lock_key(project: str, *, target: str = "production") -> str:
     return f"delivery:{_canonical_project(project)}:production"
 
 
-def _validate_owner(conn, owner: LeaseOwner) -> None:
+def project_lock_db_path():
+    """Return the one shared lock store for every Kanban board."""
+    return kb.kanban_home() / "kanban" / "project-delivery-locks.db"
+
+
+@contextlib.contextmanager
+def connect_project_locks():
+    with kb.connect_closing(project_lock_db_path()) as conn:
+        yield conn
+
+
+def _owner_valid(conn, owner: LeaseOwner) -> bool:
     row = conn.execute(
         "SELECT 1 FROM tasks WHERE id=? AND status='running' "
         "AND current_run_id=? AND claim_lock=?",
         (owner.task_id, owner.run_id, owner.claim_lock),
     ).fetchone()
-    if row is None:
+    return row is not None
+
+
+def _validate_owner(conn, owner: LeaseOwner) -> None:
+    if not _owner_valid(conn, owner):
         raise RuntimeError("Kanban run no longer owns its task claim")
+
+
+@contextlib.contextmanager
+def _lock_write_txn(conn):
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
+        raise
+    else:
+        try:
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
 
 
 def acquire_project_lock(
     conn,
     *,
+    owner_conn=None,
     project: str,
     operation: str,
     owner: LeaseOwner,
@@ -176,8 +231,8 @@ def acquire_project_lock(
     token = secrets.token_urlsafe(32)
     expires_at = timestamp + float(lease_seconds)
 
-    with kb.write_txn(conn):
-        _validate_owner(conn, owner)
+    _validate_owner(owner_conn or conn, owner)
+    with _lock_write_txn(conn):
         row = conn.execute(
             "SELECT owner_token, expires_at, fence, owner_host, owner_pid, command_pid "
             "FROM project_delivery_locks WHERE resource_key=?",
@@ -244,21 +299,21 @@ def renew_project_lock(
     conn,
     lease: ProjectLease,
     *,
+    owner_conn=None,
     lease_seconds: float,
     now: Optional[float] = None,
 ) -> bool:
     timestamp = time.time() if now is None else float(now)
     expires_at = timestamp + float(lease_seconds)
-    with kb.write_txn(conn):
+    if not _owner_valid(owner_conn or conn, lease.owner):
+        return False
+    with _lock_write_txn(conn):
         cur = conn.execute(
             "UPDATE project_delivery_locks SET renewed_at=?, expires_at=? "
             "WHERE resource_key=? AND owner_token=? AND fence=? AND expires_at>? "
-            "AND owner_task_id=? AND owner_run_id=? AND owner_claim_lock=? "
-            "AND EXISTS (SELECT 1 FROM tasks WHERE id=? AND status='running' "
-            "AND current_run_id=? AND claim_lock=?)",
+            "AND owner_task_id=? AND owner_run_id=? AND owner_claim_lock=?",
             (
                 timestamp, expires_at, lease.key, lease.token, lease.fence, timestamp,
-                lease.owner.task_id, lease.owner.run_id, lease.owner.claim_lock,
                 lease.owner.task_id, lease.owner.run_id, lease.owner.claim_lock,
             ),
         )
@@ -266,7 +321,7 @@ def renew_project_lock(
 
 
 def attach_project_lock_process(conn, lease: ProjectLease, pid: int) -> bool:
-    with kb.write_txn(conn):
+    with _lock_write_txn(conn):
         cur = conn.execute(
             "UPDATE project_delivery_locks SET command_pid=? WHERE resource_key=? "
             "AND owner_token=? AND fence=?",
@@ -275,20 +330,25 @@ def attach_project_lock_process(conn, lease: ProjectLease, pid: int) -> bool:
         return cur.rowcount == 1
 
 
-def release_project_lock(conn, lease: ProjectLease, *, now: Optional[float] = None) -> bool:
+def release_project_lock(
+    conn,
+    lease: ProjectLease,
+    *,
+    owner_conn=None,
+    now: Optional[float] = None,
+) -> bool:
     timestamp = time.time() if now is None else float(now)
-    with kb.write_txn(conn):
+    if not _owner_valid(owner_conn or conn, lease.owner):
+        return False
+    with _lock_write_txn(conn):
         cur = conn.execute(
             "UPDATE project_delivery_locks SET owner_task_id=NULL, owner_run_id=NULL, "
             "owner_claim_lock=NULL, owner_instance=NULL, owner_host=NULL, "
             "owner_pid=NULL, command_pid=NULL, owner_token=NULL, "
             "expires_at=NULL, released_at=? WHERE resource_key=? "
-            "AND owner_token=? AND fence=? "
-            "AND EXISTS (SELECT 1 FROM tasks WHERE id=? AND status='running' "
-            "AND current_run_id=? AND claim_lock=?)",
+            "AND owner_token=? AND fence=?",
             (
                 timestamp, lease.key, lease.token, lease.fence,
-                lease.owner.task_id, lease.owner.run_id, lease.owner.claim_lock,
             ),
         )
         return cur.rowcount == 1
@@ -309,6 +369,7 @@ def project_lock_status(conn, project: str) -> Optional[dict]:
 def acquire_with_wait(
     conn,
     *,
+    owner_conn=None,
     project: str,
     operation: str,
     owner: LeaseOwner,
@@ -322,21 +383,34 @@ def acquire_with_wait(
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("poll_seconds must be positive")
     deadline = time.monotonic() + max(0.0, wait_seconds)
-    while True:
-        lease = acquire_project_lock(
-            conn,
-            project=project,
-            operation=operation,
-            owner=owner,
-            lease_seconds=lease_seconds,
-        )
-        if lease is not None:
-            return lease
-        if time.monotonic() >= deadline:
-            return None
-        if on_wait is not None:
-            on_wait(project_lock_status(conn, project))
-        time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
+    previous_busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    conn.execute("PRAGMA busy_timeout=0")
+    try:
+        while True:
+            busy = False
+            try:
+                lease = acquire_project_lock(
+                    conn,
+                    owner_conn=owner_conn,
+                    project=project,
+                    operation=operation,
+                    owner=owner,
+                    lease_seconds=lease_seconds,
+                )
+            except sqlite3.OperationalError as exc:
+                if not kb._is_busy_error(exc):
+                    raise
+                lease = None
+                busy = True
+            if lease is not None:
+                return lease
+            if time.monotonic() >= deadline:
+                return None
+            if on_wait is not None:
+                on_wait(None if busy else project_lock_status(conn, project))
+            time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
+    finally:
+        conn.execute(f"PRAGMA busy_timeout={int(previous_busy_timeout)}")
 
 
 def _emit(state: str, **fields) -> None:
@@ -394,9 +468,10 @@ def run_locked_command(
     if lease_seconds < 2:
         raise ValueError("--lease must be at least 2 seconds")
     owner = LeaseOwner.from_env()
-    with kb.connect() as conn:
+    with kb.connect_closing() as owner_conn, connect_project_locks() as conn:
         lease = acquire_with_wait(
             conn,
+            owner_conn=owner_conn,
             project=project,
             operation=operation,
             owner=owner,
@@ -420,11 +495,11 @@ def run_locked_command(
         try:
             proc = subprocess.Popen(_supervised_command(command))  # noqa: S603 -- explicit argv, no shell
         except Exception:
-            release_project_lock(conn, lease)
+            release_project_lock(conn, lease, owner_conn=owner_conn)
             raise
         if not attach_project_lock_process(conn, lease, proc.pid):
             _stop_process(proc)
-            release_project_lock(conn, lease)
+            release_project_lock(conn, lease, owner_conn=owner_conn)
             raise RuntimeError("lost project lease before command process registration")
         interrupted = False
         old_handlers = {}
@@ -444,7 +519,9 @@ def run_locked_command(
                     _stop_process(proc)
                     break
                 if time.monotonic() >= next_renewal:
-                    if not renew_project_lock(conn, lease, lease_seconds=lease_seconds):
+                    if not renew_project_lock(
+                        conn, lease, owner_conn=owner_conn, lease_seconds=lease_seconds,
+                    ):
                         lost = True
                         _emit("lost", fence=lease.fence)
                         _stop_process(proc)
@@ -458,7 +535,7 @@ def run_locked_command(
         finally:
             for sig, handler in old_handlers.items():
                 signal.signal(sig, handler)
-            released = release_project_lock(conn, lease)
+            released = release_project_lock(conn, lease, owner_conn=owner_conn)
             _emit("released" if released else "stale_release_rejected", fence=lease.fence)
         if lost or not released:
             return 74

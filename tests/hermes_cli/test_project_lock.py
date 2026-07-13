@@ -60,8 +60,12 @@ def test_worker_production_commands_require_lock_wrapper(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deploy")
     assert pl.production_delivery_guard("vercel --prod")
     assert pl.production_delivery_guard("supabase db push")
+    assert pl.production_delivery_guard("supabase db push && echo --local")
+    assert pl.production_delivery_guard("bash -c 'supabase db push && echo --local'")
     assert pl.production_delivery_guard("gh pr merge 123 --squash")
+    assert pl.production_delivery_guard("gh --repo owner/repo pr merge 123")
     assert pl.production_delivery_guard("git push origin main")
+    assert pl.production_delivery_guard("git -C /tmp/repo push origin main")
     assert pl.production_delivery_guard("vercel") is None
     assert pl.production_delivery_guard("supabase db push --local") is None
     assert pl.production_delivery_guard(
@@ -76,6 +80,61 @@ def test_worker_production_commands_require_lock_wrapper(monkeypatch):
     blocked = json.loads(terminal_tool("vercel --prod", force=True))
     assert blocked["status"] == "blocked"
     assert "kanban lock run" in blocked["error"]
+
+
+def test_same_project_lock_is_shared_across_boards(claimed_owner, tmp_path):
+    home, owner_a = claimed_owner
+    board_b_path = tmp_path / "board-b.db"
+    kb.init_db(board_b_path)
+    with kb.connect_closing(board_b_path) as board_b:
+        task_id = kb.create_task(board_b, title="deploy b", assignee="developer")
+        task = kb.claim_task(board_b, task_id, claimer="host:200")
+        assert task is not None
+        assert task.current_run_id is not None
+        owner_b = pl.LeaseOwner(
+            task_id=task_id,
+            run_id=task.current_run_id,
+            claim_lock="host:200",
+            instance_id="instance-b",
+            host=socket.gethostname(),
+            pid=os.getpid(),
+        )
+        with kb.connect_closing(home / "kanban.db") as board_a, pl.connect_project_locks() as locks:
+            first = pl.acquire_project_lock(
+                locks, owner_conn=board_a, project="Pryapus/Drip-Research-Hub",
+                operation="deploy", owner=owner_a, lease_seconds=10, now=100.0,
+            )
+            assert first is not None
+            assert pl.acquire_project_lock(
+                locks, owner_conn=board_b, project="Pryapus/Drip-Research-Hub",
+                operation="migration", owner=owner_b, lease_seconds=10, now=100.0,
+            ) is None
+            assert pl.release_project_lock(locks, first, owner_conn=board_a) is True
+
+
+def test_wait_deadline_is_bounded_during_sqlite_contention(claimed_owner):
+    _, owner = claimed_owner
+    with (
+        kb.connect_closing() as owner_conn,
+        pl.connect_project_locks() as blocker,
+        pl.connect_project_locks() as contender,
+    ):
+        blocker.execute("BEGIN IMMEDIATE")
+        waits = []
+        started = time.monotonic()
+        try:
+            lease = pl.acquire_with_wait(
+                contender, owner_conn=owner_conn,
+                project="Pryapus/Drip-Research-Hub", operation="deploy",
+                owner=owner, lease_seconds=10, wait_seconds=0.05,
+                poll_seconds=0.01, on_wait=lambda holder: waits.append(holder),
+            )
+        finally:
+            blocker.execute("ROLLBACK")
+        elapsed = time.monotonic() - started
+    assert lease is None
+    assert waits
+    assert elapsed < 0.2
 
 
 def test_atomic_handoff_and_stale_token_rejection(claimed_owner):
@@ -272,12 +331,18 @@ def test_real_cli_killed_holder_hands_off_after_lease(claimed_owner, tmp_path):
     )
     entered = tmp_path / "entered"
     handed_off = tmp_path / "handed-off"
+    child_pid_path = tmp_path / "child-pid"
+    completed = tmp_path / "completed"
     holder = subprocess.Popen(
         _cli_lock_command(
             [
                 sys.executable,
                 "-c",
-                f"import pathlib,time; pathlib.Path({str(entered)!r}).write_text('entered'); time.sleep(30)",
+                "import os,pathlib,time; "
+                f"pathlib.Path({str(child_pid_path)!r}).write_text(str(os.getpid())); "
+                f"pathlib.Path({str(entered)!r}).write_text(str(time.time())); "
+                "time.sleep(30); "
+                f"pathlib.Path({str(completed)!r}).write_text(str(time.time()))",
             ],
             wait=5,
         ),
@@ -287,13 +352,15 @@ def test_real_cli_killed_holder_hands_off_after_lease(claimed_owner, tmp_path):
         text=True,
     )
     command_pid = None
+    child_pid = None
     try:
         deadline = time.time() + 5
         while time.time() < deadline:
-            with kb.connect() as conn:
+            with pl.connect_project_locks() as conn:
                 status = pl.project_lock_status(conn, "Pryapus/Drip-Research-Hub")
-            if entered.exists() and status and status["command_pid"]:
+            if entered.exists() and child_pid_path.exists() and status and status["command_pid"]:
                 command_pid = status["command_pid"]
+                child_pid = int(child_pid_path.read_text())
                 break
             time.sleep(0.05)
         if command_pid is None:
@@ -324,15 +391,21 @@ def test_real_cli_killed_holder_hands_off_after_lease(claimed_owner, tmp_path):
         )
         assert successor.returncode == 0, successor.stderr
         assert handed_off.read_text() == "successor"
-        states = [json.loads(line)["state"] for line in successor.stderr.splitlines()]
+        events = [json.loads(line) for line in successor.stderr.splitlines()]
+        states = [event["state"] for event in events]
         assert "waiting" in states
         assert states[-2:] == ["acquired", "released"]
+        assert events[-2]["timestamp"] >= float(entered.read_text())
+        assert child_pid is not None and not kb._pid_alive(child_pid)
+        assert not completed.exists()
     finally:
         if holder.poll() is None:
             holder.kill()
             holder.wait()
         if command_pid and kb._pid_alive(command_pid):
             os.kill(command_pid, signal.SIGKILL)
+        if child_pid and kb._pid_alive(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
 
 
 def test_non_finite_wait_is_rejected(claimed_owner):

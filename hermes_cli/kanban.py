@@ -1046,7 +1046,7 @@ def _cmd_lock(args: argparse.Namespace) -> int:
             wait_seconds=args.wait,
         )
     if action == "status":
-        with kb.connect() as conn:
+        with project_lock.connect_project_locks() as conn:
             status = project_lock.project_lock_status(conn, args.project)
         if getattr(args, "json", False):
             print(json.dumps(status, indent=2, sort_keys=True))

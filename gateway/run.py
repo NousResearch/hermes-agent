@@ -8673,28 +8673,31 @@ class GatewayRunner:
         return "\n".join(lines)
 
     async def _handle_qstatus_command(self, event: MessageEvent) -> str:
-        """Handle /qstatus — show queue depth for this session and totals."""
+        """Handle /qstatus — show queue depth for the caller's session.
+
+        Cross-session aggregates (total queued across all sessions, global
+        active-agent count) are live-activity data for OTHER users, so they
+        are gated behind configured-admin authorization — the same boundary
+        that restricts cross-origin command data elsewhere. Non-admins see
+        only their own queue.
+        """
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         adapter = self.adapters.get(source.platform) if source else None
 
-        # Current session depth
+        # Current session depth — always visible to the caller (own data).
         my_depth = self._queue_depth(session_key, adapter=adapter)
-
-        # Total across all sessions
         queued_events = getattr(self, "_queued_events", None) or {}
-        total_overflow = sum(len(v) for v in queued_events.values())
-        # Count adapter-level pending slots
-        total_slots = 0
-        for adap in self.adapters.values():
-            pending = getattr(adap, "_pending_messages", None) or {}
-            total_slots += len(pending)
-        total_depth = total_overflow + total_slots
 
-        # Running agents count
-        running = getattr(self, "_running_agents", {}) or {}
-        running_count = len(running)
+        # Cross-session totals are only shown to admins. When no admin list is
+        # configured for this scope (policy.enabled is False), the scope is
+        # unrestricted and everyone is effectively trusted, so allow it too.
+        from gateway.slash_access import policy_for_source as _policy_for_source
+
+        policy = _policy_for_source(self.config, source)
+        user_id = (source.user_id if source else None) or ""
+        show_global = (not policy.enabled) or policy.is_admin(user_id)
 
         lines = ["📋 Queue Status", ""]
 
@@ -8703,13 +8706,26 @@ class GatewayRunner:
         else:
             lines.append("This session: empty")
 
-        if total_depth > my_depth:
-            lines.append(f"Total (all sessions): {total_depth} queued")
+        if show_global:
+            # Total across all sessions (slot + overflow).
+            total_overflow = sum(len(v) for v in queued_events.values())
+            total_slots = 0
+            for adap in self.adapters.values():
+                pending = getattr(adap, "_pending_messages", None) or {}
+                total_slots += len(pending)
+            total_depth = total_overflow + total_slots
 
-        if running_count:
-            lines.append(f"Active agents: {running_count}")
+            running_count = len(getattr(self, "_running_agents", {}) or {})
 
-        # Show pending items for current session if any
+            if total_depth > my_depth:
+                lines.append(f"Total (all sessions): {total_depth} queued")
+            if running_count:
+                lines.append(f"Active agents: {running_count}")
+        else:
+            total_depth = my_depth
+            running_count = 0
+
+        # Show pending items for current session if any (own data).
         if my_depth and adapter:
             pending_slot = getattr(adapter, "_pending_messages", None) or {}
             if session_key in pending_slot:

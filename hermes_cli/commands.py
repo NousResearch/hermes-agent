@@ -337,6 +337,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "help",
         "new",
         "profile",
+        "qstatus",
         "queue",
         "restart",
         "status",

@@ -545,6 +545,162 @@ async def test_status_command_bypasses_active_session_guard():
     assert session_key not in adapter._pending_messages, "/status was incorrectly queued"
 
 
+def _make_qstatus_runner(session_entry, *, admin_ids=None, user_commands=None,
+                         platform: Platform = Platform.TELEGRAM):
+    """Runner for /qstatus tests. ``admin_ids`` set → slash gating enabled
+    for the scope, so only listed admins see cross-session aggregates.
+    ``user_commands`` are the slash commands non-admins may reach at all."""
+    extra: dict = {}
+    if admin_ids:
+        extra["allow_admin_from"] = list(admin_ids)
+    if user_commands:
+        extra["user_allowed_commands"] = list(user_commands)
+    runner = _make_runner(session_entry, platform=platform)
+    runner.config = GatewayConfig(
+        platforms={platform: PlatformConfig(enabled=True, token="***", extra=extra)}
+    )
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_qstatus_reports_local_queue_depth():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_qstatus_runner(session_entry)
+    session_key = session_entry.session_key
+    runner._queued_events = {session_key: [SimpleNamespace(text="hi there")]}
+
+    result = await runner._handle_message(_make_event("/qstatus"))
+
+    assert "Queue Status" in result
+    assert "This session: 1 queued" in result
+    assert '"hi there"' in result
+
+
+@pytest.mark.asyncio
+async def test_qstatus_alias_qs_routes_to_qstatus():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_qstatus_runner(session_entry)
+
+    result = await runner._handle_message(_make_event("/qs"))
+
+    assert "Queue Status" in result
+    assert "This session: empty" in result
+
+
+@pytest.mark.asyncio
+async def test_qstatus_hides_cross_session_totals_from_non_admin():
+    """Non-admins (gating enabled, not listed) see only their own queue —
+    never other sessions' live activity or the global active-agent count."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    # Caller "u1" is NOT an admin, but the operator lets non-admins run
+    # /qstatus. The command reaches the handler, which must still hide
+    # cross-session data from the non-admin.
+    runner = _make_qstatus_runner(
+        session_entry, admin_ids=["admin-99"], user_commands=["qstatus"]
+    )
+    # Another session has queued items and there's a running agent.
+    runner._queued_events = {"other-session": [SimpleNamespace(text="x"), SimpleNamespace(text="y")]}
+    runner._running_agents = {"other-session": MagicMock()}
+
+    result = await runner._handle_message(_make_event("/qstatus"))
+
+    assert "This session: empty" in result
+    assert "Total (all sessions)" not in result
+    assert "Active agents" not in result
+
+
+@pytest.mark.asyncio
+async def test_qstatus_shows_cross_session_totals_to_admin():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    # Caller "u1" IS the configured admin → cross-session aggregates visible.
+    runner = _make_qstatus_runner(session_entry, admin_ids=["u1"])
+    runner._queued_events = {"other-session": [SimpleNamespace(text="x"), SimpleNamespace(text="y")]}
+    runner._running_agents = {"other-session": MagicMock()}
+
+    result = await runner._handle_message(_make_event("/qstatus"))
+
+    assert "Total (all sessions): 2 queued" in result
+    assert "Active agents: 1" in result
+
+
+@pytest.mark.asyncio
+async def test_qstatus_bypasses_active_session_guard():
+    """When an agent is running, /qstatus must be dispatched immediately —
+    not queued or treated as an interrupt (mirrors /status behavior)."""
+    import asyncio
+    from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+
+    source = _make_source()
+    session_key = build_session_key(source)
+    handler_called_with = []
+
+    async def fake_handler(event):
+        handler_called_with.append(event)
+        return "📋 Queue Status\nThis session: empty"
+
+    class _ConcreteAdapter(BasePlatformAdapter):
+        platform = Platform.TELEGRAM
+
+        async def connect(self): pass
+        async def disconnect(self): pass
+        async def send(self, chat_id, content, **kwargs): pass
+        async def get_chat_info(self, chat_id): return {}
+
+    adapter = _ConcreteAdapter(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+    adapter.set_message_handler(fake_handler)
+
+    sent = []
+
+    async def fake_send_with_retry(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+
+    adapter._send_with_retry = fake_send_with_retry
+
+    interrupt_event = asyncio.Event()
+    adapter._active_sessions[session_key] = interrupt_event
+
+    event = MessageEvent(
+        text="/qstatus",
+        source=source,
+        message_id="m1",
+        message_type=MessageType.COMMAND,
+    )
+    await adapter.handle_message(event)
+
+    assert handler_called_with, "/qstatus handler was never called (event was queued or dropped)"
+    assert sent, "/qstatus response was never sent"
+    assert not interrupt_event.is_set(), "/qstatus incorrectly triggered an agent interrupt"
+    assert session_key not in adapter._pending_messages, "/qstatus was incorrectly queued"
+
+
 @pytest.mark.asyncio
 async def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path):
     """Gateway /profile detects custom-root profiles (not under ~/.hermes)."""

@@ -1,4 +1,4 @@
-import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
+import { type ToolCallMessagePartProps, useAuiState, useMessagePartReasoning } from '@assistant-ui/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
@@ -174,10 +174,16 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   )
 }
 
-const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ text, status }) => {
-  const displayText = text.trimStart()
+const ReasoningTextPart: FC = () => {
+  // Read the reasoning text from the assistant-ui part context (same contract
+  // as MarkdownText's useMessagePartText). The `Reasoning` component is NOT
+  // handed a `text` prop — the runtime provides the part via context — so the
+  // previous prop-based read rendered an empty string and the Thinking widget
+  // showed blank even though the part carried text.
+  const part = useMessagePartReasoning() as { text?: string; status?: { type?: string } }
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
-  const isRunning = status?.type === 'running' || messageRunning
+  const isRunning = part.status?.type === 'running' || messageRunning
+  const displayText = (part.text ?? '').trimStart()
 
   return (
     <MarkdownTextContent

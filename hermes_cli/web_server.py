@@ -203,7 +203,17 @@ def _dashboard_shutdown_timeouts(config: Dict[str, Any]) -> tuple[int, float]:
     )
     if hard_exit is None:
         hard_exit = _DASHBOARD_HARD_EXIT_GRACE
-    return graceful_seconds, max(hard_exit, graceful_seconds + 2.0)
+    minimum_hard_exit = graceful_seconds + 2.0
+    if hard_exit < minimum_hard_exit:
+        _log.warning(
+            "dashboard.hard_exit_grace %.1fs is shorter than the %.1fs "
+            "minimum for graceful shutdown; using %.1fs",
+            hard_exit,
+            minimum_hard_exit,
+            minimum_hard_exit,
+        )
+        hard_exit = minimum_hard_exit
+    return graceful_seconds, hard_exit
 
 
 def _dashboard_ws_ping(

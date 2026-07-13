@@ -215,7 +215,7 @@ def test_start_server_bounds_graceful_shutdown(monkeypatch):
     assert captured["timeout_graceful_shutdown"] > 0
 
 
-def test_dashboard_shutdown_timeouts_enforce_hard_exit_cushion():
+def test_dashboard_shutdown_timeouts_enforce_hard_exit_cushion(caplog):
     graceful, hard_exit = web_server._dashboard_shutdown_timeouts({
         "dashboard": {
             "graceful_shutdown_timeout": 4,
@@ -226,6 +226,7 @@ def test_dashboard_shutdown_timeouts_enforce_hard_exit_cushion():
     assert graceful == 4
     assert isinstance(graceful, int)
     assert hard_exit == 6.0
+    assert "hard_exit_grace 4.5s is shorter than the 6.0s minimum" in caplog.text
 
 
 def test_dashboard_shutdown_timeouts_round_fractional_grace_up():

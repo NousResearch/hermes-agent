@@ -42,8 +42,10 @@ Implementation notes:
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
@@ -71,7 +73,53 @@ DIAGNOSTICS_DOCUMENT_WAIT = 5.0
 DIAGNOSTICS_FULL_WAIT = 10.0
 DIAGNOSTICS_REQUEST_TIMEOUT = 3.0
 PUSH_DEBOUNCE = 0.15
-SHUTDOWN_GRACE = 1.0  # seconds between SIGTERM and SIGKILL
+SHUTDOWN_GRACE = 5.0  # seconds between SIGTERM and SIGKILL
+SHUTDOWN_VERIFY_TIMEOUT = 1.0
+
+_LINUX_PROCESS_GROUPS = os.name == "posix" and sys.platform.startswith("linux")
+_PROC_ROOT = Path("/proc")
+
+
+def _load_pidfd_bindings():
+    """Return safe Linux process-identity bindings, if this runtime has them."""
+    if not _LINUX_PROCESS_GROUPS:
+        return None, None
+    if hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"):
+        return os.pidfd_open, lambda pidfd, sig: signal.pidfd_send_signal(pidfd, sig)
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        pidfd_open = libc.pidfd_open
+        pidfd_open.argtypes = (ctypes.c_int, ctypes.c_uint)
+        pidfd_open.restype = ctypes.c_int
+        pidfd_send_signal = libc.pidfd_send_signal
+        pidfd_send_signal.argtypes = (
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_uint,
+        )
+        pidfd_send_signal.restype = ctypes.c_int
+    except (AttributeError, OSError):
+        return None, None
+
+    def open_pidfd(pid: int, flags: int) -> int:
+        fd = pidfd_open(pid, flags)
+        if fd < 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+        return fd
+
+    def send_pidfd_signal(pidfd: int, sig: int) -> None:
+        if pidfd_send_signal(pidfd, sig, None, 0) < 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+
+    return open_pidfd, send_pidfd_signal
+
+
+_PIDFD_OPEN, _PIDFD_SEND_SIGNAL = _load_pidfd_bindings()
 
 # Retry policy for transient ContentModified errors.
 MAX_CONTENT_MODIFIED_RETRIES = 3
@@ -162,8 +210,12 @@ class LSPClient:
 
         # Process + streams
         self._proc: Optional[asyncio.subprocess.Process] = None
+        self._process_group_id: Optional[int] = None
+        self._session_id: Optional[int] = None
+        self._leader_start_time: Optional[int] = None
         self._stderr_task: Optional[asyncio.Task] = None
         self._reader_task: Optional[asyncio.Task] = None
+        self._server_request_tasks: Set[asyncio.Task] = set()
 
         # Request/response correlation
         self._next_id: int = 0
@@ -240,9 +292,15 @@ class LSPClient:
             await self._spawn()
             await self._initialize()
             self._state = "running"
-        except Exception:
+        except BaseException as exc:
             self._state = "error"
-            await self._cleanup_process()
+            if isinstance(exc, asyncio.CancelledError):
+                reason = "start_cancelled"
+            elif isinstance(exc, asyncio.TimeoutError):
+                reason = "start_timeout"
+            else:
+                reason = "start_failed"
+            await self._cleanup_process_cancellation_safe(reason=reason)
             raise
 
     @staticmethod
@@ -280,6 +338,22 @@ class LSPClient:
                 cwd=self._cwd,
                 start_new_session=True,
             )
+            if _LINUX_PROCESS_GROUPS:
+                # subprocess only reports a successful spawn after its child-side
+                # setsid() and exec complete. The resulting group is therefore
+                # owned by this client even if the leader exits before this task
+                # resumes and getpgid()/getsid() could no longer inspect it.
+                self._process_group_id = self._proc.pid
+                self._session_id = self._proc.pid
+                identity, readable = self._read_proc_identity(
+                    _PROC_ROOT / str(self._proc.pid)
+                )
+                if (
+                    readable
+                    and identity is not None
+                    and identity[1:3] == (self._proc.pid, self._proc.pid)
+                ):
+                    self._leader_start_time = identity[3]
         except FileNotFoundError as e:
             raise LSPProtocolError(
                 f"LSP server binary not found: {cmd[0]} ({e})"
@@ -318,7 +392,7 @@ class LSPClient:
                 if kind == "response":
                     self._dispatch_response(key, msg)
                 elif kind == "request":
-                    asyncio.create_task(self._dispatch_request(key, msg))
+                    self._start_server_request_task(key, msg)
                 elif kind == "notification":
                     self._dispatch_notification(key, msg)
                 else:
@@ -429,38 +503,340 @@ class LSPClient:
                     pass
         finally:
             self._state = "stopped"
-            await self._cleanup_process()
+            await self._cleanup_process_cancellation_safe(reason="shutdown")
 
-    async def _cleanup_process(self) -> None:
+    async def _cleanup_process_cancellation_safe(self, *, reason: str) -> None:
+        """Finish cleanup even if the lifecycle operation is cancelled."""
+        task = asyncio.create_task(self._cleanup_process(reason=reason))
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # The cleanup task is shielded from this cancellation. Wait for it
+            # before preserving cancellation for the caller.
+            await task
+            raise
+
+    def _safe_owned_process_group(self) -> Optional[int]:
+        """Return the isolated Linux session identifier recorded at spawn."""
+        if not _LINUX_PROCESS_GROUPS:
+            return None
+        pgid = self._process_group_id
+        session_id = self._session_id
+        if (
+            pgid is None
+            or session_id is None
+            or pgid != session_id
+            or pgid <= 1
+            or pgid == os.getpid()
+        ):
+            return None
+        try:
+            current_pgid = os.getpgrp()
+        except OSError:
+            return None
+        if pgid == current_pgid:
+            logger.error(
+                "[%s] refusing LSP cleanup for current process group pgid=%s",
+                self.server_id,
+                pgid,
+            )
+            return None
+        return pgid
+
+    @staticmethod
+    def _read_proc_identity(
+        entry: Path,
+    ) -> tuple[Optional[tuple[str, int, int, int]], bool]:
+        """Read ``(state, pgid, sid, start_time)`` and whether the read was safe."""
+        try:
+            stat = entry.joinpath("stat").read_text(encoding="ascii")
+            fields = stat[stat.rfind(")") + 2 :].split()
+            state = fields[0]
+            member_pgid = int(fields[2])
+            session_id = int(fields[3])
+            start_time = int(fields[19])
+        except FileNotFoundError:
+            return None, True
+        except (OSError, ValueError, IndexError):
+            return None, False
+        return (state, member_pgid, session_id, start_time), True
+
+    @staticmethod
+    def _identity_is_live_group_member(
+        identity: Optional[tuple[str, int, int, int]], pgid: int
+    ) -> bool:
+        return bool(
+            identity is not None
+            and identity[0] not in {"Z", "X"}
+            and identity[1] == pgid
+            and identity[2] == pgid
+        )
+
+    def _session_leader_ownership(self, pgid: int) -> tuple[Optional[bool], bool]:
+        """Return leader ownership, with ``None`` for an exited leader."""
+        identity, readable = self._read_proc_identity(_PROC_ROOT / str(pgid))
+        if not readable or identity is None:
+            return None, readable
+        owned = bool(
+            self._leader_start_time is not None
+            and identity[1] == pgid
+            and identity[2] == pgid
+            and identity[3] == self._leader_start_time
+        )
+        return owned, True
+
+    def _open_owned_process_group_members(
+        self, pgid: int
+    ) -> Optional[tuple[List[tuple[int, int]], bool]]:
+        """Pin and validate every visible member of this LSP launch.
+
+        Ownership is checked before and after opening each pidfd. PID reuse can
+        therefore only make validation fail or leave the pinned process dead;
+        it cannot redirect the signal to the replacement process.
+        """
+        if _PIDFD_OPEN is None or _PIDFD_SEND_SIGNAL is None:
+            return None
+        if self._session_id != pgid:
+            return ([], False)
+        leader_owned, leader_readable = self._session_leader_ownership(pgid)
+        if not leader_readable:
+            return ([], False)
+        if leader_owned is False:
+            # The numeric SID/PGID now names a different session leader.
+            return ([], True)
+        try:
+            entries = tuple(_PROC_ROOT.iterdir())
+        except OSError:
+            return ([], False)
+
+        members: List[tuple[int, int]] = []
+        scan_complete = True
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            initial_identity, readable = self._read_proc_identity(entry)
+            if not readable:
+                scan_complete = False
+                continue
+            if not self._identity_is_live_group_member(initial_identity, pgid):
+                continue
+            pid = int(entry.name)
+            try:
+                pidfd = _PIDFD_OPEN(pid, 0)
+            except ProcessLookupError:
+                continue
+            except OSError as exc:
+                scan_complete = False
+                if exc.errno == errno.ENOSYS:
+                    for _, opened_fd in members:
+                        try:
+                            os.close(opened_fd)
+                        except OSError:
+                            pass
+                    return None
+                continue
+            pinned_identity, readable = self._read_proc_identity(entry)
+            if not readable:
+                scan_complete = False
+            if (
+                pinned_identity == initial_identity
+                and self._identity_is_live_group_member(pinned_identity, pgid)
+            ):
+                members.append((pid, pidfd))
+            else:
+                try:
+                    os.close(pidfd)
+                except OSError:
+                    scan_complete = False
+        leader_owned, leader_readable = self._session_leader_ownership(pgid)
+        if not leader_readable:
+            scan_complete = False
+        if leader_owned is False:
+            for _, pidfd in members:
+                try:
+                    os.close(pidfd)
+                except OSError:
+                    pass
+            return ([], scan_complete)
+        return members, scan_complete
+
+    def _signal_owned_process_group_members(
+        self, pgid: int, sig: int
+    ) -> Optional[tuple[int, bool]]:
+        opened = self._open_owned_process_group_members(pgid)
+        if opened is None:
+            return None
+        members, complete = opened
+        try:
+            for pid, pidfd in members:
+                try:
+                    _PIDFD_SEND_SIGNAL(pidfd, sig)
+                except ProcessLookupError:
+                    continue
+                except OSError as exc:
+                    if exc.errno == errno.ENOSYS:
+                        return None
+                    complete = False
+                    logger.warning(
+                        "[%s] LSP pidfd signal failed pid=%s signal=%s error=%s",
+                        self.server_id,
+                        pid,
+                        signal.Signals(sig).name,
+                        type(exc).__name__,
+                    )
+        finally:
+            for _, pidfd in members:
+                try:
+                    os.close(pidfd)
+                except OSError:
+                    complete = False
+        return len(members), complete
+
+    async def _signal_process_group_until_empty(
+        self, pgid: int, sig: int, timeout: float
+    ) -> Optional[bool]:
+        """Repeatedly pin and signal members so late descendants are contained."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        complete = True
+        while True:
+            result = self._signal_owned_process_group_members(pgid, sig)
+            if result is None:
+                return None
+            member_count, scan_complete = result
+            complete = complete and scan_complete
+            if member_count == 0:
+                return complete
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(min(0.05, max(0.0, deadline - loop.time())))
+
+    async def _reap_leader(self, proc: asyncio.subprocess.Process) -> None:
+        if proc.returncode is not None:
+            return
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_VERIFY_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] LSP leader pid=%s did not exit after cleanup",
+                self.server_id,
+                proc.pid,
+            )
+
+    async def _cleanup_process_group(
+        self,
+        proc: asyncio.subprocess.Process,
+        pgid: int,
+        *,
+        reason: str,
+    ) -> None:
+        terminated = await self._signal_process_group_until_empty(
+            pgid, signal.SIGTERM, SHUTDOWN_GRACE
+        )
+        if terminated is None:
+            logger.warning(
+                "[%s] pidfd signaling unavailable; skipping unsafe LSP descendant "
+                "cleanup reason=%s pgid=%s",
+                self.server_id,
+                reason,
+                pgid,
+            )
+            await self._cleanup_direct_process(proc, reason=reason)
+            return
+
+        logger.info(
+            "[%s] LSP pidfd cleanup reason=%s pgid=%s signal=SIGTERM",
+            self.server_id,
+            reason,
+            pgid,
+        )
+        complete = terminated
+        if not terminated:
+            logger.warning(
+                "[%s] LSP cleanup escalating reason=%s pgid=%s signal=SIGKILL",
+                self.server_id,
+                reason,
+                pgid,
+            )
+            killed = await self._signal_process_group_until_empty(
+                pgid, signal.SIGKILL, SHUTDOWN_VERIFY_TIMEOUT
+            )
+            complete = bool(killed)
+        await self._reap_leader(proc)
+        log = logger.info if complete else logger.warning
+        log(
+            "[%s] LSP cleanup %s reason=%s pgid=%s",
+            self.server_id,
+            "complete" if complete else "incomplete",
+            reason,
+            pgid,
+        )
+
+    async def _cleanup_direct_process(
+        self,
+        proc: asyncio.subprocess.Process,
+        *,
+        reason: str,
+    ) -> None:
+        """Terminate only the server process.
+
+        This conservative non-Linux or no-pidfd fallback cannot contain
+        descendants; Linux pidfd cleanup is required for safe tree containment.
+        """
+        if proc.returncode is not None:
+            return
+        try:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] LSP direct cleanup escalating reason=%s pid=%s signal=SIGKILL",
+                    self.server_id,
+                    reason,
+                    proc.pid,
+                )
+                proc.kill()
+                await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_VERIFY_TIMEOUT)
+        except (ProcessLookupError, asyncio.TimeoutError):
+            pass
+
+    async def _cleanup_process(self, *, reason: str = "cleanup") -> None:
         if self._reader_task is not None and not self._reader_task.done():
             self._reader_task.cancel()
             try:
                 await self._reader_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        self._reader_task = None
         if self._stderr_task is not None and not self._stderr_task.done():
             self._stderr_task.cancel()
             try:
                 await self._stderr_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        self._stderr_task = None
+        request_tasks = tuple(self._server_request_tasks)
+        for task in request_tasks:
+            if not task.done():
+                task.cancel()
+        if request_tasks:
+            await asyncio.gather(*request_tasks, return_exceptions=True)
+        self._server_request_tasks.clear()
         proc = self._proc
-        self._proc = None
         if proc is None:
             return
-        if proc.returncode is None:
-            try:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
-                except asyncio.TimeoutError:
-                    try:
-                        proc.kill()
-                        await proc.wait()
-                    except ProcessLookupError:
-                        pass
-            except ProcessLookupError:
-                pass
+        pgid = self._safe_owned_process_group()
+        try:
+            if pgid is not None:
+                await self._cleanup_process_group(proc, pgid, reason=reason)
+            else:
+                await self._cleanup_direct_process(proc, reason=reason)
+        finally:
+            self._proc = None
+            self._process_group_id = None
+            self._session_id = None
+            self._leader_start_time = None
 
     # ------------------------------------------------------------------
     # request / notification plumbing
@@ -543,6 +919,11 @@ class LSPClient:
             )
         else:
             fut.set_result(msg.get("result"))
+
+    def _start_server_request_task(self, req_id: Any, msg: dict) -> None:
+        task = asyncio.create_task(self._dispatch_request(req_id, msg))
+        self._server_request_tasks.add(task)
+        task.add_done_callback(self._server_request_tasks.discard)
 
     async def _dispatch_request(self, req_id: Any, msg: dict) -> None:
         method = msg.get("method", "")
@@ -824,18 +1205,18 @@ class LSPClient:
             # Concurrent: document pull + push wait.
             pull_task = asyncio.create_task(self._pull_document_diagnostics(abs_path))
             push_task = asyncio.create_task(self._wait_for_fresh_push(abs_path, version, remaining))
-            done, pending = await asyncio.wait(
-                {pull_task, push_task},
-                timeout=remaining,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for t in pending:
-                t.cancel()
-            for t in pending:
-                try:
-                    await t
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+            diagnostic_tasks = (pull_task, push_task)
+            try:
+                await asyncio.wait(
+                    diagnostic_tasks,
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                for task in diagnostic_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*diagnostic_tasks, return_exceptions=True)
 
             # If we got a fresh push for our version, we're done.
             current_v = self._published_version.get(abs_path)

@@ -39,6 +39,7 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.lsp import eventlog
@@ -59,6 +60,13 @@ from agent.lsp.workspace import (
 logger = logging.getLogger("agent.lsp.manager")
 
 DEFAULT_IDLE_TIMEOUT = 600  # seconds; servers idle for >10min get reaped
+
+
+@dataclass
+class _SpawnState:
+    future: asyncio.Future
+    owner: asyncio.Task
+    client: Optional[LSPClient] = None
 
 
 class _BackgroundLoop:
@@ -173,9 +181,12 @@ class LSPService:
         # Per-(server_id, workspace_root) state
         self._clients: Dict[Tuple[str, str], LSPClient] = {}
         self._broken: set = set()
-        self._spawning: Dict[Tuple[str, str], asyncio.Future] = {}
+        self._spawning: Dict[Tuple[str, str], _SpawnState] = {}
         self._last_used: Dict[Tuple[str, str], float] = {}
         self._state_lock = threading.Lock()
+        self._shutdown_lock = threading.Lock()
+        self._shutting_down = False
+        self._shutdown_complete = False
 
         # Delta baseline: file path → snapshot of diagnostics taken
         # immediately before a write.  ``get_diagnostics_sync`` filters
@@ -411,15 +422,17 @@ class LSPService:
         except Exception:  # noqa: BLE001
             per_server_root = ws_root
         key = (srv.server_id, per_server_root)
-        already_broken = key in self._broken
-        self._broken.add(key)
 
         # Kill any client we managed to spawn before the timeout.  The
         # cancelled future never reached the broken-set add inside
         # ``_get_or_spawn`` so the client may still be hanging in
         # ``_clients`` with a half-initialized state.
         with self._state_lock:
-            client = self._clients.pop(key, None)
+            already_broken = key in self._broken
+            self._broken.add(key)
+            client = None
+            if not self._shutting_down:
+                client = self._clients.pop(key, None)
         if client is not None:
             try:
                 # Fire-and-forget shutdown — give it a second to cleanup,
@@ -435,12 +448,19 @@ class LSPService:
         """Tear down all clients and stop the background loop."""
         if not self._enabled:
             return
-        try:
-            self._loop.run(self._shutdown_async(), timeout=10.0)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("LSP shutdown error: %s", e)
-        self._loop.stop()
-        clear_cache()
+        with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+            with self._state_lock:
+                self._shutting_down = True
+            try:
+                self._loop.run(self._shutdown_async())
+            except Exception as e:  # noqa: BLE001
+                logger.debug("LSP shutdown error: %s", e)
+            finally:
+                self._loop.stop()
+                clear_cache()
+                self._shutdown_complete = True
 
     # ------------------------------------------------------------------
     # async internals
@@ -503,25 +523,30 @@ class LSPService:
             return None  # exclude marker hit, server gated off
 
         key = (srv.server_id, per_server_root)
-        if key in self._broken:
+        loop = asyncio.get_running_loop()
+        owner = asyncio.current_task()
+        if owner is None:
             return None
         with self._state_lock:
+            if self._shutting_down or key in self._broken:
+                return None
             client = self._clients.get(key)
             if client is not None and client.is_running:
                 eventlog.log_active(srv.server_id, per_server_root)
                 return client
-            spawning = self._spawning.get(key)
-        if spawning is not None:
+            spawn_state = self._spawning.get(key)
+            owns_spawn = spawn_state is None
+            if owns_spawn:
+                spawn_state = _SpawnState(future=loop.create_future(), owner=owner)
+                self._spawning[key] = spawn_state
+            spawn_future = spawn_state.future
+        if not owns_spawn:
             try:
-                return await spawning
+                return await asyncio.shield(spawn_future)
             except Exception:  # noqa: BLE001
                 return None
 
         # Begin spawn
-        loop = asyncio.get_running_loop()
-        spawn_future: asyncio.Future = loop.create_future()
-        with self._state_lock:
-            self._spawning[key] = spawn_future
         try:
             ctx = ServerContext(
                 workspace_root=per_server_root,
@@ -538,7 +563,8 @@ class LSPService:
                 # the structured logger so the user can act on it.
                 eventlog.log_server_unavailable(srv.server_id, srv.server_id)
                 self._broken.add(key)
-                spawn_future.set_result(None)
+                if not spawn_future.done():
+                    spawn_future.set_result(None)
                 return None
             client = LSPClient(
                 server_id=srv.server_id,
@@ -549,27 +575,79 @@ class LSPService:
                 initialization_options=spec.initialization_options,
                 seed_diagnostics_on_first_push=spec.seed_diagnostics_on_first_push or srv.seed_first_push,
             )
+            with self._state_lock:
+                if self._spawning.get(key) is spawn_state:
+                    spawn_state.client = client
             try:
                 await client.start()
             except Exception as e:  # noqa: BLE001
                 eventlog.log_spawn_failed(srv.server_id, per_server_root, e)
                 self._broken.add(key)
-                spawn_future.set_result(None)
+                if not spawn_future.done():
+                    spawn_future.set_result(None)
                 return None
             with self._state_lock:
-                self._clients[key] = client
+                publish_client = not self._shutting_down
+                if publish_client:
+                    self._clients[key] = client
+            if not publish_client:
+                if not spawn_future.done():
+                    spawn_future.cancel()
+                await client.shutdown()
+                return None
             self._last_used[key] = time.time()
             eventlog.log_active(srv.server_id, per_server_root)
-            spawn_future.set_result(client)
+            if not spawn_future.done():
+                spawn_future.set_result(client)
             return client
+        except asyncio.CancelledError:
+            if not spawn_future.done():
+                spawn_future.cancel()
+            raise
+        except BaseException as exc:
+            if not spawn_future.done():
+                spawn_future.set_exception(exc)
+                spawn_future.exception()
+            raise
         finally:
             with self._state_lock:
-                self._spawning.pop(key, None)
+                if self._spawning.get(key) is spawn_state:
+                    self._spawning.pop(key, None)
 
     async def _shutdown_async(self) -> None:
         with self._state_lock:
-            clients = list(self._clients.values())
+            self._shutting_down = True
+            spawn_states = list(self._spawning.values())
+
+        for state in spawn_states:
+            if not state.future.done():
+                state.future.cancel()
+            if not state.owner.done():
+                state.owner.cancel()
+        if spawn_states:
+            await asyncio.gather(
+                *(state.owner for state in spawn_states),
+                return_exceptions=True,
+            )
+
+        partial_clients = [
+            state.client for state in spawn_states if state.client is not None
+        ]
+        if partial_clients:
+            await asyncio.gather(
+                *(client.shutdown() for client in partial_clients),
+                return_exceptions=True,
+            )
+
+        with self._state_lock:
+            partial_ids = {id(client) for client in partial_clients}
+            clients = [
+                client
+                for client in self._clients.values()
+                if id(client) not in partial_ids
+            ]
             self._clients.clear()
+            self._spawning.clear()
             self._broken.clear()
             self._last_used.clear()
         await asyncio.gather(

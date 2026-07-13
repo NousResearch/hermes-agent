@@ -118,8 +118,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // Pin the session context for the whole async submit pipeline. Without
       // this, a fast session switch during session.resume / file.attach can
       // redirect the user's text into a different chat (#54527).
-      const startingActiveSessionId = activeSessionIdRef.current
-      const startingStoredSessionId = selectedStoredSessionIdRef.current
+      // `let` not `const`: createBackendSessionForSend legitimately rewrites
+      // these refs + the route token (it mints the new session and navigates),
+      // which is the expected self-transition for a new chat — not a user
+      // switch. We re-baseline after creation so the guard only catches a
+      // genuine drift that happens during the *rest* of the pipeline.
+      let startingActiveSessionId = activeSessionIdRef.current
+      let startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
 
       const sessionContextDrifted = (): boolean =>
@@ -280,6 +285,18 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
           return false
         }
+
+        // createBackendSessionForSend has now *legitimately* repointed the
+        // active/stored refs and changed the route token (it minted the new
+        // session and navigated to it). That is the expected self-transition of
+        // a new chat, not a user switching sessions mid-submit. Re-baseline the
+        // drift baseline to the post-creation state so the guard below only
+        // catches a genuine navigation that happens after creation — otherwise
+        // the very first message of a new chat trips sessionContextDrifted() on
+        // its own side effect, gets aborted, and requires a second Enter (#54527
+        // regression, see issue #62481).
+        startingActiveSessionId = activeSessionIdRef.current
+        startingStoredSessionId = selectedStoredSessionIdRef.current
 
         if (sessionContextDrifted()) {
           return abortForSessionSwitch(sessionId)

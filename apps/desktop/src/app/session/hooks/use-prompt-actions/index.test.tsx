@@ -1321,6 +1321,59 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
     expect(calls).not.toContain('session.resume')
   })
+
+  it('new-chat first message sends on the FIRST Enter (no double press) — #54527 regression (#62481)', async () => {
+    // The real createBackendSessionForSend repoints selectedStoredSessionIdRef
+    // (and the route token) when it mints the new session — that is the expected
+    // self-transition of a new chat, NOT a user switching sessions mid-submit.
+    // Simulate that mutation so the post-creation sessionContextDrifted() guard
+    // is exercised exactly as in production. Without the re-baseline fix, the
+    // self-induced drift trips the guard, aborts the submit, and a second Enter
+    // is required before the message actually sends.
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const createBackendSessionForSend = vi.fn(async () => {
+      selectedStoredSessionIdRef.current = 'stored-new-session'
+      activeSessionIdRef.current = RUNTIME_SESSION_ID
+
+      return RUNTIME_SESSION_ID
+    })
+    const calls: { method: string; params: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params: params ?? {} })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => 'token'}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    const ok = await handle!.submitText('hello from a brand new chat')
+
+    expect(ok).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+
+    const submit = calls.find(c => c.method === 'prompt.submit')
+
+    // The first Enter must reach prompt.submit with the user's text — the bug
+    // aborted before this, so a second press was needed.
+    expect(submit).toBeDefined()
+    expect(submit?.params).toMatchObject({ session_id: RUNTIME_SESSION_ID, text: 'hello from a brand new chat' })
+  })
 })
 
 describe('usePromptActions submit session-context isolation (#54527)', () => {

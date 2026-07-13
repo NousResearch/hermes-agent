@@ -58,6 +58,7 @@ export const youtube: EmbedMatcher = url => {
     id: `youtube:${id}`,
     label: 'YouTube',
     maxWidth: 640,
+    previewUrl: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
     provider: 'youtube',
     renderer: 'frame',
     sourceUrl: url.toString()

@@ -28,6 +28,7 @@ describe('detectEmbed — YouTube', () => {
     expect(embed.provider).toBe('youtube')
     expect(embed.id).toBe('youtube:dQw4w9WgXcQ')
     expect(embed.embedUrl).toContain('youtube-nocookie.com/embed/dQw4w9WgXcQ')
+    expect(embed.previewUrl).toBe('https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg')
   })
 
   it('carries a start time from t/start through to the embed', () => {

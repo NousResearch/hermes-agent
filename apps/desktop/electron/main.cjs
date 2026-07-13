@@ -26,6 +26,7 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
 const { installEmbedReferer } = require('./embed-referer.cjs')
+const { startRendererServer } = require('./renderer-server.cjs')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const {
@@ -164,6 +165,7 @@ if (USER_DATA_OVERRIDE) {
 }
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
+let packagedRendererServer = null
 const IS_PACKAGED = app.isPackaged
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
@@ -2806,6 +2808,10 @@ function resolveRendererIndex() {
       `Rebuild with: hermes desktop --force-build`
   )
   return candidates[0]
+}
+
+function rendererBaseUrl() {
+  return DEV_SERVER || packagedRendererServer?.origin || pathToFileURL(resolveRendererIndex()).toString()
 }
 
 // True when `dir` lives inside the packaged app bundle / install tree.
@@ -5724,7 +5730,7 @@ function wireCommonWindowHandlers(win) {
     return { action: 'deny' }
   })
   win.webContents.on('will-navigate', (event, url) => {
-    if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
+    if (url.startsWith(rendererBaseUrl())) {
       return
     }
 
@@ -5789,8 +5795,7 @@ function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
 
   win.loadURL(
     buildSessionWindowUrl(sessionId, {
-      devServer: DEV_SERVER,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
+      devServer: rendererBaseUrl(),
       watch,
       newSession
     })
@@ -5821,11 +5826,8 @@ function createNewSessionWindow() {
 let petOverlayWindow = null
 
 function petOverlayUrl() {
-  if (DEV_SERVER) {
-    return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/?win=overlay#/`
-  }
-
-  return `${pathToFileURL(resolveRendererIndex()).toString()}?win=overlay#/`
+  const base = rendererBaseUrl().replace(/\/$/, '')
+  return `${base}/?win=overlay#/`
 }
 
 function spawnPetOverlayWindow(bounds) {
@@ -6066,11 +6068,7 @@ function createWindow() {
     rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
   })
 
-  if (DEV_SERVER) {
-    mainWindow.loadURL(DEV_SERVER)
-  } else {
-    mainWindow.loadURL(pathToFileURL(resolveRendererIndex()).toString())
-  }
+  mainWindow.loadURL(rendererBaseUrl())
 
   mainWindow.webContents.once('did-finish-load', () => {
     restorePersistedZoomLevel(mainWindow)
@@ -7589,7 +7587,10 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  if (!DEV_SERVER) {
+    packagedRendererServer = await startRendererServer(path.dirname(resolveRendererIndex()))
+  }
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())
   } else {
@@ -7647,6 +7648,7 @@ app.on('before-quit', () => {
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
+  void packagedRendererServer?.close()
 
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {

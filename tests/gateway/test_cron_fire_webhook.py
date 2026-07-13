@@ -8,6 +8,7 @@ test_chronos_verify.py.
 """
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -133,6 +134,61 @@ async def test_valid_token_refuses_during_gateway_drain(adapter, monkeypatch):
     assert response.status == 503
     assert payload["error"]["code"] == "gateway_draining"
     assert spy.fired == []
+
+
+@pytest.mark.asyncio
+async def test_valid_fire_reservation_blocks_drain_before_body_and_task(adapter, monkeypatch):
+    runner = SimpleNamespace(_draining=False, _external_drain_active=False)
+    body_started = asyncio.Event()
+    release_body = asyncio.Event()
+    fired = threading.Event()
+    release_fire = threading.Event()
+
+    class BlockingProvider:
+        def fire_due(self, job_id, *, adapters=None, loop=None):
+            fired.set()
+            release_fire.wait(timeout=2)
+            return True
+
+    original_json = web.Request.json
+
+    async def delayed_json(request):
+        body_started.set()
+        await release_body.wait()
+        return await original_json(request)
+
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", BlockingProvider)
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    app = _create_app(adapter)
+    with patch("gateway.run._gateway_runner_ref", lambda: runner), patch.object(
+        web.Request, "json", delayed_json
+    ):
+        async with TestClient(TestServer(app)) as cli:
+            request_task = asyncio.create_task(
+                cli.post(
+                    "/api/cron/fire",
+                    headers={"Authorization": "Bearer good"},
+                    json={"job_id": "abc123"},
+                )
+            )
+            await body_started.wait()
+            assert adapter.active_agent_work_count() == 1
+
+            release_body.set()
+            response = await request_task
+            assert response.status == 202
+            await asyncio.to_thread(fired.wait, 2)
+            assert adapter.active_agent_work_count() == 1
+            release_fire.set()
+            for _ in range(50):
+                if adapter.active_agent_work_count() == 0:
+                    break
+                await asyncio.sleep(0.01)
+
+    assert adapter.active_agent_work_count() == 0
 
 
 @pytest.mark.asyncio

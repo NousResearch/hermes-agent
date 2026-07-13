@@ -35,6 +35,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 import logging
@@ -701,6 +702,29 @@ def _admit_api_agent_request(handler):
             _api_agent_request_reservation.reset(token)
 
     return _wrapped
+
+
+def _release_pending_api_work(adapter, reservation: dict[str, bool]) -> None:
+    """Release a pending-work reservation exactly once."""
+    if reservation["active"]:
+        reservation["active"] = False
+        adapter._pending_agent_requests = max(0, adapter._pending_agent_requests - 1)
+
+
+@contextmanager
+def _reserve_pending_api_work(adapter):
+    """Keep externally-triggered background work visible across awaits.
+
+    A handler can detach the reservation to an asyncio task; its done callback
+    then owns release so shutdown cannot miss the handoff to background work.
+    """
+    reservation = {"active": True, "detached": False}
+    adapter._pending_agent_requests += 1
+    try:
+        yield reservation
+    finally:
+        if not reservation["detached"]:
+            _release_pending_api_work(adapter, reservation)
 
 
 if AIOHTTP_AVAILABLE:
@@ -3927,30 +3951,35 @@ class APIServerAdapter(BasePlatformAdapter):
         if draining is not None:
             return draining
 
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        job_id = (body or {}).get("job_id")
-        if not job_id:
-            return web.json_response({"error": "missing job_id"}, status=400)
+        with _reserve_pending_api_work(self) as reservation:
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            job_id = (body or {}).get("job_id")
+            if not job_id:
+                return web.json_response({"error": "missing job_id"}, status=400)
 
-        from cron.scheduler_provider import resolve_cron_scheduler
-        provider = resolve_cron_scheduler()
+            from cron.scheduler_provider import resolve_cron_scheduler
+            provider = resolve_cron_scheduler()
 
-        loop = asyncio.get_running_loop()
-        # Fire in the background (202 immediately). fire_due claims via the
-        # store CAS, so a retry while this is in flight is de-duped.
-        task = asyncio.create_task(
-            asyncio.to_thread(provider.fire_due, job_id, adapters=None, loop=loop)
-        )
-        try:
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
-        except (TypeError, AttributeError):
-            pass
+            loop = asyncio.get_running_loop()
+            # Fire in the background (202 immediately). fire_due claims via the
+            # store CAS, so a retry while this is in flight is de-duped.
+            task = asyncio.create_task(
+                asyncio.to_thread(provider.fire_due, job_id, adapters=None, loop=loop)
+            )
+            reservation["detached"] = True
+            task.add_done_callback(
+                lambda _task: _release_pending_api_work(self, reservation)
+            )
+            try:
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+            except (TypeError, AttributeError):
+                pass
 
-        return web.json_response({"status": "accepted", "job_id": job_id}, status=202)
+            return web.json_response({"status": "accepted", "job_id": job_id}, status=202)
 
 
     # ------------------------------------------------------------------

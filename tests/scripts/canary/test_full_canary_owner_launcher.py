@@ -18,10 +18,14 @@ import scripts.canary.full_canary_owner_launcher as launcher
 
 from scripts.canary.full_canary_owner_launcher import (
     ADMIN_FRAME_MAGIC,
+    CANARY_BOOTSTRAP_AUTHORITY_RECEIPT_SCHEMA,
+    CANARY_BOOTSTRAP_DATABASE_ROLE,
+    CANARY_BOOTSTRAP_LOGIN,
     COORDINATOR_FAILURE_SCHEMA,
     COORDINATOR_RECEIPT_SCHEMA,
     COORDINATOR_SECRET_GATE_SCHEMA,
     CleanupBlocked,
+    CloudSqlCanaryBootstrapLogin,
     CloudSqlTemporaryAdmin,
     DISCORD_FRAME_MAGIC,
     DISCORD_INSTALL_GATE_SCHEMA,
@@ -5088,6 +5092,118 @@ def _cloud_sql_operations_payload(items=()) -> dict[str, object]:
     return {"kind": "sql#operationsList", "items": list(items)}
 
 
+def _cloud_sql_bootstrap_list_item() -> dict[str, object]:
+    # This matches the intentionally incomplete real users.list projection.
+    return {
+        "kind": "sql#user",
+        "name": CANARY_BOOTSTRAP_LOGIN,
+        "project": PROJECT,
+        "instance": SQL_INSTANCE,
+    }
+
+
+def _cloud_sql_bootstrap_resource(
+    *,
+    etag: str = "bootstrap-etag-1",
+    database_roles: list[str] | None = None,
+    **changes: object,
+) -> dict[str, object]:
+    resource: dict[str, object] = {
+        "kind": "sql#user",
+        "name": CANARY_BOOTSTRAP_LOGIN,
+        "project": PROJECT,
+        "instance": SQL_INSTANCE,
+        "type": "BUILT_IN",
+        "host": "",
+        "etag": etag,
+        "databaseRoles": (
+            [CANARY_BOOTSTRAP_DATABASE_ROLE]
+            if database_roles is None
+            else database_roles
+        ),
+    }
+    resource.update(changes)
+    return resource
+
+
+class _BootstrapCloudSqlApi:
+    def __init__(
+        self,
+        *,
+        resource: dict[str, object] | None = None,
+        post_mode: str = "success",
+    ) -> None:
+        self.resource = resource
+        self.post_mode = post_mode
+        self.calls: list[tuple[str, str, bytes | None]] = []
+        self.operations: list[dict[str, object]] = []
+        self.operation_number = 0
+
+    def _operation(self, operation_type: str) -> dict[str, object]:
+        self.operation_number += 1
+        operation = _cloud_sql_operation_item(
+            f"bootstrap-operation-{self.operation_number}",
+            operation_type,
+        )
+        self.operations.append(operation)
+        return operation
+
+    def __call__(self, method, url, headers, body, timeout):
+        del headers, timeout
+        self.calls.append((method, url, body))
+        if method == "GET" and "/operations?" in url:
+            return HttpResponse(
+                200,
+                _canonical(_cloud_sql_operations_payload(self.operations)),
+            )
+        if method == "GET" and "/operations/" in url:
+            name = url.rsplit("/", 1)[-1]
+            operation = next(item for item in self.operations if item["name"] == name)
+            return HttpResponse(200, _canonical(operation))
+        if method == "GET" and url.endswith("/users"):
+            items = [] if self.resource is None else [_cloud_sql_bootstrap_list_item()]
+            return HttpResponse(
+                200,
+                _canonical({"kind": "sql#usersList", "items": items}),
+            )
+        fixed_user_path = "/users/" + launcher.urllib.parse.quote(
+            CANARY_BOOTSTRAP_LOGIN,
+            safe="",
+        )
+        if method == "GET" and fixed_user_path in url:
+            parsed = launcher.urllib.parse.urlsplit(url)
+            assert parsed.path.endswith(fixed_user_path)
+            assert parsed.query == "host="
+            if self.resource is None:
+                return HttpResponse(404, b"{}")
+            return HttpResponse(200, _canonical(self.resource))
+        if method == "GET" and "/users?" in url:
+            raise AssertionError("users.get must not use the collection query endpoint")
+        if method == "POST" and url.endswith("/users"):
+            if self.post_mode == "reject":
+                return HttpResponse(409, b"{}")
+            if self.post_mode != "lost_absent":
+                self.resource = _cloud_sql_bootstrap_resource()
+                operation = self._operation("CREATE_USER")
+            if self.post_mode in {"lost_absent", "lost_committed"}:
+                raise OwnerLauncherError("google_api_unavailable")
+            return HttpResponse(200, _canonical({"name": operation["name"]}))
+        if method == "PUT" and "/users?" in url:
+            assert self.resource is not None
+            decoded = json.loads(body)
+            self.resource = _cloud_sql_bootstrap_resource(
+                etag=f"bootstrap-etag-{self.operation_number + 2}",
+                database_roles=decoded["databaseRoles"],
+            )
+            operation = self._operation("UPDATE_USER")
+            return HttpResponse(200, _canonical({"name": operation["name"]}))
+        if method == "DELETE" and "/users?" in url:
+            self.resource = None
+            operation = self._operation("DELETE_USER")
+            return HttpResponse(200, _canonical({"name": operation["name"]}))
+        raise AssertionError((method, url))
+
+
 def test_actual_http_error_499_is_ambiguous_and_never_reads_response_body(
     monkeypatch,
 ):
@@ -5172,6 +5288,49 @@ def test_cloud_sql_users_page_one_shift_at_end_fence_is_rejected():
         payload = _cloud_sql_users_payload([USERNAME] if first_page_reads > 1 else [])
         payload["nextPageToken"] = "page-2"
         return HttpResponse(200, _canonical(payload))
+
+    admin = CloudSqlTemporaryAdmin(
+        GoogleRestClient(lambda: "owner-access-token", requester=request)
+    )
+
+    with pytest.raises(OwnerLauncherError, match="invalid_cloud_sql_users"):
+        admin.require_absent(USERNAME)
+
+
+def test_cloud_sql_temp_admin_users_list_accepts_omitted_type():
+    item = _cloud_sql_user_item()
+    del item["type"]
+
+    def request(method, url, headers, body, timeout):
+        del headers, body, timeout
+        assert method == "GET"
+        assert url.endswith("/users")
+        return HttpResponse(
+            200,
+            _canonical({"kind": "sql#usersList", "items": [item]}),
+        )
+
+    admin = CloudSqlTemporaryAdmin(
+        GoogleRestClient(lambda: "owner-access-token", requester=request)
+    )
+
+    with pytest.raises(OwnerLauncherError, match="temporary_admin_already_exists"):
+        admin.require_absent(USERNAME)
+
+
+@pytest.mark.parametrize("user_type", [None, "CLOUD_IAM_USER"])
+def test_cloud_sql_temp_admin_users_list_rejects_explicit_non_builtin_type(user_type):
+    item = _cloud_sql_user_item()
+    item["type"] = user_type
+
+    def request(method, url, headers, body, timeout):
+        del headers, body, timeout
+        assert method == "GET"
+        assert url.endswith("/users")
+        return HttpResponse(
+            200,
+            _canonical({"kind": "sql#usersList", "items": [item]}),
+        )
 
     admin = CloudSqlTemporaryAdmin(
         GoogleRestClient(lambda: "owner-access-token", requester=request)
@@ -5539,6 +5698,336 @@ def test_cloud_sql_delete_error_succeeds_only_after_fresh_absence_proof():
         "response_known_candidate_observed": False,
         "post_baseline_authority_operation_count": 0,
     }
+
+
+def test_bootstrap_login_create_rotate_receipt_and_delete_are_exact_and_secret_free(
+    monkeypatch,
+):
+    api = _BootstrapCloudSqlApi()
+    clock = _CloudSqlClock()
+    digest_inputs: list[bytes] = []
+    real_sha256 = launcher._sha256
+
+    def recording_sha256(value: bytes) -> str:
+        digest_inputs.append(value)
+        return real_sha256(value)
+
+    monkeypatch.setattr(launcher, "_sha256", recording_sha256)
+    login = CloudSqlCanaryBootstrapLogin(
+        GoogleRestClient(lambda: "owner-access-token", requester=api),
+        expected_owner_subject_sha256=OWNER_SUBJECT_SHA,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+        operation_timeout_seconds=2.0,
+    )
+    password = PASSWORD.decode()
+    recovery_password = "owner-recovery-random-password-abcdefgh"
+
+    login.create(password)
+    created_receipt = login.authority_receipt()
+    assert created_receipt == {
+        "schema": CANARY_BOOTSTRAP_AUTHORITY_RECEIPT_SCHEMA,
+        "project": PROJECT,
+        "instance": SQL_INSTANCE,
+        "name": CANARY_BOOTSTRAP_LOGIN,
+        "host": "",
+        "type": "BUILT_IN",
+        "database_roles": [CANARY_BOOTSTRAP_DATABASE_ROLE],
+        "etag": "bootstrap-etag-1",
+        "resource_projection_sha256": created_receipt[
+            "resource_projection_sha256"
+        ],
+        "operation_name": "bootstrap-operation-1",
+        "operation_type": "CREATE_USER",
+        "owner_subject_sha256": OWNER_SUBJECT_SHA,
+        "receipt_sha256": created_receipt["receipt_sha256"],
+    }
+
+    login.rotate_existing(recovery_password)
+    rotated_receipt = login.authority_receipt()
+    assert rotated_receipt["operation_type"] == "UPDATE_USER"
+    assert rotated_receipt["operation_name"] == "bootstrap-operation-2"
+    assert rotated_receipt["database_roles"] == [CANARY_BOOTSTRAP_DATABASE_ROLE]
+    assert "cloudsqlsuperuser" not in rotated_receipt["database_roles"]
+
+    post_body = next(body for method, _url, body in api.calls if method == "POST")
+    put_body = next(body for method, _url, body in api.calls if method == "PUT")
+    assert json.loads(post_body) == {
+        "databaseRoles": [CANARY_BOOTSTRAP_DATABASE_ROLE],
+        "host": "",
+        "instance": SQL_INSTANCE,
+        "name": CANARY_BOOTSTRAP_LOGIN,
+        "password": password,
+        "project": PROJECT,
+        "type": "BUILT_IN",
+    }
+    assert json.loads(put_body) == {
+        "databaseRoles": [CANARY_BOOTSTRAP_DATABASE_ROLE],
+        "etag": "bootstrap-etag-1",
+        "host": "",
+        "name": CANARY_BOOTSTRAP_LOGIN,
+        "password": recovery_password,
+        "type": "BUILT_IN",
+    }
+    assert all(
+        password not in url and recovery_password not in url
+        for _method, url, _body in api.calls
+    )
+    describe_urls = [
+        url
+        for method, url, _body in api.calls
+        if method == "GET" and f"/users/{CANARY_BOOTSTRAP_LOGIN}?" in url
+    ]
+    assert describe_urls
+    assert all(url.endswith(f"/users/{CANARY_BOOTSTRAP_LOGIN}?host=") for url in describe_urls)
+    assert not any(
+        method == "GET" and "/users?" in url
+        for method, url, _body in api.calls
+    )
+    assert all(PASSWORD not in value for value in digest_inputs)
+    assert all(recovery_password.encode() not in value for value in digest_inputs)
+    assert password not in json.dumps(created_receipt)
+    assert recovery_password not in json.dumps(rotated_receipt)
+
+    login.delete_and_confirm_absent()
+    assert api.resource is None
+    assert login.reconciliation_evidence()["reconciliation_proven"] is True
+    evidence_identity = login._absence_evidence_identity()
+    assert evidence_identity == {
+        "schema": launcher.CANARY_BOOTSTRAP_ABSENCE_EVIDENCE_SCHEMA,
+        "bootstrap_login_absent": True,
+        "bootstrap_login": CANARY_BOOTSTRAP_LOGIN,
+        "database_roles": [CANARY_BOOTSTRAP_DATABASE_ROLE],
+    }
+    assert "temporary_admin_absent" not in evidence_identity
+
+
+def test_bootstrap_login_explicit_create_rejection_is_not_ambiguous():
+    api = _BootstrapCloudSqlApi(post_mode="reject")
+    login = CloudSqlCanaryBootstrapLogin(
+        GoogleRestClient(lambda: "owner-access-token", requester=api),
+        expected_owner_subject_sha256=OWNER_SUBJECT_SHA,
+    )
+
+    with pytest.raises(OwnerLauncherError, match="google_api_rejected"):
+        login.create(PASSWORD.decode())
+
+    assert login.mutation_reconciliation_required() is False
+    assert [method for method, _url, _body in api.calls].count("POST") == 1
+    assert not any(method in {"PUT", "DELETE"} for method, _url, _body in api.calls)
+
+
+def test_bootstrap_login_lost_uncommitted_create_reconciles_absence_without_delete():
+    api = _BootstrapCloudSqlApi(post_mode="lost_absent")
+    clock = _CloudSqlClock()
+    login = CloudSqlCanaryBootstrapLogin(
+        GoogleRestClient(lambda: "owner-access-token", requester=api),
+        expected_owner_subject_sha256=OWNER_SUBJECT_SHA,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+        operation_timeout_seconds=2.0,
+    )
+
+    with pytest.raises(OwnerLauncherError, match="google_api_unavailable") as caught:
+        login.create(PASSWORD.decode())
+    login.reconcile_ambiguous_mutation_and_confirm_absent()
+
+    assert PASSWORD.decode() not in str(caught.value)
+    assert login.mutation_reconciliation_required() is False
+    assert login.reconciliation_evidence()["reconciliation_proven"] is True
+    assert not any(method == "DELETE" for method, _url, _body in api.calls)
+    assert PASSWORD.decode() not in json.dumps(login.reconciliation_evidence())
+
+
+def test_bootstrap_login_lost_committed_create_requires_rotation_before_delete():
+    api = _BootstrapCloudSqlApi(post_mode="lost_committed")
+    clock = _CloudSqlClock()
+    login = CloudSqlCanaryBootstrapLogin(
+        GoogleRestClient(lambda: "owner-access-token", requester=api),
+        expected_owner_subject_sha256=OWNER_SUBJECT_SHA,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+        operation_timeout_seconds=2.0,
+    )
+
+    with pytest.raises(OwnerLauncherError, match="google_api_unavailable"):
+        login.create(PASSWORD.decode())
+    with pytest.raises(CleanupBlocked) as caught:
+        login.reconcile_ambiguous_mutation_and_confirm_absent()
+    assert caught.value.cause_code == "cloud_sql_bootstrap_login_ownership_unproven"
+    assert not any(method == "DELETE" for method, _url, _body in api.calls)
+
+    login.create_or_rotate_recovery("owner-recovery-random-password-abcdefgh")
+    assert login.authority_receipt()["operation_type"] == "UPDATE_USER"
+    assert api.resource["databaseRoles"] == [CANARY_BOOTSTRAP_DATABASE_ROLE]
+    login.delete_and_confirm_absent()
+    assert api.resource is None
+
+
+@pytest.mark.parametrize(
+    "publish_recreate_operation",
+    [False, True],
+    ids=("etag-guard", "ledger-and-etag-guard"),
+)
+def test_bootstrap_login_ambiguous_delete_never_retries_against_recreated_user(
+    publish_recreate_operation,
+):
+    api = _BootstrapCloudSqlApi()
+    delete_calls = 0
+
+    def request(method, url, headers, body, timeout):
+        nonlocal delete_calls
+        if method == "DELETE" and "/users?" in url:
+            delete_calls += 1
+            assert delete_calls == 1
+            api._operation("DELETE_USER")
+            api.resource = _cloud_sql_bootstrap_resource(
+                etag="recreated-bootstrap-etag"
+            )
+            if publish_recreate_operation:
+                api._operation("CREATE_USER")
+            raise OwnerLauncherError("google_api_unavailable")
+        return api(method, url, headers, body, timeout)
+
+    clock = _CloudSqlClock()
+    login = CloudSqlCanaryBootstrapLogin(
+        GoogleRestClient(lambda: "owner-access-token", requester=request),
+        expected_owner_subject_sha256=OWNER_SUBJECT_SHA,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+        operation_timeout_seconds=2.0,
+    )
+    login.create(PASSWORD.decode())
+
+    with pytest.raises(CleanupBlocked) as caught:
+        login.delete_and_confirm_absent()
+
+    assert caught.value.cause_code == "cloud_sql_bootstrap_login_ownership_unproven"
+    assert delete_calls == 1
+    assert api.resource is not None
+    assert api.resource["etag"] == "recreated-bootstrap-etag"
+    assert api.resource["databaseRoles"] == [CANARY_BOOTSTRAP_DATABASE_ROLE]
+
+    with pytest.raises(CleanupBlocked) as second_attempt:
+        login.delete_and_confirm_absent()
+    assert (
+        second_attempt.value.cause_code
+        == "cloud_sql_bootstrap_login_ownership_unproven"
+    )
+    assert delete_calls == 1
+
+
+def test_bootstrap_login_describe_rejects_concurrent_operation_drift():
+    api = _BootstrapCloudSqlApi(resource=_cloud_sql_bootstrap_resource())
+    operation_reads = 0
+
+    def request(method, url, headers, body, timeout):
+        nonlocal operation_reads
+        if method == "GET" and "/operations?" in url:
+            operation_reads += 1
+            items = []
+            if operation_reads > 2:
+                items = [_cloud_sql_operation_item("concurrent-op", "UPDATE_USER")]
+            return HttpResponse(200, _canonical(_cloud_sql_operations_payload(items)))
+        return api(method, url, headers, body, timeout)
+
+    login = CloudSqlCanaryBootstrapLogin(
+        GoogleRestClient(lambda: "owner-access-token", requester=request),
+        expected_owner_subject_sha256=OWNER_SUBJECT_SHA,
+    )
+
+    with pytest.raises(
+        OwnerLauncherError,
+        match="cloud_sql_bootstrap_login_resource_drifted",
+    ):
+        login.describe()
+    assert not any(method in {"POST", "PUT", "DELETE"} for method, _url, _body in api.calls)
+
+
+def test_bootstrap_login_describe_rejects_etag_resource_drift():
+    api = _BootstrapCloudSqlApi(resource=_cloud_sql_bootstrap_resource())
+    describe_reads = 0
+
+    def request(method, url, headers, body, timeout):
+        nonlocal describe_reads
+        if method == "GET" and f"/users/{CANARY_BOOTSTRAP_LOGIN}?" in url:
+            describe_reads += 1
+            return HttpResponse(
+                200,
+                _canonical(
+                    _cloud_sql_bootstrap_resource(
+                        etag=f"bootstrap-etag-{describe_reads}"
+                    )
+                ),
+            )
+        return api(method, url, headers, body, timeout)
+
+    login = CloudSqlCanaryBootstrapLogin(
+        GoogleRestClient(lambda: "owner-access-token", requester=request),
+        expected_owner_subject_sha256=OWNER_SUBJECT_SHA,
+    )
+
+    with pytest.raises(
+        OwnerLauncherError,
+        match="cloud_sql_bootstrap_login_resource_drifted",
+    ):
+        login.describe()
+
+
+def test_bootstrap_login_describe_accepts_omitted_type_and_normalizes_builtin():
+    resource = _cloud_sql_bootstrap_resource()
+    del resource["type"]
+    api = _BootstrapCloudSqlApi(resource=resource)
+    login = CloudSqlCanaryBootstrapLogin(
+        GoogleRestClient(lambda: "owner-access-token", requester=api),
+        expected_owner_subject_sha256=OWNER_SUBJECT_SHA,
+    )
+
+    described = login.describe()
+
+    assert described is not None
+    assert described["type"] == "BUILT_IN"
+    assert described["databaseRoles"] == [CANARY_BOOTSTRAP_DATABASE_ROLE]
+
+
+@pytest.mark.parametrize(
+    "resource",
+    [
+        _cloud_sql_bootstrap_resource(database_roles=[]),
+        _cloud_sql_bootstrap_resource(
+            database_roles=[CANARY_BOOTSTRAP_DATABASE_ROLE, "cloudsqlsuperuser"]
+        ),
+        _cloud_sql_bootstrap_resource(type="CLOUD_IAM_USER"),
+        _cloud_sql_bootstrap_resource(type=None),
+        _cloud_sql_bootstrap_resource(host="attacker"),
+        _cloud_sql_bootstrap_resource(project="wrong-project"),
+        _cloud_sql_bootstrap_resource(instance="wrong-instance"),
+        _cloud_sql_bootstrap_resource(etag=""),
+    ],
+    ids=(
+        "no-role",
+        "superuser-role",
+        "wrong-type",
+        "explicit-null-type",
+        "wrong-host",
+        "wrong-project",
+        "wrong-instance",
+        "missing-etag",
+    ),
+)
+def test_bootstrap_login_describe_rejects_wrong_exact_resource(resource):
+    api = _BootstrapCloudSqlApi(resource=resource)
+    login = CloudSqlCanaryBootstrapLogin(
+        GoogleRestClient(lambda: "owner-access-token", requester=api),
+        expected_owner_subject_sha256=OWNER_SUBJECT_SHA,
+    )
+
+    with pytest.raises(
+        OwnerLauncherError,
+        match="cloud_sql_bootstrap_login_resource_invalid",
+    ):
+        login.describe()
+    assert not any(method in {"POST", "PUT", "DELETE"} for method, _url, _body in api.calls)
 
 
 def test_default_http_request_disables_proxies_and_rejects_redirect(monkeypatch):

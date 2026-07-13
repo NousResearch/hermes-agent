@@ -78,6 +78,14 @@ WRITER_PREFLIGHT_DATABASE_TLS_SERVER_NAME = (
     "14-0d81ef63-2cac-4a64-84ad-c4f58c0cfd56.europe-west3.sql.goog"
 )
 SQL_INSTANCE = "muncho-canary-pg18-v2"
+CANARY_BOOTSTRAP_LOGIN = "canonical_brain_canary_bootstrap_login"
+CANARY_BOOTSTRAP_DATABASE_ROLE = "canonical_brain_canary_bootstrap"
+CANARY_BOOTSTRAP_AUTHORITY_RECEIPT_SCHEMA = (
+    "muncho-cloud-sql-bootstrap-login-authority.v1"
+)
+CANARY_BOOTSTRAP_ABSENCE_EVIDENCE_SCHEMA = (
+    "muncho-cloud-sql-bootstrap-login-absence-evidence.v1"
+)
 DATABASE_HOST = "10.91.0.3"
 DATABASE_PORT = 5432
 DATABASE_NAME = "muncho_canary_brain"
@@ -6267,7 +6275,7 @@ class CloudSqlTemporaryAdmin:
         """
 
         try:
-            if not _ADMIN_USERNAME.fullmatch(username):
+            if not self._valid_target_username(username):
                 raise OwnerLauncherError("invalid_admin_username")
             baseline = self._mutation_operation_baseline
             baseline_relevant = self._mutation_relevant_baseline
@@ -6391,7 +6399,52 @@ class CloudSqlTemporaryAdmin:
                 raise OwnerLauncherError("cloud_sql_operation_timeout")
             self._sleeper(1.0)
 
-    def _user_names(self, *, exact_admin_username: str | None = None) -> frozenset[str]:
+    def _valid_target_username(self, username: object) -> bool:
+        return (
+            isinstance(username, str)
+            and _ADMIN_USERNAME.fullmatch(username) is not None
+        )
+
+    def _validate_exact_user_resource(
+        self,
+        item: Mapping[str, Any],
+        *,
+        username: str,
+    ) -> Mapping[str, Any]:
+        if (
+            item.get("kind") != "sql#user"
+            or item.get("name") != username
+            or item.get("project") != PROJECT
+            or item.get("instance") != SQL_INSTANCE
+            or ("type" in item and item.get("type") != "BUILT_IN")
+        ):
+            raise OwnerLauncherError("invalid_cloud_sql_users")
+        normalized = dict(item)
+        normalized["type"] = "BUILT_IN"
+        return normalized
+
+    def _create_user_body(self, username: str, password: str) -> Mapping[str, Any]:
+        return {
+            "instance": SQL_INSTANCE,
+            "name": username,
+            "password": password,
+            "project": PROJECT,
+            "type": "BUILT_IN",
+        }
+
+    def _update_user_body(self, username: str, password: str) -> Mapping[str, Any]:
+        return {
+            "name": username,
+            "password": password,
+            "type": "BUILT_IN",
+        }
+
+    def _users_and_exact_resource(
+        self,
+        *,
+        exact_admin_username: str | None = None,
+    ) -> tuple[frozenset[str], Mapping[str, Any] | None]:
+        exact_resource: Mapping[str, Any] | None = None
         names: set[str] = set()
         page_token: str | None = None
         visited_tokens: set[str] = set()
@@ -6419,16 +6472,13 @@ class CloudSqlTemporaryAdmin:
                 if not isinstance(item, Mapping):
                     raise OwnerLauncherError("invalid_cloud_sql_users")
                 name = item.get("name")
-                if not isinstance(name, str):
+                if not isinstance(name, str) or name in names:
                     raise OwnerLauncherError("invalid_cloud_sql_users")
-                if name == exact_admin_username and (
-                    item.get("kind") != "sql#user"
-                    or item.get("project") != PROJECT
-                    or item.get("instance") != SQL_INSTANCE
-                    or item.get("type") != "BUILT_IN"
-                    or name in names
-                ):
-                    raise OwnerLauncherError("invalid_cloud_sql_users")
+                if name == exact_admin_username:
+                    exact_resource = self._validate_exact_user_resource(
+                        item,
+                        username=name,
+                    )
                 names.add(name)
             next_token = payload.get("nextPageToken")
             if next_token is None:
@@ -6439,7 +6489,7 @@ class CloudSqlTemporaryAdmin:
                     first_page
                 ):
                     raise OwnerLauncherError("invalid_cloud_sql_users")
-                return frozenset(names)
+                return frozenset(names), exact_resource
             if (
                 not isinstance(next_token, str)
                 or not next_token
@@ -6451,8 +6501,14 @@ class CloudSqlTemporaryAdmin:
             visited_tokens.add(next_token)
             page_token = next_token
 
+    def _user_names(self, *, exact_admin_username: str | None = None) -> frozenset[str]:
+        names, _resource = self._users_and_exact_resource(
+            exact_admin_username=exact_admin_username
+        )
+        return names
+
     def require_absent(self, username: str) -> None:
-        if not _ADMIN_USERNAME.fullmatch(username):
+        if not self._valid_target_username(username):
             raise OwnerLauncherError("invalid_admin_username")
         if username in self._user_names(exact_admin_username=username):
             raise OwnerLauncherError("temporary_admin_already_exists")
@@ -6473,7 +6529,7 @@ class CloudSqlTemporaryAdmin:
         return False
 
     def create(self, username: str, password: str) -> None:
-        if not _ADMIN_USERNAME.fullmatch(username):
+        if not self._valid_target_username(username):
             raise OwnerLauncherError("invalid_admin_username")
         encoded_password = password.encode("utf-8")
         if (
@@ -6494,13 +6550,7 @@ class CloudSqlTemporaryAdmin:
             operation = self._client.request_json(
                 "POST",
                 self._users_url,
-                body={
-                    "instance": SQL_INSTANCE,
-                    "name": username,
-                    "password": password,
-                    "project": PROJECT,
-                    "type": "BUILT_IN",
-                },
+                body=self._create_user_body(username, password),
             )
         except OwnerLauncherError as exc:
             if exc.code == "google_api_rejected":
@@ -6555,7 +6605,7 @@ class CloudSqlTemporaryAdmin:
         password: str,
     ) -> None:
 
-        if not _ADMIN_USERNAME.fullmatch(username):
+        if not self._valid_target_username(username):
             raise OwnerLauncherError("invalid_admin_username")
         encoded_password = password.encode("utf-8")
         if (
@@ -6579,11 +6629,7 @@ class CloudSqlTemporaryAdmin:
             operation = self._client.request_json(
                 "PUT",
                 f"{self._users_url}?{query}",
-                body={
-                    "name": username,
-                    "password": password,
-                    "type": "BUILT_IN",
-                },
+                body=self._update_user_body(username, password),
             )
             operation_name = self._record_operation_name(
                 operation,
@@ -6608,7 +6654,7 @@ class CloudSqlTemporaryAdmin:
     def create_or_rotate_recovery(self, username: str, password: str) -> None:
         """Provision the exact recovery admin for either valid stale-user state."""
 
-        if not _ADMIN_USERNAME.fullmatch(username):
+        if not self._valid_target_username(username):
             raise OwnerLauncherError("invalid_admin_username")
         self._ensure_mutation_observation()
         present = username in self._user_names(exact_admin_username=username)
@@ -6722,7 +6768,7 @@ class CloudSqlTemporaryAdmin:
             set(observed_relevant) & self._mutation_authority_known_operations
         )
         evidence = {
-            "schema": "muncho-cloud-sql-admin-absence-evidence.v1",
+            **self._absence_evidence_identity(),
             "project": PROJECT,
             "instance": SQL_INSTANCE,
             "username_sha256": _sha256(username.encode("utf-8")),
@@ -6765,7 +6811,6 @@ class CloudSqlTemporaryAdmin:
             ],
             "mutation_ambiguity_observed": ambiguity_observed,
             "quiet_window_seconds": self._operation_timeout_seconds,
-            "temporary_admin_absent": True,
         }
         self._reconciliation_evidence_sha256 = _sha256(_canonical_bytes(evidence))
         self._reconciliation_quiet_window_seconds = self._operation_timeout_seconds
@@ -6779,6 +6824,12 @@ class CloudSqlTemporaryAdmin:
         self._mutation_ambiguity_observed = bool(
             self._mutation_ambiguity_observed or ambiguity_observed
         )
+
+    def _absence_evidence_identity(self) -> Mapping[str, Any]:
+        return {
+            "schema": "muncho-cloud-sql-admin-absence-evidence.v1",
+            "temporary_admin_absent": True,
+        }
 
     def _reconcile_absence(
         self,
@@ -6876,7 +6927,7 @@ class CloudSqlTemporaryAdmin:
     def delete_and_confirm_absent(self, username: str) -> None:
         """Drain user operations and require one full continuous quiet window."""
 
-        if not _ADMIN_USERNAME.fullmatch(username):
+        if not self._valid_target_username(username):
             raise CleanupBlocked()
         try:
             initial_operations = self._stable_instance_operations()
@@ -6907,7 +6958,7 @@ class CloudSqlTemporaryAdmin:
         """Observe the full operation horizon before resolving lost mutation truth."""
 
         if (
-            not _ADMIN_USERNAME.fullmatch(username)
+            not self._valid_target_username(username)
             or self._mutation_operation_baseline is None
             or not self._mutation_ambiguous
         ):
@@ -6922,6 +6973,494 @@ class CloudSqlTemporaryAdmin:
             baseline_relevant=baseline_relevant,
             ambiguity_observed=True,
         )
+
+
+class CloudSqlCanaryBootstrapLogin(CloudSqlTemporaryAdmin):
+    """Fixed Cloud SQL boundary for the canary bootstrap login.
+
+    The target project, instance, login, host, type, and sole database role are
+    constants.  Callers provide only the owner identity digest at construction
+    and an in-memory provisional password at mutation time.
+    """
+
+    def __init__(
+        self,
+        client: GoogleRestClient,
+        *,
+        expected_owner_subject_sha256: str,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+        operation_timeout_seconds: float = _OPERATION_TIMEOUT_SECONDS,
+    ) -> None:
+        _require_sha256(
+            expected_owner_subject_sha256,
+            "invalid_owner_subject_sha256",
+        )
+        super().__init__(
+            client,
+            monotonic=monotonic,
+            sleeper=sleeper,
+            operation_timeout_seconds=operation_timeout_seconds,
+        )
+        self._fixed_owner_subject_sha256 = expected_owner_subject_sha256
+        self._fixed_update_etag: str | None = None
+        self._fixed_delete_authorized = False
+        self._fixed_delete_resource: Mapping[str, Any] | None = None
+        self._fixed_delete_authority_operation_name: str | None = None
+
+    def _valid_target_username(self, username: object) -> bool:
+        return username == CANARY_BOOTSTRAP_LOGIN
+
+    def _validate_exact_user_resource(
+        self,
+        item: Mapping[str, Any],
+        *,
+        username: str,
+    ) -> Mapping[str, Any]:
+        if (
+            username != CANARY_BOOTSTRAP_LOGIN
+            or item.get("kind") != "sql#user"
+            or item.get("name") != CANARY_BOOTSTRAP_LOGIN
+            or item.get("project") != PROJECT
+            or item.get("instance") != SQL_INSTANCE
+            or item.get("host") not in (None, "")
+        ):
+            raise OwnerLauncherError("cloud_sql_bootstrap_login_resource_invalid")
+        # Cloud SQL users.list omits security-bearing fields on the real
+        # canary.  This projection is intentionally presence-only; describe()
+        # obtains and validates the complete User resource separately.
+        return {
+            "instance": SQL_INSTANCE,
+            "name": CANARY_BOOTSTRAP_LOGIN,
+            "project": PROJECT,
+        }
+
+    @staticmethod
+    def _validate_described_resource(
+        item: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        etag = item.get("etag")
+        database_roles = item.get("databaseRoles")
+        if (
+            item.get("kind") != "sql#user"
+            or item.get("name") != CANARY_BOOTSTRAP_LOGIN
+            or item.get("project") != PROJECT
+            or item.get("instance") != SQL_INSTANCE
+            or ("type" in item and item.get("type") != "BUILT_IN")
+            or item.get("host") != ""
+            or not isinstance(etag, str)
+            or not 1 <= len(etag) <= 1024
+            or any(ord(character) < 0x21 or ord(character) > 0x7E for character in etag)
+            or type(database_roles) is not list
+            or database_roles != [CANARY_BOOTSTRAP_DATABASE_ROLE]
+            or any(
+                isinstance(role, str) and role.casefold() == "cloudsqlsuperuser"
+                for role in database_roles
+            )
+            or "password" in item
+        ):
+            raise OwnerLauncherError("cloud_sql_bootstrap_login_resource_invalid")
+        return {
+            "databaseRoles": [CANARY_BOOTSTRAP_DATABASE_ROLE],
+            "etag": etag,
+            "host": "",
+            "instance": SQL_INSTANCE,
+            "name": CANARY_BOOTSTRAP_LOGIN,
+            "project": PROJECT,
+            "type": "BUILT_IN",
+        }
+
+    @property
+    def _fixed_user_url(self) -> str:
+        encoded_login = urllib.parse.quote(CANARY_BOOTSTRAP_LOGIN, safe="")
+        query = urllib.parse.urlencode({"host": ""})
+        return f"{self._users_url}/{encoded_login}?{query}"
+
+    def _create_user_body(self, username: str, password: str) -> Mapping[str, Any]:
+        if username != CANARY_BOOTSTRAP_LOGIN:
+            raise OwnerLauncherError("cloud_sql_bootstrap_login_target_invalid")
+        return {
+            "databaseRoles": [CANARY_BOOTSTRAP_DATABASE_ROLE],
+            "host": "",
+            "instance": SQL_INSTANCE,
+            "name": CANARY_BOOTSTRAP_LOGIN,
+            "password": password,
+            "project": PROJECT,
+            "type": "BUILT_IN",
+        }
+
+    def _update_user_body(self, username: str, password: str) -> Mapping[str, Any]:
+        if username != CANARY_BOOTSTRAP_LOGIN or self._fixed_update_etag is None:
+            raise OwnerLauncherError("cloud_sql_bootstrap_login_target_invalid")
+        return {
+            "databaseRoles": [CANARY_BOOTSTRAP_DATABASE_ROLE],
+            "etag": self._fixed_update_etag,
+            "host": "",
+            "name": CANARY_BOOTSTRAP_LOGIN,
+            "password": password,
+            "type": "BUILT_IN",
+        }
+
+    def begin_mutation_observation(self) -> None:
+        super().begin_mutation_observation(
+            expected_owner_subject_sha256=self._fixed_owner_subject_sha256
+        )
+
+    def _description_snapshot(self) -> Mapping[str, Any] | None:
+        first_operations = self._instance_operations()
+        names, _presence = self._users_and_exact_resource(
+            exact_admin_username=CANARY_BOOTSTRAP_LOGIN
+        )
+        resource: Mapping[str, Any] | None = None
+        if CANARY_BOOTSTRAP_LOGIN in names:
+            try:
+                payload = self._client.request_json("GET", self._fixed_user_url)
+            except OwnerLauncherError:
+                raise OwnerLauncherError(
+                    "cloud_sql_bootstrap_login_resource_drifted"
+                ) from None
+            resource = self._validate_described_resource(payload)
+        second_operations = self._instance_operations()
+        if first_operations != second_operations:
+            raise OwnerLauncherError("cloud_sql_bootstrap_login_resource_drifted")
+        return resource
+
+    def describe(self) -> Mapping[str, Any] | None:
+        """Return a stable, password-free projection of the fixed user."""
+
+        first = self._description_snapshot()
+        second = self._description_snapshot()
+        if first != second:
+            raise OwnerLauncherError("cloud_sql_bootstrap_login_resource_drifted")
+        return second
+
+    def _require_observation_unchanged(self) -> None:
+        baseline = self._mutation_relevant_baseline
+        if baseline is None:
+            raise OwnerLauncherError("cloud_sql_mutation_evidence_unconfirmed")
+        current = self._relevant_user_operations(self._stable_instance_operations())
+        if current != baseline:
+            raise OwnerLauncherError("cloud_sql_mutation_evidence_unconfirmed")
+
+    def require_absent(self) -> None:
+        if self.describe() is not None:
+            raise OwnerLauncherError("cloud_sql_bootstrap_login_already_exists")
+
+    def create(self, provisional_password: str) -> None:
+        """Create only the fixed login with its exact sole database role."""
+
+        self._fixed_delete_authorized = False
+        self.begin_mutation_observation()
+        self.require_absent()
+        self._require_observation_unchanged()
+        super().create(CANARY_BOOTSTRAP_LOGIN, provisional_password)
+        try:
+            if self.describe() is None:
+                raise OwnerLauncherError("cloud_sql_bootstrap_login_create_unconfirmed")
+        except OwnerLauncherError:
+            self._mutation_ambiguous = True
+            self._mutation_ambiguity_observed = True
+            raise
+        self._fixed_delete_authorized = True
+
+    def _rotate_from_resource(
+        self,
+        provisional_password: str,
+        resource: Mapping[str, Any],
+    ) -> None:
+        self._fixed_delete_authorized = False
+        self.begin_mutation_observation()
+        current = self.describe()
+        if current is None:
+            raise OwnerLauncherError("cloud_sql_bootstrap_login_missing")
+        if current != resource:
+            raise OwnerLauncherError("cloud_sql_bootstrap_login_resource_drifted")
+        self._require_observation_unchanged()
+        etag = current.get("etag")
+        if not isinstance(etag, str):
+            raise OwnerLauncherError("cloud_sql_bootstrap_login_resource_invalid")
+        self._fixed_update_etag = etag
+        try:
+            super().rotate_existing(CANARY_BOOTSTRAP_LOGIN, provisional_password)
+        finally:
+            self._fixed_update_etag = None
+        try:
+            if self.describe() is None:
+                raise OwnerLauncherError("cloud_sql_bootstrap_login_rotate_unconfirmed")
+        except OwnerLauncherError:
+            self._mutation_ambiguous = True
+            self._mutation_ambiguity_observed = True
+            raise
+        self._fixed_delete_authorized = True
+
+    def rotate_existing(self, provisional_password: str) -> None:
+        resource = self.describe()
+        if resource is None:
+            raise OwnerLauncherError("cloud_sql_bootstrap_login_missing")
+        self._rotate_from_resource(provisional_password, resource)
+
+    def create_or_rotate_recovery(self, provisional_password: str) -> None:
+        """Recover authority without changing or broadening database roles."""
+
+        resource = self.describe()
+        if resource is None:
+            self.create(provisional_password)
+        else:
+            self._rotate_from_resource(provisional_password, resource)
+
+    def require_current_authority(self) -> None:
+        super().require_current_authority(CANARY_BOOTSTRAP_LOGIN)
+
+    def authority_receipt(self) -> Mapping[str, Any]:
+        """Return fixed authority and resource truth without password material."""
+
+        if not self._fixed_delete_authorized:
+            raise OwnerLauncherError("cloud_sql_mutation_evidence_unconfirmed")
+        self.require_current_authority()
+        resource = self.describe()
+        if resource is None:
+            raise OwnerLauncherError("cloud_sql_mutation_evidence_unconfirmed")
+        self.require_current_authority()
+        operation_name = self._confirmed_authority_operation_name
+        operation_type = self._confirmed_authority_operation_type
+        if operation_name is None or operation_type not in {
+            "CREATE_USER",
+            "UPDATE_USER",
+        }:
+            raise OwnerLauncherError("cloud_sql_mutation_evidence_unconfirmed")
+        receipt = {
+            "schema": CANARY_BOOTSTRAP_AUTHORITY_RECEIPT_SCHEMA,
+            "project": PROJECT,
+            "instance": SQL_INSTANCE,
+            "name": CANARY_BOOTSTRAP_LOGIN,
+            "host": "",
+            "type": "BUILT_IN",
+            "database_roles": [CANARY_BOOTSTRAP_DATABASE_ROLE],
+            "etag": resource["etag"],
+            "resource_projection_sha256": _sha256(_canonical_bytes(resource)),
+            "operation_name": operation_name,
+            "operation_type": operation_type,
+            "owner_subject_sha256": self._fixed_owner_subject_sha256,
+        }
+        return {
+            **receipt,
+            "receipt_sha256": _sha256(_canonical_bytes(receipt)),
+        }
+
+    def _absence_evidence_identity(self) -> Mapping[str, Any]:
+        return {
+            "schema": CANARY_BOOTSTRAP_ABSENCE_EVIDENCE_SCHEMA,
+            "bootstrap_login_absent": True,
+            "bootstrap_login": CANARY_BOOTSTRAP_LOGIN,
+            "database_roles": [CANARY_BOOTSTRAP_DATABASE_ROLE],
+        }
+
+    def _confirm_absent_without_delete(self, *, ambiguity_observed: bool) -> None:
+        """Boundedly prove absence without ever deleting an unowned resource."""
+
+        try:
+            initial_operations = self._stable_instance_operations()
+        except OwnerLauncherError as exc:
+            raise CleanupBlocked(exc.code) from None
+        initial_relevant = self._relevant_user_operations(initial_operations)
+        baseline = (
+            self._mutation_operation_baseline
+            if self._mutation_operation_baseline is not None
+            else frozenset(initial_operations)
+        )
+        baseline_relevant = (
+            self._mutation_relevant_baseline
+            if self._mutation_relevant_baseline is not None
+            else initial_relevant
+        )
+        if baseline_relevant is None:
+            raise CleanupBlocked("cloud_sql_mutation_evidence_unconfirmed")
+        quiet_window = self._operation_timeout_seconds
+        started = self._monotonic()
+        hard_deadline = started + max(quiet_window * 2.0, quiet_window + 1.0)
+        quiet_since: float | None = None
+        previous_signature: tuple[tuple[str, tuple[str, str, str, bool]], ...] | None = None
+        known_operations: dict[str, tuple[str, str, str, bool]] = dict(
+            baseline_relevant
+        )
+        pending_seen = {
+            name for name, value in baseline_relevant.items() if value[1] != "DONE"
+        }
+        done_seen = {
+            name for name, value in baseline_relevant.items() if value[1] == "DONE"
+        }
+        polls = 0
+        maximum_polls = max(8, int(hard_deadline - started) + 8)
+        poll_interval = min(5.0, max(0.1, quiet_window / 2.0))
+        while polls < maximum_polls:
+            polls += 1
+            relevant, present = self._cleanup_snapshot(CANARY_BOOTSTRAP_LOGIN)
+            self._track_operation_snapshot(
+                relevant,
+                known_operations=known_operations,
+                pending_seen=pending_seen,
+                done_seen=done_seen,
+            )
+            if present:
+                raise CleanupBlocked("cloud_sql_bootstrap_login_ownership_unproven")
+            signature = tuple(sorted(relevant.items()))
+            current = self._monotonic()
+            if signature != previous_signature:
+                quiet_since = current
+            previous_signature = signature
+            if (
+                not any(value[1] != "DONE" for value in relevant.values())
+                and quiet_since is not None
+                and current - quiet_since >= quiet_window
+            ):
+                final_relevant, final_present = self._cleanup_snapshot(
+                    CANARY_BOOTSTRAP_LOGIN
+                )
+                self._track_operation_snapshot(
+                    final_relevant,
+                    known_operations=known_operations,
+                    pending_seen=pending_seen,
+                    done_seen=done_seen,
+                )
+                if final_present:
+                    raise CleanupBlocked(
+                        "cloud_sql_bootstrap_login_ownership_unproven"
+                    )
+                if (
+                    tuple(sorted(final_relevant.items())) == signature
+                    and not any(
+                        value[1] != "DONE" for value in final_relevant.values()
+                    )
+                ):
+                    self._record_absence_reconciliation(
+                        username=CANARY_BOOTSTRAP_LOGIN,
+                        observed_relevant=known_operations,
+                        baseline=baseline,
+                        ambiguity_observed=ambiguity_observed,
+                    )
+                    self._mutation_ambiguous = False
+                    return
+            if self._monotonic() >= hard_deadline:
+                raise CleanupBlocked("cloud_sql_quiet_window_timeout")
+            self._sleeper(poll_interval)
+        raise CleanupBlocked("cloud_sql_quiet_window_timeout")
+
+    def _validate_fixed_delete_ledger(
+        self,
+        relevant: Mapping[str, tuple[str, str, str, bool]],
+    ) -> None:
+        baseline = self._mutation_operation_baseline
+        baseline_relevant = self._mutation_relevant_baseline
+        authority_name = self._fixed_delete_authority_operation_name
+        authority_type = self._confirmed_authority_operation_type
+        if (
+            baseline is None
+            or baseline_relevant is None
+            or authority_name is None
+            or authority_type not in {"CREATE_USER", "UPDATE_USER"}
+        ):
+            raise CleanupBlocked("cloud_sql_mutation_evidence_unconfirmed")
+        observed_baseline = {
+            name: relevant[name] for name in baseline_relevant if name in relevant
+        }
+        authority_delta = {
+            name: value
+            for name, value in relevant.items()
+            if name not in baseline and value[0] in {"CREATE_USER", "UPDATE_USER"}
+        }
+        expected_authority = authority_delta.get(authority_name)
+        post_baseline_deletes = {
+            name: value
+            for name, value in relevant.items()
+            if name not in baseline and value[0] == "DELETE_USER"
+        }
+        if (
+            observed_baseline != baseline_relevant
+            or set(authority_delta) != {authority_name}
+            or expected_authority is None
+            or expected_authority[0] != authority_type
+            or expected_authority[1] != "DONE"
+            or expected_authority[2] != self._fixed_owner_subject_sha256
+            or expected_authority[3] is not True
+            or any(
+                value[2] != self._fixed_owner_subject_sha256
+                for value in post_baseline_deletes.values()
+            )
+        ):
+            raise CleanupBlocked("cloud_sql_bootstrap_login_ownership_unproven")
+
+    def _cleanup_snapshot(
+        self,
+        username: str,
+    ) -> tuple[Mapping[str, tuple[str, str, str, bool]], bool]:
+        relevant, present = super()._cleanup_snapshot(username)
+        if self._fixed_delete_resource is not None:
+            self._validate_fixed_delete_ledger(relevant)
+        return relevant, present
+
+    def _delete_user_once(self, username: str, *, deadline: float) -> bool:
+        bound_resource = self._fixed_delete_resource
+        if username != CANARY_BOOTSTRAP_LOGIN or bound_resource is None:
+            raise CleanupBlocked("cloud_sql_bootstrap_login_ownership_unproven")
+        try:
+            current = self.describe()
+            current_relevant = self._relevant_user_operations(
+                self._stable_instance_operations()
+            )
+        except OwnerLauncherError as exc:
+            raise CleanupBlocked(exc.code) from None
+        self._validate_fixed_delete_ledger(current_relevant)
+        if current is None:
+            return False
+        if current != bound_resource:
+            raise CleanupBlocked("cloud_sql_bootstrap_login_ownership_unproven")
+        return super()._delete_user_once(username, deadline=deadline)
+
+    def delete_and_confirm_absent(self) -> None:
+        """Delete only after this object has confirmed current mutation authority."""
+
+        resource = self.describe()
+        if resource is None:
+            self._confirm_absent_without_delete(ambiguity_observed=False)
+            return
+        if not self._fixed_delete_authorized:
+            raise CleanupBlocked("cloud_sql_bootstrap_login_ownership_unproven")
+        try:
+            super().require_current_authority(CANARY_BOOTSTRAP_LOGIN)
+        except OwnerLauncherError as exc:
+            raise CleanupBlocked(exc.code) from None
+        authority_operation_name = self._confirmed_authority_operation_name
+        if authority_operation_name is None:
+            raise CleanupBlocked("cloud_sql_mutation_evidence_unconfirmed")
+        self._fixed_delete_resource = dict(resource)
+        self._fixed_delete_authority_operation_name = authority_operation_name
+        try:
+            super().delete_and_confirm_absent(CANARY_BOOTSTRAP_LOGIN)
+            try:
+                final_resource = self.describe()
+            except OwnerLauncherError as exc:
+                raise CleanupBlocked(exc.code) from None
+            if final_resource is not None:
+                cause_code = (
+                    "cloud_sql_bootstrap_login_delete_unconfirmed"
+                    if final_resource == resource
+                    else "cloud_sql_bootstrap_login_ownership_unproven"
+                )
+                raise CleanupBlocked(cause_code)
+        except BaseException:
+            self._fixed_delete_authorized = False
+            raise
+        finally:
+            self._fixed_delete_resource = None
+            self._fixed_delete_authority_operation_name = None
+        self._fixed_delete_authorized = False
+
+    def reconcile_ambiguous_mutation_and_confirm_absent(self) -> None:
+        """Reconcile lost truth without blind-deleting a same-named account."""
+
+        if self._mutation_operation_baseline is None or not self._mutation_ambiguous:
+            raise CleanupBlocked("cloud_sql_mutation_evidence_unconfirmed")
+        self._confirm_absent_without_delete(ambiguity_observed=True)
 
 
 class DiscordTokenSource(Protocol):
@@ -11542,7 +12081,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "ADMIN_FRAME_MAGIC",
     "ADMIN_USERNAME_PREFIX",
+    "CANARY_BOOTSTRAP_ABSENCE_EVIDENCE_SCHEMA",
+    "CANARY_BOOTSTRAP_AUTHORITY_RECEIPT_SCHEMA",
+    "CANARY_BOOTSTRAP_DATABASE_ROLE",
+    "CANARY_BOOTSTRAP_LOGIN",
     "CleanupBlocked",
+    "CloudSqlCanaryBootstrapLogin",
     "CloudSqlCreateNotCommitted",
     "CloudSqlTemporaryAdmin",
     "COORDINATOR_FAILURE_SCHEMA",

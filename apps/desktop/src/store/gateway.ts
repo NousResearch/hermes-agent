@@ -74,6 +74,14 @@ export function activeGateway(): HermesGateway | null {
   return secondaries.get(activeKey)?.gateway ?? primaryGateway
 }
 
+// Read only: return an already-owned connection without creating, reconnecting,
+// or making it active. Background prompt actions must fail closed if it is gone.
+export function gatewayForProfile(profile: string): HermesGateway | null {
+  const key = normKey(profile)
+
+  return key === primaryProfile ? primaryGateway : (secondaries.get(key)?.gateway ?? null)
+}
+
 // Mirror a backend's connection state into the global composer state, but only
 // when that backend is the one the user is currently looking at. Lets the
 // composer reflect the active profile's socket without a background reconnect

@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
-import { $gateway } from '@/store/gateway'
+import { $gateway, setPrimaryGateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $secretRequest, $sudoRequest, clearAllPrompts, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
@@ -24,6 +24,7 @@ afterEach(() => {
   cleanup()
   clearAllPrompts()
   $activeSessionId.set(null)
+  setPrimaryGateway(null)
   $gateway.set(null)
   vi.clearAllMocks()
 })
@@ -33,8 +34,10 @@ describe('PromptOverlays', () => {
     const request = vi.fn().mockRejectedValue(new Error('no pending password request'))
 
     $activeSessionId.set('s1')
-    $gateway.set({ request } as never)
-    setSudoRequest({ requestId: 'sudo-1', sessionId: 's1' })
+    const gateway = { request } as never
+    setPrimaryGateway(gateway)
+    $gateway.set(gateway)
+    setSudoRequest({ profile: 'default', requestId: 'sudo-1', sessionId: 's1' })
 
     renderPrompts()
 
@@ -51,8 +54,16 @@ describe('PromptOverlays', () => {
     const request = vi.fn().mockRejectedValue(new Error('no pending value request'))
 
     $activeSessionId.set('s1')
-    $gateway.set({ request } as never)
-    setSecretRequest({ envVar: 'TEST_SECRET', prompt: 'Paste a secret', requestId: 'secret-1', sessionId: 's1' })
+    const gateway = { request } as never
+    setPrimaryGateway(gateway)
+    $gateway.set(gateway)
+    setSecretRequest({
+      envVar: 'TEST_SECRET',
+      profile: 'default',
+      prompt: 'Paste a secret',
+      requestId: 'secret-1',
+      sessionId: 's1'
+    })
 
     renderPrompts()
 

@@ -1,62 +1,60 @@
-import { atom, computed } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 
+import { $activeGatewayProfile } from './profile'
+import { normalizePromptIdentity, promptIdentityKey, type PromptTarget } from './prompt-identity'
 import { $activeSessionId } from './session'
 
 export interface ClarifyRequest {
+  profile: string
   requestId: string
   question: string
   choices: string[] | null
   sessionId: string | null
 }
 
-// Pending clarify requests keyed by the runtime session id that raised them.
-// Storing per-session (instead of one shared slot) lets a *background* session
-// park its clarify request while the user is looking at a different chat, then
-// resolve it once they switch over — without a second concurrent clarify
-// clobbering the first. A request with no session id lands under the empty key.
-const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
-
-export const $clarifyRequests = atom<Record<string, ClarifyRequest>>({})
+const $allClarifyRequests = atom<Record<string, ClarifyRequest>>({})
+export const $clarifyRequests: ReadableAtom<Record<string, ClarifyRequest>> = $allClarifyRequests
 
 // The clarify request for the currently-viewed session. The inline ClarifyTool
 // only ever mounts inside the active session's transcript, so it reads this
 // focus-scoped view rather than reaching into the whole map.
 export const $clarifyRequest = computed(
-  [$clarifyRequests, $activeSessionId],
-  (requests, activeId) => requests[keyFor(activeId)] ?? null
+  [$clarifyRequests, $activeGatewayProfile, $activeSessionId],
+  (requests, activeProfile, activeId) => requests[promptIdentityKey(activeProfile, activeId)] ?? null
 )
 
 export function setClarifyRequest(request: ClarifyRequest): void {
-  $clarifyRequests.set({ ...$clarifyRequests.get(), [keyFor(request.sessionId)]: request })
+  const normalized = normalizePromptIdentity(request)
+  $allClarifyRequests.set({
+    ...$allClarifyRequests.get(),
+    [promptIdentityKey(normalized.profile, normalized.sessionId)]: normalized
+  })
 }
 
-export function clearClarifyRequest(requestId?: string, sessionId?: string | null): void {
-  const requests = $clarifyRequests.get()
+export function clearClarifyRequest(target?: PromptTarget | string): void {
+  const requests = $allClarifyRequests.get()
 
-  // Targeted clear when the caller knows the session (the common path from the
-  // inline ClarifyTool answering its own request).
-  if (sessionId !== undefined) {
-    const key = keyFor(sessionId)
+  if (typeof target === 'object') {
+    const key = promptIdentityKey(target.profile, target.sessionId)
     const current = requests[key]
 
-    if (!current || (requestId && current.requestId !== requestId)) {
+    if (!current || (target.requestId && current.requestId !== target.requestId)) {
       return
     }
 
     const next = { ...requests }
     delete next[key]
-    $clarifyRequests.set(next)
+    $allClarifyRequests.set(next)
 
     return
   }
 
-  // Fallback with no session hint: drop every entry matching the request id
-  // (or clear all when none is given).
+  // Preserve the global reset and legacy request-id sweep used by teardown.
   const next: Record<string, ClarifyRequest> = {}
   let changed = false
 
   for (const [key, value] of Object.entries(requests)) {
-    if (requestId && value.requestId !== requestId) {
+    if (target && value.requestId !== target) {
       next[key] = value
     } else {
       changed = true
@@ -64,6 +62,6 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
   }
 
   if (changed) {
-    $clarifyRequests.set(next)
+    $allClarifyRequests.set(next)
   }
 }

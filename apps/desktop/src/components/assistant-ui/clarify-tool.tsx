@@ -22,7 +22,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
-import { $gateway } from '@/store/gateway'
+import { gatewayForProfile } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 
 import { selectMessageRunning } from './tool/fallback-model'
@@ -185,7 +185,6 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
   const request = useStore($clarifyRequest)
-  const gateway = useStore($gateway)
   const fromArgs = useMemo(() => readClarifyArgs(args), [args])
 
   const matchingRequest = useMemo(() => {
@@ -230,6 +229,8 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         return
       }
 
+      const gateway = gatewayForProfile(matchingRequest.profile)
+
       if (!gateway) {
         notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
 
@@ -244,14 +245,14 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           answer
         })
         triggerHaptic('submit')
-        clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
+        clearClarifyRequest(matchingRequest)
         // tool.complete lands next → ClarifyToolSettled.
       } catch (error) {
         notifyError(error, copy.sendFailed)
         setSubmitting(false)
       }
     },
-    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, ready]
+    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, matchingRequest, ready]
   )
 
   const trimmedDraft = draft.trim()

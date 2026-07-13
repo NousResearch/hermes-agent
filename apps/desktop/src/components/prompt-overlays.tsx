@@ -18,7 +18,7 @@ import { useI18n } from '@/i18n'
 import { isMissingPendingPromptRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Loader2, Lock } from '@/lib/icons'
-import { $gateway } from '@/store/gateway'
+import { gatewayForProfile } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $secretRequest, $sudoRequest, clearSecretRequest, clearSudoRequest } from '@/store/prompts'
 
@@ -39,7 +39,6 @@ function SudoDialog() {
   const { t } = useI18n()
   const copy = t.prompts
   const request = useStore($sudoRequest)
-  const gateway = useStore($gateway)
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -53,6 +52,8 @@ function SudoDialog() {
       if (!request) {
         return
       }
+
+      const gateway = gatewayForProfile(request.profile)
 
       if (!gateway) {
         notifyError(new Error(copy.gatewayDisconnected), copy.sudoSendFailed)
@@ -68,10 +69,10 @@ function SudoDialog() {
           request_id: request.requestId
         })
         triggerHaptic('submit')
-        clearSudoRequest(request.sessionId, request.requestId)
+        clearSudoRequest(request)
       } catch (error) {
         if (isMissingPendingPromptRequest(error, 'password')) {
-          clearSudoRequest(request.sessionId, request.requestId)
+          clearSudoRequest(request)
 
           return
         }
@@ -80,7 +81,7 @@ function SudoDialog() {
         setSubmitting(false)
       }
     },
-    [copy.gatewayDisconnected, copy.sudoSendFailed, gateway, request]
+    [copy.gatewayDisconnected, copy.sudoSendFailed, request]
   )
 
   // Cancel → empty password. The backend treats an empty sudo response as a
@@ -141,7 +142,6 @@ function SecretDialog() {
   const { t } = useI18n()
   const copy = t.prompts
   const request = useStore($secretRequest)
-  const gateway = useStore($gateway)
   const [value, setValue] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -155,6 +155,8 @@ function SecretDialog() {
       if (!request) {
         return
       }
+
+      const gateway = gatewayForProfile(request.profile)
 
       if (!gateway) {
         notifyError(new Error(copy.gatewayDisconnected), copy.secretSendFailed)
@@ -170,10 +172,10 @@ function SecretDialog() {
           value: secret
         })
         triggerHaptic('submit')
-        clearSecretRequest(request.sessionId, request.requestId)
+        clearSecretRequest(request)
       } catch (error) {
         if (isMissingPendingPromptRequest(error, 'value')) {
-          clearSecretRequest(request.sessionId, request.requestId)
+          clearSecretRequest(request)
 
           return
         }
@@ -182,7 +184,7 @@ function SecretDialog() {
         setSubmitting(false)
       }
     },
-    [copy.gatewayDisconnected, copy.secretSendFailed, gateway, request]
+    [copy.gatewayDisconnected, copy.secretSendFailed, request]
   )
 
   const onOpenChange = useCallback(

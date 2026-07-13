@@ -99,6 +99,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
+      const profile = normalizeProfileKey(event.profile)
 
       if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
         return
@@ -335,8 +336,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // (e.g. interrupted, or the approval already resolved). Scoped to the
         // session so a background turn finishing can't wipe the active chat's
         // prompt, and vice versa.
-        clearAllPrompts(sessionId)
-        clearClarifyRequest(undefined, sessionId)
+        clearAllPrompts({ profile, sessionId })
+        clearClarifyRequest({ profile, sessionId })
         // Turn ended without a final `todo` update — drop a still-unfinished
         // list so "Tasks N/M" doesn't stay pinned above the composer with the
         // last item stuck pending/in_progress. Finished lists keep their linger.
@@ -454,6 +455,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (requestId && question) {
           setClarifyRequest({
+            profile,
             requestId,
             question,
             choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,
@@ -472,6 +474,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           dispatchNativeNotification({
             body: question,
             kind: 'input',
+            profile,
             sessionId,
             title: translateNow('notifications.native.inputTitle')
           })
@@ -492,6 +495,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           choices: Array.isArray(payload?.choices) ? payload.choices.filter(choice => typeof choice === 'string') : undefined,
           command,
           description,
+          profile,
           sessionId: sessionId ?? null,
           smartDenied: payload?.smart_denied === true
         })
@@ -507,6 +511,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           ],
           body: command || description,
           kind: 'approval',
+          profile,
           sessionId,
           title: translateNow('notifications.native.approvalTitle')
         })
@@ -516,7 +521,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
         if (requestId) {
-          setSudoRequest({ requestId, sessionId: sessionId ?? null })
+          setSudoRequest({ profile, requestId, sessionId: sessionId ?? null })
 
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
@@ -525,6 +530,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           dispatchNativeNotification({
             body: translateNow('notifications.native.inputBody'),
             kind: 'input',
+            profile,
             sessionId,
             title: translateNow('notifications.native.inputTitle')
           })
@@ -541,6 +547,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           setSecretRequest({
             requestId,
             envVar,
+            profile,
             prompt: promptText,
             sessionId: sessionId ?? null
           })
@@ -552,6 +559,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           dispatchNativeNotification({
             body: promptText || envVar || translateNow('notifications.native.inputBody'),
             kind: 'input',
+            profile,
             sessionId,
             title: translateNow('notifications.native.inputTitle')
           })
@@ -621,8 +629,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // for this session so an approval/sudo/secret overlay can't linger past
         // the failed turn (same intent as the message.complete clear).
         if (sessionId) {
-          clearAllPrompts(sessionId)
-          clearClarifyRequest(undefined, sessionId)
+          clearAllPrompts({ profile, sessionId })
+          clearClarifyRequest({ profile, sessionId })
           clearActiveSessionTodos(sessionId)
           setSessionCompacting(sessionId, false)
           compactedTurnRef.current.delete(sessionId)

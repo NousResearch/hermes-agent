@@ -20,6 +20,7 @@ import {
 import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
 import { $busy, $connection, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
@@ -537,8 +538,9 @@ export function usePromptActions({
     // raised. Drop this session's pending clarify / approval / sudo / secret so
     // a dead panel (and the sidebar "needs input" dot) can't linger and accept
     // an answer the backend will reject.
-    clearAllPrompts(sessionId)
-    clearClarifyRequest(undefined, sessionId)
+    const profile = normalizeProfileKey($activeGatewayProfile.get())
+    clearAllPrompts({ profile, sessionId })
+    clearClarifyRequest({ profile, sessionId })
 
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })

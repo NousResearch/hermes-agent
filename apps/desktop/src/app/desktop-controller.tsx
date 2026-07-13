@@ -46,7 +46,13 @@ import {
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
+import {
+  $activeGatewayProfile,
+  $freshSessionRequest,
+  $profileScope,
+  ensureGatewayProfile,
+  refreshActiveProfile
+} from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
@@ -305,9 +311,18 @@ export function DesktopController() {
   // resumes a non-existent stored session ("session not found") and strands the
   // user. Translate runtime -> stored before navigating.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
+    const unsubscribe = window.hermesDesktop?.onFocusSession?.(payload => {
+      const profile = typeof payload === 'string' ? undefined : payload.profile
+      const sessionId = typeof payload === 'string' ? payload : payload.sessionId
+
       if (sessionId) {
-        navigate(sessionRoute(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionIdRef.current)))
+        const route = sessionRoute(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionIdRef.current))
+
+        if (profile) {
+          void ensureGatewayProfile(profile).then(() => navigate(route))
+        } else {
+          navigate(route)
+        }
       }
     })
 
@@ -316,8 +331,8 @@ export function DesktopController() {
 
   // Notification action button (Approve/Reject) — resolve in place, no navigation.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onNotificationAction?.(({ actionId, sessionId }) => {
-      void respondToApprovalAction(sessionId ?? null, actionId)
+    const unsubscribe = window.hermesDesktop?.onNotificationAction?.(({ actionId, profile, sessionId }) => {
+      void respondToApprovalAction(profile ?? 'default', sessionId ?? null, actionId)
     })
 
     return () => unsubscribe?.()

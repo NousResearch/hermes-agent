@@ -4885,13 +4885,17 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     Returns:
         List of all currently registered MCP tool names.
     """
-    if not _MCP_AVAILABLE:
-        logger.debug("MCP SDK not available -- skipping explicit MCP registration")
-        return []
-
-    servers = _filter_suspicious_mcp_servers(servers)
+    servers = _filter_suspicious_mcp_servers(servers) if servers else {}
     if not servers:
         logger.debug("No explicit MCP servers provided")
+        return []
+
+    if not _MCP_AVAILABLE:
+        logger.warning(
+            "MCP servers configured (%s) but MCP SDK is not installed -- "
+            "install with: pip install mcp",
+            ", ".join(servers),
+        )
         return []
 
     # Only attempt servers that aren't already connected and are enabled
@@ -5005,13 +5009,17 @@ def discover_mcp_tools() -> List[str]:
     Returns:
         List of all registered MCP tool names.
     """
-    if not _MCP_AVAILABLE:
-        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
-        return []
-
     servers = _load_mcp_config()
     if not servers:
         logger.debug("No MCP servers configured")
+        return []
+
+    if not _MCP_AVAILABLE:
+        logger.warning(
+            "MCP servers configured (%s) but MCP SDK is not installed -- "
+            "install with: pip install mcp",
+            ", ".join(servers),
+        )
         return []
 
     with _lock:

@@ -1464,12 +1464,36 @@ class TestToolsetInjection:
 # ---------------------------------------------------------------------------
 
 class TestGracefulFallback:
-    def test_mcp_unavailable_returns_empty(self):
-        """When _MCP_AVAILABLE is False, discover_mcp_tools is a no-op."""
-        with patch("tools.mcp_tool._MCP_AVAILABLE", False):
+    def test_mcp_unavailable_no_servers_returns_empty_silent(self, caplog):
+        """No servers configured + no SDK -> empty list, NO warning."""
+        import logging
+        with patch("tools.mcp_tool._MCP_AVAILABLE", False), \
+             patch("tools.mcp_tool._load_mcp_config", return_value={}):
             from tools.mcp_tool import discover_mcp_tools
-            result = discover_mcp_tools()
+            with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+                result = discover_mcp_tools()
             assert result == []
+            assert not any(
+                "MCP servers configured" in rec.message
+                for rec in caplog.records
+            )
+
+    def test_mcp_unavailable_with_servers_warns(self, caplog):
+        """Servers configured + no SDK -> empty list + WARNING with install hint."""
+        import logging
+        servers = {"github": {"command": "npx"}, "fs": {"command": "node"}}
+        with patch("tools.mcp_tool._MCP_AVAILABLE", False), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=servers):
+            from tools.mcp_tool import discover_mcp_tools
+            with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+                result = discover_mcp_tools()
+            assert result == []
+            warnings = [
+                rec for rec in caplog.records
+                if "MCP servers configured" in rec.message
+            ]
+            assert len(warnings) == 1
+            assert "pip install mcp" in warnings[0].message
 
     def test_no_servers_returns_empty(self):
         """No MCP servers configured -> empty list."""
@@ -1479,6 +1503,42 @@ class TestGracefulFallback:
             from tools.mcp_tool import discover_mcp_tools
             result = discover_mcp_tools()
             assert result == []
+
+
+class TestRegisterMcpServersWarningScoping:
+    """caplog tests for the SDK-missing warning contract."""
+
+    def test_register_empty_servers_silent(self, caplog):
+        """register_mcp_servers({}) with no SDK -> no warning."""
+        import logging
+        from tools.mcp_tool import register_mcp_servers
+        with patch("tools.mcp_tool._MCP_AVAILABLE", False), \
+             patch("tools.mcp_tool._filter_suspicious_mcp_servers", return_value={}):
+            with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+                result = register_mcp_servers({})
+            assert result == []
+            assert not any(
+                "MCP servers configured" in rec.message
+                for rec in caplog.records
+            )
+
+    def test_register_with_servers_warns(self, caplog):
+        """register_mcp_servers({srv: ...}) with no SDK -> WARNING."""
+        import logging
+        from tools.mcp_tool import register_mcp_servers
+        servers = {"myserver": {"command": "test"}}
+        with patch("tools.mcp_tool._MCP_AVAILABLE", False), \
+             patch("tools.mcp_tool._filter_suspicious_mcp_servers", return_value=servers):
+            with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+                result = register_mcp_servers(servers)
+            assert result == []
+            warnings = [
+                rec for rec in caplog.records
+                if "MCP servers configured" in rec.message
+            ]
+            assert len(warnings) == 1
+            assert "myserver" in warnings[0].message
+            assert "pip install mcp" in warnings[0].message
 
 
 # ---------------------------------------------------------------------------

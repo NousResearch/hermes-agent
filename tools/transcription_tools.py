@@ -1086,6 +1086,36 @@ def _looks_like_cuda_lib_error(exc: BaseException) -> bool:
     return any(marker in msg for marker in _CUDA_LIB_ERROR_MARKERS)
 
 
+# A separate failure family from the missing-lib markers above: the CUDA
+# runtime is present and working, but the compute type ctranslate2
+# auto-selected has no supported kernel on this GPU.  Seen on RTX 50-series
+# (Blackwell / sm120) with ctranslate2 < 4.6.3, where "auto" resolves to an
+# int8_* type and the int8 GEMM fails at first use (OpenNMT/CTranslate2#1865;
+# fixed upstream in 4.6.3/4.7.0).  Explicit float16 works on the same GPU,
+# so this must NOT take the CPU fallback.
+_CUBLAS_UNSUPPORTED_MARKER = "CUBLAS_STATUS_NOT_SUPPORTED"
+
+
+def _looks_like_cublas_unsupported(exc: BaseException) -> bool:
+    """Heuristic: did the auto-selected compute type hit an unsupported cuBLAS kernel?
+
+    ctranslate2 raises plain RuntimeError with the literal status enum name,
+    e.g. ``cuBLAS failed with status CUBLAS_STATUS_NOT_SUPPORTED``.
+    """
+    return _CUBLAS_UNSUPPORTED_MARKER in str(exc)
+
+
+def _warn_cublas_unsupported(exc: BaseException) -> None:
+    logger.warning(
+        "faster-whisper hit an unsupported cuBLAS kernel (%s) — the compute "
+        "type auto-selected by ctranslate2 isn't supported on this GPU "
+        "(int8 on Blackwell-class GPUs with ctranslate2 < 4.6.3). Retrying "
+        "with explicit float16 on CUDA. Upgrade ctranslate2 "
+        "(pip install -U ctranslate2) to restore int8 performance.",
+        exc,
+    )
+
+
 def _load_local_whisper_model(model_name: str):
     """Load faster-whisper with graceful CUDA → CPU fallback.
 
@@ -1096,13 +1126,19 @@ def _load_local_whisper_model(model_name: str):
     On those hosts the load itself sometimes succeeds and the dlopen failure
     only surfaces at first ``transcribe()`` call.
 
-    We try ``auto`` first (fast CUDA path when it works), and on any CUDA
-    library load failure fall back to CPU + int8.
+    We try ``auto`` first (fast CUDA path when it works).  If the
+    auto-selected compute type has no supported kernel on this GPU
+    (``CUBLAS_STATUS_NOT_SUPPORTED``), we retry with explicit float16 on CUDA
+    — the GPU itself works.  On a CUDA library load failure we fall back to
+    CPU + int8.
     """
     from faster_whisper import WhisperModel
     try:
         return WhisperModel(model_name, device="auto", compute_type="auto")
     except Exception as exc:
+        if _looks_like_cublas_unsupported(exc):
+            _warn_cublas_unsupported(exc)
+            return WhisperModel(model_name, device="cuda", compute_type="float16")
         if not _looks_like_cuda_lib_error(exc):
             raise
         logger.warning(
@@ -1142,22 +1178,31 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
             transcript = " ".join(segment.text.strip() for segment in segments)
         except Exception as exc:
-            # CUDA runtime libs sometimes only fail at dlopen-on-first-use,
+            # Two recoverable failure families surface only at first use,
             # AFTER the model loaded successfully.  Evict the broken cached
-            # model, reload on CPU, retry once.  Without this the module-
-            # global `_local_model` is poisoned and every subsequent voice
-            # message on this process fails identically until restart.
-            if not _looks_like_cuda_lib_error(exc):
+            # model, reload with a working config, retry once.  Without this
+            # the module-global `_local_model` is poisoned and every
+            # subsequent voice message on this process fails identically
+            # until restart.
+            #   - Unsupported auto-selected compute type (Blackwell + old
+            #     ctranslate2): the GPU works — reload with explicit float16.
+            #   - CUDA runtime libs failing dlopen-on-first-use: reload on CPU.
+            if _looks_like_cublas_unsupported(exc):
+                _warn_cublas_unsupported(exc)
+                retry_device, retry_compute = "cuda", "float16"
+            elif _looks_like_cuda_lib_error(exc):
+                logger.warning(
+                    "faster-whisper CUDA runtime failed mid-transcribe (%s) — "
+                    "evicting cached model and retrying on CPU (int8).",
+                    exc,
+                )
+                retry_device, retry_compute = "cpu", "int8"
+            else:
                 raise
-            logger.warning(
-                "faster-whisper CUDA runtime failed mid-transcribe (%s) — "
-                "evicting cached model and retrying on CPU (int8).",
-                exc,
-            )
             _local_model = None
             _local_model_name = None
             from faster_whisper import WhisperModel
-            _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            _local_model = WhisperModel(model_name, device=retry_device, compute_type=retry_compute)
             _local_model_name = model_name
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
             transcript = " ".join(segment.text.strip() for segment in segments)

@@ -131,6 +131,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "stt.mistral": ("mistralai==2.4.8",),
     "stt.faster_whisper": (
         "faster-whisper==1.2.1",
+        # Pinned explicitly (normally transitive via faster-whisper):
+        # ctranslate2 < 4.6.3 selects int8 kernels on Blackwell GPUs (sm120)
+        # that fail with CUBLAS_STATUS_NOT_SUPPORTED (OpenNMT/CTranslate2#1865,
+        # fixed in 4.6.3/4.7.0).  Listing it here also upgrades stale venvs
+        # where an old ctranslate2 already satisfies the transitive dep.
+        "ctranslate2==4.8.1",
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),

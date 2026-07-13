@@ -3794,17 +3794,21 @@ def tick(
 
         return sum(_results)
     finally:
-        if fcntl:
+        if lock_fd is not None:
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
+                if fcntl:
+                    try:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    except (OSError, IOError):
+                        pass
+                elif msvcrt:
+                    try:
+                        msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                    except (OSError, IOError):
+                        pass
+                lock_fd.close()
+            except (OSError, IOError, ValueError):
                 pass
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
 
 
 if __name__ == "__main__":

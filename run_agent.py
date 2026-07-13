@@ -3425,6 +3425,25 @@ class AIAgent:
         except Exception:
             pass
 
+    def release_memory_provider(self) -> None:
+        """Close external memory clients without firing session-end hooks.
+
+        Cache eviction discards this AIAgent instance but keeps the logical
+        conversation resumable. The rebuilt agent creates a fresh memory
+        manager, so retaining Hindsight's aiohttp session on the evicted
+        instance leaks a connector until garbage collection. This operation
+        is intentionally separate from ``shutdown_memory_provider`` because
+        soft eviction is not a real conversation boundary.
+        """
+        manager = self._memory_manager
+        self._memory_manager = None
+        if manager is None:
+            return
+        try:
+            manager.shutdown_all()
+        except Exception:
+            pass
+
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
 

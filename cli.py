@@ -3804,6 +3804,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        startup_alias_provider = None
+        if model:
+            try:
+                from hermes_cli.model_switch import resolve_alias
+
+                alias = resolve_alias(
+                    model,
+                    provider or _model_config.get("provider") or "auto",
+                )
+                if alias is not None:
+                    alias_provider, alias_model, _alias_name = alias
+                    self.model = alias_model
+                    if not provider:
+                        startup_alias_provider = alias_provider
+            except Exception:
+                logger.debug("Could not resolve startup model alias %r", model, exc_info=True)
         # Read max_tokens from config (env var override: HERMES_MAX_TOKENS)
         _env_mt = os.environ.get("HERMES_MAX_TOKENS")
         if _env_mt:
@@ -3840,6 +3856,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
             provider
+            or startup_alias_provider
             or CLI_CONFIG["model"].get("provider")
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"

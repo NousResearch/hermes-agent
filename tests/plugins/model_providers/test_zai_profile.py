@@ -19,6 +19,11 @@ from __future__ import annotations
 import pytest
 
 
+def _thinking(kind: str) -> dict:
+    """Expected local profile contract: each turn clears prior thinking."""
+    return {"thinking": {"type": kind, "clear_thinking": True}}
+
+
 @pytest.fixture
 def zai_profile():
     """Resolve the registered Z.AI profile through the real discovery path."""
@@ -48,7 +53,7 @@ class TestZaiThinkingWireShape:
         extra_body, top_level = zai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "medium"}, model="glm-5"
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == _thinking("enabled")
         assert top_level == {}
 
     def test_explicitly_disabled_sends_disabled_marker(self, zai_profile):
@@ -61,7 +66,7 @@ class TestZaiThinkingWireShape:
         extra_body, top_level = zai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": False}, model="glm-5"
         )
-        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert extra_body == _thinking("disabled")
         assert top_level == {}
 
     def test_no_effort_levels_leak_to_top_level(self, zai_profile):
@@ -83,7 +88,7 @@ class TestZaiGLM52ReasoningEffort:
             reasoning_config={"enabled": True, "effort": "high"},
             model="glm-5.2",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == _thinking("enabled")
         assert top_level == {"reasoning_effort": "high"}
 
     @pytest.mark.parametrize("effort", ["low", "medium", "minimal"])
@@ -94,7 +99,7 @@ class TestZaiGLM52ReasoningEffort:
             reasoning_config={"enabled": True, "effort": effort},
             model="glm-5.2",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == _thinking("enabled")
         assert top_level == {"reasoning_effort": "high"}
 
     @pytest.mark.parametrize("effort", ["xhigh", "max"])
@@ -103,7 +108,7 @@ class TestZaiGLM52ReasoningEffort:
             reasoning_config={"enabled": True, "effort": effort},
             model="glm-5.2",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == _thinking("enabled")
         assert top_level == {"reasoning_effort": "max"}
 
     def test_disabled_sends_no_effort(self, zai_profile):
@@ -113,7 +118,7 @@ class TestZaiGLM52ReasoningEffort:
             reasoning_config={"enabled": False, "effort": "high"},
             model="glm-5.2",
         )
-        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert extra_body == _thinking("disabled")
         assert top_level == {}
 
     def test_no_config_leaves_server_default(self, zai_profile):
@@ -131,7 +136,7 @@ class TestZaiGLM52ReasoningEffort:
             reasoning_config={"enabled": True},
             model="glm-5.2",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == _thinking("enabled")
         assert top_level == {}
 
     @pytest.mark.parametrize(
@@ -182,7 +187,7 @@ class TestZaiModelGating:
         extra_body, _ = zai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": False}, model=model
         )
-        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert extra_body == _thinking("disabled")
 
     @pytest.mark.parametrize(
         "model",
@@ -218,7 +223,10 @@ class TestZaiFullKwargsIntegration:
             base_url="https://api.z.ai/api/paas/v4",
             provider_name="zai",
         )
-        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+        assert kwargs["extra_body"]["thinking"] == {
+            "type": "disabled",
+            "clear_thinking": True,
+        }
 
     def test_no_preference_keeps_wire_clean(self, zai_profile):
         from agent.transports.chat_completions import ChatCompletionsTransport
@@ -247,4 +255,7 @@ class TestZaiFullKwargsIntegration:
             provider_name="zai",
         )
         assert kwargs["reasoning_effort"] == "max"
-        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+        assert kwargs["extra_body"]["thinking"] == {
+            "type": "enabled",
+            "clear_thinking": True,
+        }

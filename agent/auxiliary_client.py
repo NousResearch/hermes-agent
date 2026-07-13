@@ -4733,6 +4733,14 @@ def resolve_provider_client(
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = os.getenv(custom_key_env, "").strip()
+            if not custom_key:
+                pool_present, pool_entry = _select_pool_entry(provider)
+                if pool_present:
+                    custom_key = _pool_runtime_api_key(pool_entry)
+                    custom_base = (
+                        custom_base
+                        or _pool_runtime_base_url(pool_entry)
+                    )
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(
@@ -4885,14 +4893,26 @@ def resolve_provider_client(
             final_model = _normalize_resolved_model(model or default_model, provider)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode else (client, final_model))
 
-        creds = resolve_api_key_provider_credentials(provider)
-        api_key = str(creds.get("api_key", "")).strip()
+        # Main-agent calls already rotate through auth.json's credential pool.
+        # Auxiliary tasks must use the same source before falling back to a
+        # legacy environment variable; otherwise chat can succeed while
+        # vision/compression fails with an obsolete key.
+        pool_present, pool_entry = _select_pool_entry(provider)
+        if pool_present:
+            api_key = _pool_runtime_api_key(pool_entry) or ""
+            pool_base_url = _pool_runtime_base_url(
+                pool_entry, pconfig.inference_base_url
+            )
+            creds = {"base_url": pool_base_url or pconfig.inference_base_url}
+        else:
+            creds = resolve_api_key_provider_credentials(provider)
+            api_key = str(creds.get("api_key", "")).strip()
         # Honour an explicit api_key override (e.g. from a fallback_model entry
         # or a custom_providers entry) so callers that pass an explicit
         # credential can authenticate against endpoints where no built-in
         # credential is registered for this provider alias.
         if explicit_api_key:
-            api_key = explicit_api_key.strip() or api_key
+            api_key = explicit_api_key.strip() or str(api_key).strip()
         if not api_key:
             tried_sources = list(pconfig.api_key_env_vars)
             if provider == "copilot":
@@ -4903,6 +4923,24 @@ def resolve_provider_client(
             return None, None
 
         raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+        # A canonical built-in provider may still have a profile-specific
+        # endpoint override under ``providers.<name>.base_url``. Coding-plan
+        # credentials, for example, are rejected by the provider's generic
+        # pay-as-you-go endpoint even though the key itself is valid.
+        try:
+            from hermes_cli.config import load_config
+
+            configured_provider = (load_config().get("providers") or {}).get(provider) or {}
+            configured_base = str(
+                configured_provider.get("base_url")
+                or configured_provider.get("api")
+                or configured_provider.get("url")
+                or ""
+            ).strip().rstrip("/")
+            if configured_base:
+                raw_base_url = configured_base
+        except Exception:
+            pass
         base_url = _to_openai_base_url(raw_base_url)
         # Honour an explicit base_url override from the caller — used when a
         # fallback_model entry (or custom_providers lookup) routes through a

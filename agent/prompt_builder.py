@@ -1957,7 +1957,8 @@ def build_context_files_prompt(
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
-    SOUL.md from HERMES_HOME is independent and always included when present.
+    AGENTS.md and SOUL.md from HERMES_HOME are profile context and are
+    independent of the current project working directory.
 
     Each context source is capped before injection. The cap defaults to the
     model's context window (scaled — see ``_dynamic_context_file_max_chars``)
@@ -1971,7 +1972,17 @@ def build_context_files_prompt(
         cwd = os.getcwd()
 
     cwd_path = Path(cwd).resolve()
+    hermes_home = get_hermes_home().resolve()
     sections = []
+
+    # Profile-level rules apply even when a gateway session runs from the
+    # user's home or a project directory. Project context is appended below,
+    # so more specific project rules retain precedence. Avoid injecting the
+    # same file twice when the working directory is HERMES_HOME itself.
+    if cwd_path != hermes_home:
+        profile_agents = _load_agents_md(hermes_home, context_length)
+        if profile_agents:
+            sections.append(profile_agents)
 
     # Priority-based project context: first match wins
     project_context = (

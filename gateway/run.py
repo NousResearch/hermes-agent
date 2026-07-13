@@ -16173,10 +16173,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 lease.release()
             except Exception:
                 logger.debug("Failed to release active session slot", exc_info=True)
-        self._running_agents.pop(session_key, None)
+        running_agent = self._running_agents.pop(session_key, None)
         self._running_agents_ts.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
+        pending_releases = self.__dict__.get("_pending_soft_release_agents")
+        pending_agent = (
+            pending_releases.pop(session_key, None)
+            if isinstance(pending_releases, dict)
+            else None
+        )
+        if pending_agent is not None and pending_agent is running_agent:
+            try:
+                threading.Thread(
+                    target=self._release_evicted_agent_soft,
+                    args=(pending_agent,),
+                    daemon=True,
+                    name=f"agent-evict-drained-{str(session_key)[:24]}",
+                ).start()
+            except Exception:
+                try:
+                    self._release_evicted_agent_soft(pending_agent)
+                except Exception:
+                    pass
         # Turn boundary: a running-agent slot was just released.  Persist the
         # new (lower) in-flight count so the dashboard readout stays current
         # between lifecycle transitions.  Preserves gateway_state (see
@@ -16440,6 +16459,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if a is not None and a is not _AGENT_PENDING_SENTINEL
         }
         if id(agent) in running_ids:
+            # The cache entry has already been removed. Defer cleanup until
+            # the running lease is released so the active request keeps its
+            # clients, then close the otherwise-orphaned memory provider.
+            pending = self.__dict__.setdefault("_pending_soft_release_agents", {})
+            pending[session_key] = agent
             return
 
         try:
@@ -16560,6 +16584,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if agent is None:
             return
         try:
+            if hasattr(agent, "release_memory_provider"):
+                agent.release_memory_provider()
             if hasattr(agent, "release_clients"):
                 agent.release_clients()
             else:

@@ -74,3 +74,22 @@ def test_empty_buffer_does_not_seed(monkeypatch):
     s = _Stub()
     s._handle_prompt_compose_command("/prompt")
     assert s._pending_agent_seed is None
+
+
+def test_compose_does_not_retry_failed_editor_through_shell(monkeypatch):
+    """An editor launch failure must not reinterpret the value as shell code."""
+    monkeypatch.setenv("EDITOR", "editor --safe-mode")
+    calls = []
+
+    def fail_once(command, *args, **kwargs):
+        calls.append((command, kwargs))
+        raise OSError("editor failed")
+
+    monkeypatch.setattr("subprocess.call", fail_once)
+
+    with pytest.raises(OSError, match="editor failed"):
+        _Stub()._compose_in_editor("")
+
+    assert len(calls) == 1
+    assert isinstance(calls[0][0], list)
+    assert calls[0][1].get("shell") is not True

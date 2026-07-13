@@ -259,6 +259,48 @@ def test_rollback_rejects_unsafe_tarball(backup_env, monkeypatch):
     assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
 
 
+def test_rollback_legacy_extractor_rejects_symlink_escape(backup_env, monkeypatch):
+    """Python runtimes without ``filter='data'`` must not follow a tar symlink."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    cb.snapshot_skills(reason="legit")
+
+    snap_dir = Path(cb.list_backups()[0]["path"])
+    archive = snap_dir / "skills.tar.gz"
+    archive.unlink()
+    outside = backup_env["home"] / "outside"
+    outside.mkdir()
+
+    with tarfile.open(archive, "w:gz") as tf:
+        link = tarfile.TarInfo("escape")
+        link.type = tarfile.SYMTYPE
+        link.linkname = str(outside)
+        tf.addfile(link)
+
+        payload = tempfile.NamedTemporaryFile(delete=False)
+        payload.write(b"escaped")
+        payload.close()
+        tf.add(payload.name, arcname="escape/pwned.txt")
+        os.unlink(payload.name)
+
+    original_extractall = tarfile.TarFile.extractall
+
+    def legacy_extractall(self, path=".", members=None, *, numeric_owner=False, filter=None):
+        if filter is not None:
+            raise TypeError("legacy Python has no filter keyword")
+        return original_extractall(
+            self, path=path, members=members, numeric_owner=numeric_owner
+        )
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", legacy_extractall)
+    ok, msg, _ = cb.rollback()
+
+    assert not ok
+    assert not (outside / "pwned.txt").exists()
+    assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
+
+
 # ---------------------------------------------------------------------------
 # Integration with run_curator_review
 # ---------------------------------------------------------------------------

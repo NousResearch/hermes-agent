@@ -37,6 +37,7 @@ import hmac
 import json
 import logging
 import os
+import ssl
 import socket as _socket
 import re
 import sqlite3
@@ -62,6 +63,7 @@ from gateway.platforms.base import (
 )
 from agent.redact import redact_sensitive_text
 from gateway.readiness import collect_runtime_readiness
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +110,14 @@ def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
 
 _TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
 _FALSE_REQUEST_BOOL_STRINGS = frozenset({"0", "false", "no", "off"})
+
+
+def _create_server_ssl_context(cert_path: Path, key_path: Path) -> ssl.SSLContext:
+    """Build the API listener's server context with an explicit TLS floor."""
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(str(cert_path), str(key_path))
+    return context
 
 
 def _coerce_request_bool(value: Any, default: bool = False) -> bool:
@@ -852,6 +862,27 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._ssl_enabled: bool = _coerce_request_bool(
+            extra.get("ssl", os.getenv("API_SERVER_SSL", os.getenv("HERMES_API_SERVER_SSL", ""))),
+            default=False,
+        )
+        cert_dir = get_hermes_home() / "certs"
+        self._ssl_certfile: str = str(
+            Path(
+                extra.get(
+                    "ssl_certfile",
+                    os.getenv("API_SERVER_SSL_CERTFILE", str(cert_dir / "hermes-tailscale.crt")),
+                )
+            ).expanduser()
+        )
+        self._ssl_keyfile: str = str(
+            Path(
+                extra.get(
+                    "ssl_keyfile",
+                    os.getenv("API_SERVER_SSL_KEYFILE", str(cert_dir / "hermes-tailscale.key")),
+                )
+            ).expanduser()
+        )
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -4926,13 +4957,45 @@ class APIServerAdapter(BasePlatformAdapter):
 
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
-            self._site = web.TCPSite(self._runner, self._host, self._port)
+            ssl_context = None
+            scheme = "http"
+            if self._ssl_enabled:
+                cert_path = Path(self._ssl_certfile).expanduser()
+                key_path = Path(self._ssl_keyfile).expanduser()
+                if not cert_path.exists() or not key_path.exists():
+                    logger.error(
+                        "[%s] Refusing to start HTTPS API server: cert/key missing "
+                        "(cert=%s key=%s)",
+                        self.name, cert_path, key_path,
+                    )
+                    await self._runner.cleanup()
+                    self._runner = None
+                    return False
+                if os.name != "nt" and key_path.stat().st_mode & 0o077:
+                    logger.error(
+                        "[%s] Refusing to start HTTPS API server: private key "
+                        "must not be group/world accessible (key=%s mode=%#o)",
+                        self.name,
+                        key_path,
+                        key_path.stat().st_mode & 0o777,
+                    )
+                    await self._runner.cleanup()
+                    self._runner = None
+                    return False
+                ssl_context = _create_server_ssl_context(cert_path, key_path)
+                scheme = "https"
+            self._site = web.TCPSite(
+                self._runner,
+                self._host,
+                self._port,
+                ssl_context=ssl_context,
+            )
             await self._site.start()
 
             self._mark_connected()
             logger.info(
-                "[%s] API server listening on http://%s:%d (model: %s)",
-                self.name, self._host, self._port, self._model_name,
+                "[%s] API server listening on %s://%s:%d (model: %s)",
+                self.name, scheme, self._host, self._port, self._model_name,
             )
             return True
 

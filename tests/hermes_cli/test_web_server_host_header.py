@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -83,6 +84,29 @@ class TestHostHeaderValidator:
         assert _is_accepted_host("LOCALHOST", "127.0.0.1")
         assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
 
+    def test_loopback_bind_accepts_only_explicit_trusted_proxy_host(self, monkeypatch):
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_TRUSTED_HOSTS",
+            "hermes.example.test, DASHBOARD.INTERNAL",
+        )
+        assert _is_accepted_host(
+            "hermes.example.test", "127.0.0.1", "127.0.0.1"
+        )
+        assert _is_accepted_host(
+            "dashboard.internal:443", "127.0.0.1", "::1"
+        )
+        assert not _is_accepted_host(
+            "hermes.example.test", "127.0.0.1", "192.0.2.10"
+        )
+        assert not _is_accepted_host(
+            "evil.hermes.example.test", "127.0.0.1", "127.0.0.1"
+        )
+        assert not _is_accepted_host(
+            "hermes.example.test.evil.test", "127.0.0.1", "127.0.0.1"
+        )
+
 
 class TestHostHeaderMiddleware:
     """End-to-end test via the FastAPI app — verify the middleware
@@ -150,6 +174,21 @@ class TestHostHeaderMiddleware:
 
 class TestWebSocketHostOriginGuard:
     """WebSocket upgrades must enforce the same dashboard boundary as HTTP."""
+
+    def test_trusted_proxy_websocket_host_and_origin_are_accepted(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setenv("HERMES_DASHBOARD_TRUSTED_HOSTS", "hermes.example.test")
+        socket = SimpleNamespace(
+            headers={
+                "host": "hermes.example.test",
+                "origin": "https://hermes.example.test",
+            },
+            client=SimpleNamespace(host="127.0.0.1"),
+        )
+
+        assert ws._ws_host_origin_reason(socket) is None
 
     def test_rebinding_websocket_host_is_rejected(self, monkeypatch):
         from fastapi.testclient import TestClient

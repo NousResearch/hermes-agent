@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import inspect
 import importlib.util
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -412,7 +413,15 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+def _get_trusted_proxy_hosts() -> frozenset[str]:
+    """Return explicit dashboard reverse-proxy hostnames trusted by the operator."""
+    raw = os.environ.get("HERMES_DASHBOARD_TRUSTED_HOSTS", "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
+
+
+def _is_accepted_host(host_header: str, bound_host: str, peer_host: str = "") -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
@@ -447,10 +456,19 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
+    # Loopback bind: accept loopback names. A configured reverse-proxy hostname
+    # is accepted only when the TCP peer is itself loopback, so the allowlist
+    # cannot weaken a future non-loopback/containerized deployment.
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        if host_only in _LOOPBACK_HOST_VALUES:
+            return True
+        if host_only in _get_trusted_proxy_hosts():
+            try:
+                return ipaddress.ip_address(peer_host.split("%", 1)[0]).is_loopback
+            except ValueError:
+                return peer_host.lower() == "localhost"
+        return False
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
@@ -473,7 +491,8 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        peer_host = request.client.host if request.client else ""
+        if not _is_accepted_host(host_header, bound_host, peer_host):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -11160,7 +11179,7 @@ def _mcp_install_action_name(name: str) -> str:
     re-click or a second catalog install doesn't overwrite the first's tracked
     process/log while its git clone is still running."""
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48] or "server"
-    digest = hashlib.sha1(name.encode()).hexdigest()[:8]
+    digest = hashlib.sha256(name.encode()).hexdigest()[:8]
     action = f"mcp-install-{slug}-{digest}"
     _ACTION_LOG_FILES.setdefault(action, f"action-{action}.log")
     return action
@@ -12099,7 +12118,7 @@ def _hub_action_name(verb: str, key: str) -> str:
     (readable) + hash (collision-proof) keys each action to its own row.
     """
     slug = re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:48] or "skill"
-    digest = hashlib.sha1(key.encode()).hexdigest()[:8]
+    digest = hashlib.sha256(key.encode()).hexdigest()[:8]
     name = f"skills-{verb}-{slug}-{digest}"
     _ACTION_LOG_FILES.setdefault(name, f"action-{name}.log")
     return name
@@ -14388,7 +14407,8 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return None
 
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    peer_host = ws.client.host if ws.client else ""
+    if not _is_accepted_host(host_header, bound_host, peer_host):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
@@ -14405,7 +14425,7 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(parsed.netloc, bound_host, peer_host):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 

@@ -630,8 +630,17 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
             try:
                 tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
             except TypeError:
-                # Python < 3.12 — no filter kwarg
-                tf.extractall(str(skills))
+                # Python without the PEP 706 data filter. Reject every
+                # link/device member before using the legacy extractor: path
+                # checks alone do not stop a symlink followed by a file that
+                # writes through that link outside the destination.
+                for member in tf.getmembers():
+                    if member.issym() or member.islnk() or member.isdev():
+                        raise tarfile.TarError(
+                            f"refusing to extract unsafe member type: {member.name!r}"
+                        )
+                # Bandit cannot infer the member checks immediately above.
+                tf.extractall(str(skills))  # nosec B202
     except (OSError, tarfile.TarError) as e:
         # Best-effort recover: move staged contents back
         for orig, dest in moved:

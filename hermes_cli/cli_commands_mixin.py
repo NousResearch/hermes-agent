@@ -2317,12 +2317,11 @@ class CLICommandsMixin:
                 fh.write(header)
                 if initial_text:
                     fh.write(initial_text)
-            try:
-                subprocess.call([*shlex.split(editor), path])
-            except Exception:
-                # Fall back to a bare invocation (editor value may not be a
-                # simple argv-splittable string on some platforms).
-                subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
+            # Never reinterpret $VISUAL/$EDITOR through a shell after a failed
+            # argv launch. The value is user-controlled environment data; a
+            # shell fallback turns an ordinary launch error into code execution
+            # with Hermes's privileges.
+            subprocess.call([*shlex.split(editor), path])
             with open(path, "r", encoding="utf-8") as fh:
                 raw = fh.read()
         finally:

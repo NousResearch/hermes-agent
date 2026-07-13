@@ -17,12 +17,30 @@ from __future__ import annotations
 import argparse
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
-from xml.etree import ElementTree as ET
+
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _watermark import Watermark, format_items_as_markdown  # type: ignore
+
+MAX_FEED_BYTES = 10 * 1024 * 1024
+
+
+def _validate_feed_url(url: str) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("feed URL must use http or https")
+
+
+def _read_limited_response(response) -> bytes:
+    payload = response.read(MAX_FEED_BYTES + 1)
+    if len(payload) > MAX_FEED_BYTES:
+        raise ValueError(f"feed exceeds {MAX_FEED_BYTES} byte limit")
+    return payload
 
 
 def _strip_ns(tag: str) -> str:
@@ -36,7 +54,7 @@ def _parse_feed(xml_bytes: bytes):
     """
     try:
         root = ET.fromstring(xml_bytes)
-    except ET.ParseError as e:
+    except (ET.ParseError, DefusedXmlException) as e:
         print(f"watch_rss: invalid XML: {e}", file=sys.stderr)
         sys.exit(2)
 
@@ -88,9 +106,13 @@ def main() -> int:
     args = p.parse_args()
 
     try:
+        _validate_feed_url(args.url)
         req = urllib.request.Request(args.url, headers={"User-Agent": "Hermes-Watcher/1.0"})
         with urllib.request.urlopen(req, timeout=args.timeout) as resp:
-            xml_bytes = resp.read()
+            xml_bytes = _read_limited_response(resp)
+    except ValueError as e:
+        print(f"watch_rss: {e}", file=sys.stderr)
+        return 2
     except urllib.error.HTTPError as e:
         print(f"watch_rss: HTTP {e.code} from {args.url}", file=sys.stderr)
         return 2

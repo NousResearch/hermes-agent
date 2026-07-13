@@ -279,6 +279,47 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+def _build_task_resume_block(checkpoint: dict) -> str:
+    """Build a structured resume prompt from a task checkpoint.
+
+    Injected into the system prompt so the agent knows what task it was
+    working on, what steps are completed (don't repeat), and what phase
+    to continue from.
+    """
+    goal = checkpoint.get("task_goal", "")
+    phase = checkpoint.get("current_phase", "")
+    completed = checkpoint.get("completed_tool_calls", [])
+    budget = checkpoint.get("iteration_budget_remaining", 0)
+
+    if not goal or not completed:
+        return ""
+
+    lines = [
+        "[TASK RESUME]",
+        "You are resuming a previously interrupted task.",
+        "",
+        f"Original task: {goal}",
+    ]
+    if phase:
+        lines.append(f"Current phase: {phase}")
+
+    lines.append("")
+    lines.append(f"Progress: {len(completed)} steps completed (do NOT re-execute):")
+    for i, step in enumerate(completed):
+        if not isinstance(step, dict):
+            continue
+        tool = step.get("tool", "unknown")
+        summary = step.get("result_summary", "")
+        lines.append(f"  {i+1}. `{tool}`: {summary}")
+
+    lines.append("")
+    if budget > 0:
+        lines.append(f"Budget: {budget} turns remaining.")
+    lines.append("Continue from where you left off. Verify state before repeating any action.")
+
+    return "\n".join(lines)
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -359,6 +400,36 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # First turn of a new session (or recovering from a broken stored
     # prompt) — build from scratch.
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
+
+    # ── Task durability: append resume context ───────────────────────
+    # When resuming a session that has a task checkpoint, append a
+    # structured summary so the agent knows what it was working on and
+    # doesn't repeat completed steps.  This is a system-prompt suffix,
+    # so it participates in prompt caching (the cached prefix includes
+    # the resume block for the rest of the resumed session).
+    try:
+        if conversation_history and agent._session_db and agent.session_id:
+            cp = agent._session_db.load_task_checkpoint(agent.session_id)
+            if cp and cp.get("completed_tool_calls"):
+                agent._session_db.save_task_checkpoint(
+                    agent.session_id,
+                    task_goal=cp.get("task_goal", ""),
+                    increment_resume=True,
+                )
+                resume_block = _build_task_resume_block(cp)
+                if resume_block:
+                    agent._cached_system_prompt = (
+                        (agent._cached_system_prompt or "")
+                        + "\n\n"
+                        + resume_block
+                    )
+                    logger.info(
+                        "Injected task resume block for session=%s (%d completed steps)",
+                        agent.session_id,
+                        len(cp.get("completed_tool_calls", [])),
+                    )
+    except Exception:
+        pass  # Best-effort — never block session start
 
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this

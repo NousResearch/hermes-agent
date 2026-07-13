@@ -2353,7 +2353,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     return run_tool_execution_middleware(
         function_name,
         function_args,
-        lambda next_args: _execute(next_args if isinstance(next_args, dict) else function_args),
+        lambda next_args: (
+            result := _execute(next_args if isinstance(next_args, dict) else function_args),
+            _maybe_save_tool_progress(function_name, next_args, result, effective_task_id or ""),
+            result
+        )[-1],
         original_args=function_args,
         task_id=effective_task_id or "",
         session_id=getattr(agent, "session_id", "") or "",
@@ -2361,6 +2365,20 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         turn_id=getattr(agent, "_current_turn_id", "") or "",
         api_request_id=getattr(agent, "_current_api_request_id", "") or "",
     )
+
+
+def _maybe_save_tool_progress(
+    function_name: str,
+    function_args: dict,
+    result: Any,
+    task_id: str,
+) -> None:
+    """Forwarder — see model_tools._save_tool_progress."""
+    try:
+        from model_tools import _save_tool_progress
+        _save_tool_progress(function_name, function_args, result, task_id or "")
+    except Exception:
+        pass
 
 
 

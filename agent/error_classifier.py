@@ -1597,3 +1597,361 @@ def _extract_upstream_provider_name(body: Any) -> Optional[str]:
     if isinstance(name, str) and name.strip():
         return name.strip()
     return None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Tool error classification
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Mirror of the API error classifier above, but for tool execution
+# failures (terminal commands, file operations, web requests, etc.).
+# The taxonomy is tool-domain-specific; the pipeline structure (priority-
+# ordered pattern matching with recovery hints) is identical.
+
+
+class ToolFailoverReason(enum.Enum):
+    """Why a tool execution failed — determines recovery strategy."""
+
+    transient = "transient"              # Temporary failure — retry with backoff
+    env_issue = "env_issue"              # Missing dependency/config — fix and retry
+    wrong_approach = "wrong_approach"    # Wrong tool/args/workflow — change approach
+    input_error = "input_error"          # User's input invalid — report, don't retry
+    tool_bug = "tool_bug"                # Tool malfunctioned — fallback or report
+    timeout = "timeout"                  # Operation exceeded time limit — more time
+    permission = "permission"            # Access denied — request auth or workaround
+    fatal = "fatal"                      # Unrecoverable environment — abort
+
+
+@dataclass
+class ClassifiedToolError:
+    """Structured classification of a tool execution error with recovery hints."""
+
+    reason: ToolFailoverReason
+    tool_name: str = ""
+    message: str = ""
+    confidence: float = 0.0
+    recovery_hint: str = ""
+    known_fix: Optional[str] = None      # e.g. "pip install <module>"
+
+    # Recovery action hints
+    retryable: bool = True
+    max_retries: int = 1
+    should_fix_env: bool = False
+    should_change_approach: bool = False
+    should_abort: bool = False
+
+
+# ── Tool error pattern lists ─────────────────────────────────────────
+
+# Commands / binaries missing from the environment
+_TOOL_ENV_ISSUE_PATTERNS = [
+    "command not found",
+    "not recognized as an internal or external command",
+    "no module named",
+    "modulenotfounderror",
+    "importerror",
+    "environment variable not set",
+    "not installed",
+    "cannot find",
+    "is not installed",
+    "missing dependency",
+    "required package",
+    "try: pip install",
+    "try pip install",
+    "please install",
+]
+
+# Patterns indicating a transient (retryable) network/service failure
+_TOOL_TRANSIENT_PATTERNS = [
+    "could not resolve host",
+    "dns resolution failed",
+    "temporary failure in name resolution",
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "network is unreachable",
+    "no route to host",
+    "rate limit",
+    "too many requests",
+    "429",
+    "service unavailable",
+    "503",
+    "try again later",
+    "temporarily unavailable",
+    "backend unavailable",
+    "upstream request timeout",
+]
+
+# Patterns indicating wrong tool, wrong args, or wrong workflow
+_TOOL_WRONG_APPROACH_PATTERNS = [
+    "src refspec",
+    "does not match any",
+    "no input files",
+    "file not found",
+    "no such file or directory",
+    "invalid path",
+    "invalid syntax",
+    "syntaxerror",
+    "cannot find module",
+    "not a git repository",
+    "fatal: not a git repository",
+    "process not found",
+    "does not exist",
+]
+
+# Patterns indicating the user's original input is invalid
+_TOOL_INPUT_ERROR_PATTERNS = [
+    "invalid url",
+    "unreachable domain",
+    "not a valid",
+    "malformed",
+]
+
+# Known placeholder/fake domains — DNS fail on these = input_error, not transient
+_TOOL_PLACEHOLDER_DOMAINS = [
+    "api.example.com",
+    "nonexistent-site.xyz",
+    "fake-domain.com",
+    "example.invalid",
+    "test.invalid",
+    "placeholder.com",
+    "nowhere.local",
+]
+
+# Patterns indicating permission/authorization failure
+_TOOL_PERMISSION_PATTERNS = [
+    "permission denied",
+    "operation not permitted",
+    "access denied",
+    "not authorized",
+    "403 forbidden",
+    "requires elevation",
+    "administrator rights",
+    "sudo",
+    "eacces",
+    "read-only file system",
+]
+
+# Patterns indicating unrecoverable environment failure
+_TOOL_FATAL_PATTERNS = [
+    "no space left on device",
+    "out of memory",
+    "cannot allocate memory",
+    "disk full",
+    "filesystem corrupted",
+    "kernel panic",
+    "system is out of",
+    "disk quota exceeded",
+]
+
+# Explicit timeout patterns
+_TOOL_TIMEOUT_PATTERNS = [
+    "timed out",
+    "command timed out",
+    "timeout after",
+    "exceeded time limit",
+    "deadline exceeded",
+    "operation timed out",
+]
+
+# ── Known fixes for common env issues ──────────────────────────────
+_TOOL_KNOWN_FIXES = {
+    "pip: command not found": "python -m ensurepip && python -m pip install ...",
+    "pip: command not found (alternative)": "pip3 install ... or python -m pip install ...",
+    "python: command not found": "python3 or ensure Python is installed",
+    "npm: command not found": "Install Node.js from https://nodejs.org",
+    "git: command not found": "Install git: apt install git / brew install git",
+    "docker: command not found": "Install Docker from https://docker.com",
+    "chromium not installed": "Install Chromium or use alternate browser backend",
+    "SEARCH_API_KEY environment variable not set": "Set the API key or use an alternate search method",
+}
+
+# ── Classification function ─────────────────────────────────────────
+
+def classify_tool_error(
+    result: Any,
+    *,
+    tool_name: str = "",
+    tool_args: Optional[Dict[str, Any]] = None,
+) -> Optional[ClassifiedToolError]:
+    """Classify a tool execution failure into a recovery recommendation.
+
+    Priority-ordered pipeline (mirrors classify_api_error):
+      1. Timeout patterns (explicit)
+      2. Fatal patterns (disk full, OOM)
+      3. Permission patterns
+      4. Env issue patterns (command not found, missing module)
+      5. Wrong approach patterns (syntax error, wrong path)
+      6. Transient patterns (network hiccup, rate limit)
+      7. Input error patterns (invalid URL)
+      8. Fallback: transient (retryable, low confidence)
+
+    Args:
+        result: The tool result — a JSON string or dict. If no error present, returns None.
+        tool_name: The tool that was executed (e.g. 'terminal', 'execute_code').
+        tool_args: The arguments passed to the tool (for context).
+
+    Returns:
+        ClassifiedToolError with reason, confidence, and recovery hints, or None
+        if the result doesn't contain a recognizable error.
+    """
+    import json as _json
+
+    # Parse result — tool results are JSON strings
+    data: dict = {}
+    raw_str = ""
+    try:
+        if isinstance(result, str):
+            data = _json.loads(result)
+            raw_str = result
+        elif isinstance(result, dict):
+            data = result
+            raw_str = _json.dumps(result)
+        else:
+            return None
+    except (_json.JSONDecodeError, TypeError):
+        raw_str = str(result)
+
+    # Check if there's an error
+    error_str = ""
+    if isinstance(data, dict):
+        error_str = str(data.get("error") or "")
+        if not error_str:
+            # Also check nested: {"results": [{"error": "...", "url": "..."}]}
+            results_list = data.get("results")
+            if isinstance(results_list, list):
+                for r in results_list:
+                    if isinstance(r, dict) and r.get("error"):
+                        err = str(r["error"])
+                        url = str(r.get("url", ""))
+                        # Include URL context so placeholder domain checks work
+                        if url and url.lower() not in err.lower():
+                            err = f"{err} (url: {url})"
+                        error_str = err
+                        break
+        # Terminal errors often appear in 'output' with non-zero exit_code,
+        # not in a dedicated 'error' field
+        if not error_str and data.get("exit_code", 0) != 0:
+            output = data.get("output", "")
+            if isinstance(output, str) and output.strip():
+                error_str = output
+    if not error_str:
+        # Some tools return plain error text, not JSON
+        lower_raw = raw_str.lower()
+        if "error" in lower_raw or "failed" in lower_raw or "traceback" in lower_raw:
+            error_str = raw_str
+    if not error_str:
+        return None  # No error to classify
+
+    error_lower = error_str.lower()
+
+    def _mk(
+        reason: ToolFailoverReason,
+        confidence: float,
+        recovery_hint: str,
+        **overrides,
+    ) -> ClassifiedToolError:
+        defaults = {
+            "reason": reason,
+            "tool_name": tool_name,
+            "message": error_str[:300],
+            "confidence": confidence,
+            "recovery_hint": recovery_hint,
+            "known_fix": _TOOL_KNOWN_FIXES.get(error_str.strip(), None),
+        }
+        defaults.update(overrides)
+        return ClassifiedToolError(**defaults)
+
+    # ── 1. Timeout (explicit) ────────────────────────────────────────
+    if any(p in error_lower for p in _TOOL_TIMEOUT_PATTERNS):
+        return _mk(
+            ToolFailoverReason.timeout,
+            confidence=0.98,
+            recovery_hint="Operation timed out — retry with longer timeout or split work into smaller chunks",
+            retryable=True,
+            max_retries=2,
+        )
+
+    # ── 2. Fatal ─────────────────────────────────────────────────────
+    if any(p in error_lower for p in _TOOL_FATAL_PATTERNS):
+        return _mk(
+            ToolFailoverReason.fatal,
+            confidence=0.99,
+            recovery_hint="Unrecoverable environment failure — abort the task and report to user",
+            retryable=False,
+            max_retries=0,
+            should_abort=True,
+        )
+
+    # ── 3. Permission ────────────────────────────────────────────────
+    if any(p in error_lower for p in _TOOL_PERMISSION_PATTERNS):
+        return _mk(
+            ToolFailoverReason.permission,
+            confidence=0.95,
+            recovery_hint="Access denied — request permission, use alternate path, or elevate privileges",
+            retryable=False,
+            max_retries=0,
+            should_change_approach=True,
+        )
+
+    # ── 4. Env issue ─────────────────────────────────────────────────
+    if any(p in error_lower for p in _TOOL_ENV_ISSUE_PATTERNS):
+        return _mk(
+            ToolFailoverReason.env_issue,
+            confidence=0.95,
+            recovery_hint="Missing dependency or configuration — fix the environment then retry",
+            retryable=True,
+            max_retries=1,
+            should_fix_env=True,
+        )
+
+    # ── 5. Wrong approach ────────────────────────────────────────────
+    if any(p in error_lower for p in _TOOL_WRONG_APPROACH_PATTERNS):
+        return _mk(
+            ToolFailoverReason.wrong_approach,
+            confidence=0.90,
+            recovery_hint="Wrong tool, arguments, or workflow — try a different approach",
+            retryable=True,
+            max_retries=2,
+            should_change_approach=True,
+        )
+
+    # ── 6. Transient ─────────────────────────────────────────────────
+    # DNS/could-not-resolve-host on a known placeholder domain → input_error
+    if any(p in error_lower for p in _TOOL_TRANSIENT_PATTERNS):
+        if ("could not resolve host" in error_lower or "dns resolution failed" in error_lower):
+            for placeholder in _TOOL_PLACEHOLDER_DOMAINS:
+                if placeholder.lower() in error_lower:
+                    return _mk(
+                        ToolFailoverReason.input_error,
+                        confidence=0.92,
+                        recovery_hint="The requested domain appears to be a placeholder/fake — report to user and ask for a real URL",
+                        retryable=False,
+                        max_retries=0,
+                    )
+        return _mk(
+            ToolFailoverReason.transient,
+            confidence=0.85,
+            recovery_hint="Temporary failure — retry with backoff; the same call should work",
+            retryable=True,
+            max_retries=3,
+        )
+
+    # ── 7. Input error ───────────────────────────────────────────────
+    if any(p in error_lower for p in _TOOL_INPUT_ERROR_PATTERNS):
+        return _mk(
+            ToolFailoverReason.input_error,
+            confidence=0.90,
+            recovery_hint="The user's input is invalid — report the issue and ask for correction",
+            retryable=False,
+            max_retries=0,
+        )
+
+    # ── 8. Fallback ──────────────────────────────────────────────────
+    return _mk(
+        ToolFailoverReason.transient,
+        confidence=0.50,
+        recovery_hint="Unclassified tool error — retry once; if it persists, report to user",
+        retryable=True,
+        max_retries=1,
+    )

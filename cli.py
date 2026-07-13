@@ -3816,6 +3816,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.max_tokens = _mt if isinstance(_mt, int) else None
         else:
             self.max_tokens = None
+        if isinstance(_model_config, dict) and isinstance(_model_config.get("extra_body"), dict):
+            self._model_extra_body = dict(_model_config.get("extra_body") or {})
+        else:
+            self._model_extra_body = {}
         # Auto-detect model from local server if still on default
         if self.model == _DEFAULT_CONFIG_MODEL:
             _base_url = (_model_config.get("base_url") or "") if isinstance(_model_config, dict) else ""

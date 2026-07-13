@@ -633,8 +633,8 @@ class ChatCompletionsTransport(ProviderTransport):
             # This happens when a profile that emits extra_body (e.g. the Nous
             # profile's portal `tags`) is active but the resolved endpoint is a
             # Gemini base_url — typical when only Google credentials are set and
-            # a fallback/aux call lands on Gemini. The native client only reads
-            # thinking_config from extra_body, so drop everything else here.
+            # a fallback/aux call lands on Gemini. The native client reads a
+            # small allowlist from extra_body, so drop everything else here.
             try:
                 from agent.gemini_native_adapter import is_native_gemini_base_url
                 _native_gemini = is_native_gemini_base_url(params.get("base_url"))
@@ -643,7 +643,11 @@ class ChatCompletionsTransport(ProviderTransport):
             if _native_gemini:
                 extra_body = {
                     k: v for k, v in extra_body.items()
-                    if k in ("thinking_config", "thinkingConfig")
+                    if k in (
+                        "thinking_config",
+                        "thinkingConfig",
+                        "google_search_grounding",
+                    )
                 }
             if extra_body:
                 api_kwargs["extra_body"] = extra_body

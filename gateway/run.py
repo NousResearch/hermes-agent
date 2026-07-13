@@ -1920,6 +1920,10 @@ def _resolve_runtime_agent_kwargs() -> dict:
         if isinstance(_runtime_mot, int) and _runtime_mot > 0:
             max_tokens = _runtime_mot
 
+    model_extra_body = {}
+    if isinstance(model_cfg, dict) and isinstance(model_cfg.get("extra_body"), dict):
+        model_extra_body = dict(model_cfg.get("extra_body") or {})
+
     return {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
@@ -1929,6 +1933,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
+        "request_extra_body": model_extra_body,
     }
 
 
@@ -3958,16 +3963,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ),
         }
 
-        service_tier = getattr(self, "_service_tier", None)
-        if not service_tier:
-            route["request_overrides"] = {}
-            return route
+        overrides = {}
+        runtime_extra_body = runtime_kwargs.get("request_extra_body")
+        if isinstance(runtime_extra_body, dict) and runtime_extra_body:
+            overrides["extra_body"] = dict(runtime_extra_body)
 
-        try:
-            overrides = resolve_fast_mode_overrides(route["model"])
-        except Exception:
-            overrides = None
-        route["request_overrides"] = overrides or {}
+        service_tier = getattr(self, "_service_tier", None)
+        if service_tier:
+            try:
+                fast_overrides = resolve_fast_mode_overrides(route["model"])
+            except Exception:
+                fast_overrides = None
+            if fast_overrides:
+                for key, value in fast_overrides.items():
+                    if key == "extra_body" and isinstance(value, dict):
+                        existing = overrides.setdefault("extra_body", {})
+                        if isinstance(existing, dict):
+                            existing.update(value)
+                    else:
+                        overrides[key] = value
+        route["request_overrides"] = overrides
         return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:

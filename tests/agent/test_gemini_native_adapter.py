@@ -36,9 +36,7 @@ def test_build_native_request_preserves_thought_signature_on_tool_replay():
                             "name": "get_weather",
                             "arguments": '{"city": "Paris"}',
                         },
-                        "extra_content": {
-                            "google": {"thought_signature": "sig-123"}
-                        },
+                        "extra_content": {"google": {"thought_signature": "sig-123"}},
                     }
                 ],
             },
@@ -205,7 +203,9 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     assert choice.finish_reason == "tool_calls"
     assert choice.message.reasoning == "thinking..."
     assert choice.message.tool_calls[0].function.name == "search"
-    assert json.loads(choice.message.tool_calls[0].function.arguments) == {"q": "hermes"}
+    assert json.loads(choice.message.tool_calls[0].function.arguments) == {
+        "q": "hermes"
+    }
 
 
 def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatch):
@@ -237,15 +237,22 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
         def close(self):
             return None
 
-    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    monkeypatch.setattr(
+        "agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP()
+    )
 
-    client = GeminiNativeClient(api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta")
+    client = GeminiNativeClient(
+        api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta"
+    )
     response = client.chat.completions.create(
         model="gemini-2.5-flash",
         messages=[{"role": "user", "content": "Hello"}],
     )
 
-    assert recorded["url"] == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    assert (
+        recorded["url"]
+        == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    )
     assert recorded["headers"]["x-goog-api-key"] == "AIza-test"
     assert "Authorization" not in recorded["headers"]
     assert response.choices[0].message.content == "hello"
@@ -343,7 +350,11 @@ def test_native_client_rejects_empty_api_key_with_actionable_message():
 async def test_async_native_client_streams_without_requiring_async_iterator_from_sync_client():
     from agent.gemini_native_adapter import AsyncGeminiNativeClient
 
-    chunk = SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hi"), finish_reason=None)])
+    chunk = SimpleNamespace(
+        choices=[
+            SimpleNamespace(delta=SimpleNamespace(content="hi"), finish_reason=None)
+        ]
+    )
     sync_stream = iter([chunk])
 
     def _advance(iterator):
@@ -355,7 +366,9 @@ async def test_async_native_client_streams_without_requiring_async_iterator_from
     sync_client = SimpleNamespace(
         api_key="AIza-test",
         base_url="https://generativelanguage.googleapis.com/v1beta",
-        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: sync_stream)),
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **kwargs: sync_stream)
+        ),
         _advance_stream_iterator=_advance,
         close=lambda: None,
     )
@@ -385,12 +398,19 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
         ]
     }
 
-    first = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
-    second = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+    first = translate_stream_event(
+        event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices
+    )
+    second = translate_stream_event(
+        event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices
+    )
 
     assert first[0].choices[0].delta.tool_calls[0].index == 0
     assert second[0].choices[0].delta.tool_calls[0].index == 0
-    assert first[0].choices[0].delta.tool_calls[0].id == second[0].choices[0].delta.tool_calls[0].id
+    assert (
+        first[0].choices[0].delta.tool_calls[0].id
+        == second[0].choices[0].delta.tool_calls[0].id
+    )
     assert first[0].choices[0].delta.tool_calls[0].function.arguments == '{"q": "abc"}'
     assert second[0].choices[0].delta.tool_calls[0].function.arguments == ""
     assert first[-1].choices[0].finish_reason == "tool_calls"
@@ -413,11 +433,16 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
         ]
     }
 
-    chunks = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices={})
+    chunks = translate_stream_event(
+        event, model="gemini-2.5-flash", tool_call_indices={}
+    )
     tool_chunks = [chunk for chunk in chunks if chunk.choices[0].delta.tool_calls]
     assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
     assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
-    assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
+    assert (
+        tool_chunks[0].choices[0].delta.tool_calls[0].id
+        != tool_chunks[1].choices[0].delta.tool_calls[0].id
+    )
 
 
 def test_system_instruction_includes_role_field_and_stays_out_of_contents():
@@ -452,12 +477,157 @@ def test_max_tokens_none_defaults_to_gemini_output_ceiling():
         GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
     )
 
-    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=None)
-    assert req["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS == 65535
+    req = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}], max_tokens=None
+    )
+    assert (
+        req["generationConfig"]["maxOutputTokens"]
+        == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        == 65535
+    )
 
 
 def test_explicit_max_tokens_is_respected():
     from agent.gemini_native_adapter import build_gemini_request
 
-    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
+    req = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}], max_tokens=4096
+    )
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+
+
+def test_google_search_grounding_request_and_response():
+    from agent.gemini_native_adapter import (
+        build_gemini_request,
+        translate_gemini_response,
+    )
+
+    # Test request build
+    req = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        google_search_grounding=True,
+    )
+    assert "tools" in req
+    assert {"googleSearch": {}} in req["tools"]
+
+    req_with_functions = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "dummy",
+                    "description": "Dummy tool",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        google_search_grounding=True,
+    )
+    assert req_with_functions["toolConfig"]["includeServerSideToolInvocations"] is True
+
+    # Test response translation with groundingMetadata
+    mock_resp = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [{"text": "According to research, the sky is blue."}]
+                },
+                "finishReason": "STOP",
+                "groundingMetadata": {
+                    "groundingChunks": [
+                        {
+                            "web": {
+                                "uri": "https://example.com/sky",
+                                "title": "Why the sky is blue",
+                            }
+                        }
+                    ]
+                },
+            }
+        ]
+    }
+    result = translate_gemini_response(mock_resp, model="gemini-2.5-flash")
+    content = result.choices[0].message.content
+    assert "According to research, the sky is blue." in content
+    assert "**Sources:**" in content
+    assert "[1] Why the sky is blue - https://example.com/sky" in content
+
+
+def test_google_search_grounding_stream_response_appends_sources_once():
+    from agent.gemini_native_adapter import translate_stream_event
+
+    event = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [{"text": "According to research, the sky is blue."}]
+                },
+                "finishReason": "STOP",
+                "groundingMetadata": {
+                    "groundingChunks": [
+                        {
+                            "web": {
+                                "uri": "https://example.com/sky",
+                                "title": "Why the sky is blue",
+                            }
+                        },
+                        {
+                            "web": {
+                                "uri": "https://example.com/sky",
+                                "title": "Duplicate source",
+                            }
+                        },
+                    ]
+                },
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 5,
+            "totalTokenCount": 15,
+        },
+    }
+
+    state = {}
+    chunks = translate_stream_event(event, "gemini-2.5-flash", state)
+    content = "".join(
+        chunk.choices[0].delta.content or "" for chunk in chunks
+    )
+
+    assert "According to research, the sky is blue." in content
+    assert content.count("**Sources:**") == 1
+    assert "[1] Why the sky is blue - https://example.com/sky" in content
+
+    repeated_chunks = translate_stream_event(event, "gemini-2.5-flash", state)
+    repeated_content = "".join(
+        chunk.choices[0].delta.content or "" for chunk in repeated_chunks
+    )
+    assert "**Sources:**" not in repeated_content
+
+
+def test_native_gemini_transport_preserves_google_search_grounding_extra_body():
+    from agent.transports.chat_completions import ChatCompletionsTransport
+    from providers.base import ProviderProfile
+
+    transport = ChatCompletionsTransport()
+    gemini_profile = ProviderProfile(
+        name="gemini",
+        api_mode="chat_completions",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+    )
+    kwargs = transport.build_kwargs(
+        model="gemini-3.5-flash",
+        messages=[{"role": "user", "content": "hi"}],
+        provider_profile=gemini_profile,
+        provider_name="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        request_overrides={
+            "extra_body": {
+                "google_search_grounding": True,
+                "tags": ["should-be-filtered"],
+            }
+        },
+    )
+
+    assert kwargs["extra_body"] == {"google_search_grounding": True}

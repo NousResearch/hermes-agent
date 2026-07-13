@@ -2703,6 +2703,49 @@ def run_job(
             logger.error("Job '%s': %s", job_id, err)
             return False, "", "", err
 
+        # Best-effort SessionDB for recording runs in the cron history.
+        # Lightweight import (just SQLite wrapper), no AIAgent payload.
+        _na_session_db = None
+        _na_session_id = None
+        try:
+            from hermes_state import SessionDB
+            _na_session_db = SessionDB()
+            _na_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+            _na_session_db.create_session(
+                session_id=_na_session_id,
+                source="cron",
+            )
+        except Exception as e:
+            logger.debug("Job '%s' (no_agent): session store not available: %s", job_id, e)
+            _na_session_db = None
+
+        def _na_write_session(status: str, status_label: str, body: str):
+            """Best-effort: record the run outcome into the cron session.
+
+            Creates a lightweight session record so the job's run-history
+            endpoint has something to return. The session title carries a
+            short status summary; the full output lives in the cron output
+            directory (the ``doc`` returned by this function).
+            """
+            if not _na_session_db or not _na_session_id:
+                return
+            try:
+                _title_base = " ".join(job_name.split())[:40].strip() or f"cron {job_id}"
+                _ts = _hermes_now().strftime('%b %d %H:%M')
+                _preview = body.strip()[:80].replace("\n", " ")
+                _na_session_db.set_session_title(
+                    _na_session_id,
+                    f"{_title_base} · {_ts} [{status_label}]",
+                )
+                # End as assistant message so the session's preview reflects
+                # the output. SessionDB's _insert_session_row stores `preview`
+                # as the first N chars of the session — we set it via title
+                # only because there is no public add_message on SessionDB.
+                _na_session_db.end_session(_na_session_id, status)
+                _na_session_db.close()
+            except Exception as e2:
+                logger.debug("Job '%s' (no_agent): failed to record session: %s", job_id, e2)
+
         # Apply workdir if configured — lets scripts use predictable relative
         # paths. For no_agent jobs this is just the subprocess cwd (not an
         # agent TERMINAL_CWD bridge).
@@ -2727,9 +2770,6 @@ def run_job(
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
         if not ok:
-            # Script crashed / timed out / exited non-zero.  Deliver the
-            # error so the user knows the watchdog itself broke — silent
-            # failure for an alerting job is the worst-case outcome.
             alert = (
                 f"⚠ Cron watchdog '{job_name}' script failed\n\n"
                 f"{output}\n\n"
@@ -2743,10 +2783,9 @@ def run_job(
                 f"**Status:** script failed\n\n"
                 f"{output}\n"
             )
+            _na_write_session("script_failed", "失败", doc)
             return False, doc, alert, output
 
-        # Honour the wakeAgent gate as a silent signal — `wakeAgent: false`
-        # means "nothing to report this tick", same as empty stdout.
         if not _parse_wake_gate(output):
             logger.info(
                 "Job '%s' (no_agent): wakeAgent=false gate — silent run", job_id
@@ -2758,6 +2797,7 @@ def run_job(
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (wakeAgent=false)\n"
             )
+            _na_write_session("cron_complete", "静默", silent_doc)
             return True, silent_doc, SILENT_MARKER, None
 
         if not output.strip():
@@ -2769,6 +2809,7 @@ def run_job(
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (empty output)\n"
             )
+            _na_write_session("cron_complete", "静默", silent_doc)
             return True, silent_doc, SILENT_MARKER, None
 
         doc = (
@@ -2779,6 +2820,7 @@ def run_job(
             f"---\n\n"
             f"{output}\n"
         )
+        _na_write_session("cron_complete", "成功", doc)
         return True, doc, output, None
 
     # ---------------------------------------------------------------

@@ -27,13 +27,12 @@ import rich
 from rich.text import Text
 
 
-
 def check_mark(ok: bool) -> Text:
     if ok:
         return rich_color("✓", RichColors.GREEN)
     return rich_color("✗", RichColors.RED)
 
-def redact_key(key: str) -> str:
+def redact_key(key: str) -> Text:
     """Redact an API key for display.
 
     Thin wrapper over :func:`agent.redact.mask_secret`. Preserves the
@@ -42,7 +41,7 @@ def redact_key(key: str) -> str:
     consolidated via PR that also introduced ``mask_secret``).
     """
     from agent.redact import mask_secret
-    return mask_secret(key, empty=(rich_color("(not set)", RichColors.DIM)).markup)
+    return Text.from_markup(mask_secret(key, empty=(rich_color("(not set)", RichColors.DIM)).markup))
 
 def _format_iso_timestamp(value) -> str:
     """Format ISO timestamps for status output, converting to local timezone."""
@@ -123,7 +122,10 @@ def show_status(args):
     rich.print(f"  Python:       {sys.version.split()[0]}")
 
     env_path = get_env_path()
-    rich.print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
+    rich.print(Text.assemble(
+        "  .env file:    ", check_mark(env_path.exists(), " "),
+        f"{'exists' if env_path.exists() else 'not found'}"
+    ))
 
     try:
         config = load_config()
@@ -181,12 +183,12 @@ def show_status(args):
         value = _resolve_env(env_ref)
         has_key = bool(value)
         display = redact_key(value)
-        rich.print(f"  {name:<12}  {check_mark(has_key)} {display}")
+        rich.print(Text.assemble(f"  {name:<12}  ", check_mark(has_key), " ", display))
 
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
     anthropic_display = redact_key(anthropic_value)
-    rich.print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
+    rich.print(Text.assemble(f"  {'Anthropic':<12}  ", check_mark(bool(anthropic_value)), " ", anthropic_display))
 
     # =========================================================================
     # Auth Providers (OAuth)
@@ -239,10 +241,7 @@ def show_status(args):
         nous_label = "not logged in (Nous inference key configured)"
     else:
         nous_label = "not logged in (run: hermes portal)"
-    rich.print(
-        f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
-        f"{nous_label}"
-    )
+    rich.print(Text.assemble(f"  {'Nous Portal':<12}  ", check_mark(nous_logged_in), " ", nous_label))
     portal_url = nous_status.get("portal_base_url") or "(unknown)"
     inference_url = (
         nous_status.get("inference_base_url")
@@ -265,10 +264,10 @@ def show_status(args):
         rich.print(f"    Error:      {nous_error}")
 
     codex_logged_in = bool(codex_status.get("logged_in"))
-    rich.print(
-        f"  {'OpenAI Codex':<12}  {check_mark(codex_logged_in)} "
+    rich.print(Text.assemble(
+        f"  {'OpenAI Codex':<12}  ", check_mark(codex_logged_in), " ",
         f"{'logged in' if codex_logged_in else 'not logged in (run: hermes model)'}"
-    )
+    ))
     codex_auth_file = codex_status.get("auth_store")
     if codex_auth_file:
         rich.print(f"    Auth file:  {codex_auth_file}")
@@ -279,10 +278,10 @@ def show_status(args):
         rich.print(f"    Error:      {codex_status.get('error')}")
 
     qwen_logged_in = bool(qwen_status.get("logged_in"))
-    rich.print(
-        f"  {'Qwen OAuth':<12}  {check_mark(qwen_logged_in)} "
+    rich.print(Text.assemble(
+        f"  {'Qwen OAuth':<12}  ", check_mark(qwen_logged_in), " ",
         f"{'logged in' if qwen_logged_in else 'not logged in (run: qwen auth qwen-oauth)'}"
-    )
+    ))
     qwen_auth_file = qwen_status.get("auth_file")
     if qwen_auth_file:
         rich.print(f"    Auth file:  {qwen_auth_file}")
@@ -294,10 +293,10 @@ def show_status(args):
         rich.print(f"    Error:      {qwen_status.get('error')}")
 
     minimax_logged_in = bool(minimax_status.get("logged_in"))
-    rich.print(
-        f"  {'MiniMax OAuth':<12}  {check_mark(minimax_logged_in)} "
+    rich.print(Text.assemble(
+        f"  {'MiniMax OAuth':<12}  ", check_mark(minimax_logged_in), " ",
         f"{'logged in' if minimax_logged_in else 'not logged in (run: hermes auth add minimax-oauth)'}"
-    )
+    ))
     minimax_region = minimax_status.get("region")
     if minimax_logged_in and minimax_region:
         rich.print(f"    Region:     {minimax_region}")
@@ -316,10 +315,10 @@ def show_status(args):
         xai_oauth_status = {}
 
     xai_oauth_logged_in = bool(xai_oauth_status.get("logged_in"))
-    rich.print(
-        f"  {'xAI OAuth':<12}  {check_mark(xai_oauth_logged_in)} "
+    rich.print(Text.assemble(
+        f"  {'xAI OAuth':<12}  ", check_mark(xai_oauth_logged_in), " ",
         f"{'logged in' if xai_oauth_logged_in else 'not logged in (run: hermes auth add xai-oauth)'}"
-    )
+    ))
     xai_auth_file = xai_oauth_status.get("auth_store")
     if xai_auth_file:
         rich.print(f"    Auth file:  {xai_auth_file}")
@@ -351,7 +350,10 @@ def show_status(args):
                 state = "available via subscription (optional)"
             else:
                 state = "not configured"
-            rich.print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
+            rich.print(Text.assemble(
+                f"  {feature.label:<15} ",
+                check_mark(feature.available or feature.active or feature.managed_by_nous), " ", state
+            ))
     elif nous_logged_in or nous_inference_present:
         # Nous OAuth without entitlement, or an opaque inference key without
         # Portal account information, cannot enable the Tool Gateway.
@@ -386,7 +388,7 @@ def show_status(args):
                 break
         configured = bool(key_val)
         label = "configured" if configured else "not configured (run: hermes model)"
-        rich.print(f"  {pname:<16} {check_mark(configured)} {label}")
+        rich.print(Text.assemble(f"  {pname:<16} ", check_mark(configured), " ", label))
 
     # LM Studio reachability — only probe when it's the active provider so
     # users with foreign configs don't see noise. Auth rejection vs. silent
@@ -403,7 +405,7 @@ def show_status(args):
                 ok, msg = True, f"reachable ({len(models)} model(s)) at {base}"
         except AuthError:
             ok, msg = False, "auth rejected — set LM_API_KEY"
-        rich.print(f"  {'LM Studio':<16} {check_mark(ok)} {msg}")
+        rich.print(Text.assemble(f"  {'LM Studio':<16} ", check_mark(ok), " ", msg))
 
     # =========================================================================
     # Terminal Configuration
@@ -430,7 +432,10 @@ def show_status(args):
         rich.print(f"  Daytona Image: {daytona_image}")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
-    rich.print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
+    rich.print(Text.assemble(
+        f"  Sudo:         ", check_mark(bool(sudo_password)), " ",
+        f"{'enabled' if sudo_password else 'disabled'}"
+    ))
 
     # =========================================================================
     # Messaging Platforms
@@ -471,7 +476,7 @@ def show_status(args):
         if home_channel:
             status += f" (home: {home_channel})"
         
-        rich.print(f"  {name:<12}  {check_mark(has_token)} {status}")
+        rich.print(Text.assemble(f"  {name:<12}  ", check_mark(has_token), " ", status))
 
     # Plugin-registered platforms
     try:
@@ -480,7 +485,7 @@ def show_status(args):
             configured = entry.check_fn()
             status_str = "configured" if configured else "not configured"
             label = entry.label
-            rich.print(f"  {label:<12}  {check_mark(configured)} {status_str} (plugin)")
+            rich.print(Text.assemble(f"  {label:<12}  ", check_mark(configured), " ", status_str, " (plugin)"))
     except Exception:
         pass
 
@@ -495,7 +500,10 @@ def show_status(args):
 
         snapshot = get_gateway_runtime_snapshot()
         is_running = snapshot.running
-        rich.print(f"  Status:       {check_mark(is_running)} {'running' if is_running else 'stopped'}")
+        rich.print(Text.assemble(
+            f"  Status:       ", check_mark(is_running), " ",
+            f"{'running' if is_running else 'stopped'}"
+        ))
         rich.print(f"  Manager:      {snapshot.manager}")
         if snapshot.gateway_pids:
             rich.print(f"  PID(s):       {_format_gateway_pids(snapshot.gateway_pids)}")
@@ -598,9 +606,15 @@ def show_status(args):
                     timeout=10
                 )
                 ok = response.status_code == 200
-                rich.print(f"  OpenRouter:   {check_mark(ok)} {'reachable' if ok else f'error ({response.status_code})'}")
+                rich.print(Text.assemble(
+                    f"  OpenRouter:   ", check_mark(ok), " ",
+                    f"{'reachable' if ok else f'error ({response.status_code})'}"
+                ))
             except Exception as e:
-                rich.print(f"  OpenRouter:   {check_mark(False)} error: {e}")
+                rich.print(Text.assemble(
+                    f"  OpenRouter:   ", check_mark(False),
+                    " error: ", str(e)
+                ))
         
         # Check gateway port
         try:

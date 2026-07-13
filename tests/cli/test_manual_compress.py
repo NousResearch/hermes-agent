@@ -188,6 +188,40 @@ def test_manual_compress_does_not_flush_full_history_when_session_id_unchanged()
     shell.agent._flush_messages_to_session_db.assert_not_called()
 
 
+def test_manual_compress_runs_when_auto_compaction_disabled(capsys):
+    """compression.enabled: false disables *automatic* compaction only.
+
+    Manual /compress must still work: the context-overflow error path
+    (agent/conversation_loop.py) explicitly directs users to /compress when
+    auto-compaction is off, and the gateway's /compress handler has never
+    gated on the flag. Regression for the CLI refusing with "Compression is
+    disabled in config."
+    """
+    shell = _make_cli()
+    history = _make_history()
+    compressed = [
+        {"role": "user", "content": "[summary]"},
+        history[-1],
+    ]
+    shell.conversation_history = history
+    shell.agent = MagicMock()
+    shell.agent.compression_enabled = False
+    shell.agent._cached_system_prompt = ""
+    shell.agent.tools = None
+    shell.agent.session_id = shell.session_id
+    shell.agent._compress_context.return_value = (compressed, "")
+
+    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+        shell._manual_compress()
+
+    output = capsys.readouterr().out
+    assert "Compression is disabled" not in output
+    shell.agent._compress_context.assert_called_once()
+    # Manual compression bypasses the summary-failure cooldown.
+    assert shell.agent._compress_context.call_args.kwargs.get("force") is True
+    assert shell.conversation_history == compressed
+
+
 def test_manual_compress_no_sync_when_session_id_unchanged():
     """If compression is a no-op (agent.session_id didn't change), the CLI
     must NOT clear _pending_title or otherwise disturb session state.

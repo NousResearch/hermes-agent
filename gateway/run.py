@@ -16794,12 +16794,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-            # "new" mode: only report when tool changes
-            if progress_mode == "new" and tool_name == last_tool[0]:
-                return
-            last_tool[0] = tool_name
-
             if event_type == "subagent.start":
+                # Subagent starts are not normal tool starts: tool_name is None,
+                # so the generic "new"-mode tool-name de-duplication below would
+                # collapse every child after the first one. Route them before that
+                # guard and de-duplicate on the child identity instead.
+                subagent_key = (
+                    "subagent.start",
+                    kwargs.get("subagent_id"),
+                    kwargs.get("task_index"),
+                    preview,
+                )
+                if progress_mode == "new" and subagent_key == last_tool[0]:
+                    return
+                last_tool[0] = subagent_key
                 subagent_label = "Subagent"
                 task_index = kwargs.get("task_index")
                 task_count = kwargs.get("task_count")
@@ -16817,6 +16825,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     msg += f"\nModel: `{model}`"
                 progress_queue.put(msg)
                 return
+
+            # "new" mode: only report when tool changes
+            if progress_mode == "new" and tool_name == last_tool[0]:
+                return
+            last_tool[0] = tool_name
 
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji

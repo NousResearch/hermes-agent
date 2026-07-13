@@ -192,6 +192,38 @@ class SubagentProgressAgent:
         }
 
 
+class TwoSubagentProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb(
+                "subagent.start",
+                preview="Audit gateway progress",
+                model="claude-sonnet-4-6",
+                task_index=0,
+                task_count=2,
+                subagent_id="child-a",
+            )
+            cb(
+                "subagent.start",
+                preview="Audit fallback restore",
+                model="claude-sonnet-4-6",
+                task_index=1,
+                task_count=2,
+                subagent_id="child-b",
+            )
+            time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class LongPreviewAgent:
     """Agent that emits a tool call with a very long preview string."""
     LONG_CMD = "cd /home/teknium/.hermes/hermes-agent/.worktrees/hermes-d8860339 && source .venv/bin/activate && python -m pytest tests/gateway/test_run_progress_topics.py -n0 -q"
@@ -418,6 +450,50 @@ async def test_run_agent_progress_shows_subagent_model(monkeypatch, tmp_path):
     assert "Audit the codebase" in adapter.sent[0]["content"]
     assert "claude-sonnet-4-6" in adapter.sent[0]["content"]
     assert adapter.sent[0]["metadata"] == {"thread_id": "17585"}
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_shows_each_subagent_in_new_mode(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "new")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TwoSubagentProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-subagent-new-mode",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "done"
+    progress_text = "\n".join(
+        [call["content"] for call in adapter.sent]
+        + [call["content"] for call in adapter.edits]
+    )
+    assert progress_text.count("Subagent 1/2") >= 1
+    assert "Audit gateway progress" in progress_text
+    assert progress_text.count("Subagent 2/2") >= 1
+    assert "Audit fallback restore" in progress_text
 
 
 @pytest.mark.asyncio

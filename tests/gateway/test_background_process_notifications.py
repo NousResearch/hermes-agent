@@ -8,6 +8,7 @@ Contributed by @PeterFile (PR #593), reimplemented on current main.
 """
 
 import asyncio
+import queue
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -63,6 +64,17 @@ def _watcher_dict(session_id="proc_test", thread_id=""):
     if thread_id:
         d["thread_id"] = thread_id
     return d
+
+
+def _watch_event(session_id="proc_watch", thread_id="42"):
+    return {
+        "type": "watch_match",
+        "session_id": session_id,
+        "session_key": f"agent:main:telegram:dm:123:{thread_id}",
+        "pattern": "READY",
+        "command": "build",
+        "output": "READY\n",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +293,54 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
     assert synth_event.source.thread_id == "42"
     assert synth_event.source.user_id == "123"
     assert synth_event.source.user_name == "Emiliyan"
+
+
+@pytest.mark.asyncio
+async def test_post_turn_watch_drain_off_consumes_without_injecting(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "off")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    completion_queue = queue.Queue()
+    completion_queue.put(_watch_event("proc_one"))
+    completion_queue.put(_watch_event("proc_two"))
+    async_event = {"type": "async_delegation", "session_id": "delegate_one"}
+    completion_queue.put(async_event)
+
+    await runner._drain_watch_notifications(completion_queue)
+
+    adapter.handle_message.assert_not_awaited()
+    assert completion_queue.qsize() == 1
+    assert completion_queue.get_nowait() is async_event
+
+
+@pytest.mark.asyncio
+async def test_post_turn_watch_drain_all_injects_from_queued_event_origin(monkeypatch, tmp_path):
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    runner.session_store._entries["agent:main:telegram:dm:123:42"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            thread_id="42",
+            user_id="proc_owner",
+            user_name="alice",
+        )
+    )
+    completion_queue = queue.Queue()
+    completion_queue.put(_watch_event())
+    async_event = {"type": "async_delegation", "session_id": "delegate_one"}
+    completion_queue.put(async_event)
+
+    await runner._drain_watch_notifications(completion_queue)
+
+    adapter.handle_message.assert_awaited_once()
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.source.thread_id == "42"
+    assert synth_event.source.user_id == "proc_owner"
+    assert completion_queue.qsize() == 1
+    assert completion_queue.get_nowait() is async_event
 
 
 @pytest.mark.asyncio

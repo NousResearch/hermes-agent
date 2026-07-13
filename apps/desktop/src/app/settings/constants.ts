@@ -750,8 +750,6 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.piper.voice',
       'tts.deepinfra.model',
       'tts.deepinfra.voice',
-      'tts.deepinfra.model',
-      'tts.deepinfra.voice',
       'tts.supertonic.voice',
       'tts.supertonic.lang',
       'tts.supertonic.speed',

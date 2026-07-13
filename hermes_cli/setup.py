@@ -1354,7 +1354,7 @@ def _setup_tts_provider(config: dict):
                 ("fr", "French"), ("it", "Italian"), ("pt", "Portuguese"), ("uk", "Ukrainian"),
                 ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"),
             ]
-            lang_choices = [f"{code} — {name}" for code, name in curated]
+            lang_choices = [f"{code} - {name}" for code, name in curated]
             lang_choices.append("Other (enter ISO code)")
             cur_lang = str(st.get("lang", "en"))
             curated_codes = [c for c, _ in curated]
@@ -1372,8 +1372,8 @@ def _setup_tts_provider(config: dict):
 
             # --- Voice ---
             voice_choices = [
-                "M1 — male", "M2 — male", "M3 — male", "M4 — male", "M5 — male",
-                "F1 — female", "F2 — female", "F3 — female", "F4 — female", "F5 — female",
+                "M1 - male", "M2 - male", "M3 - male", "M4 - male", "M5 - male",
+                "F1 - female", "F2 - female", "F3 - female", "F4 - female", "F5 - female",
             ]
             voice_ids = list(SUPERTONIC_VOICES)
             cur_voice = str(st.get("voice", "M1"))
@@ -1383,7 +1383,7 @@ def _setup_tts_provider(config: dict):
 
             # --- Speed ---
             while True:
-                raw = prompt("Speed (0.7–2.0, higher = faster)", default=str(st.get("speed", 1.0)))
+                raw = prompt("Speed (0.7-2.0, higher = faster)", default=str(st.get("speed", 1.0)))
                 try:
                     speed = float(raw)
                 except (TypeError, ValueError):
@@ -1396,10 +1396,10 @@ def _setup_tts_provider(config: dict):
 
             # --- Quality (total_steps) ---
             quality_choices = [
-                "Fast (5 steps — quickest, lower quality)",
-                "Balanced (8 steps — recommended)",
-                "High (10 steps — better quality)",
-                "Very High (12 steps — best quality, slowest)",
+                "Fast (5 steps - quickest, lower quality)",
+                "Balanced (8 steps - recommended)",
+                "High (10 steps - better quality)",
+                "Very High (12 steps - best quality, slowest)",
             ]
             quality_steps = [5, 8, 10, 12]
             try:

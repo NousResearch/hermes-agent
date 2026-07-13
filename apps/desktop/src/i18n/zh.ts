@@ -725,7 +725,7 @@ export const zh: Translations = {
       },
       tts: {
         supertonic: {
-          voice: '内置语音风格，M1–M5 或 F1–F5。',
+          voice: '内置语音风格，M1-M5 或 F1-F5。',
           lang: '用于 Supertonic 合成的口语语言代码。',
           speed: '语速范围为 0.7 到 2.0。',
           totalSteps: '质量与速度的权衡范围为 5 到 12 步。'

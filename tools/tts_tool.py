@@ -210,7 +210,7 @@ def _import_supertonic():
     on ONNX Runtime (99M params, no torch). ``pip install supertonic`` pulls
     cross-platform wheels; the ~400MB model is downloaded on first use to
     ``~/.cache/supertonic3/``. Supports 31 languages, male/female voices
-    (M1–M5 / F1–F5) and expression tags ``<laugh>`` / ``<breath>`` / ``<sigh>``.
+    (M1-M5 / F1-F5) and expression tags ``<laugh>`` / ``<breath>`` / ``<sigh>``.
     """
     from supertonic import TTS
     return TTS
@@ -233,10 +233,10 @@ MANAGED_OPENAI_TTS_MODELS = frozenset({"gpt-4o-mini-tts"})
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
-DEFAULT_SUPERTONIC_VOICE = "M1"  # M1–M5 (male) / F1–F5 (female)
+DEFAULT_SUPERTONIC_VOICE = "M1"  # M1-M5 (male) / F1-F5 (female)
 DEFAULT_SUPERTONIC_LANG = "en"
-DEFAULT_SUPERTONIC_SPEED = 1.0  # 0.7–2.0 (higher = faster)
-DEFAULT_SUPERTONIC_TOTAL_STEPS = 8  # 5–12 (higher = better quality, slower)
+DEFAULT_SUPERTONIC_SPEED = 1.0  # 0.7-2.0 (higher = faster)
+DEFAULT_SUPERTONIC_TOTAL_STEPS = 8  # 5-12 (higher = better quality, slower)
 # Built-in voice styles shipped with the Supertonic model.
 SUPERTONIC_VOICES = ("M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5")
 # Supertonic supports 31 languages (+ ``na`` neutral/accentless fallback).
@@ -2801,7 +2801,7 @@ def _generate_supertonic_tts(text: str, output_path: str, tts_config: Dict[str, 
         SUPERTONIC_TOTAL_STEPS_MIN, min(SUPERTONIC_TOTAL_STEPS_MAX, total_steps)
     )
 
-    # Optional, rarely-tuned synthesis knobs — only forwarded when configured
+    # Optional, rarely-tuned synthesis knobs - only forwarded when configured
     # so we stay compatible with the installed engine version.
     extra: Dict[str, Any] = {}
     if "max_chunk_length" in st_config:

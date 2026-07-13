@@ -1885,7 +1885,7 @@ def _run_post_setup(post_setup_key: str):
                 _print_warning("    supertonic install timed out (>5min)")
                 _print_info('    Run manually: uv pip install -U "supertonic>=1.3.1,<2"')
                 return
-        _print_info("    Voices: M1–M5 (male) / F1–F5 (female); 31 languages; expression tags <laugh>/<breath>/<sigh>")
+        _print_info("    Voices: M1-M5 (male) / F1-F5 (female); 31 languages; expression tags <laugh>/<breath>/<sigh>")
         _print_info("    The ~400MB model downloads on first TTS call to ~/.cache/supertonic3/")
         _print_info("    Tune via tts.supertonic.* (voice, lang, speed, total_steps) in ~/.hermes/config.yaml")
 

@@ -601,7 +601,7 @@ export const zhHant = defineLocale({
       },
       tts: {
         supertonic: {
-          voice: '內建語音風格，M1–M5 或 F1–F5。',
+          voice: '內建語音風格，M1-M5 或 F1-F5。',
           lang: '用於 Supertonic 合成的口語語言代碼。',
           speed: '語速範圍為 0.7 到 2.0。',
           totalSteps: '品質與速度的權衡範圍為 5 到 12 步。'

@@ -105,7 +105,7 @@ tts:
     # volume: 1.0                               # 0.5 = half as loud
     # normalize_audio: true
   supertonic:
-    voice: M1                                   # M1–M5 (male) / F1–F5 (female)
+    voice: M1                                   # M1-M5 (male) / F1-F5 (female)
     lang: en                                    # 31 languages + 'na' neutral (see list below)
     speed: 1.0                                  # 0.7 - 2.0 (higher = faster)
     total_steps: 8                              # 5 - 12 (higher = better quality, slower)
@@ -271,7 +271,7 @@ tts:
 
 Supertonic is a light, fully-local neural TTS engine built on ONNX Runtime (99M params, no PyTorch). It runs on CPU, supports **31 languages**, ships with male/female voices, understands inline **expression tags**, and needs no API key.
 
-**Install via `hermes tools`** → Voice & TTS → Supertonic — Hermes runs `pip install "supertonic>=1.3.1,<2"` for you. You can also pick it interactively via `hermes setup tts` (which lets you choose voice, language, speed, and quality), or install manually: `pip install "supertonic>=1.3.1,<2"`.
+**Install via `hermes tools`** -> Voice & TTS -> Supertonic - Hermes runs `pip install "supertonic>=1.3.1,<2"` for you. You can also pick it interactively via `hermes setup tts` (which lets you choose voice, language, speed, and quality), or install manually: `pip install "supertonic>=1.3.1,<2"`.
 
 On the first TTS call, Supertonic downloads its ~400MB model into `~/.cache/supertonic3/`. Subsequent calls reuse the cached model (loaded once per process).
 
@@ -281,19 +281,19 @@ On the first TTS call, Supertonic downloads its ~400MB model into `~/.cache/supe
 tts:
   provider: supertonic
   supertonic:
-    voice: M1            # M1–M5 (male) / F1–F5 (female)
+    voice: M1            # M1-M5 (male) / F1-F5 (female)
     lang: en
     speed: 1.0           # 0.7 - 2.0 (higher = faster)
     total_steps: 8       # 5 - 12 (higher = better quality, slower)
 ```
 
-**Voices.** Ten built-in voice styles: `M1`–`M5` (male) and `F1`–`F5` (female).
+**Voices.** Ten built-in voice styles: `M1`-`M5` (male) and `F1`-`F5` (female).
 
 **Languages.** Set `tts.supertonic.lang` to one of the 31 supported ISO codes (plus `na` for a neutral/accentless rendering):
 
 `en, ko, ja, ar, bg, cs, da, de, el, es, et, fi, fr, hi, hr, hu, id, it, lt, lv, nl, pl, pt, ro, ru, sk, sl, sv, tr, uk, vi, na`
 
-**Expression tags.** Embed `<laugh>`, `<breath>`, or `<sigh>` directly in the text to add non-verbal expression, e.g. `That's hilarious <laugh> — anyway, where were we?`
+**Expression tags.** Embed `<laugh>`, `<breath>`, or `<sigh>` directly in the text to add non-verbal expression, e.g. `That's hilarious <laugh> - anyway, where were we?`
 
 **Custom voices.** If you built a voice with the Supertonic Voice Builder, point `tts.supertonic.voice_style_path` at the exported style file; it takes precedence over `voice`.
 

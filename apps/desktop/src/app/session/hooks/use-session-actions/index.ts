@@ -679,17 +679,27 @@ export function useSessionActions({
   // Shared fork: create a child session seeded with `branchMessages`, linked to
   // `parentStoredId` so it nests under its parent, then make it the active chat.
   const forkBranch = useCallback(
-    async (branchMessages: BranchMessage[], parentStoredId: null | string, cwd?: string): Promise<boolean> => {
+    async (
+      branchMessages: BranchMessage[],
+      parentStoredId: null | string,
+      cwd?: string,
+      profile?: null | string
+    ): Promise<boolean> => {
       creatingSessionRef.current = true
 
       try {
+        const branchProfile = normalizeProfileKey(profile ?? $activeGatewayProfile.get())
+
+        await ensureGatewayProfile(branchProfile)
+
         // No title: the backend auto-names the branch from its parent's lineage.
         const branched = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           source: 'desktop',
           ...(cwd && { cwd }),
           messages: branchMessages.map(({ content, role }) => ({ content, role })),
-          ...(parentStoredId && { parent_session_id: parentStoredId })
+          ...(parentStoredId && { parent_session_id: parentStoredId }),
+          profile: branchProfile
         })
 
         const routedSessionId = branched.stored_session_id ?? branched.session_id
@@ -793,7 +803,11 @@ export function useSessionActions({
 
       clearNotifications()
 
-      return forkBranch(branchMessages, selectedStoredSessionIdRef.current, $currentCwd.get().trim())
+      const parent = selectedStoredSessionIdRef.current
+        ? $sessions.get().find(session => sessionMatchesStoredId(session, selectedStoredSessionIdRef.current!))
+        : null
+
+      return forkBranch(branchMessages, selectedStoredSessionIdRef.current, $currentCwd.get().trim(), parent?.profile)
     },
     [activeSessionIdRef, busyRef, copy, forkBranch, selectedStoredSessionIdRef]
   )
@@ -819,7 +833,7 @@ export function useSessionActions({
           return false
         }
 
-        return await forkBranch(branchMessages, stored?.id ?? storedSessionId, stored?.cwd?.trim())
+        return await forkBranch(branchMessages, stored?.id ?? storedSessionId, stored?.cwd?.trim(), profile)
       } catch (err) {
         notifyError(err, copy.branchFailed)
 

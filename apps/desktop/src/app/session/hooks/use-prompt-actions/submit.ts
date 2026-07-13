@@ -13,7 +13,7 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { $sessions, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -48,6 +48,17 @@ interface SubmitPromptDeps {
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
+}
+
+function storedSessionProfile(storedSessionId: string | null): string | null {
+  if (!storedSessionId) {
+    return null
+  }
+
+  const stored = $sessions.get().find(session => session.id === storedSessionId || session._lineage_root_id === storedSessionId)
+  const profile = stored?.profile?.trim()
+
+  return profile || null
 }
 
 /** The prompt submit pipeline, extracted from usePromptActions. */
@@ -243,8 +254,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // to session creation when NO stored session is selected (a genuine
         // new-chat draft).
         try {
+          const profile = storedSessionProfile(startingStoredSessionId)
           const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-            session_id: startingStoredSessionId
+            session_id: startingStoredSessionId,
+            source: 'desktop',
+            ...(profile ? { profile } : {})
           })
 
           if (sessionContextDrifted()) {
@@ -331,9 +345,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // backend loop (#55578 symptom d) rejects the submit even though
             // the stored session is fine — resume + retry instead of erroring
             // out and losing the session binding.
+            const storedSessionId = startingStoredSessionId
+            const profile = storedSessionProfile(storedSessionId)
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: startingStoredSessionId,
-              source: 'desktop'
+              session_id: storedSessionId,
+              source: 'desktop',
+              ...(profile ? { profile } : {})
             })
 
             if (sessionContextDrifted()) {

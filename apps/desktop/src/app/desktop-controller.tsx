@@ -62,6 +62,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   getRememberedSessionId,
+  rememberedSessionProfile,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -201,6 +202,8 @@ export function DesktopController() {
   const previewPaneOpen = useStore($paneOpen(PREVIEW_PANE_ID))
   const panesFlipped = useStore($panesFlipped)
   const profileScope = useStore($profileScope)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
+  const sessions = useStore($sessions)
   // Below SIDEBAR_COLLAPSE_BREAKPOINT_PX there's no room for a docked rail —
   // collapse both sidebars (without touching their stored open state) so the
   // hover-reveal overlay becomes the way in. Restores once it's wide again.
@@ -272,9 +275,9 @@ export function DesktopController() {
   // Remember the open chat so a relaunch reopens it instead of an empty new-chat.
   useEffect(() => {
     if (routedSessionId) {
-      setRememberedSessionId(routedSessionId)
+      setRememberedSessionId(routedSessionId, rememberedSessionProfile(sessions, routedSessionId, activeGatewayProfile))
     }
-  }, [routedSessionId])
+  }, [activeGatewayProfile, routedSessionId, sessions])
 
   // Restore that chat once, on cold start only (we're at the new-chat route and
   // haven't navigated yet). A dead/deleted id self-clears via the exhausted latch
@@ -286,18 +289,18 @@ export function DesktopController() {
     }
 
     restoredLastSessionRef.current = true
-    const last = getRememberedSessionId()
+    const last = getRememberedSessionId(activeGatewayProfile)
 
     if (last && location.pathname === NEW_CHAT_ROUTE) {
       navigate(sessionRoute(last), { replace: true })
     }
-  }, [location.pathname, navigate])
+  }, [activeGatewayProfile, location.pathname, navigate])
 
   useEffect(() => {
-    if (resumeExhaustedSessionId && getRememberedSessionId() === resumeExhaustedSessionId) {
-      setRememberedSessionId(null)
+    if (resumeExhaustedSessionId && getRememberedSessionId(activeGatewayProfile) === resumeExhaustedSessionId) {
+      setRememberedSessionId(null, activeGatewayProfile)
     }
-  }, [resumeExhaustedSessionId])
+  }, [activeGatewayProfile, resumeExhaustedSessionId])
 
   // Notification click: the main process already focused the window; jump to its
   // session. Notifications are tagged with the gateway *runtime* session id, but
@@ -655,7 +658,6 @@ export function DesktopController() {
   // without this the statusbar keeps showing the previous profile's model
   // (the "forgets the LLM setting" report). gatewayState stays 'open' across a
   // swap (background sockets persist), so the open→open effect won't re-run.
-  const activeGatewayProfile = useStore($activeGatewayProfile)
   const lastGatewayProfileRef = useRef(activeGatewayProfile)
 
   useEffect(() => {

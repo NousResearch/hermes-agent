@@ -21,7 +21,7 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
-import { $busy, $connection, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { $busy, $connection, $messages, $sessions, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
@@ -57,6 +57,17 @@ import {
 interface HandoffResult {
   ok: boolean
   error?: string
+}
+
+function storedSessionProfile(storedSessionId: string | null): string | null {
+  if (!storedSessionId) {
+    return null
+  }
+
+  const stored = $sessions.get().find(session => session.id === storedSessionId || session._lineage_root_id === storedSessionId)
+  const profile = stored?.profile?.trim()
+
+  return profile || null
 }
 
 /**
@@ -548,9 +559,12 @@ export function usePromptActions({
 
       if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
         try {
+          const storedSessionId = selectedStoredSessionIdRef.current
+          const profile = storedSessionProfile(storedSessionId)
           const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-            session_id: selectedStoredSessionIdRef.current,
-            source: 'desktop'
+            session_id: storedSessionId,
+            source: 'desktop',
+            ...(profile ? { profile } : {})
           })
 
           const recoveredId = resumed?.session_id

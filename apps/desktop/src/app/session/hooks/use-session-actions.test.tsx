@@ -89,6 +89,39 @@ function Harness({
   return null
 }
 
+function BranchHarness({
+  onReady,
+  requestGateway
+}: {
+  onReady: (branchStoredSession: (storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) => void
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+}) {
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
+  const actions = useSessionActions({
+    activeSessionId: null,
+    activeSessionIdRef: ref<string | null>(null),
+    busyRef: ref(false),
+    creatingSessionRef: ref(false),
+    ensureSessionState: () => ({}) as ClientSessionState,
+    getRouteToken: () => 'token',
+    navigate: vi.fn() as never,
+    requestGateway,
+    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    selectedStoredSessionId: null,
+    selectedStoredSessionIdRef: ref<string | null>(null),
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: (_sessionId, updater) => updater({} as ClientSessionState)
+  })
+
+  useEffect(() => {
+    onReady(actions.branchStoredSession)
+  }, [actions.branchStoredSession, onReady])
+
+  return null
+}
+
 async function createWith(
   profileSetup: () => void,
   beforeCreate?: (handle: HarnessHandle) => Promise<void> | void
@@ -199,6 +232,47 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ cwd: '/repo/app' })
+  })
+})
+
+describe('branchStoredSession profile routing', () => {
+  afterEach(() => {
+    cleanup()
+    $activeGatewayProfile.set('default')
+    setMessages([])
+    setSessions([])
+    vi.restoreAllMocks()
+  })
+
+  it('creates the branch on the parent session profile instead of the currently active profile', async () => {
+    const createCalls: Record<string, unknown>[] = []
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'parent text', role: 'user', timestamp: 1 }],
+      session_id: 'default-parent'
+    } as never)
+
+    setSessions([storedSession({ id: 'default-parent', profile: 'default' })])
+    $activeGatewayProfile.set('work-profile')
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createCalls.push(params ?? {})
+
+        return { session_id: 'runtime-branch', stored_session_id: 'stored-branch', messages: [] } as never
+      }
+
+      return {} as never
+    })
+
+    let branchStoredSession: ((storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={b => (branchStoredSession = b)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('default-parent', 'default')).resolves.toBe(true)
+
+    expect(createCalls).toHaveLength(1)
+    expect(createCalls[0]).toMatchObject({ parent_session_id: 'default-parent', profile: 'default' })
   })
 })
 
@@ -458,38 +532,6 @@ describe('resumeSession failure recovery', () => {
   })
 })
 
-function BranchHarness({
-  onReady,
-  requestGateway
-}: {
-  onReady: (branchStoredSession: (storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) => void
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
-}) {
-  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
-
-  const actions = useSessionActions({
-    activeSessionId: null,
-    activeSessionIdRef: ref<string | null>(null),
-    busyRef: ref(false),
-    creatingSessionRef: ref(false),
-    ensureSessionState: () => ({}) as ClientSessionState,
-    getRouteToken: () => 'token',
-    navigate: vi.fn() as never,
-    requestGateway,
-    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
-    selectedStoredSessionId: null,
-    selectedStoredSessionIdRef: ref<string | null>(null),
-    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
-    syncSessionStateToView: vi.fn(),
-    updateSessionState: () => ({}) as ClientSessionState
-  })
-
-  useEffect(() => {
-    onReady(actions.branchStoredSession)
-  }, [actions.branchStoredSession, onReady])
-
-  return null
-}
 
 describe('branchStoredSession desktop source tagging', () => {
   afterEach(() => {

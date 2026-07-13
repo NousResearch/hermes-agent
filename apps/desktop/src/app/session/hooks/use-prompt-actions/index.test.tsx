@@ -1082,6 +1082,8 @@ describe('usePromptActions sleep/wake session recovery', () => {
       return {} as never
     })
 
+    setSessions(() => [sessionInfo({ id: STORED_SESSION_ID, profile: 'default' })])
+
     let handle: HarnessHandle | null = null
     render(
       <Harness
@@ -1095,9 +1097,9 @@ describe('usePromptActions sleep/wake session recovery', () => {
     const ok = await handle!.submitText('message after wake')
 
     expect(ok).toBe(true)
-    // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
+    // First submit (stale id) → session.resume (stored id + owning profile) → retry submit (fresh id).
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', profile: 'default' })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
   })
 
@@ -1125,6 +1127,8 @@ describe('usePromptActions sleep/wake session recovery', () => {
       return {} as never
     })
 
+    setSessions(() => [sessionInfo({ id: STORED_SESSION_ID, profile: 'default' })])
+
     let handle: HarnessHandle | null = null
     render(
       <Harness
@@ -1140,7 +1144,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(calls.map(c => c.method)).toEqual(['session.interrupt', 'session.resume', 'session.interrupt'])
     expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', profile: 'default' })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
   })
 
@@ -1246,7 +1250,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', profile: 'default' })
     expect(calls[2]?.params).toEqual({
       session_id: RECOVERED_SESSION_ID,
       text: 'message during starved loop'
@@ -1289,7 +1293,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(createBackendSessionForSend).not.toHaveBeenCalled()
     expect(calls.map(c => c.method)).toEqual(['session.resume', 'prompt.submit'])
-    expect(calls[0]?.params).toEqual({ session_id: STORED_SESSION_ID })
+    expect(calls[0]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', profile: 'default' })
     expect(calls[1]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
   })
 
@@ -1383,7 +1387,8 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     expect(await submitting).toBe(false)
     expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
     expect(calls.find(c => c.method === 'session.resume')?.params).toEqual({
-      session_id: STORED_SESSION_A
+      session_id: STORED_SESSION_A,
+      source: 'desktop'
     })
   })
 

@@ -23,10 +23,41 @@ const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 
 // The last chat the user had open, so a relaunch lands back on it instead of an
 // empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
+//
+// Multi-profile Desktop must remember this per profile. A single global key lets
+// opening a work-profile chat overwrite the default profile's last default
+// branch, so a later profile/app switch can jump to an unrelated session.
 const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
 
-export const getRememberedSessionId = (): null | string => storedString(LAST_SESSION_KEY)
-export const setRememberedSessionId = (id: null | string) => persistString(LAST_SESSION_KEY, id)
+function normalizeRememberedProfile(profile?: null | string): string {
+  const value = (profile ?? '').trim()
+
+  return value || 'default'
+}
+
+export function rememberedSessionStorageKey(profile?: null | string): string {
+  const key = normalizeRememberedProfile(profile)
+
+  return key === 'default' ? LAST_SESSION_KEY : `${LAST_SESSION_KEY}.${encodeURIComponent(key)}`
+}
+
+export const getRememberedSessionId = (profile?: null | string): null | string =>
+  storedString(rememberedSessionStorageKey(profile))
+export const setRememberedSessionId = (id: null | string, profile?: null | string) =>
+  persistString(rememberedSessionStorageKey(profile), id)
+
+export function rememberedSessionProfile(
+  sessions: Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>[],
+  storedSessionId: null | string,
+  fallbackProfile?: null | string
+): string {
+  const session = storedSessionId
+    ? sessions.find(item => item.id === storedSessionId || item._lineage_root_id === storedSessionId)
+    : null
+  const profile = session?.profile?.trim() || fallbackProfile?.trim()
+
+  return profile || 'default'
+}
 
 let configuredDefaultProjectDir = ''
 

@@ -10,9 +10,13 @@ import {
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
+  getRememberedSessionId,
   mergeSessionPage,
+  rememberedSessionProfile,
+  rememberedSessionStorageKey,
   sessionPinId,
   setCurrentCwd,
+  setRememberedSessionId,
   setSessionAttention,
   setSessionWorking,
   workspaceCwdForNewSession
@@ -35,6 +39,40 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
   title: null,
   tool_call_count: 0,
   ...over
+})
+
+describe('remembered last session', () => {
+  afterEach(() => {
+    window.localStorage.removeItem('hermes.desktop.lastSessionId')
+    window.localStorage.removeItem('hermes.desktop.lastSessionId.work-profile')
+    window.localStorage.removeItem('hermes.desktop.lastSessionId.profile%20with%20spaces')
+  })
+
+  it('keeps the last opened chat separate per profile', () => {
+    setRememberedSessionId('default-branch', 'default')
+    setRememberedSessionId('coding-session', 'work-profile')
+
+    expect(getRememberedSessionId('default')).toBe('default-branch')
+    expect(getRememberedSessionId('work-profile')).toBe('coding-session')
+  })
+
+  it('uses the legacy key only for the default profile', () => {
+    expect(rememberedSessionStorageKey('default')).toBe('hermes.desktop.lastSessionId')
+    expect(rememberedSessionStorageKey('work-profile')).toBe('hermes.desktop.lastSessionId.work-profile')
+    expect(rememberedSessionStorageKey('profile with spaces')).toBe(
+      'hermes.desktop.lastSessionId.profile%20with%20spaces'
+    )
+  })
+
+  it('keys a routed session by its stored owner profile instead of the current gateway profile', () => {
+    const sessions = [session({ id: 'default-branch', profile: 'default' })]
+
+    expect(rememberedSessionProfile(sessions, 'default-branch', 'work-profile')).toBe('default')
+  })
+
+  it('falls back to the current gateway profile before the routed session row is loaded', () => {
+    expect(rememberedSessionProfile([], 'not-loaded-yet', 'work-profile')).toBe('work-profile')
+  })
 })
 
 describe('setSessionAttention', () => {

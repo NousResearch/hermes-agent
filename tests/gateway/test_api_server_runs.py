@@ -660,3 +660,135 @@ class TestRunsModelOverride:
 
                 mock_create.assert_called_once()
                 assert mock_create.call_args.kwargs["model_override"] is None
+
+
+def _make_routing_adapter(routes) -> APIServerAdapter:
+    config = PlatformConfig(enabled=True, extra={"model_routes": routes})
+    return APIServerAdapter(config)
+
+
+def _patch_create_agent_runtime(monkeypatch, fake_agent_cls):
+    """Stub every external dependency of _create_agent (captured-agent pattern)."""
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent_cls)
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openrouter",
+            "api_key": "sk-global",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: {})
+    )
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None)
+    )
+    monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+
+class TestCreateAgentModelOverridePrecedence:
+    """Direct _create_agent AIAgent(model=...) capture for #33072 precedence."""
+
+    def test_bare_model_override_sets_aiagent_model(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, FakeAgent)
+        adapter = _make_routing_adapter({"alias": {"model": "route/model"}})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        agent = adapter._create_agent(
+            session_id="s1",
+            route=None,
+            model_override="claude-haiku-4-5-20251001",
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "claude-haiku-4-5-20251001"
+
+    def test_route_beats_bare_model_override(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, FakeAgent)
+        routes = {
+            "alias": {
+                "model": "route/model",
+                "api_key": "sk-route",
+                "base_url": "https://route.example/v1",
+            }
+        }
+        adapter = _make_routing_adapter(routes)
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        agent = adapter._create_agent(
+            session_id="s1",
+            route=adapter._resolve_route("alias"),
+            model_override="claude-haiku-4-5-20251001",
+        )
+
+        assert isinstance(agent, FakeAgent)
+        # Matched model_routes entry wins over bare per-run override string.
+        assert captured["model"] == "route/model"
+        assert captured["api_key"] == "sk-route"
+
+    def test_session_override_beats_route_and_bare_override(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, FakeAgent)
+        adapter = _make_routing_adapter(
+            {"alias": {"model": "route/model", "api_key": "sk-route"}}
+        )
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(
+            adapter,
+            "_session_model_override_for",
+            lambda key: {"model": "session/override-model"},
+        )
+
+        agent = adapter._create_agent(
+            session_id="s1",
+            route=adapter._resolve_route("alias"),
+            model_override="claude-haiku-4-5-20251001",
+        )
+
+        assert isinstance(agent, FakeAgent)
+        # Session /model wins: route and bare override must not rewrite model.
+        # Session-scoped /model is applied outside _create_agent (GatewayRunner),
+        # so here we keep the global model construction path.
+        assert captured["model"] == "global/model"
+        assert captured["api_key"] == "sk-global"
+
+    def test_no_override_keeps_global_model(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, FakeAgent)
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        agent = adapter._create_agent(session_id="s1")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "global/model"

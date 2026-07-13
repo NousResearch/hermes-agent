@@ -2257,62 +2257,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
-            # Track which tool_call_ids we've emitted a "running" lifecycle
-            # event for, so a "completed" event without a matching "running"
-            # (e.g. internal/filtered tools) is silently dropped instead of
-            # producing an orphaned event clients can't correlate.
-            _started_tool_call_ids: set[str] = set()
-
-            def _on_tool_start(tool_call_id, function_name, function_args):
-                """Emit ``hermes.tool.progress`` with ``status: running``.
-
-                Replaces the old ``tool_progress_callback("tool.started",
-                ...)`` emit so SSE consumers receive a single event per
-                tool start, carrying both the legacy ``tool``/``emoji``/
-                ``label`` payload (for #6972 frontends) and the new
-                ``toolCallId``/``status`` correlation fields (#16588).
-
-                Skips tools whose names start with ``_`` so internal
-                events (``_thinking``, …) stay off the wire — matching
-                the prior ``_on_tool_progress`` filter exactly.
-                """
-                if not tool_call_id or function_name.startswith("_"):
-                    return
-                _started_tool_call_ids.add(tool_call_id)
-                from agent.display import build_tool_preview, get_tool_emoji
-                label = build_tool_preview(function_name, function_args) or function_name
-                _stream_q.put(("__tool_progress__", {
-                    "tool": function_name,
-                    "emoji": get_tool_emoji(function_name),
-                    "label": label,
-                    "toolCallId": tool_call_id,
-                    "status": "running",
-                }))
-
-            def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
-                """Emit the matching ``status: completed`` event.
-
-                Dropped if the start was filtered (internal tool, missing
-                id, or never seen) so clients never get an orphaned
-                ``completed`` they can't correlate to a prior ``running``.
-                """
-                if not tool_call_id or tool_call_id not in _started_tool_call_ids:
-                    return
-                _started_tool_call_ids.discard(tool_call_id)
-                _stream_q.put(("__tool_progress__", {
-                    "tool": function_name,
-                    "toolCallId": tool_call_id,
-                    "status": "completed",
-                }))
-
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             #
-            # ``tool_progress_callback`` is intentionally not wired here:
-            # it would duplicate every emit because ``run_agent`` fires it
-            # side-by-side with ``tool_start_callback``/``tool_complete_callback``.
-            # The structured callbacks are strictly richer (they carry the
-            # tool_call id), so they own the chat-completions SSE channel.
+            # Do NOT wire tool lifecycle/progress callbacks into the
+            # OpenAI-compatible Chat Completions stream.  Strict clients parse
+            # every ``data:`` frame as a ``chat.completion.chunk``; custom
+            # Hermes payloads such as ``event: hermes.tool.progress`` break
+            # their schema validation.  Tool progress belongs on Hermes-native
+            # streams and the Responses stream, not /v1/chat/completions.
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -2320,8 +2273,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
-                tool_start_callback=_on_tool_start,
-                tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
@@ -2495,25 +2446,22 @@ class APIServerAdapter(BasePlatformAdapter):
             async def _emit(item):
                 """Write a single queue item to the SSE stream.
 
-                Plain strings are sent as normal ``delta.content`` chunks.
-                Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
-                frontends can display them without storing the markers in
-                conversation history.  See #6972 for the original event,
-                #16588 for the ``toolCallId``/``status`` lifecycle fields.
+                Only OpenAI ``chat.completion.chunk`` frames are written so
+                strict clients that parse every ``data:`` payload as a Chat
+                Completions chunk never encounter a custom Hermes frame.  Tool
+                lifecycle callbacks are not wired into this endpoint (see
+                ``_handle_chat_completions``); should an internal tagged tuple
+                ever reach this queue it is dropped rather than serialized as a
+                custom ``event: hermes.tool.progress`` frame.
                 """
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
-                    await response.write(
-                        f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
-                    )
-                else:
-                    content_chunk = {
-                        "id": completion_id, "object": "chat.completion.chunk",
-                        "created": created, "model": model,
-                        "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
-                    }
-                    await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                if isinstance(item, tuple):
+                    return time.monotonic()
+                content_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
+                }
+                await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
                 return time.monotonic()
 
             # Stream content chunks as they arrive from the agent

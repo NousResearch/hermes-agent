@@ -118,3 +118,31 @@ test('unknown window kinds default to chat (zoom enabled)', () => {
   assert.deepEqual(zoomWiringForWindowKind('unknown'), { zoom: true })
   assert.deepEqual(zoomWiringForWindowKind(undefined), { zoom: true })
 })
+// Source assertion, same pattern as the pet-overlay test above: verifies the
+// fix for the UI Scale settings control drifting out of sync after a restart.
+// restorePersistedZoomLevel correctly re-applies the persisted zoom level to
+// the window, but must also notify the renderer — otherwise the renderer's
+// $zoomPercent store (see store/zoom.ts), which only updates from zoom.get()
+// (called once on load) and 'hermes:zoom:changed' events, can be left with a
+// stale value if zoom.get() resolves before the restore finishes, leaving the
+// Appearance settings UI Scale control showing the wrong preset even though
+// the window's actual zoom level was correctly restored.
+test('restorePersistedZoomLevel notifies the renderer, same as setAndPersistZoomLevel', () => {
+  const electronDir = path.dirname(fileURLToPath(import.meta.url))
+  const source = fs.readFileSync(path.join(electronDir, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
+
+  const restoreStart = source.indexOf('function restorePersistedZoomLevel(window)')
+  assert.notEqual(restoreStart, -1, 'missing restorePersistedZoomLevel')
+
+  const snippet = source.slice(restoreStart, restoreStart + 600)
+  const setZoomIndex = snippet.indexOf('window.webContents.setZoomLevel(level)')
+  const sendIndex = snippet.indexOf("window.webContents.send('hermes:zoom:changed'")
+
+  assert.notEqual(setZoomIndex, -1, 'restorePersistedZoomLevel must apply the restored zoom level')
+  assert.notEqual(
+    sendIndex,
+    -1,
+    'restorePersistedZoomLevel must notify the renderer after restoring zoom, or the UI Scale control can show a stale preset'
+  )
+  assert.ok(sendIndex > setZoomIndex, 'the renderer notification must happen after the zoom level is applied')
+})

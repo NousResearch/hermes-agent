@@ -473,7 +473,6 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 | `LINE_ALLOWED_GROUPS` | bot 将在其中响应的逗号分隔群组 ID（`C` 前缀）。 |
 | `LINE_ALLOWED_ROOMS` | bot 将在其中响应的逗号分隔房间 ID（`R` 前缀）。 |
 | `LINE_ALLOW_ALL_USERS` | 仅用于开发的逃生舱——接受任意来源。默认：`false`。 |
-| `LINE_REQUIRE_MENTION_IN_GROUPS` | 在群聊/房间中，是否需要 @ 提及 bot 才会将消息转发给 agent。默认：`false`。 |
 | `LINE_HOME_CHANNEL` | `deliver: line` 的 cron 任务的默认投递目标。 |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | 慢速 LLM Template Buttons postback 触发前的等待秒数（默认：`45`）。设为 `0` 可禁用并始终使用 Push 回退。 |
 | `LINE_PENDING_TEXT` | 与 postback 按钮一起显示的气泡文本。 |

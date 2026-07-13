@@ -13,6 +13,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -51,6 +52,13 @@ function copyGlobByExt(srcDir, destDir, extensions) {
   }
 }
 
+function copyNativeFile(src, dest, { executable = false } = {}) {
+  cpSync(src, dest)
+  if (executable) {
+    chmodSync(dest, 0o755)
+  }
+}
+
 /**
  * Copies the locally-compiled build/Release output (used when no prebuild
  * was available and node-pty was built from source for the host machine).
@@ -72,14 +80,20 @@ function copyBuildRelease(srcDir, destDir) {
       continue
     }
     if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name))
+      copyNativeFile(join(srcDir, entry.name), join(destDir, entry.name), {
+        executable: entry.name === 'spawn-helper'
+      })
     }
   }
 }
 
-export function stageNodePty({ platform = process.platform, arch = process.arch } = {}) {
-  const srcRoot = resolveNodePtyRoot()
-  const destRoot = resolve(projectRoot, 'dist/node_modules/node-pty')
+export function stageNodePty({
+  platform = process.platform,
+  arch = process.arch,
+  sourceRoot = resolveNodePtyRoot(),
+  destRoot = resolve(projectRoot, 'dist/node_modules/node-pty')
+} = {}) {
+  const srcRoot = sourceRoot
 
   rmSync(destRoot, { recursive: true, force: true })
   mkdirSync(destRoot, { recursive: true })
@@ -110,11 +124,13 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
         continue
       }
       if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        copyNativeFile(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
         continue
       }
       if (entry.name === 'spawn-helper') {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        copyNativeFile(join(prebuildDir, entry.name), join(destPrebuild, entry.name), {
+          executable: true
+        })
       }
     }
   } else {

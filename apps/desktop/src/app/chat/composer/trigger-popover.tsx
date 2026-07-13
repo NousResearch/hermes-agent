@@ -137,7 +137,7 @@ export function ComposerTriggerPopover({
                         floating tooltip. */}
                     <span
                       className={cn(
-                        'text-[0.8125rem] font-medium leading-snug text-foreground',
+                        'font-medium leading-snug text-foreground',
                         active ? 'whitespace-normal break-words' : 'truncate'
                       )}
                     >
@@ -146,7 +146,7 @@ export function ComposerTriggerPopover({
                     {description && (
                       <span
                         className={cn(
-                          'text-[0.6875rem] leading-snug text-(--ui-text-tertiary)',
+                          'leading-snug text-(--ui-text-tertiary)',
                           active ? 'whitespace-normal break-words' : 'truncate'
                         )}
                       >

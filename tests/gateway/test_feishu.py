@@ -18,6 +18,18 @@ from gateway.platforms.base import ProcessingOutcome
 _HAS_LARK_OAPI = importlib.util.find_spec("lark_oapi") is not None
 
 
+class _FakeRequestContent:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.read_sizes: list[int] = []
+
+    async def readexactly(self, size: int) -> bytes:
+        self.read_sizes.append(size)
+        if len(self.body) < size:
+            raise asyncio.IncompleteReadError(self.body, size)
+        return self.body[:size]
+
+
 def _mock_event_dispatcher_builder(mock_handler_class):
     mock_builder = Mock()
     mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
@@ -78,7 +90,7 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):
-        from gateway.platforms.feishu import normalize_feishu_message
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
 
         normalized = normalize_feishu_message(
             message_type="merge_forward",
@@ -173,7 +185,7 @@ class TestFeishuStreamEditRotation(unittest.TestCase):
         self.assertFalse(adapter.should_rotate_stream_edit_failure(result))
 
     def test_normalize_share_chat_exposes_summary_and_metadata(self):
-        from gateway.platforms.feishu import normalize_feishu_message
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
 
         normalized = normalize_feishu_message(
             message_type="share_chat",
@@ -191,7 +203,7 @@ class TestFeishuStreamEditRotation(unittest.TestCase):
         self.assertEqual(normalized.metadata["chat_name"], "Backend Guild")
 
     def test_normalize_interactive_card_preserves_title_body_and_actions(self):
-        from gateway.platforms.feishu import normalize_feishu_message
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
 
         normalized = normalize_feishu_message(
             message_type="interactive",
@@ -223,6 +235,16 @@ class TestFeishuStreamEditRotation(unittest.TestCase):
 
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
+    @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+    def test_websocket_sdk_accepts_channel_ua_tag(self):
+        """The shipped SDK must support the Channel signaling argument."""
+        import inspect
+
+        from lark_oapi.ws import Client as FeishuWSClient
+
+        signature = inspect.signature(FeishuWSClient)
+        self.assertIn("extra_ua_tags", signature.parameters)
+
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",
@@ -234,26 +256,26 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
     }, clear=True)
     def test_connect_webhook_mode_starts_local_server(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         runner = AsyncMock()
         site = AsyncMock()
         web_module = SimpleNamespace(
-            Application=lambda: SimpleNamespace(router=SimpleNamespace(add_post=lambda *_args, **_kwargs: None)),
+            Application=lambda **_kwargs: SimpleNamespace(router=SimpleNamespace(add_post=lambda *_args, **_kwargs: None)),
             AppRunner=lambda _app: runner,
             TCPSite=lambda _runner, host, port: SimpleNamespace(start=site.start, host=host, port=port),
         )
 
         with (
-            patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True),
-            patch("gateway.platforms.feishu.FEISHU_WEBHOOK_AVAILABLE", True),
-            patch("gateway.platforms.feishu.EventDispatcherHandler") as mock_handler_class,
-            patch("gateway.platforms.feishu.acquire_scoped_lock", return_value=(True, None)),
-            patch("gateway.platforms.feishu.release_scoped_lock"),
+            patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.FEISHU_WEBHOOK_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.EventDispatcherHandler") as mock_handler_class,
+            patch("plugins.platforms.feishu.adapter.acquire_scoped_lock", return_value=(True, None)),
+            patch("plugins.platforms.feishu.adapter.release_scoped_lock"),
             patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
-            patch("gateway.platforms.feishu.web", web_module),
+            patch("plugins.platforms.feishu.adapter.web", web_module),
         ):
             _mock_event_dispatcher_builder(mock_handler_class)
             connected = asyncio.run(adapter.connect())
@@ -268,20 +290,20 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
     }, clear=True)
     def test_connect_acquires_scoped_lock_and_disconnect_releases_it(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         ws_client = SimpleNamespace()
 
         with (
-            patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True),
-            patch("gateway.platforms.feishu.FEISHU_WEBSOCKET_AVAILABLE", True),
-            patch("gateway.platforms.feishu.lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
-            patch("gateway.platforms.feishu.EventDispatcherHandler") as mock_handler_class,
-            patch("gateway.platforms.feishu.FeishuWSClient", return_value=ws_client),
-            patch("gateway.platforms.feishu._run_official_feishu_ws_client"),
-            patch("gateway.platforms.feishu.acquire_scoped_lock", return_value=(True, None)) as acquire_lock,
-            patch("gateway.platforms.feishu.release_scoped_lock") as release_lock,
+            patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.FEISHU_WEBSOCKET_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
+            patch("plugins.platforms.feishu.adapter.EventDispatcherHandler") as mock_handler_class,
+            patch("plugins.platforms.feishu.adapter.FeishuWSClient", return_value=ws_client),
+            patch("plugins.platforms.feishu.adapter._run_official_feishu_ws_client"),
+            patch("plugins.platforms.feishu.adapter.acquire_scoped_lock", return_value=(True, None)) as acquire_lock,
+            patch("plugins.platforms.feishu.adapter.release_scoped_lock") as release_lock,
             patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
         ):
@@ -299,7 +321,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                     return False
 
             try:
-                with patch("gateway.platforms.feishu.asyncio.get_running_loop", return_value=_Loop()):
+                with patch("plugins.platforms.feishu.adapter.asyncio.get_running_loop", return_value=_Loop()):
                     connected = asyncio.run(adapter.connect())
                     asyncio.run(adapter.disconnect())
             finally:
@@ -314,21 +336,92 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
         release_lock.assert_called_once_with("feishu-app-id", "cli_app")
 
+    def test_disconnect_sends_websocket_close_frame(self):
+        """Regression test for #10202: disconnect() must call the WSS
+        client's ``_disconnect()`` coroutine so a WebSocket CLOSE frame
+        is sent to Feishu. Without this, Feishu's server continues
+        routing to the stale connection, silencing the channel.
+        """
+        import threading
+        from types import SimpleNamespace
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        # Real thread loop to schedule the close coroutine on.
+        ws_thread_loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        def _run_loop() -> None:
+            asyncio.set_event_loop(ws_thread_loop)
+            ready.set()
+            ws_thread_loop.run_forever()
+
+        thread = threading.Thread(target=_run_loop, daemon=True)
+        thread.start()
+        ready.wait()
+
+        close_called = threading.Event()
+
+        async def _fake_disconnect() -> None:
+            close_called.set()
+
+        ws_client = SimpleNamespace(_disconnect=_fake_disconnect, _auto_reconnect=True)
+        adapter._ws_client = ws_client
+        adapter._ws_thread_loop = ws_thread_loop
+        adapter._ws_future = None
+
+        try:
+            asyncio.run(adapter.disconnect())
+        finally:
+            if not ws_thread_loop.is_closed():
+                ws_thread_loop.call_soon_threadsafe(ws_thread_loop.stop)
+            thread.join(timeout=2.0)
+            if not ws_thread_loop.is_closed():
+                ws_thread_loop.close()
+
+        self.assertTrue(
+            close_called.is_set(),
+            "disconnect() must schedule ws_client._disconnect() on the ws thread loop",
+        )
+        # _disable_websocket_auto_reconnect() must still run.
+        self.assertIsNone(adapter._ws_client)
+
+    def test_disconnect_tolerates_missing_internal_disconnect(self):
+        """If the lark_oapi client layout changes and ``_disconnect``
+        disappears, disconnect() must not raise — fall through to the
+        existing task-cancel path.
+        """
+        from types import SimpleNamespace
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        # No ``_disconnect`` attribute — ``hasattr`` guard should skip.
+        adapter._ws_client = SimpleNamespace(_auto_reconnect=True)
+        adapter._ws_thread_loop = None
+        adapter._ws_future = None
+
+        # Must not raise.
+        asyncio.run(adapter.disconnect())
+        self.assertIsNone(adapter._ws_client)
+
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",
     }, clear=True)
     def test_connect_rejects_existing_app_lock(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
 
         with (
-            patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True),
-            patch("gateway.platforms.feishu.FEISHU_WEBSOCKET_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.FEISHU_WEBSOCKET_AVAILABLE", True),
             patch(
-                "gateway.platforms.feishu.acquire_scoped_lock",
+                "plugins.platforms.feishu.adapter.acquire_scoped_lock",
                 return_value=(False, {"pid": 4321}),
             ),
         ):
@@ -345,22 +438,22 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
     }, clear=True)
     def test_connect_retries_transient_startup_failure(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         ws_client = SimpleNamespace()
         sleeps = []
 
         with (
-            patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True),
-            patch("gateway.platforms.feishu.FEISHU_WEBSOCKET_AVAILABLE", True),
-            patch("gateway.platforms.feishu.lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
-            patch("gateway.platforms.feishu.EventDispatcherHandler") as mock_handler_class,
-            patch("gateway.platforms.feishu.FeishuWSClient", return_value=ws_client),
-            patch("gateway.platforms.feishu.acquire_scoped_lock", return_value=(True, None)),
-            patch("gateway.platforms.feishu.release_scoped_lock"),
+            patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.FEISHU_WEBSOCKET_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
+            patch("plugins.platforms.feishu.adapter.EventDispatcherHandler") as mock_handler_class,
+            patch("plugins.platforms.feishu.adapter.FeishuWSClient", return_value=ws_client),
+            patch("plugins.platforms.feishu.adapter.acquire_scoped_lock", return_value=(True, None)),
+            patch("plugins.platforms.feishu.adapter.release_scoped_lock"),
             patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
-            patch("gateway.platforms.feishu.asyncio.sleep", side_effect=lambda delay: sleeps.append(delay)),
+            patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=lambda delay: sleeps.append(delay)),
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
         ):
             _mock_event_dispatcher_builder(mock_handler_class)
@@ -384,7 +477,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
 
             fake_loop = _Loop()
             try:
-                with patch("gateway.platforms.feishu.asyncio.get_running_loop", return_value=fake_loop):
+                with patch("plugins.platforms.feishu.adapter.asyncio.get_running_loop", return_value=fake_loop):
                     connected = asyncio.run(adapter.connect())
             finally:
                 loop.close()
@@ -393,10 +486,69 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(sleeps, [1])
         self.assertEqual(fake_loop.calls, 2)
 
+    @patch.dict(os.environ, {
+        "FEISHU_APP_ID": "cli_app",
+        "FEISHU_APP_SECRET": "secret_app",
+    }, clear=True)
+    def test_connect_websocket_sets_channel_ua_tag(self):
+        """Verify that FeishuWSClient receives extra_ua_tags=["channel"].
+
+        Without this UA tag the Feishu server does not push group @mention
+        events over the WebSocket transport.  See
+        https://github.com/NousResearch/hermes-agent/issues/50656
+        """
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        ws_client = SimpleNamespace()
+
+        with (
+            patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.FEISHU_WEBSOCKET_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.lark",
+                  SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
+            patch("plugins.platforms.feishu.adapter.EventDispatcherHandler") as mock_handler_class,
+            patch("plugins.platforms.feishu.adapter.FeishuWSClient") as mock_ws_client,
+            patch("plugins.platforms.feishu.adapter._run_official_feishu_ws_client"),
+            patch("plugins.platforms.feishu.adapter.acquire_scoped_lock", return_value=(True, None)),
+            patch("plugins.platforms.feishu.adapter.release_scoped_lock"),
+            patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
+            patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
+        ):
+            _mock_event_dispatcher_builder(mock_handler_class)
+
+            loop = asyncio.new_event_loop()
+            future = loop.create_future()
+            future.set_result(None)
+
+            class _Loop:
+                def run_in_executor(self, *_args, **_kwargs):
+                    return future
+                def is_closed(self):
+                    return False
+
+            try:
+                with patch("plugins.platforms.feishu.adapter.asyncio.get_running_loop",
+                           return_value=_Loop()):
+                    connected = asyncio.run(adapter.connect())
+            finally:
+                loop.close()
+
+        self.assertTrue(connected)
+        # Verify the Channel SDK UA tag is present — this is the fix for
+        # group @mention message delivery over WebSocket.
+        mock_ws_client.assert_called_once()
+        call_kwargs = mock_ws_client.call_args.kwargs
+        self.assertIn("extra_ua_tags", call_kwargs,
+                      "FeishuWSClient must receive extra_ua_tags for group @mention delivery")
+        self.assertEqual(call_kwargs["extra_ua_tags"], ["channel"],
+                         "extra_ua_tags must be ['channel'] to enable group event routing")
+
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_updates_existing_feishu_message(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -417,7 +569,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
                 adapter.edit_message(
                     chat_id="oc_chat",
@@ -438,7 +590,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_falls_back_to_text_when_post_update_is_rejected(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {"calls": []}
@@ -461,7 +613,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
                 adapter.edit_message(
                     chat_id="oc_chat",
@@ -481,7 +633,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
 
@@ -505,7 +657,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             info = asyncio.run(adapter.get_chat_info("oc_chat"))
 
         self.assertEqual(chat_api.request.chat_id, "oc_chat")
@@ -515,7 +667,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
 
 class TestAdapterModule(unittest.TestCase):
     def test_load_settings_uses_sdk_defaults_for_invalid_ws_reconnect_values(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         settings = FeishuAdapter._load_settings(
             {
@@ -528,7 +680,7 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(settings.ws_reconnect_interval, 120)
 
     def test_load_settings_accepts_custom_ws_reconnect_values(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         settings = FeishuAdapter._load_settings(
             {
@@ -541,7 +693,7 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(settings.ws_reconnect_interval, 3)
 
     def test_load_settings_accepts_custom_ws_ping_values(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         settings = FeishuAdapter._load_settings(
             {
@@ -554,7 +706,7 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(settings.ws_ping_timeout, 8)
 
     def test_load_settings_ignores_invalid_ws_ping_values(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         settings = FeishuAdapter._load_settings(
             {
@@ -609,7 +761,7 @@ class TestAdapterModule(unittest.TestCase):
         sys.modules["lark_oapi.ws"] = fake_ws_module
         sys.modules["lark_oapi.ws.client"] = fake_client_module
         try:
-            from gateway.platforms.feishu import _run_official_feishu_ws_client
+            from plugins.platforms.feishu.adapter import _run_official_feishu_ws_client
 
             _run_official_feishu_ws_client(fake_client, fake_adapter)
         finally:
@@ -636,7 +788,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_build_event_handler_registers_reaction_and_card_processors(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         calls = []
@@ -692,7 +844,7 @@ class TestAdapterBehavior(unittest.TestCase):
                 calls.append("builder")
                 return _Builder()
 
-        with patch("gateway.platforms.feishu.EventDispatcherHandler", _Dispatcher):
+        with patch("plugins.platforms.feishu.adapter.EventDispatcherHandler", _Dispatcher):
             handler = adapter._build_event_handler()
 
         self.assertEqual(handler, "handler")
@@ -718,7 +870,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_bot_origin_reactions_are_dropped_to_avoid_feedback_loops(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._loop = object()
@@ -731,7 +883,7 @@ class TestAdapterBehavior(unittest.TestCase):
             )
             data = SimpleNamespace(event=event)
             with patch(
-                "gateway.platforms.feishu.asyncio.run_coroutine_threadsafe"
+                "plugins.platforms.feishu.adapter.asyncio.run_coroutine_threadsafe"
             ) as run_threadsafe:
                 adapter._on_reaction_event("im.message.reaction.created_v1", data)
             run_threadsafe.assert_not_called()
@@ -742,7 +894,7 @@ class TestAdapterBehavior(unittest.TestCase):
         # not additionally swallow user-origin reactions just because their
         # emoji happens to collide with a lifecycle emoji.
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._loop = SimpleNamespace(is_closed=lambda: False)
@@ -759,7 +911,7 @@ class TestAdapterBehavior(unittest.TestCase):
             return SimpleNamespace(add_done_callback=lambda _: None)
 
         with patch(
-            "gateway.platforms.feishu.asyncio.run_coroutine_threadsafe",
+            "plugins.platforms.feishu.adapter.asyncio.run_coroutine_threadsafe",
             side_effect=_close_coro_and_return_future,
         ) as run_threadsafe:
             adapter._on_reaction_event("im.message.reaction.created_v1", data)
@@ -768,7 +920,7 @@ class TestAdapterBehavior(unittest.TestCase):
     def _build_reaction_adapter(self, *, msg_sender_id: str):
         """Build a FeishuAdapter wired up to return a single GET-message result."""
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._app_id = "cli_self_app"
@@ -829,7 +981,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_requires_mentions_even_when_policy_open(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         message = SimpleNamespace(mentions=[])
@@ -842,7 +994,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_with_other_user_mention_is_rejected_when_bot_identity_unknown(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
@@ -866,7 +1018,7 @@ class TestAdapterBehavior(unittest.TestCase):
     )
     def test_group_message_allowlist_and_mention_both_required(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         # Mention without IDs — name fallback legitimately engages.
@@ -896,7 +1048,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     def test_per_group_allowlist_policy_gates_by_sender(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         config = PlatformConfig(
             extra={
@@ -932,7 +1084,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     def test_per_group_blacklist_policy_blocks_specific_users(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         config = PlatformConfig(
             extra={
@@ -968,7 +1120,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     def test_per_group_admin_only_policy_requires_admin(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         config = PlatformConfig(
             extra={
@@ -1004,7 +1156,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     def test_per_group_disabled_policy_blocks_all(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         config = PlatformConfig(
             extra={
@@ -1040,7 +1192,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     def test_global_admins_bypass_all_group_rules(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         config = PlatformConfig(
             extra={
@@ -1070,7 +1222,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     def test_default_group_policy_fallback_for_chats_without_explicit_rule(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         config = PlatformConfig(
             extra={
@@ -1095,7 +1247,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_matches_bot_open_id_when_configured(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._bot_open_id = "ou_bot"
@@ -1123,7 +1275,7 @@ class TestAdapterBehavior(unittest.TestCase):
         the mention and the bot carry open_ids, IDs are authoritative — a
         same-name human with a different open_id must NOT admit."""
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         # Case 1: bot has only a name (open_id not hydrated / not configured).
         # Name fallback is the only available signal for any mention.
@@ -1177,7 +1329,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_post_message_as_text(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         message = SimpleNamespace(
@@ -1196,7 +1348,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_post_message_uses_first_available_language_block(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         message = SimpleNamespace(
@@ -1215,7 +1367,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_post_message_with_rich_elements_does_not_drop_content(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         message = SimpleNamespace(
@@ -1241,7 +1393,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_post_message_downloads_embedded_resources(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._download_feishu_image = AsyncMock(return_value=("/tmp/feishu-image.png", "image/png"))
@@ -1277,7 +1429,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_merge_forward_message_as_text_summary(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         message = SimpleNamespace(
@@ -1307,7 +1459,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_share_chat_message_as_text_summary(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         message = SimpleNamespace(
@@ -1326,7 +1478,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_interactive_message_as_text_summary(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         message = SimpleNamespace(
@@ -1360,7 +1512,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_image_message_downloads_and_caches(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._download_feishu_image = AsyncMock(return_value=("/tmp/feishu-image.png", "image/png"))
@@ -1384,7 +1536,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_audio_message_downloads_and_caches(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._download_feishu_message_resource = AsyncMock(
@@ -1406,7 +1558,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_file_message_downloads_and_caches(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._download_feishu_message_resource = AsyncMock(
@@ -1428,7 +1580,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_media_message_with_image_mime_becomes_photo(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._download_feishu_message_resource = AsyncMock(
@@ -1450,7 +1602,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_media_message_with_video_mime_becomes_video(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._download_feishu_message_resource = AsyncMock(
@@ -1472,7 +1624,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_from_raw_content_uses_relation_message_fallbacks(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
 
@@ -1491,7 +1643,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_message_starting_with_slash_becomes_command(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._dispatch_inbound_event = AsyncMock()
@@ -1529,7 +1681,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_file_injects_content(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tmp:
@@ -1547,7 +1699,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_message_event_submits_to_adapter_loop(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
 
@@ -1574,7 +1726,7 @@ class TestAdapterBehavior(unittest.TestCase):
             coro.close()
             return future
 
-        with patch("gateway.platforms.feishu.asyncio.run_coroutine_threadsafe", side_effect=_submit) as submit:
+        with patch("plugins.platforms.feishu.adapter.asyncio.run_coroutine_threadsafe", side_effect=_submit) as submit:
             adapter._on_message_event(data)
 
         self.assertTrue(submit.called)
@@ -1582,7 +1734,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_request_uses_same_message_dispatch_path(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._on_message_event = Mock()
@@ -1595,7 +1747,7 @@ class TestAdapterBehavior(unittest.TestCase):
             remote="127.0.0.1",
             content_length=None,
             headers={},
-            read=AsyncMock(return_value=body),
+            content=_FakeRequestContent(body),
         )
 
         response = asyncio.run(adapter._handle_webhook_request(request))
@@ -1612,7 +1764,7 @@ class TestAdapterBehavior(unittest.TestCase):
         sending an attacker-controlled challenge string.
         """
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         body = json.dumps({
@@ -1624,7 +1776,7 @@ class TestAdapterBehavior(unittest.TestCase):
             remote="203.0.113.10",
             content_length=None,
             headers={},
-            read=AsyncMock(return_value=body),
+            content=_FakeRequestContent(body),
         )
 
         response = asyncio.run(adapter._handle_webhook_request(request))
@@ -1635,7 +1787,7 @@ class TestAdapterBehavior(unittest.TestCase):
     def test_process_inbound_message_uses_event_sender_identity_only(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.base import MessageType
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._dispatch_inbound_event = AsyncMock()
@@ -1681,7 +1833,7 @@ class TestAdapterBehavior(unittest.TestCase):
     def test_text_batch_merges_rapid_messages_into_single_event(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.base import MessageEvent, MessageType
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
         from gateway.session import SessionSource
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -1699,7 +1851,7 @@ class TestAdapterBehavior(unittest.TestCase):
             return None
 
         async def _run() -> None:
-            with patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep):
+            with patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=_sleep):
                 await adapter._dispatch_inbound_event(
                     MessageEvent(text="A", message_type=MessageType.TEXT, source=source, message_id="om_1")
                 )
@@ -1727,7 +1879,7 @@ class TestAdapterBehavior(unittest.TestCase):
     def test_text_batch_flushes_when_message_count_limit_is_hit(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.base import MessageEvent, MessageType
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
         from gateway.session import SessionSource
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -1745,7 +1897,7 @@ class TestAdapterBehavior(unittest.TestCase):
             return None
 
         async def _run() -> None:
-            with patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep):
+            with patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=_sleep):
                 await adapter._dispatch_inbound_event(
                     MessageEvent(text="A", message_type=MessageType.TEXT, source=source, message_id="om_1")
                 )
@@ -1771,7 +1923,7 @@ class TestAdapterBehavior(unittest.TestCase):
     def test_media_batch_merges_rapid_photo_messages(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.base import MessageEvent, MessageType
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
         from gateway.session import SessionSource
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -1789,7 +1941,7 @@ class TestAdapterBehavior(unittest.TestCase):
             return None
 
         async def _run() -> None:
-            with patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep):
+            with patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=_sleep):
                 await adapter._dispatch_inbound_event(
                     MessageEvent(
                         text="第一张",
@@ -1825,13 +1977,13 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_image_downloads_then_uses_native_image_send(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter.send_image_file = AsyncMock(return_value=SimpleNamespace(success=True, message_id="om_img"))
 
         async def _run():
-            with patch("gateway.platforms.feishu.cache_image_from_url", new=AsyncMock(return_value="/tmp/cached.png")):
+            with patch("plugins.platforms.feishu.adapter.cache_image_from_url", new=AsyncMock(return_value="/tmp/cached.png")):
                 return await adapter.send_image("oc_chat", "https://example.com/cat.png", caption="cat")
 
         result = asyncio.run(_run())
@@ -1843,7 +1995,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_animation_degrades_to_document_send(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter.send_document = AsyncMock(return_value=SimpleNamespace(success=True, message_id="om_gif"))
@@ -1871,7 +2023,7 @@ class TestAdapterBehavior(unittest.TestCase):
         eagerly buffers it; a future refactor to .stream() would silently
         read-after-close."""
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         events: list[str] = []
 
@@ -1909,7 +2061,7 @@ class TestAdapterBehavior(unittest.TestCase):
                     with patch("tools.url_safety.is_safe_url", return_value=True):
                         with patch("httpx.AsyncClient", _FakeAsyncClient):
                             with patch(
-                                "gateway.platforms.feishu.cache_document_from_bytes",
+                                "plugins.platforms.feishu.adapter.cache_document_from_bytes",
                                 return_value="/tmp/cached-doc.bin",
                             ):
                                 return await adapter._download_remote_document(
@@ -1929,7 +2081,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     def test_dedup_state_persists_across_adapter_restart(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         with tempfile.TemporaryDirectory() as temp_home:
             with patch.dict(os.environ, {"HERMES_HOME": temp_home}, clear=False):
@@ -1941,7 +2093,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_process_inbound_group_message_keeps_group_type_when_chat_lookup_falls_back(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._dispatch_inbound_event = AsyncMock()
@@ -1978,7 +2130,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_process_inbound_message_fetches_reply_to_text(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._dispatch_inbound_event = AsyncMock()
@@ -2017,7 +2169,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -2041,7 +2193,7 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
                 adapter.send(
                     chat_id="oc_chat",
@@ -2058,7 +2210,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_metadata_reply_target_for_threaded_feishu_topic(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -2078,7 +2230,7 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
                 adapter.send(
                     chat_id="oc_chat",
@@ -2097,7 +2249,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_retries_transient_failure(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {"attempts": 0}
@@ -2129,8 +2281,8 @@ class TestAdapterBehavior(unittest.TestCase):
             sleeps.append(delay)
 
         with (
-            patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
-            patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep),
+            patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct),
+            patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=_sleep),
         ):
             result = asyncio.run(adapter.send(chat_id="oc_chat", content="hello retry"))
 
@@ -2142,7 +2294,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_does_not_retry_deterministic_api_failure(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {"attempts": 0}
@@ -2172,8 +2324,8 @@ class TestAdapterBehavior(unittest.TestCase):
             sleeps.append(delay)
 
         with (
-            patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
-            patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep),
+            patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct),
+            patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=_sleep),
         ):
             result = asyncio.run(adapter.send(chat_id="oc_chat", content="bad payload"))
 
@@ -2185,7 +2337,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_document_reply_uses_thread_flag(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -2222,7 +2374,7 @@ class TestAdapterBehavior(unittest.TestCase):
             file_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
                 result = asyncio.run(
                     adapter.send_document(
                         chat_id="oc_chat",
@@ -2240,7 +2392,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_document_uploads_file_and_sends_file_message(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -2278,7 +2430,7 @@ class TestAdapterBehavior(unittest.TestCase):
             file_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
                 result = asyncio.run(adapter.send_document(chat_id="oc_chat", file_path=file_path))
         finally:
             os.unlink(file_path)
@@ -2294,7 +2446,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_document_with_caption_uses_single_post_message(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -2331,7 +2483,7 @@ class TestAdapterBehavior(unittest.TestCase):
             file_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
                 result = asyncio.run(
                     adapter.send_document(chat_id="oc_chat", file_path=file_path, caption="报告请看")
                 )
@@ -2347,7 +2499,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_image_file_uploads_image_and_sends_image_message(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -2385,7 +2537,7 @@ class TestAdapterBehavior(unittest.TestCase):
             image_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
                 result = asyncio.run(adapter.send_image_file(chat_id="oc_chat", image_path=image_path))
         finally:
             os.unlink(image_path)
@@ -2401,7 +2553,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_image_file_with_caption_uses_single_post_message(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -2438,7 +2590,7 @@ class TestAdapterBehavior(unittest.TestCase):
             image_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
                 result = asyncio.run(
                     adapter.send_image_file(chat_id="oc_chat", image_path=image_path, caption="截图说明")
                 )
@@ -2454,7 +2606,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_video_uploads_file_and_sends_media_message(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -2492,7 +2644,7 @@ class TestAdapterBehavior(unittest.TestCase):
             video_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
                 result = asyncio.run(adapter.send_video(chat_id="oc_chat", video_path=video_path))
         finally:
             os.unlink(video_path)
@@ -2505,7 +2657,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_voice_uploads_opus_and_sends_audio_message(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -2543,7 +2695,7 @@ class TestAdapterBehavior(unittest.TestCase):
             audio_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
                 result = asyncio.run(adapter.send_voice(chat_id="oc_chat", audio_path=audio_path))
         finally:
             os.unlink(audio_path)
@@ -2556,7 +2708,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_extracts_title_and_links(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         payload = json.loads(adapter._build_post_payload("# 标题\n访问 [文档](https://example.com)"))
@@ -2567,7 +2719,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_wraps_markdown_in_md_tag(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         payload = json.loads(
@@ -2585,7 +2737,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_keeps_full_markdown_text(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         payload = json.loads(
@@ -2603,7 +2755,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_inline_markdown(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -2627,7 +2779,7 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
                 adapter.send(
                     chat_id="oc_chat",
@@ -2644,7 +2796,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -2678,7 +2830,7 @@ class TestAdapterBehavior(unittest.TestCase):
             "后续说明仍应保留。"
         )
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
                 adapter.send(
                     chat_id="oc_chat",
@@ -2707,7 +2859,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         payload = json.loads(
@@ -2728,7 +2880,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_preserves_trailing_spaces_in_code_block(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         payload = json.loads(
@@ -2749,7 +2901,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_splits_multiple_fenced_code_blocks(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         payload = json.loads(
@@ -2772,7 +2924,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_falls_back_to_text_when_post_payload_is_rejected(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {"calls": []}
@@ -2798,7 +2950,7 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
                 adapter.send(
                     chat_id="oc_chat",
@@ -2817,7 +2969,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_falls_back_to_text_when_post_response_is_unsuccessful(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {"calls": []}
@@ -2843,7 +2995,7 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
                 adapter.send(
                     chat_id="oc_chat",
@@ -2862,7 +3014,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_advanced_markdown_lines(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
@@ -2886,7 +3038,7 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(
                 adapter.send(
                     chat_id="oc_chat",
@@ -2916,7 +3068,7 @@ class TestHydrateBotIdentity(unittest.TestCase):
 
     def _make_adapter(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         return FeishuAdapter(PlatformConfig())
 
@@ -3040,12 +3192,12 @@ class TestPendingInboundQueue(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_event_queued_when_loop_not_ready(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._loop = None  # Simulate "before start()" or "during reconnect"
 
-        with patch("gateway.platforms.feishu.threading.Thread") as thread_cls:
+        with patch("plugins.platforms.feishu.adapter.threading.Thread") as thread_cls:
             adapter._on_message_event(SimpleNamespace(tag="evt-1"))
             adapter._on_message_event(SimpleNamespace(tag="evt-2"))
             adapter._on_message_event(SimpleNamespace(tag="evt-3"))
@@ -3060,7 +3212,7 @@ class TestPendingInboundQueue(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_drainer_replays_queued_events_when_loop_becomes_ready(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._loop = None
@@ -3072,7 +3224,7 @@ class TestPendingInboundQueue(unittest.TestCase):
 
         # Queue three events while loop is None (simulate the race).
         events = [SimpleNamespace(tag=f"evt-{i}") for i in range(3)]
-        with patch("gateway.platforms.feishu.threading.Thread"):
+        with patch("plugins.platforms.feishu.adapter.threading.Thread"):
             for ev in events:
                 adapter._on_message_event(ev)
 
@@ -3091,7 +3243,7 @@ class TestPendingInboundQueue(unittest.TestCase):
             return future
 
         with patch(
-            "gateway.platforms.feishu.asyncio.run_coroutine_threadsafe",
+            "plugins.platforms.feishu.adapter.asyncio.run_coroutine_threadsafe",
             side_effect=_submit,
         ) as submit:
             adapter._drain_pending_inbound_events()
@@ -3106,13 +3258,13 @@ class TestPendingInboundQueue(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_drainer_drops_queue_when_adapter_shuts_down(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._loop = None
         adapter._running = False  # Shutdown state
 
-        with patch("gateway.platforms.feishu.threading.Thread"):
+        with patch("plugins.platforms.feishu.adapter.threading.Thread"):
             adapter._on_message_event(SimpleNamespace(tag="evt-lost"))
 
         self.assertEqual(len(adapter._pending_inbound_events), 1)
@@ -3126,13 +3278,13 @@ class TestPendingInboundQueue(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_queue_cap_evicts_oldest_beyond_max_depth(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._loop = None
         adapter._pending_inbound_max_depth = 3  # Shrink for test
 
-        with patch("gateway.platforms.feishu.threading.Thread"):
+        with patch("plugins.platforms.feishu.adapter.threading.Thread"):
             for i in range(5):
                 adapter._on_message_event(SimpleNamespace(tag=f"evt-{i}"))
 
@@ -3146,7 +3298,7 @@ class TestPendingInboundQueue(unittest.TestCase):
         """When the loop is ready, events should dispatch directly without
         ever touching the pending queue."""
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
 
@@ -3163,10 +3315,10 @@ class TestPendingInboundQueue(unittest.TestCase):
             return future
 
         with patch(
-            "gateway.platforms.feishu.asyncio.run_coroutine_threadsafe",
+            "plugins.platforms.feishu.adapter.asyncio.run_coroutine_threadsafe",
             side_effect=_submit,
         ) as submit, patch(
-            "gateway.platforms.feishu.threading.Thread"
+            "plugins.platforms.feishu.adapter.threading.Thread"
         ) as thread_cls:
             adapter._on_message_event(SimpleNamespace(tag="evt"))
 
@@ -3183,7 +3335,7 @@ class TestWebhookSecurity(unittest.TestCase):
 
     def _make_adapter(self, encrypt_key: str = ""):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         with patch.dict(os.environ, {"FEISHU_APP_ID": "cli", "FEISHU_APP_SECRET": "sec", "FEISHU_ENCRYPT_KEY": encrypt_key}, clear=True):
             return FeishuAdapter(PlatformConfig())
@@ -3220,14 +3372,14 @@ class TestWebhookSecurity(unittest.TestCase):
             self.assertTrue(adapter._check_webhook_rate_limit("10.0.0.1"))
 
     def test_rate_limit_blocks_after_exceeding_max(self):
-        from gateway.platforms.feishu import _FEISHU_WEBHOOK_RATE_LIMIT_MAX
+        from plugins.platforms.feishu.adapter import _FEISHU_WEBHOOK_RATE_LIMIT_MAX
         adapter = self._make_adapter()
         for _ in range(_FEISHU_WEBHOOK_RATE_LIMIT_MAX):
             adapter._check_webhook_rate_limit("10.0.0.2")
         self.assertFalse(adapter._check_webhook_rate_limit("10.0.0.2"))
 
     def test_rate_limit_resets_after_window_expires(self):
-        from gateway.platforms.feishu import _FEISHU_WEBHOOK_RATE_LIMIT_MAX, _FEISHU_WEBHOOK_RATE_WINDOW_SECONDS
+        from plugins.platforms.feishu.adapter import _FEISHU_WEBHOOK_RATE_LIMIT_MAX, _FEISHU_WEBHOOK_RATE_WINDOW_SECONDS
         adapter = self._make_adapter()
         ip = "10.0.0.3"
         for _ in range(_FEISHU_WEBHOOK_RATE_LIMIT_MAX):
@@ -3241,7 +3393,7 @@ class TestWebhookSecurity(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_request_rejects_oversized_body(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter, _FEISHU_WEBHOOK_MAX_BODY_BYTES
+        from plugins.platforms.feishu.adapter import FeishuAdapter, _FEISHU_WEBHOOK_MAX_BODY_BYTES
 
         adapter = FeishuAdapter(PlatformConfig())
         # Simulate a request whose Content-Length already signals oversize.
@@ -3252,16 +3404,40 @@ class TestWebhookSecurity(unittest.TestCase):
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 413)
 
+    def test_webhook_request_rejects_oversized_chunked_body_while_reading(self):
+        from gateway.config import PlatformConfig
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from plugins.platforms.feishu.adapter import FeishuAdapter, _FEISHU_WEBHOOK_MAX_BODY_BYTES
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            token = set_hermes_home_override(tmpdir)
+            try:
+                adapter = FeishuAdapter(PlatformConfig())
+            finally:
+                reset_hermes_home_override(token)
+            content = _FakeRequestContent(b"A" * (_FEISHU_WEBHOOK_MAX_BODY_BYTES + 2))
+            request = SimpleNamespace(
+                remote="127.0.0.1",
+                content_length=None,
+                headers={},
+                content=content,
+            )
+
+            response = asyncio.run(adapter._handle_webhook_request(request))
+
+            self.assertEqual(response.status, 413)
+            self.assertEqual(content.read_sizes, [_FEISHU_WEBHOOK_MAX_BODY_BYTES + 1])
+
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_request_rejects_invalid_json(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         request = SimpleNamespace(
             remote="127.0.0.1",
             content_length=None,
-            read=AsyncMock(return_value=b"not-json"),
+            content=_FakeRequestContent(b"not-json"),
         )
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 400)
@@ -3269,7 +3445,7 @@ class TestWebhookSecurity(unittest.TestCase):
     @patch.dict(os.environ, {"FEISHU_ENCRYPT_KEY": "secret"}, clear=True)
     def test_webhook_request_rejects_bad_signature(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         body = json.dumps({"header": {"event_type": "im.message.receive_v1"}}).encode()
@@ -3277,7 +3453,7 @@ class TestWebhookSecurity(unittest.TestCase):
             remote="127.0.0.1",
             content_length=None,
             headers={"x-lark-request-timestamp": "123", "x-lark-request-nonce": "abc", "x-lark-signature": "bad"},
-            read=AsyncMock(return_value=body),
+            content=_FakeRequestContent(body),
         )
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 401)
@@ -3285,7 +3461,7 @@ class TestWebhookSecurity(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_connect_requires_inbound_auth_secret(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(
             PlatformConfig(
@@ -3298,7 +3474,7 @@ class TestWebhookSecurity(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_loads_auth_secrets_from_platform_extra(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(
             PlatformConfig(
@@ -3319,14 +3495,14 @@ class TestWebhookSecurity(unittest.TestCase):
     def test_webhook_url_verification_challenge_passes_without_signature(self):
         """Challenge requests must succeed even when no encrypt_key is set."""
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         body = json.dumps({"type": "url_verification", "challenge": "test_challenge_token"}).encode()
         request = SimpleNamespace(
             remote="127.0.0.1",
             content_length=None,
-            read=AsyncMock(return_value=body),
+            content=_FakeRequestContent(body),
         )
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 200)
@@ -3339,7 +3515,7 @@ class TestDedupTTL(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_duplicate_within_ttl_is_rejected(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         with patch.object(adapter, "_persist_seen_message_ids"):
@@ -3350,7 +3526,7 @@ class TestDedupTTL(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_expired_entry_is_not_considered_duplicate(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter, _FEISHU_DEDUP_TTL_SECONDS
+        from plugins.platforms.feishu.adapter import FeishuAdapter, _FEISHU_DEDUP_TTL_SECONDS
 
         adapter = FeishuAdapter(PlatformConfig())
         # Plant an entry that expired well past the TTL.
@@ -3368,7 +3544,7 @@ class TestDedupTTL(unittest.TestCase):
         """
         import tempfile
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         with tempfile.TemporaryDirectory() as temp_home:
             with patch.dict(os.environ, {"HERMES_HOME": temp_home}, clear=True):
@@ -3394,7 +3570,7 @@ class TestDedupTTL(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_persist_saves_timestamps_as_dict(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         ts = time.time()
@@ -3410,7 +3586,7 @@ class TestDedupTTL(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_load_backward_compat_list_format(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3428,7 +3604,7 @@ class TestGroupMentionAtAll(unittest.TestCase):
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_at_all_in_content_accepts_without_explicit_bot_mention(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         message = SimpleNamespace(
@@ -3442,7 +3618,7 @@ class TestGroupMentionAtAll(unittest.TestCase):
     def test_at_all_still_requires_policy_gate(self):
         """@_all bypasses mention gating but NOT the allowlist policy."""
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         message = SimpleNamespace(content='{"text":"@_all attention"}', mentions=[])
@@ -3461,7 +3637,7 @@ class TestSenderNameResolution(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_returns_none_when_client_is_none(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._client = None
@@ -3471,7 +3647,7 @@ class TestSenderNameResolution(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_returns_cached_name_within_ttl(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._client = SimpleNamespace()
@@ -3483,7 +3659,7 @@ class TestSenderNameResolution(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_fetches_and_caches_name_from_api(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         user_obj = SimpleNamespace(name="Bob", display_name=None, nickname=None, en_name=None)
@@ -3503,7 +3679,7 @@ class TestSenderNameResolution(unittest.TestCase):
             contact=SimpleNamespace(v3=SimpleNamespace(user=_ContactAPI()))
         )
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_bob"))
 
         self.assertEqual(result, "Bob")
@@ -3512,7 +3688,7 @@ class TestSenderNameResolution(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_expired_cache_triggers_new_api_call(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         # Expired cache entry.
@@ -3531,7 +3707,7 @@ class TestSenderNameResolution(unittest.TestCase):
             contact=SimpleNamespace(v3=SimpleNamespace(user=_ContactAPI()))
         )
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_expired"))
 
         self.assertEqual(result, "NewName")
@@ -3539,7 +3715,7 @@ class TestSenderNameResolution(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_api_failure_returns_none_without_raising(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
 
@@ -3554,7 +3730,7 @@ class TestSenderNameResolution(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_broken"))
 
         self.assertIsNone(result)
@@ -3575,7 +3751,7 @@ class TestBotNameResolution(unittest.TestCase):
 
     def _build_adapter_with_bots(self, bots: Dict[str, str]):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         calls = []
@@ -3590,7 +3766,7 @@ class TestBotNameResolution(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_returns_cached_bot_name_without_api_call(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._sender_name_cache["ou_peer"] = ("Peer Bot", time.time() + 600)
@@ -3607,7 +3783,7 @@ class TestBotNameResolution(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_peer", is_bot=True))
 
         self.assertEqual(result, "Peer Bot")
@@ -3620,7 +3796,7 @@ class TestBotNameResolution(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_api_failure_returns_none_and_does_not_poison_cache(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
 
@@ -3632,7 +3808,7 @@ class TestBotNameResolution(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_peer", is_bot=True))
 
         self.assertIsNone(result)
@@ -3647,7 +3823,7 @@ class TestBotNameResolution(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_ghost", is_bot=True))
 
         self.assertIsNone(result)
@@ -3661,7 +3837,7 @@ class TestBotNameResolution(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             first = asyncio.run(adapter._resolve_sender_name_from_api("ou_nameless", is_bot=True))
             second = asyncio.run(adapter._resolve_sender_name_from_api("ou_nameless", is_bot=True))
 
@@ -3673,7 +3849,7 @@ class TestBotNameResolution(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_non_zero_code_returns_none(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         error_payload = b'{"code":99991663,"msg":"permission denied"}'
@@ -3684,7 +3860,7 @@ class TestBotNameResolution(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_peer", is_bot=True))
 
         self.assertIsNone(result)
@@ -3707,7 +3883,7 @@ class TestProcessingReactions(unittest.TestCase):
         next_reaction_id: str = "r1",
     ):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         tracker = SimpleNamespace(
@@ -3756,7 +3932,7 @@ class TestProcessingReactions(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        return patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct)
+        return patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct)
 
     # ------------------------------------------------------------------ start
     @patch.dict(os.environ, {}, clear=True)
@@ -3890,7 +4066,7 @@ class TestProcessingReactions(unittest.TestCase):
     # ------------------------------------------------------------- LRU bounds
     @patch.dict(os.environ, {}, clear=True)
     def test_cache_evicts_oldest_entry_beyond_size_limit(self):
-        from gateway.platforms.feishu import _FEISHU_PROCESSING_REACTION_CACHE_SIZE
+        from plugins.platforms.feishu.adapter import _FEISHU_PROCESSING_REACTION_CACHE_SIZE
 
         adapter, _ = self._build_adapter()
         counter = {"n": 0}
@@ -3921,7 +4097,7 @@ class TestProcessingReactions(unittest.TestCase):
 
 class TestFeishuMentionMap(unittest.TestCase):
     def test_build_mentions_map_handles_at_all(self):
-        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity, FeishuMentionRef
+        from plugins.platforms.feishu.adapter import _build_mentions_map, _FeishuBotIdentity, FeishuMentionRef
 
         mention = SimpleNamespace(key="@_all", id=None, name="")
         result = _build_mentions_map(
@@ -3931,7 +4107,7 @@ class TestFeishuMentionMap(unittest.TestCase):
         self.assertEqual(result["@_all"], FeishuMentionRef(is_all=True))
 
     def test_build_mentions_map_marks_self_by_open_id(self):
-        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+        from plugins.platforms.feishu.adapter import _build_mentions_map, _FeishuBotIdentity
 
         mention = SimpleNamespace(
             key="@_user_1",
@@ -3944,7 +4120,7 @@ class TestFeishuMentionMap(unittest.TestCase):
         self.assertEqual(ref.name, "Hermes")
 
     def test_build_mentions_map_marks_self_by_name_fallback(self):
-        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+        from plugins.platforms.feishu.adapter import _build_mentions_map, _FeishuBotIdentity
 
         mention = SimpleNamespace(
             key="@_user_1",
@@ -3959,7 +4135,7 @@ class TestFeishuMentionMap(unittest.TestCase):
         NOT be flagged as self when their open_id differs. Before the fix,
         name-match fired even when open_id was present and different, causing
         their messages to be silently stripped/dropped."""
-        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+        from plugins.platforms.feishu.adapter import _build_mentions_map, _FeishuBotIdentity
 
         human_with_same_name = SimpleNamespace(
             key="@_user_1",
@@ -3977,7 +4153,7 @@ class TestFeishuMentionMap(unittest.TestCase):
         not have populated _bot_open_id yet. During that window, a mention
         carrying a real open_id should still match via name — otherwise
         @bot messages silently fail admission."""
-        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+        from plugins.platforms.feishu.adapter import _build_mentions_map, _FeishuBotIdentity
 
         bot_mention = SimpleNamespace(
             key="@_user_1",
@@ -3992,7 +4168,7 @@ class TestFeishuMentionMap(unittest.TestCase):
         self.assertTrue(result["@_user_1"].is_self)
 
     def test_build_mentions_map_non_self_user(self):
-        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+        from plugins.platforms.feishu.adapter import _build_mentions_map, _FeishuBotIdentity
 
         mention = SimpleNamespace(
             key="@_user_1",
@@ -4005,12 +4181,12 @@ class TestFeishuMentionMap(unittest.TestCase):
         self.assertEqual(ref.name, "Alice")
 
     def test_build_mentions_map_returns_empty_for_none_input(self):
-        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+        from plugins.platforms.feishu.adapter import _build_mentions_map, _FeishuBotIdentity
 
         self.assertEqual(_build_mentions_map(None, _FeishuBotIdentity(open_id="ou_bot")), {})
 
     def test_build_mentions_map_tolerates_missing_id_object(self):
-        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+        from plugins.platforms.feishu.adapter import _build_mentions_map, _FeishuBotIdentity
 
         mention = SimpleNamespace(key="@_user_9", id=None, name="")
         ref = _build_mentions_map([mention], _FeishuBotIdentity(open_id="ou_bot"))["@_user_9"]
@@ -4020,7 +4196,7 @@ class TestFeishuMentionMap(unittest.TestCase):
 
 class TestFeishuMentionHint(unittest.TestCase):
     def test_hint_single_user(self):
-        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+        from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
 
         refs = [FeishuMentionRef(name="Alice", open_id="ou_alice")]
         self.assertEqual(
@@ -4029,7 +4205,7 @@ class TestFeishuMentionHint(unittest.TestCase):
         )
 
     def test_hint_multiple_users(self):
-        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+        from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
 
         refs = [
             FeishuMentionRef(name="Alice", open_id="ou_alice"),
@@ -4041,13 +4217,13 @@ class TestFeishuMentionHint(unittest.TestCase):
         )
 
     def test_hint_at_all(self):
-        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+        from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
 
         refs = [FeishuMentionRef(is_all=True)]
         self.assertEqual(_build_mention_hint(refs), "[Mentioned: @all]")
 
     def test_hint_filters_self_mentions(self):
-        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+        from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
 
         refs = [
             FeishuMentionRef(name="Hermes", open_id="ou_bot", is_self=True),
@@ -4059,30 +4235,30 @@ class TestFeishuMentionHint(unittest.TestCase):
         )
 
     def test_hint_returns_empty_when_only_self(self):
-        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+        from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
 
         refs = [FeishuMentionRef(name="Hermes", open_id="ou_bot", is_self=True)]
         self.assertEqual(_build_mention_hint(refs), "")
 
     def test_hint_returns_empty_for_no_refs(self):
-        from gateway.platforms.feishu import _build_mention_hint
+        from plugins.platforms.feishu.adapter import _build_mention_hint
 
         self.assertEqual(_build_mention_hint([]), "")
 
     def test_hint_falls_back_when_open_id_missing(self):
-        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+        from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
 
         refs = [FeishuMentionRef(name="Alice", open_id="")]
         self.assertEqual(_build_mention_hint(refs), "[Mentioned: Alice]")
 
     def test_hint_uses_unknown_placeholder_when_name_missing(self):
-        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+        from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
 
         refs = [FeishuMentionRef(name="", open_id="ou_xxx")]
         self.assertEqual(_build_mention_hint(refs), "[Mentioned: unknown (open_id=ou_xxx)]")
 
     def test_hint_dedupes_repeated_user(self):
-        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+        from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
 
         refs = [
             FeishuMentionRef(name="Alice", open_id="ou_alice"),
@@ -4095,7 +4271,7 @@ class TestFeishuMentionHint(unittest.TestCase):
         )
 
     def test_hint_dedupes_repeated_at_all(self):
-        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+        from plugins.platforms.feishu.adapter import FeishuMentionRef, _build_mention_hint
 
         refs = [FeishuMentionRef(is_all=True), FeishuMentionRef(is_all=True)]
         self.assertEqual(_build_mention_hint(refs), "[Mentioned: @all]")
@@ -4103,7 +4279,7 @@ class TestFeishuMentionHint(unittest.TestCase):
 
 class TestFeishuStripLeadingSelf(unittest.TestCase):
     def _make_refs(self, *, self_name="Hermes", other_name=None):
-        from gateway.platforms.feishu import FeishuMentionRef
+        from plugins.platforms.feishu.adapter import FeishuMentionRef
 
         refs = [FeishuMentionRef(name=self_name, open_id="ou_bot", is_self=True)]
         if other_name:
@@ -4111,19 +4287,19 @@ class TestFeishuStripLeadingSelf(unittest.TestCase):
         return refs
 
     def test_strips_leading_self(self):
-        from gateway.platforms.feishu import _strip_edge_self_mentions
+        from plugins.platforms.feishu.adapter import _strip_edge_self_mentions
 
         result = _strip_edge_self_mentions("@Hermes /help", self._make_refs())
         self.assertEqual(result, "/help")
 
     def test_strips_consecutive_leading_self(self):
-        from gateway.platforms.feishu import _strip_edge_self_mentions
+        from plugins.platforms.feishu.adapter import _strip_edge_self_mentions
 
         result = _strip_edge_self_mentions("@Hermes @Hermes hi", self._make_refs())
         self.assertEqual(result, "hi")
 
     def test_stops_at_first_non_self_token(self):
-        from gateway.platforms.feishu import _strip_edge_self_mentions
+        from plugins.platforms.feishu.adapter import _strip_edge_self_mentions
 
         result = _strip_edge_self_mentions(
             "@Hermes @Alice make a group", self._make_refs(other_name="Alice")
@@ -4131,26 +4307,26 @@ class TestFeishuStripLeadingSelf(unittest.TestCase):
         self.assertEqual(result, "@Alice make a group")
 
     def test_preserves_mid_text_self(self):
-        from gateway.platforms.feishu import _strip_edge_self_mentions
+        from plugins.platforms.feishu.adapter import _strip_edge_self_mentions
 
         result = _strip_edge_self_mentions("check @Hermes said yesterday", self._make_refs())
         self.assertEqual(result, "check @Hermes said yesterday")
 
     def test_strips_trailing_self_at_end_of_text(self):
-        from gateway.platforms.feishu import _strip_edge_self_mentions
+        from plugins.platforms.feishu.adapter import _strip_edge_self_mentions
 
         result = _strip_edge_self_mentions("look up docs @Hermes", self._make_refs())
         self.assertEqual(result, "look up docs")
 
     def test_strips_trailing_self_with_terminal_punct(self):
-        from gateway.platforms.feishu import _strip_edge_self_mentions
+        from plugins.platforms.feishu.adapter import _strip_edge_self_mentions
 
         # Terminal punct after the mention — strip the mention, keep the punct.
         result = _strip_edge_self_mentions("look up docs @Hermes.", self._make_refs())
         self.assertEqual(result, "look up docs.")
 
     def test_preserves_trailing_self_before_non_terminal_char(self):
-        from gateway.platforms.feishu import _strip_edge_self_mentions
+        from plugins.platforms.feishu.adapter import _strip_edge_self_mentions
 
         # Non-terminal char (here a Chinese particle) follows — preserve.
         result = _strip_edge_self_mentions(
@@ -4159,25 +4335,25 @@ class TestFeishuStripLeadingSelf(unittest.TestCase):
         self.assertEqual(result, "please don't @Hermes anymore")
 
     def test_returns_input_when_refs_empty(self):
-        from gateway.platforms.feishu import _strip_edge_self_mentions
+        from plugins.platforms.feishu.adapter import _strip_edge_self_mentions
 
         self.assertEqual(_strip_edge_self_mentions("@Hermes /help", []), "@Hermes /help")
 
     def test_returns_input_when_no_self_refs(self):
-        from gateway.platforms.feishu import _strip_edge_self_mentions, FeishuMentionRef
+        from plugins.platforms.feishu.adapter import _strip_edge_self_mentions, FeishuMentionRef
 
         refs = [FeishuMentionRef(name="Alice", open_id="ou_alice")]
         self.assertEqual(_strip_edge_self_mentions("@Alice hi", refs), "@Alice hi")
 
     def test_uses_open_id_fallback_when_name_missing(self):
-        from gateway.platforms.feishu import _strip_edge_self_mentions, FeishuMentionRef
+        from plugins.platforms.feishu.adapter import _strip_edge_self_mentions, FeishuMentionRef
 
         refs = [FeishuMentionRef(name="", open_id="ou_bot", is_self=True)]
         self.assertEqual(_strip_edge_self_mentions("@ou_bot hi", refs), "hi")
 
     def test_word_boundary_prevents_prefix_collision(self):
         """A bot named 'Al' must not eat the leading '@Alice' of a different user."""
-        from gateway.platforms.feishu import _strip_edge_self_mentions, FeishuMentionRef
+        from plugins.platforms.feishu.adapter import _strip_edge_self_mentions, FeishuMentionRef
 
         refs = [FeishuMentionRef(name="Al", open_id="ou_bot", is_self=True)]
         self.assertEqual(_strip_edge_self_mentions("@Alice hi", refs), "@Alice hi")
@@ -4185,13 +4361,13 @@ class TestFeishuStripLeadingSelf(unittest.TestCase):
 
 class TestFeishuNormalizeText(unittest.TestCase):
     def test_renders_mention_with_display_name(self):
-        from gateway.platforms.feishu import _normalize_feishu_text, FeishuMentionRef
+        from plugins.platforms.feishu.adapter import _normalize_feishu_text, FeishuMentionRef
 
         refs = {"@_user_1": FeishuMentionRef(name="Alice", open_id="ou_alice")}
         self.assertEqual(_normalize_feishu_text("@_user_1 hello", refs), "@Alice hello")
 
     def test_renders_self_mention_with_name(self):
-        from gateway.platforms.feishu import _normalize_feishu_text, FeishuMentionRef
+        from plugins.platforms.feishu.adapter import _normalize_feishu_text, FeishuMentionRef
 
         refs = {"@_user_1": FeishuMentionRef(name="Hermes", open_id="ou_bot", is_self=True)}
         self.assertEqual(
@@ -4200,23 +4376,23 @@ class TestFeishuNormalizeText(unittest.TestCase):
         )
 
     def test_at_all_rendered_as_english_literal(self):
-        from gateway.platforms.feishu import _normalize_feishu_text
+        from plugins.platforms.feishu.adapter import _normalize_feishu_text
 
         self.assertEqual(_normalize_feishu_text("@_all notice", None), "@all notice")
 
     def test_unknown_placeholder_degrades_to_space(self):
-        from gateway.platforms.feishu import _normalize_feishu_text
+        from plugins.platforms.feishu.adapter import _normalize_feishu_text
 
         # No map: fall back to the old behavior (substitute with space, then collapse).
         self.assertEqual(_normalize_feishu_text("@_user_9 hello", None), "hello")
 
     def test_backward_compatible_without_map(self):
-        from gateway.platforms.feishu import _normalize_feishu_text
+        from plugins.platforms.feishu.adapter import _normalize_feishu_text
 
         self.assertEqual(_normalize_feishu_text("hello  world"), "hello world")
 
     def test_mention_for_missing_map_entry_degrades_to_space(self):
-        from gateway.platforms.feishu import _normalize_feishu_text, FeishuMentionRef
+        from plugins.platforms.feishu.adapter import _normalize_feishu_text, FeishuMentionRef
 
         refs = {"@_user_1": FeishuMentionRef(name="Alice")}
         # @_user_2 has no entry — should degrade to a space (legacy behavior)
@@ -4231,7 +4407,7 @@ class TestFeishuPostMentionParsing(unittest.TestCase):
         """Post <at>.user_id is a placeholder ('@_user_N'); the real display
         name comes from the mentions_map lookup. Confirmed via live
         im.v1.message.get payload."""
-        from gateway.platforms.feishu import parse_feishu_post_payload, FeishuMentionRef
+        from plugins.platforms.feishu.adapter import parse_feishu_post_payload, FeishuMentionRef
 
         payload = {
             "en_us": {
@@ -4250,7 +4426,7 @@ class TestFeishuPostMentionParsing(unittest.TestCase):
     def test_post_at_tag_falls_back_to_inline_user_name_when_map_misses(self):
         """When the mentions payload is missing a placeholder, fall back to the
         inline user_name in the <at> tag itself."""
-        from gateway.platforms.feishu import parse_feishu_post_payload
+        from plugins.platforms.feishu.adapter import parse_feishu_post_payload
 
         payload = {
             "en_us": {
@@ -4266,7 +4442,7 @@ class TestFeishuPostMentionParsing(unittest.TestCase):
     def test_post_at_all_tag_renders_as_at_all(self):
         """Post-format @everyone has user_id == '@_all' (confirmed via live
         im.v1.message.get). Rendered as literal '@all' regardless of map."""
-        from gateway.platforms.feishu import parse_feishu_post_payload
+        from plugins.platforms.feishu.adapter import parse_feishu_post_payload
 
         payload = {
             "en_us": {
@@ -4282,7 +4458,7 @@ class TestFeishuPostMentionParsing(unittest.TestCase):
 
 class TestFeishuNormalizeWithMentions(unittest.TestCase):
     def test_text_message_renders_mention_by_name(self):
-        from gateway.platforms.feishu import normalize_feishu_message, _FeishuBotIdentity
+        from plugins.platforms.feishu.adapter import normalize_feishu_message, _FeishuBotIdentity
 
         mention = SimpleNamespace(
             key="@_user_1",
@@ -4301,7 +4477,7 @@ class TestFeishuNormalizeWithMentions(unittest.TestCase):
         self.assertFalse(normalized.mentions[0].is_self)
 
     def test_text_message_marks_bot_self_mention(self):
-        from gateway.platforms.feishu import normalize_feishu_message, _FeishuBotIdentity
+        from plugins.platforms.feishu.adapter import normalize_feishu_message, _FeishuBotIdentity
 
         mention = SimpleNamespace(
             key="@_user_1",
@@ -4319,7 +4495,7 @@ class TestFeishuNormalizeWithMentions(unittest.TestCase):
         self.assertEqual(normalized.text_content, "@Hermes /help")
 
     def test_text_message_at_all_surfaces_ref(self):
-        from gateway.platforms.feishu import normalize_feishu_message
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
 
         mention = SimpleNamespace(key="@_all", id=None, name="")
         normalized = normalize_feishu_message(
@@ -4335,7 +4511,7 @@ class TestFeishuNormalizeWithMentions(unittest.TestCase):
         """Feishu SDK sometimes omits @_all from the mentions payload (confirmed
         via im.v1.message.get). The fallback scan on raw text must still yield
         an is_all ref so [Mentioned: @all] gets injected."""
-        from gateway.platforms.feishu import normalize_feishu_message
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
 
         normalized = normalize_feishu_message(
             message_type="text",
@@ -4348,7 +4524,7 @@ class TestFeishuNormalizeWithMentions(unittest.TestCase):
 
     def test_text_message_at_all_not_synthesized_if_absent_from_text(self):
         """No @_all in text → no synthetic ref even if mentions_map is empty."""
-        from gateway.platforms.feishu import normalize_feishu_message
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
 
         normalized = normalize_feishu_message(
             message_type="text",
@@ -4358,7 +4534,7 @@ class TestFeishuNormalizeWithMentions(unittest.TestCase):
         self.assertEqual(normalized.mentions, [])
 
     def test_text_message_without_mentions_param_is_backward_compatible(self):
-        from gateway.platforms.feishu import normalize_feishu_message
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
 
         normalized = normalize_feishu_message(
             message_type="text",
@@ -4370,7 +4546,7 @@ class TestFeishuNormalizeWithMentions(unittest.TestCase):
     def test_post_message_marks_self_via_mentions_map_lookup(self):
         """Real Feishu post: <at user_id="@_user_N"> + top-level mentions array
         resolves to open_id via placeholder lookup, not direct tag fields."""
-        from gateway.platforms.feishu import normalize_feishu_message, _FeishuBotIdentity
+        from plugins.platforms.feishu.adapter import normalize_feishu_message, _FeishuBotIdentity
 
         raw = json.dumps({
             "en_us": {
@@ -4400,7 +4576,7 @@ class TestFeishuNormalizeWithMentions(unittest.TestCase):
 
 class TestFeishuPostMentionsBot(unittest.TestCase):
     def _build_adapter(self, bot_open_id="ou_bot", bot_user_id="", bot_name=""):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter.__new__(FeishuAdapter)
         adapter._bot_open_id = bot_open_id
@@ -4409,7 +4585,7 @@ class TestFeishuPostMentionsBot(unittest.TestCase):
         return adapter
 
     def test_post_mentions_bot_uses_is_self_flag(self):
-        from gateway.platforms.feishu import FeishuMentionRef
+        from plugins.platforms.feishu.adapter import FeishuMentionRef
 
         adapter = self._build_adapter()
         self.assertTrue(
@@ -4430,7 +4606,7 @@ class TestFeishuPostMentionsBot(unittest.TestCase):
 
 class TestFeishuExtractMessageContent(unittest.TestCase):
     def _build_adapter(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter.__new__(FeishuAdapter)
         adapter._bot_open_id = "ou_bot"
@@ -4477,7 +4653,7 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
 
 class TestFeishuProcessInboundMessage(unittest.TestCase):
     def _build_adapter(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter.__new__(FeishuAdapter)
         adapter._bot_open_id = "ou_bot"
@@ -4661,7 +4837,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
 
 class TestFeishuFetchMessageText(unittest.TestCase):
     def _build_adapter(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter.__new__(FeishuAdapter)
         adapter._bot_open_id = "ou_bot"
@@ -4697,7 +4873,7 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         self.assertNotIn("[Mentioned:", result)
 
     def test_extract_text_from_raw_content_accepts_mentions_kwarg(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter.__new__(FeishuAdapter)
         adapter._bot_open_id = ""
@@ -4748,7 +4924,7 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         """_build_mentions_map accepts the reply-history shape (id as str +
         id_type='open_id'). user_id id_type is not load-bearing for self
         detection — inbound mention payloads always include an open_id."""
-        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+        from plugins.platforms.feishu.adapter import _build_mentions_map, _FeishuBotIdentity
 
         # open_id discriminator, non-self
         alice = SimpleNamespace(key="@_user_1", id="ou_alice", id_type="open_id", name="Alice")
@@ -4767,7 +4943,7 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
     """High-level scenarios from the design spec — verify the full pipeline."""
 
     def _build_adapter(self):
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter.__new__(FeishuAdapter)
         adapter._bot_open_id = "ou_bot"
@@ -4955,7 +5131,7 @@ class TestChatLockEviction(unittest.TestCase):
     def _make_adapter(self, max_size=5):
         import collections as _collections
 
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = object.__new__(FeishuAdapter)
         adapter._chat_locks = _collections.OrderedDict()

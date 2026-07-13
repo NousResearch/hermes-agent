@@ -1418,6 +1418,11 @@ DEFAULT_CONFIG = {
                                       # set this above 0.75 to override the floor.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "max_attempts": 3,            # compression retry rounds before a turn gives up
+                                      # with "max compression attempts reached". Raise
+                                      # (e.g. 6) for tool-schema-heavy sessions where 3
+                                      # rounds cannot clear the request estimate.
+                                      # Validated >= 1, hard-capped at 10.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt

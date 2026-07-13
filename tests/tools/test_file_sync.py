@@ -1,8 +1,10 @@
 """Tests for FileSyncManager — mtime tracking, deletion detection, transactional rollback."""
 
+import concurrent.futures
 import io
 import os
 import tarfile
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -257,6 +259,59 @@ class TestEdgeCases:
 
         mgr.sync(force=True)
         upload.assert_not_called()  # _file_mtime_key returns None, skipped
+
+
+class TestConcurrency:
+    def test_sync_back_waits_for_active_sync_transaction(self, tmp_path):
+        initial_file = tmp_path / "initial.png"
+        new_file = tmp_path / "new.png"
+        initial_file.write_bytes(b"initial")
+        upload_started = threading.Event()
+        release_upload = threading.Event()
+        sync_back_transport_started = threading.Event()
+        overlap_detected = threading.Event()
+        download_calls = []
+
+        def get_files():
+            return [
+                (str(path), f"/root/.hermes/cache/images/{path.name}")
+                for path in sorted(tmp_path.glob("*.png"))
+            ]
+
+        def upload(host_path, _remote_path):
+            if host_path == str(new_file):
+                upload_started.set()
+                sync_back_transport_started.wait(timeout=1.0)
+                release_upload.set()
+
+        def bulk_download(destination):
+            if not release_upload.is_set():
+                overlap_detected.set()
+            sync_back_transport_started.set()
+            download_calls.append(destination)
+            with tarfile.open(destination, "w"):
+                pass
+
+        mgr = FileSyncManager(
+            get_files_fn=get_files,
+            upload_fn=upload,
+            delete_fn=MagicMock(),
+            bulk_download_fn=bulk_download,
+        )
+        mgr.sync(force=True)
+        new_file.write_bytes(b"new")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            sync_future = executor.submit(mgr.sync, force=True)
+            assert upload_started.wait(timeout=2.0)
+
+            sync_back_future = executor.submit(mgr.sync_back, hermes_home=tmp_path)
+
+            sync_future.result(timeout=3.0)
+            sync_back_future.result(timeout=3.0)
+
+        assert len(download_calls) == 1
+        assert not overlap_detected.is_set()
 
 
 class TestSyncBackSecurity:

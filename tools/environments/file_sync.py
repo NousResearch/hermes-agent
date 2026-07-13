@@ -153,6 +153,7 @@ class FileSyncManager:
         self._bulk_upload_fn = bulk_upload_fn
         self._bulk_download_fn = bulk_download_fn
         self._delete_fn = delete_fn
+        self._transaction_lock = threading.Lock()
         self._synced_files: dict[str, tuple[float, int]] = {}  # remote_path -> (mtime, size)
         self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
         self._upload_only_host_paths: set[str] = set()
@@ -168,6 +169,11 @@ class FileSyncManager:
         Transactional: state only committed if ALL operations succeed.
         On failure, state rolls back so the next cycle retries everything.
         """
+        with self._transaction_lock:
+            self._sync_transaction(force=force)
+
+    def _sync_transaction(self, *, force: bool = False) -> None:
+        """Execute one sync cycle while holding the per-manager lock."""
         if not force and not os.environ.get(_FORCE_SYNC_ENV):
             now = time.monotonic()
             if now - self._last_sync_time < self._sync_interval:
@@ -249,6 +255,11 @@ class FileSyncManager:
         Protected against SIGINT (defers the signal until complete) and
         serialized across concurrent gateway sandboxes via file lock.
         """
+        with self._transaction_lock:
+            self._sync_back_transaction(hermes_home=hermes_home)
+
+    def _sync_back_transaction(self, hermes_home: Path | None = None) -> None:
+        """Execute sync-back against a stable snapshot of manager state."""
         if self._bulk_download_fn is None:
             return
 

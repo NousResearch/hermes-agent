@@ -162,6 +162,13 @@ class NonEmptyFailingAgent:
         }
 
 
+class NonEmptyCompressionExhaustedAgent(NonEmptyFailingAgent):
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        result = super().run_conversation(message, conversation_history, task_id)
+        result["compression_exhausted"] = True
+        return result
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -357,6 +364,31 @@ async def test_non_empty_agent_failure_keeps_failed_flag_and_skips_cleanup(
         for _ in range(10):
             await asyncio.sleep(0.01)
     assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_non_empty_agent_failure_keeps_compression_exhausted_flag(
+    monkeypatch, tmp_path
+):
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch, NonEmptyCompressionExhaustedAgent, cleanup_on=True
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1001"),
+        session_id="sess-1",
+        session_key="agent:main:telegram:group:-1001",
+    )
+
+    assert result["final_response"].startswith("API call failed")
+    assert result.get("failed") is True
+    assert result.get("compression_exhausted") is True
 
 
 @pytest.mark.asyncio

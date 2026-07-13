@@ -17072,7 +17072,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.error("Proxy connection error to %s: %s", proxy_url, e)
             if not full_response:
-                error = f"Proxy connection error: {e}"
+                error = f"Proxy connection error: {str(e)[:300]}"
                 return {
                     "final_response": f"⚠️ {error}",
                     "messages": [],

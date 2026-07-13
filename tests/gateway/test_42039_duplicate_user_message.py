@@ -220,6 +220,40 @@ async def test_runtime_resolution_failure_persists_user_turn_not_assistant_error
     assert user_call.kwargs.get("skip_db", False) is False
 
 
+@pytest.mark.asyncio
+async def test_proxy_failure_persists_user_turn_not_assistant_error(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    proxy_urls = iter(("http://fake-proxy:1", None))
+    runner._get_proxy_url = lambda: next(proxy_urls)
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert "Proxy URL not configured" in response
+
+    calls = runner.session_store.append_to_transcript.call_args_list
+    rows = [
+        call.args[1]
+        for call in calls
+        if len(call.args) >= 2 and isinstance(call.args[1], dict)
+    ]
+    assert any(
+        row.get("role") == "user" and row.get("content") == "hello world"
+        for row in rows
+    )
+    assert all(row.get("role") != "assistant" for row in rows)
+
+    user_call = next(
+        call
+        for call in calls
+        if len(call.args) >= 2 and call.args[1].get("role") == "user"
+    )
+    assert user_call.kwargs.get("skip_db", False) is False
+
+
 # ── Test 3: not-new-messages path uses skip_db=True ───────────────────
 
 

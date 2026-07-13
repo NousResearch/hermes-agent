@@ -2992,10 +2992,12 @@ class FeishuAdapter(BasePlatformAdapter):
         sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
         sender_profile = await self._resolve_sender_profile(sender_id)
         chat_info = await self.get_chat_info(chat_id)
+        # Card callbacks do not expose the raw chat type. Let chat_info decide
+        # when available instead of pretending every callback came from a group.
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type="group"),
+            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=""),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=None,
@@ -4025,7 +4027,14 @@ class FeishuAdapter(BasePlatformAdapter):
         resolved = str(chat_info.get("type") or "").strip().lower()
         if resolved in {"group", "forum"}:
             return resolved
-        if event_chat_type == "p2p":
+        event_type = str(event_chat_type or "").strip().lower()
+        if event_type == "p2p":
+            return "dm"
+        if "topic" in event_type or "thread" in event_type or "forum" in event_type:
+            return "forum"
+        if event_type == "group":
+            return "group"
+        if resolved == "dm":
             return "dm"
         return "group"
 

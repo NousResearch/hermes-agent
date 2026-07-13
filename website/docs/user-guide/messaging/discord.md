@@ -384,6 +384,12 @@ When enabled, every `@mention` in a regular text channel automatically creates a
 
 Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead.
 
+#### `discord.auto_thread_auto_archive_duration`
+
+**Type:** integer — **Default:** `1440`
+
+Controls how long after the last message before an auto-created thread is automatically archived by Discord. Valid values: `60`, `1440` (24h, default), `4320` (3 days), `10080` (7 days). Invalid values are rejected with a warning and fall back to `1440`.
+
 #### `discord.reactions`
 
 **Type:** boolean — **Default:** `true`

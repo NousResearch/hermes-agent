@@ -41,7 +41,37 @@ class _Snowflake:
         self.id = id
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+DEFAULT_THREAD_AUTO_ARCHIVE_MINUTES = 1440
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
+
+
+def _discord_auto_thread_auto_archive_duration() -> int:
+    """Resolve the auto-thread archive duration from env, with validation.
+
+    Reads ``DISCORD_AUTO_THREAD_AUTO_ARCHIVE_DURATION`` and falls back to
+    ``DEFAULT_THREAD_AUTO_ARCHIVE_MINUTES`` (1440) for missing or invalid
+    values — both non-numeric strings and unsupported integers.
+    """
+    raw = os.getenv("DISCORD_AUTO_THREAD_AUTO_ARCHIVE_DURATION", str(DEFAULT_THREAD_AUTO_ARCHIVE_MINUTES))
+    try:
+        duration = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "DISCORD_AUTO_THREAD_AUTO_ARCHIVE_DURATION=%s is invalid; must be one of %s. Falling back to %s.",
+            raw,
+            ", ".join(str(v) for v in sorted(VALID_THREAD_AUTO_ARCHIVE_MINUTES)),
+            DEFAULT_THREAD_AUTO_ARCHIVE_MINUTES,
+        )
+        return DEFAULT_THREAD_AUTO_ARCHIVE_MINUTES
+    if duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+        logger.warning(
+            "DISCORD_AUTO_THREAD_AUTO_ARCHIVE_DURATION=%s is invalid; must be one of %s. Falling back to %s.",
+            duration,
+            ", ".join(str(v) for v in sorted(VALID_THREAD_AUTO_ARCHIVE_MINUTES)),
+            DEFAULT_THREAD_AUTO_ARCHIVE_MINUTES,
+        )
+        return DEFAULT_THREAD_AUTO_ARCHIVE_MINUTES
+    return duration
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
@@ -5346,13 +5376,14 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
+        auto_archive_duration = _discord_auto_thread_auto_archive_duration()
 
         last_direct_error: Exception | None = None
         last_fallback_error: Exception | None = None
 
         for attempt in range(2):
             try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+                thread = await message.create_thread(name=thread_name, auto_archive_duration=auto_archive_duration)
                 try:
                     setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
                 except Exception:
@@ -5366,7 +5397,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                     thread = await seed_msg.create_thread(
                         name=thread_name,
-                        auto_archive_duration=1440,
+                        auto_archive_duration=auto_archive_duration,
                         reason=reason,
                     )
                     try:
@@ -8287,6 +8318,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+    if "auto_thread_auto_archive_duration" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD_AUTO_ARCHIVE_DURATION"):
+        os.environ["DISCORD_AUTO_THREAD_AUTO_ARCHIVE_DURATION"] = str(discord_cfg["auto_thread_auto_archive_duration"])
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
     # ignored_channels: channels where bot never responds (even when mentioned)

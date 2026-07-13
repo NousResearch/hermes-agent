@@ -10733,21 +10733,26 @@ def _render_distribution_plan(plan) -> None:
             # Check both the current shell environment and the target profile's
             # .env file so we don't nag about keys the user already has set up.
             already = os.environ.get(er.name) is not None
+            unverifiable = False
             if not already and plan.target_dir.is_dir():
-                env_path = plan.target_dir / ".env"
-                if env_path.is_file():
-                    try:
-                        for raw in env_path.read_text().splitlines():
-                            line = raw.strip()
-                            if not line or line.startswith("#"):
-                                continue
-                            key = line.split("=", 1)[0].strip()
-                            if key == er.name:
-                                already = True
-                                break
-                    except OSError:
-                        pass
-            status = "✓ set" if already else ("needs setting" if er.required else "—")
+                from hermes_cli.config import env_file_defines
+
+                # env_file_defines decrypts an encrypted .env; it returns None
+                # when it cannot (the target profile's .env is sealed under
+                # that profile's own keystore, which we cannot unlock). Do not
+                # collapse None to "not set" — that would nag the user to
+                # re-enter a key they have already configured.
+                defined = env_file_defines(plan.target_dir / ".env", er.name)
+                if defined is None:
+                    unverifiable = True
+                else:
+                    already = defined
+            if already:
+                status = "✓ set"
+            elif unverifiable:
+                status = "encrypted — cannot verify"
+            else:
+                status = "needs setting" if er.required else "—"
             line = f"    • {er.name} ({tag}, {status})"
             if er.description:
                 line += f" — {er.description}"

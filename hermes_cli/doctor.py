@@ -647,16 +647,29 @@ def run_doctor(args):
     if env_path.exists():
         check_ok(f"{_DHH}/.env file exists")
         
-        # Check for common issues. Pin encoding to UTF-8 because .env files are
-        # written as UTF-8 everywhere in the codebase, while Path.read_text()
-        # defaults to the system locale — which crashes on non-UTF-8 Windows
-        # locales (e.g. GBK) as soon as the file contains any non-ASCII byte.
-        content = env_path.read_text(encoding="utf-8")
-        if _has_provider_env_config(content):
-            check_ok("API key or custom endpoint configured")
+        # Check for common issues. read_env_text decrypts an encrypted .env
+        # first — a raw read_text() would see the marker + base64 envelope
+        # instead of KEY=VALUE lines and report a false "No API key found",
+        # sending the user off to re-run setup on a perfectly good .env. It
+        # also pins UTF-8, which Path.read_text() does not: the system locale
+        # (e.g. GBK on Windows) crashes on the first non-ASCII byte.
+        from hermes_cli.config import read_env_text
+
+        try:
+            content = read_env_text(env_path)
+        except Exception as exc:
+            # Encrypted, but the keystore would not unlock. We cannot see the
+            # keys — say so rather than claiming there are none.
+            check_warn(
+                f"{_DHH}/.env is encrypted but could not be decrypted",
+                f"({exc}) — run 'hermes encrypt unlock'",
+            )
         else:
-            check_warn(f"No API key found in {_DHH}/.env")
-            issues.append("Run 'hermes setup' to configure API keys")
+            if _has_provider_env_config(content):
+                check_ok("API key or custom endpoint configured")
+            else:
+                check_warn(f"No API key found in {_DHH}/.env")
+                issues.append("Run 'hermes setup' to configure API keys")
     else:
         # Also check project root as fallback
         fallback_env = PROJECT_ROOT / '.env'

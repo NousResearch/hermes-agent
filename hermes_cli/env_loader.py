@@ -166,7 +166,15 @@ def _maybe_decrypt_env_file(path: Path) -> str | None:
     return decrypt_if_encrypted(raw).decode("utf-8", errors="replace")
 
 
-def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+def load_dotenv_file(path: Path, *, override: bool) -> None:
+    """Load a ``.env`` file into ``os.environ``, decrypting it first if needed.
+
+    The one loader every caller that re-reads a ``.env`` outside of
+    :func:`load_hermes_dotenv` should use — a bare ``dotenv.load_dotenv()`` on
+    an encrypted ``.env`` parses the marker as a comment and the base64 body as
+    junk, yielding **zero** variables, so the caller silently sees no
+    credentials at all.
+    """
     decrypted = _maybe_decrypt_env_file(path)
     if decrypted is not None:
         # Encrypted .env — feed python-dotenv the decrypted text directly so
@@ -277,11 +285,11 @@ def load_hermes_dotenv(
         _sanitize_env_file_if_needed(project_env_path)
 
     if user_env.exists():
-        _load_dotenv_with_fallback(user_env, override=True)
+        load_dotenv_file(user_env, override=True)
         loaded.append(user_env)
 
     if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not loaded)
+        load_dotenv_file(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
     _apply_external_secret_sources(home_path)

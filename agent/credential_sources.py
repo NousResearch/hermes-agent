@@ -149,7 +149,7 @@ def _remove_env_source(provider: str, removed) -> RemovalResult:
          EnvironmentFile, launchd plist) → hint them where to unset it
       3. Var lives in both → clear from .env, hint about shell
     """
-    from hermes_cli.config import get_env_path, remove_env_value
+    from hermes_cli.config import get_env_path, read_env_text, remove_env_value
 
     result = RemovalResult()
     env_var = removed.source[len("env:"):]
@@ -162,11 +162,18 @@ def _remove_env_source(provider: str, removed) -> RemovalResult:
     try:
         env_path = get_env_path()
         if env_path.exists():
+            # read_env_text decrypts an encrypted .env first. A raw read_text()
+            # would scan the base64 envelope, never match "VAR=", and so report
+            # a key that IS in the .env as "still set in your shell" — sending
+            # the user hunting through shell profiles for a variable that was
+            # never there.
             env_in_dotenv = any(
                 line.strip().startswith(f"{env_var}=")
-                for line in env_path.read_text(errors="replace").splitlines()
+                for line in read_env_text(env_path).splitlines()
             )
-    except OSError:
+    except Exception:
+        # Includes a locked keystore: we cannot prove the var is in .env, so
+        # fall back to the pre-existing conservative default (False).
         pass
     shell_exported = env_in_process and not env_in_dotenv
 

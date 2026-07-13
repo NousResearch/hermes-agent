@@ -5831,6 +5831,50 @@ def _read_env_lines(env_path: Path) -> List[str]:
     return text.splitlines(keepends=True)
 
 
+def read_env_text(env_path: Optional[Path] = None) -> str:
+    """Return the ``.env`` file's text, decrypted when it is encrypted.
+
+    The public reader counterpart to :func:`save_env_values`, for callers that
+    need the raw ``.env`` *text* rather than a parsed mapping. A caller that
+    does its own ``read_text()`` sees the ``#HERMES-ENCRYPTED-V1`` marker plus
+    a base64 blob instead of ``KEY=VALUE`` lines, and so concludes the file
+    defines nothing at all.
+
+    Returns ``""`` when the file does not exist. A genuine decryption failure
+    (locked keystore, wrong key) propagates — an unreadable encrypted ``.env``
+    must fail loudly rather than silently read as empty.
+    """
+    if env_path is None:
+        env_path = get_env_path()
+    return "".join(_read_env_lines(Path(env_path)))
+
+
+def env_file_defines(env_path: Path, key: str) -> Optional[bool]:
+    """Whether *env_path* defines *key*. ``None`` when the file cannot be read.
+
+    ``None`` is a real answer, not an error: an encrypted ``.env`` belonging to
+    a *different* profile is sealed under that profile's own keystore
+    (``<HERMES_HOME>/.encryption``), which this process cannot unlock. Callers
+    must render that as "cannot verify" rather than collapsing it to "not set"
+    — reporting a key the user has already configured as missing is exactly the
+    nag this helper exists to prevent.
+    """
+    env_path = Path(env_path)
+    if not env_path.is_file():
+        return False
+    try:
+        lines = _read_env_lines(env_path)
+    except Exception:
+        return None
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.split("=", 1)[0].strip() == key:
+            return True
+    return False
+
+
 def _write_env_lines(
     env_path: Path, lines: List[str], *, original_mode: Optional[int] = None
 ) -> None:

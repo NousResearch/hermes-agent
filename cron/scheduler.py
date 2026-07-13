@@ -1560,12 +1560,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
-        # changes take effect without a gateway restart.
-        from dotenv import load_dotenv
-        try:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="utf-8")
-        except UnicodeDecodeError:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
+        # changes take effect without a gateway restart. Goes through
+        # load_dotenv_file, not dotenv.load_dotenv: on an encrypted .env a bare
+        # load_dotenv parses the marker as a comment and the base64 body as
+        # junk, loading zero variables — so a rotated key would silently never
+        # reach scheduled jobs.
+        from hermes_cli.env_loader import load_dotenv_file
+
+        load_dotenv_file(_get_hermes_home() / ".env", override=True)
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:

@@ -4225,6 +4225,33 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    def _classify_server_tool_kind(self, run_id: str, tool_name: Optional[str]) -> Optional[str]:
+        """Best-effort provenance tag for a server-executed tool, surfaced on the
+        Runs ``tool.started`` SSE event so split-runtime shells can render a
+        distinct badge (MCP / memory) instead of the generic wrench.
+
+        Returns ``"mcp"``, ``"memory"``, or ``None`` (plain server tool). Never
+        raises — a missing agent/manager just yields ``None`` (wrench baseline).
+        """
+        if not tool_name:
+            return None
+        # MCP tools are registered under the ``mcp_{server}_{tool}`` namespace
+        # (see tools/mcp_tool.is_mcp_tool_parallel_safe), so a prefix check is
+        # authoritative and needs no agent handle.
+        if tool_name.startswith("mcp_"):
+            return "mcp"
+        # Memory-provider tools are only knowable from the live agent's memory
+        # manager, looked up by run_id (populated for the duration of the run).
+        agent = self._active_run_agents.get(run_id)
+        memory_manager = getattr(agent, "_memory_manager", None) if agent is not None else None
+        if memory_manager is not None:
+            try:
+                if memory_manager.has_tool(tool_name):
+                    return "memory"
+            except Exception:
+                pass
+        return None
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
@@ -4244,13 +4271,20 @@ class APIServerAdapter(BasePlatformAdapter):
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
             if event_type == "tool.started":
-                _push({
+                evt = {
                     "event": "tool.started",
                     "run_id": run_id,
                     "timestamp": ts,
                     "tool": tool_name,
                     "preview": preview,
-                })
+                }
+                # Optional provenance tag ("mcp"/"memory") so split-runtime
+                # shells light up a distinct badge; omitted for plain server
+                # tools (shells fall back to the generic wrench).
+                kind = self._classify_server_tool_kind(run_id, tool_name)
+                if kind:
+                    evt["kind"] = kind
+                _push(evt)
             elif event_type == "tool.completed":
                 _push({
                     "event": "tool.completed",

@@ -118,6 +118,12 @@ def _load_google_modules() -> bool:
 
 from gateway.config import Platform, PlatformConfig
 
+# Trigger registration of the dynamic "google_chat" pseudo-member at module
+# import time.  _missing_() caches the member in _value2member_map_ so
+# Platform("google_chat") works from any other module without needing
+# a static enum entry.  Bundled plugin platforms are looked up by value,
+# not attribute (matches Teams, IRC).
+Platform("google_chat")
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -440,7 +446,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     _RECONNECT_MAX_DELAY = 120.0
 
     def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.GOOGLE_CHAT)
+        super().__init__(config, Platform("google_chat"))
         # Trigger the deferred google-cloud + googleapiclient import here so
         # that any code path which constructs the adapter and then calls
         # methods directly (notably the test suite, which builds an adapter

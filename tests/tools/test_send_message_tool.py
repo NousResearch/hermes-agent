@@ -668,9 +668,7 @@ class TestSendGoogleChatMediaDelivery:
         adapter.send_image_file.return_value = type("R", (), {"success": True, "message_id": "msg2", "error": None})()
 
         runner = MagicMock()
-        runner.adapters = {"google_chat": adapter}
         
-        # Mock Platform.GOOGLE_CHAT resolving logic
         class FakePlatform:
             def __init__(self, value):
                 self.value = value
@@ -678,13 +676,11 @@ class TestSendGoogleChatMediaDelivery:
                 return self.value == other
             def __hash__(self):
                 return hash(self.value)
-        FakePlatform.GOOGLE_CHAT = FakePlatform("google_chat")
                 
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
         monkeypatch.setattr("gateway.config.Platform", FakePlatform)
         
-        # Need to put adapter under the FakePlatform key
-        runner.adapters = {FakePlatform.GOOGLE_CHAT: adapter}
+        runner.adapters = {FakePlatform("google_chat"): adapter}
 
         from tools.send_message_tool import _send_google_chat
         
@@ -717,9 +713,8 @@ class TestSendGoogleChatMediaDelivery:
                 return self.value == other
             def __hash__(self):
                 return hash(self.value)
-        FakePlatform.GOOGLE_CHAT = FakePlatform("google_chat")
                 
-        runner.adapters = {FakePlatform.GOOGLE_CHAT: adapter}
+        runner.adapters = {FakePlatform("google_chat"): adapter}
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
         monkeypatch.setattr("gateway.config.Platform", FakePlatform)
 
@@ -737,8 +732,6 @@ class TestSendGoogleChatMediaDelivery:
 
     @pytest.mark.asyncio
     async def test_missing_adapter_falls_back_to_standalone(self, tmp_path, monkeypatch):
-        image_path = tmp_path / "photo.png"
-        image_path.write_text("fake image")
 
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
         
@@ -757,7 +750,7 @@ class TestSendGoogleChatMediaDelivery:
             pconfig="fake_config",
             chat_id="spaces/S",
             message="Standalone message",
-            media_files=[(str(image_path), False)]
+            media_files=None,
         )
 
         assert result["success"] is True
@@ -767,9 +760,24 @@ class TestSendGoogleChatMediaDelivery:
             chat_id="spaces/S",
             message="Standalone message",
             thread_id=None,
-            media_files=[(str(image_path), False)],
+            media_files=None,
             force_document=False
         )
+
+    @pytest.mark.asyncio
+    async def test_missing_adapter_with_media_files_returns_error(self, monkeypatch):
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+        from tools.send_message_tool import _send_google_chat
+        result = await _send_google_chat(
+            pconfig="fake_config",
+            chat_id="spaces/S",
+            message="Standalone message",
+            media_files=[("/tmp/photo.png", False)],
+        )
+
+        assert "error" in result
+        assert "native attachment" in result["error"]
 
     @pytest.mark.asyncio
     async def test_empty_message_plus_media_skips_text_send(self, tmp_path, monkeypatch):
@@ -787,9 +795,8 @@ class TestSendGoogleChatMediaDelivery:
                 return self.value == other
             def __hash__(self):
                 return hash(self.value)
-        FakePlatform.GOOGLE_CHAT = FakePlatform("google_chat")
                 
-        runner.adapters = {FakePlatform.GOOGLE_CHAT: adapter}
+        runner.adapters = {FakePlatform("google_chat"): adapter}
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
         monkeypatch.setattr("gateway.config.Platform", FakePlatform)
 
@@ -823,9 +830,8 @@ class TestSendGoogleChatMediaDelivery:
                 return self.value == other
             def __hash__(self):
                 return hash(self.value)
-        FakePlatform.GOOGLE_CHAT = FakePlatform("google_chat")
                 
-        runner.adapters = {FakePlatform.GOOGLE_CHAT: adapter}
+        runner.adapters = {FakePlatform("google_chat"): adapter}
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
         monkeypatch.setattr("gateway.config.Platform", FakePlatform)
 

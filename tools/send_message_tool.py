@@ -1703,7 +1703,7 @@ async def _send_google_chat(pconfig, chat_id, message, media_files=None, thread_
         runner = _gateway_runner_ref()
         if runner and hasattr(runner, "adapters"):
             from gateway.config import Platform
-            adapter = runner.adapters.get(Platform.GOOGLE_CHAT)
+            adapter = runner.adapters.get(Platform("google_chat"))
             if adapter:
                 metadata = {"thread_id": thread_id} if thread_id else None
                 last_result = None
@@ -1733,7 +1733,9 @@ async def _send_google_chat(pconfig, chat_id, message, media_files=None, thread_
     except Exception as e:
         logger.debug("Failed to use live Google Chat adapter: %s", e)
 
-    # Standalone fallback
+    # Standalone fallback — text-only; refuse native attachments.
+    if media_files:
+        return {"error": "Google Chat adapter not running; native attachment delivery requires a live gateway adapter."}
     try:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get("google_chat")

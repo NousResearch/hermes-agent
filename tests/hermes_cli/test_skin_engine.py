@@ -444,7 +444,7 @@ class TestDetectSystemDarkMode:
         finally:
             subprocess.run = orig_run
 
-    def test_detects_light_via_defaults(self):
+    def test_detects_light_via_defaults(self, clean_env):
         """When `defaults read` returns exit 1, detects light mode."""
         import subprocess
         orig_run = subprocess.run
@@ -454,8 +454,18 @@ class TestDetectSystemDarkMode:
             return orig_run(cmd, **kwargs)
         subprocess.run = mock_run
         try:
-            from hermes_cli.skin_engine import _detect_system_dark_mode
-            assert _detect_system_dark_mode() is False
+            import hermes_cli.skin_engine as se
+            # Mock the lazy-imported detector so it doesn't override with
+            # a stale cached value from a prior test.
+            import types
+            fake_cli = types.ModuleType("cli")
+            fake_cli._detect_light_mode = lambda: True  # say "light" → dark=False
+            import sys
+            sys.modules["cli"] = fake_cli
+            try:
+                assert se._detect_system_dark_mode() is False
+            finally:
+                del sys.modules["cli"]
         finally:
             subprocess.run = orig_run
 
@@ -526,7 +536,7 @@ class TestDetectSystemDarkMode:
         subprocess.run = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("nope"))
         try:
             from hermes_cli.skin_engine import _detect_system_dark_mode
-            assert _detect_system_dark_mode() is False  # defaults to dark
+            assert _detect_system_dark_mode() is True  # defaults to dark
         finally:
             subprocess.run = orig_run
 

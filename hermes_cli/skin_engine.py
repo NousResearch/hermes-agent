@@ -816,13 +816,20 @@ def _detect_system_dark_mode() -> bool:
     """Detect whether the system/terminal is in dark mode.
 
     Returns True for dark mode, False for light mode.
-    On macOS, uses `defaults read -g AppleInterfaceStyle` (authoritative).
-    Falls back to env vars on other platforms.
+
+    Detection priority:
+      1. macOS ``defaults read -g AppleInterfaceStyle`` (authoritative).
+      2. Explicit env-var overrides (COLORFGBG, HERMES_TUI_THEME,
+         HERMES_LIGHT, HERMES_TUI_LIGHT) — user intent always wins.
+      3. cli._detect_light_mode() — comprehensive shared detector (includes
+         OSC 11, HERMES_TUI_BACKGROUND, cached after first call).
+         Imported lazily to avoid circular-import issues at startup.
+      4. Default to dark (matches Hermes legacy).
     """
     import os
     import sys
 
-    # 1. macOS system appearance (authoritative, instant)
+    # 1. macOS system appearance (authoritative, instant, background-safe)
     if sys.platform == "darwin":
         try:
             import subprocess
@@ -837,7 +844,8 @@ def _detect_system_dark_mode() -> bool:
         except Exception:
             pass
 
-    # 2. COLORFGBG env var
+    # 2. Explicit env-var overrides — user-set values always take priority
+    #    over the cached detector below.
     cfgbg = (os.environ.get("COLORFGBG") or "").strip()
     if cfgbg:
         last = cfgbg.split(";")[-1] if ";" in cfgbg else cfgbg
@@ -848,7 +856,6 @@ def _detect_system_dark_mode() -> bool:
             if 0 <= bg < 16:
                 return True   # dark
 
-    # 3. Theme hint env vars
     theme = (os.environ.get("HERMES_TUI_THEME") or "").strip().lower()
     if theme == "dark":
         return True
@@ -862,7 +869,17 @@ def _detect_system_dark_mode() -> bool:
         if v in ("0", "false", "off", "no", "n"):
             return True   # dark
 
-    return False  # default to dark (matches Hermes legacy)
+    # 3. Comprehensive cached detector from cli.py — covers OSC 11,
+    #    HERMES_TUI_BACKGROUND, and any other dynamic sources that
+    #    aren't available via simple env-var checks.
+    #    Lazy import avoids circular-import at startup.
+    try:
+        from cli import _detect_light_mode
+        return not _detect_light_mode()  # light=False → dark=True
+    except (ImportError, AttributeError):
+        pass
+
+    return True  # default to dark (matches Hermes legacy)
 
 
 def _do_skin_switch(config: dict) -> bool:
@@ -904,10 +921,16 @@ def _macos_theme_observer_callback(notification) -> None:
 def _skin_monitor_loop(config: dict) -> None:
     """Background thread that monitors for dark/light mode changes.
 
+    This thread ONLY detects changes and signals the main thread via
+    ``_skin_switch_event``.  The actual skin switch + UI refresh happens
+    on the main thread (idle loop in cli.py) so that ``_ACCENT.reset()``
+    and ``_apply_tui_skin_style()`` always run in the correct context.
+
     On macOS: listens for AppleInterfaceThemeChangedNotification via
     NSDistributedNotificationCenter (instant, zero-polling).
 
-    On other platforms: polls every 2 seconds as fallback.
+    On other platforms: polls every 2 seconds, comparing against the
+    last known mode to detect changes.
     """
     import sys
     stop = _skin_monitor_stop
@@ -926,6 +949,7 @@ def _skin_monitor_loop(config: dict) -> None:
 
             class ThemeObserver(NSObject):
                 def themeChanged_(self, notification):
+                    # Signal only — the main thread does the actual switch
                     if _skin_switch_event is not None:
                         _skin_switch_event.set()
 
@@ -940,31 +964,34 @@ def _skin_monitor_loop(config: dict) -> None:
 
             logger.debug("Skin monitor: listening for macOS theme notifications")
 
-            # Run loop to receive notifications
+            # Run loop to receive notifications; just keep spinning
             while not stop.is_set():
                 from Foundation import NSDate, NSRunLoop
                 loop = NSRunLoop.currentRunLoop()
                 date = NSDate.dateWithTimeIntervalSinceNow_(1.0)
                 loop.runUntilDate_(date)
-
-                # Check if there's a pending skin switch
-                if _skin_switch_event is not None and _skin_switch_event.is_set():
-                    _skin_switch_event.clear()
-                    if _do_skin_switch(config):
-                        logger.debug("Skin monitor: switched skin via notification")
+                # The callback signals _skin_switch_event; main thread picks it up
 
             center.removeObserver_(observer)
             return
         except Exception as e:
             logger.debug("Skin monitor: macOS notification unavailable (%s), falling back to polling", e)
 
-    # Fallback: poll every 2 seconds
+    # Fallback: poll every 2 seconds — detect changes and signal only
     logger.debug("Skin monitor: using polling fallback (2s interval)")
+    global _system_dark_mode
+    # Seed the baseline so the first poll after init detects a real change
+    if _system_dark_mode is None:
+        _system_dark_mode = _detect_system_dark_mode()
     while not stop.is_set():
         if stop.wait(timeout=2.0):
             break
-        if _do_skin_switch(config):
-            logger.debug("Skin monitor: switched skin via polling")
+        current_dark = _detect_system_dark_mode()
+        if current_dark != _system_dark_mode:
+            _system_dark_mode = current_dark
+            if _skin_switch_event is not None:
+                _skin_switch_event.set()
+            logger.debug("Skin monitor: detected mode change (dark=%s), signaled main thread", current_dark)
 
 
 def start_skin_auto_switch_monitor(config: dict) -> None:

@@ -467,3 +467,108 @@ async def test_image_file_still_sets_photo_type():
 
     assert dispatched, "_handle_chat_item did not dispatch any event"
     assert dispatched[0].message_type == MessageType.PHOTO
+
+
+# ---------------------------------------------------------------------------
+# Nested AChatItem normalization (singular newChatItem events)
+# ---------------------------------------------------------------------------
+
+def _make_direct_text_wrapper(text: str = "hello") -> dict:
+    """Minimal normalized AChatItem wrapper for a received direct text."""
+    return {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 42, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemTs": "2026-01-01T00:00:00Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "text", "text": text},
+            },
+        },
+    }
+
+
+def test_normalize_unwraps_nested_achatitem():
+    """{type: newChatItem, chatItem: {chatInfo, chatItem}} → inner wrapper."""
+    inner = _make_direct_text_wrapper()
+    payload = {"type": "newChatItem", "chatItem": inner}
+    assert SimplexAdapter._normalize_chat_item_wrapper(payload) is inner
+
+
+def test_normalize_passes_through_normalized_wrapper():
+    """An already-normalized {chatInfo, chatItem} wrapper is returned as-is."""
+    wrapper = _make_direct_text_wrapper()
+    assert SimplexAdapter._normalize_chat_item_wrapper(wrapper) is wrapper
+
+
+def test_normalize_maps_item_key_variant():
+    """{chatInfo, item} responses normalize to {chatInfo, chatItem}."""
+    wrapper = _make_direct_text_wrapper()
+    payload = {"chatInfo": wrapper["chatInfo"], "item": wrapper["chatItem"]}
+    normalized = SimplexAdapter._normalize_chat_item_wrapper(payload)
+    assert normalized["chatInfo"] is wrapper["chatInfo"]
+    assert normalized["chatItem"] is wrapper["chatItem"]
+
+
+def test_normalize_tolerates_non_dict():
+    assert SimplexAdapter._normalize_chat_item_wrapper(None) == {}
+    assert SimplexAdapter._normalize_chat_item_wrapper("junk") == {}
+
+
+@pytest.mark.asyncio
+async def test_handle_event_singular_new_chat_item_nested():
+    """A wrapped singular newChatItem event with the AChatItem nested one
+    level down must reach message handling instead of being silently
+    dropped because chatInfo isn't at the top level."""
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    event = {
+        "corrId": "",
+        "resp": {"type": "newChatItem", "chatItem": _make_direct_text_wrapper("hi there")},
+    }
+    await adapter._handle_event(event)
+
+    # Text messages are buffered by the batching layer before dispatch —
+    # the pending batch proves the item survived normalization.
+    batches = list(adapter._pending_text_batches.values())
+    assert batches, "nested newChatItem was dropped before dispatch"
+    assert batches[0].text == "hi there"
+    assert batches[0].source.chat_id == "42"
+    # Cancel the flush timer so no task leaks out of the test.
+    for task in adapter._pending_text_batch_tasks.values():
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_handle_event_new_chat_items_nested_elements():
+    """newChatItems arrays whose elements nest the AChatItem one level down
+    are normalized element-by-element."""
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    event = {
+        "corrId": "",
+        "resp": {
+            "type": "newChatItems",
+            "chatItems": [
+                {"chatItem": _make_direct_text_wrapper("first")},
+                _make_direct_text_wrapper("second"),  # already-normalized mix
+            ],
+        },
+    }
+    await adapter._handle_event(event)
+
+    batches = list(adapter._pending_text_batches.values())
+    assert batches, "nested newChatItems elements were dropped"
+    # Same chat → batched into one pending event, in arrival order.
+    assert batches[0].text == "first\nsecond"
+    for task in adapter._pending_text_batch_tasks.values():
+        task.cancel()

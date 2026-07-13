@@ -51,11 +51,16 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import array
 import inspect
 import logging
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
@@ -133,6 +138,96 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
+
+
+def _probe_audio_duration_ms(data: bytes, content_type: str) -> Optional[int]:
+    """Return audio duration in milliseconds for Matrix voice metadata."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+
+    suffix = ".ogg" if content_type == "audio/ogg" else ".audio"
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp:
+            temp.write(data)
+            temp_path = temp.name
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                temp_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        duration = float(result.stdout.strip())
+        if duration <= 0:
+            return None
+        return max(1, round(duration * 1000))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    finally:
+        if temp_path:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
+    """Return best-effort duration and waveform metadata for voice events."""
+    metadata: Dict[str, Any] = {}
+    duration = _probe_audio_duration_ms(path.read_bytes(), "audio/ogg")
+    if duration is not None:
+        metadata["duration"] = duration
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return metadata
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-v", "error", "-i", str(path), "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+            capture_output=True,
+            timeout=15,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout:
+            return metadata
+        samples = array.array("h")
+        samples.frombytes(result.stdout)
+        if sys.byteorder != "little":
+            samples.byteswap()
+        if samples:
+            bins = 100
+            count = len(samples)
+            metadata["waveform"] = [
+                min(
+                    1024,
+                    int(
+                        max(
+                            abs(value)
+                            for value in samples[
+                                idx * count // bins : max(idx + 1, (idx + 1) * count // bins)
+                            ]
+                        )
+                        / 32767
+                        * 1024
+                    ),
+                )
+                for idx in range(bins)
+            ]
+    except (OSError, ValueError, subprocess.SubprocessError):
+        logger.debug("Matrix: failed to build voice waveform for %s", path, exc_info=True)
+    return metadata
+
 
 _MATRIX_BANG_COMMAND_RE = re.compile(
     r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$",
@@ -1969,16 +2064,51 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload an audio file as a voice message (MSC3245 native voice)."""
-        return await self._send_local_file(
-            chat_id,
-            audio_path,
-            "m.audio",
-            caption,
-            reply_to,
-            metadata=metadata,
-            is_voice=True,
-        )
+        """Upload audio as a Matrix native voice message when possible.
+
+        Matrix clients expect MSC3245 voice messages to contain Opus audio
+        in an OGG container. TTS providers commonly return MP3 or WAV, so
+        convert those files at the adapter boundary instead of relying on
+        the upstream caller to know which platform is delivering the audio.
+        """
+        source = Path(audio_path).expanduser()
+        converted_path: Optional[str] = None
+        upload_path = str(source)
+        is_voice = source.suffix.lower() == ".ogg"
+        try:
+            if not is_voice:
+                try:
+                    from tools.tts_tool import _convert_to_opus
+                    converted_path = await asyncio.to_thread(
+                        _convert_to_opus, str(source)
+                    )
+                except Exception as exc:
+                    logger.warning("Matrix: voice conversion failed: %s", exc)
+
+                if converted_path:
+                    upload_path = converted_path
+                    is_voice = True
+                else:
+                    logger.warning(
+                        "Matrix: sending %s as regular audio; OGG/Opus conversion unavailable",
+                        source.name,
+                    )
+
+            return await self._send_local_file(
+                chat_id,
+                upload_path,
+                "m.audio",
+                caption,
+                reply_to,
+                metadata=metadata,
+                is_voice=is_voice,
+            )
+        finally:
+            if converted_path and converted_path != str(source):
+                try:
+                    Path(converted_path).unlink(missing_ok=True)
+                except OSError:
+                    logger.debug("Matrix: failed to remove temporary voice file %s", converted_path)
 
     async def send_video(
         self,
@@ -2148,6 +2278,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         is_voice: bool = False,
+        voice_metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload bytes to Matrix and send as a media message."""
         if len(data) > self._max_media_bytes:
@@ -2186,13 +2317,23 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
         # Build media message content.
+        audio_duration_ms = None
+        if is_voice:
+            audio_duration_ms = await asyncio.to_thread(
+                _probe_audio_duration_ms, data, content_type
+            )
+            if voice_metadata:
+                audio_duration_ms = voice_metadata.get("duration") or audio_duration_ms
+        media_info: Dict[str, Any] = {
+            "mimetype": content_type,
+            "size": len(data),
+        }
+        if audio_duration_ms is not None:
+            media_info["duration"] = audio_duration_ms
         msg_content: Dict[str, Any] = {
             "msgtype": msgtype,
             "body": caption or filename,
-            "info": {
-                "mimetype": content_type,
-                "size": len(data),
-            },
+            "info": media_info,
         }
         if encrypted_file is not None:
             file_payload = encrypted_file.serialize()
@@ -2204,6 +2345,14 @@ class MatrixAdapter(BasePlatformAdapter):
         # Add MSC3245 voice flag for native voice messages.
         if is_voice:
             msg_content["org.matrix.msc3245.voice"] = {}
+            waveform = (voice_metadata or {}).get("waveform")
+            if audio_duration_ms is not None or waveform is not None:
+                audio_metadata: Dict[str, Any] = {}
+                if audio_duration_ms is not None:
+                    audio_metadata["duration"] = audio_duration_ms
+                if waveform is not None:
+                    audio_metadata["waveform"] = waveform
+                msg_content["org.matrix.msc1767.audio"] = audio_metadata
 
         self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 
@@ -2251,10 +2400,23 @@ class MatrixAdapter(BasePlatformAdapter):
 
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"
+        if is_voice and p.suffix.lower() == ".ogg":
+            # Match Element iOS' own native voice-message sender.
+            ct = "audio/ogg"
         data = p.read_bytes()
+        voice_metadata = _matrix_voice_metadata_for_file(p) if is_voice else None
 
         return await self._upload_and_send(
-            room_id, data, fname, ct, msgtype, caption, reply_to, metadata, is_voice
+            room_id,
+            data,
+            fname,
+            ct,
+            msgtype,
+            caption,
+            reply_to,
+            metadata,
+            is_voice,
+            voice_metadata,
         )
 
     # ------------------------------------------------------------------

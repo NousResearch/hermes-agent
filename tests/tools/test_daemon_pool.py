@@ -5,6 +5,11 @@ batches, wedged memory-provider syncs) can never block interpreter exit:
 stdlib ThreadPoolExecutor workers are non-daemon AND registered in
 concurrent.futures.thread._threads_queues, whose atexit hook joins every
 worker unconditionally — even after shutdown(wait=False).
+
+Additional Python 3.14+ coverage: the stdlib ``ThreadPoolExecutor`` changed
+its internal ``_worker`` signature and dropped ``self._initializer`` /
+``self._initargs`` in favor of a WorkerContext (issue #63769). The daemon
+pool must keep working on both layouts.
 """
 
 import subprocess
@@ -14,7 +19,7 @@ import time
 
 from concurrent.futures.thread import _threads_queues
 
-from tools.daemon_pool import DaemonThreadPoolExecutor
+from tools.daemon_pool import DaemonThreadPoolExecutor, _PY314_PLUS
 
 
 def test_workers_are_daemon_threads():
@@ -81,6 +86,79 @@ def test_wedged_worker_does_not_block_interpreter_exit():
     )
     assert proc.returncode == 0
     assert "main-done" in proc.stdout
+
+
+def test_python_314_worker_context_signature_does_not_crash():
+    """Regression test for issue #63769.
+
+    On Python 3.14+, stdlib ``ThreadPoolExecutor`` drops ``self._initializer``
+    / ``self._initargs`` and switches ``_worker`` to a ``(ref, ctx, q)``
+    signature with a ``WorkerContext``. The daemon pool must:
+
+      1. submit without raising ``AttributeError: ... _initializer``.
+      2. still produce daemon workers that are not registered with
+         ``concurrent.futures.thread._threads_queues``.
+      3. still honor ``initializer`` / ``initargs`` semantics via the new
+         WorkerContext path.
+    """
+    if not _supports_worker_context():
+        # On 3.11–3.13 the legacy path is exercised by the other tests; this
+        # assertion is a 3.14+ guard, so skip rather than duplicate work.
+        import pytest
+
+        pytest.skip("WorkerContext path only exists on Python 3.14+")
+
+    init_seen = []
+
+    def _init(tag):
+        init_seen.append(tag)
+
+    pool = DaemonThreadPoolExecutor(max_workers=1, initializer=_init, initargs=("ctx",))
+    try:
+        # Submit must not raise AttributeError: '_initializer'
+        result = pool.submit(lambda: 21 * 2).result(timeout=10)
+        assert result == 42
+        # Initializer ran exactly once per worker spawn.
+        assert init_seen == ["ctx"]
+
+        # Worker is still daemon and unregistered with the atexit join hook.
+        worker_id = pool.submit(threading.get_ident).result(timeout=10)
+        worker = next(
+            (t for t in pool._threads if t.ident == worker_id),
+            None,
+        )
+        assert worker is not None
+        assert worker.daemon is True
+        assert worker not in _threads_queues
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_python_314_submit_many_tasks_exercises_reused_workers():
+    """Submit several sequential tasks on a single-worker pool.
+
+    On 3.14+ this exercises both _adjust_thread_count branches: the first
+    submit spawns the worker, subsequent submits reuse it via the idle
+    semaphore. This guards against any silent ctx/state mismatch where a
+    second task would fail to run because the worker context was tied to
+    the first submit only.
+    """
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    try:
+        results = [pool.submit(lambda i=i: i * i).result(timeout=10) for i in range(5)]
+        assert results == [0, 1, 4, 9, 16]
+    finally:
+        pool.shutdown(wait=True)
+
+
+def _supports_worker_context() -> bool:
+    """True if the active Python ships the 3.14+ ThreadPoolExecutor layout.
+
+    Reuses ``tools.daemon_pool._PY314_PLUS`` so the test gate and the
+    dispatch logic stay in lockstep — a future Python release that changes
+    ``_worker``'s signature again only needs to be updated in one place.
+    """
+    return _PY314_PLUS
 
 
 def _repo_root():

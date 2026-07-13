@@ -50,6 +50,7 @@ _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 # billing reasons keep their own 60s cooldown (set above); this is the
 # narrower non-rate-limit case.  See issue #24996.
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
+_TOOL_CALL_STALE_TIMEOUT_MULTIPLIER = 1.5
 
 
 def _ra():
@@ -188,6 +189,17 @@ def _env_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+def _effective_stream_stale_timeout(
+    base_timeout: float,
+    *,
+    tool_call_in_progress: bool,
+) -> float:
+    """Return the inactivity threshold for the current stream phase."""
+    if not tool_call_in_progress or base_timeout == float("inf"):
+        return base_timeout
+    return base_timeout * _TOOL_CALL_STALE_TIMEOUT_MULTIPLIER
 
 
 # ── Cross-turn stale-call circuit breaker (#58962) ─────────────────────
@@ -2138,6 +2150,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     first_delta_fired = {"done": False}
     deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
+    # A named tool call can legitimately pause while the model generates a
+    # large JSON argument payload. Keep this as a separate atomic flag instead
+    # of reading the worker-owned partial-tool list from the polling thread.
+    tool_call_in_progress = {"flag": False}
     # Wall-clock timestamp of the last real streaming chunk.  The outer
     # poll loop uses this to detect stale connections that keep receiving
     # SSE keep-alive pings but no actual data.
@@ -2162,6 +2178,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     def _call_chat_completions():
         """Stream a chat completions response."""
         import httpx as _httpx
+        tool_call_in_progress["flag"] = False
         # Per-provider / per-model request_timeout_seconds (from config.yaml)
         # wins over the HERMES_API_TIMEOUT env default if the user set it.
         _provider_timeout_cfg = get_provider_request_timeout(agent.provider, agent.model)
@@ -2176,6 +2193,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _stream_read_timeout = _provider_timeout_cfg
         else:
             _stream_read_timeout = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
+            _max_stale_timeout = None
             # Local providers (Ollama, llama.cpp, vLLM) can take minutes for
             # prefill on large contexts before producing the first token.
             # Auto-increase the httpx read timeout unless the user explicitly
@@ -2186,11 +2204,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "Local provider detected (%s) — stream read timeout raised to %.0fs",
                     agent.base_url, _stream_read_timeout,
                 )
-            elif (
+            else:
+                _max_stale_timeout = (
+                    _effective_stream_stale_timeout(
+                        _stream_stale_timeout,
+                        tool_call_in_progress=True,
+                    )
+                    if _stream_stale_timeout is not None
+                    else None
+                )
+            if (
                 _stream_read_timeout == 120.0
-                and _stream_stale_timeout is not None
-                and _stream_stale_timeout != float("inf")
-                and _stream_stale_timeout > _stream_read_timeout
+                and _max_stale_timeout is not None
+                and _max_stale_timeout != float("inf")
+                and _max_stale_timeout > _stream_read_timeout
             ):
                 # Cloud reasoning models (e.g. Opus) routinely pause mid-stream
                 # for minutes during extended thinking.  The stale-stream
@@ -2201,10 +2228,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # detector (which owns retry + diagnostics) could act.  Keep the
                 # socket read timeout in step with the detector so it no longer
                 # preempts it.
-                _stream_read_timeout = _stream_stale_timeout
+                _stream_read_timeout = _max_stale_timeout
                 logger.debug(
                     "Cloud reasoning stream — read timeout raised to %.0fs to "
-                    "match stale-stream detector", _stream_read_timeout,
+                    "cover the maximum stale-stream threshold", _stream_read_timeout,
                 )
         # Cap connect/pool at 60s even when provider timeout is higher.
         # connect/pool cover TCP handshake, not model inference.
@@ -2456,6 +2483,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # at line ~6107 return `tool_calls=None`, silently
                         # discarding the attempted action.
                         result["partial_tool_names"].append(name)
+                        tool_call_in_progress["flag"] = True
 
             if chunk.choices[0].finish_reason:
                 finish_reason = chunk.choices[0].finish_reason
@@ -2821,6 +2849,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # attempt's chunks don't concat onto the dead
                         # stream's partial JSON.
                         result["partial_tool_names"] = []
+                        tool_call_in_progress["flag"] = False
                         deltas_were_sent["yes"] = False
                         first_delta_fired["done"] = False
                         agent._emit_stream_drop(
@@ -3053,13 +3082,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # Detect stale streams: connections kept alive by SSE pings
         # but delivering no real chunks.  Kill the client so the
         # inner retry loop can start a fresh connection.
+        _effective_stale_timeout = _effective_stream_stale_timeout(
+            _stream_stale_timeout,
+            tool_call_in_progress=tool_call_in_progress["flag"],
+        )
         _stale_elapsed = time.time() - last_chunk_time["t"]
-        if _stale_elapsed > _stream_stale_timeout:
+        if _stale_elapsed > _effective_stale_timeout:
             _est_ctx = estimate_request_context_tokens(api_kwargs)
             logger.warning(
-                "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
+                "Stream stale for %.0fs (threshold %.0fs%s) — no chunks received. "
                 "model=%s context=~%s tokens. Killing connection.",
-                _stale_elapsed, _stream_stale_timeout,
+                _stale_elapsed,
+                _effective_stale_timeout,
+                " during tool-call generation" if tool_call_in_progress["flag"] else "",
                 api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
             )
             agent._buffer_status(

@@ -6833,6 +6833,31 @@ class TestStreamingApiCall:
         assert tc[0].function.arguments == '{"q":"test"}'
         assert tc[0].id == "call_1"
 
+    def test_named_tool_call_read_timeout_covers_extended_idle_gap(
+        self, agent, monkeypatch
+    ):
+        monkeypatch.delenv("HERMES_STREAM_READ_TIMEOUT", raising=False)
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "180")
+        chunks = [
+            _make_chunk(
+                tool_calls=[
+                    _make_tc_delta(
+                        0,
+                        "call_1",
+                        "write_file",
+                        '{"path":"report.md","content":"done"}',
+                    )
+                ]
+            ),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        agent._interruptible_streaming_api_call({"messages": []})
+
+        timeout = agent.client.chat.completions.create.call_args.kwargs["timeout"]
+        assert timeout.read == 270.0
+
     def test_multiple_tool_calls(self, agent):
         chunks = [
             _make_chunk(tool_calls=[_make_tc_delta(0, "call_a", "search", '{}')]),

@@ -8,8 +8,8 @@ fired *first* — tearing down a healthy reasoning stream before the stale
 detector (which owns retry + diagnostics) could act.
 
 These tests pin the invariant: for a cloud provider on the default read
-timeout, the httpx socket read timeout is floored at the stale-stream timeout
-so it can never fire before the detector.  They mirror the inline logic in
+timeout, the httpx socket read timeout covers the longest stale-stream window,
+including the extra time granted during named tool-call generation. They mirror the inline logic in
 ``agent/chat_completion_helpers.py`` (the real builder lives deep inside a
 worker thread, so — like ``test_local_stream_timeout.py`` — the resolution is
 reproduced here rather than driven end-to-end).
@@ -20,6 +20,7 @@ import os
 import pytest
 
 from agent.model_metadata import is_local_endpoint
+from agent.chat_completion_helpers import _effective_stream_stale_timeout
 
 
 def _resolve_stale_timeout(base_url, est_tokens, stale_base=180.0):
@@ -42,9 +43,15 @@ def _resolve_read_timeout(base_url, stale_timeout, base_timeout=1800.0):
         read_timeout == 120.0
         and stale_timeout is not None
         and stale_timeout != float("inf")
-        and stale_timeout > read_timeout
+        and _effective_stream_stale_timeout(
+            stale_timeout,
+            tool_call_in_progress=True,
+        ) > read_timeout
     ):
-        read_timeout = stale_timeout
+        read_timeout = _effective_stream_stale_timeout(
+            stale_timeout,
+            tool_call_in_progress=True,
+        )
     return read_timeout
 
 
@@ -73,16 +80,28 @@ class TestCloudReadTimeoutFloor:
 
     @pytest.mark.parametrize("base_url", CLOUD_URLS)
     def test_small_context_floored_to_stale_base(self, base_url):
-        """Reported case: ~120s timeouts on Copilot are raised to the 180s base."""
+        """The default read timeout covers the 180s base plus tool-call leniency."""
         stale = _resolve_stale_timeout(base_url, est_tokens=37_000)
         read = _resolve_read_timeout(base_url, stale)
-        assert read == 180.0
+        assert read == 270.0
 
     @pytest.mark.parametrize("base_url", CLOUD_URLS)
     def test_large_context_tracks_scaled_stale(self, base_url):
         """Big contexts scale the stale detector; the read timeout follows."""
-        assert _resolve_read_timeout(base_url, _resolve_stale_timeout(base_url, 60_000)) == 240.0
-        assert _resolve_read_timeout(base_url, _resolve_stale_timeout(base_url, 150_000)) == 300.0
+        assert _resolve_read_timeout(base_url, _resolve_stale_timeout(base_url, 60_000)) == 360.0
+        assert _resolve_read_timeout(base_url, _resolve_stale_timeout(base_url, 150_000)) == 450.0
+
+    def test_named_tool_call_gets_extended_idle_gap(self):
+        base_timeout = 180.0
+
+        assert _effective_stream_stale_timeout(
+            base_timeout,
+            tool_call_in_progress=False,
+        ) == 180.0
+        assert _effective_stream_stale_timeout(
+            base_timeout,
+            tool_call_in_progress=True,
+        ) == 270.0
 
     def test_user_override_is_respected(self):
         """An explicit HERMES_STREAM_READ_TIMEOUT is never overridden by the floor."""

@@ -750,6 +750,100 @@ class TestTeamsMessageHandling:
         assert adapter.handle_message.await_count == 1
 
 
+class TestTeamsApprovalIdentity:
+    class _Card:
+        def __init__(self):
+            self.body = []
+            self.actions = []
+
+        def with_version(self, _version):
+            return self
+
+        def with_body(self, body):
+            self.body = body
+            return self
+
+        def with_actions(self, actions):
+            self.actions = actions
+            return self
+
+    class _Block:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class _Action:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    def _adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_uses_core_id_and_force_redacts_card_data(self, monkeypatch):
+        monkeypatch.setattr(_teams_mod, "AdaptiveCard", self._Card)
+        monkeypatch.setattr(_teams_mod, "TextBlock", self._Block)
+        monkeypatch.setattr(_teams_mod, "ExecuteAction", self._Action)
+        adapter = self._adapter()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="msg-1"))
+        secret = "sk-proj-" + "E" * 40
+
+        result = await adapter.send_exec_approval(
+            chat_id="chat-1",
+            command=f"echo {secret}",
+            session_key="session-1",
+            description=f"reason {secret}",
+            metadata={"approval_id": "approval-from-core"},
+        )
+
+        assert result.success
+        card = adapter._send_card.await_args.args[1]
+        assert secret not in repr([block.__dict__ for block in card.body])
+        assert {
+            action.data["approval_id"] for action in card.actions
+        } == {"approval-from-core"}
+        assert all("session_key" not in action.data for action in card.actions)
+        assert all("cmd" not in action.data for action in card.actions)
+        assert adapter._approval_state["approval-from-core"]["session_key"] == "session-1"
+
+    @pytest.mark.asyncio
+    async def test_card_action_resolves_exact_core_identity(self, monkeypatch):
+        adapter = self._adapter()
+        adapter._approval_state["approval-target"] = {
+            "session_key": "session-target",
+            "cmd": "echo safe",
+            "desc": "test",
+        }
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        calls = []
+
+        def resolve(session_key, choice, approval_id=None):
+            calls.append((session_key, choice, approval_id))
+            return 1
+
+        monkeypatch.setattr("tools.approval.resolve_gateway_approval", resolve)
+        ctx = SimpleNamespace(
+            activity=SimpleNamespace(
+                value=SimpleNamespace(
+                    action=SimpleNamespace(data={
+                        "hermes_action": "approve_once",
+                        "approval_id": "approval-target",
+                    })
+                ),
+                from_=SimpleNamespace(id="user-1", aad_object_id="aad-1"),
+            )
+        )
+
+        response = await adapter._on_card_action(ctx)
+
+        assert response.status == 200
+        assert calls == [("session-target", "once", "approval-target")]
+        assert "approval-target" not in adapter._approval_state
+
+
 class TestTeamsAttachmentClassification:
     """Document attachments must set MessageType.DOCUMENT so run.py's
     document-context injection surfaces the cached file to the agent

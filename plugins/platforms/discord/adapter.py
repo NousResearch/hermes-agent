@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
@@ -5582,6 +5583,11 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            from agent.redact import redact_sensitive_text
+
+            command = redact_sensitive_text(command, force=True)
+            description = redact_sensitive_text(description, force=True)
+            approval_id = str((metadata or {}).get("approval_id") or uuid.uuid4().hex)
             # Resolve channel — use thread_id from metadata if present
             target_id = chat_id
             if metadata and metadata.get("thread_id"):
@@ -5638,6 +5644,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             view = ExecApprovalView(
                 session_key=session_key,
+                approval_id=approval_id,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
                 require_admin=require_admin,
@@ -6836,9 +6843,11 @@ def _define_discord_view_classes() -> None:
             allowed_role_ids: Optional[set] = None,
             require_admin: bool = False,
             admin_user_ids: Optional[set] = None,
+            approval_id: Optional[str] = None,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
+            self.approval_id = str(approval_id or uuid.uuid4().hex)
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             # Opt-in admin gate for exec approval (default off → user-scope,
@@ -6900,7 +6909,32 @@ def _define_discord_view_classes() -> None:
                 )
                 return
 
+            # Resolve the Hermes-owned identity before committing the UI. If
+            # the resolver itself fails, leave the buttons retryable.
+            try:
+                from tools.approval import resolve_gateway_approval
+                count = resolve_gateway_approval(
+                    self.session_key,
+                    choice,
+                    approval_id=self.approval_id,
+                )
+                logger.info(
+                    "Discord button resolved %d approval(s) for session %s "
+                    "(approval_id=%s, choice=%s, user=%s)",
+                    count, self.session_key, self.approval_id, choice,
+                    interaction.user.display_name,
+                )
+            except Exception as exc:
+                logger.error("Failed to resolve gateway approval from button: %s", exc)
+                await interaction.response.send_message(
+                    "Approval resolution failed. Please retry~", ephemeral=True
+                )
+                return
+
             self.resolved = True
+            if not count:
+                color = discord.Color.greyple()
+                label = "Approval is no longer pending"
 
             # Update the embed with the decision
             embed = interaction.message.embeds[0] if interaction.message.embeds else None
@@ -6913,17 +6947,6 @@ def _define_discord_view_classes() -> None:
                 child.disabled = True
 
             await interaction.response.edit_message(embed=embed, view=self)
-
-            # Unblock the waiting agent thread via the gateway approval queue
-            try:
-                from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(self.session_key, choice)
-                logger.info(
-                    "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, self.session_key, choice, interaction.user.display_name,
-                )
-            except Exception as exc:
-                logger.error("Failed to resolve gateway approval from button: %s", exc)
 
         @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
         async def allow_once(

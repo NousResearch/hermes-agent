@@ -8383,8 +8383,9 @@ def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        server, "_close_session_by_id",
-        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+        server,
+        "_teardown_session",
+        lambda session, *, end_reason: seen.append((session, end_reason)),
     )
     # Detached session "b" would schedule a real grace-reap threading.Timer that
     # outlives the test; grace=0 short-circuits it so no thread lingers.
@@ -8394,8 +8395,10 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     server._sessions["a"] = {"transport": transport, "close_on_disconnect": True}
     server._sessions["b"] = {"transport": transport, "close_on_disconnect": False}
     try:
+        flagged = server._sessions["a"]
         server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
-        assert seen == [("a", "ws_disconnect")]  # only the flagged one closed
+        assert seen == [(flagged, "ws_disconnect")]  # only the flagged one closed
+        assert "a" not in server._sessions  # claimed before teardown can race resume
         assert server._sessions["b"]["transport"] is server._detached_ws_transport  # re-pointed
     finally:
         server._sessions.clear()

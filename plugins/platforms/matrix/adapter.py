@@ -56,6 +56,7 @@ import logging
 import mimetypes
 import os
 import re
+import uuid
 import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
@@ -309,11 +310,13 @@ class _MatrixApprovalPrompt:
         session_key: str,
         chat_id: str,
         message_id: str,
+        approval_id: str | None = None,
         resolved: bool = False,
         requester_user_id: str | None = None,
         expires_at: float | None = None,
     ):
         self.session_key = session_key
+        self.approval_id = str(approval_id or uuid.uuid4().hex)
         self.chat_id = chat_id
         self.message_id = message_id
         self.resolved = resolved
@@ -2005,6 +2008,11 @@ class MatrixAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        from agent.redact import redact_sensitive_text
+
+        command = redact_sensitive_text(command, force=True)
+        description = redact_sensitive_text(description, force=True)
+        approval_id = str((metadata or {}).get("approval_id") or uuid.uuid4().hex)
         requester_user_id = str((metadata or {}).get("requester_user_id") or "") or None
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
         text = (
@@ -2026,12 +2034,10 @@ class MatrixAdapter(BasePlatformAdapter):
             session_key=session_key,
             chat_id=chat_id,
             message_id=result.message_id,
+            approval_id=approval_id,
             requester_user_id=requester_user_id,
             expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
         )
-        old_event = self._approval_prompt_by_session.get(session_key)
-        if old_event:
-            self._approval_prompts_by_event.pop(old_event, None)
         self._approval_prompts_by_event[result.message_id] = prompt
         self._approval_prompt_by_session[session_key] = result.message_id
 
@@ -3265,18 +3271,27 @@ class MatrixAdapter(BasePlatformAdapter):
                 try:
                     from tools.approval import resolve_gateway_approval
 
-                    count = resolve_gateway_approval(prompt.session_key, choice)
+                    count = resolve_gateway_approval(
+                        prompt.session_key,
+                        choice,
+                        approval_id=prompt.approval_id,
+                    )
                     if count:
                         prompt.resolved = True
                         self._approval_prompts_by_event.pop(reacts_to, None)
-                        self._approval_prompt_by_session.pop(prompt.session_key, None)
+                        if self._approval_prompt_by_session.get(prompt.session_key) == reacts_to:
+                            self._approval_prompt_by_session.pop(prompt.session_key, None)
                         logger.info(
                             "Matrix reaction resolved %d approval(s) for session %s "
-                            "(choice=%s, user=%s)",
-                            count, prompt.session_key, choice, sender,
+                            "(approval_id=%s, choice=%s, user=%s)",
+                            count, prompt.session_key, prompt.approval_id, choice, sender,
                         )
                         # Redact bot's seed reactions, leaving only the user's
                         await self._redact_bot_approval_reactions(room_id, prompt)
+                    else:
+                        await self._expire_matrix_approval_prompt(
+                            room_id, reacts_to, prompt
+                        )
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
                 return
@@ -3384,7 +3399,8 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> None:
         prompt.resolved = True
         self._approval_prompts_by_event.pop(target_event_id, None)
-        self._approval_prompt_by_session.pop(prompt.session_key, None)
+        if self._approval_prompt_by_session.get(prompt.session_key) == target_event_id:
+            self._approval_prompt_by_session.pop(prompt.session_key, None)
         await self._redact_bot_approval_reactions(room_id, prompt)
         await self._send_invalid_reaction_feedback(
             room_id,

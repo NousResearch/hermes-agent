@@ -313,8 +313,19 @@ def build_turn_context(
             should_review_memory = True
             agent._turns_since_memory = 0
 
-    # Add user message.
+    # Add user message. Gateway mobile receipt tags are process-private proof
+    # tags: transport sanitizers strip underscore-prefixed fields and SessionDB
+    # stores only the canonical message columns, while `_db_persisted` remains
+    # on this exact dict after a successful append for receipt finalization.
     user_msg = {"role": "user", "content": user_message}
+    mobile_mutation_receipt_tags = list(
+        getattr(agent, "_pending_mobile_mutation_receipt_tags", ()) or ()
+    )
+    agent._pending_mobile_mutation_receipt_tags = []
+    if mobile_mutation_receipt_tags:
+        user_msg["_mobile_mutation_receipt_tags"] = (
+            mobile_mutation_receipt_tags
+        )
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
@@ -360,6 +371,36 @@ def build_turn_context(
             agent.session_id or "none",
             exc_info=True,
         )
+    if user_msg.get("_db_persisted") and mobile_mutation_receipt_tags:
+        receipt_condition = getattr(
+            agent,
+            "_mobile_mutation_receipt_condition",
+            None,
+        )
+        if receipt_condition is not None:
+            with receipt_condition:
+                durable_tags = set(
+                    getattr(
+                        agent,
+                        "_durable_mobile_mutation_receipt_tags",
+                        set(),
+                    )
+                    or set()
+                )
+                durable_tags.update(mobile_mutation_receipt_tags)
+                agent._durable_mobile_mutation_receipt_tags = durable_tags
+                receipt_condition.notify_all()
+        else:
+            durable_tags = set(
+                getattr(
+                    agent,
+                    "_durable_mobile_mutation_receipt_tags",
+                    set(),
+                )
+                or set()
+            )
+            durable_tags.update(mobile_mutation_receipt_tags)
+            agent._durable_mobile_mutation_receipt_tags = durable_tags
 
     # ── Preflight context compression ──
     # Gate the (expensive) full token estimate behind a cheap pre-check.

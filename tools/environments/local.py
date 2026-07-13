@@ -589,6 +589,12 @@ def _find_bash() -> str:
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
         os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
+        # Scoop
+        os.path.join(os.environ.get("USERPROFILE", ""), "scoop", "apps", "git", "current", "usr", "bin", "bash.exe"),
+        # Chocolatey
+        r"C:\ProgramData\chocolatey\lib\git\tools\git\bin\bash.exe",
+        # MSYS2
+        r"C:\msys64\usr\bin\bash.exe",
     ):
         if candidate and os.path.isfile(candidate):
             return candidate

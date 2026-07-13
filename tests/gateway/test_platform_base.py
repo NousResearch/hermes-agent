@@ -1145,6 +1145,54 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
 
+    def test_denylist_blocks_profile_scoped_pairing_directory_contents(
+        self, tmp_path, monkeypatch
+    ):
+        """Multiplex gateways serve secondary profiles via
+        PairingStore(profile=name) (gateway/pairing.py), which stores
+        per-profile DM-pairing credentials at
+        <HERMES_HOME>/profiles/<name>/pairing/ — a third layout distinct
+        from the legacy and consolidated global stores this class's sibling
+        tests cover. Same credential material, must be equally undeliverable.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        pairing = hermes_dir / "profiles" / "coder" / "pairing"
+        pairing.mkdir(parents=True)
+        token = pairing / "telegram-approved.json"
+        token.write_text('{"approved": ["123"]}')
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
+
+    def test_allows_delivery_from_profile_scoped_non_pairing_subdir(
+        self, tmp_path, monkeypatch
+    ):
+        """Only the pairing/ credential store within a profile is denied — a
+        freshly-produced file in another profile subdirectory (e.g. a media
+        cache) must stay deliverable via recency trust, i.e. it must not be
+        caught by the new profile-pairing denylist check."""
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        other = hermes_dir / "profiles" / "coder" / "cache"
+        other.mkdir(parents=True)
+        media = other / "report.pdf"
+        media.write_bytes(b"%PDF-1.4")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(media)) == str(media.resolve())
+
     def test_hermes_cache_still_delivers_under_denied_home(self, tmp_path, monkeypatch):
         """The targeted credential denylist must not break legitimate cache
         deliveries: a generated artifact under the allowlisted cache root is

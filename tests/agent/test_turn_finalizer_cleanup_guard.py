@@ -81,7 +81,9 @@ class _StubAgent:
     def _safe_print(self, *a, **k):
         pass
 
-    def _handle_max_iterations(self, messages, n):
+    def _handle_max_iterations(
+        self, messages, n, *, current_user_context=""
+    ):
         return "PARTIAL SUMMARY FROM MODEL"
 
     def _file_mutation_verifier_enabled(self):

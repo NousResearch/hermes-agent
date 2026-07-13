@@ -166,9 +166,14 @@ def _build(agent, **overrides):
 
 def test_returns_turn_context_with_user_message_appended():
     agent = _FakeAgent()
-    ctx = _build(agent)
+    with patch(
+        "agent.turn_context.format_current_time_note",
+        return_value="[System note: Current time is TEST.]",
+    ):
+        ctx = _build(agent)
     assert isinstance(ctx, TurnContext)
     assert ctx.user_message == "hello"
+    assert ctx.current_user_context == "[System note: Current time is TEST.]"
     # The user turn was appended and indexed.
     assert ctx.messages[-1] == {"role": "user", "content": "hello"}
     assert ctx.current_turn_user_idx == len(ctx.messages) - 1
@@ -363,4 +368,46 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
+
+
+def test_preflight_compression_reindexes_current_user_turn():
+    agent = _FakeAgent()
+    agent.compression_enabled = True
+    agent.context_compressor = types.SimpleNamespace(
+        protect_first_n=1,
+        protect_last_n=1,
+        threshold_tokens=100,
+        context_length=10_000,
+        last_prompt_tokens=0,
+        last_real_prompt_tokens=0,
+        should_defer_preflight_to_real_usage=lambda _tokens: False,
+        get_active_compression_failure_cooldown=lambda: None,
+        should_compress=MagicMock(side_effect=[True, False]),
+    )
+    compressed = [
+        {"role": "assistant", "content": "compressed history"},
+        {"role": "user", "content": "hello"},
+    ]
+    setattr(agent, "_compress_context", MagicMock(return_value=(compressed, "SYSTEM")))
+    history = [
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "older question"},
+        {"role": "assistant", "content": "older answer"},
+    ]
+
+    with patch("agent.turn_context._should_run_preflight_estimate", return_value=True), \
+         patch(
+             "agent.turn_context.estimate_request_tokens_rough",
+             side_effect=[1_000, 50],
+         ), \
+         patch(
+             "agent.turn_context.conversation_history_after_compression",
+             return_value=[],
+         ):
+        ctx = _build(agent, conversation_history=history)
+
+    assert ctx.messages == compressed
+    assert ctx.current_turn_user_idx == 1
+    assert getattr(agent, "_persist_user_message_idx") == 1
 

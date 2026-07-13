@@ -34,6 +34,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
 )
+from hermes_time import format_current_time_note
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,8 @@ class TurnContext:
     turn_id: str
     # Index of the current user turn within ``messages``.
     current_turn_user_idx: int
+    # Runtime-only context appended to the outbound copy of the current user turn.
+    current_user_context: str = ""
     # Whether the post-turn memory review should fire.
     should_review_memory: bool = False
     # Context contributed by ``pre_llm_call`` plugins (appended to user message).
@@ -303,6 +306,15 @@ def build_turn_context(
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
 
+    # Fresh wall-clock context is carried separately from ``messages`` so every
+    # runtime can add it to its outbound request without polluting transcripts,
+    # session search, memory queries, or trajectories.
+    try:
+        current_user_context = format_current_time_note()
+    except Exception:
+        logger.debug("current-time turn context unavailable", exc_info=True)
+        current_user_context = ""
+
     # Track memory nudge trigger (turn-based, checked here).
     should_review_memory = False
     if (agent._memory_nudge_interval > 0
@@ -451,6 +463,14 @@ def build_turn_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
                 )
+                # Compression may replace/shorten the list. Rebind both indexes
+                # to the preserved current user turn so API-only context and any
+                # persistence override still target the right message.
+                for _idx in range(len(messages) - 1, -1, -1):
+                    if messages[_idx].get("role") == "user":
+                        current_turn_user_idx = _idx
+                        agent._persist_user_message_idx = _idx
+                        break
                 # Re-estimate now so size-only compression (same row count,
                 # lower token count — e.g. summarising tool outputs) is
                 # recognised as progress instead of being misread as
@@ -573,6 +593,7 @@ def build_turn_context(
         effective_task_id=effective_task_id,
         turn_id=turn_id,
         current_turn_user_idx=current_turn_user_idx,
+        current_user_context=current_user_context,
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,

@@ -3655,6 +3655,25 @@ class TestHandleMaxIterations:
         assert len(result) > 0
         assert "summary" in result.lower()
 
+    def test_current_time_context_is_api_only_on_summary_request(self, agent):
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Summary",
+        )
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+        current_context = "[System note: Current time is TEST.]"
+
+        result = agent._handle_max_iterations(
+            messages,
+            60,
+            current_user_context=current_context,
+        )
+
+        assert result == "Summary"
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert sent_messages[-1]["content"].endswith(f"\n\n{current_context}")
+        assert current_context not in messages[-1]["content"]
+
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."
@@ -3983,6 +4002,124 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_current_time_context_is_api_only(self, agent):
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+        current_context = "[System note: Current time is TEST.]"
+
+        with (
+            patch(
+                "agent.turn_context.format_current_time_note",
+                return_value=current_context,
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory") as save_trajectory,
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        api_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert api_messages[-1]["content"] == f"hello\n\n{current_context}"
+        assert result["messages"][0]["content"] == "hello"
+        assert save_trajectory.call_args.args[0][0]["content"] == "hello"
+
+    def test_ephemeral_context_appender_preserves_multimodal_user_turn(self):
+        from agent.conversation_loop import _append_ephemeral_user_context
+
+        current_context = "[System note: Current time is TEST.]"
+        original = [
+            {"type": "text", "text": "describe this"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "https://example.com/image.png"},
+            },
+        ]
+
+        api_content = _append_ephemeral_user_context(original, [current_context])
+
+        assert api_content is not original
+        assert api_content[:-1] == original
+        assert api_content[-1] == {"type": "text", "text": current_context}
+        assert len(original) == 2
+
+    def test_current_time_context_reaches_codex_app_server_without_persistence_leak(
+        self, agent
+    ):
+        self._setup_agent(agent)
+        agent.api_mode = "codex_app_server"
+        current_context = "[System note: Current time is TEST.]"
+        codex_result = {
+            "final_response": "Codex answer",
+            "messages": [{"role": "user", "content": "hello"}],
+            "api_calls": 1,
+            "completed": True,
+        }
+
+        with (
+            patch(
+                "agent.turn_context.format_current_time_note",
+                return_value=current_context,
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(
+                agent,
+                "_run_codex_app_server_turn",
+                return_value=codex_result,
+            ) as run_codex,
+        ):
+            result = agent.run_conversation("hello")
+
+        kwargs = run_codex.call_args.kwargs
+        assert kwargs["user_message"] == f"hello\n\n{current_context}"
+        assert kwargs["original_user_message"] == "hello"
+        assert kwargs["messages"][0]["content"] == "hello"
+        assert result == codex_result
+
+    def test_current_time_context_reaches_codex_multimodal_turn(self, agent):
+        self._setup_agent(agent)
+        agent.api_mode = "codex_app_server"
+        current_context = "[System note: Current time is TEST.]"
+        original = [
+            {"type": "text", "text": "describe this"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "https://example.com/image.png"},
+            },
+        ]
+        codex_result = {
+            "final_response": "Codex answer",
+            "messages": [{"role": "user", "content": original}],
+            "api_calls": 1,
+            "completed": True,
+        }
+
+        with (
+            patch(
+                "agent.turn_context.format_current_time_note",
+                return_value=current_context,
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(
+                agent,
+                "_run_codex_app_server_turn",
+                return_value=codex_result,
+            ) as run_codex,
+        ):
+            result = agent.run_conversation(original)
+
+        kwargs = run_codex.call_args.kwargs
+        assert kwargs["user_message"][:-1] == original
+        assert kwargs["user_message"][-1] == {
+            "type": "text",
+            "text": current_context,
+        }
+        assert kwargs["messages"][0]["content"] == original
+        assert len(original) == 2
+        assert result == codex_result
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"
@@ -4066,7 +4203,14 @@ class TestRunConversation:
         ]
         assert all("message_count" in c and isinstance(c.get("request_messages"), list) for c in pre_request_calls)
         assert all("request" in c and "messages" in c["request"]["body"] for c in pre_request_calls)
-        assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
+        assert any(
+            msg.get("role") == "user"
+            and isinstance(msg.get("content"), str)
+            and msg["content"].startswith(
+                "search something\n\n[System note: Current time is "
+            )
+            for msg in pre_request_calls[0]["request_messages"]
+        )
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
 

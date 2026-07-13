@@ -32,7 +32,9 @@ class FakeAgent:
         self.valid_tool_names = []
         self.persisted_messages = None
 
-    def _handle_max_iterations(self, messages, api_call_count):
+    def _handle_max_iterations(
+        self, messages, api_call_count, *, current_user_context=""
+    ):
         raise AssertionError("not expected")
 
     def _emit_status(self, *_args, **_kwargs):

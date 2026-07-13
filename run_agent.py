@@ -5779,10 +5779,21 @@ class AIAgent:
         from agent.tool_executor import execute_tool_calls_sequential
         return execute_tool_calls_sequential(self, assistant_message, messages, effective_task_id, api_call_count)
 
-    def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
+    def _handle_max_iterations(
+        self,
+        messages: list,
+        api_call_count: int,
+        *,
+        current_user_context: str = "",
+    ) -> str:
         """Forwarder — see ``agent.chat_completion_helpers.handle_max_iterations``."""
         from agent.chat_completion_helpers import handle_max_iterations
-        return handle_max_iterations(self, messages, api_call_count)
+        return handle_max_iterations(
+            self,
+            messages,
+            api_call_count,
+            current_user_context=current_user_context,
+        )
 
     def run_conversation(
         self,

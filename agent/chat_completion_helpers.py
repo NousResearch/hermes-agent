@@ -1671,7 +1671,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 
-def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+def handle_max_iterations(
+    agent,
+    messages: list,
+    api_call_count: int,
+    *,
+    current_user_context: str = "",
+) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
 
@@ -1681,14 +1687,23 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         "without calling any more tools."
     )
     messages.append({"role": "user", "content": summary_request})
+    summary_user_idx = len(messages) - 1
 
     try:
         # Build API messages, stripping internal-only fields
         # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
         _needs_sanitize = agent._should_sanitize_tool_calls()
         api_messages = []
-        for msg in messages:
+        for idx, msg in enumerate(messages):
             api_msg = msg.copy()
+            if (
+                idx == summary_user_idx
+                and current_user_context
+                and isinstance(api_msg.get("content"), str)
+            ):
+                api_msg["content"] = (
+                    f"{api_msg['content']}\n\n{current_user_context}"
+                )
             agent._copy_reasoning_content_for_api(msg, api_msg)
             for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                 api_msg.pop(internal_field, None)

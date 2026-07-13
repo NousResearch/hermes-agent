@@ -356,6 +356,34 @@ def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _enforce_macos_synchronous_full(conn: sqlite3.Connection) -> None:
+    """Enforce ``PRAGMA synchronous=FULL`` on macOS to prevent btree corruption.
+
+    On Darwin, the default ``synchronous=NORMAL`` only calls ``fsync()``,
+    which Apple's fsync(2) man page explicitly states does *not* guarantee
+    data-on-platter or write-ordering. During a WAL checkpoint race with
+    process termination (e.g., launchd shutdown), this can leave the main
+    DB with half-written btree pages → ``btreeInitPage error 11``.
+
+    WAL mode's durability guarantee assumes the OS honors fsync barriers;
+    macOS does not unless we explicitly set ``synchronous=FULL`` (which
+    issues ``fsync()`` *and* ``F_FULLFSYNC`` via checkpoint_fullfsync=1).
+
+    This function is called after any successful WAL activation (either
+    from ``apply_wal_with_fallback()`` setting a fresh WAL or when probing
+    an existing WAL mode). It ensures macOS connections always use FULL
+    synchronous mode, even if a prior connection set ``synchronous=NORMAL``.
+
+    Best-effort: never raises.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        conn.execute("PRAGMA synchronous=FULL")
+    except sqlite3.OperationalError:
+        pass
+
+
 def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
@@ -387,6 +415,7 @@ def apply_wal_with_fallback(
         current_mode = conn.execute("PRAGMA journal_mode").fetchone()
         if current_mode and current_mode[0] == "wal":
             _apply_macos_checkpoint_barrier(conn)
+            _enforce_macos_synchronous_full(conn)
             return "wal"
     except sqlite3.OperationalError:
         pass
@@ -394,6 +423,7 @@ def apply_wal_with_fallback(
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         _apply_macos_checkpoint_barrier(conn)
+        _enforce_macos_synchronous_full(conn)
         return "wal"
     except sqlite3.OperationalError as exc:
         msg = str(exc).lower()

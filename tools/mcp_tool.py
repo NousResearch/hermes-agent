@@ -3676,6 +3676,16 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
         try:
             return future.result(timeout=wait_timeout)
         except concurrent.futures.TimeoutError:
+            # On Py>=3.8 concurrent.futures.TimeoutError IS builtin TimeoutError,
+            # so this also catches a COMPLETED future whose stored exception is a
+            # real TimeoutError (e.g. an inner asyncio.wait_for hitting the
+            # configured mcp_servers.<srv>.timeout). Re-resolving a done future
+            # returns instantly and re-raises the same exception object, tightly
+            # spinning and growing its __traceback__ unboundedly (gateway OOM).
+            # Resolve once when done: value on a poll/success race, real
+            # exception otherwise — capping the traceback at constant depth.
+            if future.done():
+                return future.result()
             continue
 
 

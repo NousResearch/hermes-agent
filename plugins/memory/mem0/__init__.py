@@ -1279,6 +1279,21 @@ class Mem0MemoryProvider(MemoryProvider):
                     self._destructive_cfg[k] = type(self._destructive_cfg[k])(self._config[k])
                 except (ValueError, TypeError):
                     pass
+        # Startup orphan-recovery: the capture drain worker (and its lease-reaper) runs INSIDE a
+        # daemon thread that dies with the process on a gateway restart. If rows were `inflight`
+        # (leased) at that moment they're orphaned — and the reaper that would reclaim them is only
+        # reachable via _get_capture_pipeline(), which is otherwise called ONLY from sync_turn. So on
+        # an idle gateway (no new turns) the orphans can sit until traffic happens to wake the worker.
+        # Warm the pipeline HERE at session init when capture is on, so a fresh gateway starts the
+        # worker+reaper immediately and recovers orphaned leases without waiting for a turn.
+        # Degrade-safe (INV-3): _get_capture_pipeline() already swallows all construction/start
+        # errors internally (returns None), so this guard exists ONLY to keep a raise from
+        # capture_is_on() (a cheap flag read) from ever breaking session initialization.
+        try:
+            if capture_is_on(self._capture):
+                self._get_capture_pipeline()
+        except Exception as e:
+            logger.debug("mem0 capture: startup pipeline warm-up skipped (non-fatal): %s", e)
 
     def _read_filters(self) -> Dict[str, Any]:
         """Filters for search/get_all — scoped to user only for cross-session recall."""

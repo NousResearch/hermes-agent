@@ -154,6 +154,34 @@ def test_startup_drains_inherited_rows_without_a_new_turn(tmp_path):
     p.stop()
 
 
+def test_startup_recovers_orphaned_inflight_leases_without_a_new_turn(tmp_path):
+    """2026-07-13 orphan-recovery: a gateway restart kills the drain worker's daemon thread. Rows
+    that were `inflight` (leased) at that moment are orphaned — and the lease-reaper that reclaims
+    them runs INSIDE that worker loop. A fresh pipeline built over a queue holding ONLY an orphaned
+    inflight row (no pending) must still start the worker at construction (maybe_start_pending counts
+    inflight), so the reaper reclaims the expired lease back to pending without waiting for a turn."""
+    qpath = str(tmp_path / "cq.db")
+    from capture_queue import CaptureQueue
+    q0 = CaptureQueue(qpath)
+    k = idem_key("s", 1, "orphaned fact", "ok")
+    q0.enqueue(k, {"user": "orphaned fact", "assistant": "ok"}, now=1000)
+    q0.lease_one(lease_s=30, now=1000)          # -> inflight, lease expires at 1030, no verdict
+    counts0 = q0.counts()
+    assert counts0.get("inflight", 0) == 1 and counts0.get("pending", 0) == 0
+    store = FakeStore()
+    # fresh pipeline over that queue with capture active — NO enqueue_turn (idle gateway)
+    p = cp.CapturePipeline(
+        capture_on_fn=lambda: True, add_fn=store.add, recall_idem_fn=store.recall_idem,
+        scrub_fn=lambda f: scrub.filter_facts(f), forget_fn=store.forget, get_written_fn=store.get_written,
+        write_filters={"user_id": "ace"}, model="gpt-5.4-mini", queue_path=qpath)
+    assert p._started is True                    # started at construction because inflight work existed
+    # drive one reaper sweep past the expired lease -> orphan returns to pending (no attempt burn)
+    p._worker._q.reap(now=1100)
+    after = p._worker._q.counts()
+    assert after.get("inflight", 0) == 0 and after.get("pending", 0) == 1
+    p.stop()
+
+
 def test_live_capture_flip_honored(tmp_path):
     """capture_on is read fresh each call — an off->on flip mid-process is honored (no restart)."""
     state = {"on": False}

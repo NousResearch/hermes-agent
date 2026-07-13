@@ -648,6 +648,23 @@ class SessionManager:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
 
         _register_task_cwd(session_id, cwd)
+
+        # Bounded wait for background MCP discovery so already-spawning fast
+        # servers land in the agent's tool snapshot.  ACP entry.py fires
+        # discovery in a background daemon thread (start_background_mcp_discovery);
+        # the agent snapshots tools once at build (run_agent/agent_init) and
+        # never re-reads the registry, so without this join a reachable-but-
+        # slow configured server would be invisible for the whole session.
+        # Bounded by ``mcp_discovery_timeout`` (config.yaml, default ~1.5s) so a
+        # dead server can't block — servers that miss the bound are picked up
+        # by the automatic late-refresh (see HermesACPAgent._schedule_mcp_late_refresh).
+        try:
+            from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+            wait_for_mcp_discovery()
+        except Exception:
+            logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
+
         agent = AIAgent(**kwargs)
         # Codex app-server sessions are spawned lazily on the first turn. Stamp
         # the ACP workspace onto the agent so the Codex runtime starts from the

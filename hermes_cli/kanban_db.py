@@ -7454,6 +7454,21 @@ def _rotated_log_path(log_path: Path, generation: int) -> Path:
     return log_path.with_suffix(log_path.suffix + f".{generation}")
 
 
+def _harden_worker_log_permissions(log_path: Path) -> None:
+    """Restrict an existing worker log to its owner on POSIX platforms."""
+    try:
+        os.chmod(log_path, 0o600)
+    except OSError:
+        pass
+
+
+def _open_worker_log(log_path: Path):
+    """Open a worker log for append without creating a world-readable file."""
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    _harden_worker_log_permissions(log_path)
+    return os.fdopen(fd, "ab")
+
+
 def _rotate_worker_log(
     log_path: Path,
     max_bytes: int,
@@ -7466,15 +7481,24 @@ def _rotate_worker_log(
     Higher values shift older generations up to ``backup_count``.
     """
     try:
-        if not log_path.exists():
-            return
-        if log_path.stat().st_size <= max_bytes:
-            return
         backup_count = _positive_int(
             backup_count,
             DEFAULT_LOG_BACKUP_COUNT,
             minimum=0,
         )
+        for candidate in (
+            log_path,
+            *(
+                _rotated_log_path(log_path, generation)
+                for generation in range(1, backup_count + 1)
+            ),
+        ):
+            if candidate.exists():
+                _harden_worker_log_permissions(candidate)
+        if not log_path.exists():
+            return
+        if log_path.stat().st_size <= max_bytes:
+            return
         if backup_count == 0:
             log_path.unlink()
             return
@@ -7493,6 +7517,10 @@ def _rotate_worker_log(
             except OSError:
                 pass
         log_path.rename(_rotated_log_path(log_path, 1))
+        for generation in range(1, backup_count + 1):
+            rotated = _rotated_log_path(log_path, generation)
+            if rotated.exists():
+                _harden_worker_log_permissions(rotated)
     except OSError:
         pass
 
@@ -7833,7 +7861,7 @@ def _default_spawn(
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
 
     # Use 'a' so a re-run on unblock appends rather than overwrites.
-    log_f = open(log_path, "ab")
+    log_f = _open_worker_log(log_path)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,

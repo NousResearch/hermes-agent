@@ -577,6 +577,17 @@ try:
 except Exception:
     pass  # best-effort — redaction stays at default (enabled) on config errors
 
+# Dispatcher-spawned Kanban workers write stdout/stderr to durable per-task
+# logs. Install the redacting streams before logging handlers capture stderr so
+# every Python-level worker message crosses the same secret-scrubbing boundary.
+if os.environ.get("HERMES_KANBAN_TASK"):
+    try:
+        from hermes_cli.worker_log import install_worker_log_redaction
+
+        install_worker_log_redaction()
+    except Exception:
+        pass  # best-effort; the dispatcher still restricts log file permissions
+
 # Initialize centralized file logging early — all `hermes` subcommands
 # (chat, setup, gateway, config, etc.) write to agent.log + errors.log.
 # Dashboard entrypoints bootstrap with GUI mode so gui.log is always present

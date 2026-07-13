@@ -736,10 +736,9 @@ class ChatCompletionsTransport(ProviderTransport):
         # ``None`` for normal responses, so this is a no-op in the common case.
         content = msg.content
         if not tool_calls:
-            text_tool_calls = parse_text_tool_calls(content)
-            if text_tool_calls:
-                tool_calls = text_tool_calls
-                content = None
+            parsed_text_tool_calls = parse_text_tool_calls(content)
+            if parsed_text_tool_calls:
+                content, tool_calls = parsed_text_tool_calls
                 finish_reason = "tool_calls"
         refusal = getattr(msg, "refusal", None)
         if refusal is None and hasattr(msg, "model_extra"):

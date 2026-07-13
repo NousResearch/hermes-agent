@@ -11,28 +11,44 @@ from agent.transports.types import ToolCall
 
 
 _TEXT_TOOL_CALL_BLOCK_RE = re.compile(
-    r"^\s*<(?P<tag>tool_?calls?)\b[^>]*>\s*(?P<payload>[\s\S]*?)\s*</(?P=tag)>\s*$",
+    r"<(?P<tag>tool_?calls?)\b[^>]*>\s*(?P<payload>[\s\S]*?)\s*</(?P=tag)>\s*$",
     re.IGNORECASE,
 )
 _TEXT_TOOL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$")
 _MAX_TEXT_TOOL_CALLS = 8
 
 
-def parse_text_tool_calls(content: Any) -> list[ToolCall] | None:
-    """Promote an all-content tool-call block to structured calls.
+def parse_text_tool_calls(content: Any) -> tuple[str | None, list[ToolCall]] | None:
+    """Promote a terminal tool-call block to structured calls.
 
     Some OpenAI-compatible local models ignore the structured ``tool_calls``
     response field and instead emit a protocol block such as
     ``<TOOLCALL>[{"name": "skill_view", ...}]</TOOLCALL>``. Treat that as a
-    tool turn only when the block is the *entire* assistant message and every
-    call has a valid name plus object arguments. This keeps ordinary prose,
-    quoted examples, malformed JSON, and mixed text/tool responses inert.
+    tool turn when the block is either the entire assistant message or a
+    newline-delimited terminal suffix, and every call has a valid name plus
+    object arguments. Any preceding prose is preserved as assistant content.
+    Inline examples, fenced examples, malformed JSON, and text after the block
+    remain inert.
     """
     if not isinstance(content, str) or not content.strip():
         return None
-    match = _TEXT_TOOL_CALL_BLOCK_RE.fullmatch(content)
+    match = _TEXT_TOOL_CALL_BLOCK_RE.search(content)
     if not match:
         return None
+    prefix = content[: match.start()]
+    if prefix.strip():
+        # A mixed prose/tool response is only protocol when the opening tag is
+        # on its own new line. This rejects inline quoted examples while still
+        # accepting the exact shape emitted by qwen during real agent runs.
+        if not prefix.rstrip(" \t").endswith(("\n", "\r")):
+            return None
+        # A closing Markdown fence after the tag already prevents the regex
+        # match; reject an opening fence immediately before it as well.
+        if prefix.rstrip().endswith("```"):
+            return None
+        visible_content = prefix.rstrip() or None
+    else:
+        visible_content = None
     try:
         payload = json.loads(match.group("payload"))
     except (TypeError, ValueError):
@@ -71,4 +87,4 @@ def parse_text_tool_calls(content: Any) -> list[ToolCall] | None:
                 arguments=json.dumps(arguments, separators=(",", ":")),
             )
         )
-    return parsed
+    return visible_content, parsed

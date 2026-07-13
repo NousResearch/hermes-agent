@@ -41,6 +41,7 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/api/sessions", adapter._handle_list_sessions)
     app.router.add_post("/api/sessions", adapter._handle_create_session)
+    app.router.add_delete("/api/sessions", adapter._handle_delete_sessions)
     app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
     app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
     app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
@@ -167,6 +168,54 @@ async def test_session_crud_and_message_history(adapter, session_db):
         deleted = await delete_resp.json()
         assert deleted == {"object": "hermes.session.deleted", "id": session_id, "deleted": True}
         assert session_db.get_session(session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_all_sessions_clears_more_than_one_list_page(adapter, session_db):
+    for index in range(205):
+        session_id = session_db.create_session(f"mobile-{index:03d}", "api_server")
+        session_db.append_message(session_id, "user", f"message {index}")
+    archived_id = session_db.create_session("archived-mobile", "api_server")
+    session_db.set_session_archived(archived_id, True)
+    child_id = session_db.create_session(
+        "child-mobile",
+        "subagent",
+        parent_session_id="mobile-000",
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        first_page = await cli.get("/api/sessions?limit=50")
+        assert first_page.status == 200
+        assert len((await first_page.json())["data"]) == 50
+
+        response = await cli.delete("/api/sessions")
+        assert response.status == 200
+        payload = await response.json()
+
+    assert payload == {
+        "object": "hermes.session.deleted_all",
+        "deleted": 207,
+    }
+    assert session_db.list_sessions_rich(
+        limit=1_000,
+        include_children=True,
+        project_compression_tips=False,
+        include_archived=True,
+    ) == []
+    assert session_db.get_session(child_id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_all_sessions_requires_valid_api_key(auth_adapter, session_db):
+    session_db.create_session("keep-me", "api_server")
+    app = _create_session_app(auth_adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.delete("/api/sessions")
+
+    assert response.status == 401
+    assert session_db.get_session("keep-me") is not None
 
 
 @pytest.mark.asyncio

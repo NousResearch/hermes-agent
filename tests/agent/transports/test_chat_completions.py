@@ -923,6 +923,66 @@ class TestChatCompletionsNormalize:
         assert nr.tool_calls[0].arguments == '{"name":"stripe-vault"}'
         assert nr.tool_calls[0].id.startswith("text_call_")
 
+    def test_promotes_observed_qwen_prose_then_terminal_text_tool_call(self, transport):
+        content = (
+            "Executing:\n\n"
+            "1. Reddit Buyer-Signal Scan\n"
+            "2. Processing Customer Assets\n"
+            "3. Automated Lead Follow-up\n"
+            '<TOOLCALL>[{"name":"read_file","arguments":'
+            '{"limit":50,"offset":1,"path":"outreach/pending-assets.md"}}]'
+            "</TOOLCALL>"
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content == (
+            "Executing:\n\n"
+            "1. Reddit Buyer-Signal Scan\n"
+            "2. Processing Customer Assets\n"
+            "3. Automated Lead Follow-up"
+        )
+        assert nr.finish_reason == "tool_calls"
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].name == "read_file"
+        assert nr.tool_calls[0].arguments == (
+            '{"limit":50,"offset":1,"path":"outreach/pending-assets.md"}'
+        )
+
+    def test_does_not_promote_fenced_terminal_text_tool_call_example(self, transport):
+        content = (
+            "Example:\n```\n"
+            '<TOOLCALL>[{"name":"terminal","arguments":{}}]</TOOLCALL>'
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=content,
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.content == content
+        assert nr.finish_reason == "stop"
+        assert nr.tool_calls is None
+
     def test_promotes_openai_shaped_text_tool_call(self, transport):
         r = SimpleNamespace(
             choices=[SimpleNamespace(

@@ -10,6 +10,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
 - GET  /api/sessions               — list client-visible Hermes sessions
 - POST /api/sessions               — create an empty Hermes session
+- DELETE /api/sessions             — delete every persisted session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
 - GET  /api/sessions/{session_id}/messages — read session message history
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
@@ -1847,6 +1848,42 @@ class APIServerAdapter(BasePlatformAdapter):
         db = self._ensure_session_db()
         deleted = db.delete_session(session_id)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
+
+    async def _handle_delete_sessions(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/sessions — delete every persisted session.
+
+        Mobile clients use this endpoint for the explicit, confirmed "Clear
+        all" action. Listing then deleting client-side is not equivalent: the
+        list API is paginated, so clients with more than one page leave older
+        sessions behind and make cleared threads appear to return.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(
+                _openai_error(
+                    "Session database unavailable",
+                    code="session_db_unavailable",
+                ),
+                status=503,
+            )
+        sessions = db.list_sessions_rich(
+            limit=1_000_000,
+            include_children=True,
+            project_compression_tips=False,
+            include_archived=True,
+            compact_rows=True,
+        )
+        session_ids = [session["id"] for session in sessions if session.get("id")]
+        deleted = db.delete_sessions(session_ids)
+        return web.json_response(
+            {
+                "object": "hermes.session.deleted_all",
+                "deleted": deleted,
+            }
+        )
 
     async def _handle_session_messages(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions/{session_id}/messages."""
@@ -4850,6 +4887,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)
+            self._app.router.add_delete("/api/sessions", self._handle_delete_sessions)
             self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)
             self._app.router.add_patch("/api/sessions/{session_id}", self._handle_patch_session)
             self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)

@@ -3,7 +3,6 @@
 When has_retried_429 is lost (user cancels between 429s), the pool should
 still rotate if the current credential is already marked exhausted.
 """
-import pytest
 from unittest.mock import MagicMock, patch
 
 from agent.credential_pool import PooledCredential, STATUS_EXHAUSTED
@@ -28,6 +27,9 @@ def _make_pool(entries):
     pool = MagicMock()
     pool.entries = entries
     pool.current.return_value = entries[0]
+    # Must be set explicitly — MagicMock.provider returns a truthy
+    # child mock, which would trigger the provider-mismatch guard.
+    pool.provider = ""
     return pool
 
 

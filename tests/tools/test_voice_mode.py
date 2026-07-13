@@ -72,6 +72,62 @@ def mock_sd(monkeypatch):
 # detect_audio_environment — WSL / SSH / Docker detection
 # ============================================================================
 
+class TestPulseSocketReachable:
+    def test_no_env_no_socket(self, monkeypatch):
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        from tools.voice_mode import _pulse_socket_reachable
+        assert _pulse_socket_reachable() is False
+
+    def test_stale_socket_file_not_reachable(self, monkeypatch, tmp_path):
+        """A socket file with no listener should not count as reachable."""
+        import socket as _socket
+        sock_path = tmp_path / "pulse" / "native"
+        sock_path.parent.mkdir(parents=True)
+        # Create + bind, then close so the path is a stale socket file.
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.bind(str(sock_path))
+        s.close()
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        from tools.voice_mode import _pulse_socket_reachable
+        assert _pulse_socket_reachable() is False
+
+    def test_listening_socket_reachable_via_xdg_runtime(self, monkeypatch, tmp_path):
+        """A live PulseAudio-style socket under XDG_RUNTIME_DIR is reachable (#35622)."""
+        import socket as _socket
+        sock_path = tmp_path / "pulse" / "native"
+        sock_path.parent.mkdir(parents=True)
+        server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        server.bind(str(sock_path))
+        server.listen(1)
+        try:
+            monkeypatch.delenv("PULSE_SERVER", raising=False)
+            monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
+            monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+            from tools.voice_mode import _pulse_socket_reachable
+            assert _pulse_socket_reachable() is True
+        finally:
+            server.close()
+
+    def test_listening_socket_reachable_via_pulse_server_env(self, monkeypatch, tmp_path):
+        import socket as _socket
+        sock_path = tmp_path / "native"
+        server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        server.bind(str(sock_path))
+        server.listen(1)
+        try:
+            monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
+            monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+            monkeypatch.setenv("PULSE_SERVER", f"unix:{sock_path}")
+            from tools.voice_mode import _pulse_socket_reachable
+            assert _pulse_socket_reachable() is True
+        finally:
+            server.close()
+
+
 class TestDetectAudioEnvironment:
     def test_clean_environment_is_available(self, monkeypatch):
         """No SSH, Docker, or WSL — should be available."""
@@ -88,8 +144,11 @@ class TestDetectAudioEnvironment:
         assert result["warnings"] == []
 
     def test_ssh_blocks_voice(self, monkeypatch):
-        """SSH environment should block voice mode."""
+        """SSH environment without a reachable sound server should block voice mode."""
         monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 54321 22")
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
+        monkeypatch.setattr("tools.voice_mode._pulse_socket_reachable", lambda: False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
 
@@ -98,12 +157,46 @@ class TestDetectAudioEnvironment:
         assert result["available"] is False
         assert any("SSH" in w for w in result["warnings"])
 
+    def test_ssh_with_pulse_server_allows_voice(self, monkeypatch):
+        """SSH with PULSE_SERVER set should NOT block voice mode (#35622)."""
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 54321 22")
+        monkeypatch.setenv("PULSE_SERVER", "unix:/run/user/1002/pulse/native")
+        monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
+        monkeypatch.setattr("tools.voice_mode._import_audio",
+                            lambda: (MagicMock(), MagicMock()))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+        assert result["available"] is True
+        assert result["warnings"] == []
+        assert any("SSH" in n for n in result.get("notices", []))
+
+    def test_ssh_with_reachable_pulse_socket_allows_voice(self, monkeypatch):
+        """SSH with a reachable PulseAudio socket (no env vars) allows voice (#35622)."""
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 54321 22")
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
+        # User runs `pulseaudio &` locally on the SSH host: the default socket
+        # is reachable even though PULSE_SERVER is unset.
+        monkeypatch.setattr("tools.voice_mode._pulse_socket_reachable", lambda: True)
+        monkeypatch.setattr("tools.voice_mode._import_audio",
+                            lambda: (MagicMock(), MagicMock()))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+        assert result["available"] is True
+        assert result["warnings"] == []
+        assert any("SSH" in n for n in result.get("notices", []))
+
     def test_wsl_without_pulse_blocks_voice(self, monkeypatch, tmp_path):
         """WSL without PULSE_SERVER should block voice mode."""
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
         monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.setattr("tools.voice_mode._pulse_socket_reachable", lambda: False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
 
@@ -184,6 +277,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
         monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.setattr("tools.voice_mode._pulse_socket_reachable", lambda: False)
 
         mock_sd = MagicMock()
         mock_sd.query_devices.side_effect = Exception("device query failed")
@@ -228,6 +322,101 @@ class TestDetectAudioEnvironment:
         assert result["available"] is False
         assert any("Termux:API Android app is not installed" in w for w in result["warnings"])
 
+
+    def test_docker_with_pulse_server_allows_voice(self, monkeypatch):
+        """Docker with PULSE_SERVER set should NOT block voice mode (#21203)."""
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.setenv("PULSE_SERVER", "unix:/run/user/1000/pulse/native")
+        monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+        monkeypatch.setattr("tools.voice_mode._import_audio",
+                            lambda: (MagicMock(), MagicMock()))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert result["warnings"] == []
+        assert any("container" in n.lower() for n in result.get("notices", []))
+
+    def test_docker_with_pipewire_remote_allows_voice(self, monkeypatch):
+        """Docker with PIPEWIRE_REMOTE set should NOT block voice mode (#21203)."""
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.setenv("PIPEWIRE_REMOTE", "/run/user/1000/pipewire-0")
+        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+        monkeypatch.setattr("tools.voice_mode._import_audio",
+                            lambda: (MagicMock(), MagicMock()))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert result["warnings"] == []
+        assert any("container" in n.lower() for n in result.get("notices", []))
+
+    def test_docker_with_pipewire_remote_and_no_devices_allows_voice(self, monkeypatch):
+        """PIPEWIRE_REMOTE should bypass empty PortAudio device lists in Docker."""
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.setenv("PIPEWIRE_REMOTE", "/run/user/1000/pipewire-0")
+        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+
+        sd = MagicMock()
+        sd.query_devices.return_value = []
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (sd, MagicMock()))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert result["warnings"] == []
+        assert any("host audio forwarding" in n.lower() for n in result.get("notices", []))
+
+    def test_docker_with_pipewire_remote_and_query_failure_allows_voice(self, monkeypatch):
+        """PIPEWIRE_REMOTE should bypass PortAudio query failures in Docker."""
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.setenv("PIPEWIRE_REMOTE", "/run/user/1000/pipewire-0")
+        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+
+        sd = MagicMock()
+        sd.query_devices.side_effect = RuntimeError("boom")
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (sd, MagicMock()))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert result["warnings"] == []
+        assert any("host audio forwarding" in n.lower() for n in result.get("notices", []))
+
+    def test_docker_without_audio_forwarding_blocks_voice(self, monkeypatch):
+        """Docker without PULSE_SERVER/PIPEWIRE_REMOTE keeps blocking voice mode."""
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
+        monkeypatch.setattr("tools.voice_mode._pulse_socket_reachable", lambda: False)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+        monkeypatch.setattr("tools.voice_mode._import_audio",
+                            lambda: (MagicMock(), MagicMock()))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is False
+        assert any("container" in w.lower() for w in result["warnings"])
+        assert any("PULSE_SERVER" in w or "PIPEWIRE_REMOTE" in w for w in result["warnings"])
 
     def test_termux_api_microphone_allows_voice_without_sounddevice(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
@@ -850,7 +1039,7 @@ class TestSilenceDetection:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder, SAMPLE_RATE
+        from tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         # Use very short durations for testing
@@ -1228,7 +1417,7 @@ class TestSubprocessTimeoutKill:
     """Bug: proc.wait(timeout) raised TimeoutExpired but process was not killed."""
 
     def test_timeout_kills_process(self):
-        import subprocess, os
+        import subprocess
         proc = subprocess.Popen(["sleep", "600"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         pid = proc.pid
         assert proc.poll() is None

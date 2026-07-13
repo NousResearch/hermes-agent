@@ -7964,8 +7964,15 @@ class TelegramAdapter(BasePlatformAdapter):
         # / caption when no native quote is present.
         reply_to_id = None
         reply_to_text = None
+        reply_to_is_own = False
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
+            replied_user = getattr(message.reply_to_message, "from_user", None)
+            reply_to_is_own = bool(
+                replied_user is not None
+                and self._bot is not None
+                and getattr(replied_user, "id", None) == getattr(self._bot, "id", None)
+            )
             quote = getattr(message, "quote", None)
             quote_text = getattr(quote, "text", None) if quote is not None else None
             if quote_text:
@@ -8008,6 +8015,7 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_to_is_own,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,

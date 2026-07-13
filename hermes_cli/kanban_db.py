@@ -1263,6 +1263,27 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+CREATE TABLE IF NOT EXISTS kanban_notify_outbox (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    root_task_id     TEXT NOT NULL,
+    task_id          TEXT NOT NULL,
+    event_id         INTEGER NOT NULL,
+    event_kind       TEXT NOT NULL,
+    platform         TEXT NOT NULL,
+    chat_id          TEXT NOT NULL,
+    thread_id        TEXT NOT NULL DEFAULT '',
+    notifier_profile TEXT,
+    tenant           TEXT,
+    state            TEXT NOT NULL DEFAULT 'pending',
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  INTEGER NOT NULL DEFAULT 0,
+    message_receipt  TEXT,
+    last_error       TEXT,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    UNIQUE(root_task_id, task_id, event_id, platform, chat_id, thread_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1273,6 +1294,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_notify_outbox_pending ON kanban_notify_outbox(state, next_attempt_at);
 """
 
 
@@ -2898,6 +2920,68 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
         (task_id,),
     ).fetchall()
     return [r["child_id"] for r in rows]
+
+
+def root_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Return every root ancestor, preserving board and tenant isolation."""
+    row = conn.execute("SELECT tenant FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return []
+    rows = conn.execute(
+        """
+        WITH RECURSIVE ancestors(id) AS (
+            SELECT ? UNION SELECT l.parent_id FROM task_links l
+            JOIN ancestors a ON l.child_id = a.id
+            JOIN tasks p ON p.id = l.parent_id WHERE p.tenant IS ?
+        )
+        SELECT a.id FROM ancestors a
+        WHERE NOT EXISTS (SELECT 1 FROM task_links l WHERE l.child_id = a.id)
+        ORDER BY a.id
+        """, (task_id, row["tenant"]),
+    ).fetchall()
+    return [r["id"] for r in rows] or [task_id]
+
+
+def task_rollup(conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+    """Summarize descendant progress and the deepest actionable blocker."""
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    rows = conn.execute(
+        """
+        WITH RECURSIVE descendants(id, depth) AS (
+            SELECT child_id, 1 FROM task_links WHERE parent_id = ?
+            UNION ALL SELECT l.child_id, d.depth + 1 FROM task_links l
+            JOIN descendants d ON l.parent_id = d.id
+        )
+        SELECT t.*, d.depth FROM descendants d JOIN tasks t ON t.id = d.id
+        WHERE t.tenant IS ? ORDER BY d.depth DESC, t.created_at ASC
+        """, (task_id, task.tenant),
+    ).fetchall()
+    active = [r for r in rows if r["status"] not in {"done", "archived"}]
+    blockers = [r for r in active if r["status"] in {"blocked", "review"}]
+    blocker = blockers[0] if blockers else None
+    reason = None
+    if blocker:
+        ev = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked' ORDER BY id DESC LIMIT 1",
+            (blocker["id"],),
+        ).fetchone()
+        if ev and ev["payload"]:
+            try:
+                reason = json.loads(ev["payload"]).get("reason")
+            except Exception:
+                pass
+    return {
+        "total_workstreams": len(rows),
+        "completed_workstreams": sum(r["status"] == "done" for r in rows),
+        "active_descendants": [r["id"] for r in active],
+        "effective_status": "blocked" if blocker else task.status,
+        "actionable_blocker": ({"task_id": blocker["id"], "title": blocker["title"],
+                                "status": blocker["status"], "reason": reason}
+                               if blocker else None),
+        "required_action": reason,
+    }
 
 
 def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Optional[str]]]:
@@ -8281,6 +8365,104 @@ def list_notify_subs(
     return [dict(r) for r in rows]
 
 
+def notify_subs_for_task_lineage(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    """Subscriptions on this task or any root ancestor.
+
+    Returned rows carry ``root_task_id`` and ``event_task_id`` so the gateway
+    can report the child while retaining the originating subscription.
+    """
+    out: list[dict] = []
+    for root_id in root_ids(conn, task_id):
+        for sub in list_notify_subs(conn, root_id):
+            sub["root_task_id"] = root_id
+            sub["event_task_id"] = task_id
+            out.append(sub)
+    return out
+
+
+def enqueue_notify_outbox(
+    conn: sqlite3.Connection, *, sub: dict, event: Event, tenant: Optional[str]
+) -> dict:
+    """Persist a deduplicated notification before any network attempt."""
+    now = int(time.time())
+    root_id = sub.get("root_task_id") or sub["task_id"]
+    event_task_id = sub.get("event_task_id") or event.task_id
+    with write_txn(conn):
+        conn.execute(
+            """INSERT OR IGNORE INTO kanban_notify_outbox
+               (root_task_id, task_id, event_id, event_kind, platform, chat_id,
+                thread_id, notifier_profile, tenant, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (root_id, event_task_id, event.id, event.kind, sub["platform"],
+             sub["chat_id"], sub.get("thread_id") or "",
+             sub.get("notifier_profile"), tenant, now, now),
+        )
+        row = conn.execute(
+            """SELECT * FROM kanban_notify_outbox WHERE root_task_id=? AND task_id=?
+               AND event_id=? AND platform=? AND chat_id=? AND thread_id=?""",
+            (root_id, event_task_id, event.id, sub["platform"], sub["chat_id"],
+             sub.get("thread_id") or ""),
+        ).fetchone()
+    return dict(row)
+
+
+def mark_notify_outbox(
+    conn: sqlite3.Connection, outbox_id: int, *, state: str,
+    receipt: Optional[str] = None, error: Optional[str] = None,
+) -> None:
+    """Record an attempt outcome with bounded exponential retry timing."""
+    if state not in {"pending", "sent", "failed", "acknowledged", "dead_letter"}:
+        raise ValueError(f"invalid notification state {state!r}")
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute("SELECT attempts FROM kanban_notify_outbox WHERE id=?", (outbox_id,)).fetchone()
+        if row is None:
+            return
+        attempts = int(row["attempts"]) + 1
+        if state == "failed" and attempts >= 5:
+            state = "dead_letter"
+        next_attempt = now + min(3600, 5 * (2 ** min(attempts - 1, 8))) if state == "failed" else 0
+        conn.execute(
+            """UPDATE kanban_notify_outbox SET state=?, attempts=?, next_attempt_at=?,
+               message_receipt=COALESCE(?, message_receipt), last_error=?, updated_at=? WHERE id=?""",
+            (state, attempts, next_attempt, receipt, error, now, outbox_id),
+        )
+
+
+def list_notify_outbox(conn: sqlite3.Connection, *, state: Optional[str] = None) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM kanban_notify_outbox" + (" WHERE state=?" if state else "") + " ORDER BY id",
+        ((state,) if state else ()),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def acknowledge_notify_reply(
+    conn: sqlite3.Connection, *, platform: str, chat_id: str,
+    thread_id: Optional[str], receipt: str, reply: str, user_id: Optional[str] = None,
+) -> Optional[str]:
+    """Correlate an explicit reply to a sent blocker, comment, and unblock it."""
+    if not reply.strip() or not receipt:
+        return None
+    row = conn.execute(
+        """SELECT o.* FROM kanban_notify_outbox o JOIN tasks t ON t.id=o.task_id
+           WHERE o.platform=? AND o.chat_id=? AND o.thread_id=?
+             AND o.message_receipt=? AND o.event_kind='blocked' AND o.state='sent'
+             AND t.status IN ('blocked', 'review') ORDER BY o.id DESC LIMIT 1""",
+        (platform, chat_id, thread_id or "", receipt),
+    ).fetchone()
+    if row is None:
+        return None
+    add_comment(conn, row["task_id"], f"gateway:{user_id or 'user'}", reply.strip())
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE kanban_notify_outbox SET state='acknowledged', updated_at=? WHERE id=?",
+            (int(time.time()), row["id"]),
+        )
+    unblock_task(conn, row["task_id"])
+    return row["task_id"]
+
+
 def remove_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -8396,6 +8578,49 @@ def claim_unseen_events_for_sub(
             (int(new_cursor), task_id, platform, chat_id, thread_id or "", int(old_cursor)),
         )
         return old_cursor, new_cursor, events
+
+
+def claim_unseen_lineage_events_for_sub(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None, kinds: Optional[Iterable[str]] = None,
+) -> tuple[int, int, list[Event]]:
+    """Claim relevant events from a subscribed root and all descendants."""
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT last_event_id FROM kanban_notify_subs WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=?",
+            (task_id, platform, chat_id, thread_id or ""),
+        ).fetchone()
+        if row is None:
+            return 0, 0, []
+        old = int(row["last_event_id"])
+        kind_list = list(kinds) if kinds else []
+        placeholders = ",".join("?" for _ in kind_list)
+        rows = conn.execute(
+            """WITH RECURSIVE lineage(id) AS (
+                   SELECT ? UNION SELECT l.child_id FROM task_links l JOIN lineage x ON l.parent_id=x.id
+                   JOIN tasks child ON child.id=l.child_id
+                   JOIN tasks root ON root.id=? AND child.tenant IS root.tenant
+               ) SELECT e.* FROM task_events e JOIN lineage x ON x.id=e.task_id
+               WHERE e.id > ? """ + (f"AND e.kind IN ({placeholders}) " if kind_list else "") +
+            "ORDER BY e.id ASC",
+            [task_id, task_id, old, *kind_list],
+        ).fetchall()
+        events = []
+        for r in rows:
+            try:
+                payload = json.loads(r["payload"]) if r["payload"] else None
+            except Exception:
+                payload = None
+            events.append(Event(id=r["id"], task_id=r["task_id"], kind=r["kind"],
+                                payload=payload, created_at=r["created_at"], run_id=r["run_id"]))
+        if not events:
+            return old, old, []
+        new = max(e.id for e in events)
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id=? WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=? AND last_event_id=?",
+            (new, task_id, platform, chat_id, thread_id or "", old),
+        )
+        return old, new, events
 
 
 def advance_notify_cursor(

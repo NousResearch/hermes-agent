@@ -4593,6 +4593,46 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
 
+        # A reply to a durable Kanban blocker notification is an explicit,
+        # narrow correlation signal. Never consume arbitrary chat messages:
+        # require a reply to this bot's exact recorded outbound receipt.
+        if (
+            event.message_type == MessageType.TEXT
+            and event.reply_to_is_own_message
+            and event.reply_to_message_id
+            and event.text.strip()
+        ):
+            def _consume_kanban_reply():
+                try:
+                    from hermes_cli import kanban_db as _kb
+                    platform = _platform_name(event.source.platform)
+                    for meta in _kb.list_boards(include_archived=False):
+                        conn = _kb.connect(board=meta.get("slug"))
+                        try:
+                            task_id = _kb.acknowledge_notify_reply(
+                                conn, platform=platform,
+                                chat_id=str(event.source.chat_id),
+                                thread_id=event.source.thread_id,
+                                receipt=str(event.reply_to_message_id),
+                                reply=event.text,
+                                user_id=event.source.user_id,
+                            )
+                            if task_id:
+                                return task_id
+                        finally:
+                            conn.close()
+                except Exception:
+                    logger.warning("kanban blocker reply correlation failed", exc_info=True)
+                return None
+            answered_task = await asyncio.to_thread(_consume_kanban_reply)
+            if answered_task:
+                await self.send(
+                    event.source.chat_id,
+                    "Thanks — I attached your answer and resumed the blocked task.",
+                    metadata=_thread_metadata_for_source(event.source, event.message_id),
+                )
+                return
+
         coerce_plaintext_gateway_command(event)
 
         # Rewrite ``event.source.thread_id`` via the installed recovery hook

@@ -59,6 +59,38 @@ def test_click_still_runs_when_current_page_is_public(monkeypatch):
     assert calls == [("task-1", "click", ["@e1"])]
 
 
+@pytest.mark.parametrize(
+    ("tool_call", "args", "command"),
+    [
+        (browser_tool.browser_click, ("@e1",), "click"),
+        (browser_tool.browser_type, ("@e1", "do-not-send-this"), "fill"),
+        (browser_tool.browser_press, ("Enter",), "press"),
+    ],
+)
+def test_private_page_probe_failure_blocks_state_changing_actions(
+    monkeypatch, tool_call, args, command
+):
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(
+        browser_tool,
+        "_current_page_private_url",
+        lambda task_id: browser_tool._URL_PROBE_FAILED,
+    )
+
+    def fail_run(task_id, actual_command, actual_args):
+        if actual_command == command:
+            raise AssertionError("browser command should not run when URL probe fails")
+        return {"success": True}
+
+    monkeypatch.setattr(browser_tool, "_run_browser_command", fail_run)
+
+    out = json.loads(tool_call(*args, task_id="task-1"))
+
+    assert out["success"] is False
+    assert "could not verify the current page URL" in out["error"]
+    assert "do-not-send-this" not in json.dumps(out)
+
+
 def test_guard_inactive_does_not_block_or_probe(monkeypatch):
     """When the SSRF guard is inactive (local backend / allow_private_urls),
     the action must proceed WITHOUT even probing the page URL — a private-looking

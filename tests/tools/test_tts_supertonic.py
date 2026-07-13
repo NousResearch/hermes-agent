@@ -172,6 +172,15 @@ class TestGenerateSupertonicTts:
         assert call["speed"] == 1.0
         assert call["total_steps"] == 8
 
+    def test_global_speed_applied_and_provider_overrides_it(self, tmp_path):
+        tts_tool._generate_supertonic_tts("hi", str(tmp_path / "global.wav"), {"speed": 1.5})
+        assert _StubSupertonicTTS.synth_calls[-1]["speed"] == 1.5
+
+        tts_tool._generate_supertonic_tts(
+            "hi", str(tmp_path / "provider.wav"), {"speed": 1.5, "supertonic": {"speed": 1.25}}
+        )
+        assert _StubSupertonicTTS.synth_calls[-1]["speed"] == 1.25
+
     def test_invalid_voice_and_language_fall_back_to_defaults(self, tmp_path):
         config = {"supertonic": {"voice": "unknown", "lang": "xx"}}
 

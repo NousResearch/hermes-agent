@@ -2290,7 +2290,7 @@ def _generate_supertonic_tts(text: str, output_path: str, tts_config: Dict[str, 
 
     # Clamp tunables to the engine's supported ranges.
     try:
-        speed = float(st_config.get("speed", DEFAULT_SUPERTONIC_SPEED))
+        speed = float(st_config.get("speed", tts_config.get("speed", DEFAULT_SUPERTONIC_SPEED)))
     except (TypeError, ValueError):
         speed = DEFAULT_SUPERTONIC_SPEED
     speed = max(SUPERTONIC_SPEED_MIN, min(SUPERTONIC_SPEED_MAX, speed))

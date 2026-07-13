@@ -555,6 +555,49 @@ class TestStreamingCallbacks:
         # Content is still accumulated in the response
         assert response.choices[0].message.content == "thinking... more text"
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_list_content_after_tool_call_is_normalized(self, mock_close, mock_create):
+        """OpenAI-compatible content blocks must never reach stream callbacks raw.
+
+        Mistral/NVIDIA can emit a text delta as a list of content-block dicts.
+        The list must be flattened before the first direct stream callback and
+        again after a tool-call has switched the stream to the suppression
+        callback path.
+        """
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content=[{"type": "text", "text": "before tool; "}]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_63734", name="read_file")
+            ]),
+            _make_stream_chunk(content=[{"type": "text", "text": "after tool"}]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        deltas = []
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=deltas.append,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert deltas == ["before tool; ", "after tool"]
+        assert response.choices[0].message.content == "before tool; after tool"
+
 
 # ── Test: Streaming Fallback ────────────────────────────────────────────
 

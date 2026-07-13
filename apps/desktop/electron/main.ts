@@ -104,6 +104,7 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import { fontationsWorkaround } from './emoji-font-workaround'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
@@ -201,21 +202,11 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 app.commandLine.appendSwitch('disable-background-timer-throttling')
 
-// macOS 26 (Tahoe): the shipped Apple Color Emoji.ttc (21.4d3e1) has at least
-// one glyph whose embedded sbix PNG SIGBUS-crashes Apple's ImageIO
-// (PNGReadPlugin::InitializePluginData dereferences a corrupt function
-// pointer 0x0BAD4007). Chromium's Fontations (Rust) font backend triggers it
-// because fontations_ffi routes sbix bitmap extraction through
-// NSImage/NSPasteboard → ImageIO. The CSS @font-face alias (styles.css) only
-// covers the renderer's web-content font resolution — the browser process has
-// its own font pipeline that resolves system fonts directly, so the crash
-// fires on CrBrowserMain before CSS can intervene.
-//
-// Disabling FontationsFontBackend makes Chromium fall back to the older
-// SkTypeface/CoreText path that decodes sbix PNGs through Skia's own libpng
-// codec, bypassing the broken ImageIO path entirely.
-if (DARWIN_MAJOR >= 25) {
-  app.commandLine.appendSwitch('disable-features', 'FontationsFontBackend')
+// macOS 26 (Tahoe) emoji SIGBUS workaround — see emoji-font-workaround.ts.
+const emojiWorkaround = fontationsWorkaround(DARWIN_MAJOR)
+
+if (emojiWorkaround) {
+  app.commandLine.appendSwitch(emojiWorkaround.switch, emojiWorkaround.value)
   console.log('[hermes] macOS Tahoe detected; disabling FontationsFontBackend to work around Apple Color Emoji ImageIO crash')
 }
 

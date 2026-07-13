@@ -11519,7 +11519,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
-            if not os.getenv(env_key):
+            home_configured = bool(os.getenv(env_key))
+            if not home_configured:
+                # The canonical home-channel setting is config.yaml.  Keep the
+                # environment-variable check for legacy/operator overrides, but
+                # do not show onboarding when the loaded gateway config already
+                # contains a valid home channel for this platform.
+                try:
+                    configured_home = self.config.get_home_channel(source.platform)
+                    home_configured = bool(
+                        configured_home and configured_home.chat_id
+                    )
+                except Exception:
+                    # Onboarding must remain best-effort if a test/dummy runner
+                    # does not provide the full gateway config interface.
+                    home_configured = False
+            if not home_configured:
                 # Slack dispatches all Hermes commands through a single
                 # parent slash command `/hermes`; bare `/sethome` is not
                 # registered and would fail with "app did not respond".

@@ -2,6 +2,7 @@ import { getSession } from '@/hermes'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { sessionMatchesStoredId } from '@/lib/session-identity'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
@@ -182,9 +183,7 @@ export function patchSessionWorkspace(sessionId: string, cwd: string | undefined
   setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
 }
 
-export function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string): boolean {
-  return session.id === storedSessionId || session._lineage_root_id === storedSessionId
-}
+export { sessionMatchesStoredId } from '@/lib/session-identity'
 
 export function sessionShouldHaveTranscript(session: SessionInfo | undefined): boolean {
   return (session?.message_count ?? 0) > 0

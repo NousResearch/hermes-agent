@@ -23,6 +23,7 @@ import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/he
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
+import { sessionIdentityIds } from '@/lib/session-identity'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
@@ -341,8 +342,8 @@ export function ChatSidebar({
 
   const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
 
-  // Index sessions by both their live id and their lineage-root id so a pin
-  // stored as the pre-compression root resolves to the live continuation tip.
+  // Index sessions by every compression-segment id so pins, search hits, and
+  // active turns resolve to the one projected live conversation row.
   const sessionByAnyId = useMemo(() => {
     const map = new Map<string, SessionInfo>()
 
@@ -350,10 +351,10 @@ export function ChatSidebar({
     // them too — otherwise a pinned cron job can't resolve into the Pinned
     // section. Recents take precedence on id collisions (set last).
     for (const s of [...cronSessions, ...visibleSessions]) {
-      map.set(s.id, s)
-
-      if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
-        map.set(s._lineage_root_id, s)
+      for (const id of sessionIdentityIds(s)) {
+        if (id === s.id || !map.has(id)) {
+          map.set(id, s)
+        }
       }
     }
 

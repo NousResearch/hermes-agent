@@ -3505,7 +3505,7 @@ class SessionDB:
                     projected.append(s)
                     continue
                 tip_id = self.get_compression_tip(s["id"])
-                if tip_id == s["id"]:
+                if not tip_id or tip_id == s["id"]:
                     projected.append(s)
                     continue
                 tip_row = self._get_session_rich_row(tip_id, compact_rows=compact_rows)
@@ -3523,6 +3523,20 @@ class SessionDB:
                     if key in tip_row:
                         merged[key] = tip_row[key]
                 merged["_lineage_root_id"] = s["id"]
+                # A live turn may still be keyed by any segment that was the
+                # tip when the turn started. Surface the complete compression
+                # chain so clients can reconcile that runtime id with this
+                # single projected conversation row after later rotations.
+                # `_session_lineage_root_to_tip` also includes a branch root's
+                # non-compression parent, so trim to this projected root.
+                lineage_ids = self._session_lineage_root_to_tip(tip_id)
+                try:
+                    lineage_ids = lineage_ids[lineage_ids.index(s["id"]):]
+                except ValueError:
+                    # Defensive fallback for an inconsistent parent chain. The
+                    # projected root and tip are still valid reconciliation ids.
+                    lineage_ids = list(dict.fromkeys((s["id"], tip_id)))
+                merged["_lineage_ids"] = lineage_ids
                 projected.append(merged)
             sessions = projected
 

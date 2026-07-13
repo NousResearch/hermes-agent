@@ -7,6 +7,7 @@ import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/l
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { persistentAtom } from '@/lib/persisted'
+import { sessionMatchesStoredId } from '@/lib/session-identity'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
@@ -585,7 +586,7 @@ function openSessionBelongsToProject(projectId: string, projects: ProjectInfo[])
     return false
   }
 
-  const open = $sessions.get().find(s => s.id === openId || s._lineage_root_id === openId)
+  const open = $sessions.get().find(s => sessionMatchesStoredId(s, openId))
 
   return Boolean(open && liveSessionProjectId(open, projects) === projectId)
 }

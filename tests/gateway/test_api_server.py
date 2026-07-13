@@ -51,6 +51,19 @@ class TestCheckRequirements:
         assert check_api_server_requirements() is False
 
 
+class TestSessionResponse:
+    def test_preserves_compression_lineage_aliases(self):
+        payload = APIServerAdapter._session_response({
+            "id": "tip",
+            "_lineage_root_id": "root",
+            "_lineage_ids": ["root", "mid", "tip"],
+            "system_prompt": "private",
+        })
+
+        assert payload["_lineage_ids"] == ["root", "mid", "tip"]
+        assert "system_prompt" not in payload
+
+
 # ---------------------------------------------------------------------------
 # _redact_api_error_text — guards every outward error site (envelopes, SSE
 # error events, cron-endpoint 500 bodies) that routes raw exception text to

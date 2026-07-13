@@ -17,6 +17,7 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { sessionMatchesStoredId } from '../lib/session-identity'
 import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
@@ -148,10 +149,6 @@ const CRON_POLL_INTERVAL_MS = 30_000
 // appears without requiring a manual refresh or route change.
 const MESSAGING_POLL_INTERVAL_MS = 10_000
 const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
-
-function sessionMatchesStoredId(session: { id: string; _lineage_root_id?: null | string }, id: string): boolean {
-  return session.id === id || session._lineage_root_id === id
-}
 
 function hashString(hash: number, value: string): number {
   let next = hash
@@ -418,7 +415,7 @@ export function DesktopController() {
     }
 
     // Pin on the durable lineage-root id so the pin survives auto-compression.
-    const session = $sessions.get().find(s => s.id === sessionId || s._lineage_root_id === sessionId)
+    const session = $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))
     const pinId = session ? sessionPinId(session) : sessionId
 
     if ($pinnedSessionIds.get().includes(pinId)) {
@@ -499,9 +496,7 @@ export function DesktopController() {
         return
       }
 
-      const storedProfile = $sessions
-        .get()
-        .find(session => session.id === storedSessionId || session._lineage_root_id === storedSessionId)?.profile
+      const storedProfile = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))?.profile
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {

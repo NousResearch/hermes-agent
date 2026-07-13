@@ -13273,10 +13273,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # send_multiple_images (Telegram sendPhoto recompresses to ~1280px).
             force_document_attachments = "[[as_document]]" in response
 
-            from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+            from gateway.platforms.base import (
+                BasePlatformAdapter,
+                is_missing_media_delivery_path,
+                should_send_media_as_audio,
+            )
 
-            media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            media_candidates, cleaned = adapter.extract_media(response)
+            media_files = []
+            missing_media_paths = []
+            for candidate in media_candidates:
+                media_path, _ = candidate
+                if is_missing_media_delivery_path(media_path):
+                    missing_media_paths.append(media_path)
+                    continue
+                media_files.extend(BasePlatformAdapter.filter_media_delivery_paths([candidate]))
             # Chain the cleaned text through each extractor (extract_media →
             # extract_images → extract_local_files) so MEDIA: tags and image URLs
             # are removed before the bare-path auto-detect runs. Previously the
@@ -13292,6 +13303,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+            for missing_path in dict.fromkeys(missing_media_paths):
+                display_name = Path(missing_path).name or "attachment"
+                logger.warning(
+                    "[%s] Missing post-stream MEDIA attachment: %s",
+                    adapter.name,
+                    display_name,
+                )
+                try:
+                    await adapter.send(
+                        chat_id=event.source.chat_id,
+                        content=f"Media attachment unavailable: `{display_name}`",
+                        metadata=_thread_meta,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "[%s] Missing post-stream media notice failed: %s",
+                        adapter.name,
+                        e,
+                    )
 
             # Partition out images so they can be sent as a single batch
             # (e.g. Signal's multi-attachment RPC). When [[as_document]] was

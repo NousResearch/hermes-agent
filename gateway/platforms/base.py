@@ -1342,6 +1342,45 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     return None
 
 
+def is_missing_media_delivery_path(path: str) -> bool:
+    """Return whether an absent file would otherwise pass delivery policy."""
+    if not path:
+        return False
+
+    candidate = str(path).strip()
+    if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "`\"'":
+        candidate = candidate[1:-1].strip()
+    candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    if not candidate:
+        return False
+
+    try:
+        expanded = Path(os.path.expanduser(candidate))
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if not expanded.is_absolute():
+        return False
+
+    try:
+        resolved = expanded.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if resolved.exists():
+        return False
+
+    for root in _media_delivery_allowed_roots():
+        try:
+            resolved_root = root.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if _path_is_within(resolved, resolved_root):
+            return True
+
+    if _media_delivery_strict_mode():
+        return False
+    return not _path_under_denied_prefix(resolved)
+
+
 # Neutralise control chars and the Unicode line separators (NEL, LS, PS) that
 # str.splitlines() / log aggregators treat as breaks, so a model-emitted path
 # can't forge a second log line. Truncated to keep records bounded.

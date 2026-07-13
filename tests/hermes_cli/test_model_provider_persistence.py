@@ -6,6 +6,8 @@ isinstance(model, dict)) to silently fail — leaving the provider unset and
 falling back to auto-detection.
 """
 
+import sys
+import types
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -95,6 +97,79 @@ class TestProviderPersistsAfterModelSave:
 
         assert mock_write.call_count == 1
         assert config_path.read_text(encoding="utf-8") == original_text
+
+    def test_openrouter_multi_select_preserves_legacy_fallbacks_in_order(
+        self, config_home, monkeypatch
+    ):
+        """The first choice is primary; normalized old fallbacks precede extras."""
+        import yaml
+
+        from hermes_cli.config import load_config
+        from hermes_cli.model_setup_flows import _model_flow_openrouter
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "model": {"default": "old-model"},
+                    "fallback_providers": [
+                        {"provider": "anthropic", "model": "claude-existing"}
+                    ],
+                    "fallback_model": {
+                        "provider": "openai-api",
+                        "model": "gpt-legacy",
+                    },
+                },
+                sort_keys=False,
+            )
+        )
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-key")
+
+        fake_main = types.ModuleType("hermes_cli.main")
+        fake_main._prompt_api_key = lambda *_args, **_kwargs: (
+            "sk-or-test-key",
+            False,
+        )
+        monkeypatch.setitem(sys.modules, "hermes_cli.main", fake_main)
+
+        captured = {}
+
+        def _select(_models, **kwargs):
+            captured.update(kwargs)
+            return ["model-a", "model-b", "model-c"]
+
+        with (
+            patch(
+                "hermes_cli.models.model_ids",
+                return_value=["model-a", "model-b", "model-c"],
+            ),
+            patch("hermes_cli.models.get_pricing_for_provider", return_value={}),
+            patch("hermes_cli.auth._prompt_model_selection", side_effect=_select),
+            patch("hermes_cli.auth.deactivate_provider"),
+        ):
+            _model_flow_openrouter(load_config(), "old-model")
+
+        config = yaml.safe_load(config_path.read_text()) or {}
+        assert captured["multi_select"] is True
+        assert config["model"]["default"] == "model-a"
+        assert config["model"]["provider"] == "openrouter"
+        assert config["fallback_providers"] == [
+            {"provider": "anthropic", "model": "claude-existing"},
+            {"provider": "openai-api", "model": "gpt-legacy"},
+            {
+                "provider": "openrouter",
+                "model": "model-b",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            },
+            {
+                "provider": "openrouter",
+                "model": "model-c",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            },
+        ]
+        assert "fallback_model" not in config
 
     def test_api_key_provider_saved_when_model_was_string(self, config_home, monkeypatch):
         """_model_flow_api_key_provider must persist the provider even when

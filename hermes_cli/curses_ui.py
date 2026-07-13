@@ -535,6 +535,8 @@ def curses_checklist(
     *,
     cancel_returns: Set[int] | None = None,
     status_fn: Optional[Callable[[Set[int]], str]] = None,
+    description: str | None = None,
+    searchable: bool = False,
 ) -> Set[int]:
     """Curses multi-select checklist. Returns set of selected indices.
 
@@ -546,27 +548,42 @@ def curses_checklist(
         status_fn: Optional callback ``f(chosen_indices) -> str`` whose return
             value is rendered on the bottom row of the terminal.  Use this for
             live aggregate info (e.g. estimated token counts).
+        description: Optional multi-line text shown between the title and
+            checklist hint.
+        searchable: When true, ``/`` opens a type-to-filter prompt. Selected
+            indices always refer to the original unfiltered item list.
     """
     if cancel_returns is None:
         cancel_returns = set(selected)
 
     chosen = set(selected)
+    desc_lines = description.splitlines() if description else []
 
-    def _draw_header(stdscr, max_y, max_x):
+    def _draw_header(stdscr, max_y, max_x, search=None):
         import curses
+        row = 0
         try:
             hattr = curses.A_BOLD
             if curses.has_colors():
                 hattr |= curses.color_pair(2)
-            stdscr.addnstr(0, 0, title, max_x - 1, hattr)
-            stdscr.addnstr(
-                1, 0,
-                "  ↑↓ navigate  SPACE toggle  ENTER confirm  ESC cancel",
-                max_x - 1, curses.A_DIM,
-            )
+            stdscr.addnstr(row, 0, title, max_x - 1, hattr)
+            row += 1
+            for dline in desc_lines:
+                if row >= max_y - 1:
+                    break
+                stdscr.addnstr(row, 0, dline, max_x - 1, curses.A_NORMAL)
+                row += 1
+            if searchable and search is not None and search.active:
+                hint = f"  Search: {search.query}▎  BACKSPACE edit  Ctrl+U clear  ESC stop"
+            elif searchable:
+                hint = "  ↑↓ navigate  SPACE toggle  ENTER confirm  / search  ESC cancel"
+            else:
+                hint = "  ↑↓ navigate  SPACE toggle  ENTER confirm  ESC cancel"
+            stdscr.addnstr(row, 0, hint, max_x - 1, curses.A_DIM)
+            row += 1
         except curses.error:
             pass
-        return 3
+        return row + 1
 
     def _draw_row(stdscr, y, i, is_cursor, max_x):
         import curses
@@ -616,6 +633,8 @@ def curses_checklist(
         extra_color_pairs=bool(status_fn),
         fallback=lambda: _numbered_fallback(title, items, selected, cancel_returns, status_fn),
         cancel_value=cancel_returns,
+        searchable=searchable,
+        search_labels=list(items) if searchable else None,
     )
 
 

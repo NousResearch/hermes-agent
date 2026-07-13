@@ -1,9 +1,12 @@
+from unittest.mock import patch
+
 from hermes_cli.curses_ui import (
     _SearchState,
     _filter_indices,
     _handle_active_search_key,
     _move_filtered_cursor,
     _reconcile_cursor,
+    curses_checklist,
 )
 
 
@@ -66,3 +69,20 @@ def test_active_search_consumes_query_editing_and_confirm_keys():
         True,
         False,
     )
+
+
+def test_checklist_search_filters_against_original_item_labels():
+    items = ["model-a", "model-b"]
+
+    with patch("hermes_cli.curses_ui._run_curses_menu", return_value={1}) as run:
+        selected = curses_checklist(
+            "Select models:",
+            items,
+            set(),
+            description="Pricing information",
+            searchable=True,
+        )
+
+    assert selected == {1}
+    assert run.call_args.kwargs["searchable"] is True
+    assert run.call_args.kwargs["search_labels"] == items

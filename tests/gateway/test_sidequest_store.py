@@ -100,3 +100,37 @@ def test_followup_is_recorded_for_background_or_quest(tmp_path):
     assert followup["status"] == "queued"
     assert followup["message"] == "also check the docs"
     assert store.list_followups("bg_120002_abcdef")[0]["message"] == "also check the docs"
+
+
+def test_reconcile_incomplete_runs_blocks_linked_sidequests(tmp_path):
+    store = SidequestStore(tmp_path / "quests.sqlite")
+    quest = store.create_quest(
+        title="interrupted quest",
+        platform="whatsapp",
+        chat_id="scope-1",
+    )
+    store.create_background_run(
+        bg_id="bg_interrupted",
+        prompt="long-running work",
+        platform="whatsapp",
+        chat_id="scope-1",
+    )
+    store.attach_background_to_quest(
+        quest_id=quest["quest_id"],
+        bg_id="bg_interrupted",
+    )
+    store.mark_running("bg_interrupted")
+
+    assert store.reconcile_incomplete_runs() == 1
+
+    run = store.get_background_run(
+        "bg_interrupted",
+        platform="whatsapp",
+        chat_id="scope-1",
+    )
+    refreshed = store.resolve_quest("1", platform="whatsapp", chat_id="scope-1")
+    assert run is not None
+    assert refreshed is not None
+    assert run["status"] == "failed"
+    assert refreshed["status"] == "blocked"
+    assert "gateway restarted" in refreshed["latest_summary"]

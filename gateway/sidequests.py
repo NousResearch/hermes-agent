@@ -167,6 +167,19 @@ class SidequestStore:
             ).fetchall()
         return [self._row(row) or {} for row in rows]
 
+    def reconcile_incomplete_runs(
+        self,
+        reason: str = "gateway restarted before task completed",
+    ) -> int:
+        """Fail queued/running rows left behind by a previous gateway process."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT bg_id FROM background_runs WHERE status IN ('queued', 'running')"
+            ).fetchall()
+        for row in rows:
+            self.mark_failed(row["bg_id"], reason)
+        return len(rows)
+
     def mark_running(self, bg_id: str) -> None:
         self._set_background_status(bg_id, "running")
 

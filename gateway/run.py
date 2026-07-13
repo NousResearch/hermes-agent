@@ -8368,6 +8368,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _phase_elapsed(),
             )
 
+            _cancelled_background_tasks = []
             for _task in list(self._background_tasks):
                 if _task is self._stop_task:
                     continue
@@ -8378,6 +8379,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # _exit_code = 75 (#12875).  It self-terminates anyway.
                     continue
                 _task.cancel()
+                _cancelled_background_tasks.append(_task)
+            if _cancelled_background_tasks:
+                # Let durable runs record their terminal cancellation state.
+                # Bound the drain so a cancellation-resistant task cannot
+                # wedge gateway shutdown.
+                _done, _pending = await asyncio.wait(
+                    _cancelled_background_tasks,
+                    timeout=2.0,
+                )
+                if _pending:
+                    logger.warning(
+                        "Shutdown left %d cancelled background task(s) pending",
+                        len(_pending),
+                    )
             self._background_tasks.clear()
 
             self.adapters.clear()
@@ -9479,6 +9494,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            if _cmd_def_inner and _cmd_def_inner.name == "sidequest":
+                return await self._handle_sidequest_command(event)
+
             # /kanban must bypass the guard. It writes to a profile-agnostic
             # DB (kanban.db), not to the running agent's state. In fact
             # /kanban unblock is often the only way to free a worker that
@@ -10010,6 +10028,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical == "sidequest":
+            return await self._handle_sidequest_command(event)
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
@@ -13432,9 +13453,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         media_urls = media_urls or []
         media_types = media_types or []
+        store = self._sidequest_store()
+        store.mark_running(task_id)
 
         adapter = self._adapter_for_source(source)
         if not adapter:
+            store.mark_failed(task_id, f"no adapter for platform {source.platform}")
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
 
@@ -13447,6 +13471,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_config=user_config,
             )
             if not runtime_kwargs.get("api_key"):
+                store.mark_failed(task_id, "no provider credentials configured")
                 await adapter.send(
                     source.chat_id,
                     f"❌ Background task {task_id} failed: no provider credentials configured.",
@@ -13536,6 +13561,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from gateway.platforms.base import BasePlatformAdapter
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
                 images, text_content = adapter.extract_images(response)
+                artifact_paths = [str(path) for path, _is_voice in (media_files or [])]
+                store.mark_completed(
+                    task_id,
+                    summary=self._clip_background_summary(
+                        text_content or response or "(No response generated)"
+                    ),
+                    artifact_paths=artifact_paths,
+                )
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
@@ -13603,6 +13636,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         pass
             else:
+                store.mark_completed(task_id, summary="(No response generated)")
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
                     chat_id=source.chat_id,
@@ -13610,8 +13644,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata=_thread_metadata,
                 )
 
+        except asyncio.CancelledError:
+            try:
+                store.mark_failed(task_id, "gateway shutdown cancelled task")
+            except Exception:
+                pass
+            raise
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
+            try:
+                store.mark_failed(task_id, str(e))
+            except Exception:
+                pass
             try:
                 await adapter.send(
                     chat_id=source.chat_id,

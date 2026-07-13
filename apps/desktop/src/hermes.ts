@@ -71,6 +71,9 @@ import type {
 export const STARTUP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+// Local Whisper can take tens of seconds to process multi-minute audio.
+// Give transcription five minutes without weakening unrelated requests.
+const AUDIO_TRANSCRIPTION_REQUEST_TIMEOUT_MS = 300_000
 // prompt.submit is effectively fire-and-forget: turn completion is signaled by
 // stream / message.complete events, NOT by the RPC return. A long turn (MoA
 // presets running references + aggregator in series, deep reasoning, large tool
@@ -1000,7 +1003,8 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
     body: {
       data_url: dataUrl,
       mime_type: mimeType
-    }
+    },
+    timeoutMs: AUDIO_TRANSCRIPTION_REQUEST_TIMEOUT_MS
   })
 }
 

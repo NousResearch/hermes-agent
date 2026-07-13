@@ -10,6 +10,7 @@ Cache location: ~/.hermes/sticker_cache.json
 
 import json
 import os
+import re
 import tempfile
 import time
 from typing import Optional
@@ -92,6 +93,26 @@ def cache_sticker_description(
     _save_cache(cache)
 
 
+# Structural closing delimiter of the sticker injection wrapper. Vision-derived
+# descriptions (and interpolated emoji/set_name) are attacker-controllable, so a
+# poisoned sticker whose description contains this literal token could close the
+# framing early and have everything after it read as trusted instructions. We
+# defang any embedded copy — mirroring agent/tool_dispatch_helpers._neutralize_delimiters
+# for untrusted tool results.
+_STICKER_CLOSE_TOKEN = "(=^.w.^=)]"
+_STICKER_CLOSE_RE = re.compile(re.escape(_STICKER_CLOSE_TOKEN))
+
+
+def _neutralize_sticker_delimiters(text: str) -> str:
+    """Defang any literal sticker-injection closing delimiter embedded in
+    attacker-controlled content so it can't break out of the wrapper.
+
+    Replacing the closing paren with a fullwidth variant keeps the text readable
+    but means it no longer matches the real structural delimiter.
+    """
+    return _STICKER_CLOSE_RE.sub("(=^.w.^=)\uff3d", text)
+
+
 def build_sticker_injection(
     description: str,
     emoji: str = "",
@@ -102,7 +123,16 @@ def build_sticker_injection(
 
     Returns a string like:
       [The user sent a sticker 😀 from "MyPack"~ It shows: "A cat waving" (=^.w.^=)]
+
+    The vision-derived ``description`` and the interpolated ``emoji``/``set_name``
+    are untrusted (an image the user chose drives the description text), so any
+    embedded copy of the structural closing delimiter is neutralized before
+    framing — the content stays inside the data boundary.
     """
+    description = _neutralize_sticker_delimiters(description)
+    emoji = _neutralize_sticker_delimiters(emoji)
+    set_name = _neutralize_sticker_delimiters(set_name)
+
     context = ""
     if set_name and emoji:
         context = f" {emoji} from \"{set_name}\""

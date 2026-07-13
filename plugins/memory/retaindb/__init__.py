@@ -808,7 +808,18 @@ class RetainDBMemoryProvider(MemoryProvider):
         for t in self._prefetch_threads:
             t.join(timeout=3.0)
         if self._queue:
-            self._queue.release()
+            # Detach before releasing: _WriteQueue.release() decrements a
+            # shared refcount keyed only on db path, not on which holder is
+            # calling it. If this method ran twice for the same instance
+            # while a sibling provider (main agent / delegate_task subagent
+            # sharing the same retaindb_queue.db) is still live, a second
+            # undetached release() would double-decrement and could pop the
+            # registry entry + stop the shared writer thread out from under
+            # that sibling. Clearing the reference first makes repeated
+            # calls to shutdown() a no-op past the first.
+            queue_ref = self._queue
+            self._queue = None
+            queue_ref.release()
 
 
 def register(ctx) -> None:

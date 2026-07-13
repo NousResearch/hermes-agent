@@ -1,238 +1,192 @@
 ---
 name: web3-permission-audit
-description: Instruction-first cross-chain wallet permission audit playbook for Solana, XRPL, and Base/EVM. Guides read-only review of delegates, trust lines, allowances, freeze controls, issuer exposure, and explicit coverage limits without bundling executable code.
+description: Read-only cross-chain wallet permission audit.
 version: 0.1.0
-author: Osraka, with Hermes Agent
+author: Ahmet Osrak (Osraka), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [Security, Web3, Wallets, Permissions, Solana, XRPL, Base, EVM, Privacy]
-    related_skills: [blockchain/solana, blockchain/base]
+    tags: [Security, Web3, Wallets, Permissions, Solana, XRPL, EVM, Privacy]
+    category: security
+    related_skills: [blockchain/solana, blockchain/evm]
+    requires_toolsets: [terminal]
 ---
 
 # Web3 Permission Audit Skill
 
-Instruction-first playbook for read-only cross-chain wallet permission reviews.
-The skill answers one narrow question:
-
-> Who, besides the wallet owner, can affect this wallet's assets or asset movement?
-
-This is intentionally shipped as a Markdown-only optional skill. Per the Hermes contribution guide,
-new skills should prefer instructions, shell commands, and existing tools before adding executable
-repo code. If a reusable parser is needed later, add it as a focused follow-up after the workflow is
-accepted and tested.
-
----
+This skill guides read-only reviews of wallet permissions across Solana, XRPL,
+and EVM-compatible networks. It produces evidence, severity, limitations, and
+user-confirmed next steps; it never requests secrets, signs, or submits a transaction.
 
 ## When to Use
 
-Use this skill when the user asks to:
+Use this skill when the user wants to:
 
-- Audit a wallet before connecting to a dapp, bridge, marketplace, or agent workflow
-- Review whether old approvals, delegates, or trust relationships should be revoked
-- Compare EVM allowances with Solana delegate risk and XRPL trust-line risk
-- Produce a structured wallet-safety report for incident triage or user education
-- Explain why an asset can be frozen, minted, rippled, or transferred by another principal
+- Audit a wallet before connecting it to a dapp, bridge, marketplace, or agent workflow.
+- Review old token approvals, Solana delegates, or XRPL trust relationships.
+- Compare EVM allowance risk with Solana delegate and XRPL issuer exposure.
+- Produce a structured permission report for incident triage or user education.
+- Understand whether another principal can freeze, mint, close, or transfer assets.
 
 Do not use this skill to:
 
-- Ask for private keys, seed phrases, or signing authority
-- Submit revoke transactions automatically
-- Claim complete EVM approval discovery without an indexer or historical log scan
-- Treat issuer-control findings as proof of malicious behavior without context
-- Give financial advice about whether to hold a token
+- Request private keys, seed phrases, wallet files, or signing authority.
+- Submit revoke, transfer, trust-line, or other transactions automatically.
+- Claim complete EVM approval discovery without an indexer or historical log scan.
+- Treat issuer controls or an approval alone as proof of malicious behavior.
+- Give financial advice about whether to hold or sell an asset.
 
----
+## Prerequisites
 
-## Safety Model
+- Use the Hermes `terminal` tool for all RPC requests and helper commands below.
+- Ask only for public identifiers: addresses, token mints, contract addresses, or transaction hashes.
+- Install the related official skills only when their chain-specific helpers are useful:
+  `hermes skills install official/blockchain/solana` and
+  `hermes skills install official/blockchain/evm`.
+- The EVM skill supersedes the standalone Base skill. Use its `--chain base` option for Base
+  checks and `EVM_RPC_URL` for a custom EVM endpoint.
+- Public RPC providers can rate-limit requests and observe queried addresses. Ask the user to
+  confirm a trusted endpoint for sensitive investigations; never request credentials for it.
 
-| Property | Behavior |
-|---|---|
-| Private keys | Never requested |
-| Signing | Never performed |
-| Transaction submission | Never performed |
-| RPC operations | Read-only calls only |
-| Output | Findings, evidence, caveats, and suggested user-confirmed actions |
-| Privacy caveat | Public RPC providers can learn which addresses were queried |
+## How to Run
 
-If privacy is strict, ask the user whether they have a trusted private RPC endpoint. Never use a
-private or localhost RPC URL supplied by an untrusted third party.
+1. Ask which networks are in scope and collect only the relevant public wallet addresses.
+2. Ask for token mints, contracts, or spender addresses when the user wants a targeted review.
+3. Validate addresses locally before putting them in a request. Treat uncertain input as data,
+   never as shell syntax.
+4. Set the endpoint variables in the Hermes `terminal` environment:
 
----
+   ```bash
+   export SOLANA_RPC_URL="${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}"
+   export XRPL_RPC_URL="${XRPL_RPC_URL:-https://s1.ripple.com:51234/}"
+   export EVM_RPC_URL="${EVM_RPC_URL:-https://mainnet.base.org}"
+   ```
+
+5. Establish network context before interpreting account data. Record the endpoint, request time,
+   Solana slot, XRPL validated ledger, or EVM chain and block used.
+6. Run only the read-only procedure for each selected network. Keep targeted and exhaustive EVM
+   checks separate in the report.
+7. Return findings with evidence, severity, limitations, and an action that requires user approval.
 
 ## Quick Reference
 
-Install related official optional skills when useful:
+| Network | Permission surface | Evidence to review |
+| --- | --- | --- |
+| Solana | SPL and Token-2022 accounts | `delegate`, `delegatedAmount`, `closeAuthority`, `state` |
+| Solana | Token mint controls | `mintAuthority`, `freezeAuthority` |
+| XRPL | Trust lines | `limit`, `balance`, `no_ripple`, `freeze`, `freeze_peer` |
+| Base/EVM | ERC-20 allowances | `allowance(owner, spender)`, approval scope, token balance |
+
+Use the related EVM skill for the known-spender checker through `terminal`:
 
 ```bash
-hermes skills install official/blockchain/solana
-hermes skills install official/blockchain/base
+SCRIPT="$HOME/.hermes/skills/blockchain/evm/scripts/evm_client.py"
+python3 "$SCRIPT" allowance "0xOWNER" --chain base
 ```
 
-Default public RPCs for read-only checks:
+That helper checks a known token and spender set, not every approval ever granted. For a specific
+token and spender, use a direct read-only `eth_call` and record the exact contract, block tag, and
+returned allowance.
 
-```bash
-export SOLANA_RPC_URL="${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}"
-export XRPL_RPC_URL="${XRPL_RPC_URL:-https://s1.ripple.com:51234/}"
-export BASE_RPC_URL="${BASE_RPC_URL:-https://mainnet.base.org}"
-```
+Severity guidance:
 
-Core audit surfaces:
-
-| Chain | Permission surface | What to look for |
-|---|---|---|
-| Solana | SPL / Token-2022 delegates | `delegate`, `delegatedAmount`, external `closeAuthority`, `state=frozen` |
-| Solana | Mint controls | `mintAuthority`, `freezeAuthority` on token mints |
-| XRPL | Trust lines | `limit`, `balance`, `no_ripple`, `freeze`, `freeze_peer`, negative balances |
-| Base/EVM | ERC-20 allowances | `allowance(owner, spender)`, especially unlimited or balance-covering approvals |
-
----
+| Severity | Meaning |
+| --- | --- |
+| `critical` | A third party can transfer current assets or has effectively unlimited approval on funded assets. |
+| `high` | A third party can transfer assets, or an account/asset is frozen. |
+| `medium` | A permission or issuer-control surface can affect assets but needs user context. |
+| `low` | Issuer or counterparty exposure is worth reviewing but is not directly actionable. |
+| `info` | Context that explains the permission graph without a direct security impact. |
 
 ## Procedure
 
-### 1. Scope the Audit
+### 1. Scope and establish context
 
-Collect only public identifiers:
+Confirm the networks, addresses, and requested depth. Run a harmless health query first:
 
-- Solana wallet address, if relevant
-- XRPL classic account address, if relevant
-- Base/EVM owner address, if relevant
-- EVM spender address or known spender alias, if the user wants allowance checks
-- Specific token contracts or mints, if the user wants targeted checks
+- Solana: `getHealth` and, when relevant, `getTokenAccountsByOwner`.
+- XRPL: `server_info` and `fee`, followed by `ledger_index: "validated"` reads.
+- Base/EVM: `eth_chainId`, `eth_blockNumber`, and the EVM helper with `--chain base`.
 
-Confirm the audit is read-only and that no private key or seed phrase is needed.
+Stop when a node is unsynchronized or returns an error. Mark later results uncertain instead of
+silently substituting a different network or endpoint.
 
-### 2. Use a Consistent Severity Model
+### 2. Review Solana delegates and authorities
 
-| Severity | Meaning |
-|---|---|
-| `critical` | A third party can transfer current assets or has effectively unlimited approval on funded assets |
-| `high` | A third party can transfer assets, or the account/asset is frozen |
-| `medium` | Permission or issuer-control surface can affect assets but needs user context |
-| `low` | Issuer/counterparty exposure or supply-control fact worth reviewing |
-| `info` | Context that explains the permission graph but is not directly actionable |
+Query both the legacy SPL Token and Token-2022 program IDs with `jsonParsed` encoding. Review each
+material account for:
 
-### 3. Solana Review
+- A non-zero `delegate` and `delegatedAmount`: `high` or `critical`, depending on amount and scope.
+- A `closeAuthority` that is not the wallet owner: `medium`.
+- `state` equal to `frozen`: `high`.
 
-Fetch SPL Token and Token-2022 accounts with `jsonParsed` encoding. Use both token program IDs:
+For material mints, inspect `mintAuthority` and `freezeAuthority`. Report their presence as issuer
+control, not automatically as abuse. If the wallet has many spam accounts, report counts and a few
+representative records rather than flooding the user with unverified findings.
 
-```bash
-curl -s "$SOLANA_RPC_URL" \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getTokenAccountsByOwner","params":["SOLANA_WALLET",{"programId":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},{"encoding":"jsonParsed"}]}'
-
-curl -s "$SOLANA_RPC_URL" \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getTokenAccountsByOwner","params":["SOLANA_WALLET",{"programId":"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"},{"encoding":"jsonParsed"}]}'
-```
-
-Review each parsed token account:
-
-- `delegate` present with non-zero `delegatedAmount`: `high` or `critical`
-- `closeAuthority` present and not the wallet owner: `medium`
-- `state` is `frozen`: `high`
-- Very large numbers of token accounts: summarize counts and sample evidence instead of flooding output
-
-For material mints, fetch mint account info:
+Example read-only requests run through `terminal`:
 
 ```bash
-curl -s "$SOLANA_RPC_URL" \
+curl --fail-with-body --silent --show-error "$SOLANA_RPC_URL" \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["TOKEN_MINT",{"encoding":"jsonParsed"}]}'
+  --data '{"jsonrpc":"2.0","id":1,"method":"getTokenAccountsByOwner","params":["SOLANA_WALLET",{"programId":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},{"encoding":"jsonParsed"}]}'
+
+curl --fail-with-body --silent --show-error "$SOLANA_RPC_URL" \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"getTokenAccountsByOwner","params":["SOLANA_WALLET",{"programId":"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"},{"encoding":"jsonParsed"}]}'
 ```
 
-Flag mint controls:
+### 3. Review XRPL trust lines
 
-- `freezeAuthority` present: `medium`
-- `mintAuthority` present: `low` or `medium`, depending on asset context
-
-### 4. XRPL Review
-
-Fetch trust lines from the validated ledger:
+Fetch trust lines from the validated ledger and follow pagination markers until the requested scope
+is complete:
 
 ```bash
-curl -s "$XRPL_RPC_URL" \
+curl --fail-with-body --silent --show-error "$XRPL_RPC_URL" \
   -H 'Content-Type: application/json' \
-  -d '{"method":"account_lines","params":[{"account":"XRPL_ACCOUNT","ledger_index":"validated","limit":200}]}'
+  --data '{"method":"account_lines","params":[{"account":"XRPL_ACCOUNT","ledger_index":"validated","limit":200}]}'
 ```
 
-Review each line:
+Interpret the fields using XRPL semantics:
 
-- `freeze` or `freeze_peer`: `high`
-- Negative `balance`: `medium`
-- Positive issued-asset `balance`: `low` issuer/counterparty exposure
-- `limit` greater than zero and `no_ripple` not set: `medium` for ordinary user wallets
-- Large or unexpected `limit_peer`: `info`, unless it explains another finding
+- `freeze` or `freeze_peer`: `high` operational impact.
+- Negative `balance`: `medium` counterparty or credit exposure.
+- Positive issued-asset balance: `low` issuer/counterparty exposure until context is known.
+- A positive `limit` with `no_ripple` unset: `medium` for ordinary user wallets when it explains a
+  reachable trust path.
+- Unexpected `limit_peer`: `info` unless it contributes to another finding.
 
-Important: XRPL trust lines are not ERC-20 approvals. Do not describe them as spend allowances.
-They represent bilateral credit/issuer relationships with different semantics.
+Trust lines are bilateral credit and issuer relationships, not ERC-20 spend allowances. Keep that
+distinction in the report.
 
-### 5. Base/EVM Targeted Allowance Review
+### 4. Review targeted Base/EVM allowances
 
-Plain EVM JSON-RPC cannot enumerate every approval for an address without an indexer or log scan.
-Only check explicit owner/spender/token sets unless the user provides an indexer export.
-
-Common spender alias:
-
-```text
-permit2 = 0x000000000022d473030f116ddee9f6b43ac78ba3
-```
-
-Use `eth_call` for ERC-20 `allowance(address,address)`:
+Use the EVM skill’s allowance command for known token and spender coverage:
 
 ```bash
-python3 - <<'PY'
-import json
-import os
-import urllib.request
-
-rpc = os.environ.get("BASE_RPC_URL", "https://mainnet.base.org")
-owner = "0xOWNER".lower().replace("0x", "").zfill(64)
-spender = "0xSPENDER".lower().replace("0x", "").zfill(64)
-token = "0xTOKEN"
-selector = "dd62ed3e"  # allowance(address,address)
-payload = {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "eth_call",
-    "params": [{"to": token, "data": "0x" + selector + owner + spender}, "latest"],
-}
-req = urllib.request.Request(
-    rpc,
-    data=json.dumps(payload).encode(),
-    headers={"Content-Type": "application/json"},
-    method="POST",
-)
-with urllib.request.urlopen(req, timeout=20) as resp:
-    body = json.load(resp)
-print(json.dumps(body, indent=2))
-PY
+python3 "$HOME/.hermes/skills/blockchain/evm/scripts/evm_client.py" allowance "0xOWNER" --chain base
 ```
 
-Interpretation:
+For a user-supplied token and spender, call ERC-20 `allowance(owner, spender)` through `eth_call`.
+Interpret the returned uint256 at the selected block:
 
-- Result is `0x0` or empty-equivalent: no allowance for that token/spender pair
-- Result near `2**256 - 1`: unlimited approval, `critical` if the token has current/future value
-- Result greater than or equal to current token balance: `high`
-- Any non-zero bounded result: `medium`
+- Zero or an empty-equivalent result: no allowance for that pair at that block.
+- A value near `2**256 - 1`: effectively unlimited approval; `critical` if funded or reusable.
+- A value greater than or equal to the current token balance: `high` when the spender is trusted by
+  neither the user nor the application context.
+- A bounded non-zero value: `medium` until scope and expiry context are established.
 
-Do not say the EVM wallet is fully clean unless historical approvals were checked via a trusted
-indexer, wallet provider export, or archive log scan.
+Plain JSON-RPC cannot enumerate every approval for an address. Do not claim that an EVM wallet is
+clean unless a trusted indexer, wallet export, or archive log scan covers the relevant history.
 
-### 6. Report Format
+### 5. Report evidence and user-controlled actions
 
-Use this structure for final answers or issue comments:
+Use this shape for a machine-readable summary:
 
 ```json
 {
-  "summary": {
-    "critical": 0,
-    "high": 0,
-    "medium": 0,
-    "low": 0,
-    "info": 0
-  },
+  "summary": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
   "findings": [
     {
       "severity": "medium",
@@ -251,18 +205,19 @@ Use this structure for final answers or issue comments:
 }
 ```
 
----
-
 ## Pitfalls
 
-- EVM approvals are event/history based; plain JSON-RPC only answers targeted allowance questions.
-- Public Solana wallets can have thousands of spam token accounts. Summarize counts and show samples.
-- Token mint/freeze authorities are not automatically malicious. Many legitimate tokens retain controls.
-- XRPL trust lines use different semantics from EVM approvals. Keep the language chain-specific.
-- Public RPC usage leaks address interest to the RPC provider.
-- Never ask the user to paste a seed phrase or private key to revoke anything.
-
----
+- The EVM helper checks known tokens and spenders only; use an indexer or archive log scan for
+  exhaustive historical approval discovery.
+- Base is selected through the EVM skill’s `--chain base` option; do not install a separate
+  standalone Base skill.
+- Public Solana wallets may contain thousands of spam token accounts. Summarize and preserve
+  evidence for representative records.
+- Token mint/freeze authorities are not automatically malicious; report the control and its scope.
+- XRPL trust lines have different semantics from EVM approvals. Use chain-specific terminology.
+- Public RPC usage reveals address interest to the provider. Never send secrets or signing material.
+- A read-only finding is not a revocation. Any revoke or transfer must be separately explained and
+  explicitly confirmed by the user.
 
 ## Verification
 
@@ -270,14 +225,14 @@ Before opening or updating a PR for this skill:
 
 ```bash
 git diff --check
-scripts/check-windows-footguns.py
+scripts/check-windows-footguns.py --all
+scripts/run_tests.sh tests/skills/test_web3_permission_audit_skill.py -q
 ```
 
-Manual verification checklist:
+Confirm that:
 
-- The PR changes stay focused on the skill and docs.
-- The skill is instruction-first and has no new runtime dependency.
-- Commands are read-only and do not submit transactions.
-- EVM limitations are explicit.
-- Security-sensitive behavior is described in the PR body.
-- Any live RPC example is labeled as optional and read-only.
+- The source, generated page, and optional-skills catalog describe the same read-only scope.
+- The skill points at `blockchain/evm` and documents `--chain base`.
+- No command asks for a seed phrase, private key, signing authority, or transaction submission.
+- EVM coverage limitations and the endpoint/block context are visible in the final report.
+- No live RPC call is required by the skill test.

@@ -207,7 +207,7 @@ hermes skills uninstall <skill-name>
 | [**oss-forensics**](/docs/user-guide/skills/optional/security/security-oss-forensics) | Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories. Covers deleted commit recovery, force-push detection, IOC extraction, multi-source evidence collection, hypothesis formation/validation, and st... |
 | [**sherlock**](/docs/user-guide/skills/optional/security/security-sherlock) | OSINT username search across 400+ social networks. Hunt down social media accounts by username. |
 | [**web-pentest**](/docs/user-guide/skills/optional/security/security-web-pentest) | Authorized web application penetration testing — reconnaissance, vulnerability analysis, proof-based exploitation, and professional reporting. Adapts Shannon's "No Exploit, No Report" methodology with hard guardrails for scope, authoriza... |
-| [**web3-permission-audit**](/docs/user-guide/skills/optional/security/security-web3-permission-audit) | Instruction-first cross-chain wallet permission audit playbook for Solana, XRPL, and Base/EVM. Guides read-only review of delegates, trust lines, allowances, freeze controls, issuer exposure, and explicit coverage limits without bundling... |
+| [**web3-permission-audit**](/docs/user-guide/skills/optional/security/security-web3-permission-audit) | Read-only cross-chain wallet permission audit. |
 
 ## software-development
 

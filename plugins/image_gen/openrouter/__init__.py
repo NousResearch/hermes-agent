@@ -226,6 +226,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         return {
             "modalities": ["text", "image"],
             "max_reference_images": _MAX_REFERENCE_IMAGES,
+            "max_source_images": _MAX_REFERENCE_IMAGES,
             "url_input": True,
         }
 

@@ -148,6 +148,7 @@ class ImageGenProvider(abc.ABC):
             {
                 "modalities": ["text", "image"],   # which inputs the backend accepts
                 "max_reference_images": 9,          # cap for reference_image_urls
+                "max_source_images": 10,            # cap for primary + references
             }
 
         ``modalities`` declares whether the active backend/model supports

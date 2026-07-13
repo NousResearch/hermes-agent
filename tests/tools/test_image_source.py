@@ -280,3 +280,25 @@ class TestSvgNormalization:
             path, mime, err = vt._normalize_to_supported_image(svg, "image/svg+xml")
         assert path is None
         assert "rasterizer" in err
+
+
+class TestRemainingMaterializationBudget:
+    @pytest.mark.asyncio
+    async def test_data_rejected_before_decode(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        source = "data:image/png;base64," + base64.b64encode(PNG + b"x" * 32).decode()
+        monkeypatch.setattr(isrc.base64, "b64decode", lambda *a, **k: (_ for _ in ()).throw(AssertionError("decode")))
+        with pytest.raises(isrc.SourceTooLarge):
+            await isrc.resolve_image_source(source, isrc.ResolveContext(), max_bytes=len(PNG))
+
+    @pytest.mark.asyncio
+    async def test_local_rejected_before_full_read(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        image = tmp_path / "large.png"
+        with image.open("wb") as handle:
+            handle.write(PNG)
+            handle.truncate(26 * 1024 * 1024)
+        monkeypatch.setattr(Path, "read_bytes", lambda self: (_ for _ in ()).throw(AssertionError("full read")))
+        with pytest.raises(isrc.SourceTooLarge):
+            await isrc.resolve_image_source(str(image), isrc.ResolveContext(), max_bytes=len(PNG))

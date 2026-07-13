@@ -112,6 +112,7 @@ class FalImageGenProvider(ImageGenProvider):
             return {
                 "modalities": ["text", "image"],
                 "max_reference_images": int(meta.get("max_reference_images") or 1),
+                "max_source_images": int(meta.get("max_reference_images") or 1),
                 "url_input": True,
             }
         return {"modalities": ["text"], "max_reference_images": 0}

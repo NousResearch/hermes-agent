@@ -86,7 +86,9 @@ class ResolvedImage:
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
-def classify_image_source(src: str, *, max_data_bytes: Optional[int] = None) -> str:
+def classify_image_source(
+    src: str, *, max_data_bytes: Optional[int] = None, validate_data: bool = True,
+) -> str:
     """Validate source shape without filesystem or network I/O and return its kind."""
     if not isinstance(src, str) or not src.strip():
         raise SourceNotFound("image_url is required", src=str(src))
@@ -95,13 +97,14 @@ def classify_image_source(src: str, *, max_data_bytes: Optional[int] = None) -> 
         header, _, payload = s.partition(",")
         if ";base64" not in header:
             raise NotAnImage("data: URL must be base64-encoded", src=s[:64])
-        limit = min(_MAX_INGEST_BYTES, max_data_bytes or _MAX_INGEST_BYTES)
+        limit = min(_MAX_INGEST_BYTES, max_data_bytes if max_data_bytes is not None else _MAX_INGEST_BYTES)
         if (len(payload) * 3) // 4 > limit:
             raise SourceTooLarge("data: URL exceeds size limit", src=s[:64])
-        try:
-            base64.b64decode(payload, validate=True)
-        except Exception as exc:
-            raise NotAnImage(f"invalid base64 in data: URL: {exc}", src=s[:64])
+        if validate_data:
+            try:
+                base64.b64decode(payload, validate=True)
+            except Exception as exc:
+                raise NotAnImage(f"invalid base64 in data: URL: {exc}", src=s[:64])
         return "data"
     if s.startswith(("http://", "https://")):
         reason = _http_block_reason(s)
@@ -117,14 +120,18 @@ def classify_image_source(src: str, *, max_data_bytes: Optional[int] = None) -> 
     return "local"
 
 
-async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
-    kind = classify_image_source(src)
+async def resolve_image_source(
+    src: str, ctx: ResolveContext, *, max_bytes: Optional[int] = None,
+) -> ResolvedImage:
+    """Resolve one image without materializing more than ``max_bytes`` when set."""
+    limit = min(_MAX_INGEST_BYTES, max_bytes if max_bytes is not None else _MAX_INGEST_BYTES)
+    kind = classify_image_source(src, max_data_bytes=limit)
     s = src.strip()
     if kind == "data":
-        data, mime = _resolve_data_url(s)
-        return _finalize(data, mime, "data", s)
+        data, mime = _resolve_data_url(s, max_bytes=limit)
+        return _finalize(data, mime, "data", s, max_bytes=limit)
     if kind == "http":
-        return _finalize(await _download_to_bytes(s), "", "http", s)
+        return _finalize(await _download_to_bytes(s), "", "http", s, max_bytes=limit)
 
     # Everything else is a filesystem path — including bare relative names
     # like "pic.png" (accepted on main; a path-shape gate here regressed them).
@@ -153,8 +160,10 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
                 raise_if_read_blocked(str(host_target))
             except ValueError as exc:
                 raise SourceUnsafe(str(exc), src=s, origin="file")
-        data = await asyncio.to_thread(host_target.read_bytes)
-        return _finalize(data, "", "file", s)
+        if host_target.stat().st_size > limit:
+            raise SourceTooLarge("image exceeds size limit", src=s, origin="file")
+        data = await asyncio.to_thread(_read_bytes_limited, host_target, limit)
+        return _finalize(data, "", "file", s, max_bytes=limit)
     if _is_local_terminal_backend():
         # Local backend: any path was host-readable, so a miss simply means
         # the file doesn't exist — no sandbox to fall back to.
@@ -162,16 +171,24 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
     # Not a permitted host read (or the host file is absent) -> read the
     # bytes inside the sandbox. Under a sandbox this reads the container's
     # filesystem, never the host's.
-    return await _resolve_container_fallback(p, ctx, s)
+    return await _resolve_container_fallback(p, ctx, s, max_bytes=limit)
 
 
-def _resolve_data_url(s: str) -> tuple[bytes, str]:
+def _read_bytes_limited(path: Path, limit: int) -> bytes:
+    with path.open("rb") as handle:
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise SourceTooLarge("image exceeds size limit", src="", origin="file")
+    return data
+
+
+def _resolve_data_url(s: str, *, max_bytes: int = _MAX_INGEST_BYTES) -> tuple[bytes, str]:
     header, _, payload = s.partition(",")
     if ";base64" not in header:
         raise NotAnImage("data: URL must be base64-encoded", src=s[:64])
     declared = header[len("data:"):].split(";", 1)[0].strip() or "application/octet-stream"
     # Cheap pre-decode size gate on the encoded length (~4/3 expansion).
-    if (len(payload) * 3) // 4 > _MAX_INGEST_BYTES:
+    if (len(payload) * 3) // 4 > max_bytes:
         raise SourceTooLarge("data: URL exceeds size limit", src=s[:64])
     try:
         data = base64.b64decode(payload, validate=True)
@@ -290,7 +307,9 @@ def _get_active_env(task_id: Optional[str]):
         return None
 
 
-async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) -> ResolvedImage:
+async def _resolve_container_fallback(
+    p: Path, ctx: ResolveContext, src: str, *, max_bytes: int = _MAX_INGEST_BYTES,
+) -> ResolvedImage:
     """Read the image bytes inside the sandbox (fail-closed when none exists).
 
     Reached when a host read is not permitted or the host file is absent. The
@@ -324,19 +343,21 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
     qp = shlex.quote(str(p))
     res = await asyncio.to_thread(
         env.execute,
-        f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'")
+        f"head -c {max_bytes + 1} < {qp} | base64 | tr -d '\\n'")
     if res.get("returncode", 1) != 0:
         raise SourceNotFound(f"could not read '{p}' inside the sandbox", src=src, origin="container")
     try:
         data = base64.b64decode(res.get("output", ""), validate=True)
     except Exception as exc:
         raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
-    if len(data) > _MAX_INGEST_BYTES:
+    if len(data) > max_bytes:
         raise SourceTooLarge("image exceeds size limit", src=src, origin="container")
-    return _finalize(data, "", "container", src)
+    return _finalize(data, "", "container", src, max_bytes=max_bytes)
 
 
-def _finalize(data: bytes, declared_mime: str, origin: str, src: str) -> ResolvedImage:
+def _finalize(
+    data: bytes, declared_mime: str, origin: str, src: str, *, max_bytes: int = _MAX_INGEST_BYTES,
+) -> ResolvedImage:
     """Intrinsic-correctness chokepoint: ingest byte cap + magic-byte sniff.
 
     The cap here is the generous 50MB *ingest* budget, not the 20MB provider
@@ -345,7 +366,7 @@ def _finalize(data: bytes, declared_mime: str, origin: str, src: str) -> Resolve
     """
     from tools.vision_tools import _detect_image_mime_type_from_bytes
 
-    if len(data) > _MAX_INGEST_BYTES:
+    if len(data) > max_bytes:
         raise SourceTooLarge("image exceeds size limit", src=src, origin=origin)
     sniffed = _detect_image_mime_type_from_bytes(data)
     if sniffed is None:

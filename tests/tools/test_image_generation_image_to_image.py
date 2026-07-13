@@ -13,6 +13,7 @@ tool routes to a provider's edit endpoint when ``image_url`` /
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any, Dict, List, Optional
 
@@ -251,6 +252,7 @@ class _UrlEditCapableProvider(_EditCapableProvider):
         return {
             "modalities": ["text", "image"],
             "max_reference_images": 2,
+            "max_source_images": 3,
             "url_input": True,
         }
 
@@ -310,6 +312,22 @@ class TestPluginDispatchImageToImage:
             "https://example.com/second.png",
         ]
 
+    def test_handler_normalizes_whitespace_urls_without_download(self, cfg_home, monkeypatch):
+        import tools.image_source as image_source
+        import tools.image_generation_tool as image_tool
+
+        provider = _UrlEditCapableProvider()
+        self._register(monkeypatch, provider)
+        monkeypatch.setattr(image_source, "_download_to_bytes", lambda url: (_ for _ in ()).throw(AssertionError("download")))
+        monkeypatch.setattr(image_source, "_http_block_reason", lambda url: None)
+        out = json.loads(image_tool._handle_image_generate({
+            "prompt": "edit", "image_url": " https://example.com/primary.png ",
+            "reference_image_urls": [" https://example.com/first.png ", "https://example.com/second.png"],
+        }))
+        assert out["success"] is True
+        assert provider.received["image_url"] == "https://example.com/primary.png"
+        assert provider.received["reference_image_urls"] == ["https://example.com/first.png", "https://example.com/second.png"]
+
     def test_handler_materializes_local_and_data_refs_in_order(self, cfg_home, monkeypatch, tmp_path):
         import base64
         import tools.image_generation_tool as image_tool
@@ -330,6 +348,24 @@ class TestPluginDispatchImageToImage:
         assert provider.received["image_url"].startswith("data:image/png;base64,")
         assert provider.received["reference_image_urls"] == [data, provider.received["image_url"]]
 
+    def test_handler_rejects_mixed_local_data_before_second_decode(self, cfg_home, monkeypatch, tmp_path):
+        import tools.image_source as image_source
+        import tools.image_generation_tool as image_tool
+
+        provider = _UrlEditCapableProvider()
+        self._register(monkeypatch, provider)
+        local = tmp_path / "primary.png"
+        with local.open("wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n")
+            handle.truncate(13 * 1024 * 1024)
+        data = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * (13 * 1024 * 1024 - 8)).decode()
+        monkeypatch.setattr(image_source, "_resolve_data_url", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("decode")))
+        out = json.loads(image_tool._handle_image_generate({
+            "prompt": "edit", "image_url": str(local), "reference_image_urls": [data],
+        }))
+        assert out["error_type"] == "invalid_image_reference"
+        assert provider.received == {}
+
     def test_handler_rejects_excess_refs_before_resolution(self, cfg_home, monkeypatch):
         import tools.image_generation_tool as image_tool
 
@@ -348,6 +384,38 @@ class TestPluginDispatchImageToImage:
 
         assert out["error_type"] == "too_many_references"
         assert provider.received == {}
+
+    def test_handler_total_source_cap_preserves_boundary_and_rejects_before_resolution(self, cfg_home, monkeypatch):
+        import tools.image_source as image_source
+        import tools.image_generation_tool as image_tool
+
+        provider = _UrlEditCapableProvider()
+        self._register(monkeypatch, provider)
+        monkeypatch.setattr(image_source, "_http_block_reason", lambda url: None)
+        assert json.loads(image_tool._handle_image_generate({
+            "prompt": "edit", "image_url": "https://example.com/primary.png",
+            "reference_image_urls": ["https://example.com/first.png", "https://example.com/second.png"],
+        }))["success"] is True
+        assert provider.received["reference_image_urls"] == ["https://example.com/first.png", "https://example.com/second.png"]
+        monkeypatch.setattr(image_tool, "_resolve_generation_sources", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("resolution")))
+        out = json.loads(image_tool._handle_image_generate({
+            "prompt": "edit", "image_url": "https://example.com/primary.png",
+            "reference_image_urls": ["https://example.com/first.png", "https://example.com/second.png", "https://example.com/third.png"],
+        }))
+        assert out["error_type"] == "too_many_references"
+
+    def test_unknown_provider_fails_before_resolution_or_dispatch(self, cfg_home, monkeypatch):
+        import tools.image_generation_tool as image_tool
+        from agent import image_gen_registry as reg
+        from hermes_cli import plugins as plugins_module
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "missing")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **kw: None)
+        monkeypatch.setattr(reg, "get_provider", lambda name: None)
+        monkeypatch.setattr(image_tool, "_resolve_generation_sources", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("resolution")))
+        monkeypatch.setattr(image_tool, "_dispatch_to_plugin_provider", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dispatch")))
+        out = json.loads(image_tool._handle_image_generate({"prompt": "edit", "image_url": "https://example.com/input.png"}))
+        assert out["error_type"] == "provider_not_registered"
 
     def test_handler_rejects_text_only_before_resolution(self, cfg_home, monkeypatch):
         import tools.image_generation_tool as image_tool

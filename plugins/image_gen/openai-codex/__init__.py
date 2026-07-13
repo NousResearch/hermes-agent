@@ -494,7 +494,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         # images as `input_image` message content parts. Keep this capability
         # honest so the dynamic `image_generate` schema encourages identity-
         # preserving edits instead of unrelated text-to-image redraws.
-        return {"modalities": ["text", "image"], "max_reference_images": _MAX_REFERENCE_IMAGES, "url_input": True}
+        return {"modalities": ["text", "image"], "max_reference_images": _MAX_REFERENCE_IMAGES, "max_source_images": _MAX_REFERENCE_IMAGES, "url_input": True}
 
     def generate(
         self,

@@ -213,7 +213,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
     def capabilities(self) -> Dict[str, Any]:
         # gpt-image-2 supports editing via images.edit() with up to 16 source
         # images.
-        return {"modalities": ["text", "image"], "max_reference_images": 16}
+        return {"modalities": ["text", "image"], "max_reference_images": 16, "max_source_images": 16}
 
     def generate(
         self,

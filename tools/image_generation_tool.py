@@ -1525,9 +1525,12 @@ def _resolve_generation_sources(
 
     def resolve(source: str) -> str:
         nonlocal total_bytes
+        source = source.strip()
         if preserve_urls and source.startswith(("http://", "https://")):
             return source
-        image = _run_async(resolve_image_source(source, ResolveContext(task_id=task_id)))
+        image = _run_async(resolve_image_source(
+            source, ResolveContext(task_id=task_id), max_bytes=_MAX_MATERIALIZED_IMAGE_BYTES - total_bytes,
+        ))
         total_bytes += len(image.data)
         if total_bytes > _MAX_MATERIALIZED_IMAGE_BYTES:
             raise ValueError("image inputs exceed the 25MB materialization limit")
@@ -1553,9 +1556,16 @@ def _handle_image_generate(args, **kw):
     from tools.image_source import classify_image_source
 
     reference_image_urls = normalize_reference_images(reference_image_urls)
-    sources = ([image_url] if isinstance(image_url, str) and image_url.strip() else []) + (reference_image_urls or [])
+    image_url = image_url.strip() if isinstance(image_url, str) and image_url.strip() else None
+    sources = ([image_url] if image_url else []) + (reference_image_urls or [])
     if sources:
         caps = _active_image_capabilities()
+        if caps.get("error_type") == "provider_not_registered":
+            return json.dumps({
+                "success": False, "image": None,
+                "error": "The configured image provider is not registered.",
+                "error_type": "provider_not_registered",
+            })
         if "image" not in (caps.get("modalities") or []):
             return json.dumps({
                 "success": False, "image": None,
@@ -1563,7 +1573,8 @@ def _handle_image_generate(args, **kw):
                 "error_type": "modality_unsupported",
             })
         max_refs = int(caps.get("max_reference_images") or 0)
-        if len(reference_image_urls or []) > max_refs:
+        max_sources = int(caps.get("max_source_images") or 0)
+        if len(reference_image_urls or []) > max_refs or (max_sources and len(sources) > max_sources):
             return json.dumps({
                 "success": False, "image": None,
                 "error": f"The active image provider supports at most {max_refs} reference images.",
@@ -1578,7 +1589,9 @@ def _handle_image_generate(args, **kw):
             if data_bytes > _MAX_MATERIALIZED_IMAGE_BYTES:
                 raise ValueError("data image inputs exceed the materialization limit")
             for source in sources:
-                classify_image_source(source, max_data_bytes=_MAX_MATERIALIZED_IMAGE_BYTES)
+                classify_image_source(
+                    source, max_data_bytes=_MAX_MATERIALIZED_IMAGE_BYTES, validate_data=False,
+                )
         except Exception:
             return json.dumps({
                 "success": False, "image": None,
@@ -1681,9 +1694,12 @@ def _active_image_capabilities() -> Dict[str, Any]:
                     info["modalities"] = list(caps["modalities"])
                 if caps.get("max_reference_images"):
                     info["max_reference_images"] = int(caps["max_reference_images"])
+                if caps.get("max_source_images"):
+                    info["max_source_images"] = int(caps["max_source_images"])
                 if caps.get("url_input"):
                     info["url_input"] = True
                 return info
+            return {"modalities": ["text"], "max_reference_images": 0, "error_type": "provider_not_registered"}
         except Exception:  # noqa: BLE001
             pass
 
@@ -1695,6 +1711,7 @@ def _active_image_capabilities() -> Dict[str, Any]:
         if meta.get("edit_endpoint"):
             info["modalities"] = ["text", "image"]
             info["max_reference_images"] = int(meta.get("max_reference_images") or 1)
+            info["max_source_images"] = int(meta.get("max_reference_images") or 1)
             info["url_input"] = True
         else:
             info["modalities"] = ["text"]

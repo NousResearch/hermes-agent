@@ -175,6 +175,16 @@ class PooledCredential:
         data.setdefault("id", uuid.uuid4().hex[:6])
         data.setdefault("label", payload.get("source", provider))
         data.setdefault("auth_type", AUTH_TYPE_API_KEY)
+        # An Anthropic setup-token (sk-ant-oat*) is always OAuth regardless of
+        # how it was ingested. The env path infers this, but manually-added
+        # credentials (hermes auth add / dashboard) default to api_key and are
+        # then sent with an x-api-key header, which Anthropic rejects for OAuth
+        # tokens. Normalize here so every ingest path agrees with
+        # _is_oauth_token()'s prefix detection. See issue #63737.
+        if provider == "anthropic":
+            _oat = data.get("access_token") or ""
+            if isinstance(_oat, str) and _oat.startswith("sk-ant-oat"):
+                data["auth_type"] = AUTH_TYPE_OAUTH
         data.setdefault("priority", 0)
         data.setdefault("source", SOURCE_MANUAL)
         data.setdefault("access_token", "")

@@ -93,12 +93,17 @@ GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
 POST /v1/runs/{id}/stop          Interrupt the run
+POST /v1/realtime/turn           Low-latency talker/orchestrator turn
+GET  /v1/realtime/events         SSE stream of realtime context/task events
+GET/POST /v1/realtime/context    Read or patch live realtime context
+GET/POST /v1/realtime/tasks      List or create realtime task records
 GET  /v1/capabilities            Machine-readable feature flags
 GET  /v1/models                  Lists hermes-agent
 GET  /health, /health/detailed
 ```
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
+For low-latency voice/chat clients, see [Realtime Orchestration API](./realtime-orchestration).
 
 ---
 

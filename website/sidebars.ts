@@ -727,6 +727,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/session-storage',
             'developer-guide/provider-runtime',
             'developer-guide/programmatic-integration',
+            'developer-guide/realtime-orchestration',
           ],
         },
         {

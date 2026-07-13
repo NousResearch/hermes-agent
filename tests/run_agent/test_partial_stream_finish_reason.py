@@ -402,6 +402,38 @@ class TestConversationLoopPartialStreamContinuation:
         assert "first half of" in result["final_response"]
         assert "forty-two" in result["final_response"]
 
+    def test_length_retry_exhaustion_returns_mid_turn_steer(self, loop_agent):
+        """A /steer received while the model is repeatedly length-truncated
+        must survive the early return so the CLI/gateway can make it the next
+        user turn.  The normal turn finalizer does this, but the exhaustion
+        branch returns before it runs.
+        """
+        from tests.run_agent.test_run_agent import _mock_response
+
+        calls = 0
+
+        def _always_truncated(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                # Simulate a steer arriving while the first API request is in
+                # flight.  No tool result exists for the pre-call drain to use.
+                loop_agent.steer("break the answer into smaller files")
+            return _mock_response(content=f"partial-{calls}", finish_reason="length")
+
+        loop_agent.client.chat.completions.create.side_effect = _always_truncated
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("write a very long answer")
+
+        assert loop_agent.client.chat.completions.create.call_count == 4
+        assert result["completed"] is False
+        assert result["pending_steer"] == "break the answer into smaller files"
+
 
 class TestContentFilterStallActivatesFallback:
     """Regression for #32421: a provider output-layer content safety filter

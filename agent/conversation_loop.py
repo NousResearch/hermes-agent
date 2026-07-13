@@ -2306,7 +2306,7 @@ def run_conversation(
                             partial_response = agent._strip_think_blocks("".join(truncated_response_parts)).strip()
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
-                            return {
+                            result = {
                                 "final_response": partial_response or None,
                                 "messages": messages,
                                 "api_calls": api_call_count,
@@ -2314,6 +2314,14 @@ def run_conversation(
                                 "partial": True,
                                 "error": "Response remained truncated after 4 continuation attempts",
                             }
+                            # This early return bypasses TurnFinalizer, which
+                            # normally returns a late /steer to the CLI/gateway
+                            # as the next user turn.  Preserve that contract
+                            # when length-continuation retries are exhausted.
+                            leftover_steer = agent._drain_pending_steer()
+                            if leftover_steer:
+                                result["pending_steer"] = leftover_steer
+                            return result
 
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
                         assistant_message = _trunc_msg

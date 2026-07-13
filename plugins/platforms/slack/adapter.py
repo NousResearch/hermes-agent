@@ -1608,15 +1608,26 @@ class SlackAdapter(BasePlatformAdapter):
                 metadata.get("thread_id") or metadata.get("thread_ts") or ""
             )
         requested_team_id = self._metadata_team_id(metadata)
-        if not requested_team_id:
-            requested_team_id = self._channel_team.get(chat_id, "")
         active = None
         if requested_thread_ts:
-            active_key = self._workspace_thread_key(
-                requested_team_id, chat_id, requested_thread_ts
-            )
-            if active_key:
-                active = self._active_status_threads.pop(active_key, None)
+            if requested_team_id:
+                active_key = self._workspace_thread_key(
+                    requested_team_id, chat_id, requested_thread_ts
+                )
+                if active_key:
+                    active = self._active_status_threads.pop(active_key, None)
+            else:
+                # Do not trust the mutable channel-only workspace fallback for
+                # a thread-specific cleanup: Slack Connect workspaces can share
+                # a channel ID. Clear the uniquely matching tracked status and
+                # let its stored team choose the correct client.
+                matching_keys = [
+                    key
+                    for key in self._active_status_threads
+                    if key[1] == str(chat_id) and key[2] == requested_thread_ts
+                ]
+                if len(matching_keys) == 1:
+                    active = self._active_status_threads.pop(matching_keys[0], None)
         else:
             # Metadata-free cleanup is safe only if exactly one status exists
             # for this channel; otherwise it may clear another Slack Connect
@@ -1624,9 +1635,7 @@ class SlackAdapter(BasePlatformAdapter):
             matching_keys = [
                 key
                 for key in self._active_status_threads
-                if isinstance(key, tuple)
-                and len(key) == 3
-                and key[1] == str(chat_id)
+                if key[1] == str(chat_id)
             ]
             if len(matching_keys) == 1:
                 active = self._active_status_threads.pop(matching_keys[0], None)

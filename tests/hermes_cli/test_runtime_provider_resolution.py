@@ -30,6 +30,22 @@ def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
         rp.resolve_runtime_provider()
 
 
+def test_openai_api_gpt4o_uses_chat_completions_not_responses(monkeypatch):
+    """Direct OpenAI API-key traffic must not send Responses-only fields."""
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "openai-api", "default": "gpt-4o"},
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    resolved = rp.resolve_runtime_provider(requested="openai-api")
+
+    assert resolved["provider"] == "openai-api"
+    assert resolved["api_mode"] == "chat_completions"
+
+
 def test_noauth_lmstudio_still_resolves(monkeypatch):
     """The fail-closed key guard preserves LM Studio's no-auth contract."""
     monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))

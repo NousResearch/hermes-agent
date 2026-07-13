@@ -504,9 +504,12 @@ def _resolve_runtime_from_pool_entry(
             # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
             # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
             # codex_responses).
-            detected = _detect_api_mode_for_url(base_url)
-            if detected:
-                api_mode = detected
+            # Direct ``openai-api`` API-key traffic is intentionally excluded:
+            # GPT-4o uses Chat Completions and rejects Responses-only fields.
+            if provider != "openai-api":
+                detected = _detect_api_mode_for_url(base_url)
+                if detected:
+                    api_mode = detected
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize
@@ -1496,9 +1499,16 @@ def _resolve_explicit_runtime(
             else:
                 # Auto-detect from URL (Anthropic /anthropic suffix,
                 # api.openai.com → Responses, Kimi /coding, etc.).
-                detected = _detect_api_mode_for_url(base_url)
-                if detected:
-                    api_mode = detected
+                # Direct ``openai-api`` traffic uses an API key and must not
+                # inherit the generic api.openai.com Responses default for
+                # GPT-4o: Responses-only fields such as
+                # ``include=["reasoning.encrypted_content"]`` are rejected
+                # with HTTP 400. Use ``openai-codex`` or an explicit
+                # ``model.api_mode`` when the Responses transport is wanted.
+                if provider != "openai-api":
+                    detected = _detect_api_mode_for_url(base_url)
+                    if detected:
+                        api_mode = detected
 
         return {
             "provider": provider,
@@ -2057,9 +2067,13 @@ def resolve_runtime_provider(
                 # Auto-detect Anthropic-compatible endpoints by URL convention
                 # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
                 # plus api.openai.com → codex_responses and api.x.ai → codex_responses.
-                detected = _detect_api_mode_for_url(base_url)
-                if detected:
-                    api_mode = detected
+                # Direct ``openai-api`` is intentionally excluded: GPT-4o on the
+                # API-key endpoint uses Chat Completions and rejects Responses-only
+                # fields such as ``reasoning.encrypted_content``.
+                if provider != "openai-api":
+                    detected = _detect_api_mode_for_url(base_url)
+                    if detected:
+                        api_mode = detected
         # Normalize the /v1 suffix for OpenCode by API mode (see comment above).
         if provider in {"opencode-zen", "opencode-go"}:
             from hermes_cli.models import normalize_opencode_base_url

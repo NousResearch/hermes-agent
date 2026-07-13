@@ -6827,7 +6827,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not sessions:
             return False
 
+        import shutil
         from hermes_cli.main import _relative_time
+        from hermes_cli.terminal_columns import pad_left, pad_right
+
+        # Column width configuration
+        COL_NUM = 3
+        COL_LAST_ACTIVE = 13
+        COL_ID = 24
+        COL_TITLE_DEFAULT = 32
+        COL_PREVIEW_DEFAULT = 40
+        DEFAULT_TOTAL = 2 + COL_NUM + COL_TITLE_DEFAULT + COL_PREVIEW_DEFAULT + COL_LAST_ACTIVE + COL_ID + 4
+        FIXED_WIDTH = 2 + COL_NUM + COL_LAST_ACTIVE + COL_ID + 4
+
+        # Get terminal width and compute adaptive column widths
+        term_width = shutil.get_terminal_size((120, 24)).columns
+        if term_width >= DEFAULT_TOTAL:
+            col_title = COL_TITLE_DEFAULT
+            col_preview = COL_PREVIEW_DEFAULT
+        else:
+            available = max(20, term_width - FIXED_WIDTH)
+            col_title = max(8, available // 2)
+            col_preview = max(8, available - col_title)
 
         _cli_visible_print()
         if reason == "history":
@@ -6835,13 +6856,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             _cli_visible_print("  Recent sessions:")
         _cli_visible_print()
-        _cli_visible_print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        _cli_visible_print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+        _cli_visible_print(f"  {pad_left('#', COL_NUM)} {pad_right('Title', col_title)} {pad_right('Preview', col_preview)} {pad_right('Last Active', COL_LAST_ACTIVE)} {'ID'}")
+        _cli_visible_print(f"  {'─' * COL_NUM} {'─' * col_title} {'─' * col_preview} {'─' * COL_LAST_ACTIVE} {'─' * COL_ID}")
         for idx, session in enumerate(sessions, start=1):
             title = session.get("title") or "—"
-            preview = (session.get("preview") or "")[:38]
+            preview = (session.get("preview") or "")
             last_active = _relative_time(session.get("last_active"))
-            _cli_visible_print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            _cli_visible_print(f"  {pad_left(str(idx), COL_NUM)} {pad_right(title, col_title)} {pad_right(preview, col_preview)} {pad_right(last_active, COL_LAST_ACTIVE)} {session['id']}")
         _cli_visible_print()
         _cli_visible_print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
         _cli_visible_print("  Example: /resume 2")

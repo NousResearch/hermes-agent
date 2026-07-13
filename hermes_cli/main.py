@@ -920,6 +920,8 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     Uses curses (not simple_term_menu) to avoid the ghost-duplication rendering
     bug in tmux/iTerm when arrow keys are used.
     """
+    from hermes_cli.terminal_columns import pad_right
+
     if not sessions:
         print("No sessions found.")
         return None
@@ -939,18 +941,18 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             sid = s["id"][:18]
 
             # Adaptive column widths based on terminal width
-            # Layout: [arrow 3] [title/preview flexible] [active 12] [src 6] [id 18]
-            fixed_cols = 3 + 12 + 6 + 18 + 6  # arrow + active + src + id + padding
+            # Layout: [arrow 3] [title/preview flexible] [active 10] [src 5] [id 18] + 4 separators
+            fixed_cols = 3 + 10 + 5 + 18 + 4  # arrow + active + src + id + separators
             name_width = max(20, max_x - fixed_cols)
 
             if title:
-                name = title[:name_width]
+                name = title
             elif preview:
-                name = preview[:name_width]
+                name = preview
             else:
                 name = sid
 
-            return f"{name:<{name_width}}  {last_active:<10}  {source:<5} {sid}"
+            return f"{pad_right(name, name_width)}  {pad_right(last_active, 10)}  {pad_right(source, 5)} {sid}"
 
         def _match(s, query):
             """Check if a session matches the search query (case-insensitive)."""
@@ -1009,7 +1011,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 # Column header line
                 fixed_cols = 3 + 12 + 6 + 18 + 6
                 name_width = max(20, max_x - fixed_cols)
-                col_header = f"   {'Title / Preview':<{name_width}}  {'Active':<10}  {'Src':<5} {'ID'}"
+                col_header = f"   {pad_right('Title / Preview', name_width)}  {pad_right('Active', 10)}  {pad_right('Src', 5)} {'ID'}"
                 try:
                     dim_attr = (
                         curses.color_pair(4) if curses.has_colors() else curses.A_DIM
@@ -1132,11 +1134,9 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         title = (s.get("title") or "").strip()
         preview = (s.get("preview") or "").strip()
         label = title or preview or s["id"]
-        if len(label) > 50:
-            label = label[:47] + "..."
         last_active = _relative_time(s.get("last_active"))
         src = s.get("source", "")[:6]
-        print(f"  {i + 1:>3}. {label:<50}  {last_active:<10}  {src}")
+        print(f"  {i + 1:>3}. {pad_right(label, 50)}  {pad_right(last_active, 10)}  {src}")
 
     while True:
         try:
@@ -13867,6 +13867,7 @@ def main():
         _exclude = None if _source else ["tool"]
 
         if action == "list":
+            from hermes_cli.terminal_columns import pad_right
             from hermes_state import workspace_key as _ws_key
 
             sessions = db.list_sessions_rich(
@@ -13901,44 +13902,84 @@ def main():
             has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
             has_titles = any(s.get("title") for s in sessions)
 
+            # Terminal width detection for adaptive column sizing
+            import shutil
+            term_width = shutil.get_terminal_size((120, 24)).columns
+            COL_ID = 24
+            COL_LAST_ACTIVE = 13
+            COL_SRC = 6
+            COL_WS = 18
+
             if has_ws:
+                # Layout with workspace: Title/Preview + Workspace + LastActive + ID
+                # or: Preview + Workspace + LastActive + Src + ID
+                FIXED_WS_TITLE = COL_WS + COL_LAST_ACTIVE + COL_ID + 3  # workspace + last_active + id + separators
+                DEFAULT_WS_TITLE_TOTAL = FIXED_WS_TITLE + 28 + 1  # + title default + separator
+                FIXED_WS_PREVIEW = COL_WS + COL_LAST_ACTIVE + COL_SRC + COL_ID + 4
+                DEFAULT_WS_PREVIEW_TOTAL = FIXED_WS_PREVIEW + 38 + 1
+
                 if has_titles:
-                    print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
-                    print("─" * 110)
-                else:
-                    print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
-                    print("─" * 100)
-                for s in sessions:
-                    last_active = _relative_time(s.get("last_active"))
-                    ws = _ws_label(s)[:16]
-                    if has_titles:
-                        title = (s.get("title") or "—")[:26]
-                        print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                    if term_width >= DEFAULT_WS_TITLE_TOTAL:
+                        col_title = 28
                     else:
-                        preview = s.get("preview", "")[:36]
-                        print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+                        col_title = max(10, term_width - FIXED_WS_TITLE - 1)
+                    print(f"{pad_right('Title', col_title)} {pad_right('Workspace', COL_WS)} {pad_right('Last Active', COL_LAST_ACTIVE)} {'ID'}")
+                    print("─" * (col_title + COL_WS + COL_LAST_ACTIVE + COL_ID + 3))
+                    for s in sessions:
+                        last_active = _relative_time(s.get("last_active"))
+                        ws = _ws_label(s)
+                        title = s.get("title") or "—"
+                        print(f"{pad_right(title, col_title)} {pad_right(ws, COL_WS)} {pad_right(last_active, COL_LAST_ACTIVE)} {s['id']}")
+                else:
+                    if term_width >= DEFAULT_WS_PREVIEW_TOTAL:
+                        col_preview = 38
+                    else:
+                        col_preview = max(10, term_width - FIXED_WS_PREVIEW - 1)
+                    print(f"{pad_right('Preview', col_preview)} {pad_right('Workspace', COL_WS)} {pad_right('Last Active', COL_LAST_ACTIVE)} {pad_right('Src', COL_SRC)} {'ID'}")
+                    print("─" * (col_preview + COL_WS + COL_LAST_ACTIVE + COL_SRC + COL_ID + 4))
+                    for s in sessions:
+                        last_active = _relative_time(s.get("last_active"))
+                        ws = _ws_label(s)
+                        preview = s.get("preview", "")
+                        print(f"{pad_right(preview, col_preview)} {pad_right(ws, COL_WS)} {pad_right(last_active, COL_LAST_ACTIVE)} {pad_right(s['source'], COL_SRC)} {s['id']}")
                 return
 
+            # Layout without workspace: Title + Preview + LastActive + ID
+            # or: Preview + LastActive + Src + ID
+            FIXED_NOWS_TITLE = COL_LAST_ACTIVE + COL_ID + 2  # last_active + id + separators
+            DEFAULT_NOWS_TITLE_TOTAL = FIXED_NOWS_TITLE + 32 + 40 + 2  # + title + preview + separators
+            FIXED_NOWS_PREVIEW = COL_LAST_ACTIVE + COL_SRC + COL_ID + 3
+            DEFAULT_NOWS_PREVIEW_TOTAL = FIXED_NOWS_PREVIEW + 50 + 1
+
             if has_titles:
-                print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-                print("─" * 110)
-            else:
-                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 95)
-            for s in sessions:
-                last_active = _relative_time(s.get("last_active"))
-                preview = (
-                    s.get("preview", "")[:38]
-                    if has_titles
-                    else s.get("preview", "")[:48]
-                )
-                if has_titles:
-                    title = (s.get("title") or "—")[:30]
-                    sid = s["id"]
-                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                if term_width >= DEFAULT_NOWS_TITLE_TOTAL:
+                    col_title = 32
+                    col_preview = 40
                 else:
+                    # Compress Title and Preview equally
+                    available = max(16, term_width - FIXED_NOWS_TITLE - 2)
+                    col_title = max(8, available // 2)
+                    col_preview = max(8, available - col_title)
+                print(f"{pad_right('Title', col_title)} {pad_right('Preview', col_preview)} {pad_right('Last Active', COL_LAST_ACTIVE)} {'ID'}")
+                print("─" * (col_title + col_preview + COL_LAST_ACTIVE + COL_ID + 3))
+                for s in sessions:
+                    last_active = _relative_time(s.get("last_active"))
+                    preview = s.get("preview", "")
+                    title = s.get("title") or "—"
                     sid = s["id"]
-                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                    print(f"{pad_right(title, col_title)} {pad_right(preview, col_preview)} {pad_right(last_active, COL_LAST_ACTIVE)} {sid}")
+            else:
+                if term_width >= DEFAULT_NOWS_PREVIEW_TOTAL:
+                    col_preview = 50
+                else:
+                    col_preview = max(10, term_width - FIXED_NOWS_PREVIEW - 1)
+                print(f"{pad_right('Preview', col_preview)} {pad_right('Last Active', COL_LAST_ACTIVE)} {pad_right('Src', COL_SRC)} {'ID'}")
+                print("─" * (col_preview + COL_LAST_ACTIVE + COL_SRC + COL_ID + 4))
+                for s in sessions:
+                    last_active = _relative_time(s.get("last_active"))
+                    preview = s.get("preview", "")
+                    sid = s["id"]
+                    print(f"{pad_right(preview, col_preview)} {pad_right(last_active, COL_LAST_ACTIVE)} {pad_right(s['source'], COL_SRC)} {sid}")
 
         elif action == "export":
             from hermes_cli.session_filters import (

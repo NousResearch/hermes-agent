@@ -728,3 +728,63 @@ class TestResumeDisplayConfig:
 
         display = config.get("display", {})
         assert display.get("resume_display") == "full"
+
+
+# ── CJK alignment in session picker ───────────────────────────────────
+
+
+class TestShowRecentSessionsCJK:
+    """_show_recent_sessions handles CJK content with correct truncation."""
+
+    def test_cjk_title_truncation_in_picker(self):
+        """CJK titles in resume picker are truncated without cutting chars."""
+        from hermes_cli.terminal_columns import pad_right, disp_width
+
+        # Simulate narrow terminal (60 cols → col_title ≈ 10)
+        col_title = 10
+        long_cjk_title = "中文测试标题这是一个很长的标题"
+
+        result = pad_right(long_cjk_title, col_title)
+
+        # Width must fit the column
+        assert disp_width(result) <= col_title
+
+        # Must contain ellipsis (truncated)
+        if disp_width(long_cjk_title) > col_title:
+            assert "…" in result
+
+        # Valid UTF-8 (no half-cut chars)
+        result.encode("utf-8").decode("utf-8")
+
+    def test_cjk_preview_truncation_in_picker(self):
+        """CJK previews in resume picker are truncated correctly."""
+        from hermes_cli.terminal_columns import pad_right, disp_width
+
+        col_preview = 10
+        cjk_preview = "这是一个预览内容测试"
+
+        result = pad_right(cjk_preview, col_preview)
+
+        assert disp_width(result) <= col_preview
+        if disp_width(cjk_preview) > col_preview:
+            assert "…" in result
+
+    def test_mixed_row_alignment_in_picker(self):
+        """Mixed CJK/ASCII rows align correctly in narrow terminal."""
+        from hermes_cli.terminal_columns import pad_right, pad_left, disp_width
+
+        COL_NUM = 3
+        COL_LAST_ACTIVE = 13
+        col_title = 10
+        col_preview = 10
+
+        # Simulate a data row with CJK content
+        num = pad_left("1", COL_NUM)
+        title = pad_right("中文标题测试", col_title)
+        preview = pad_right("预览内容", col_preview)
+        last = pad_right("2h ago", COL_LAST_ACTIVE)
+
+        assert disp_width(num) <= COL_NUM
+        assert disp_width(title) <= col_title
+        assert disp_width(preview) <= col_preview
+        assert disp_width(last) <= COL_LAST_ACTIVE

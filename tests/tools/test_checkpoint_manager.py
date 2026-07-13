@@ -523,6 +523,36 @@ class TestFormatCheckpointList:
         assert "before write_file" in result
         assert "/rollback" in result
 
+    def test_cjk_workdir_truncation(self):
+        """CJK workdir paths are truncated without cutting chars in half."""
+        from hermes_cli.terminal_columns import pad_right, disp_width
+
+        col_workdir = 60
+        cjk_workdir = "/home/user/projects/这是一个中文项目名称测试截断效果/very/long/path"
+
+        result = pad_right(cjk_workdir, col_workdir)
+
+        # Width must fit the column
+        assert disp_width(result) <= col_workdir
+
+        # Must contain ellipsis if truncated
+        if disp_width(cjk_workdir) > col_workdir:
+            assert "…" in result
+
+        # Valid UTF-8 (no half-cut chars)
+        result.encode("utf-8").decode("utf-8")
+
+    def test_cjk_reason_displayed(self):
+        """CJK reason strings are displayed correctly."""
+        cps = [
+            {"hash": "abc123", "short_hash": "abc1",
+             "timestamp": "2026-03-09T21:15:00-07:00",
+             "reason": "修改文件前创建检查点"},  # CJK reason
+        ]
+        result = format_checkpoint_list(cps, "/home/user/project")
+        assert "abc1" in result
+        assert "修改文件前" in result  # Reason should appear
+
 
 # =========================================================================
 # Dir size / file count guards

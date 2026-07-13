@@ -64,6 +64,7 @@ def _fmt_age(ts: Any) -> str:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    from hermes_cli.terminal_columns import pad_right
     from tools.checkpoint_manager import store_status
 
     info = store_status()
@@ -81,23 +82,21 @@ def cmd_status(args: argparse.Namespace) -> int:
     )
     if projects:
         print()
-        print(f"  {'WORKDIR':<60}  {'COMMITS':>7}  {'LAST TOUCH':>12}  STATE")
+        print(f"  {pad_right('WORKDIR', 60)}  {'COMMITS':>7}  {'LAST TOUCH':>12}  STATE")
         for p in projects[: args.limit if hasattr(args, "limit") and args.limit else 20]:
             wd = p.get("workdir") or "(unknown)"
-            if len(wd) > 60:
-                wd = "…" + wd[-59:]
             exists = p.get("exists")
             state = "live" if exists else "orphan"
             commits = p.get("commits", 0)
             last = _fmt_age(p.get("last_touch"))
-            print(f"  {wd:<60}  {commits:>7}  {last:>12}  {state}")
+            print(f"  {pad_right(wd, 60)}  {commits:>7}  {last:>12}  {state}")
 
     legacy = info.get("legacy_archives", [])
     if legacy:
         print()
         print(f"Legacy archives ({len(legacy)}):")
         for arch in sorted(legacy, key=lambda a: a.get("mtime", 0), reverse=True):
-            print(f"  {arch['name']:<40}  {_fmt_bytes(arch['size_bytes']):>10}")
+            print(f"  {pad_right(arch['name'], 40)}  {_fmt_bytes(arch['size_bytes']):>10}")
         print()
         print("Clear with: hermes checkpoints clear-legacy")
     return 0
@@ -169,6 +168,7 @@ def cmd_clear(args: argparse.Namespace) -> int:
 
 
 def cmd_clear_legacy(args: argparse.Namespace) -> int:
+    from hermes_cli.terminal_columns import pad_right
     from tools.checkpoint_manager import clear_legacy, store_status
 
     info = store_status()
@@ -180,7 +180,7 @@ def cmd_clear_legacy(args: argparse.Namespace) -> int:
     total = sum(a.get("size_bytes", 0) for a in legacy)
     print(f"Found {len(legacy)} legacy archive(s), total {_fmt_bytes(total)}:")
     for arch in legacy:
-        print(f"  {arch['name']:<40}  {_fmt_bytes(arch['size_bytes']):>10}")
+        print(f"  {pad_right(arch['name'], 40)}  {_fmt_bytes(arch['size_bytes']):>10}")
     print()
     print("Legacy archives hold pre-v2 per-project shadow repos, moved aside")
     print("during the single-store migration. Delete when you're confident")

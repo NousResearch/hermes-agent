@@ -363,6 +363,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/blockchain/blockchain-evm',
                     'user-guide/skills/optional/blockchain/blockchain-hyperliquid',
                     'user-guide/skills/optional/blockchain/blockchain-solana',
+                    'user-guide/skills/optional/blockchain/blockchain-xrpl',
                   ],
                 },
                 {

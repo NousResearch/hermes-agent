@@ -321,11 +321,16 @@ def _read_output_file_lossy(path: str) -> str:
     (e.g. Cp1252 on Windows with accented characters) rather than UTF-8.
     Reading with a strict UTF-8 decoder raised UnicodeDecodeError and turned
     a recoverable browser error into a hard tool failure. We decode from
-    bytes with errors="replace" so the content is always returned.
+    bytes with errors="replace" so the content is always returned. Accept an
+    already-decoded ``str`` as well: some file-like wrappers and existing
+    tests provide text even when the file was requested in binary mode.
     """
     try:
         with open(path, "rb") as f:
-            return f.read().decode("utf-8", errors="replace").strip()
+            output: Any = f.read()
+        if isinstance(output, str):
+            return output.strip()
+        return output.decode("utf-8", errors="replace").strip()
     except OSError:
         return ""
 

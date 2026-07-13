@@ -12,9 +12,7 @@ surfacing the real browser error. The fix reads bytes and decodes with
 ``errors="replace"`` so the content is always returned.
 """
 
-import os
-
-import pytest
+from unittest.mock import mock_open, patch
 
 
 class TestReadOutputFileLossy:
@@ -34,10 +32,12 @@ class TestReadOutputFileLossy:
         # 0xc6 is 'Æ' in Cp1252; invalid as strict UTF-8.
         p.write_bytes(b"status: falha na conex\xc6o\n")
         result = self.bt._read_output_file_lossy(str(p))
-        # Must return a str (never raise), with the bad byte replaced.
-        assert isinstance(result, str)
-        assert "conex" in result
-        assert "falha" in result
+        assert result == "status: falha na conex\ufffdo"
+
+    def test_accepts_already_decoded_text_from_file_like_wrapper(self):
+        """Preserve compatibility with wrappers/mocks that return text."""
+        with patch("builtins.open", mock_open(read_data="already decoded\n")):
+            assert self.bt._read_output_file_lossy("out.txt") == "already decoded"
 
     def test_missing_file_returns_empty(self, tmp_path):
         missing = tmp_path / "does_not_exist.txt"
@@ -48,8 +48,7 @@ class TestReadOutputFileLossy:
         out = tmp_path / "stdout.txt"
         err = tmp_path / "stderr.txt"
         out.write_bytes(b"ok\n")
-        err.write_bytes(b"erro: a\xc7\xc3o inv\xc3lida\n".replace(b"\xc3", b"\xc6"))
+        err.write_bytes(b"erro: byte \xc6 invalido\n")
         stdout, stderr = self.bt._read_command_output_files(str(out), str(err))
-        assert isinstance(stdout, str)
-        assert isinstance(stderr, str)
         assert stdout == "ok"
+        assert stderr == "erro: byte \ufffd invalido"

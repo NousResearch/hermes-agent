@@ -16937,6 +16937,22 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
         _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
 
 
+def _emit_ready_tokens(actual_port: int, *, headless: bool) -> None:
+    """Print Desktop/backend port sentinels.
+
+    ``hermes serve`` is a plain headless backend, so current Desktop builds
+    listen for ``HERMES_BACKEND_READY``. Older installed Desktop shells only
+    understood the legacy dashboard sentinel, though, and can be left behind
+    when the backend updates first. Emit both for headless backends so a
+    backend-only update cannot strand an older native app on "Connecting…".
+    """
+    if headless:
+        print(f"HERMES_BACKEND_READY port={actual_port}", flush=True)
+        print(f"HERMES_DASHBOARD_READY port={actual_port}", flush=True)
+    else:
+        print(f"HERMES_DASHBOARD_READY port={actual_port}", flush=True)
+
+
 def _maybe_open_browser(
     host: str, actual_port: int, open_browser: bool, initial_profile: str
 ) -> None:
@@ -17154,11 +17170,7 @@ def start_server(
             app.state.bound_port = actual_port
 
             _write_dashboard_ready_file(actual_port)
-            # Port-discovery sentinel parsed by the desktop spawn. `serve` is a
-            # plain backend, not a dashboard, so it announces a neutral token;
-            # `dashboard` keeps the legacy one. The desktop matches either.
-            ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
-            print(f"{ready_token} port={actual_port}", flush=True)
+            _emit_ready_tokens(actual_port, headless=headless)
             if headless:
                 # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
                 # advertise a paste-and-connect URL, just announce the bind.

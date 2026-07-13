@@ -40,6 +40,12 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+from gateway.write_approval_interactions import (
+    WRITE_APPROVAL_REPLY_KEY,
+    WriteApprovalReply,
+    build_pending_surface,
+    command_for_reply_intent,
+)
 from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
 from utils import (
     atomic_json_write,
@@ -3042,7 +3048,7 @@ class GatewaySlashCommandsMixin:
         if out is None:
             out = ("Unknown /memory subcommand. Use: pending, approve <id>, "
                    "reject <id>, approval <on|off>.")
-        return out
+        return WriteApprovalReply(out, build_pending_surface((wa.MEMORY,)))
 
     async def _handle_skills_command(self, event: MessageEvent) -> str:
         """Handle /skills on the gateway — pending skill-write review only.
@@ -3104,7 +3110,35 @@ class GatewaySlashCommandsMixin:
             out = (out[:3000]
                    + "\n… (truncated — full diff in "
                      f"~/.hermes/pending/skills/{pending_id}.json)")
-        return out
+        return WriteApprovalReply(out, build_pending_surface((wa.SKILLS,)))
+
+    async def _dispatch_write_approval_reply_intent(
+        self,
+        event: MessageEvent,
+        intent_text: str,
+    ) -> tuple[bool, Optional[str]]:
+        """Route a scoped text/voice intent through the existing slash handler."""
+        surface = (getattr(event, "metadata", None) or {}).get(
+            WRITE_APPROVAL_REPLY_KEY
+        )
+        command_text = command_for_reply_intent(intent_text, surface)
+        if command_text is None:
+            return False, None
+
+        command_event = dataclasses.replace(
+            event,
+            text=command_text,
+            message_type=MessageType.COMMAND,
+        )
+        canonical = command_text.split(None, 1)[0].lstrip("/")
+        denied = self._check_slash_access(command_event.source, canonical)
+        if denied is not None:
+            return True, WriteApprovalReply(denied)
+        if canonical == "memory":
+            return True, await self._handle_memory_command(command_event)
+        if canonical == "skills":
+            return True, await self._handle_skills_command(command_event)
+        return False, None
 
     async def _handle_fast_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""

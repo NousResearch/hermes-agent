@@ -1940,6 +1940,11 @@ from gateway.shutdown_watchdog import (
     loop_heartbeat_forever,
     resolve_shutdown_watchdog_delay,
 )
+from gateway.write_approval_interactions import (
+    WRITE_APPROVAL_METADATA_KEY,
+    WriteApprovalReply,
+    build_pending_surface,
+)
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
@@ -11203,7 +11208,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # broken judge never breaks normal message handling.
             try:
                 _final_text = ""
-                if isinstance(_agent_result, dict):
+                if isinstance(_agent_result, WriteApprovalReply):
+                    _final_text = ""
+                elif isinstance(_agent_result, dict):
                     _final_text = str(_agent_result.get("final_response") or "")
                 elif isinstance(_agent_result, str):
                     _final_text = _agent_result
@@ -11422,6 +11429,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_text,
                     audio_paths,
                 )
+                if (
+                    event.message_type == MessageType.VOICE
+                    and len(_successful_transcripts) == 1
+                    and not (event.text or "").strip()
+                ):
+                    _handled, _approval_response = (
+                        await self._dispatch_write_approval_reply_intent(
+                            event, _successful_transcripts[0]
+                        )
+                    )
+                    if _handled:
+                        return _approval_response or WriteApprovalReply(
+                            "Write-approval action produced no response."
+                        )
                 # Echo each successful transcript back to the user immediately
                 # when configured. Lets users verify STT quality in real-time,
                 # while allowing quiet STT for users who only want the agent to
@@ -12580,6 +12601,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         if message_text is None:
             return
+        if isinstance(message_text, WriteApprovalReply):
+            return message_text
 
         # Capture the platform event time as message metadata and keep the
         # persisted transcript clean (strip any leading timestamp prefix).
@@ -19889,12 +19912,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             def _deliver_bg_review_message(message: str) -> None:
                 if not _status_adapter or not _run_still_current():
                     return
-                safe_schedule_threadsafe(
-                    _status_adapter.send(
+
+                async def _deliver() -> None:
+                    metadata = _non_conversational_metadata(
+                        _status_thread_metadata, platform=source.platform
+                    )
+                    surface = await asyncio.to_thread(
+                        build_pending_surface, ("memory", "skills")
+                    )
+                    if surface:
+                        metadata = dict(metadata or {})
+                        metadata[WRITE_APPROVAL_METADATA_KEY] = surface
+                    await _status_adapter.send(
                         _status_chat_id,
                         message,
-                        metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
-                    ),
+                        metadata=metadata,
+                    )
+
+                safe_schedule_threadsafe(
+                    _deliver(),
                     _loop_for_step,
                     logger=logger,
                     log_message="background_review_callback scheduling error",

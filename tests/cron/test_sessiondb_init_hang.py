@@ -107,11 +107,63 @@ class TestSessionDbInitTimeout:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            with caplog.at_level("WARNING"):
+                success, output, final_response, error = run_job(job)
 
         assert success is True
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["session_db"] is fake_db  # default 10s was plenty for a MagicMock
+        # The malformed env var must produce a warning so the misconfiguration
+        # is observable — otherwise it silently falls back and operators can't
+        # diagnose why their custom timeout isn't taking effect.
+        assert any(
+            "HERMES_CRON_SESSION_DB_TIMEOUT" in rec.message
+            for rec in caplog.records
+        ), f"Expected warning about invalid timeout env var; got: {[r.message for r in caplog.records]}"
+
+    def test_timeout_resolved_from_config_yaml(self, tmp_path, monkeypatch):
+        """cron.session_db_timeout_seconds in config.yaml is respected when
+        the env var is not set — the canonical config-first resolution path."""
+        import yaml
+
+        monkeypatch.delenv("HERMES_CRON_SESSION_DB_TIMEOUT", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"cron": {"session_db_timeout_seconds": 0.2}})
+        )
+        never_set = threading.Event()
+        job = {"id": "config-timeout", "name": "test", "prompt": "hello"}
+
+        try:
+            with patch("cron.scheduler._hermes_home", tmp_path), \
+                 patch("cron.scheduler._resolve_origin", return_value=None), \
+                 patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+                 patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+                 patch("hermes_state.SessionDB", side_effect=lambda: _hanging_session_db(never_set)), \
+                 patch(
+                     "hermes_cli.runtime_provider.resolve_runtime_provider",
+                     return_value={
+                         "api_key": "test-key",
+                         "base_url": "https://example.invalid/v1",
+                         "provider": "openrouter",
+                         "api_mode": "chat_completions",
+                     },
+                 ), \
+                 patch("run_agent.AIAgent") as mock_agent_cls:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "ok"}
+                mock_agent_cls.return_value = mock_agent
+
+                start = time.monotonic()
+                success, output, final_response, error = run_job(job)
+                elapsed = time.monotonic() - start
+        finally:
+            never_set.set()
+
+        # Config value 0.2s bounds the hang, not the 10s default.
+        assert elapsed < 5.0
+        assert success is True
+        assert mock_agent_cls.call_args.kwargs["session_db"] is None
 
 
 class TestDispatchGuardReleasedAfterHang:

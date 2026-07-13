@@ -1996,7 +1996,7 @@ class CLICommandsMixin:
             print()
 
     def _handle_goal_command(self, cmd: str) -> None:
-        """Dispatch /goal subcommands: set / draft / show / status / pause / resume / clear."""
+        """Dispatch /goal subcommands, including loading goal text from a file."""
         from cli import _DIM, _RST, _cprint
         parts = (cmd or "").strip().split(None, 1)
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -2007,6 +2007,34 @@ class CLICommandsMixin:
             return
 
         lower = arg.lower()
+
+        # /goal --file <path> reads a long goal from disk without forcing the
+        # user to paste multi-page text into the TUI. File contents are always
+        # treated as goal text, even when they happen to equal a subcommand
+        # such as "status" or "pause".
+        if lower == "--file" or lower.startswith("--file "):
+            import shlex
+            from pathlib import Path
+
+            try:
+                file_args = shlex.split(arg)
+            except ValueError as exc:
+                _cprint(f"  /goal --file: invalid path: {exc}")
+                return
+            if len(file_args) != 2 or file_args[0] != "--file":
+                _cprint("  Usage: /goal --file <path>")
+                return
+
+            goal_path = Path(file_args[1]).expanduser()
+            try:
+                arg = goal_path.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeError) as exc:
+                _cprint(f"  /goal --file: could not read {goal_path}: {exc}")
+                return
+            if not arg:
+                _cprint(f"  /goal --file: {goal_path} is empty.")
+                return
+            lower = ""
 
         # Bare /goal or /goal status → show current state
         if not arg or lower == "status":

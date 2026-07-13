@@ -1,13 +1,26 @@
+#!/usr/bin/env python3
 """Deterministic evidence-gating for RLM-style parent synthesis.
 
 TraceGuard validates a structured parent answer against evidence handles
 accepted from child calls. It is deliberately not an LLM judge: it only checks
 that every structured claim names a supported ``fact_id`` and the matching
 ``evidence_chunk_id``/``chunk_id`` from the manifest.
+
+Run as a terminal helper — pass a JSON payload with ``evidence_manifest``
+and ``parent_synthesis`` keys via ``--input FILE`` (or stdin) and read the
+JSON verdict from stdout:
+
+    python3 traceguard.py --input payload.json
+
+Exit codes: 0 = all claims accepted, 1 = one or more claims rejected,
+2 = invalid payload.
 """
 
 from __future__ import annotations
 
+import argparse
+import json
+import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -357,3 +370,71 @@ def _claim_text(value: Mapping[str, Any]) -> str:
         if isinstance(item, str) and item:
             parts.append(item)
     return "\n".join(parts)
+
+
+def validate_payload(payload: Any) -> dict[str, Any]:
+    """Validate a ``{"evidence_manifest": [...], "parent_synthesis": {...}}`` payload."""
+    if not isinstance(payload, Mapping):
+        return {
+            "success": False,
+            "error": "payload must be a JSON object with evidence_manifest and parent_synthesis",
+        }
+    evidence_manifest = payload.get("evidence_manifest")
+    parent_synthesis = payload.get("parent_synthesis")
+    if not isinstance(evidence_manifest, list):
+        return {
+            "success": False,
+            "error": "evidence_manifest must be a list of evidence handle objects",
+        }
+    if not isinstance(parent_synthesis, Mapping):
+        return {
+            "success": False,
+            "error": "parent_synthesis must be a structured JSON object",
+        }
+
+    result = validate_parent_synthesis(
+        evidence_manifest=evidence_manifest,
+        parent_synthesis=parent_synthesis,
+    )
+    return {
+        "success": True,
+        "traceguard": result.to_dict(),
+        "normalized_evidence_manifest": list(
+            normalize_allowed_evidence_manifest(evidence_manifest)
+        ),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Validate structured parent-synthesis claims against accepted "
+            "child evidence handles."
+        ),
+    )
+    parser.add_argument(
+        "--input",
+        default="-",
+        help="Path to the JSON payload, or '-' to read stdin (default).",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        if args.input == "-":
+            payload = json.load(sys.stdin)
+        else:
+            with open(args.input, encoding="utf-8") as handle:
+                payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        print(json.dumps({"success": False, "error": f"could not read payload: {error}"}))
+        return 2
+
+    verdict = validate_payload(payload)
+    print(json.dumps(verdict, ensure_ascii=False, indent=2))
+    if not verdict["success"]:
+        return 2
+    return 0 if verdict["traceguard"]["accepted"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

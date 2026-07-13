@@ -6,7 +6,6 @@ coerce_tool_args() fixes these type mismatches by comparing argument values
 against the tool's JSON Schema before dispatch.
 """
 
-import pytest
 from unittest.mock import patch
 
 from model_tools import (
@@ -14,6 +13,8 @@ from model_tools import (
     _coerce_value,
     _coerce_number,
     _coerce_boolean,
+    _schema_accepts_kind,
+    _normalize_json_strings_for_schema,
 )
 
 
@@ -64,10 +65,23 @@ class TestCoerceNumber:
     def test_scientific_notation(self):
         assert _coerce_number("1e5") == 100000
 
-    def test_inf_stays_string_for_integer_only(self):
-        """Infinity should not be converted to int."""
+    def test_inf_stays_string(self):
+        """Infinity is not JSON-serializable, so it should stay as string."""
         result = _coerce_number("inf")
-        assert result == float("inf")
+        assert result == "inf"
+        assert isinstance(result, str)
+
+    def test_negative_inf_stays_string(self):
+        """Negative infinity should also stay as string."""
+        result = _coerce_number("-inf")
+        assert result == "-inf"
+        assert isinstance(result, str)
+
+    def test_nan_stays_string(self):
+        """NaN is not JSON-serializable, so it should stay as string."""
+        result = _coerce_number("nan")
+        assert result == "nan"
+        assert isinstance(result, str)
 
     def test_negative_float(self):
         assert _coerce_number("-2.5") == -2.5
@@ -255,13 +269,98 @@ class TestCoerceToolArgs:
             result = coerce_tool_args("test_tool", args)
             assert result["config"] == {"max": 50}
 
-    def test_invalid_json_array_preserved_as_string(self):
-        """If the string isn't valid JSON, pass it through — let the tool decide."""
+    def test_coerces_string_null_for_nullable_object_arg(self):
+        """Models often emit literal "null" for optional MCP object args."""
+        schema = self._mock_schema({
+            "setting": {
+                "type": "object",
+                "additionalProperties": True,
+                "nullable": True,
+                "default": None,
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"setting": "null"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["setting"] is None
+
+    def test_coerces_string_null_for_nullable_array_arg(self):
+        schema = self._mock_schema({
+            "stages": {
+                "type": "array",
+                "items": {"type": "object"},
+                "nullable": True,
+                "default": None,
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"stages": "null"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["stages"] is None
+
+    def test_invalid_json_array_wrapped_in_single_element_list(self):
+        """A bare string gets wrapped into ``[value]`` when the schema says array.
+
+        Open-weight models (DeepSeek, Qwen, GLM) sometimes emit
+        ``{"urls": "https://a.com"}`` when the tool expects a list.
+        Wrapping produces a valid dispatch rather than a confusing tool
+        failure.  This supersedes the earlier "pass the string through"
+        behavior — no real tool handles a bare string as an array
+        gracefully.
+        """
         schema = self._mock_schema({"items": {"type": "array"}})
         with patch("model_tools.registry.get_schema", return_value=schema):
             args = {"items": "not-json"}
             result = coerce_tool_args("test_tool", args)
-            assert result["items"] == "not-json"
+            assert result["items"] == ["not-json"]
+
+    def test_bare_string_wrapped_as_array(self):
+        """Bare string on array field → single-element list."""
+        schema = self._mock_schema({"urls": {"type": "array", "items": {"type": "string"}}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"urls": "https://a.com"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["urls"] == ["https://a.com"]
+
+    def test_bare_int_wrapped_as_array(self):
+        """Bare non-string scalars (int, bool, float) also get wrapped."""
+        schema = self._mock_schema({"ids": {"type": "array", "items": {"type": "integer"}}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"ids": 5}
+            result = coerce_tool_args("test_tool", args)
+            assert result["ids"] == [5]
+
+    def test_bare_dict_wrapped_as_array(self):
+        """Bare dict on array field → single-element list."""
+        schema = self._mock_schema({"items": {"type": "array"}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": {"a": 1}}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == [{"a": 1}]
+
+    def test_none_on_array_field_preserved(self):
+        """``None`` is never wrapped — tools with defaults handle it."""
+        schema = self._mock_schema({"items": {"type": "array"}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": None}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] is None
+
+    def test_existing_list_passthrough(self):
+        """An already-valid list is not touched."""
+        schema = self._mock_schema({"items": {"type": "array"}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": ["a", "b"]}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == ["a", "b"]
+
+    def test_json_encoded_array_still_parses(self):
+        """JSON-encoded strings still parse (not double-wrapped)."""
+        schema = self._mock_schema({"items": {"type": "array"}})
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": '["a","b"]'}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == ["a", "b"]
 
     def test_extra_args_without_schema_left_alone(self):
         """Args not in the schema properties are not touched."""
@@ -311,3 +410,138 @@ class TestCoerceToolArgs:
         assert isinstance(result["offset"], int)
         assert result["limit"] == 100
         assert isinstance(result["limit"], int)
+
+
+# ── Schema-guided nested JSON-string normalization (cline/cline#11803) ─────
+
+
+class TestSchemaAcceptsKind:
+    """Unit tests for _schema_accepts_kind."""
+
+    def test_plain_type(self):
+        assert _schema_accepts_kind({"type": "array"}, "array") is True
+        assert _schema_accepts_kind({"type": "object"}, "object") is True
+        assert _schema_accepts_kind({"type": "string"}, "array") is False
+
+    def test_type_list(self):
+        assert _schema_accepts_kind({"type": ["array", "null"]}, "array") is True
+        assert _schema_accepts_kind({"type": ["string", "null"]}, "array") is False
+
+    def test_union_branches(self):
+        schema = {"anyOf": [{"type": "string"}, {"type": "array"}]}
+        assert _schema_accepts_kind(schema, "array") is True
+        assert _schema_accepts_kind(schema, "object") is False
+
+    def test_non_dict(self):
+        assert _schema_accepts_kind(None, "array") is False
+
+
+class TestNormalizeJsonStringsForSchema:
+    """Unit tests for _normalize_json_strings_for_schema (the recursive pass)."""
+
+    def test_parses_json_string_array_when_schema_expects_array(self):
+        schema = {"type": "array", "items": {"type": "string"}}
+        out = _normalize_json_strings_for_schema('["git status", "bun test"]', schema)
+        assert out == ["git status", "bun test"]
+
+    def test_preserves_json_looking_string_when_schema_expects_string(self):
+        schema = {"type": "string"}
+        text = '{"keep": "as text"}'
+        assert _normalize_json_strings_for_schema(text, schema) == text
+
+    def test_normalizes_array_item_json_strings(self):
+        schema = {
+            "type": "array",
+            "items": {"type": "object", "properties": {"id": {"type": "string"}}},
+        }
+        out = _normalize_json_strings_for_schema(['{"id": "1"}', '{"id": "2"}'], schema)
+        assert out == [{"id": "1"}, {"id": "2"}]
+
+    def test_normalizes_nested_object_field(self):
+        schema = {
+            "type": "object",
+            "properties": {"cfg": {"type": "object", "properties": {"k": {"type": "string"}}}},
+        }
+        out = _normalize_json_strings_for_schema({"cfg": '{"k": "v"}'}, schema)
+        assert out == {"cfg": {"k": "v"}}
+
+    def test_native_list_preserved_identity(self):
+        schema = {"type": "array", "items": {"type": "object", "properties": {}}}
+        value = [{"id": "1"}]
+        # Nothing to change — same object back (no-op identity preserved).
+        assert _normalize_json_strings_for_schema(value, schema) is value
+
+    def test_non_dict_schema_returns_value(self):
+        assert _normalize_json_strings_for_schema("x", None) == "x"
+
+
+class TestCoerceToolArgsNested:
+    """Integration: nested JSON-string elements/fields are normalized via the
+    registry schema, while legitimate string fields are preserved."""
+
+    def _array_of_objects_schema(self):
+        return {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+            },
+        }
+
+    def test_array_elements_as_json_strings_are_parsed(self):
+        schema = self._array_of_objects_schema()
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": ['{"id": "1", "content": "x"}']}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == [{"id": "1", "content": "x"}]
+
+    def test_mixed_native_and_string_elements(self):
+        schema = self._array_of_objects_schema()
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": [{"id": "1", "content": "a"}, '{"id": "2", "content": "b"}']}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == [
+                {"id": "1", "content": "a"},
+                {"id": "2", "content": "b"},
+            ]
+
+    def test_string_subfield_with_json_content_preserved(self):
+        """A string-typed sub-field whose value looks like JSON must NOT be parsed."""
+        schema = self._array_of_objects_schema()
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": [{"id": "1", "content": '{"not": "parsed"}'}]}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"][0]["content"] == '{"not": "parsed"}'
+
+    def test_whole_array_string_still_works(self):
+        schema = self._array_of_objects_schema()
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": '[{"id": "1", "content": "x"}]'}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == [{"id": "1", "content": "x"}]
+
+    def test_native_array_preserved(self):
+        schema = self._array_of_objects_schema()
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"items": [{"id": "1", "content": "keep"}]}
+            result = coerce_tool_args("test_tool", args)
+            assert result["items"] == [{"id": "1", "content": "keep"}]
+
+    def test_real_todo_schema_element_strings(self):
+        """Against the real todo schema from the registry."""
+        import json as _json
+        args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
+        result = coerce_tool_args("todo", args)
+        assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}

@@ -10,7 +10,6 @@ the past, the entry is treated as expired and the message is allowed through.
 """
 
 import time
-from unittest.mock import patch
 
 from gateway.platforms.helpers import MessageDeduplicator
 
@@ -76,6 +75,19 @@ class TestMessageDeduplicatorTTL:
         assert len(dedup._seen) == 4
         assert "old-0" not in dedup._seen
         assert "new-0" in dedup._seen
+
+    def test_max_size_eviction_caps_fresh_entries(self):
+        """Fresh entries must still be capped to max_size on overflow."""
+        dedup = MessageDeduplicator(max_size=2, ttl_seconds=60)
+
+        dedup.is_duplicate("msg-1")
+        dedup.is_duplicate("msg-2")
+        dedup.is_duplicate("msg-3")
+
+        assert len(dedup._seen) == 2
+        assert "msg-1" not in dedup._seen
+        assert "msg-2" in dedup._seen
+        assert "msg-3" in dedup._seen
 
     def test_ttl_zero_means_no_dedup(self):
         """With TTL=0, all entries expire immediately."""

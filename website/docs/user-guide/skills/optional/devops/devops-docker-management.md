@@ -19,6 +19,7 @@ Manage Docker containers, images, volumes, networks, and Compose stacks — life
 | Version | `1.0.0` |
 | Author | sprmn24 |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `docker`, `containers`, `devops`, `infrastructure`, `compose`, `images`, `volumes`, `networks`, `debugging` |
 
 ## Reference: full SKILL.md

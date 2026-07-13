@@ -9,6 +9,7 @@ view) and don't need this.
 import hashlib
 import logging
 import os
+import posixpath
 import shlex
 import shutil
 import signal
@@ -28,6 +29,12 @@ from hermes_constants import get_hermes_home
 from tools.environments.base import _file_mtime_key
 
 logger = logging.getLogger(__name__)
+
+# Keep retry sleeps patchable without mutating the shared stdlib ``time``
+# module. Patching ``tools.environments.file_sync.time.sleep`` replaces
+# ``time.sleep`` globally because ``time`` is the module object; under xdist
+# that lets unrelated background threads inflate retry-test call counts.
+_sleep = time.sleep
 
 _SYNC_INTERVAL_SECONDS = 5.0
 _FORCE_SYNC_ENV = "HERMES_FORCE_FILE_SYNC"
@@ -69,6 +76,29 @@ def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, st
     return files
 
 
+def _credential_host_paths() -> set[str]:
+    """Return credential files that are upload-only for remote sandboxes."""
+    try:
+        from tools.credential_files import get_credential_file_mounts
+    except Exception:
+        return set()
+
+    paths: set[str] = set()
+    try:
+        mounts = get_credential_file_mounts()
+    except Exception:
+        return set()
+    for entry in mounts:
+        host_path = entry.get("host_path") if isinstance(entry, dict) else None
+        if not host_path:
+            continue
+        try:
+            paths.add(str(Path(host_path).expanduser().resolve()))
+        except OSError:
+            paths.add(str(Path(host_path).expanduser()))
+    return paths
+
+
 def quoted_rm_command(remote_paths: list[str]) -> str:
     """Build a shell ``rm -f`` command for a batch of remote paths."""
     return "rm -f " + " ".join(shlex.quote(p) for p in remote_paths)
@@ -81,7 +111,7 @@ def quoted_mkdir_command(dirs: list[str]) -> str:
 
 def unique_parent_dirs(files: list[tuple[str, str]]) -> list[str]:
     """Extract sorted unique parent directories from (host, remote) pairs."""
-    return sorted({str(Path(remote).parent) for _, remote in files})
+    return sorted({posixpath.dirname(remote) for _, remote in files})
 
 
 def _sha256_file(path: str) -> str:
@@ -125,6 +155,7 @@ class FileSyncManager:
         self._delete_fn = delete_fn
         self._synced_files: dict[str, tuple[float, int]] = {}  # remote_path -> (mtime, size)
         self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
+        self._upload_only_host_paths: set[str] = set()
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
         self._sync_interval = sync_interval
 
@@ -143,6 +174,7 @@ class FileSyncManager:
                 return
 
         current_files = self._get_files_fn()
+        self._upload_only_host_paths.update(_credential_host_paths())
         current_remote_paths = {remote for _, remote in current_files}
 
         # --- Uploads: new or changed files ---
@@ -243,7 +275,7 @@ class FileSyncManager:
                         "sync_back: attempt %d failed (%s), retrying in %ds",
                         attempt + 1, exc, delay,
                     )
-                    time.sleep(delay)
+                    _sleep(delay)
 
         logger.warning("sync_back: all %d attempts failed: %s", _SYNC_BACK_MAX_RETRIES, last_exc)
 
@@ -270,7 +302,17 @@ class FileSyncManager:
             if on_main_thread and original_handler is not None:
                 signal.signal(signal.SIGINT, original_handler)
                 if deferred_sigint:
-                    os.kill(os.getpid(), signal.SIGINT)
+                    # Re-deliver the deferred Ctrl+C to the just-restored
+                    # handler. ``os.kill(os.getpid(), signal.SIGINT)`` is NOT a
+                    # graceful signal on Windows: os.kill only treats
+                    # CTRL_C_EVENT(0)/CTRL_BREAK_EVENT(1) as console events; any
+                    # other value (SIGINT == 2) routes to TerminateProcess(sig),
+                    # hard-killing the CLI (exit code 2) instead of raising
+                    # KeyboardInterrupt — so a Ctrl+C during a remote-backend
+                    # sync-back would kill the whole session on Windows.
+                    # ``signal.raise_signal`` (3.8+) invokes the handler via C
+                    # ``raise()`` on every platform.
+                    signal.raise_signal(signal.SIGINT)
 
     def _sync_back_locked(self, lock_path: Path) -> None:
         """Sync-back under file lock (serializes concurrent gateways)."""
@@ -278,12 +320,15 @@ class FileSyncManager:
             # Windows: no flock — run without serialization
             self._sync_back_impl()
             return
-        lock_fd = open(lock_path, "w")
+        lock_fd = open(lock_path, "w", encoding="utf-8")
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             self._sync_back_impl()
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
             lock_fd.close()
 
     def _sync_back_impl(self) -> None:
@@ -318,6 +363,9 @@ class FileSyncManager:
                     tar.extractall(staging, filter="data")
 
                 applied = 0
+                upload_only_host_paths = (
+                    self._upload_only_host_paths | _credential_host_paths()
+                )
                 for dirpath, _dirnames, filenames in os.walk(staging):
                     for fname in filenames:
                         staged_file = os.path.join(dirpath, fname)
@@ -337,13 +385,24 @@ class FileSyncManager:
                         # Resolve host path from cached mapping
                         host_path = self._resolve_host_path(remote_path, file_mapping)
                         if host_path is None:
-                            host_path = self._infer_host_path(remote_path, file_mapping)
+                            host_path = self._infer_host_path(
+                                remote_path,
+                                file_mapping,
+                                upload_only_host_paths=upload_only_host_paths,
+                            )
                             if host_path is None:
                                 logger.debug(
                                     "sync_back: skipping %s (no host mapping)",
                                     remote_path,
                                 )
                                 continue
+
+                        if self._is_upload_only_host_path(host_path, upload_only_host_paths):
+                            logger.debug(
+                                "sync_back: skipping upload-only credential file %s",
+                                remote_path,
+                            )
+                            continue
 
                         if os.path.exists(host_path) and pushed_hash is not None:
                             host_hash = _sha256_file(host_path)
@@ -374,7 +433,9 @@ class FileSyncManager:
         return None
 
     def _infer_host_path(self, remote_path: str,
-                         file_mapping: list[tuple[str, str]] | None = None) -> str | None:
+                         file_mapping: list[tuple[str, str]] | None = None,
+                         *,
+                         upload_only_host_paths: set[str] | None = None) -> str | None:
         """Infer a host path for a new remote file by matching path prefixes.
 
         Uses the existing file mapping to find a remote->host directory
@@ -384,10 +445,21 @@ class FileSyncManager:
         ``/root/.hermes/skills/b.md`` maps to ``~/.hermes/skills/b.md``.
         """
         mapping = file_mapping if file_mapping is not None else []
+        upload_only_host_paths = upload_only_host_paths or set()
         for host, remote in mapping:
+            if self._is_upload_only_host_path(host, upload_only_host_paths):
+                continue
             remote_dir = str(Path(remote).parent)
             if remote_path.startswith(remote_dir + "/"):
                 host_dir = str(Path(host).parent)
                 suffix = remote_path[len(remote_dir):]
                 return host_dir + suffix
         return None
+
+    @staticmethod
+    def _is_upload_only_host_path(host_path: str, upload_only_host_paths: set[str]) -> bool:
+        try:
+            resolved = str(Path(host_path).expanduser().resolve())
+        except OSError:
+            resolved = str(Path(host_path).expanduser())
+        return resolved in upload_only_host_paths

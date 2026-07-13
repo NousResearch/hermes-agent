@@ -71,7 +71,11 @@ class TestReasoningCommand:
 
         result = await runner._handle_help_command(event)
 
-        assert "/reasoning [level|show|hide]" in result
+        # Behaviour contract: /reasoning is surfaced in help. Don't freeze the
+        # exact args-hint literal — it changes whenever a new arg is added
+        # (e.g. full/clamp). Assert the command + its category-defining args.
+        assert "/reasoning" in result
+        assert "level" in result and "show" in result and "hide" in result
 
     def test_reasoning_is_known_command(self):
         source = inspect.getsource(gateway_run.GatewayRunner._handle_message)
@@ -143,6 +147,29 @@ class TestReasoningCommand:
         assert runner._session_reasoning_overrides[session_key] == {"enabled": True, "effort": "high"}
         assert runner._reasoning_config == {"enabled": True, "effort": "high"}
         assert "session only" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("effort", ["max", "ultra"])
+    async def test_handle_reasoning_command_accepts_extended_efforts(
+        self, tmp_path, monkeypatch, effort
+    ):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "agent:\n  reasoning_effort: medium\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        event = _make_event(f"/reasoning {effort}")
+        session_key = runner._session_key_for_source(event.source)
+
+        await runner._handle_reasoning_command(event)
+
+        assert runner._session_reasoning_overrides[session_key] == {
+            "enabled": True,
+            "effort": effort,
+        }
 
     @pytest.mark.asyncio
     async def test_reasoning_global_clears_existing_session_override(self, tmp_path, monkeypatch):
@@ -407,3 +434,44 @@ class TestReasoningCommand:
         assert result["final_response"] == "ok"
         assert _CapturingAgent.last_init is not None
         assert "homeassistant" in set(_CapturingAgent.last_init["enabled_toolsets"])
+
+
+class TestLoadShowReasoningCoercion:
+    """Regression: display.show_reasoning must be coerced, not bool()'d."""
+
+    def _load_with_config(self, tmp_path, monkeypatch, yaml_body: str) -> bool:
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(yaml_body, encoding="utf-8")
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        return gateway_run.GatewayRunner._load_show_reasoning()
+
+    def test_quoted_false_is_false(self, tmp_path, monkeypatch):
+        assert self._load_with_config(
+            tmp_path, monkeypatch,
+            'display:\n  show_reasoning: "false"\n',
+        ) is False
+
+    def test_quoted_off_is_false(self, tmp_path, monkeypatch):
+        assert self._load_with_config(
+            tmp_path, monkeypatch,
+            'display:\n  show_reasoning: "off"\n',
+        ) is False
+
+    def test_quoted_true_is_true(self, tmp_path, monkeypatch):
+        assert self._load_with_config(
+            tmp_path, monkeypatch,
+            'display:\n  show_reasoning: "true"\n',
+        ) is True
+
+    def test_bare_true_is_true(self, tmp_path, monkeypatch):
+        assert self._load_with_config(
+            tmp_path, monkeypatch,
+            'display:\n  show_reasoning: true\n',
+        ) is True
+
+    def test_missing_is_false(self, tmp_path, monkeypatch):
+        assert self._load_with_config(
+            tmp_path, monkeypatch,
+            'display: {}\n',
+        ) is False

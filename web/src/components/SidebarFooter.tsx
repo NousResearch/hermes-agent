@@ -1,10 +1,9 @@
-import { Typography } from "@nous-research/ui";
-import { useSidebarStatus } from "@/hooks/useSidebarStatus";
+import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import type { StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 
-export function SidebarFooter() {
-  const status = useSidebarStatus();
+export function SidebarFooter({ status }: SidebarFooterProps) {
   const { t } = useI18n();
 
   return (
@@ -16,8 +15,7 @@ export function SidebarFooter() {
       )}
     >
       <Typography
-        mondwest
-        className="font-mono-ui text-[0.7rem] tabular-nums tracking-[0.1em] text-muted-foreground/70"
+        className="font-mono-ui text-xs tabular-nums tracking-[0.08em] text-text-tertiary lowercase"
       >
         {status?.version != null ? `v${status.version}` : "—"}
       </Typography>
@@ -27,14 +25,17 @@ export function SidebarFooter() {
         target="_blank"
         rel="noopener noreferrer"
         className={cn(
-          "font-mondwest text-[0.65rem] tracking-[0.15em] text-midground",
+          "font-sans text-display text-xs tracking-[0.12em] text-midground",
           "transition-opacity hover:opacity-90",
           "focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40",
         )}
-        style={{ mixBlendMode: "plus-lighter" }}
       >
         {t.app.footer.org}
       </a>
     </div>
   );
+}
+
+interface SidebarFooterProps {
+  status: StatusResponse | null;
 }

@@ -1,6 +1,7 @@
 import importlib
 import logging
 
+
 terminal_tool_module = importlib.import_module("tools.terminal_tool")
 
 
@@ -8,9 +9,17 @@ def _clear_terminal_env(monkeypatch):
     """Remove terminal env vars that could affect requirements checks."""
     keys = [
         "TERMINAL_ENV",
+        "TERMINAL_CONTAINER_CPU",
+        "TERMINAL_CONTAINER_DISK",
+        "TERMINAL_CONTAINER_MEMORY",
+        "TERMINAL_DOCKER_FORWARD_ENV",
+        "TERMINAL_DOCKER_VOLUMES",
+        "TERMINAL_LIFETIME_SECONDS",
         "TERMINAL_MODAL_MODE",
         "TERMINAL_SSH_HOST",
+        "TERMINAL_SSH_PORT",
         "TERMINAL_SSH_USER",
+        "TERMINAL_TIMEOUT",
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "HOME",
@@ -155,7 +164,7 @@ def test_modal_backend_managed_mode_does_not_fall_back_to_direct(monkeypatch, ca
 
     assert ok is False
     assert any(
-        "paid Nous subscription is required" in record.getMessage()
+        "Nous Tool Gateway access is not currently available" in record.getMessage()
         for record in caplog.records
     )
 
@@ -173,6 +182,6 @@ def test_modal_backend_managed_mode_without_feature_flag_logs_clear_error(monkey
 
     assert ok is False
     assert any(
-        "paid Nous subscription is required" in record.getMessage()
+        "Nous Tool Gateway access is not currently available" in record.getMessage()
         for record in caplog.records
     )

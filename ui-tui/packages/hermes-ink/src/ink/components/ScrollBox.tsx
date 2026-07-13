@@ -38,6 +38,7 @@ export type ScrollBoxHandle = {
    * padding). Used for drag-to-scroll edge detection.
    */
   getViewportTop: () => number
+  getLastManualScrollAt: () => number
   /**
    * True when scroll is pinned to the bottom. Set by scrollToBottom, the
    * initial stickyScroll attribute, and by the renderer when positional
@@ -47,10 +48,10 @@ export type ScrollBoxHandle = {
    */
   isSticky: () => boolean
   /**
-   * Subscribe to imperative scroll changes (scrollTo/scrollBy/scrollToBottom).
-   * Does NOT fire for stickyScroll updates done by the Ink renderer — those
-   * happen during Ink's render phase after React has committed. Callers that
-   * care about the sticky case should treat "at bottom" as a fallback.
+   * Subscribe to scroll viewport changes. Fires for imperative scroll changes
+   * (scrollTo/scrollBy/scrollToBottom) and for renderer-computed scroll bounds
+   * changes such as content growth or terminal resize. Callers use this to
+   * keep virtualized ranges aligned with the currently visible viewport.
    */
   subscribe: (listener: () => void) => () => void
   /**
@@ -94,6 +95,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
   // forces a React render: sticky is attribute-observed, no DOM-only path.
   const [, forceRender] = useState(0)
   const listenersRef = useRef(new Set<() => void>())
+  const manualScrollAtRef = useRef(0)
   const renderQueuedRef = useRef(false)
 
   const notify = () => {
@@ -135,6 +137,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         // Explicit false overrides the DOM attribute so manual scroll
         // breaks stickiness. Render code checks ?? precedence.
         el.stickyScroll = false
+        manualScrollAtRef.current = Date.now()
         el.pendingScrollDelta = undefined
         el.scrollAnchor = undefined
         el.scrollTop = Math.max(0, Math.floor(y))
@@ -148,6 +151,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         }
 
         box.stickyScroll = false
+        manualScrollAtRef.current = Date.now()
         box.pendingScrollDelta = undefined
         box.scrollAnchor = {
           el,
@@ -163,11 +167,8 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         }
 
         el.stickyScroll = false
-        // Wheel input cancels any in-flight anchor seek — user override.
+        manualScrollAtRef.current = Date.now()
         el.scrollAnchor = undefined
-        // Accumulate in pendingScrollDelta; renderer drains it at a capped
-        // rate so fast flicks show intermediate frames. Pure accumulator:
-        // scroll-up followed by scroll-down naturally cancels.
         el.pendingScrollDelta = (el.pendingScrollDelta ?? 0) + Math.floor(dy)
         scrollMutated(el)
       },
@@ -206,6 +207,9 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
       },
       getViewportTop() {
         return domRef.current?.scrollViewportTop ?? 0
+      },
+      getLastManualScrollAt() {
+        return manualScrollAtRef.current
       },
       isSticky() {
         const el = domRef.current

@@ -19,6 +19,7 @@ Optional vendor skill for Parallel CLI — agent-native web search, extraction, 
 | Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `Research`, `Web`, `Search`, `Deep-Research`, `Enrichment`, `CLI` |
 | Related skills | [`duckduckgo-search`](/docs/user-guide/skills/optional/research/research-duckduckgo-search), [`mcporter`](/docs/user-guide/skills/optional/mcp/mcp-mcporter) |
 
@@ -131,6 +132,7 @@ If auth requires browser interaction, run with `pty=true`.
 
 ## Quick reference
 
+<!-- ascii-guard-ignore -->
 ```text
 parallel-cli
 ├── auth
@@ -143,6 +145,7 @@ parallel-cli
 ├── findall run|ingest|status|poll|result|enrich|extend|schema|cancel
 └── monitor create|list|get|update|delete|events|event-group|simulate
 ```
+<!-- ascii-guard-ignore-end -->
 
 ## Common flags and patterns
 

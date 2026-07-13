@@ -48,6 +48,12 @@ class TestIgnoreUserConfigEnvGate:
     """
 
     def _write_user_config(self, tmp_path, model_default):
+        # NOTE: the model value is a sentinel that can never appear in a real
+        # config. With HERMES_IGNORE_USER_CONFIG=1, load_cli_config() falls
+        # back to the repo-root ``cli-config.yaml`` (untracked, gitignored) —
+        # on a dev machine that file can legitimately set the same popular
+        # model this test previously used ("anthropic/claude-sonnet-4.6"),
+        # making the != assertion flip locally while passing on CI.
         config_yaml = textwrap.dedent(
             f"""
             model:
@@ -66,13 +72,13 @@ class TestIgnoreUserConfigEnvGate:
         return cli.load_cli_config
 
     def test_user_config_loaded_when_flag_unset(self, tmp_path, monkeypatch):
-        self._write_user_config(tmp_path, "anthropic/claude-sonnet-4.6")
+        self._write_user_config(tmp_path, "test-vendor/ignore-user-config-sentinel")
         load_cli_config = self._reload_cli(monkeypatch, tmp_path)
 
         cfg = load_cli_config()
 
         # User config value wins
-        assert cfg["model"]["default"] == "anthropic/claude-sonnet-4.6"
+        assert cfg["model"]["default"] == "test-vendor/ignore-user-config-sentinel"
         assert cfg["agent"]["system_prompt"] == "from user config"
 
     def test_user_config_skipped_when_flag_set(self, tmp_path, monkeypatch):
@@ -81,7 +87,7 @@ class TestIgnoreUserConfigEnvGate:
         The built-in default ``model.default`` is empty string (no user override),
         and the user's ``agent.system_prompt`` is not seen.
         """
-        self._write_user_config(tmp_path, "anthropic/claude-sonnet-4.6")
+        self._write_user_config(tmp_path, "test-vendor/ignore-user-config-sentinel")
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
 
         load_cli_config = self._reload_cli(monkeypatch, tmp_path)
@@ -93,18 +99,18 @@ class TestIgnoreUserConfigEnvGate:
         # User-set model.default MUST NOT leak through — either the built-in
         # default ("" or unset) or a project-level fallback, but never the
         # user's value
-        assert cfg["model"].get("default", "") != "anthropic/claude-sonnet-4.6"
+        assert cfg["model"].get("default", "") != "test-vendor/ignore-user-config-sentinel"
 
     def test_flag_ignored_when_set_to_other_value(self, tmp_path, monkeypatch):
         """Only the literal value "1" activates the bypass, matching the yolo pattern."""
-        self._write_user_config(tmp_path, "anthropic/claude-sonnet-4.6")
+        self._write_user_config(tmp_path, "test-vendor/ignore-user-config-sentinel")
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "true")  # not "1"
 
         load_cli_config = self._reload_cli(monkeypatch, tmp_path)
         cfg = load_cli_config()
 
         # "true" != "1", so user config IS loaded
-        assert cfg["model"]["default"] == "anthropic/claude-sonnet-4.6"
+        assert cfg["model"]["default"] == "test-vendor/ignore-user-config-sentinel"
 
 
 class TestIgnoreRulesEnvGate:
@@ -224,22 +230,21 @@ class TestArgparseFlagsRegistered:
         assert args.ignore_rules is True
 
     def test_main_py_registers_both_flags(self):
-        """E2E: the real hermes_cli/main.py parser accepts both flags.
+        """E2E: the real hermes parser accepts both flags."""
+        from hermes_cli._parser import build_top_level_parser
 
-        We invoke the real argparse tree builder from hermes_cli.main.
-        """
-        import hermes_cli.main as hm
+        parser, _subparsers, chat_parser = build_top_level_parser()
 
-        # hm has a helper that builds the argparse tree inside main().
-        # We can extract it by catching the SystemExit on --help.
-        # Simpler: just grep the source for the flag strings. Both approaches
-        # are brittle; we use a combined test.
-        import inspect
-        src = inspect.getsource(hm)
-        assert '"--ignore-user-config"' in src, \
-            "chat subparser must register --ignore-user-config"
-        assert '"--ignore-rules"' in src, \
-            "chat subparser must register --ignore-rules"
+        top_dests = {a.dest for a in parser._actions}
+        chat_dests = {a.dest for a in chat_parser._actions}
+        assert "ignore_user_config" in top_dests
+        assert "ignore_rules" in top_dests
+        assert "ignore_user_config" in chat_dests
+        assert "ignore_rules" in chat_dests
+
         # And the cmd_chat env-var wiring must be present
+        import inspect
+        import hermes_cli.main as hm
+        src = inspect.getsource(hm)
         assert "HERMES_IGNORE_USER_CONFIG" in src
         assert "HERMES_IGNORE_RULES" in src

@@ -13,7 +13,6 @@ import re
 import sys
 from pathlib import Path
 
-import pytest
 
 _repo = str(Path(__file__).resolve().parents[2])
 if _repo not in sys.path:
@@ -32,7 +31,7 @@ class TestTelegramWebhookSecretRequired:
     """
 
     def _get_source(self) -> str:
-        path = Path(_repo) / "gateway" / "platforms" / "telegram.py"
+        path = Path(_repo) / "plugins" / "platforms" / "telegram" / "adapter.py"
         return path.read_text(encoding="utf-8")
 
     def test_webhook_branch_checks_secret(self):

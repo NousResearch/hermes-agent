@@ -27,9 +27,120 @@ import ipaddress
 import logging
 import os
 import socket
-from urllib.parse import urlparse
+import asyncio
+import re
+from typing import Any, Optional
+from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
+
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_url_for_request(url: str) -> str:
+    """Return an ASCII-safe HTTP URL for Hermes-owned URL tools.
+
+    Browsers and HTTP clients expect URIs, but users and models often provide
+    IRIs such as ``https://wttr.in/Köln``.  Preserve URL syntax and existing
+    percent escapes while encoding non-ASCII host/path/query/fragment text.
+    This is intentionally for URL tool inputs only; arbitrary shell commands
+    must not be rewritten.
+    """
+    if not isinstance(url, str):
+        return url
+
+    raw = url.strip()
+    if not raw:
+        return raw
+
+    # Models sometimes emit otherwise valid URLs with whitespace between the
+    # scheme separator and authority (``https:// docs.example``). That position
+    # is never meaningful in HTTP(S) URLs, and repairing it before parsing keeps
+    # web tools from failing on a formatting artifact while leaving path/query
+    # whitespace to the normal percent-encoding path below.
+    raw = re.sub(r"^([A-Za-z][A-Za-z0-9+.-]*://)\s+", r"\1", raw)
+
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return raw
+
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return raw
+
+    netloc = parsed.netloc
+    hostname = parsed.hostname
+    if hostname:
+        try:
+            ascii_host = hostname.encode("idna").decode("ascii")
+        except UnicodeError:
+            ascii_host = hostname
+        if ascii_host != hostname:
+            netloc = netloc.replace(hostname, ascii_host, 1)
+
+    path = quote(parsed.path, safe="/%:@!$&'()*+,;=")
+    query = quote(parsed.query, safe="/%:@!$&'()*+,;=?")
+    fragment = quote(parsed.fragment, safe="/%:@!$&'()*+,;=?")
+
+    return urlunsplit((parsed.scheme, netloc, path, query, fragment))
+
+
+# Query parameter names that are unambiguously credential-bearing. Kept
+# deliberately narrow: bare English words that double as normal page facets
+# (``code`` on promo/challenge pages, ``key``/``auth``/``session``/``sig`` as
+# search or routing params) are intentionally EXCLUDED to avoid blocking
+# ordinary browsing. Prefix-based token redaction (``is_safe_url``) still
+# catches recognizable vendor key shapes; this set is the belt-and-suspenders
+# for opaque secrets that carry an explicit credential-named parameter.
+_SENSITIVE_QUERY_PARAM_NAMES = frozenset({
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth_token",
+    "authorization",
+    "awsaccesskeyid",
+    "client_secret",
+    "credential",
+    "credentials",
+    "jwt",
+    "password",
+    "passwd",
+    "secret",
+    "session_id",
+    "signature",
+    "token",
+    "x_amz_security_token",
+    "x_amz_signature",
+    "x-amz-security-token",
+    "x-amz-signature",
+})
+
+
+def sensitive_query_param_name(url: str) -> Optional[str]:
+    """Return the first sensitive query parameter name in ``url``, if any.
+
+    Used before handing URLs to third-party fetch/browser backends. Prefix-based
+    token redaction catches known credential shapes; this catches opaque magic
+    links, OAuth codes, signed URL signatures, and custom ``?token=...`` values
+    that do not have a recognizable vendor prefix.
+    """
+    if not isinstance(url, str) or "?" not in url:
+        return None
+    try:
+        parsed = urlsplit(url.strip())
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.query:
+        return None
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if value and unquote(key).lower() in _SENSITIVE_QUERY_PARAM_NAMES:
+            return key
+    return None
+
+
+def has_sensitive_query_params(url: str) -> bool:
+    """Return True when ``url`` carries likely credential-bearing query params."""
+    return sensitive_query_param_name(url) is not None
 
 # Hostnames that should always be blocked regardless of IP resolution
 # or any config toggle.  These are cloud metadata endpoints that an
@@ -43,15 +154,26 @@ _BLOCKED_HOSTNAMES = frozenset({
 # allow_private_urls toggle.  These are cloud metadata / credential
 # endpoints — the #1 SSRF target — and the link-local range where
 # they all live.
+#
+# IPv4-mapped IPv6 variants are included because DNS resolvers may
+# return ``::ffff:x.x.x.x`` for IPv4-only hosts, and Python's
+# ipaddress module treats these as distinct from the plain IPv4
+# address (they won't match ``ip in frozenset`` or ``ip in network``).
 _ALWAYS_BLOCKED_IPS = frozenset({
     ipaddress.ip_address("169.254.169.254"),  # AWS/GCP/Azure/DO/Oracle metadata
     ipaddress.ip_address("169.254.170.2"),     # AWS ECS task metadata (task IAM creds)
     ipaddress.ip_address("169.254.169.253"),   # Azure IMDS wire server
     ipaddress.ip_address("fd00:ec2::254"),     # AWS metadata (IPv6)
     ipaddress.ip_address("100.100.100.200"),   # Alibaba Cloud metadata
+    # IPv4-mapped IPv6 variants — same endpoints reachable via ::ffff:x.x.x.x
+    ipaddress.ip_address("::ffff:169.254.169.254"),
+    ipaddress.ip_address("::ffff:169.254.170.2"),
+    ipaddress.ip_address("::ffff:169.254.169.253"),
+    ipaddress.ip_address("::ffff:100.100.100.200"),
 })
 _ALWAYS_BLOCKED_NETWORKS = (
     ipaddress.ip_network("169.254.0.0/16"),    # Entire link-local range (no legit agent target)
+    ipaddress.ip_network("::ffff:169.254.0.0/112"), # IPv4-mapped link-local range
 )
 
 # Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs.
@@ -94,10 +216,10 @@ def _global_allow_private_urls() -> bool:
 
     # 1. Env var override (highest priority)
     env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
-    if env_val in ("true", "1", "yes"):
+    if env_val in {"true", "1", "yes"}:
         _cached_allow_private = True
         return _cached_allow_private
-    if env_val in ("false", "0", "no"):
+    if env_val in {"false", "0", "no"}:
         # Explicit false — don't fall through to config
         return _cached_allow_private
 
@@ -107,12 +229,16 @@ def _global_allow_private_urls() -> bool:
         cfg = read_raw_config()
         # security.allow_private_urls (preferred)
         sec = cfg.get("security", {})
-        if isinstance(sec, dict) and sec.get("allow_private_urls"):
+        if isinstance(sec, dict) and is_truthy_value(
+            sec.get("allow_private_urls"), default=False
+        ):
             _cached_allow_private = True
             return _cached_allow_private
         # browser.allow_private_urls (legacy fallback)
         browser = cfg.get("browser", {})
-        if isinstance(browser, dict) and browser.get("allow_private_urls"):
+        if isinstance(browser, dict) and is_truthy_value(
+            browser.get("allow_private_urls"), default=False
+        ):
             _cached_allow_private = True
             return _cached_allow_private
     except Exception:
@@ -131,6 +257,16 @@ def _reset_allow_private_cache() -> None:
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
+    # IPv4-mapped IPv6 addresses (``::ffff:x.x.x.x``) should be checked
+    # by their embedded IPv4 address, not as IPv6
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        embedded_ip = ip.ipv4_mapped
+        return (embedded_ip.is_private or embedded_ip.is_loopback or
+                embedded_ip.is_link_local or embedded_ip.is_reserved or
+                embedded_ip.is_multicast or embedded_ip.is_unspecified or
+                embedded_ip in _CGNAT_NETWORK)
+
+    # Standard IPv4/IPv6 address checking
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
         return True
     if ip.is_multicast or ip.is_unspecified:
@@ -139,6 +275,105 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     if ip in _CGNAT_NETWORK:
         return True
     return False
+
+
+def is_always_blocked_url(url: str) -> bool:
+    """Return True when the URL targets an always-blocked endpoint.
+
+    This is the security floor — cloud metadata IPs / hostnames
+    (169.254.169.254, metadata.google.internal, ECS task metadata, etc.)
+    that have no legitimate agent use regardless of backend, routing, or
+    the ``allow_private_urls`` toggle.  Used by callers that bypass the
+    full ``is_safe_url`` check for their own reasons (e.g. hybrid cloud
+    browser routing to a local Chromium sidecar for private URLs) and
+    still need to enforce the non-negotiable floor before letting the
+    request proceed.
+
+    Returns True (= blocked) on:
+      - Hostnames in ``_BLOCKED_HOSTNAMES``
+      - IPs / networks in ``_ALWAYS_BLOCKED_IPS`` / ``_ALWAYS_BLOCKED_NETWORKS``
+      - URLs whose hostname resolves to any of the above
+
+    Returns False (= not in the always-blocked floor) on:
+      - Benign public / private / loopback URLs (whether or not they'd
+        be blocked by the ordinary SSRF check)
+      - DNS-resolution failures for non-sentinel hostnames (these are
+        someone else's problem — the caller's ordinary fail-closed path
+        will catch them if applicable)
+      - Parse errors (caller decides fail-open vs fail-closed)
+
+    Intentionally narrower than ``is_safe_url``: only blocks the sentinel
+    set, not ordinary private addresses.  Callers that want the full
+    SSRF check should still use ``is_safe_url``.
+    """
+    try:
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+        if not hostname:
+            return False
+
+        # Blocked-hostname check fires regardless of DNS resolution
+        if hostname in _BLOCKED_HOSTNAMES:
+            logger.warning(
+                "Blocked request to internal hostname (always-blocked floor): %s",
+                hostname,
+            )
+            return True
+
+        # Literal IP → check directly against the always-blocked set
+        try:
+            ip = ipaddress.ip_address(hostname)
+        except ValueError:
+            ip = None
+
+        if ip is not None:
+            if ip in _ALWAYS_BLOCKED_IPS or any(
+                ip in net for net in _ALWAYS_BLOCKED_NETWORKS
+            ):
+                logger.warning(
+                    "Blocked request to cloud metadata address "
+                    "(always-blocked floor): %s",
+                    hostname,
+                )
+                return True
+            return False
+
+        # Hostname → resolve and check every answer.  DNS failure is NOT
+        # always-blocked (caller's ordinary path handles that).
+        try:
+            addr_info = socket.getaddrinfo(
+                hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+            )
+        except socket.gaierror:
+            return False
+
+        for _family, _, _, _, sockaddr in addr_info:
+            ip_str = sockaddr[0]
+            if '%' in ip_str:
+                ip_str = ip_str.split('%')[0]
+            try:
+                resolved = ipaddress.ip_address(ip_str)
+            except ValueError:
+                logger.warning("Unparseable IP address %r for hostname %s — skipping address", sockaddr[0], hostname)
+                continue
+            if resolved in _ALWAYS_BLOCKED_IPS or any(
+                resolved in net for net in _ALWAYS_BLOCKED_NETWORKS
+            ):
+                logger.warning(
+                    "Blocked request to cloud metadata address "
+                    "(always-blocked floor): %s -> %s",
+                    hostname,
+                    ip_str,
+                )
+                return True
+
+        return False
+
+    except Exception as exc:
+        # Parse failures or unexpected errors — don't claim the URL is
+        # always-blocked.  Caller decides what to do with a malformed URL.
+        logger.debug("is_always_blocked_url error for %s: %s", url, exc)
+        return False
 
 
 def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
@@ -161,6 +396,9 @@ def is_safe_url(url: str) -> bool:
         parsed = urlparse(url)
         hostname = (parsed.hostname or "").strip().lower().rstrip(".")
         scheme = (parsed.scheme or "").strip().lower()
+        if scheme not in {"http", "https"}:
+            logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
+            return False
         if not hostname:
             return False
 
@@ -185,10 +423,14 @@ def is_safe_url(url: str) -> bool:
 
         for family, _, _, _, sockaddr in addr_info:
             ip_str = sockaddr[0]
+            if '%' in ip_str:
+                ip_str = ip_str.split('%')[0]
             try:
                 ip = ipaddress.ip_address(ip_str)
             except ValueError:
-                continue
+                # Still unparseable after scope ID strip — fail closed
+                logger.warning("Blocked request — unparseable IP address %r for hostname %s", sockaddr[0], hostname)
+                return False
 
             # Always block cloud metadata IPs and link-local, even with toggle on
             if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
@@ -223,3 +465,39 @@ def is_safe_url(url: str) -> bool:
         # become SSRF bypass vectors
         logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
         return False
+
+
+async def async_is_safe_url(url: str) -> bool:
+    """Same rules as :func:`is_safe_url`, but run the DNS work off the event loop.
+
+    ``socket.getaddrinfo`` can block; call this from async code paths (gateway,
+    ``web_extract_tool``, vision download hooks) instead of ``is_safe_url``.
+    """
+    return await asyncio.to_thread(is_safe_url, url)
+
+
+def redirect_target_from_response(response: Any) -> Optional[str]:
+    """Return the redirect target visible from inside an httpx response hook.
+
+    In ``httpx.AsyncClient`` response event hooks, ``response.next_request`` is
+    frequently ``None`` even for a genuine redirect (it is populated later by
+    the redirect-following machinery). Relying on ``next_request`` alone means
+    an SSRF redirect guard silently never fires: a public URL that 302s to
+    ``http://169.254.169.254/`` gets followed anyway. The ``Location`` header,
+    however, is already present on the response, so resolve the target from it
+    first (handling relative Locations via ``urljoin``) and only fall back to
+    ``next_request`` when no ``Location`` header is set.
+    """
+    if not getattr(response, "is_redirect", False):
+        return None
+
+    headers = getattr(response, "headers", {}) or {}
+    location = headers.get("location")
+    if location:
+        return urljoin(str(getattr(response, "url", "")), str(location))
+
+    next_request = getattr(response, "next_request", None)
+    if next_request:
+        return str(next_request.url)
+
+    return None

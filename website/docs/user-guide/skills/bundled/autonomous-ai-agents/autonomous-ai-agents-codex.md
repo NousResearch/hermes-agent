@@ -1,14 +1,14 @@
 ---
-title: "Codex — Delegate coding tasks to OpenAI Codex CLI agent"
+title: "Codex — Delegate coding to OpenAI Codex CLI (features, PRs)"
 sidebar_label: "Codex"
-description: "Delegate coding tasks to OpenAI Codex CLI agent"
+description: "Delegate coding to OpenAI Codex CLI (features, PRs)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Codex
 
-Delegate coding tasks to OpenAI Codex CLI agent. Use for building features, refactoring, PR reviews, and batch issue fixing. Requires the codex CLI and a git repository.
+Delegate coding to OpenAI Codex CLI (features, PRs).
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Delegate coding tasks to OpenAI Codex CLI agent. Use for building features, refa
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `Coding-Agent`, `Codex`, `OpenAI`, `Code-Review`, `Refactoring` |
 | Related skills | [`claude-code`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
 
@@ -32,12 +33,28 @@ The following is the complete skill definition that Hermes loads when this skill
 
 Delegate coding tasks to [Codex](https://github.com/openai/codex) via the Hermes terminal. Codex is OpenAI's autonomous coding agent CLI.
 
+## When to use
+
+- Building features
+- Refactoring
+- PR reviews
+- Batch issue fixing
+
+Requires the codex CLI and a git repository.
+
 ## Prerequisites
 
 - Codex installed: `npm install -g @openai/codex`
-- OpenAI API key configured
+- OpenAI auth configured: either `OPENAI_API_KEY` or Codex OAuth credentials
+  from the Codex CLI login flow
 - **Must run inside a git repository** — Codex refuses to run outside one
 - Use `pty=true` in terminal calls — Codex is an interactive terminal app
+
+For Hermes itself, `model.provider: openai-codex` uses Hermes-managed Codex
+OAuth from `~/.hermes/auth.json` after `hermes auth add openai-codex`. For the
+standalone Codex CLI, a valid CLI OAuth session may live under
+`~/.codex/auth.json`; do not treat a missing `OPENAI_API_KEY` alone as proof
+that Codex auth is missing.
 
 ## One-Shot Tasks
 
@@ -75,6 +92,25 @@ process(action="kill", session_id="<id>")
 | `exec "prompt"` | One-shot execution, exits when done |
 | `--full-auto` | Sandboxed but auto-approves file changes in workspace |
 | `--yolo` | No sandbox, no approvals (fastest, most dangerous) |
+| `--sandbox danger-full-access` | No Codex sandbox; useful when the host service context breaks bubblewrap |
+
+## Hermes Gateway Caveat
+
+When invoking the Codex CLI from a Hermes gateway/service context (for example,
+Telegram-driven agent sessions), Codex `workspace-write` sandboxing may fail even
+when the same command works in the user's interactive shell. A typical symptom is
+bubblewrap/user-namespace errors such as `setting up uid map: Permission denied`
+or `loopback: Failed RTM_NEWADDR: Operation not permitted`.
+
+In that context, prefer:
+
+```
+codex exec --sandbox danger-full-access "<task>"
+```
+
+Use process boundaries as the safety layer instead: explicit `workdir`, clean git
+status before launch, narrow task prompts, `git diff` review, targeted tests, and
+human/agent confirmation before committing broad changes.
 
 ## PR Reviews
 

@@ -31,9 +31,18 @@ Hermes' own session keys.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from typing import Set
 
-from hermes_constants import get_hermes_home
+logger = logging.getLogger(__name__)
+
+# WhatsApp JIDs are numeric (or plus-prefixed numeric) with optional
+# ``@``, ``.`` and ``:`` separators. ``\w`` is pinned to ASCII so
+# full-width digits / Unicode word chars can't sneak through.
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9@.+\-]+$")
+
+from hermes_constants import get_hermes_dir
 
 
 def normalize_whatsapp_identifier(value: str) -> str:
@@ -58,6 +67,57 @@ def normalize_whatsapp_identifier(value: str) -> str:
     )
 
 
+# A target that is "just a phone number" — optional leading ``+`` then digits
+# and the usual human separators (spaces, dots, dashes, parens). Anything that
+# already carries an ``@`` is a fully-qualified JID and must pass through
+# untouched (group ``@g.us``, LID ``@lid``, ``status@broadcast`` etc.).
+_BARE_PHONE_RE = re.compile(r"^\+?[\d\s().\-]+$")
+
+
+def to_whatsapp_jid(value: str) -> str:
+    """Normalize an *outbound* WhatsApp target to a bridge-safe JID.
+
+    Baileys' ``jidDecode`` crashes on a bare phone number — it expects a
+    fully-qualified JID such as ``50766715226@s.whatsapp.net``. This helper
+    is the inverse of :func:`normalize_whatsapp_identifier`: instead of
+    stripping a JID down to its numeric core for comparison, it *builds* the
+    JID a send must use.
+
+    Behaviour:
+
+    - ``"+50766715226"`` / ``"50766715226"`` → ``"50766715226@s.whatsapp.net"``
+    - ``"50766715226@s.whatsapp.net"`` → unchanged
+    - ``"group-id@g.us"`` / ``"130631430344750@lid"`` → unchanged
+    - ``"user:device@s.whatsapp.net"`` style colon-before-``@`` → ``@`` form
+    - anything that isn't a recognizable bare phone → returned unchanged so
+      the bridge can surface a meaningful error rather than us mangling it.
+
+    Returns ``""`` for an empty/whitespace input.
+    """
+    if not value:
+        return ""
+
+    normalized = str(value).strip()
+    # Drop a device suffix before the domain: ``user:device@domain`` is a
+    # legacy Baileys shape whose ``:device`` part is not addressable — collapse
+    # it to ``user@domain``. (Mirrors normalize_whatsapp_identifier, which
+    # splits the bare id on ``:`` for the same reason.)
+    if ":" in normalized and "@" in normalized:
+        prefix, _, domain = normalized.partition("@")
+        normalized = f"{prefix.split(':', 1)[0]}@{domain}"
+
+    # Already a fully-qualified JID — leave it alone.
+    if "@" in normalized:
+        return normalized
+
+    if _BARE_PHONE_RE.fullmatch(normalized):
+        digits = re.sub(r"\D+", "", normalized)
+        if digits:
+            return f"{digits}@s.whatsapp.net"
+
+    return normalized
+
+
 def expand_whatsapp_aliases(identifier: str) -> Set[str]:
     """Resolve WhatsApp phone/LID aliases via bridge session mapping files.
 
@@ -73,13 +133,23 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
     if not normalized:
         return set()
 
-    session_dir = get_hermes_home() / "whatsapp" / "session"
+    session_dir = get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
     resolved: Set[str] = set()
     queue = [normalized]
 
     while queue:
         current = queue.pop(0)
         if not current or current in resolved:
+            continue
+        # Defense-in-depth: reject identifiers that could sneak path
+        # separators / traversal segments into the ``lid-mapping-{current}``
+        # filename below. The hardcoded ``lid-mapping-`` prefix already
+        # prevents escape via pathlib's component split (an attacker can't
+        # create ``lid-mapping-..`` as a real directory in session_dir), but
+        # this keeps the identifier space to the characters WhatsApp JIDs
+        # actually use and avoids depending on that filesystem-layout
+        # invariant.
+        if not _SAFE_IDENTIFIER_RE.match(current):
             continue
 
         resolved.add(current)
@@ -91,7 +161,8 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
                 mapped = normalize_whatsapp_identifier(
                     json.loads(mapping_path.read_text(encoding="utf-8"))
                 )
-            except Exception:
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.debug("whatsapp_identity: failed to read %s: %s", mapping_path, exc)
                 continue
             if mapped and mapped not in resolved:
                 queue.append(mapped)

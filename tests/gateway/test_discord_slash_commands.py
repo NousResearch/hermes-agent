@@ -75,7 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 class FakeTree:
@@ -107,6 +107,10 @@ def adapter():
         user=SimpleNamespace(id=99999, name="HermesBot"),
     )
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
+    # Slash auth is exercised in test_discord_slash_auth.py — bypass it here
+    # so registration / dispatch / thread behavior tests don't have to
+    # construct a full auth context (allowlist / channel scope).
+    adapter._check_slash_authorization = AsyncMock(return_value=True)
     return adapter
 
 
@@ -117,6 +121,10 @@ def adapter():
 
 @pytest.mark.asyncio
 async def test_registers_native_thread_slash_command(adapter):
+    # The /thread slash closure now delegates ALL the work — including
+    # defer() — to _handle_thread_create_slash so the auth gate can send
+    # an ephemeral rejection on the still-unresponded interaction. The
+    # closure should just forward.
     adapter._handle_thread_create_slash = AsyncMock()
     adapter._register_slash_commands()
 
@@ -127,7 +135,9 @@ async def test_registers_native_thread_slash_command(adapter):
 
     await command(interaction, name="Planning", message="", auto_archive_duration=1440)
 
-    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    # defer is now performed inside _handle_thread_create_slash, AFTER the
+    # auth check passes — not by the closure.
+    interaction.response.defer.assert_not_awaited()
     adapter._handle_thread_create_slash.assert_awaited_once_with(interaction, "Planning", "", 1440)
 
 
@@ -146,6 +156,34 @@ async def test_registers_native_restart_slash_command(adapter):
         "/restart",
         "Restart requested~",
     )
+
+
+@pytest.mark.asyncio
+async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter):
+    class UnknownInteraction(Exception):
+        status = 404
+        code = 10062
+
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        guild_id=456,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+        response=SimpleNamespace(defer=AsyncMock(side_effect=UnknownInteraction("Unknown interaction"))),
+        edit_original_response=AsyncMock(),
+        delete_original_response=AsyncMock(),
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._run_simple_slash(interaction, "/reset", "Session reset~")
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "/reset"
+    assert event.source.chat_id == "123"
+    interaction.edit_original_response.assert_not_awaited()
+    interaction.delete_original_response.assert_not_awaited()
 
 
 # ------------------------------------------------------------------
@@ -283,6 +321,58 @@ async def test_plugin_command_name_conflict_skipped(adapter):
 
 
 # ------------------------------------------------------------------
+# 100-command cap (Discord error 30032 guard)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_slash_command_registration_stays_under_discord_limit(adapter):
+    """Registering far more commands than Discord allows must NOT push the
+    tree over the 100-command hard cap.
+
+    Discord rejects the ENTIRE command sync with error 30032 once the
+    desired set exceeds 100 global application commands, silently breaking
+    every slash command. The adapter must bound the desired set instead.
+    Regression guard for samuraiheart's recurring
+    "Maximum number of application commands reached (100)" sync failures.
+    """
+    from plugins.platforms.discord.adapter import _DISCORD_MAX_APP_COMMANDS
+
+    adapter._run_simple_slash = AsyncMock()
+
+    # 200 plugin commands — way past Discord's limit on their own.
+    many_plugins = {
+        f"plug{i:03d}": {
+            "handler": lambda _a: "ok",
+            "description": f"Plugin command {i}",
+            "args_hint": "",
+            "plugin": "stress-plugin",
+        }
+        for i in range(200)
+    }
+
+    with patch("hermes_cli.plugins.get_plugin_commands", return_value=many_plugins):
+        adapter._register_slash_commands()
+
+    tree_names = set(adapter._client.tree.commands.keys())
+
+    # Contract: never exceed Discord's hard cap.
+    assert len(tree_names) <= _DISCORD_MAX_APP_COMMANDS, (
+        f"registered {len(tree_names)} commands — exceeds Discord's "
+        f"{_DISCORD_MAX_APP_COMMANDS} limit and would fail sync with 30032"
+    )
+
+    # Native, high-priority commands are registered first and must survive
+    # the cap — they are the core UX, not droppable overflow.
+    for native in ("status", "stop", "new", "model", "help"):
+        assert native in tree_names, f"/{native} (native) was dropped by the cap"
+
+    # The cap must actually have dropped overflow — not every plugin fit.
+    registered_plugins = [n for n in tree_names if n.startswith("plug")]
+    assert len(registered_plugins) < 200, "cap did not drop any overflow commands"
+
+
+# ------------------------------------------------------------------
 # _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------
 
@@ -298,6 +388,7 @@ async def test_handle_thread_create_slash_reports_success(adapter):
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
@@ -326,6 +417,7 @@ async def test_handle_thread_create_slash_dispatches_session_when_message_provid
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     adapter._dispatch_thread_session = AsyncMock()
@@ -348,6 +440,7 @@ async def test_handle_thread_create_slash_no_dispatch_without_message(adapter):
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     adapter._dispatch_thread_session = AsyncMock()
@@ -371,6 +464,7 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
@@ -395,6 +489,7 @@ async def test_handle_thread_create_slash_reports_failure(adapter):
         channel_id=123,
         user=SimpleNamespace(display_name="Jezza", id=42),
         followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
     )
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "", 1440)
@@ -495,6 +590,7 @@ async def test_auto_create_thread_uses_message_content_as_name(adapter):
     call_kwargs = message.create_thread.await_args[1]
     assert call_kwargs["name"] == "Hello world, how are you?"
     assert call_kwargs["auto_archive_duration"] == 1440
+    assert thread._hermes_auto_thread_initial_name == "Hello world, how are you?"
 
 
 @pytest.mark.asyncio
@@ -592,6 +688,47 @@ async def test_auto_create_thread_returns_none_when_direct_and_fallback_fail(ada
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_rename_thread_edits_only_when_current_name_matches(adapter):
+    thread = SimpleNamespace(
+        id=999,
+        name="raw user prompt",
+        edit=AsyncMock(),
+    )
+    adapter._client.get_channel = lambda _id: thread
+
+    result = await adapter.rename_thread(
+        "999",
+        "Semantic Session Title",
+        only_if_current_name="raw user prompt",
+    )
+
+    assert result is True
+    thread.edit.assert_awaited_once_with(
+        name="Semantic Session Title",
+        reason="Hermes semantic session title",
+    )
+
+
+@pytest.mark.asyncio
+async def test_rename_thread_skips_when_human_renamed(adapter):
+    thread = SimpleNamespace(
+        id=999,
+        name="human fixed this already",
+        edit=AsyncMock(),
+    )
+    adapter._client.get_channel = lambda _id: thread
+
+    result = await adapter.rename_thread(
+        "999",
+        "Semantic Session Title",
+        only_if_current_name="raw user prompt",
+    )
+
+    assert result is False
+    thread.edit.assert_not_awaited()
+
+
 # ------------------------------------------------------------------
 # Auto-thread integration in _handle_message
 # ------------------------------------------------------------------
@@ -609,6 +746,13 @@ class _FakeTextChannel:
         self.guild = SimpleNamespace(name=guild_name, id=1)
         self.topic = None
 
+    def history(self, *args, **kwargs):
+        async def _empty():
+            return
+            yield  # pragma: no cover — make this an async generator
+
+        return _empty()
+
 
 class _FakeThreadChannel(_discord_mod.Thread):
     """isinstance(ch, discord.Thread) → True."""
@@ -620,6 +764,13 @@ class _FakeThreadChannel(_discord_mod.Thread):
         self.guild = SimpleNamespace(name=guild_name, id=1)
         self.topic = None
         self.parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
+
+    def history(self, *args, **kwargs):
+        async def _empty():
+            return
+            yield  # pragma: no cover — make this an async generator
+
+        return _empty()
 
 
 def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza"):
@@ -661,6 +812,35 @@ async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
     assert event.source.chat_id == "999"  # redirected to thread
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "999"
+    assert event.source.auto_thread_created is True
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_source_carries_initial_name_for_semantic_rename(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+
+    thread = SimpleNamespace(
+        id=999,
+        name="raw user prompt",
+        _hermes_auto_thread_initial_name="raw user prompt",
+    )
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    msg = _fake_message(_FakeTextChannel(), content="raw user prompt")
+
+    await adapter._handle_message(msg)
+
+    source = captured_events[0].source
+    assert source.auto_thread_created is True
+    assert source.auto_thread_initial_name == "raw user prompt"
 
 
 @pytest.mark.asyncio
@@ -965,4 +1145,3 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
-

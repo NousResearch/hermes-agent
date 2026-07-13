@@ -19,8 +19,6 @@ function hermesDevToken(): Plugin {
   const TOKEN_RE = /window\.__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"/;
   const EMBEDDED_RE =
     /window\.__HERMES_DASHBOARD_EMBEDDED_CHAT__\s*=\s*(true|false)/;
-  const LEGACY_TUI_RE =
-    /window\.__HERMES_DASHBOARD_TUI__\s*=\s*(true|false)/;
 
   return {
     name: "hermes:dev-session-token",
@@ -38,12 +36,7 @@ function hermesDevToken(): Plugin {
           return;
         }
         const embeddedMatch = html.match(EMBEDDED_RE);
-        const legacyMatch = html.match(LEGACY_TUI_RE);
-        const embeddedJs = embeddedMatch
-          ? embeddedMatch[1]
-          : legacyMatch
-            ? legacyMatch[1]
-            : "false";
+        const embeddedJs = embeddedMatch ? embeddedMatch[1] : "true";
         return [
           {
             tag: "script",
@@ -69,7 +62,26 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@hermes/shared": path.resolve(__dirname, "../apps/shared/src"),
     },
+    // When @nous-research/ui is symlinked via `file:../../design-language`,
+    // Node's module resolution would pick up shared deps from
+    // design-language/node_modules/*, giving us two copies + breaking
+    // hooks (useRef-of-null), webgl contexts, etc. Force everything that
+    // exists in BOTH places to use the dashboard's copy.
+    //
+    // Don't list packages here that only exist in the DS (nanostores,
+    // @nanostores/react) — Vite dedupe errors out when it can't find
+    // them at the project root.
+    dedupe: [
+      "react",
+      "react-dom",
+      "@react-three/fiber",
+      "@observablehq/plot",
+      "three",
+      "leva",
+      "gsap",
+    ],
   },
   build: {
     outDir: "../hermes_cli/web_dist",

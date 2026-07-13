@@ -159,7 +159,6 @@ Certain toolsets are blocked for subagents regardless of what you specify:
 - `clarify` — subagents cannot interact with the user
 - `memory` — no writes to shared persistent memory
 - `code_execution` — children should reason step-by-step
-- `send_message` — no cross-platform side effects (e.g., sending Telegram messages)
 
 ## Max Iterations
 
@@ -172,6 +171,37 @@ delegate_task(
     max_iterations=10  # Simple task, don't need many turns
 )
 ```
+
+## Child Timeout
+
+By default there is **no wall-clock timeout** on subagents. Children fail only from what they're actually doing — API errors, tool errors, or hitting their iteration budget — never from a delegation-level stopwatch. Earlier releases shipped a hard cap (300s, later 600s), which kept killing legitimately busy children mid-task: deep code reviews, large research fan-outs, and slow reasoning models routinely need more than 10 minutes while making steady progress the whole time.
+
+Genuinely stuck children are still detected: the heartbeat staleness monitor stops refreshing the parent's activity when a child makes no progress (no API calls, no tool starts), letting the gateway inactivity timeout fire on a truly wedged worker.
+
+If you want a hard cap anyway (e.g. cost control on unattended cron-driven delegation), opt in per-install:
+
+```yaml
+delegation:
+  child_timeout_seconds: 0     # default: 0 = no timeout
+  # child_timeout_seconds: 1800  # opt-in hard cap (floor 30s)
+```
+
+A positive value enforces a hard wall-clock limit on each child; `0` or a negative value disables it.
+
+:::tip Diagnostic dump on zero-call timeout
+With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, and any early error messages. Much easier to root-cause than the previous silent-timeout behavior.
+:::
+
+## Monitoring Running Subagents (`/agents`)
+
+The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegate_task` fan-out into a first-class audit surface:
+
+- Live tree view of running and recently-finished subagents, grouped by parent
+- Per-branch cost, token, and file-touched rollups
+- Kill and pause controls — cancel a specific subagent mid-flight without interrupting its siblings
+- Post-hoc review: step through each subagent's turn-by-turn history even after they've returned to the parent
+
+The classic CLI just prints `/agents` as a text summary; the TUI is where the overlay shines. See [TUI — Slash commands](/user-guide/tui#slash-commands).
 
 ## Depth Limit and Nested Orchestration
 
@@ -188,16 +218,31 @@ delegate_task(
 ```
 
 - `role="leaf"` (default): child cannot delegate further — identical to the flat-delegation behavior.
-- `role="orchestrator"`: child retains the `delegation` toolset. Gated by `delegation.max_spawn_depth` (default **1** = flat, so `role="orchestrator"` is a no-op at defaults). Raise `max_spawn_depth` to 2 to allow orchestrator children to spawn leaf grandchildren; 3 for three levels (cap).
+- `role="orchestrator"`: child retains the `delegation` toolset. Gated by `delegation.max_spawn_depth` (default **1** = flat, so `role="orchestrator"` is a no-op at defaults). Raise `max_spawn_depth` to 2 to allow orchestrator children to spawn leaf grandchildren; 3+ for deeper trees. There is no upper ceiling — cost is the practical limit.
 - `delegation.orchestrator_enabled: false`: global kill switch that forces every child to `leaf` regardless of the `role` parameter.
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
+
+## Lifetime and Durability
+
+:::warning delegate_task is synchronous — not durable
+`delegate_task` runs **inside the parent's current turn**. It blocks the parent until every child finishes (or is cancelled). It is **not** a background job queue:
+
+- If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active children are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
+- Children do **not** continue running after the parent turn ends.
+- Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
+
+For **durable long-running work** that must survive interrupts or outlive the current turn, use:
+
+- `cronjob` (action=`create`) — schedules a separate agent run; immune to parent-turn interrupts.
+- `terminal(background=True, notify_on_complete=True)` — long-running shell commands that keep running while the agent does other things.
+:::
 
 ## Key Properties
 
 - Each subagent gets its **own terminal session** (separate from the parent)
 - **Nested delegation is opt-in** — only `role="orchestrator"` children can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`.
-- Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `execute_code`. Orchestrator subagents retain `delegate_task` but still cannot use the other four.
+- Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `execute_code`. Orchestrator subagents retain `delegate_task` but still cannot use the other three.
 - **Interrupt propagation** — interrupting the parent interrupts all active children (including grandchildren under orchestrators)
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
@@ -223,17 +268,21 @@ delegate_task(
 delegation:
   max_iterations: 50                        # Max turns per child (default: 50)
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
-  # max_spawn_depth: 1                      # Tree depth (1-3, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3 for three levels.
+  # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
+  api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints
 
 # Or use a direct custom endpoint instead of provider:
 delegation:
   model: "qwen2.5-coder"
   base_url: "http://localhost:1234/v1"
   api_key: "local-key"
+  # api_mode: "anthropic_messages"  # Optional. Wire protocol override for base_url ("chat_completions", "codex_responses", or "anthropic_messages"). Empty = auto-detect from URL (e.g. /anthropic suffix). Set explicitly for endpoints the heuristic can't classify (Azure AI Foundry, MiniMax, Zhipu GLM, LiteLLM proxies, …).
 ```
+
+When `base_url` points at an Anthropic-compatible endpoint — for example a path ending in `/anthropic`, an Azure Foundry Claude route, or a MiniMax `/anthropic` proxy — `api_mode` is auto-detected as `anthropic_messages` so the subagent uses the right wire format without you setting anything. Set `api_mode` explicitly when the auto-detection guess is wrong (rare).
 
 :::tip
 The agent handles delegation automatically based on the task complexity. You don't need to explicitly ask it to delegate — it will do so when it makes sense.

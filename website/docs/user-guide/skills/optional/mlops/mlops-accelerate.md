@@ -20,6 +20,7 @@ Simplest distributed training API. 4 lines to add distributed support to any PyT
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `accelerate`, `torch`, `transformers` |
+| Platforms | linux, macos, windows |
 | Tags | `Distributed Training`, `HuggingFace`, `Accelerate`, `DeepSpeed`, `FSDP`, `Mixed Precision`, `PyTorch`, `DDP`, `Unified API`, `Simple` |
 
 ## Reference: full SKILL.md

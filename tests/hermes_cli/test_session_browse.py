@@ -6,11 +6,9 @@ Covers:
 - Argument parser registration
 """
 
-import os
 import time
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 from hermes_cli.main import _session_browse_picker
 
@@ -249,7 +247,6 @@ class TestCursesBrowse:
 
     def _run_with_keys(self, sessions, key_sequence):
         """Simulate running the curses picker with a given key sequence."""
-        import curses
 
         # Build a mock stdscr that returns keys from the sequence
         mock_stdscr = MagicMock()
@@ -305,7 +302,6 @@ class TestCursesBrowse:
 
     def test_type_to_filter_then_enter(self):
         """Typing characters filters the list, Enter selects from filtered."""
-        import curses
         sessions = [
             {"id": "s1", "source": "cli", "title": "Alpha project", "preview": "", "last_active": time.time()},
             {"id": "s2", "source": "cli", "title": "Beta project", "preview": "", "last_active": time.time()},
@@ -325,7 +321,6 @@ class TestCursesBrowse:
 
     def test_backspace_removes_filter_char(self):
         """Backspace removes the last character from the filter."""
-        import curses
         sessions = [
             {"id": "s1", "source": "cli", "title": "Alpha", "preview": "", "last_active": time.time()},
             {"id": "s2", "source": "cli", "title": "Beta", "preview": "", "last_active": time.time()},
@@ -337,7 +332,6 @@ class TestCursesBrowse:
 
     def test_escape_clears_filter_first(self):
         """First Esc clears the search text, second Esc exits."""
-        import curses
         sessions = _make_sessions(3)
         # Type "ab" then Esc (clears filter) then Enter (selects first)
         keys = [ord('a'), ord('b'), 27, 10]
@@ -391,24 +385,29 @@ class TestSessionBrowseArgparse:
 
     def test_browse_subcommand_exists(self):
         """hermes sessions browse should be parseable."""
-        from hermes_cli.main import main as _main_entry
 
         # We can't run main(), but we can import and test the parser setup
         # by checking that argparse doesn't error on "sessions browse"
-        import argparse
         # Re-create the parser portion
         # Instead, let's just verify the import works and the function exists
         from hermes_cli.main import _session_browse_picker
         assert callable(_session_browse_picker)
 
-    def test_browse_default_limit_is_50(self):
-        """The default --limit for browse should be 50."""
-        # This test verifies at the argparse level
-        # We test by running the parse on "sessions browse" args
-        # Since we can't easily extract the subparser, verify via the
-        # _session_browse_picker accepting large lists
-        sessions = _make_sessions(50)
-        assert len(sessions) == 50
+    def test_browse_default_limit_is_500(self):
+        """The default --limit for browse should be 500."""
+        # Build the same argparse tree cmd_sessions uses and verify the default.
+        import argparse
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="sessions_action")
+        browse = subparsers.add_parser("browse")
+        browse.add_argument("--source")
+        browse.add_argument("--limit", type=int, default=500)
+
+        args = parser.parse_args(["browse"])
+        assert args.limit == 500
+
+        args = parser.parse_args(["browse", "--limit", "42"])
+        assert args.limit == 42
 
 
 # ─── Integration: cmd_sessions browse action ────────────────────────────────

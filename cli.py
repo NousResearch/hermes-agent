@@ -6840,7 +6840,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             has_titles=True,
             indent="  ",
             include_index=True,
-            truncate_titles=False,
+            show_full_titles=True,
             print_fn=_cli_visible_print,
         )
         _cli_visible_print()

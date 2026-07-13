@@ -139,6 +139,23 @@ class TestPrintSessionsTable:
         assert lines[0].startswith("#   Title")
         assert lines[2].startswith("1   中文")
 
+    def test_full_title_continues_on_a_separate_line_without_shifting_columns(self) -> None:
+        lines: list[str] = []
+        title = "中文标题" * 12
+        print_sessions_table(
+            [{"title": title, "preview": "preview", "last_active": 1, "id": "id"}],
+            has_titles=True,
+            indent="  ",
+            include_index=True,
+            show_full_titles=True,
+            print_fn=lines.append,
+        )
+
+        row = next(line for line in lines if line.endswith(" id"))
+        before_last_active = row.split("1970-01-01", 1)[0]
+        assert _text_display_width(before_last_active) == 2 + 3 + 1 + 32 + 1 + 40 + 1
+        assert f"      ↳ {title}" in lines
+
     def test_row_columns_have_expected_display_widths(self) -> None:
         """Guardrail: titled row layout matches fixed column budgets + spaces."""
         title = _pad_display_right("ColdStore Rust 项目", 32)

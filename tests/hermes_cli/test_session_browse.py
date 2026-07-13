@@ -274,6 +274,11 @@ class TestSessionBrowsePicker:
         before_last_active = row.split("1970-01-01", 1)[0]
         assert cell_width(before_last_active) == _session_browse_name_width(width) + 2
 
+    def test_curses_row_minimum_width_accounts_for_all_columns(self):
+        width = 61
+        row = _format_session_browse_row(SAMPLE_SESSIONS[0], width)
+        assert cell_width("   " + row) == width
+
 
 # ─── Curses-based picker (mocked curses) ────────────────────────────────────
 
@@ -329,6 +334,21 @@ class TestCursesBrowse:
         sessions = _make_sessions(3)
         result = self._run_with_keys(sessions, [27])  # Esc
         assert result is None
+
+    def test_terminal_too_narrow_for_all_columns_exits_before_rendering_rows(self):
+        mock_stdscr = MagicMock()
+        # 61 cells fit the data columns, but curses reserves the final cell.
+        mock_stdscr.getmaxyx.return_value = (30, 61)
+        mock_stdscr.getch.return_value = 0
+
+        with patch("curses.wrapper") as mock_wrapper:
+            mock_wrapper.side_effect = lambda func: func(mock_stdscr)
+            with patch("curses.curs_set"), patch("curses.has_colors", return_value=False):
+                result = _session_browse_picker(_make_sessions(1))
+
+        assert result is None
+        mock_stdscr.addstr.assert_called_once_with(0, 0, "Terminal too small")
+        mock_stdscr.addnstr.assert_not_called()
 
     def test_q_cancels(self):
         sessions = _make_sessions(3)

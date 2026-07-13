@@ -653,20 +653,22 @@ def print_sessions_table(
     has_titles: bool,
     indent: str = "",
     include_index: bool = False,
-    truncate_titles: bool = True,
+    show_full_titles: bool = False,
     print_fn=None,
 ) -> None:
     """Print session rows with terminal-accurate column alignment (CJK-safe).
 
     Plain ``str.ljust`` / f-string padding counts Unicode code points, not
-    terminal cell width, which breaks mixed Chinese/Latin rows.
+    terminal cell width, which breaks mixed Chinese/Latin rows.  Full titles
+    requested for an inline resume list are emitted on a continuation line so
+    the fixed table columns remain aligned.
     """
 
     emit = print if print_fn is None else print_fn
 
     if has_titles:
         header_columns = [("Title", 32), ("Preview", 40), ("Last Active", 13), ("ID", None)]
-        title_width = 32 if truncate_titles else None
+        title_width = 32
         rule_w = 110
     else:
         header_columns = [("Preview", 50), ("Last Active", 13), ("Src", 6), ("ID", None)]
@@ -680,8 +682,9 @@ def print_sessions_table(
     emit(f"{indent}{'─' * rule_w}")
     for index, session in enumerate(sessions, start=1):
         if has_titles:
+            title = session.get("title") or "—"
             columns = [
-                (session.get("title") or "—", title_width),
+                (title, title_width),
                 (session.get("preview") or "", 40),
             ]
         else:
@@ -694,6 +697,9 @@ def print_sessions_table(
         if include_index:
             columns.insert(0, (str(index), 3))
         emit(f"{indent}{_format_display_columns(*columns)}")
+        if has_titles and show_full_titles and _text_display_width(title) > title_width:
+            title_indent = indent + (" " * 4 if include_index else "")
+            emit(f"{title_indent}↳ {title}")
 
 
 def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
@@ -857,18 +863,22 @@ _BROWSE_LAST_ACTIVE_WIDTH = 10
 _BROWSE_SOURCE_WIDTH = 5
 _BROWSE_SESSION_ID_WIDTH = 18
 _BROWSE_COLUMN_GAPS_WIDTH = 5
+_BROWSE_MIN_NAME_WIDTH = 20
+_BROWSE_FIXED_COLUMNS_WIDTH = (
+    _BROWSE_PREFIX_WIDTH
+    + _BROWSE_LAST_ACTIVE_WIDTH
+    + _BROWSE_SOURCE_WIDTH
+    + _BROWSE_SESSION_ID_WIDTH
+    + _BROWSE_COLUMN_GAPS_WIDTH
+)
+_BROWSE_MIN_CONTENT_WIDTH = _BROWSE_FIXED_COLUMNS_WIDTH + _BROWSE_MIN_NAME_WIDTH
+# curses avoids writing the final terminal cell, so reserve one column for it.
+_BROWSE_MIN_TERMINAL_WIDTH = _BROWSE_MIN_CONTENT_WIDTH + 1
 
 
 def _session_browse_name_width(terminal_width: int) -> int:
     """Return the flexible browse-column width within a terminal row."""
-    fixed_width = (
-        _BROWSE_PREFIX_WIDTH
-        + _BROWSE_LAST_ACTIVE_WIDTH
-        + _BROWSE_SOURCE_WIDTH
-        + _BROWSE_SESSION_ID_WIDTH
-        + _BROWSE_COLUMN_GAPS_WIDTH
-    )
-    return max(20, terminal_width - fixed_width)
+    return max(_BROWSE_MIN_NAME_WIDTH, terminal_width - _BROWSE_FIXED_COLUMNS_WIDTH)
 
 
 def _format_session_browse_row(session: dict, terminal_width: int) -> str:
@@ -1069,7 +1079,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             while True:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
-                if max_y < 5 or max_x < 40:
+                if max_y < 5 or max_x < _BROWSE_MIN_TERMINAL_WIDTH:
                     # Terminal too small
                     try:
                         stdscr.addstr(0, 0, "Terminal too small")
@@ -1095,8 +1105,12 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 except curses.error:
                     pass
 
+                # Leave curses' final terminal cell untouched: some terminals
+                # scroll when it is written.  Format rows to that same width.
+                render_width = max_x - 1
+
                 # Column header line
-                col_header = _format_session_browse_header(max_x)
+                col_header = _format_session_browse_header(render_width)
                 try:
                     dim_attr = (
                         curses.color_pair(4) if curses.has_colors() else curses.A_DIM
@@ -1136,7 +1150,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                             break
                         s = filtered[i]
                         arrow = " → " if i == cursor else "   "
-                        row = arrow + _format_session_browse_row(s, max_x)
+                        row = arrow + _format_session_browse_row(s, render_width)
                         attr = curses.A_NORMAL
                         if i == cursor:
                             attr = curses.A_BOLD

@@ -412,6 +412,30 @@ class TestHistoryDisplay:
         assert "Use /resume" in output
         assert "session title" in output
 
+    def test_resume_keeps_columns_aligned_for_a_long_cjk_title(self, capsys):
+        from hermes_cli.display_width import cell_width
+
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        title = "中文标题" * 12
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "long-cjk-session",
+                "title": title,
+                "preview": "preview",
+                "last_active": 1,
+            }
+        ]
+
+        cli._handle_resume_command("/resume")
+
+        output = capsys.readouterr().out
+        row = next(line for line in output.splitlines() if "long-cjk-session" in line)
+        before_last_active = row.split("1970-01-01", 1)[0]
+        assert cell_width(before_last_active) == 2 + 3 + 1 + 32 + 1 + 40 + 1
+        assert f"↳ {title}" in output
+
     def test_resume_updates_hermes_session_id_env_and_context(self, tmp_path):
         from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
         from hermes_state import SessionDB

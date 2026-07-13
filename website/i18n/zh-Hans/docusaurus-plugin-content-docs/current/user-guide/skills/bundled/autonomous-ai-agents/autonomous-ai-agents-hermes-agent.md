@@ -52,7 +52,7 @@ Hermes 的差异化特性：
 
 ```bash
 # 安装
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 # 交互式聊天（默认）
 hermes
@@ -275,7 +275,7 @@ hermes uninstall            Uninstall Hermes
 /config              Show config (CLI)
 /model [name]        Show or change model
 /personality [name]  Set personality
-/reasoning [level]   Set reasoning (none|minimal|low|medium|high|xhigh|show|hide)
+/reasoning [level]   Set reasoning (none|minimal|low|medium|high|xhigh|max|ultra|show|hide)
 /verbose             Cycle: off → new → all → verbose
 /voice [on|off|tts]  Voice mode
 /yolo                Toggle approval bypass
@@ -332,7 +332,6 @@ hermes uninstall            Uninstall Hermes
 /commands [page]     Browse all commands (gateway)
 /usage               Token usage
 /insights [days]     Usage analytics
-/gquota              Show Google Gemini Code Assist quota usage (CLI)
 /status              Session info (gateway)
 /profile             Active profile info
 /debug               Upload debug report (system info + logs) and get shareable links
@@ -482,10 +481,10 @@ hermes config set privacy.redact_pii false   # 禁用（默认）
 
 ### 命令审批提示
 
-默认情况下（`approvals.mode: manual`），Hermes 在运行被标记为破坏性的 shell 命令（`rm -rf`、`git reset --hard` 等）之前会提示用户。模式如下：
+默认情况下（`approvals.mode: smart`），Hermes 会让辅助 LLM 评估被标记为破坏性的 shell 命令（`rm -rf`、`git reset --hard` 等）。模式如下：
 
-- `manual` — 始终提示（默认）
-- `smart` — 使用辅助 LLM 自动批准低风险命令，对高风险命令提示
+- `smart` — 低风险命令仅批准一次，高风险命令拒绝，不确定时提示（默认）
+- `manual` — 始终提示
 - `off` — 跳过所有审批提示（等同于 `--yolo`）
 
 ```bash
@@ -634,7 +633,7 @@ terminal(command="tmux new-session -d -s resumed 'hermes --resume 20260225_14305
 
 同步子 agent 生成——父 agent 等待子 agent 的摘要后再继续自身循环。隔离的上下文和终端会话。
 
-- **单个：** `delegate_task(goal, context, toolsets)`。
+- **单个：** `delegate_task(goal, context)`。
 - **批量：** `delegate_task(tasks=[{goal, ...}, ...])` 并行运行子任务，上限由 `delegation.max_concurrent_children`（默认 3）控制。
 - **角色：** `leaf`（默认；不能再委派）vs `orchestrator`（可以生成自己的 worker，受 `delegation.max_spawn_depth` 限制）。
 - **非持久化。** 如果父 agent 被中断，子 agent 会被取消。对于必须在当前轮次之后继续的工作，使用 `cronjob` 或 `terminal(background=True, notify_on_complete=True)`。

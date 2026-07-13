@@ -52,7 +52,7 @@ People use Hermes for software development, research, system administration, dat
 
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 # Interactive chat (default)
 hermes
@@ -157,6 +157,10 @@ hermes mcp test NAME        Test connection
 hermes mcp configure NAME   Toggle tool selection
 ```
 
+How the built-in MCP client connects servers (stdio/HTTP), auto-discovers
+their tools, and exposes them as first-class tools, plus catalog install
+(`hermes mcp install <name>`): `skill_view(name="hermes-agent", file_path="references/native-mcp.md")`.
+
 ### Gateway (Messaging Platforms)
 
 ```
@@ -204,6 +208,9 @@ hermes webhook list         List subscriptions
 hermes webhook remove NAME  Remove a subscription
 hermes webhook test NAME    Send a test POST
 ```
+
+Full setup, route config, payload templating, and event-driven agent-run
+patterns: `skill_view(name="hermes-agent", file_path="references/webhooks.md")`.
 
 ### Profiles
 
@@ -279,7 +286,7 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 /config              Show config (CLI)
 /model [name]        Show or change model
 /personality [name]  Set personality
-/reasoning [level]   Set reasoning (none|minimal|low|medium|high|xhigh|show|hide)
+/reasoning [level]   Set reasoning (none|minimal|low|medium|high|xhigh|max|ultra|show|hide)
 /verbose             Cycle: off → new → all → verbose
 /voice [on|off|tts]  Voice mode
 /yolo                Toggle approval bypass
@@ -336,7 +343,6 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 /commands [page]     Browse all commands (gateway)
 /usage               Token usage
 /insights [days]     Usage analytics
-/gquota              Show Google Gemini Code Assist quota usage (CLI)
 /status              Session info (gateway)
 /profile             Active profile info
 /debug               Upload debug report (system info + logs) and get shareable links
@@ -353,7 +359,7 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 
 ```
 ~/.hermes/config.yaml       Main configuration
-~/.hermes/.env              API keys and secrets
+~/.hermes/.env              API keys and secrets (under $HERMES_HOME if set)
 $HERMES_HOME/skills/        Installed skills
 ~/.hermes/sessions/         Gateway routing index, request dumps, *.jsonl transcripts (and optional per-session JSON snapshots when sessions.write_json_snapshots: true)
 ~/.hermes/state.db          Canonical session store (SQLite + FTS5)
@@ -370,7 +376,7 @@ Edit with `hermes config edit` or `hermes config set section.key value`.
 
 | Section | Key options |
 |---------|-------------|
-| `model` | `default`, `provider`, `base_url`, `api_key`, `context_length` |
+| `model` | `default`, `provider`, `base_url`, `api_key`, `context_length` (explicit override; clear to `""` for auto-detect from server `/v1/models`) |
 | `agent` | `max_turns` (90), `tool_use_enforcement` |
 | `terminal` | `backend` (local/docker/ssh/modal), `cwd`, `timeout` (180) |
 | `compression` | `enabled`, `threshold` (0.50), `target_ratio` (0.20) |
@@ -449,7 +455,6 @@ Enable/disable via `hermes tools` (interactive) or `hermes tools enable/disable 
 | `feishu_drive` | Feishu (Lark) drive tools |
 | `yuanbao` | Yuanbao integration tools |
 | `rl` | Reinforcement learning tools (off by default) |
-| `moa` | Mixture of Agents (off by default) |
 
 Full enumeration lives in `toolsets.py` as the `TOOLSETS` dict; `_HERMES_CORE_TOOLS` is the default bundle most platforms inherit from.
 
@@ -487,10 +492,10 @@ hermes config set privacy.redact_pii false   # disable (default)
 
 ### Command approval prompts
 
-By default (`approvals.mode: manual`), Hermes prompts the user before running shell commands flagged as destructive (`rm -rf`, `git reset --hard`, etc.). The modes are:
+By default (`approvals.mode: smart`), Hermes asks an auxiliary LLM to assess shell commands flagged as destructive (`rm -rf`, `git reset --hard`, etc.). The modes are:
 
-- `manual` — always prompt (default)
-- `smart` — use an auxiliary LLM to auto-approve low-risk commands, prompt on high-risk
+- `smart` — auto-approve a low-risk command once, deny high-risk commands, and prompt when uncertain (default)
+- `manual` — always prompt
 - `off` — skip all approval prompts (equivalent to `--yolo`)
 
 ```bash
@@ -642,7 +647,7 @@ here; full developer notes live in `AGENTS.md`, user-facing docs under
 Synchronous subagent spawn — the parent waits for the child's summary
 before continuing its own loop. Isolated context + terminal session.
 
-- **Single:** `delegate_task(goal, context, toolsets)`.
+- **Single:** `delegate_task(goal, context)`.
 - **Batch:** `delegate_task(tasks=[{goal, ...}, ...])` runs children in
   parallel, capped by `delegation.max_concurrent_children` (default 3).
 - **Roles:** `leaf` (default; cannot re-delegate) vs `orchestrator`
@@ -868,6 +873,22 @@ hermes config set auxiliary.vision.model <model_name>
 ```
 
 ---
+### Context window shows wrong size
+
+If Hermes reports a smaller context window than your local model supports
+(e.g., 128k when llama-server has `-c 262144`):
+
+**Check if `model.context_length` is explicitly set.** Hermes uses a
+multi-source resolution chain (highest priority first):
+
+1. `model.context_length` in config.yaml — **blocks auto-detection if set**
+2. Custom provider per-model setting
+3. Persistent cache (survives restarts)
+4. `/v1/models` endpoint from your server — auto-detected when nothing
+   above overrides it
+
+**Fix:** Clear the override so auto-detection falls through:
+
 
 ## Where to Find Things
 
@@ -920,7 +941,7 @@ hermes-agent/
 ```
 <!-- ascii-guard-ignore-end -->
 
-Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys).
+Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys) — both under `$HERMES_HOME` when it is set.
 
 ### Adding a Tool (3 files)
 

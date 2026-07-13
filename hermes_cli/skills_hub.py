@@ -28,6 +28,20 @@ from agent.skill_utils import is_excluded_skill_path
 _console = Console()
 
 
+def _display_source(r) -> str:
+    """Human-facing source label for a result row.
+
+    GitHub-tap skills are stored under source="github"; surface their per-tap
+    provider label (NVIDIA / OpenAI / ...) when present so the table reflects
+    the real origin instead of the generic "github".
+    """
+    if r.source == "github":
+        provider = (getattr(r, "extra", None) or {}).get("provider")
+        if provider:
+            return provider
+    return r.source
+
+
 # ---------------------------------------------------------------------------
 # Shared do_* functions
 # ---------------------------------------------------------------------------
@@ -303,7 +317,7 @@ def do_search(query: str, source: str = "all", limit: int = 10,
         table.add_row(
             r.name,
             r.description[:60] + ("..." if len(r.description) > 60 else ""),
-            r.source,
+            _display_source(r),
             f"[{trust_style}]{trust_label}[/]",
             r.identifier,
         )
@@ -335,24 +349,60 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     # Collect results from all (or filtered) sources in parallel.
     # Per-source limits are generous — parallelism + 30s timeout cap prevents hangs.
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
+    # NOTE: when the centralized index is available, parallel_search_sources
+    # skips the external API sources and serves everything from "hermes-index".
+    # That source MUST therefore carry a limit large enough to cover the whole
+    # catalog, or browse silently caps the hub — it shipped at 50 (surfaced
+    # ~136 of 88k skills), then 5000 (surfaced ~5.4k of 90k). The index is
+    # disk-cached and browse paginates client-side, so a ceiling above the
+    # current catalog size is the right call. The external-source limits below
+    # only apply when the index is unavailable (offline / first run before the
+    # cache populates).
     _PER_SOURCE_LIMIT = {
+        "hermes-index": 1000000,
         "official": 200, "skills-sh": 200, "well-known": 50,
         "github": 200, "clawhub": 500, "claude-marketplace": 100,
         "lobehub": 500, "browse-sh": 500,
     }
 
-    with c.status("[bold]Fetching skills from registries..."):
+    with c.status("[bold]Fetching skills from registries...") as status:
+        # Live progress: tick off each source as it resolves so the wait is
+        # visible instead of a frozen spinner. parallel_search_sources invokes
+        # this callback from the collecting thread as each source completes;
+        # the page itself is still rendered once, after the correctly-merged
+        # and trust-sorted result set is final (browse's ordering contract is
+        # computed over the whole set, so we never render a half-sorted page).
+        _done: List[str] = []
+
+        def _on_source_done(sid: str, count: int) -> None:
+            _done.append(f"{sid} ({count})")
+            status.update(
+                "[bold]Fetching skills from registries...[/]  "
+                f"[dim]done: {', '.join(_done)}[/]"
+            )
+
         all_results, source_counts, timed_out = parallel_search_sources(
             sources,
             query="",
             per_source_limits=_PER_SOURCE_LIMIT,
             source_filter=source,
             overall_timeout=30,
+            on_source_done=_on_source_done,
         )
 
     if not all_results:
         c.print("[dim]No skills found in the Skills Hub.[/]\n")
         return
+
+    # Provider filter (nvidia/openai/...) narrows GitHub-tap skills by their
+    # per-tap ``extra.provider`` label (the runtime index stores them all under
+    # source="github"). Real source ids were already filtered upstream.
+    from tools.skills_hub import _PROVIDER_FILTER_VALUES, _filter_results_by_provider
+    if source.strip().lower() in _PROVIDER_FILTER_VALUES:
+        all_results = _filter_results_by_provider(all_results, source)
+        if not all_results:
+            c.print(f"[dim]No skills found for provider '{source}'.[/]\n")
+            return
 
     # Deduplicate by identifier, preferring higher trust.
     # identifier is always unique per skill; name is not (browse-sh skills from different
@@ -396,26 +446,31 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     # Build table
     table = Table(show_header=True, header_style="bold")
     table.add_column("#", style="dim", width=4, justify="right")
-    table.add_column("Name", style="bold cyan", max_width=25)
-    table.add_column("Description", max_width=50)
+    table.add_column("Name", style="bold cyan", max_width=22)
+    table.add_column("Description", max_width=44)
     table.add_column("Source", style="dim", width=12)
     table.add_column("Trust", width=10)
+    # The identifier is what you pass to `hermes skills install`. Browse used
+    # to omit it entirely, so users couldn't act on what they saw without a
+    # second `search`. overflow="fold" keeps long slugs copy-pasteable.
+    table.add_column("Identifier", style="dim", overflow="fold", no_wrap=False)
 
     for i, r in enumerate(page_items, start=start + 1):
         trust_style = {"builtin": "bright_cyan", "trusted": "green",
                        "community": "yellow"}.get(r.trust_level, "dim")
         trust_label = "★ official" if r.source == "official" else r.trust_level
 
-        desc = r.description[:50]
-        if len(r.description) > 50:
+        desc = r.description[:44]
+        if len(r.description) > 44:
             desc += "..."
 
         table.add_row(
             str(i),
             r.name,
             desc,
-            r.source,
+            _display_source(r),
             f"[{trust_style}]{trust_label}[/]",
+            r.identifier,
         )
 
     c.print(table)
@@ -439,7 +494,9 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         c.print(f"  [yellow]⚡ Slow sources skipped: {', '.join(timed_out)} "
                 f"— run again for cached results[/]")
 
-    c.print("[dim]Tip: 'hermes skills search <query>' searches deeper across all registries[/]\n")
+    c.print("[dim]Tip: 'hermes skills inspect <identifier>' to preview, "
+            "'hermes skills install <identifier>' to install, "
+            "'hermes skills search <query>' to search deeper[/]\n")
 
 
 def do_install(identifier: str, category: str = "", force: bool = False,
@@ -459,7 +516,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         GitHubAuth, create_source_router, ensure_hub_dirs,
         quarantine_bundle, install_from_quarantine, HubLockFile,
     )
-    from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+    from tools.skills_guard import scan_skill_cached, should_allow_install, format_scan_report
 
     c = console or _console
     ensure_hub_dirs()
@@ -591,8 +648,24 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             or getattr(meta, "identifier", "")
             or identifier
         )
-    result = scan_skill(q_path, source=scan_source)
+    from tools.skills_hub import HUB_DIR, source_url_for_bundle
+    result, scan_provenance = scan_skill_cached(
+        q_path,
+        source=scan_source,
+        source_url=source_url_for_bundle(bundle),
+        cache_dir=HUB_DIR / "scan-cache",
+    )
     c.print(format_scan_report(result))
+    freshness = "fresh" if scan_provenance["fresh"] else "cached"
+    c.print(
+        f"[dim]Scan provenance: {freshness}; scanner "
+        f"{scan_provenance['scanner_version']}; hash {scan_provenance['bundle_hash']}[/]"
+    )
+    rules = ", ".join(scan_provenance["rules"]) or "none"
+    c.print(
+        f"[dim]Source: {scan_provenance['source_url']}; scanned "
+        f"{scan_provenance['scanned_at']}; rules: {rules}[/]"
+    )
 
     # Check install policy
     allowed, reason = should_allow_install(result, force=force)
@@ -657,6 +730,47 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
+
+    # Blueprint detection: if the installed skill declares a
+    # metadata.hermes.blueprint block, it is a runnable automation. Register it as
+    # a Suggested Cron Job rather than auto-scheduling — installing never
+    # silently creates a recurring job; the user accepts it via /suggestions.
+    # This is the single surface every automation proposal flows through.
+    try:
+        from tools.blueprints import BlueprintError, blueprint_spec_for_installed, register_blueprint_suggestion
+
+        try:
+            spec = blueprint_spec_for_installed(bundle.name)
+        except BlueprintError as _rec_err:
+            c.print(f"[yellow]Blueprint block present but invalid:[/] {_rec_err}\n")
+            spec = None
+        if spec is not None:
+            registered = register_blueprint_suggestion(spec)
+            if registered is not None:
+                c.print(
+                    f"[bold cyan]Blueprint:[/] '{bundle.name}' is an automation "
+                    f"(schedule [bold]{spec.schedule}[/])."
+                )
+                c.print(
+                    "[dim]Added to your suggestions — run[/] [bold]/suggestions[/] "
+                    "[dim]to schedule or dismiss it.[/]\n"
+                )
+            else:
+                # Dropped: already offered/dismissed (latched) or the pending
+                # list is at its cap. Say so instead of silently doing nothing —
+                # the user can still schedule it by hand.
+                c.print(
+                    f"[bold cyan]Blueprint:[/] '{bundle.name}' is an automation "
+                    f"(schedule [bold]{spec.schedule}[/]), but it wasn't added to "
+                    "your suggestions (already offered/dismissed, or the pending "
+                    "list is full — run [bold]/suggestions[/] to review)."
+                )
+                c.print(
+                    "[dim]You can still schedule it any time by asking the agent "
+                    "or via[/] [bold]hermes cron add[/][dim].[/]\n"
+                )
+    except Exception:  # pragma: no cover - blueprint detection is best-effort
+        pass
 
     if invalidate_cache:
         # Invalidate the skills prompt cache so the new skill appears immediately
@@ -725,24 +839,27 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
 
     Returns ``{"items": [...], "page": int, "total_pages": int, "total": int}``.
     """
-    from tools.skills_hub import GitHubAuth, create_source_router
+    from tools.skills_hub import (
+        GitHubAuth, create_source_router, parallel_search_sources,
+    )
 
     page_size = max(1, min(page_size, 100))
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
-    _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "well-known": 25, "github": 100, "clawhub": 50,
+    # "hermes-index" must carry a high limit: when the index is available the
+    # router skips external API sources and serves everything from it, so a
+    # low cap here silently truncates the whole hub (see do_browse note).
+    _PER_SOURCE_LIMIT = {"hermes-index": 5000, "official": 100, "skills-sh": 100,
+                         "well-known": 25, "github": 100, "clawhub": 50,
                          "claude-marketplace": 50, "lobehub": 50, "browse-sh": 500}
     auth = GitHubAuth()
     sources = create_source_router(auth)
-    all_results: list = []
-    for src in sources:
-        sid = src.source_id()
-        if source != "all" and sid != source and sid != "official":
-            continue
-        try:
-            limit = _PER_SOURCE_LIMIT.get(sid, 50)
-            all_results.extend(src.search("", limit=limit))
-        except Exception:
-            continue
+    # Delegate to the shared parallel walker so this inherits the index-aware
+    # source-skip logic — querying hermes-index AND the external APIs at once
+    # would double-count every skill.
+    all_results, _counts, _timed_out = parallel_search_sources(
+        sources, query="", per_source_limits=_PER_SOURCE_LIMIT,
+        source_filter=source, overall_timeout=30,
+    )
     if not all_results:
         return {"items": [], "page": 1, "total_pages": 1, "total": 0}
     seen: dict = {}
@@ -759,7 +876,7 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     page_items = deduped[start : min(start + page_size, total)]
     return {
         "items": [{"name": r.name, "description": r.description, "source": r.source,
-                    "trust": r.trust_level} for r in page_items],
+                    "trust": r.trust_level, "identifier": r.identifier} for r in page_items],
         "page": page,
         "total_pages": total_pages,
         "total": total,
@@ -1070,6 +1187,174 @@ def do_reset(name: str, restore: bool = False,
     else:
         c.print("[dim]Change will take effect in your next session.[/]")
         c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
+
+
+def do_list_modified(console: Optional[Console] = None,
+                     as_json: bool = False) -> None:
+    """List bundled skills the user has edited (which `hermes update` keeps)."""
+    from tools.skills_sync import list_user_modified_bundled_skills
+
+    c = console or _console
+    modified = list_user_modified_bundled_skills()
+
+    if as_json:
+        import json
+
+        c.print(json.dumps([m["name"] for m in modified]))
+        return
+
+    if not modified:
+        c.print("[dim]No user-modified bundled skills — everything tracks upstream.[/]\n")
+        return
+
+    c.print(f"\n[bold]{len(modified)} user-modified bundled skill(s)[/] "
+            "[dim](kept as-is by `hermes update`):[/]")
+    for entry in modified:
+        c.print(f"  [yellow]~[/] {entry['name']}")
+    c.print()
+    c.print("[dim]See changes:   hermes skills diff <name>[/]")
+    c.print("[dim]Resume updates: hermes skills reset <name>          (keep your copy, re-baseline)[/]")
+    c.print("[dim]Revert to stock: hermes skills reset <name> --restore[/]\n")
+
+
+def do_diff(name: str, console: Optional[Console] = None) -> None:
+    """Show how the user's copy of a bundled skill differs from the stock version."""
+    from tools.skills_sync import diff_bundled_skill
+
+    c = console or _console
+    result = diff_bundled_skill(name)
+
+    if not result["ok"]:
+        c.print(f"[bold red]Error:[/] {result['message']}\n")
+        return
+
+    if not result["modified"]:
+        c.print(f"[green]{result['message']}[/]\n")
+        return
+
+    c.print(f"\n[bold]{result['message']}[/]\n")
+    for entry in result["diffs"]:
+        status = entry["status"]
+        if status == "modified":
+            # Render the unified diff with light coloring.
+            for line in entry["diff"].splitlines():
+                if line.startswith("+") and not line.startswith("+++"):
+                    c.print(f"[green]{line}[/]")
+                elif line.startswith("-") and not line.startswith("---"):
+                    c.print(f"[red]{line}[/]")
+                elif line.startswith("@@"):
+                    c.print(f"[cyan]{line}[/]")
+                else:
+                    c.print(line, highlight=False)
+        elif status == "added":
+            c.print(f"[green]+ only in your copy:[/] {entry['path']}")
+        elif status == "removed":
+            c.print(f"[red]- only in stock:[/] {entry['path']}")
+        else:  # binary
+            c.print(f"[yellow]~ {entry['path']}:[/] binary file differs")
+    c.print()
+    c.print(f"[dim]Revert with: hermes skills reset {name} --restore[/]\n")
+
+
+def do_opt_out(remove: bool = False,
+               console: Optional[Console] = None,
+               skip_confirm: bool = False,
+               invalidate_cache: bool = True) -> None:
+    """Opt the active profile out of bundled-skill seeding.
+
+    Always writes the .no-bundled-skills marker (stop future seeding). With
+    ``remove``, also deletes already-present bundled skills that are pristine
+    (manifest-tracked AND unmodified); user-edited and non-bundled skills are
+    never touched.
+    """
+    from tools.skills_sync import (
+        set_bundled_skills_opt_out,
+        remove_pristine_bundled_skills,
+    )
+
+    c = console or _console
+
+    # Write the marker first (the always-safe part).
+    res = set_bundled_skills_opt_out(True)
+    if not res["ok"]:
+        c.print(f"[bold red]Error:[/] {res['message']}\n")
+        return
+    c.print(f"[bold green]{res['message']}[/]")
+    c.print(f"[dim]Marker: {res['marker']}[/]")
+
+    if not remove:
+        c.print("[dim]Existing skills on disk were left in place. "
+                "Re-run with --remove to also delete unmodified bundled skills.[/]\n")
+        return
+
+    # Destructive step: preview, confirm, then delete.
+    preview = remove_pristine_bundled_skills(dry_run=True)
+    candidates = preview["removed"]
+    kept = preview["skipped"]
+    if not candidates:
+        c.print("[dim]No pristine bundled skills to remove "
+                "(nothing tracked, or all are user-modified/local).[/]\n")
+        return
+
+    c.print(f"\n[bold]Will remove {len(candidates)} unmodified bundled skill(s):[/]")
+    c.print(f"[dim]{', '.join(candidates)}[/]")
+    if kept:
+        c.print(f"[dim]Keeping {len(kept)} (user-modified or non-bundled).[/]")
+
+    if not skip_confirm:
+        c.print("[dim]This deletes the on-disk copies. User-edited and "
+                "hub/local skills are NOT touched.[/]")
+        try:
+            answer = input("Confirm [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer not in {"y", "yes"}:
+            c.print("[dim]Marker kept; no skills deleted.[/]\n")
+            return
+
+    result = remove_pristine_bundled_skills(dry_run=False)
+    c.print(f"[bold green]{result['message']}[/]")
+    if result["removed"]:
+        c.print(f"[dim]Removed: {', '.join(result['removed'])}[/]")
+    c.print()
+
+    if invalidate_cache:
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
+
+
+def do_opt_in(sync: bool = False,
+              console: Optional[Console] = None,
+              invalidate_cache: bool = True) -> None:
+    """Remove the opt-out marker so bundled-skill seeding resumes.
+
+    With ``sync``, immediately re-seed bundled skills instead of waiting for
+    the next ``hermes update``.
+    """
+    from tools.skills_sync import set_bundled_skills_opt_out, sync_skills
+
+    c = console or _console
+
+    res = set_bundled_skills_opt_out(False)
+    if not res["ok"]:
+        c.print(f"[bold red]Error:[/] {res['message']}\n")
+        return
+    c.print(f"[bold green]{res['message']}[/]")
+
+    if sync:
+        synced = sync_skills(quiet=True)
+        copied = len(synced.get("copied", []))
+        c.print(f"[dim]Re-seeded {copied} bundled skill(s).[/]")
+        if invalidate_cache:
+            try:
+                from agent.prompt_builder import clear_skills_system_prompt_cache
+                clear_skills_system_prompt_cache(clear_snapshot=True)
+            except Exception:
+                pass
+    c.print()
 
 
 def do_repair_official(name: str, restore: bool = False,
@@ -1446,6 +1731,15 @@ def skills_command(args) -> None:
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
+    elif action == "list-modified":
+        do_list_modified(as_json=getattr(args, "json", False))
+    elif action == "diff":
+        do_diff(args.name)
+    elif action == "opt-out":
+        do_opt_out(remove=getattr(args, "remove", False),
+                   skip_confirm=getattr(args, "yes", False))
+    elif action == "opt-in":
+        do_opt_in(sync=getattr(args, "sync", False))
     elif action == "repair-official":
         do_repair_official(args.name, restore=getattr(args, "restore", False),
                            skip_confirm=getattr(args, "yes", False))
@@ -1471,7 +1765,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1543,10 +1837,10 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "search":
         if not args:
-            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|well-known|github|official] [--limit N] [--json]\n")
+            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|github|official|nvidia|openai|anthropic|huggingface] [--limit N] [--json]\n")
             return
         source = "all"
-        limit = 10
+        limit = 25
         as_json = False
         query_parts = []
         i = 0
@@ -1643,6 +1937,15 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_reset(name, restore=restore, console=c, skip_confirm=True,
                  invalidate_cache=invalidate_cache)
 
+    elif action in {"list-modified", "modified"}:
+        do_list_modified(console=c, as_json="--json" in args)
+
+    elif action == "diff":
+        if not args:
+            c.print("[bold red]Usage:[/] /skills diff <name>\n")
+            return
+        do_diff(args[0], console=c)
+
     elif action == "publish":
         if not args:
             c.print("[bold red]Usage:[/] /skills publish <skill-path> [--to github] [--repo owner/repo]\n")
@@ -1700,6 +2003,8 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
+        "  [cyan]list-modified[/]               List bundled skills you've edited (kept by update)\n"
+        "  [cyan]diff[/] <name>                 Diff your copy of a bundled skill vs the stock version\n"
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"

@@ -79,6 +79,95 @@ class TestSafeWriteRoot:
         assert _is_write_denied(os.path.expanduser("~/.ssh/id_rsa")) is True
 
 
+class TestMultipleSafeWriteRoots:
+    """HERMES_WRITE_SAFE_ROOT with multiple colon-separated directories."""
+
+    def test_write_inside_first_root_allowed(self, tmp_path: Path, monkeypatch):
+        root_a = tmp_path / "workspace_a"
+        root_b = tmp_path / "workspace_b"
+        child = root_a / "subdir" / "file.txt"
+        os.makedirs(child.parent, exist_ok=True)
+        os.makedirs(root_b, exist_ok=True)
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", f"{root_a}{os.pathsep}{root_b}")
+        assert _is_write_denied(str(child)) is False
+
+    def test_write_inside_second_root_allowed(self, tmp_path: Path, monkeypatch):
+        root_a = tmp_path / "workspace_a"
+        root_b = tmp_path / "workspace_b"
+        child = root_b / "subdir" / "file.txt"
+        os.makedirs(child.parent, exist_ok=True)
+        os.makedirs(root_a, exist_ok=True)
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", f"{root_a}{os.pathsep}{root_b}")
+        assert _is_write_denied(str(child)) is False
+
+    def test_write_outside_all_roots_denied(self, tmp_path: Path, monkeypatch):
+        root_a = tmp_path / "workspace_a"
+        root_b = tmp_path / "workspace_b"
+        outside = tmp_path / "other" / "file.txt"
+        os.makedirs(root_a, exist_ok=True)
+        os.makedirs(root_b, exist_ok=True)
+        os.makedirs(outside.parent, exist_ok=True)
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", f"{root_a}{os.pathsep}{root_b}")
+        assert _is_write_denied(str(outside)) is True
+
+    def test_trailing_separator_ignored(self, tmp_path: Path, monkeypatch):
+        root = tmp_path / "workspace"
+        inside = root / "file.txt"
+        os.makedirs(root, exist_ok=True)
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", f"{root}{os.pathsep}")
+        assert _is_write_denied(str(inside)) is False
+
+    def test_leading_separator_ignored(self, tmp_path: Path, monkeypatch):
+        root = tmp_path / "workspace"
+        inside = root / "file.txt"
+        os.makedirs(root, exist_ok=True)
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", f"{os.pathsep}{root}")
+        assert _is_write_denied(str(inside)) is False
+
+    def test_double_separator_ignored(self, tmp_path: Path, monkeypatch):
+        root_a = tmp_path / "workspace_a"
+        root_b = tmp_path / "workspace_b"
+        os.makedirs(root_a, exist_ok=True)
+        os.makedirs(root_b, exist_ok=True)
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", f"{root_a}{os.pathsep}{os.pathsep}{root_b}")
+        # Both roots should still be active
+        assert _is_write_denied(str(root_a / "file.txt")) is False
+        assert _is_write_denied(str(root_b / "file.txt")) is False
+
+    def test_all_separators_yields_empty_set(self, tmp_path: Path, monkeypatch):
+        target = tmp_path / "regular.txt"
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", os.pathsep * 3)
+        assert _is_write_denied(str(target)) is False
+
+    def test_static_deny_still_wins_with_multiple_roots(self, tmp_path: Path, monkeypatch):
+        """Static deny list takes priority even when multiple safe roots include home."""
+        root = tmp_path / "workspace"
+        os.makedirs(root, exist_ok=True)
+
+        monkeypatch.setenv(
+            "HERMES_WRITE_SAFE_ROOT",
+            f"{root}{os.pathsep}{os.path.expanduser('~')}",
+        )
+        assert _is_write_denied(os.path.expanduser("~/.ssh/id_rsa")) is True
+
+    def test_duplicate_roots_deduplicated(self, tmp_path: Path, monkeypatch):
+        root = tmp_path / "workspace"
+        inside = root / "file.txt"
+        os.makedirs(root, exist_ok=True)
+
+        monkeypatch.setenv(
+            "HERMES_WRITE_SAFE_ROOT",
+            f"{root}{os.pathsep}{root}",
+        )
+        assert _is_write_denied(str(inside)) is False
+
+
 class TestCheckSensitivePathMacOSBypass:
     """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""
 
@@ -181,6 +270,102 @@ class TestAtomicWrite:
         assert res.success, res.error
         assert target.read_text() == "a = 1\nb = 22\nc = 3\n"
         assert (os.stat(target).st_mode & 0o777) == 0o600
+
+
+class TestBomHandling:
+    """UTF-8 BOM is stripped on read and preserved across write/patch.
+
+    A BOM (U+FEFF, bytes EF BB BF) is an invisible leading marker some
+    Windows editors prepend. The agent should never see it in read output,
+    but a file that had one on disk must keep it after an edit so the byte
+    signature is preserved.
+    """
+
+    BOM = "\ufeff"
+
+    @pytest.fixture
+    def ops(self, tmp_path: Path):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+        env = LocalEnvironment(cwd=str(tmp_path))
+        return ShellFileOperations(env, cwd=str(tmp_path))
+
+    def test_helpers(self):
+        from tools.file_operations import _strip_bom, _has_bom
+        assert _strip_bom("\ufeffhello") == ("hello", True)
+        assert _strip_bom("hello") == ("hello", False)
+        assert _strip_bom("") == ("", False)
+        # mid-string BOM is data, not a marker — left alone
+        assert _strip_bom("a\ufeffb") == ("a\ufeffb", False)
+        assert _has_bom("\ufeffx") is True
+        assert _has_bom("x") is False
+        assert _has_bom(None) is False
+
+    def test_read_strips_bom(self, ops, tmp_path: Path):
+        target = tmp_path / "bom.py"
+        # Write raw bytes with a real UTF-8 BOM prefix.
+        target.write_bytes(self.BOM.encode("utf-8") + b"import os\nx = 1\n")
+        res = ops.read_file(str(target))
+        assert res.error is None, res.error
+        # Line 1 content must NOT carry the phantom U+FEFF.
+        first_line = res.content.split("\n", 1)[0]
+        assert self.BOM not in first_line
+        assert first_line.endswith("import os")
+
+    def test_read_raw_strips_bom(self, ops, tmp_path: Path):
+        target = tmp_path / "bom.txt"
+        target.write_bytes(self.BOM.encode("utf-8") + b"hello\nworld\n")
+        res = ops.read_file_raw(str(target))
+        assert res.error is None, res.error
+        assert not res.content.startswith(self.BOM)
+        assert res.content == "hello\nworld\n"
+
+    def test_write_preserves_bom(self, ops, tmp_path: Path):
+        # Existing file has a BOM; agent rewrites with BOM-less content.
+        target = tmp_path / "config.txt"
+        target.write_bytes(self.BOM.encode("utf-8") + b"old\n")
+        res = ops.write_file(str(target), "new content\n")
+        assert res.error is None, res.error
+        raw = target.read_bytes()
+        assert raw.startswith(self.BOM.encode("utf-8"))  # BOM restored
+        assert raw == self.BOM.encode("utf-8") + b"new content\n"
+
+    def test_write_no_bom_when_original_had_none(self, ops, tmp_path: Path):
+        target = tmp_path / "plain.txt"
+        target.write_text("old\n")
+        res = ops.write_file(str(target), "new\n")
+        assert res.error is None, res.error
+        assert not target.read_bytes().startswith(self.BOM.encode("utf-8"))
+
+    def test_write_does_not_double_bom(self, ops, tmp_path: Path):
+        # If content already carries a BOM and the file had one, don't add a
+        # second.
+        target = tmp_path / "config.txt"
+        target.write_bytes(self.BOM.encode("utf-8") + b"old\n")
+        res = ops.write_file(str(target), self.BOM + "new\n")
+        assert res.error is None, res.error
+        raw = target.read_bytes()
+        # exactly one BOM
+        assert raw == self.BOM.encode("utf-8") + b"new\n"
+
+    def test_patch_roundtrip_preserves_bom(self, ops, tmp_path: Path):
+        target = tmp_path / "edit.py"
+        target.write_bytes(self.BOM.encode("utf-8") + b"a = 1\nb = 2\nc = 3\n")
+        res = ops.patch_replace(str(target), "b = 2", "b = 22")
+        assert res.success, res.error
+        raw = target.read_bytes()
+        assert raw.startswith(self.BOM.encode("utf-8"))  # marker survived
+        assert raw == self.BOM.encode("utf-8") + b"a = 1\nb = 22\nc = 3\n"
+
+    def test_patch_matches_first_line_through_bom(self, ops, tmp_path: Path):
+        # The whole point: an edit targeting the BOM-prefixed first line
+        # must match cleanly (the matcher sees BOM-stripped content).
+        target = tmp_path / "mod.py"
+        target.write_bytes(self.BOM.encode("utf-8") + b"import os\nimport sys\n")
+        res = ops.patch_replace(str(target), "import os", "import os, json")
+        assert res.success, res.error
+        raw = target.read_bytes()
+        assert raw == self.BOM.encode("utf-8") + b"import os, json\nimport sys\n"
 
 
 if __name__ == "__main__":

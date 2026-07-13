@@ -1,9 +1,16 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
+import { sessionScopedModelArg } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SessionActiveItem, SessionActiveListResponse, SessionCloseResponse } from '../gatewayTypes.js'
+import type {
+  SessionActiveItem,
+  SessionActiveListResponse,
+  SessionCloseResponse,
+  SessionDeleteResponse,
+  SessionListItem,
+  SessionListResponse
+} from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -37,8 +44,59 @@ const ctrlChar = (letter: string) => String.fromCharCode(letter.charCodeAt(0) - 
 
 export const fixedSessionColumnStyle = () => ({ flexShrink: 0 })
 
-export const activeSessionCountLabel = (count: number) =>
-  `${count} live ${count === 1 ? 'session' : 'sessions'}`
+export const activeSessionCountLabel = (count: number) => `${count} live ${count === 1 ? 'session' : 'sessions'}`
+
+export const sessionsCountLabel = (liveCount: number, resumableCount: number) =>
+  `${liveCount} live · ${resumableCount} resumable`
+
+export type SessionRowKind = 'history' | 'live' | 'new'
+
+/**
+ * Map a flat row index into the merged Sessions list to its kind. Rows are
+ * ordered [new][live…][history…] — the "+ new" row is pinned first so it is
+ * always visible no matter how long the resumable history grows.
+ */
+export const sessionRowKindAt = (index: number, liveCount: number): SessionRowKind => {
+  if (index <= 0) {
+    return 'new'
+  }
+
+  return index - 1 < liveCount ? 'live' : 'history'
+}
+
+export const relativeSessionAge = (ts?: number) => {
+  if (!ts) {
+    return ''
+  }
+
+  const days = (Date.now() / 1000 - ts) / 86400
+
+  if (days < 1) {
+    return 'today'
+  }
+
+  if (days < 2) {
+    return 'yesterday'
+  }
+
+  return `${Math.floor(days)}d ago`
+}
+
+/** Drop already-live sessions from the resumable history list (dedupe by id). */
+export const resumableHistory = (history: readonly SessionListItem[], live: readonly SessionActiveItem[]) => {
+  const liveIds = new Set(live.map(s => s.id))
+
+  return history.filter(h => !liveIds.has(h.id))
+}
+
+export const resumeRowContextHintSegments: OrchestratorHintSegment[] = [
+  { role: 'label', text: 'Resumable:' },
+  { role: 'text', text: ' ' },
+  { role: 'hotkey', text: 'Enter' },
+  { role: 'text', text: ' resume · ' },
+  { role: 'hotkey', text: 'd' },
+  { role: 'text', text: ' delete' }
+]
 
 export type OrchestratorHintRole = 'hotkey' | 'label' | 'text'
 
@@ -147,18 +205,7 @@ export const closeFallbackAfterClose = (
 }
 
 export const draftModelArgFromPickerValue = (value: string) => {
-  const parts = value.trim().split(/\s+/).filter(Boolean)
-  const kept: string[] = []
-
-  for (const part of parts) {
-    if (part === TUI_SESSION_MODEL_FLAG || part === '--global') {
-      continue
-    }
-
-    kept.push(part)
-  }
-
-  return kept.join(' ')
+  return sessionScopedModelArg(value)
 }
 
 export const draftModelNameFromArg = (value: string) => {
@@ -170,6 +217,7 @@ export const draftModelNameFromArg = (value: string) => {
 
     if (part === '--provider') {
       i++
+
       continue
     }
 
@@ -239,10 +287,12 @@ export function ActiveSessionSwitcher({
   onClose,
   onNew,
   onNewPrompt,
+  onResume,
   onSelect,
   t
 }: ActiveSessionSwitcherProps) {
   const [items, setItems] = useState<SessionActiveItem[]>([])
+  const [history, setHistory] = useState<SessionListItem[]>([])
   const [err, setErr] = useState('')
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -250,22 +300,57 @@ export function ActiveSessionSwitcher({
   const [draftModel, setDraftModel] = useState('')
   const [pickingModel, setPickingModel] = useState(false)
   const [closingId, setClosingId] = useState('')
+  // When non-null, the user pressed `d` on this (history) session and we await
+  // a second `d` to confirm deletion. Tracked by session id (not row index) so
+  // the 1.5s live-status poll re-indexing rows can't redirect the delete to a
+  // different session. Any other key cancels the prompt.
+  const [confirmDelete, setConfirmDelete] = useState<null | string>(null)
+  const [deleting, setDeleting] = useState(false)
   const initialSelectionAppliedRef = useRef(false)
+  // Holds the RAW `session.list` results (pre-dedupe). The quiet 1.5s poll
+  // re-derives the resumable list from this against the latest live set, so a
+  // session that was hidden while live reappears in history once it closes —
+  // without re-querying the DB. Only refreshed on a full (includeHistory) load.
+  const rawHistoryRef = useRef<SessionListItem[]>([])
+  // Mirror the displayed lists so the async poll can re-anchor the selection to
+  // the *same* row (by session id) after live sessions appear/disappear, rather
+  // than keeping a now-stale flat index.
+  const itemsRef = useRef<SessionActiveItem[]>([])
+  const historyDisplayRef = useRef<SessionListItem[]>([])
   const { stdout } = useStdout()
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
   const promptColumns = Math.max(20, width - 11)
 
+  // Rows are [new][live…][history…]: the "+ new" row is pinned first (index 0,
+  // always rendered) and the live+history list is windowed below it. `total`
+  // is the count of selectable rows (incl. the new row).
+  const liveCount = items.length
+  const histCount = history.length
+  const listLen = liveCount + histCount
+  const total = listLen + 1
+  const rowKind = useCallback((index: number) => sessionRowKindAt(index, liveCount), [liveCount])
+
   const load = useCallback(
-    async (quiet = false) => {
+    // `quiet` skips the loading spinner (used by the live-status poll);
+    // `includeHistory` re-queries the resumable DB list (skipped on the 1.5s
+    // poll, which only needs fresh live-session status).
+    async (quiet = false, includeHistory = true) => {
       if (!quiet) {
         setLoading(true)
       }
 
       try {
-        const raw = await gw.request<SessionActiveListResponse>('session.active_list', {
-          current_session_id: currentSessionId
-        })
-        const r = asRpcResult<SessionActiveListResponse>(raw)
+        // Fetch independently (allSettled) so a failing session.list can't
+        // wipe the live-session list: live sessions still render and the
+        // resumable history degrades on its own.
+        const [liveRes, histRes] = await Promise.allSettled([
+          gw.request<SessionActiveListResponse>('session.active_list', {
+            current_session_id: currentSessionId
+          }),
+          includeHistory ? gw.request<SessionListResponse>('session.list', { limit: 200 }) : Promise.resolve(null)
+        ])
+
+        const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
 
         if (!r) {
           setErr('invalid response: session.active_list')
@@ -275,15 +360,63 @@ export function ActiveSessionSwitcher({
         }
 
         const next = r.sessions ?? []
+
+        // Surface a garbled/failed session.list rather than silently blanking
+        // the resumable section; keep the last good raw history so a transient
+        // failure doesn't wipe it.
+        let histError = ''
+
+        if (includeHistory) {
+          if (histRes.status === 'fulfilled') {
+            const parsedHist = asRpcResult<SessionListResponse>(histRes.value)
+
+            if (parsedHist) {
+              rawHistoryRef.current = parsedHist.sessions ?? []
+            } else {
+              histError = 'invalid response: session.list'
+            }
+          } else {
+            histError = 'could not load resumable sessions'
+          }
+        }
+
+        const hist = resumableHistory(rawHistoryRef.current, next)
         const initializeSelection = !initialSelectionAppliedRef.current
         initialSelectionAppliedRef.current = true
+        const maxSel = next.length + hist.length // == total - 1 (new row is index 0)
+
         setItems(next)
-        setSel(s =>
-          initializeSelection
-            ? clampOrchestratorSelection(currentSessionSelectionIndex(next, currentSessionId), next.length)
-            : clampOrchestratorSelection(s, next.length)
-        )
-        setErr('')
+        setHistory(hist)
+        // Re-anchor selection to the same row by identity (the live list can
+        // grow/shrink between polls, which would otherwise drift a flat index).
+        setSel(s => {
+          if (initializeSelection) {
+            // Land on the current live session (shifted +1 past the pinned new
+            // row); with no live sessions, start on the new row itself.
+            return next.length ? Math.min(currentSessionSelectionIndex(next, currentSessionId) + 1, maxSel) : 0
+          }
+
+          if (s <= 0) {
+            return 0 // "+ new" row
+          }
+
+          const prevItems = itemsRef.current
+          const prevHist = historyDisplayRef.current
+          const clamp = () => Math.max(0, Math.min(s, maxSel))
+
+          if (s - 1 < prevItems.length) {
+            const id = prevItems[s - 1]?.id
+            const i = id ? next.findIndex(x => x.id === id) : -1
+
+            return i >= 0 ? i + 1 : clamp()
+          }
+
+          const id = prevHist[s - 1 - prevItems.length]?.id
+          const i = id ? hist.findIndex(x => x.id === id) : -1
+
+          return i >= 0 ? 1 + next.length + i : clamp()
+        })
+        setErr(histError)
         setLoading(false)
 
         return next
@@ -298,8 +431,13 @@ export function ActiveSessionSwitcher({
   )
 
   useEffect(() => {
+    itemsRef.current = items
+    historyDisplayRef.current = history
+  }, [items, history])
+
+  useEffect(() => {
     void load()
-    const timer = setInterval(() => void load(true), 1500)
+    const timer = setInterval(() => void load(true, false), 1500)
 
     return () => clearInterval(timer)
   }, [load])
@@ -319,9 +457,9 @@ export function ActiveSessionSwitcher({
   )
 
   const closeSelected = useCallback(async () => {
-    const target = items[sel]
+    const target = items[sel - 1]
 
-    if (!target || isNewSessionRow(sel, items.length) || closingId) {
+    if (!target || rowKind(sel) !== 'live' || closingId) {
       return
     }
 
@@ -346,37 +484,94 @@ export function ActiveSessionSwitcher({
       } else if (fallback.action === 'new') {
         onNew()
       } else {
-        setSel(s => clampOrchestratorSelection(s, remaining.length))
+        setSel(s => Math.max(0, Math.min(s, remaining.length + history.length)))
       }
     } catch (e: unknown) {
       setErr(rpcErrorMessage(e))
     } finally {
       setClosingId('')
     }
-  }, [closingId, currentSessionId, items, load, onClose, onNew, onSelect, sel])
+  }, [closingId, currentSessionId, history.length, items, load, onClose, onNew, onSelect, rowKind, sel])
+
+  const performDelete = useCallback(
+    (id: string) => {
+      const target = history.find(h => h.id === id)
+
+      if (!target || deleting) {
+        return
+      }
+
+      setDeleting(true)
+      gw.request<SessionDeleteResponse>('session.delete', { session_id: target.id })
+        .then(raw => {
+          const r = asRpcResult<SessionDeleteResponse>(raw)
+
+          if (!r || r.deleted !== target.id) {
+            setErr('invalid response: session.delete')
+            setDeleting(false)
+
+            return
+          }
+
+          rawHistoryRef.current = rawHistoryRef.current.filter(h => h.id !== target.id)
+          setHistory(prev => prev.filter(h => h.id !== target.id))
+          setSel(s => Math.max(0, Math.min(s, items.length + history.length - 1)))
+          setErr('')
+          setDeleting(false)
+        })
+        .catch((e: unknown) => {
+          setErr(rpcErrorMessage(e))
+          setDeleting(false)
+        })
+    },
+    [deleting, gw, history, items.length]
+  )
 
   const handleRowClick = useCallback(
     (index: number) => (event: { stopImmediatePropagation?: () => void }) => {
       event.stopImmediatePropagation?.()
-      const action = orchestratorRowClickAction(index, items)
+      const kind = rowKind(index)
+      const clamped = Math.max(0, Math.min(index, total - 1))
 
-      if (action.action === 'activate') {
-        setSel(clampOrchestratorSelection(index, items.length))
-        onSelect(action.sessionId)
+      if (kind === 'live') {
+        setSel(clamped)
+        onSelect(items[index - 1]!.id)
 
         return
       }
 
-      setSel(newSessionRowIndex(items.length))
+      if (kind === 'history') {
+        setSel(clamped)
+        onResume(history[index - 1 - items.length]!.id)
+
+        return
+      }
+
+      setSel(0)
     },
-    [items, onSelect]
+    [history, items, onResume, onSelect, rowKind, total]
   )
 
-  const newSelected = isNewSessionRow(sel, items.length)
+  const selectedKind = rowKind(sel)
+  const newSelected = selectedKind === 'new'
   const draftHasText = Boolean(draft.trim())
 
   useInput((ch, key) => {
-    if (pickingModel) {
+    if (pickingModel || deleting) {
+      return
+    }
+
+    // Two-press history delete: once armed, only a second `d` deletes; any
+    // other key cancels the prompt (mirrors the standalone resume picker).
+    if (confirmDelete !== null) {
+      if (ch?.toLowerCase() === 'd') {
+        const id = confirmDelete
+        setConfirmDelete(null)
+        performDelete(id)
+      } else {
+        setConfirmDelete(null)
+      }
+
       return
     }
 
@@ -406,9 +601,17 @@ export function ActiveSessionSwitcher({
     }
 
     if (isCtrl('d')) {
-      if (!newSelected) {
+      if (selectedKind === 'live') {
         void closeSelected()
       }
+
+      return
+    }
+
+    // `d` arms deletion on a resumable history row. (On the New row `d` is
+    // captured by the prompt's TextInput, so it never reaches here.)
+    if (lower === 'd' && !key.ctrl && selectedKind === 'history') {
+      setConfirmDelete(history[sel - 1 - items.length]?.id ?? null)
 
       return
     }
@@ -418,11 +621,11 @@ export function ActiveSessionSwitcher({
     }
 
     if (key.upArrow && sel > 0) {
-      return setSel(s => clampOrchestratorSelection(s - 1, items.length))
+      return setSel(s => Math.max(0, s - 1))
     }
 
-    if (key.downArrow && sel < newSessionRowIndex(items.length)) {
-      return setSel(s => clampOrchestratorSelection(s + 1, items.length))
+    if (key.downArrow && sel < total - 1) {
+      return setSel(s => Math.min(total - 1, s + 1))
     }
 
     if (key.return) {
@@ -434,8 +637,12 @@ export function ActiveSessionSwitcher({
         return
       }
 
-      if (items[sel]) {
-        return onSelect(items[sel]!.id)
+      if (selectedKind === 'live' && items[sel - 1]) {
+        return onSelect(items[sel - 1]!.id)
+      }
+
+      if (selectedKind === 'history' && history[sel - 1 - items.length]) {
+        return onResume(history[sel - 1 - items.length]!.id)
       }
     }
   })
@@ -457,40 +664,91 @@ export function ActiveSessionSwitcher({
   }
 
   if (loading) {
-    return <Text color={t.color.muted}>loading session orchestrator…</Text>
+    return <Text color={t.color.muted}>loading sessions…</Text>
   }
 
-  const totalRows = items.length + 1
-  const offset = windowOffset(totalRows, sel, VISIBLE)
-  const visibleRows = orchestratorVisibleRowIndexes(items.length, sel, VISIBLE)
+  // The "+ new" row (sel 0) is pinned at the top so it's always visible; the
+  // live + history list is windowed beneath it.
+  const listSel = sel > 0 ? sel - 1 : 0
+  const offset = windowOffset(listLen, listSel, VISIBLE)
+  const visibleCount = Math.max(0, Math.min(VISIBLE, listLen - offset))
+  const visibleRows = Array.from({ length: visibleCount }, (_, k) => offset + k + 1)
+
+  const newSelectedRow = sel === 0
+  const newRowStyle = newSelectedRow ? selectedSessionRowStyle(t) : null
+  const newRowTextColor = newRowStyle?.color
+  const newRowMarkerColor = newSessionMarkerColor(t, newSelectedRow)
+  const promptTitle = draftTitleFromPrompt(draft) || 'Start a new live session'
 
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent}>
-        Session Orchestrator
+        Sessions
       </Text>
-      <Text color={t.color.muted}>{activeSessionCountLabel(items.length)}</Text>
+      <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
 
       {err && <Text color={t.color.label}>error: {err}</Text>}
-      {!items.length && (
-        <Text color={t.color.muted}>no live sessions — closed TUIs only leave resumable transcripts</Text>
-      )}
+
+      <Box backgroundColor={newRowStyle?.backgroundColor} flexDirection="row" onClick={handleRowClick(0)} width="100%">
+        <Text bold={newSelectedRow} color={newRowTextColor ?? t.color.muted}>
+          {newSelectedRow ? '▸ ' : '  '}
+        </Text>
+
+        <Box {...fixedSessionColumnStyle()} width={5}>
+          <Text bold={newSelectedRow} color={newRowMarkerColor}>
+            {'+'.padStart(2)}
+          </Text>
+        </Box>
+
+        <Box {...fixedSessionColumnStyle()} width={11}>
+          <Text bold={newSelectedRow} color={newRowMarkerColor} wrap="truncate-end">
+            new
+          </Text>
+        </Box>
+
+        <Box {...fixedSessionColumnStyle()} width={11}>
+          <Text color={newRowTextColor ?? t.color.muted} wrap="truncate-end">
+            ✎ draft
+          </Text>
+        </Box>
+
+        <Box {...fixedSessionColumnStyle()} width={18}>
+          <Text color={newRowTextColor ?? t.color.muted} wrap="truncate-end">
+            {draftModelDisplayLabel(draftModel)}
+          </Text>
+        </Box>
+
+        <Box flexGrow={1} flexShrink={1} minWidth={0}>
+          <Text bold={newSelectedRow} color={newRowTextColor ?? t.color.muted} wrap="truncate-end">
+            {promptTitle}
+          </Text>
+        </Box>
+      </Box>
+
       {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
+      {!listLen && <Text color={t.color.muted}>no other sessions — Enter on +new to start one</Text>}
 
       {visibleRows.map(i => {
         const selected = sel === i
         const selectedStyle = selected ? selectedSessionRowStyle(t) : null
         const rowTextColor = selectedStyle?.color
+        const kind = rowKind(i)
 
-        if (isNewSessionRow(i, items.length)) {
-          const promptTitle = draftTitleFromPrompt(draft) || 'Start a new live session'
-          const markerColor = newSessionMarkerColor(t, selected)
+        if (kind === 'history') {
+          const h = history[i - 1 - items.length]!
+          const pendingDelete = confirmDelete === h.id
+
+          const title = pendingDelete
+            ? 'press d again to delete'
+            : deleting && selected
+              ? 'deleting…'
+              : h.title || h.preview || '(untitled)'
 
           return (
             <Box
               backgroundColor={selectedStyle?.backgroundColor}
               flexDirection="row"
-              key="new-session"
+              key={h.id}
               onClick={handleRowClick(i)}
               width="100%"
             >
@@ -499,39 +757,43 @@ export function ActiveSessionSwitcher({
               </Text>
 
               <Box {...fixedSessionColumnStyle()} width={5}>
-                <Text bold={selected} color={markerColor}>
-                  +
+                <Text bold={selected} color={rowTextColor ?? t.color.muted}>
+                  {String(i).padStart(2)}.
                 </Text>
               </Box>
 
               <Box {...fixedSessionColumnStyle()} width={11}>
-                <Text bold={selected} color={markerColor} wrap="truncate-end">
-                  new
+                <Text bold={selected} color={rowTextColor ?? t.color.muted} wrap="truncate-end">
+                  {h.id}
                 </Text>
               </Box>
 
               <Box {...fixedSessionColumnStyle()} width={11}>
                 <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  ✎ draft
+                  {relativeSessionAge(h.started_at)}
                 </Text>
               </Box>
 
               <Box {...fixedSessionColumnStyle()} width={18}>
                 <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  {draftModelDisplayLabel(draftModel)}
+                  {h.message_count} msgs
                 </Text>
               </Box>
 
               <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                <Text bold={selected} color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  {promptTitle}
+                <Text
+                  bold={selected}
+                  color={pendingDelete ? t.color.label : (rowTextColor ?? t.color.muted)}
+                  wrap="truncate-end"
+                >
+                  {title}
                 </Text>
               </Box>
             </Box>
           )
         }
 
-        const s = items[i]!
+        const s = items[i - 1]!
         const status = s.status ?? 'idle'
         const current = s.current || s.id === currentSessionId
         const title = closingId === s.id ? 'closing…' : s.title || s.preview || '(untitled)'
@@ -550,7 +812,7 @@ export function ActiveSessionSwitcher({
 
             <Box {...fixedSessionColumnStyle()} width={5}>
               <Text bold={selected} color={rowTextColor ?? t.color.muted}>
-                {String(i + 1).padStart(2)}.
+                {String(i).padStart(2)}.
               </Text>
             </Box>
 
@@ -591,7 +853,7 @@ export function ActiveSessionSwitcher({
         )
       })}
 
-      {offset + VISIBLE < totalRows && <Text color={t.color.muted}> ↓ {totalRows - offset - VISIBLE} more</Text>}
+      {offset + VISIBLE < listLen && <Text color={t.color.muted}> ↓ {listLen - offset - VISIBLE} more</Text>}
 
       {newSelected ? (
         <>
@@ -605,8 +867,13 @@ export function ActiveSessionSwitcher({
           </Text>
         </>
       ) : (
-        <Box marginTop={1} flexDirection="column">
-          <OrchestratorHintText segments={orchestratorContextHintSegments(false)} t={t} />
+        <Box flexDirection="column" marginTop={1}>
+          <OrchestratorHintText
+            segments={
+              selectedKind === 'history' ? resumeRowContextHintSegments : orchestratorContextHintSegments(false)
+            }
+            t={t}
+          />
           <Text color={t.color.muted} wrap="truncate-end">
             Select <Text color={newSessionMarkerColor(t, false)}>+new</Text> to type a prompt
           </Text>
@@ -630,6 +897,7 @@ interface ActiveSessionSwitcherProps {
   onClose: (id: string) => Promise<null | SessionCloseResponse>
   onNew: () => void
   onNewPrompt: (prompt: string, modelArg?: string) => void
+  onResume: (id: string) => void
   onSelect: (id: string) => void
   t: Theme
 }

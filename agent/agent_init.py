@@ -1311,6 +1311,14 @@ def init_agent(
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db
     agent._parent_session_id = parent_session_id
+    # A close flush and the worker's turn-start flush can overlap. The durable
+    # marker is attached to each in-memory message dict, so its test-and-append
+    # sequence must be serialized per agent rather than relying on SQLite alone.
+    agent._session_persist_lock = threading.RLock()
+    # CLI retains its just-accepted user dict until turn setup can reuse it.
+    # This preserves the message-local durable marker if close persistence wins
+    # the race before the agent's normal early turn flush.
+    agent._pending_cli_user_message = None
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()
     # Most agents own their session row and should finalize it on close().

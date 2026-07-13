@@ -205,10 +205,12 @@ def _real_agent(db, session_id, session_messages):
     agent._flushed_db_message_ids = set()
     agent._flushed_db_message_session_id = None
     agent._persist_disabled = False
-    agent._cached_system_prompt = None
+    agent._cached_system_prompt = "test system prompt"
     agent._session_init_model_config = None
     agent._parent_session_id = None
     agent._session_json_enabled = False
+    agent._pending_cli_user_message = None
+    agent._session_persist_lock = threading.RLock()
     return agent
 
 
@@ -315,11 +317,26 @@ def test_cli_close_preflush_resumed_prefix_is_not_duplicated(tmp_path, monkeypat
     cli.conversation_history = list(loaded) + [{"role": "user", "content": "ui prompt"}]
     cli.session_id = session_id
     cli.agent = agent
-    cli._persist_active_session_before_close()
+    close_started = threading.Event()
+    close_finished = threading.Event()
+
+    def _close_while_worker_flushes():
+        close_started.set()
+        cli._persist_active_session_before_close()
+        close_finished.set()
+
+    close_worker = threading.Thread(target=_close_while_worker_flushes, daemon=True)
+    close_worker.start()
+    assert close_started.wait(timeout=5)
+    # The per-agent persistence lock holds the close flush until the normal
+    # turn-start write has stamped its durable markers.
+    assert not close_finished.wait(timeout=0.1)
 
     release_flush.set()
     worker.join(timeout=5)
+    close_worker.join(timeout=5)
     assert not worker.is_alive()
+    assert not close_worker.is_alive()
 
     stored = db.get_messages_as_conversation(session_id)
     assert [m["content"] for m in stored] == [
@@ -360,4 +377,151 @@ def test_cli_close_preserves_unflushed_tail_after_prior_prefix_flush(tmp_path, m
         "old prompt",
         "old answer",
         "new tail",
+    ]
+
+
+def test_cli_close_hands_staged_user_marker_to_turn_start(tmp_path, monkeypatch):
+    """A close before turn setup does not duplicate the CLI-staged user row."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    import cli as cli_mod
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "cli-close-staged-user"
+    db.create_session(session_id=session_id, source="cli")
+    prefix = [
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    agent = _real_agent(db, session_id, prefix)
+    agent._flush_messages_to_session_db(prefix, [])
+    staged = {"role": "user", "content": "new prompt"}
+    # `chat()` copies a completed agent transcript before it stages the next
+    # user input, so close initially sees the prior agent snapshot only.
+    cli_history = list(prefix) + [staged]
+    agent._pending_cli_user_message = staged
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = cli_history
+    cli.session_id = session_id
+    cli.agent = agent
+
+    # Close appends only the pending UI dict, while treating the durable prefix
+    # as its baseline. Turn setup then reuses the marked dict without re-writing.
+    cli._persist_active_session_before_close()
+    assert staged["_db_persisted"] is True
+
+    worker_messages = list(prefix) + [staged]
+    agent._persist_session(worker_messages, prefix)
+
+    stored = db.get_messages_as_conversation(session_id)
+    assert [m["content"] for m in stored] == [
+        "old prompt",
+        "old answer",
+        "new prompt",
+    ]
+
+
+def test_cli_chat_staging_does_not_mutate_live_agent_snapshot():
+    """The next CLI input must be outside the prior live agent transcript."""
+    import cli as cli_mod
+
+    previous = [{"role": "assistant", "content": "done"}]
+    agent = MagicMock()
+    agent._session_messages = previous
+    agent._pending_cli_user_message = None
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.agent = agent
+    cli.conversation_history = previous
+
+    # Model the narrow staging operation in ``chat`` without starting a provider.
+    if cli.conversation_history is agent._session_messages:
+        cli.conversation_history = list(cli.conversation_history)
+    staged = {"role": "user", "content": "next"}
+    agent._pending_cli_user_message = staged
+    cli.conversation_history.append(staged)
+
+    assert agent._session_messages == [{"role": "assistant", "content": "done"}]
+    assert cli.conversation_history == [
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": "next"},
+    ]
+
+
+def test_cli_close_persists_pending_user_when_agent_snapshot_is_empty(tmp_path, monkeypatch):
+    """Close before worker startup persists only the CLI-staged user input."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    import cli as cli_mod
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "cli-close-before-worker"
+    db.create_session(session_id=session_id, source="cli")
+    prefix = [
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    for message in prefix:
+        db.append_message(
+            session_id=session_id,
+            role=message["role"],
+            content=message["content"],
+        )
+
+    agent = _real_agent(db, session_id, [])
+    staged = {"role": "user", "content": "new prompt"}
+    agent._pending_cli_user_message = staged
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = list(prefix) + [staged]
+    cli.session_id = session_id
+    cli.agent = agent
+
+    cli._persist_active_session_before_close()
+
+    stored = db.get_messages_as_conversation(session_id)
+    assert [m["content"] for m in stored] == [
+        "old prompt",
+        "old answer",
+        "new prompt",
+    ]
+    assert staged["_db_persisted"] is True
+
+
+def test_cli_close_builds_prompt_before_creating_first_session_row(tmp_path, monkeypatch):
+    """First-turn close persistence must not leave a NULL prompt snapshot."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    import agent.conversation_loop as loop_mod
+    import cli as cli_mod
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "cli-close-first-turn"
+    agent = _real_agent(db, session_id, [])
+    agent._session_db_created = False
+    agent._cached_system_prompt = None
+    staged = {"role": "user", "content": "first prompt"}
+    agent._pending_cli_user_message = staged
+
+    def _build_prompt(target, _system_message, _history):
+        target._cached_system_prompt = "close-built-system-prompt"
+
+    monkeypatch.setattr(loop_mod, "_restore_or_build_system_prompt", _build_prompt)
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = [staged]
+    cli.session_id = session_id
+    cli.agent = agent
+
+    cli._persist_active_session_before_close()
+
+    session = db.get_session(session_id)
+    assert session is not None
+    assert session["system_prompt"] == "close-built-system-prompt"
+    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
+        "first prompt"
     ]

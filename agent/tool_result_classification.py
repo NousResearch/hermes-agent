@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 
-FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})
+FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch", "execute_code"})
 
 
 def file_mutation_result_landed(tool_name: str, result: Any) -> bool:
@@ -23,4 +23,12 @@ def file_mutation_result_landed(tool_name: str, result: Any) -> bool:
         return "bytes_written" in data
     if tool_name == "patch":
         return data.get("success") is True
+    if tool_name == "execute_code":
+        # execute_code returns {"status": "success", "output": "..."} on success.
+        # The code may or may not have written files — landed means the script
+        # itself ran without error, not that a specific file was written.
+        # Whether a file was actually written is determined by path extraction
+        # in _extract_file_mutation_targets; if no paths are extracted, the
+        # mutation set stays empty (correct behavior).
+        return data.get("status") == "success"
     return False

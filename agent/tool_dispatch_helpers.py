@@ -236,18 +236,23 @@ def _append_subdir_hint_to_multimodal(value: Dict[str, Any], hint: str) -> None:
 
 
 def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List[str]:
-    """Return the file paths a ``write_file`` or ``patch`` call is targeting.
+    """Return the file paths a ``write_file`` / ``patch`` / ``execute_code`` call is targeting.
 
     For ``write_file`` and ``patch`` in replace mode this is just ``args["path"]``.
     For ``patch`` in V4A patch mode we parse the patch content for
     ``*** Update File:`` / ``*** Add File:`` / ``*** Delete File:`` headers so
     the verifier can track each file in a multi-file patch separately.
+
+    For ``execute_code`` we regex-scan the ``code`` arg for ``write_file(path=...)``
+    and ``terminal(...)`` calls that include shell redirects to file paths.
     """
     if tool_name not in _FILE_MUTATING_TOOLS:
         return []
     if tool_name == "write_file":
         p = args.get("path")
         return [str(p)] if p else []
+    if tool_name == "execute_code":
+        return _extract_execute_code_file_paths(args)
     # tool_name == "patch"
     mode = args.get("mode") or "replace"
     if mode == "replace":
@@ -281,6 +286,46 @@ def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List
     return []
 
 
+# Regex patterns for extracting file paths from execute_code source.
+# Matches: write_file(path="/abs/path"), write_file(path="/abs/path", ...),
+# hermes_tools write_file calls, and shell redirects (> /path).
+_EXECUTE_CODE_WRITE_FILE_RE = re.compile(
+    r'write_file\s*\(\s*(?:path\s*=\s*)?["\']([^"\']+)["\']',
+)
+_EXECUTE_CODE_REDIRECT_RE = re.compile(
+    r'(?:^|\s|;|&&|\|\|)>[>\s]*([/~][^\s\'";|&<>]+)',
+    re.MULTILINE,
+)
+
+
+def _extract_execute_code_file_paths(args: Dict[str, Any]) -> List[str]:
+    """Extract file paths that an execute_code script writes to.
+
+    Scans the ``code`` arg for:
+    - ``write_file(path="...")`` calls (hermes_tools.write_file or bare write_file)
+    - Shell redirects in terminal() calls (``> /path/to/file``)
+
+    Returns an empty list when no file writes are detected — the script may
+    do computation-only work (no mutation), which is correct: the mutation
+    set stays empty and pre_verify doesn't fire for non-mutating scripts.
+    """
+    code = args.get("code") or ""
+    if not isinstance(code, str) or not code:
+        return []
+    paths: List[str] = []
+    # write_file(path="...") calls
+    for m in _EXECUTE_CODE_WRITE_FILE_RE.finditer(code):
+        p = m.group(1).strip()
+        if p:
+            paths.append(p)
+    # Shell redirects > /path or >> /path inside terminal() strings
+    for m in _EXECUTE_CODE_REDIRECT_RE.finditer(code):
+        p = m.group(1).strip().rstrip("'\"")
+        if p:
+            paths.append(p)
+    return paths
+
+
 def _extract_landed_file_mutation_paths(
     tool_name: str,
     args: Dict[str, Any],
@@ -296,6 +341,13 @@ def _extract_landed_file_mutation_paths(
         return targets
     if not isinstance(data, dict):
         return targets
+
+    # execute_code: no structured path info in result, trust the extraction
+    # from the code arg. Only return targets if the script succeeded.
+    if tool_name == "execute_code":
+        if data.get("status") == "success":
+            return targets
+        return []  # script failed — no files landed
 
     files = data.get("files_modified")
     if isinstance(files, list):

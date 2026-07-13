@@ -427,10 +427,10 @@ class TestVerifierEnabled:
 
 
 def test_file_mutating_tools_set_shape():
-    """write_file + patch are the only tools the verifier tracks.
+    """write_file, patch, and execute_code are the tools the verifier tracks.
 
-    Guard rail: if someone adds a third file-mutating tool (e.g. a new
-    ``append_file``), they should also audit whether the verifier should
-    track it.  This test fails loudly on unilateral additions.
+    Guard rail: if someone adds another file-mutating tool, they should also
+    audit whether the verifier should track it.  This test fails loudly on
+    unilateral additions.
     """
-    assert _FILE_MUTATING_TOOLS == frozenset({"write_file", "patch"})
+    assert _FILE_MUTATING_TOOLS == frozenset({"write_file", "patch", "execute_code"})

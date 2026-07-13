@@ -15,7 +15,6 @@ import {
   useDeferredValue,
   useEffect,
   useMemo,
-  useRef,
   useState
 } from 'react'
 
@@ -588,12 +587,9 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
-  // Render through the same path as the assistant answer (DeferStreamingText →
-  // surface). The previous SmoothStreamingText/useSmoothReveal wrapper stalled
-  // at empty for reasoning: the reasoning part stays isRunning for the whole
-  // message while the answer streams and thrashes re-renders, and the reveal
-  // never advanced past 0 — so the Thinking widget rendered blank even though
-  // the part carried text. Chunked (per-delta) reveal matches the answer.
+  // Same path as the assistant answer. A reasoning-only smoothing wrapper used
+  // to sit here but stalled its char-reveal at empty (the part stays running
+  // the whole message), blanking the Thinking widget.
   return (
     <TextMessagePartProvider isRunning={isRunning} text={text}>
       <DeferStreamingText>

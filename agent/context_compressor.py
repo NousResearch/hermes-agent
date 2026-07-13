@@ -30,6 +30,7 @@ from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
     estimate_messages_tokens_rough,
+    invalidate_endpoint_model_metadata_cache,
 )
 from agent.redact import redact_sensitive_text
 
@@ -746,6 +747,37 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
+        # Re-probe context length in case the provider-side model configuration
+        # changed (e.g. LM Studio context length was adjusted).  The gateway
+        # path creates a fresh ContextCompressor on /new; the CLI path reuses
+        # the existing compressor and must explicitly re-probe (#31043).
+        try:
+            # LM Studio's runtime context length is transient, and endpoint
+            # model metadata is cached briefly.  Drop that cache before probing
+            # so /new reflects a just-reloaded model instead of a 5-minute-old
+            # /api/v1/models response.
+            if (self.provider or "").lower() == "lmstudio" and self.base_url:
+                invalidate_endpoint_model_metadata_cache(self.base_url)
+            new_ctx_len = get_model_context_length(
+                self.model, base_url=self.base_url, api_key=self.api_key,
+                config_context_length=self._config_context_length,
+                provider=self.provider,
+            )
+        except Exception:
+            new_ctx_len = None
+
+        # Only adopt the probed value when it *increases* the window — a
+        # probe-down (e.g. endpoint stopped advertising context_length, or
+        # returned a smaller value) must not shrink the resolved budget that
+        # was established at agent initialization.  This preserves the old
+        # value instead of overwriting it with a transient lower one. (#31492)
+        if new_ctx_len is not None and new_ctx_len > self.context_length:
+            self.update_model(
+                self.model, new_ctx_len,
+                base_url=self.base_url, api_key=self.api_key,
+                provider=self.provider, api_mode=self.api_mode,
+            )
+
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Clear all per-session compaction state at a real session boundary.
 
@@ -1073,6 +1105,13 @@ class ContextCompressor(ContextEngine):
         # When False (default = historical behavior), insert a
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
+
+        # Preserve the resolved config override used at agent initialization.
+        # get_model_context_length() gives config_context_length precedence
+        # over any probe, so on_session_reset() must re-pass it; otherwise /new
+        # can replace an explicit model.context_length or custom-provider
+        # override with transient endpoint metadata. (#31043, #31492)
+        self._config_context_length = config_context_length
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,

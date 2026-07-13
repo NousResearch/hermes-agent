@@ -896,6 +896,15 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         return {}
 
 
+def invalidate_endpoint_model_metadata_cache(base_url: str) -> None:
+    """Drop cached live model metadata for an OpenAI-compatible endpoint."""
+    normalized = _normalize_base_url(base_url)
+    if not normalized:
+        return
+    _endpoint_model_metadata_cache.pop(normalized, None)
+    _endpoint_model_metadata_cache_time.pop(normalized, None)
+
+
 def fetch_endpoint_model_metadata(
     base_url: str,
     api_key: str = "",

@@ -25,6 +25,36 @@ class TestGenerateTitle:
             title = generate_title("help me fix this import", "Sure, let me check...")
             assert title == "Debugging Python Import Errors"
 
+    def test_salvages_unquoted_meta_title(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "The conversation is about Kubernetes pod debugging"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("my pod keeps crashing", "Let me look...")
+            assert title == "Kubernetes pod debugging"
+
+    def test_extracts_quoted_meta_title(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = 'The conversation is about "Kubernetes pod debugging"'
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("my pod keeps crashing", "Let me look...")
+            assert title == "Kubernetes pod debugging"
+
+    def test_uses_reasoning_when_content_is_empty(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = None
+        mock_response.choices[0].message.reasoning = "Redis deployment troubleshooting"
+        mock_response.choices[0].message.reasoning_content = None
+        mock_response.choices[0].message.reasoning_details = None
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("redis won't start", "Let's debug it")
+            assert title == "Redis deployment troubleshooting"
+
     def test_default_prompt_matches_user_language(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

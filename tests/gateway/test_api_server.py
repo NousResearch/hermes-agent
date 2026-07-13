@@ -4375,3 +4375,80 @@ class TestSessionDbOffEventLoop:
             hermes_state.SessionDB = original_class
             auth_adapter._session_db = None
             auth_adapter._session_db_lock = None
+
+
+# ---------------------------------------------------------------------------
+# _run_agent auto-title behavior
+# ---------------------------------------------------------------------------
+
+
+class TestRunAgentAutoTitle:
+    @pytest.mark.asyncio
+    async def test_triggers_auto_title_on_success(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        agent = MagicMock()
+        agent.session_id = "sess-1"
+        agent.session_prompt_tokens = 11
+        agent.session_completion_tokens = 7
+        agent.session_total_tokens = 18
+        agent.run_conversation.return_value = {
+            "final_response": "Hello there",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hello there"},
+            ],
+        }
+
+        with (
+            patch.object(adapter, "_create_agent", return_value=agent),
+            patch.object(adapter, "_ensure_session_db", return_value="db"),
+            patch("agent.title_generator.maybe_auto_title") as maybe_auto_title,
+        ):
+            result, usage = await adapter._run_agent(
+                user_message="Hello",
+                conversation_history=[{"role": "user", "content": "Hello"}],
+            )
+
+        assert result["final_response"] == "Hello there"
+        assert usage["total_tokens"] == 18
+        maybe_auto_title.assert_called_once_with(
+            "db",
+            "sess-1",
+            "Hello",
+            "Hello there",
+            [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hello there"},
+            ],
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_auto_title_for_failed_results(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        agent = MagicMock()
+        agent.session_id = "sess-2"
+        agent.session_prompt_tokens = 11
+        agent.session_completion_tokens = 7
+        agent.session_total_tokens = 18
+        agent.run_conversation.return_value = {
+            "final_response": "",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": ""},
+            ],
+            "failed": True,
+        }
+
+        with (
+            patch.object(adapter, "_create_agent", return_value=agent),
+            patch.object(adapter, "_ensure_session_db", return_value="db"),
+            patch("agent.title_generator.maybe_auto_title") as maybe_auto_title,
+        ):
+            result, _usage = await adapter._run_agent(
+                user_message="Hello",
+                conversation_history=[{"role": "user", "content": "Hello"}],
+            )
+
+        assert result.get("failed")
+        maybe_auto_title.assert_not_called()
+

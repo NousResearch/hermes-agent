@@ -4693,6 +4693,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     _eff_sid = getattr(agent, "session_id", session_id)
                     if isinstance(_eff_sid, str) and _eff_sid:
                         result["session_id"] = _eff_sid
+                    # Auto-generate session title after first successful exchange
+                    final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    if final_response and not result.get("failed"):
+                        try:
+                            from agent.title_generator import maybe_auto_title
+                            maybe_auto_title(
+                                self._ensure_session_db(),
+                                _eff_sid or session_id,
+                                user_message,
+                                final_response,
+                                result.get("messages", conversation_history) if isinstance(result, dict) else conversation_history,
+                            )
+                        except Exception:
+                            pass
                     return result, usage
                 finally:
                     clear_session_vars(tokens)
@@ -5047,6 +5061,19 @@ class APIServerAdapter(BasePlatformAdapter):
                         usage=usage,
                         last_event="run.completed",
                     )
+                    # Auto-generate session title after first successful exchange
+                    if final_response and isinstance(result, dict) and not result.get("failed"):
+                        try:
+                            from agent.title_generator import maybe_auto_title
+                            maybe_auto_title(
+                                self._ensure_session_db(),
+                                session_id,
+                                user_message,
+                                final_response,
+                                result.get("messages", conversation_history) if isinstance(result, dict) else conversation_history,
+                            )
+                        except Exception:
+                            pass
             except asyncio.CancelledError:
                 self._set_run_status(
                     run_id,

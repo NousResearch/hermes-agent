@@ -208,8 +208,8 @@
       "gatekeeperAssess": false,
       "hardenedRuntime": true,
       "target": [
-        "dmg",
-        "zip"
+        { "target": "dmg", "arch": ["universal"] },
+        { "target": "zip", "arch": ["universal"] }
       ]
     },
     "dmg": {

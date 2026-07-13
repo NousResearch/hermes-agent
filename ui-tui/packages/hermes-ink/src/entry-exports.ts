@@ -26,6 +26,24 @@ export { default as measureElement } from './ink/measure-element.js'
 export { scrollFastPathStats, type ScrollFastPathStats } from './ink/render-node-to-output.js'
 export { createRoot, forceRedraw, default as render, renderSync } from './ink/root.js'
 export { stringWidth } from './ink/stringWidth.js'
-export { wrapAnsi } from './ink/wrapAnsi.js'
 export { isXtermJs } from './ink/terminal.js'
-export { default as TextInput, UncontrolledTextInput } from 'ink-text-input'
+export type { MouseTrackingMode } from './ink/termio/dec.js'
+export { wrapAnsi } from './ink/wrapAnsi.js'
+
+// NOTE: Do not re-export from 'ink-text-input' here.
+//
+// 'ink-text-input' depends on the npm 'ink' package; pulling it in from
+// this re-export drags an entire second copy of ink (and its async
+// top-level init chain) into any caller that bundles `@hermes/ink` from
+// source. esbuild's `__esm` helper then deadlocks on the circular
+// async init between the two ink graphs — the dashboard TUI bundle
+// stalls at startup with only 141 bytes of ANSI reset output, blank
+// screen forever (#31227).
+//
+// Consumers that actually want the upstream ink-text-input widget must
+// import it via the dedicated subpath:
+//
+//     import TextInput from '@hermes/ink/text-input'
+//
+// which still resolves through this package's `./text-input` export,
+// just outside the entry-exports surface that gets inlined by callers.

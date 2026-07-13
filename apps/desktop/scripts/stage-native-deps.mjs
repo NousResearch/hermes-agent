@@ -13,6 +13,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -115,6 +116,7 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
       }
       if (entry.name === 'spawn-helper') {
         cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        chmodSync(join(destPrebuild, entry.name), 0o775)
       }
     }
   } else {

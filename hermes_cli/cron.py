@@ -43,9 +43,33 @@ def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None)
 
 
 def _cron_api(**kwargs):
-    from tools.cronjob_tools import cronjob as cronjob_tool
+    from tools.cronjob_tools import _resolve_model_override, cronjob as cronjob_tool
+
+    model_override = kwargs.get("model")
+    if isinstance(model_override, dict):
+        provider, model = _resolve_model_override(model_override)
+        kwargs["provider"] = provider
+        kwargs["model"] = model
 
     return json.loads(cronjob_tool(**kwargs))
+
+
+def _model_override_from_args(args):
+    """Build the cron tool's model object without collapsing edit tri-state."""
+    provider = str(getattr(args, "provider", None) or "").strip() or None
+    model = str(getattr(args, "model", None) or "").strip() or None
+    if getattr(args, "no_model", False) and provider:
+        print(color("--provider cannot be combined with --no-model", Colors.RED))
+        return False, None
+    if provider and not model:
+        print(color("--provider requires --model", Colors.RED))
+        return False, None
+    if not model:
+        return True, None
+    override = {"model": model}
+    if provider:
+        override["provider"] = provider
+    return True, override
 
 
 def _active_cron_provider_name() -> str:
@@ -298,6 +322,10 @@ def cron_create(args):
     # raises GatewayLifecycleBlocked, the `cronjob` tool wrapper catches it and
     # returns it as result["error"], and the `if not result.get("success")`
     # branch below prints it in red and exits 1 — same UX as before.
+    valid_model, model_override = _model_override_from_args(args)
+    if not valid_model:
+        return 1
+
     result = _cron_api(
         action="create",
         schedule=args.schedule,
@@ -311,6 +339,7 @@ def cron_create(args):
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", False) or None,
         attach_to_session=getattr(args, "attach_to_session", False) or None,
+        model=model_override,
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -334,6 +363,10 @@ def cron_create(args):
 
 def cron_edit(args):
     from cron.jobs import AmbiguousJobReference, resolve_job_ref
+
+    valid_model, model_override = _model_override_from_args(args)
+    if not valid_model:
+        return 1
 
     try:
         job = resolve_job_ref(args.job_id)
@@ -362,6 +395,7 @@ def cron_edit(args):
             if skill not in final_skills:
                 final_skills.append(skill)
 
+    clear_model = getattr(args, "no_model", False)
     result = _cron_api(
         action="update",
         job_id=args.job_id,
@@ -375,6 +409,9 @@ def cron_edit(args):
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", None),
         attach_to_session=getattr(args, "attach_to_session", None),
+        model="" if clear_model else model_override,
+        provider="" if clear_model else None,
+        base_url="" if clear_model else None,
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))

@@ -264,6 +264,27 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_registry_dispatch_forwards_attach_to_session(self):
+        from cron.jobs import get_job
+        from tools.registry import registry
+
+        raw = registry.dispatch(
+            "cronjob",
+            {
+                "action": "create",
+                "prompt": "Send a continuable briefing",
+                "schedule": "every 1h",
+                "attach_to_session": True,
+            },
+        )
+        assert isinstance(raw, str)
+        created = json.loads(raw)
+
+        assert created["success"] is True
+        job = get_job(created["job_id"])
+        assert job is not None
+        assert job["attach_to_session"] is True
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

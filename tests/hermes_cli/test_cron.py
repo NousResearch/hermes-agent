@@ -151,6 +151,150 @@ class TestCronCommandLifecycle:
         )
         assert get_job(job["id"])["attach_to_session"] is False
 
+    def test_create_and_edit_model_override(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        cron_command(
+            SimpleNamespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Generate a deterministic briefing",
+                provider="openrouter",
+                model="anthropic/claude-sonnet-4",
+            )
+        )
+        job = list_jobs()[0]
+        assert job["provider"] == "openrouter"
+        assert job["model"] == "anthropic/claude-sonnet-4"
+
+        cron_command(
+            SimpleNamespace(
+                cron_command="edit",
+                job_id=job["id"],
+                name="Preserve pinned inference",
+            )
+        )
+        preserved = get_job(job["id"])
+        assert preserved["provider"] == "openrouter"
+        assert preserved["model"] == "anthropic/claude-sonnet-4"
+
+        cron_command(
+            SimpleNamespace(
+                cron_command="edit",
+                job_id=job["id"],
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+                no_model=False,
+            )
+        )
+        selected = get_job(job["id"])
+        assert selected["provider"] == "anthropic"
+        assert selected["model"] == "claude-sonnet-4-6"
+
+        cron_command(
+            SimpleNamespace(
+                cron_command="edit",
+                job_id=job["id"],
+                provider=None,
+                model=None,
+                no_model=True,
+            )
+        )
+        cleared = get_job(job["id"])
+        assert cleared["provider"] is None
+        assert cleared["model"] is None
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "nous"}},
+        )
+        cron_command(
+            SimpleNamespace(
+                cron_command="edit",
+                job_id=job["id"],
+                provider=None,
+                model="pinned-model",
+                no_model=False,
+            )
+        )
+        model_only = get_job(job["id"])
+        assert model_only["provider"] == "nous"
+        assert model_only["model"] == "pinned-model"
+
+    def test_edit_no_model_clears_base_url_override(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Use a private inference endpoint",
+            schedule="every 1h",
+            provider="custom",
+            model="private-model",
+            base_url="https://inference.example/v1",
+        )
+
+        result = cron_command(
+            SimpleNamespace(
+                cron_command="edit",
+                job_id=job["id"],
+                provider=None,
+                model=None,
+                no_model=True,
+            )
+        )
+
+        assert result == 0
+        cleared = get_job(job["id"])
+        assert cleared["provider"] is None
+        assert cleared["model"] is None
+        assert cleared["base_url"] is None
+
+    @pytest.mark.parametrize("cron_command_name", ["create", "edit"])
+    def test_provider_requires_model(
+        self, cron_command_name, tmp_cron_dir, capsys, monkeypatch
+    ):
+        api_calls = []
+        monkeypatch.setattr(
+            cron_cli, "_cron_api", lambda **kwargs: api_calls.append(kwargs)
+        )
+        args = SimpleNamespace(
+            cron_command=cron_command_name,
+            job_id="job-id",
+            schedule="every 1h",
+            prompt="Briefing",
+            provider="openrouter",
+            model=None,
+            no_model=False,
+        )
+        if cron_command_name == "edit":
+            monkeypatch.setattr(
+                "cron.jobs.resolve_job_ref",
+                lambda _job_id: {"id": "job-id", "skills": []},
+            )
+
+        assert cron_command(args) == 1
+        assert api_calls == []
+        assert "--provider requires --model" in capsys.readouterr().out
+
+    def test_edit_provider_and_no_model_are_cleanly_rejected(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        api_calls = []
+        monkeypatch.setattr(
+            cron_cli, "_cron_api", lambda **kwargs: api_calls.append(kwargs)
+        )
+
+        result = cron_command(
+            SimpleNamespace(
+                cron_command="edit",
+                job_id="job-id",
+                provider="openrouter",
+                model=None,
+                no_model=True,
+            )
+        )
+
+        assert result == 1
+        assert api_calls == []
+        assert "--provider cannot be combined with --no-model" in capsys.readouterr().out
+
     def test_list_does_not_crash_when_repeat_is_null(self, tmp_cron_dir, capsys):
         """A one-shot job can be persisted with ``"repeat": null``. `cron
         list` must render it as ∞ rather than crashing on .get(...)\\.get."""

@@ -1152,6 +1152,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        attach_to_session=args.get("attach_to_session"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

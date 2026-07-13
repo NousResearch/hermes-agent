@@ -311,12 +311,12 @@ def render_team_md(plan: dict) -> str:
         "",
         "## Per-task workspace requirement",
         "",
-        f"All `kanban_create` calls MUST pass:",
-        f"```",
-        f'workspace_kind="dir"',
+        "All `kanban_create` calls MUST pass:",
+        "```",
+        'workspace_kind="dir"',
         f'workspace_path="$HOME/projects/video-pipeline/{plan["slug"]}"',
         f'tenant="{plan["tenant"]}"',
-        f"```",
+        "```",
     ])
     return "\n".join(lines)
 
@@ -423,8 +423,6 @@ def render_soul_md(team_member: dict, plan: dict) -> str:
             "- **Decompose, route, comment, approve — that's the whole job.**\n"
             "- **Read TEAM.md** for the canonical task graph. Do not invent "
             "new roles unless the brief truly demands it.\n"
-            "- **Load the `kanban-orchestrator` skill** for the deeper "
-            "decomposition playbook beyond the auto-injected baseline.\n"
         )
 
     common_commands = (

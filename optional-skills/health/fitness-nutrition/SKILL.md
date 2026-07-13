@@ -6,6 +6,7 @@ description: >
   foods via USDA FoodData Central. Compute BMI, TDEE, one-rep max, macro
   splits, and body fat — pure Python, no pip installs. Built for anyone
   chasing gains, cutting weight, or just trying to eat better.
+platforms: [linux, macos, windows]
 version: 1.0.0
 authors:
   - haileymarshall

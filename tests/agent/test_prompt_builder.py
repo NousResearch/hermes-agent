@@ -18,12 +18,17 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
-    build_environment_hints,
     CONTEXT_FILE_MAX_CHARS,
+    _dynamic_context_file_max_chars,
+    _get_context_file_max_chars,
+    _CONTEXT_FILE_DYNAMIC_CEILING,
     DEFAULT_AGENT_IDENTITY,
+    drain_truncation_warnings,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    PARALLEL_TOOL_CALL_GUIDANCE,
+    GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -114,6 +119,18 @@ class TestScanContextContent:
 
 
 class TestTruncateContent:
+    @pytest.fixture(autouse=True)
+    def _reset_truncation_state(self, monkeypatch):
+        drain_truncation_warnings()
+
+        def default_load_config():
+            return {}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", default_load_config)
+
+    def test_context_file_max_chars_default_matches_upstream_limit(self):
+        assert CONTEXT_FILE_MAX_CHARS == 20_000
+
     def test_short_content_unchanged(self):
         content = "Short content"
         result = _truncate_content(content, "test.md")
@@ -138,6 +155,138 @@ class TestTruncateContent:
         content = "x" * CONTEXT_FILE_MAX_CHARS
         result = _truncate_content(content, "exact.md")
         assert result == content
+
+    def test_configured_context_file_max_chars_controls_truncation(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "HEAD" + "x" * 160 + "TAIL"
+
+        result = _truncate_content(content, "config.md")
+
+        assert result != content
+        assert "truncated config.md" in result
+        assert "kept 84+24" in result
+        assert "HEAD" in result
+        assert "TAIL" in result
+
+    def test_explicit_max_chars_overrides_config(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "x" * 180
+
+        result = _truncate_content(content, "explicit.md", max_chars=200)
+
+        assert result == content
+
+    def test_truncation_warning_points_to_config_key(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        _truncate_content("x" * 180, "warning.md")
+
+        warnings = drain_truncation_warnings()
+        assert len(warnings) == 1
+        assert "context_file_max_chars" in warnings[0]
+        assert "CONTEXT_FILE_MAX_CHARS" not in warnings[0]
+
+    def test_warnings_isolated_across_contexts(self, monkeypatch):
+        """Truncation warnings accumulate per-context — a concurrent build in
+        a separate context must not see or drain this context's warnings."""
+        import contextvars
+
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        # Generate a warning in a fresh child context, then assert it did NOT
+        # leak into the parent context's accumulator.
+        def _child():
+            _truncate_content("x" * 180, "child.md")
+            # Inside the child context, the warning is visible & drainable.
+            assert any("child.md" in w for w in drain_truncation_warnings())
+
+        contextvars.copy_context().run(_child)
+
+        # Parent context never saw the child's warning.
+        assert drain_truncation_warnings() == []
+
+        # And a warning raised in the parent stays in the parent.
+        _truncate_content("y" * 180, "parent.md")
+        parent_warnings = drain_truncation_warnings()
+        assert len(parent_warnings) == 1
+        assert "parent.md" in parent_warnings[0]
+
+
+class TestDynamicContextFileCap:
+    """B — cap scales with the model's context window when not pinned.
+    C — truncation marker points the agent at the full file to read_file."""
+
+    @pytest.fixture(autouse=True)
+    def _no_explicit_config(self, monkeypatch):
+        # No explicit context_file_max_chars → dynamic path is eligible.
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+
+    def test_dynamic_floor_for_small_window(self):
+        # A small context window never drops below the historical 20K floor.
+        assert _dynamic_context_file_max_chars(8_000) == CONTEXT_FILE_MAX_CHARS
+
+    def test_dynamic_scales_above_floor_for_large_window(self):
+        # 200K-token window → ~48K (200000 * 4 * 0.06), well above the floor
+        # and above Codex's 32 KiB project_doc default.
+        cap = _dynamic_context_file_max_chars(200_000)
+        assert cap == 48_000
+        assert cap > CONTEXT_FILE_MAX_CHARS
+
+    def test_dynamic_respects_ceiling(self):
+        # An enormous window is clamped to the ceiling.
+        assert _dynamic_context_file_max_chars(100_000_000) == _CONTEXT_FILE_DYNAMIC_CEILING
+
+    def test_none_context_length_falls_back_to_flat_default(self):
+        assert _dynamic_context_file_max_chars(None) == CONTEXT_FILE_MAX_CHARS
+        assert _dynamic_context_file_max_chars(0) == CONTEXT_FILE_MAX_CHARS
+
+    def test_get_context_file_max_chars_uses_context_length(self):
+        # With no explicit config, the resolver derives the cap from context.
+        assert _get_context_file_max_chars(200_000) == 48_000
+        assert _get_context_file_max_chars(None) == CONTEXT_FILE_MAX_CHARS
+
+    def test_explicit_config_beats_dynamic(self, monkeypatch):
+        # An explicit value always wins, even when a big window is available.
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"context_file_max_chars": 1_000},
+        )
+        assert _get_context_file_max_chars(200_000) == 1_000
+
+    def test_large_window_avoids_truncation_of_midsize_doc(self):
+        # A 30K-char AGENTS.md is truncated at the flat default but survives
+        # whole on a large-context model (dynamic cap ~48K).
+        content = "z" * 30_000
+        small = _truncate_content(content, "AGENTS.md", context_length=8_000)
+        big = _truncate_content(content, "AGENTS.md", context_length=200_000)
+        assert "truncated" in small.lower()
+        assert big == content
+
+    def test_marker_points_to_read_path(self):
+        content = "h" * 50_000
+        result = _truncate_content(
+            content, "AGENTS.md", context_length=8_000,
+            read_path="/proj/AGENTS.md",
+        )
+        assert "read_file" in result
+        assert "/proj/AGENTS.md" in result
+
+    def test_marker_defaults_to_filename_without_read_path(self):
+        result = _truncate_content("h" * 50_000, "AGENTS.md", context_length=8_000)
+        assert "read_file" in result
+        assert "AGENTS.md" in result
 
 
 # =========================================================================
@@ -276,6 +425,54 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt()
         # "search" should appear only once per category
         assert result.count("- search") == 1
+
+    def test_compact_categories_demoted_to_names_only(self, monkeypatch, tmp_path):
+        """Posture-driven demotion keeps every skill NAME visible.
+
+        Demoted categories lose their descriptions, never their entries —
+        full pruning caused silent capability loss in a real workflow
+        (agent-created skills are the model's project memory, and models
+        don't rediscover them via skills_list once the index goes quiet).
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for cat, name in (("social-media", "tweet-stuff"), ("github", "pr-review")):
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Does {name} things\n---\n"
+            )
+
+        result = build_skills_system_prompt(
+            compact_categories=frozenset({"social-media"})
+        )
+        # Coding-adjacent category keeps its full entry.
+        assert "pr-review" in result and "Does pr-review things" in result
+        # Demoted category: name stays visible, description is dropped.
+        assert "tweet-stuff" in result
+        assert "Does tweet-stuff things" not in result
+        assert "social-media [names only]" in result
+        # Disclosure note explains the demotion and how to load.
+        assert "skill_view" in result
+
+    def test_compact_categories_demote_nested_and_miss_cache_separately(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "social-media" / "twitter" / "thread-writer"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: thread-writer\ndescription: Write threads\n---\n"
+        )
+        # Nested category ("social-media/twitter") demoted via its parent:
+        # name visible, description gone.
+        compact = build_skills_system_prompt(
+            compact_categories=frozenset({"social-media"})
+        )
+        assert "thread-writer" in compact
+        assert "Write threads" not in compact
+        # Unfiltered call must not be served from the compacted cache entry.
+        full = build_skills_system_prompt()
+        assert "Write threads" in full
 
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
@@ -441,7 +638,9 @@ class TestBuildNousSubscriptionPrompt:
                 features={
                     "web": NousFeatureState("web", "Web tools", True, True, True, True, False, True, "firecrawl"),
                     "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
+                    "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
+                    "stt": NousFeatureState("stt", "Speech-to-text", True, True, True, True, False, True, "OpenAI Whisper"),
                     "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
                     "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
                 },
@@ -452,7 +651,7 @@ class TestBuildNousSubscriptionPrompt:
 
         assert "Browser Use" in prompt
         assert "Modal execution is optional" in prompt
-        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys" in prompt
+        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys" in prompt
 
     def test_non_subscriber_prompt_includes_relevant_upgrade_guidance(self, monkeypatch):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
@@ -465,7 +664,9 @@ class TestBuildNousSubscriptionPrompt:
                 features={
                     "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
                     "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                    "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                    "stt": NousFeatureState("stt", "Speech-to-text", True, False, False, False, False, True, ""),
                     "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, ""),
                     "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, ""),
                 },
@@ -727,6 +928,43 @@ class TestFindHermesMd:
         (repo / ".git").mkdir()
         assert _find_hermes_md(repo) is None
 
+    def test_no_git_root_checks_cwd_only(self, tmp_path):
+        """Outside a git repo, only cwd is checked — parents are NOT walked.
+
+        Walking parents with no git root to stop the loop would climb all
+        the way to / and pick up a .hermes.md planted in /tmp, /home, or /
+        on a shared system — a cross-user prompt-injection vector.
+        """
+        from unittest.mock import patch
+
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        (parent / ".hermes.md").write_text("planted by another user")
+        cwd = parent / "work"
+        cwd.mkdir()
+        # No git root anywhere up the tree.
+        with patch("agent.prompt_builder._find_git_root", return_value=None):
+            assert _find_hermes_md(cwd) is None
+
+    def test_no_git_root_finds_in_cwd(self, tmp_path):
+        """Outside a git repo, a .hermes.md in cwd itself is still found."""
+        from unittest.mock import patch
+
+        (tmp_path / ".hermes.md").write_text("local rules")
+        with patch("agent.prompt_builder._find_git_root", return_value=None):
+            assert _find_hermes_md(tmp_path) == tmp_path / ".hermes.md"
+
+    def test_walks_parents_inside_git_repo(self, tmp_path):
+        """Inside a git repo, parent walk up to the git root still works."""
+        from unittest.mock import patch
+
+        (tmp_path / ".hermes.md").write_text("repo root rules")
+        sub = tmp_path / "a" / "b"
+        sub.mkdir(parents=True)
+        # Simulate cwd being inside a repo rooted at tmp_path.
+        with patch("agent.prompt_builder._find_git_root", return_value=tmp_path):
+            assert _find_hermes_md(sub) == tmp_path / ".hermes.md"
+
 
 class TestFindGitRoot:
     def test_finds_git_dir(self, tmp_path):
@@ -784,11 +1022,51 @@ class TestPromptBuilderConstants:
 
     def test_platform_hints_known_platforms(self):
         assert "whatsapp" in PLATFORM_HINTS
+        assert "whatsapp_cloud" in PLATFORM_HINTS
         assert "telegram" in PLATFORM_HINTS
         assert "discord" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
+        assert "tui" in PLATFORM_HINTS
         assert "api_server" in PLATFORM_HINTS
+        assert "webui" in PLATFORM_HINTS
+
+    def test_cli_and_tui_hints_flag_local_only_cron(self):
+        """#51568 — cron jobs from CLI/TUI sessions don't deliver back into
+        the session, so the agent must be told up front not to promise it."""
+        for key in ("cli", "tui"):
+            hint = PLATFORM_HINTS[key]
+            assert "LOCAL-ONLY" in hint
+            assert "deliver" in hint
+
+    def test_whatsapp_cloud_hint_mentions_24h_window(self):
+        """The Cloud API's 24-hour conversation window is a hard rule the
+        agent should know about. Phase 5 (template fallback) was deferred,
+        so the model needs to know free-form replies outside the window
+        will fail with Graph error 131047 — otherwise it'll cheerfully
+        try to schedule delayed messages that silently break."""
+        hint = PLATFORM_HINTS["whatsapp_cloud"]
+        assert "24-hour" in hint or "24h" in hint or "24 hour" in hint
+        assert "131047" in hint
+
+    def test_whatsapp_cloud_hint_advertises_media(self):
+        """Cloud adapter supports the same MEDIA:/path/ convention as
+        Baileys for outbound attachments."""
+        hint = PLATFORM_HINTS["whatsapp_cloud"]
+        assert "MEDIA:" in hint
+
+    def test_markdown_converting_platform_hints_do_not_forbid_markdown(self):
+        """#12224 — WhatsApp (Baileys) and Signal adapters actively convert
+        markdown to native formatting (gateway/platforms/whatsapp_common.py
+        format_message + signal_format.markdown_to_signal: bold, italic,
+        strikethrough, headers, bullets). Their hints previously told the
+        agent "do not use markdown", which made it strip bullets/bold the
+        adapter would have rendered. The hint must affirm markdown, not
+        forbid it."""
+        for key in ("whatsapp", "signal"):
+            hint = PLATFORM_HINTS[key]
+            assert "do not use markdown" not in hint.lower()
+            assert "markdown" in hint.lower()
 
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
@@ -808,6 +1086,23 @@ class TestPromptBuilderConstants:
         # check that this test is calibrated correctly).
         assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
 
+    def test_telegram_hint_encourages_rich_markdown(self):
+        # Telegram Bot API 10.1 rich messages are default-on, so the hint must
+        # encourage native structured markdown instead of forbidding tables.
+        hint = PLATFORM_HINTS["telegram"]
+        lowered = hint.lower()
+        assert "Telegram has NO table syntax" not in hint
+        assert "rich markdown" in lowered
+        assert "table" in lowered
+        assert "task list" in lowered
+        assert "math" in lowered
+        # Hint should proactively steer toward structured formatting, not just
+        # permit it: bullet + numbered lists for scannable, structured output.
+        assert "bullet" in lowered
+        assert "numbered" in lowered
+        # Local media delivery guidance must remain intact.
+        assert "include MEDIA:" in hint
+
     def test_platform_hints_mattermost(self):
         hint = PLATFORM_HINTS["mattermost"]
         assert "Mattermost" in hint
@@ -826,6 +1121,13 @@ class TestPromptBuilderConstants:
         assert "MEDIA:" in hint
         assert "Markdown" in hint
 
+    def test_platform_hints_webui(self):
+        hint = PLATFORM_HINTS["webui"]
+        assert "WebUI" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+        assert "absolute" in hint
+
 
 # =========================================================================
 # Environment hints
@@ -839,15 +1141,221 @@ class TestEnvironmentHints:
     def test_build_environment_hints_on_wsl(self, monkeypatch):
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
         assert "/mnt/" in result
         assert "WSL" in result
+        # WSL block still carries the always-on host info ahead of it.
+        assert "User home directory:" in result
 
-    def test_build_environment_hints_not_wsl(self, monkeypatch):
+    def test_build_environment_hints_on_linux_local(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys, platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert result != ""
+        assert "Host: Linux" in result
+        assert "6.8.0-generic" in result
+        assert "User home directory:" in result
+        assert "Current working directory:" in result
+        # Linux must NOT get the Windows-specific callouts.
+        assert "PowerShell" not in result
+        assert "hostname" not in result
+        assert "WSL" not in result
+
+    def test_build_environment_hints_on_windows_local(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Host: Windows" in result
+        assert "User home directory:" in result
+        # Two Windows-specific callouts that must ALWAYS appear together:
+        # hostname warning + bash-not-PowerShell warning.
+        assert "hostname" in result
+        assert "NOT the username" in result
+        assert "bash" in result
+        assert "PowerShell" in result
+
+    def test_build_environment_hints_on_macos_local(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Host: macOS" in result
+        assert "User home directory:" in result
+        # macOS must NOT get the Windows-specific callouts.
+        assert "PowerShell" not in result
+        assert "hostname" not in result
+
+    def test_build_environment_hints_suppresses_host_on_docker_backend(self, monkeypatch):
+        """Docker/remote backends must hide host info — the agent can only touch the backend."""
+        import agent.prompt_builder as _pb
+        import sys
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        # Force the probe to fail so we exercise the static fallback path
+        # deterministically (the live probe would try to spin up docker).
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: None)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        # Host suppression: none of the local-backend lines should appear.
+        assert "Host: Windows" not in result
+        assert "User home directory:" not in result
+        assert "PowerShell" not in result
+        # Backend info must appear instead.
+        assert "Terminal backend: docker" in result
+        assert "inside" in result.lower()
+
+    def test_build_environment_hints_uses_terminal_cwd_over_launch_dir(self, monkeypatch, tmp_path):
+        """THE BUG: gateway/cron set TERMINAL_CWD but the prompt emitted os.getcwd()
+        (the daemon launch dir). Regression for #24882/#24969/#27383/#29265."""
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        configured = tmp_path / "workspace"
+        configured.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(configured))
+        monkeypatch.chdir(tmp_path)
+        _pb._clear_backend_probe_cache()
+        assert f"Current working directory: {configured}" in _pb.build_environment_hints()
+
+    def test_build_environment_hints_falls_back_to_launch_dir(self, monkeypatch, tmp_path):
+        """The #19242 local-CLI contract: no TERMINAL_CWD → the launch dir."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.chdir(tmp_path)
+        _pb._clear_backend_probe_cache()
+        assert f"Current working directory: {tmp_path}" in _pb.build_environment_hints()
+
+    def test_build_environment_hints_uses_live_probe_when_available(self, monkeypatch):
+        """When the probe succeeds, its output must appear in the hint block."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setenv("TERMINAL_ENV", "modal")
+        fake_probe_output = "  OS: Linux 6.8.0\n  User: root\n  Home: /root\n  Working directory: /workspace"
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: fake_probe_output)
+        _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
-        assert result == ""
+        assert "Terminal backend: modal" in result
+        assert "Linux 6.8.0" in result
+        assert "/workspace" in result
+
+    def test_probe_remote_backend_imports_real_factory(self, monkeypatch):
+        """Regression for #53667: the probe imported a nonexistent
+        ``get_environment`` from ``tools.environments`` and always died with
+        ``ImportError: cannot import name 'get_environment'`` (cosmetic — it
+        only dropped the live backend description to a static fallback). The
+        real factory is ``_create_environment`` in ``tools.terminal_tool``;
+        the probe must import and call THAT, returning a parsed line instead
+        of None."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/root\n"
+                        "cwd=/workspace\nuser=root\n"
+                    ),
+                }
+
+        created = {}
+
+        def _fake_create_environment(*, env_type, **kwargs):
+            created["env_type"] = env_type
+            return _FakeEnv()
+
+        # Patch the REAL factory in tools.terminal_tool — the probe imports it
+        # locally, so the import itself must succeed (the bug was here).
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
+
+        line = _pb._probe_remote_backend("docker")
+        assert created.get("env_type") == "docker"
+        assert line is not None
+        assert "Linux 6.8.0" in line
+        assert "root" in line
+
+    def test_remote_backend_list_covers_known_sandboxes(self):
+        """Regression guard: if someone adds a remote backend, they must list it here."""
+        import agent.prompt_builder as _pb
+        for backend in ("docker", "singularity", "modal", "daytona", "ssh"):
+            assert backend in _pb._REMOTE_TERMINAL_BACKENDS, (
+                f"{backend!r} must be in _REMOTE_TERMINAL_BACKENDS so its host "
+                f"info is suppressed in the system prompt"
+            )
+
+    def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
+        """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setenv("HERMES_ENVIRONMENT_HINT", "Running inside an OpenShell sandbox.")
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Running inside an OpenShell sandbox." in result
+        # The factual host block must still come first.
+        assert result.index("Host:") < result.index("OpenShell")
+
+    def test_environment_hint_env_var_overrides_config(self, monkeypatch):
+        """Env var wins over config.yaml agent.environment_hint."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setenv("HERMES_ENVIRONMENT_HINT", "ENV-WINS")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"environment_hint": "CONFIG-VALUE"}},
+        )
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "ENV-WINS" in result
+        assert "CONFIG-VALUE" not in result
+
+    def test_environment_hint_falls_back_to_config(self, monkeypatch):
+        """With no env var, the config.yaml value is used."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("HERMES_ENVIRONMENT_HINT", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"environment_hint": "CONFIG-VALUE"}},
+        )
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "CONFIG-VALUE" in result
+
+    def test_environment_hint_empty_by_default(self, monkeypatch):
+        """No hint configured anywhere → no embedder text, host block intact."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("HERMES_ENVIRONMENT_HINT", raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"agent": {}})
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Host:" in result
 
 
 # =========================================================================
@@ -1045,6 +1553,12 @@ class TestToolUseEnforcementGuidance:
     def test_enforcement_models_includes_grok(self):
         assert "grok" in TOOL_USE_ENFORCEMENT_MODELS
 
+    def test_enforcement_models_includes_qwen(self):
+        assert "qwen" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_deepseek(self):
+        assert "deepseek" in TOOL_USE_ENFORCEMENT_MODELS
+
     def test_enforcement_models_is_tuple(self):
         assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
 
@@ -1084,9 +1598,51 @@ class TestOpenAIModelExecutionGuidance:
         assert len(OPENAI_MODEL_EXECUTION_GUIDANCE) > 100
 
 
+class TestParallelToolCallGuidance:
+    """Behavior contracts for the universal parallel-tool-call guidance block.
+
+    Asserts the invariants the block must satisfy (steer batching, scope to
+    independent calls, stay short for the cached prompt) rather than freezing
+    its exact wording.
+    """
+
+    def test_is_nonempty_string(self):
+        assert isinstance(PARALLEL_TOOL_CALL_GUIDANCE, str)
+        assert PARALLEL_TOOL_CALL_GUIDANCE.strip()
+
+    def test_steers_batching_into_one_response(self):
+        text = PARALLEL_TOOL_CALL_GUIDANCE.lower()
+        # Must tell the model to group independent calls together — accept any
+        # phrasing that means "one turn" without freezing exact wording.
+        assert "single response" in text or ("same" in text and "turn" in text)
+        assert "independent" in text
+
+    def test_carves_out_dependent_calls(self):
+        # Must NOT tell the model to batch dependent calls — that would break
+        # ordering (read-before-patch). The block has to acknowledge the
+        # serialize-when-dependent case.
+        text = PARALLEL_TOOL_CALL_GUIDANCE.lower()
+        assert "depend" in text
+
+    def test_stays_short_for_cached_prompt(self):
+        # Shipped in every cached system prompt — keep it tight. The existing
+        # task-completion block is ~600 chars; allow generous headroom but
+        # guard against accidental essay growth.
+        assert len(PARALLEL_TOOL_CALL_GUIDANCE) < 900
+
+    def test_has_a_heading(self):
+        # Heading delimits it as its own section in the assembled prompt.
+        assert PARALLEL_TOOL_CALL_GUIDANCE.lstrip().startswith("#")
+
+    def test_not_duplicated_in_google_guidance(self):
+        # The universal block is now the single source of parallel-batching
+        # steer. The Google-only block must NOT carry its own copy, otherwise
+        # Gemini/Gemma would receive the instruction twice in one prompt.
+        assert "parallel tool call" not in GOOGLE_MODEL_OPERATIONAL_GUIDANCE.lower()
+
+
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 

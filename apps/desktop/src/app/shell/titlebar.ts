@@ -12,11 +12,17 @@ export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 24
 // (traffic lights are hidden). Matches the right-cluster's 0.75rem padding.
 export const TITLEBAR_EDGE_INSET = 14
 
+// Titlebar palette only. All sizing/radius/cursor/centering come from the
+// shared <Button size="icon-titlebar"> (used polymorphically via asChild) —
+// Button is the single source of button styling.
 export const titlebarButtonClass =
-  'h-[var(--titlebar-control-height)] w-[var(--titlebar-control-size)] cursor-pointer rounded-md text-muted-foreground/85 transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground'
+  'text-muted-foreground/85 hover:bg-(--ui-control-hover-background) hover:text-foreground'
 
 export const titlebarHeaderBaseClass =
-  'pointer-events-none relative z-3 flex h-(--titlebar-height) shrink-0 items-center justify-start gap-3 border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-[max(0.75rem,var(--titlebar-content-inset,0rem))]'
+  'pointer-events-none relative z-3 flex h-(--titlebar-height) w-full min-w-0 shrink-0 items-center justify-start gap-3 overflow-hidden border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-[max(0.75rem,var(--titlebar-content-inset,0rem))] pr-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,0px)+0.75rem)]'
+
+// Title row inside the header — must stay in the flex truncate chain.
+export const titlebarHeaderTitleClass = 'min-w-0 flex-1 overflow-hidden'
 
 export const titlebarHeaderShadowClass =
   "after:pointer-events-none after:absolute after:left-0 after:right-0 after:top-full after:h-4 after:bg-linear-to-b after:from-(--ui-chat-surface-background) after:to-transparent after:content-['']"

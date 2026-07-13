@@ -2,10 +2,16 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { type CommandCenterSection } from '@/app/command-center'
-import { AGENTS_ROUTE, appViewForPath, COMMAND_CENTER_ROUTE, NEW_CHAT_ROUTE } from '@/app/routes'
+import {
+  AGENTS_ROUTE,
+  appViewForPath,
+  COMMAND_CENTER_ROUTE,
+  isOverlayView,
+  NEW_CHAT_ROUTE,
+  STARMAP_ROUTE
+} from '@/app/routes'
 
 const SECTIONS = ['sessions', 'system', 'usage'] as const
-const OVERLAY_VIEWS = new Set(['settings', 'command-center', 'agents'])
 
 export function useOverlayRouting() {
   const location = useLocation()
@@ -15,8 +21,11 @@ export function useOverlayRouting() {
   const settingsOpen = currentView === 'settings'
   const commandCenterOpen = currentView === 'command-center'
   const agentsOpen = currentView === 'agents'
+  const starmapOpen = currentView === 'starmap'
+  const cronOpen = currentView === 'cron'
+  const profilesOpen = currentView === 'profiles'
   const chatOpen = currentView === 'chat'
-  const overlayOpen = OVERLAY_VIEWS.has(currentView)
+  const overlayOpen = isOverlayView(currentView)
 
   // Overlay routes (settings/command-center/agents) stash the underlying path
   // so closing them returns there instead of bouncing to /.
@@ -52,6 +61,7 @@ export function useOverlayRouting() {
   }, [closeOverlayToPreviousRoute, commandCenterOpen, navigate])
 
   const openAgents = useCallback(() => navigate(AGENTS_ROUTE), [navigate])
+  const openStarmap = useCallback(() => navigate(STARMAP_ROUTE), [navigate])
 
   return {
     agentsOpen,
@@ -59,10 +69,14 @@ export function useOverlayRouting() {
     closeOverlayToPreviousRoute,
     commandCenterInitialSection,
     commandCenterOpen,
+    cronOpen,
     currentView,
     openAgents,
     openCommandCenterSection,
+    openStarmap,
+    profilesOpen,
     settingsOpen,
+    starmapOpen,
     toggleCommandCenter
   }
 }

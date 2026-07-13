@@ -19,6 +19,7 @@ import {
 } from '../lib/text.js'
 import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
 
+import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
 import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
@@ -132,6 +133,17 @@ class TurnController {
   private streamDelay = STREAM_IDLE_BATCH_MS
   private toolProgressTimer: Timer = null
 
+  // ── Credits notice machinery (Strategy B) ───────────────────────────
+  //
+  // A notice arriving mid-turn must NOT show (FaceTicker wins while busy);
+  // it is held here, latest-wins, and applied at turn end via onTurnEnd().
+  // The TTL clock starts only when the notice becomes VISIBLE (on apply),
+  // never on arrival, so an 8s "restored" notice shows for its full life.
+  // `noticeTimer` is DEDICATED — it is never the shared `statusTimer`.
+  private pendingNotice: Notice | null = null
+  private noticeTimer: Timer = null
+  private noticeIdSeq = 0
+
   boostStreamingForTyping() {
     this.streamDelay = STREAM_TYPING_BATCH_MS
   }
@@ -155,6 +167,100 @@ class TurnController {
 
   clearStatusTimer() {
     this.statusTimer = clear(this.statusTimer)
+  }
+
+  // ── Notice: arrival ──────────────────────────────────────────────────
+  //
+  // A `notification.show` arrived. If a turn is in flight (`busy`), the
+  // FaceTicker owns the verb slot, so we hold the notice (latest-wins) and
+  // let onTurnEnd() apply it when the turn finishes. If idle, apply it now.
+  // The Python side emits STABLE ids per notice kind (e.g. `credits.warn90`,
+  // `credits.restored`), NOT unique-per-emission ids.  The id-guard in
+  // applyNotice() is a defensive backup; the primary latest-wins mechanism is
+  // that applyNotice/clearNotice always cancel the prior timer first.
+  showNotice(notice: Notice) {
+    const stamped: Notice = { ...notice, id: notice.id || `n${++this.noticeIdSeq}` }
+
+    if (getUiState().busy) {
+      this.pendingNotice = stamped
+
+      return
+    }
+
+    this.applyNotice(stamped)
+  }
+
+  // ── Notice: clear by key (R3-H3 / HIGH-3) ────────────────────────────
+  //
+  // `notification.clear` only clears the visible notice when its key
+  // matches — a stale/late clear must not wipe a NEWER notice. Always drop
+  // a matching pending notice so it can't resurface at the next turn end.
+  clearNotice(key?: string) {
+    if (this.pendingNotice && this.pendingNotice.key === key) {
+      this.pendingNotice = null
+    }
+
+    if (getUiState().notice?.key === key) {
+      this.clearNoticeTimer()
+      patchUiState({ notice: null })
+    }
+  }
+
+  // Apply a notice to the visible UI state and (re)arm its TTL clock.
+  // Latest-wins: clear any prior TTL timer FIRST so an older notice's
+  // expiry can't wipe this one. A 'ttl' notice with `ttl_ms` self-expires;
+  // 'sticky' (default) persists until an explicit clear.
+  private applyNotice(notice: Notice) {
+    this.clearNoticeTimer()
+    patchUiState({ notice })
+
+    if (notice.kind === 'ttl' && typeof notice.ttl_ms === 'number' && notice.ttl_ms > 0) {
+      const id = notice.id
+
+      this.noticeTimer = setTimeout(() => {
+        this.noticeTimer = null
+
+        // Defensive backup: the prior timer was already cancelled by
+        // clearNoticeTimer() when a newer notice was applied, so in
+        // practice this guard only fires for the notice that armed it.
+        if (getUiState().notice?.id === id) {
+          patchUiState({ notice: null })
+        }
+      }, notice.ttl_ms)
+    }
+  }
+
+  private clearNoticeTimer() {
+    this.noticeTimer = clear(this.noticeTimer)
+  }
+
+  // ── Notice: turn-end flush (R3-C1 / R3-H4) ───────────────────────────
+  //
+  // Invoked ONLY by the three real turn-end sites (recordMessageComplete,
+  // interruptTurn, recordError) — NEVER by idle()/reset(), which would leak
+  // session A's notice into session B. Applies a pending NEW notice so it
+  // appears now that FaceTicker has yielded; the TTL clock starts here, when
+  // the notice first becomes visible. With no pending notice this is a
+  // no-op, so a standing sticky notice REappears untouched after the turn.
+  private flushPendingNotice() {
+    if (!this.pendingNotice) {
+      return
+    }
+
+    const notice = this.pendingNotice
+    this.pendingNotice = null
+    this.applyNotice(notice)
+  }
+
+  // Drop all notice state — pending + timer + visible (R3-H5). Called by
+  // reset()/fullReset() so a session A notice can't bleed into session B.
+  private clearNoticeState() {
+    this.pendingNotice = null
+    this.clearNoticeTimer()
+
+    if (getUiState().notice) {
+      patchUiState({ notice: null })
+    }
   }
 
   endReasoningPhase() {
@@ -182,7 +288,12 @@ class TurnController {
     resetFlowOverlays()
   }
 
-  interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps) {
+  // `keepBusy` holds the session busy after interrupting so a queued message
+  // drains on the gateway's real settle edge (message.complete, suppressed
+  // while `interrupted`) instead of racing the still-unwinding turn — the race
+  // duplicated the user bubble, leaked a "queued: …" note, and surfaced the
+  // cancelled turn's "[interrupted]" reply.
+  interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
     this.interrupted = true
     gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
 
@@ -218,13 +329,24 @@ class TurnController {
       sys('interrupted')
     }
 
-    patchUiState({ status: 'interrupted' })
     this.clearStatusTimer()
+
+    if (opts.keepBusy) {
+      // `idle()` already cleared busy; re-assert it so the drain waits for settle.
+      patchUiState({ busy: true, status: 'interrupting…' })
+
+      return
+    }
+
+    patchUiState({ status: 'interrupted' })
 
     this.statusTimer = setTimeout(() => {
       this.statusTimer = null
       patchUiState({ status: 'ready' })
     }, INTERRUPT_COOLDOWN_MS)
+
+    // Real turn end: surface any notice held back while busy.
+    this.flushPendingNotice()
   }
 
   pruneTransient() {
@@ -427,6 +549,9 @@ class TurnController {
     this.segmentMessages = []
     this.turnTools = []
     this.persistedToolLabels.clear()
+
+    // Real turn end: surface any notice held back while busy.
+    this.flushPendingNotice()
   }
 
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
@@ -520,6 +645,10 @@ class TurnController {
     this.interrupted = false
     patchTurnState({ activity: [], outcome: '' })
 
+    // Real turn end: surface any notice held back while busy. Done after
+    // idle() flips busy=false so applyNotice() reaches the visible slot.
+    this.flushPendingNotice()
+
     return { finalMessages, finalText, wasInterrupted }
   }
 
@@ -559,6 +688,39 @@ class TurnController {
     this.scheduleReasoning()
     this.syncReasoningSegment()
     this.pulseReasoningStreaming()
+  }
+
+  /**
+   * Render one MoA reference model's output as a committed labelled block
+   * before the aggregator responds. Unlike reasoning, references are shown
+   * regardless of showReasoning (they ARE the mixture-of-agents process the
+   * user opted into by selecting a MoA preset). Each becomes its own
+   * thinking-style segment tagged with the source model, so a multi-reference
+   * preset builds a stack the user can scroll.
+   */
+  recordMoaReference(label: string, text: string, index?: number, count?: number) {
+    if (this.interrupted) {
+      return
+    }
+
+    // Close any open reasoning segment so the reference block lands as its own
+    // committed entry rather than merging into streaming reasoning.
+    this.closeReasoningSegment()
+
+    const header =
+      index && count ? `◇ Reference ${index}/${count} — ${label}` : `◇ Reference — ${label}`
+
+    const body = text.trim()
+    const thinking = body ? `${header}\n${body}` : header
+
+    this.pushSegment({
+      kind: 'trail',
+      role: 'system',
+      text: '',
+      thinking,
+      thinkingTokens: estimateTokensRough(thinking)
+    })
+    patchTurnState({ streamSegments: this.segmentMessages })
   }
 
   recordReasoningDelta(text: string, force = false) {
@@ -643,7 +805,13 @@ class TurnController {
             done?.verboseArgs,
             error || resultText || summary || ''
           )
-        : buildToolTrailLine(name, done?.context || '', Boolean(error), error || summary || '', duration ?? fallbackDuration)
+        : buildToolTrailLine(
+            name,
+            done?.context || '',
+            Boolean(error),
+            error || summary || '',
+            duration ?? fallbackDuration
+          )
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 
@@ -722,6 +890,9 @@ class TurnController {
     this.turnTools = []
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()
+    // Session boundary: drop notice state so session A's sticky can't bleed
+    // into session B (R3-H5). reset()/fullReset() CLEAR — they never flush.
+    this.clearNoticeState()
     patchTurnState({ activity: [], outcome: '' })
   }
 
@@ -775,6 +946,19 @@ class TurnController {
     this.toolTokenAcc = 0
     this.interrupted = false
     this.persistedToolLabels.clear()
+    // "Flash and yield" notices clear when a new turn starts: a usage-band heads-up
+    // (credits.usage, 50/75/90%) and the one-time "grant spent" transition
+    // (credits.grant_spent) should show once, then get out of the way — not camp the
+    // bar (e.g. "Grant spent · $990 top-up left" sitting there with plenty of top-up
+    // left). Depletion (credits.depleted) and other notices stay — they're explicitly
+    // sticky until the policy clears them. The Python `active` latch retains the key,
+    // so a yielded notice won't re-fire on the next turn.
+    const yieldingNoticeKey = getUiState().notice?.key
+
+    if (yieldingNoticeKey === 'credits.usage' || yieldingNoticeKey === 'credits.grant_spent') {
+      this.clearNotice(yieldingNoticeKey)
+    }
+
     patchUiState({ busy: true })
     patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
   }

@@ -22,10 +22,15 @@ from typing import Awaitable, Callable
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from hermes_cli.dashboard_auth import list_providers
+from hermes_cli.dashboard_auth import list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError
-from hermes_cli.dashboard_auth.cookies import read_session_cookies
+from hermes_cli.dashboard_auth.cookies import (
+    clear_sso_attempt_cookie,
+    read_session_cookies,
+    read_sso_attempt_cookie,
+    set_sso_attempt_cookie,
+)
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 
 _log = logging.getLogger(__name__)
@@ -38,6 +43,7 @@ _log = logging.getLogger(__name__)
 _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login",
     "/auth/callback",
+    "/auth/password-login",
     "/auth/logout",
     "/login",
     "/api/auth/providers",
@@ -131,6 +137,84 @@ def _unauth_response(request: Request, *, reason: str) -> Response:
     return RedirectResponse(url=login_url, status_code=302)
 
 
+def _auto_sso_response(request: Request) -> Response | None:
+    """Maybe auto-initiate the portal OAuth redirect on an unauth HTML load.
+
+    Returns a 302 → ``/auth/login`` (the existing OAuth-initiation route)
+    when ALL of the following hold, else ``None`` (caller falls back to the
+    ordinary ``/login`` interstitial):
+
+      * the request is an HTML document navigation, not an ``/api/*`` fetch
+        (a fetch() would follow the 302 into the cross-origin OAuth dance
+        opaquely — same reason ``_unauth_response`` never redirects APIs);
+      * exactly ONE interactive provider is registered — with two or more we
+        can't pick for the user, so the ``/login`` chooser must render; with
+        zero there's nothing to redirect to;
+      * that provider is OAuth-style, not a password form provider. Password
+        providers must render ``/login`` so the user can enter credentials;
+      * the one-shot loop-guard marker is ABSENT. Its presence means we
+        already bounced to the portal once and came back still
+        unauthenticated (no portal session) — auto-redirecting again would
+        ping-pong, so we fall through to ``/login`` and clear the marker.
+
+    The portal ``/oauth/authorize`` auto-approves any current member of the
+    dashboard's org and is a silent 302 when the user already holds a portal
+    session, so for the common case (clicked a dashboard link while signed
+    in to the portal) this removes the interstitial CLICK entirely. It
+    removes a click, not a security check: the redirect lands on
+    ``/auth/login`` which runs the unchanged PKCE auth-code flow.
+    """
+    path = request.url.path
+    # APIs never auto-redirect (see _unauth_response). Only document loads.
+    if path.startswith("/api/"):
+        return None
+
+    # Already bounced once and still no session → portal has no session for
+    # this user. Stop here, clear the marker, let /login render.
+    if read_sso_attempt_cookie(request):
+        from hermes_cli.dashboard_auth.prefix import prefix_from_request
+        resp = _unauth_response(request, reason="no_cookie")
+        clear_sso_attempt_cookie(resp, prefix=prefix_from_request(request))
+        return resp
+
+    # list_session_providers() already filters on supports_session=True, so
+    # token-only credentials (drain/service providers) are never candidates.
+    providers = list_session_providers()
+    if len(providers) != 1:
+        # Zero → nothing to redirect to. Two+ → user must choose at /login.
+        return None
+
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+
+    provider = providers[0]
+    if getattr(provider, "supports_password", False):
+        return None
+
+    prefix = prefix_from_request(request)
+    next_param = _safe_next_target(request)
+    from urllib.parse import quote
+    auth_login = f"{prefix}/auth/login?provider={quote(provider.name, safe='')}"
+    if next_param:
+        auth_login = f"{auth_login}&next={next_param}"
+
+    resp = RedirectResponse(url=auth_login, status_code=302)
+    # Drop the one-shot marker so a return trip that's STILL unauthenticated
+    # (portal had no session) trips the guard above next time instead of
+    # looping. Detect HTTPS for the Secure flag the same way the auth routes
+    # do; bind Path via the active prefix.
+    from hermes_cli.dashboard_auth.cookies import detect_https
+    set_sso_attempt_cookie(
+        resp, use_https=detect_https(request), prefix=prefix,
+    )
+    audit_log(
+        AuditEvent.LOGIN_START,
+        provider=provider.name,
+        reason="auto_sso",
+        ip=_client_ip(request),
+    )
+    return resp
+
+
 def _safe_next_target(request: Request) -> str:
     """Build the URL-encoded ``next`` query value, or empty string.
 
@@ -180,6 +264,13 @@ async def gated_auth_middleware(
     if not getattr(request.app.state, "auth_required", False):
         return await call_next(request)
 
+    # A request already authenticated by the token-auth seam (a service caller
+    # on a registered token route) carries ``token_authenticated`` — it is NOT
+    # a cookie session and must not be bounced to /login. Pass it through; the
+    # seam already attached ``request.state.token_principal``.
+    if getattr(request.state, "token_authenticated", False):
+        return await call_next(request)
+
     path = request.url.path
     if _path_is_public(path):
         return await call_next(request)
@@ -187,7 +278,15 @@ async def gated_auth_middleware(
     at, _rt = read_session_cookies(request)
     if not at and not _rt:
         # Neither token present — no session at all. Nothing to verify or
-        # refresh; force login.
+        # refresh. Before falling back to the /login interstitial, try to
+        # silently bounce the user through the portal OAuth flow: the portal
+        # auto-approves org members and 302s straight back when they already
+        # hold a portal session, so the interstitial click is pure friction
+        # for the common case. The one-shot loop-guard inside _auto_sso_response
+        # prevents a ping-pong when the portal genuinely has no session.
+        auto = _auto_sso_response(request)
+        if auto is not None:
+            return auto
         return _unauth_response(request, reason="no_cookie")
 
     # Try every registered provider's verify_session in turn. Providers
@@ -206,7 +305,23 @@ async def gated_auth_middleware(
     # good refresh token — defeating the whole transparent-refresh feature.
     session = None
     if at:
-        for provider in list_providers():
+        # Try every registered provider's verify_session in turn. A provider
+        # that doesn't recognise the token returns None and we move on; the
+        # first provider that returns a Session wins.
+        #
+        # A provider may instead raise ProviderError (its IDP/JWKS is
+        # unreachable, so it can neither confirm nor deny the token). With
+        # multiple providers stacked, that MUST NOT abort the chain — the
+        # token may belong to a *different*, reachable provider. (Concretely:
+        # a self-hosted-OIDC session hits the `nous` provider first, which
+        # tries to reach Nous Portal's JWKS; if that's unreachable it raises,
+        # but the `self-hosted` provider can still verify the token.) So we
+        # remember the unreachable error and keep going. Only if NO provider
+        # verifies the token AND at least one was unreachable do we surface a
+        # 503 — distinguishing "transient IDP outage" (don't force re-login)
+        # from "token genuinely invalid" (fall through to refresh/relogin).
+        unreachable_provider: str | None = None
+        for provider in list_session_providers():
             try:
                 session = provider.verify_session(access_token=at)
             except ProviderError as e:
@@ -220,12 +335,19 @@ async def gated_auth_middleware(
                     reason="provider_unreachable",
                     ip=_client_ip(request),
                 )
-                return JSONResponse(
-                    {"detail": f"Auth provider {provider.name!r} unreachable"},
-                    status_code=503,
-                )
+                if unreachable_provider is None:
+                    unreachable_provider = provider.name
+                continue
             if session is not None:
                 break
+        if session is None and unreachable_provider is not None:
+            # No provider could verify the token and at least one couldn't be
+            # reached — treat as a transient outage rather than forcing a
+            # re-login through a (possibly also-unreachable) refresh.
+            return JSONResponse(
+                {"detail": f"Auth provider {unreachable_provider!r} unreachable"},
+                status_code=503,
+            )
 
     if session is None:
         # Access token is expired/invalid. Before forcing re-login, try to
@@ -313,7 +435,7 @@ def _attempt_refresh(request: Request, *, refresh_token):
     """
     if not refresh_token:
         return None
-    for provider in list_providers():
+    for provider in list_session_providers():
         try:
             new_session = provider.refresh_session(refresh_token=refresh_token)
         except RefreshExpiredError:
@@ -341,4 +463,3 @@ def _attempt_refresh(request: Request, *, refresh_token):
         if new_session is not None:
             return new_session, provider.name
     return None
-

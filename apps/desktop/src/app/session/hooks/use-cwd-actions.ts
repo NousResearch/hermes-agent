@@ -1,7 +1,14 @@
 import { type MutableRefObject, useCallback } from 'react'
 
+import { useI18n } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
-import { $currentCwd, setCurrentBranch, setCurrentCwd } from '@/store/session'
+import {
+  $currentCwd,
+  $newChatWorkspaceTargetGeneration,
+  setCurrentBranch,
+  setCurrentCwd,
+  setNewChatWorkspaceTarget
+} from '@/store/session'
 import type { SessionRuntimeInfo } from '@/types/hermes'
 
 interface CwdActionsOptions {
@@ -17,6 +24,9 @@ export function useCwdActions({
   onSessionRuntimeInfo,
   requestGateway
 }: CwdActionsOptions) {
+  const { t } = useI18n()
+  const copy = t.desktop
+
   const refreshProjectBranch = useCallback(
     async (cwd: string) => {
       const target = cwd.trim()
@@ -51,6 +61,7 @@ export function useCwdActions({
 
       if (!activeSessionId) {
         setCurrentCwd(trimmed)
+        const workspaceGeneration = setNewChatWorkspaceTarget(trimmed)
 
         try {
           const info = await requestGateway<{ branch?: string; cwd?: string }>('config.get', {
@@ -58,15 +69,22 @@ export function useCwdActions({
             cwd: trimmed
           })
 
+          if ($newChatWorkspaceTargetGeneration.get() !== workspaceGeneration || activeSessionIdRef.current) {
+            return
+          }
+
           // Adopt the backend's normalized cwd so the persisted workspace and
           // branch stay consistent with what the agent will use.
           if (info.cwd) {
             setCurrentCwd(info.cwd)
+            setNewChatWorkspaceTarget(info.cwd)
           }
 
           setCurrentBranch(info.branch || '')
         } catch {
-          setCurrentBranch('')
+          if ($newChatWorkspaceTargetGeneration.get() === workspaceGeneration && !activeSessionIdRef.current) {
+            setCurrentBranch('')
+          }
         }
 
         return
@@ -85,7 +103,7 @@ export function useCwdActions({
         const message = err instanceof Error ? err.message : String(err)
 
         if (!message.includes('unknown method')) {
-          notifyError(err, 'Working directory change failed')
+          notifyError(err, copy.cwdChangeFailed)
 
           return
         }
@@ -94,12 +112,12 @@ export function useCwdActions({
         setCurrentBranch('')
         notify({
           kind: 'warning',
-          title: 'Working directory staged',
-          message: 'Restart the desktop backend to apply cwd changes to this active session.'
+          title: copy.cwdStagedTitle,
+          message: copy.cwdStagedMessage
         })
       }
     },
-    [activeSessionId, onSessionRuntimeInfo, requestGateway]
+    [activeSessionId, activeSessionIdRef, copy, onSessionRuntimeInfo, requestGateway]
   )
 
   return { changeSessionCwd, refreshProjectBranch }

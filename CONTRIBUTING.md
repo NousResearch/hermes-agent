@@ -49,6 +49,24 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 
 ---
 
+## Memory Providers: Ship as a Standalone Plugin
+
+**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (honcho, mem0, supermemory, byterover, hindsight, holographic, openviking, retaindb) is closed. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.hermes/plugins/` (or via a pip entry point).
+
+Standalone memory plugins:
+
+- Implement the same `MemoryProvider` ABC (`agent/memory_provider.py`) — `sync_turn`, `prefetch`, `shutdown`, and optionally `post_setup(hermes_home, config)` for setup-wizard integration
+- Use the same discovery system — `discover_memory_providers()` picks them up from user/project plugin directories and pip entry points
+- Integrate with `hermes memory setup` via `post_setup()` — no need to touch core code
+- Can register their own CLI subcommands via `register_cli(subparser)` in a `cli.py` file
+- Get all the same lifecycle hooks and config plumbing as in-tree providers
+
+PRs that add a new directory under `plugins/memory/` will be closed with a pointer to publish the provider as its own repo. Existing in-tree providers stay; bug fixes to them are welcome.
+
+This isn't a quality bar — it's a coupling-and-maintenance decision. Memory providers are the most common plugin type and they shouldn't all live in this tree.
+
+---
+
 ## Development Setup
 
 ### Prerequisites
@@ -72,9 +90,6 @@ export VIRTUAL_ENV="$(pwd)/venv"
 
 # Install with all extras (messaging, cron, CLI menus, dev tools)
 uv pip install -e ".[all,dev]"
-
-# Optional: RL training submodule
-# git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"
 
 # Optional: browser tools
 npm install
@@ -106,6 +121,11 @@ hermes chat -q "Hello"
 ### Run tests
 
 ```bash
+# Preferred — matches CI (hermetic env, 4 xdist workers); see AGENTS.md
+scripts/run_tests.sh
+
+# Alternative (activate the venv first). The wrapper is still recommended
+# for parity with GitHub Actions before you open a PR:
 pytest tests/ -v
 ```
 
@@ -173,7 +193,6 @@ hermes-agent/
 │
 ├── skills/                   # Bundled skills (copied to ~/.hermes/skills/ on install)
 ├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
-├── environments/             # RL training environments (Atropos integration)
 ├── tests/                    # Test suite
 ├── website/                  # Documentation site (hermes-agent.nousresearch.com)
 │
@@ -286,16 +305,18 @@ registry.register(
 )
 ```
 
-Then add the import to `model_tools.py` in the `_modules` list:
+**Wire into a toolset (required):** Built-in tools are auto-discovered: any
+`tools/*.py` file that contains a top-level `registry.register(...)` call is
+imported by `discover_builtin_tools()` in `tools/registry.py` when `model_tools`
+loads. There is **no** manual import list in `model_tools.py` to maintain.
 
-```python
-_modules = [
-    # ... existing modules ...
-    "tools.my_tool",
-]
-```
+You must still add the tool name to the appropriate list in `toolsets.py`
+(for example `_HERMES_CORE_TOOLS` or a dedicated toolset); otherwise the tool
+registers but is never exposed to the agent. If you introduce a new toolset,
+add it in `toolsets.py` and wire it into the relevant platform presets.
 
-If it's a new toolset, add it to `toolsets.py` and to the relevant platform presets.
+See `AGENTS.md` (section **Adding New Tools**) for profile-aware paths and
+plugin vs core guidance.
 
 ---
 
@@ -454,6 +475,58 @@ Gateway and messaging sessions never collect secrets in-band; they instruct the 
 
 See `skills/gifs/gif-search/` and `skills/email/himalaya/` for examples.
 
+### Skill authoring standards (HARDLINE)
+
+Every new or modernized skill — bundled, optional, or contributed — must meet these standards before merge. Reviewers reject PRs that violate them.
+
+1. **`description` ≤ 60 characters, one sentence, ends with a period.** Long descriptions bloat the skill listing UI and dilute the model's attention when many skills are loaded. State the capability, not the implementation. No marketing words ("powerful", "comprehensive", "seamless", "advanced"). Don't repeat the skill name. Verify with:
+   ```python
+   import re, pathlib
+   m = re.search(r'^description: (.*)$',
+                 pathlib.Path('skills/<cat>/<name>/SKILL.md').read_text(),
+                 re.MULTILINE)
+   assert len(m.group(1)) <= 60, len(m.group(1))
+   ```
+
+   Good: `Search arXiv papers by keyword, author, category, or ID.`
+   Bad: `A powerful and comprehensive skill that allows the agent to search arXiv for relevant academic papers using various criteria including keywords, authors, and categories.`
+
+2. **Tools referenced in SKILL.md prose must be native Hermes tools or MCP servers the skill explicitly expects.** When the skill needs a capability, point at the proper tool by name in backticks: `` `terminal` ``, `` `web_extract` ``, `` `web_search` ``, `` `read_file` ``, `` `write_file` ``, `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``, `` `browser_navigate` ``, `` `delegate_task` ``, `` `image_generate` ``, `` `text_to_speech` ``, `` `cronjob` ``, `` `memory` ``, `` `skill_view` ``, `` `todo` ``, `` `execute_code` ``.
+
+   Do NOT name shell utilities the agent already has wrapped:
+
+   | Don't say | Say |
+   |---|---|
+   | `grep`, `rg` | `search_files` |
+   | `cat`, `head`, `tail` | `read_file` |
+   | `sed`, `awk` | `patch` |
+   | `find`, `ls` | `search_files` (with `target='files'`) |
+   | `curl` for content extraction | `web_extract` |
+   | `echo > file`, `cat <<EOF` | `write_file` |
+
+   If the skill depends on an MCP server, name the MCP server and document its setup in `## Prerequisites`. Third-party CLIs (e.g. `ffmpeg`, `gh`, a specific SDK) are fine to invoke from inside script files, but the prose should frame the interaction as "invoke through the `terminal` tool", not as a manual shell session.
+
+3. **`platforms:` gating audited against actual script imports.** Skills that use POSIX-only primitives (`fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)` for liveness, `/proc`, hardcoded `/tmp` paths, `signal.SIGKILL`, bash heredocs, `osascript`, `apt`, `systemctl`) must declare their supported platforms via the `platforms:` frontmatter. Default posture is to fix it cross-platform first — `tempfile.gettempdir()`, `pathlib.Path`, `psutil.pid_exists()`, Python-level filtering instead of `grep`. Gate to a narrower set only when the dependency is genuinely platform-bound (e.g. `osascript` is macOS-only, `/proc` is Linux-only).
+
+4. **`author` credits the human contributor first.** For external contributions, the contributor's real name + GitHub handle goes first (`Jane Doe (jane-doe)`); "Hermes Agent" is the secondary collaborator. If the contributor's commit shows "Hermes Agent" as author because they used Hermes to draft the skill, replace it with their actual name — credit the human, not the tool.
+
+5. **SKILL.md body uses the modern section order.** `# <Skill> Skill` title, 2-3 sentence intro stating what it does and what it doesn't do, then:
+   - `## When to Use` — trigger conditions
+   - `## Prerequisites` — env vars, install steps, MCP setup, API key sourcing
+   - `## How to Run` — canonical invocation through the `terminal` tool
+   - `## Quick Reference` — flat command/API reference
+   - `## Procedure` — numbered steps with copy-paste commands
+   - `## Pitfalls` — known limits, rate limits, things that look broken but aren't
+   - `## Verification` — single command that proves the skill works
+
+   Target ~200 lines for a complex skill, ~100 lines for a simple one. Cut redundant intro fluff, marketing prose, and re-explanations of env vars already documented in `## Prerequisites`.
+
+6. **Scripts go in `scripts/`, references in `references/`, templates in `templates/`.** Don't expect the model to inline-write parsers, XML walkers, or non-trivial logic every call — ship a helper script. Reference scripts from SKILL.md by path relative to the skill directory.
+
+7. **Tests live at `tests/skills/test_<skill>_skill.py`** and use only stdlib + pytest + `unittest.mock`. No live network calls. Run via `scripts/run_tests.sh tests/skills/test_<skill>_skill.py -q`. Must pass under the hermetic CI env (no API keys leaking through). Use `monkeypatch` and `tmp_path` for any env-var or filesystem dependencies.
+
+8. **`.env.example` additions are isolated to a clearly delimited block.** Don't touch the surrounding file — contributor-supplied `.env.example` versions are usually stale, and edits outside the skill's own block will be dropped during salvage. Comment all values with `#` (it's documentation, not live config).
+
 ### Skill guidelines
 
 - **No external dependencies unless absolutely necessary.** Prefer stdlib Python, curl, and existing Hermes tools (`web_extract`, `terminal`, `read_file`).
@@ -515,11 +588,57 @@ See `hermes_cli/skin_engine.py` for the full schema and existing skins as exampl
 
 ## Cross-Platform Compatibility
 
-Hermes runs on Linux, macOS, and WSL2 on Windows. When writing code that touches the OS:
+Hermes runs on Linux, macOS, and native Windows (plus WSL2). When writing code
+that touches the OS, assume *any* platform can hit your code path.
+
+> **Before you PR:** run `scripts/check-windows-footguns.py` to catch the
+> common Windows-unsafe patterns in your diff. It's grep-based and cheap;
+> CI runs it on every PR too.
 
 ### Critical rules
 
-1. **`termios` and `fcntl` are Unix-only.** Always catch both `ImportError` and `NotImplementedError`:
+1. **Never call `os.kill(pid, 0)` for liveness checks.** `os.kill(pid, 0)`
+   is a standard POSIX idiom to check "is this PID alive" — the signal 0
+   is a no-op permission check. **On Windows it is NOT a no-op.** Python's
+   Windows `os.kill` maps `sig=0` to `CTRL_C_EVENT` (they collide at the
+   integer value 0) and routes it through `GenerateConsoleCtrlEvent(0, pid)`,
+   which broadcasts Ctrl+C to the **entire console process group** containing
+   the target PID. "Probe if alive" silently becomes "kill the target and
+   often unrelated processes sharing its console." See [bpo-14484](https://bugs.python.org/issue14484)
+   (open since 2012 — will never be fixed for compat reasons).
+
+   **Preferred:** use `psutil` (a core dependency — always available):
+
+   ```python
+   import psutil
+   if psutil.pid_exists(pid):
+       # process is alive — safe on every platform
+       ...
+   ```
+
+   If you specifically need the hermes wrapper (it has a stdlib fallback
+   for scaffold-phase imports before pip install finishes), use
+   `gateway.status._pid_exists(pid)`. It calls `psutil.pid_exists` first
+   and falls back to a hand-rolled `OpenProcess + WaitForSingleObject`
+   dance on Windows only when psutil is somehow missing.
+
+   Audit grep for new callsites: `rg "os\.kill\([^,]+,\s*0\s*\)"`. Any hit
+   in non-test code is presumptively a Windows silent-kill bug.
+
+2. **Use `shutil.which()` before shelling out — don't assume Windows has
+   tools Linux has.** `wmic` was removed in Windows 10 21H1 and later. `ps`,
+   `kill`, `grep`, `awk`, `fuser`, `lsof`, `pgrep`, and most POSIX CLI tools
+   simply don't exist on Windows. Test availability with
+   `shutil.which("tool")` and fall back to a Windows-native equivalent —
+   usually PowerShell via `subprocess.run(["powershell", "-NoProfile",
+   "-Command", ...])`.
+
+   For process enumeration: PowerShell's `Get-CimInstance Win32_Process` is
+   the modern replacement for `wmic process`. See
+   `hermes_cli/gateway.py::_scan_gateway_pids` for the pattern.
+
+3. **`termios` and `fcntl` are Unix-only.** Always catch both `ImportError`
+   and `NotImplementedError`:
    ```python
    try:
        from simple_term_menu import TerminalMenu
@@ -532,24 +651,126 @@ Hermes runs on Linux, macOS, and WSL2 on Windows. When writing code that touches
        idx = int(input("Choice: ")) - 1
    ```
 
-2. **File encoding.** Windows may save `.env` files in `cp1252`. Always handle encoding errors:
+4. **File encoding.** Windows may save `.env` files in `cp1252`. Always
+   handle encoding errors:
    ```python
    try:
        load_dotenv(env_path)
    except UnicodeDecodeError:
        load_dotenv(env_path, encoding="latin-1")
    ```
+   Config files (`config.yaml`) may be saved with a UTF-8 BOM by Notepad and
+   similar editors — use `encoding="utf-8-sig"` when reading files that
+   could have been touched by a Windows GUI editor.
 
-3. **Process management.** `os.setsid()`, `os.killpg()`, and signal handling differ on Windows. Use platform checks:
+5. **Process management.** `os.setsid()`, `os.killpg()`, `os.fork()`,
+   `os.getuid()`, and POSIX signal handling differ on Windows. Guard with
+   `platform.system()`, `sys.platform`, or `hasattr(os, "setsid")`:
    ```python
-   import platform
    if platform.system() != "Windows":
        kwargs["preexec_fn"] = os.setsid
+   else:
+       kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
    ```
 
-4. **Path separators.** Use `pathlib.Path` instead of string concatenation with `/`.
+   **Preferred:** for killing a process AND its children (what `os.killpg`
+   does on POSIX), use `psutil` — it works on every platform:
+   ```python
+   import psutil
+   try:
+       parent = psutil.Process(pid)
+       # Kill children first (leaf-up), then the parent.
+       for child in parent.children(recursive=True):
+           child.kill()
+       parent.kill()
+   except psutil.NoSuchProcess:
+       pass
+   ```
 
-5. **Shell commands in installers.** If you change `scripts/install.sh`, check if the equivalent change is needed in `scripts/install.ps1`.
+6. **Signals that don't exist on Windows: `SIGALRM`, `SIGCHLD`, `SIGHUP`,
+   `SIGUSR1`, `SIGUSR2`, `SIGPIPE`, `SIGQUIT`, `SIGKILL`.** Python's
+   `signal` module raises `AttributeError` at import time if you reference
+   them on Windows. Use `getattr(signal, "SIGKILL", signal.SIGTERM)` or
+   gate the whole block behind a platform check. `loop.add_signal_handler`
+   raises `NotImplementedError` on Windows — always catch it.
+
+7. **Path separators.** Use `pathlib.Path` instead of string concatenation
+   with `/`. Forward slashes work almost everywhere on Windows, but
+   `subprocess.run(["cmd.exe", "/c", ...])` and other shell contexts can
+   require backslashes — convert with `str(path)` at the subprocess boundary,
+   not inside Python logic.
+
+8. **Symlinks need elevated privileges on Windows** (unless Developer Mode is
+   on). Tests that create symlinks need `@pytest.mark.skipif(sys.platform ==
+   "win32", reason="Symlinks require elevated privileges on Windows")`.
+
+9. **POSIX file modes (0o600, 0o644, etc.) are NOT enforced on NTFS** by
+   default. Tests that assert on `stat().st_mode & 0o777` must skip on
+   Windows — the concept doesn't translate. Use ACLs (`icacls`, `pywin32`)
+   for Windows secret-file protection if needed.
+
+10. **Detached background daemons on Windows need `pythonw.exe`, NOT
+    `python.exe`.** `python.exe` always allocates or attaches to a console,
+    which makes it vulnerable to `CTRL_C_EVENT` broadcasts from any sibling
+    process. `pythonw.exe` is the no-console variant. Combine with
+    `CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
+    CREATE_BREAKAWAY_FROM_JOB` in `subprocess.Popen(creationflags=...)`.
+    See `hermes_cli/gateway_windows.py::_spawn_detached` for the reference
+    implementation.
+
+11. **`subprocess.Popen` with `.cmd` or `.bat` shims needs `shutil.which`
+    to resolve.** Passing `"agent-browser"` to `Popen` on Windows finds
+    the extensionless POSIX shebang shim in `node_modules/.bin/`, which
+    `CreateProcessW` can't execute — you'll get `WinError 193 "not a valid
+    Win32 application"`. Use `shutil.which("agent-browser", path=local_bin)`
+    which honors PATHEXT and picks the `.CMD` variant on Windows.
+
+12. **Don't use shell shebangs as a way to run Python.** `#!/usr/bin/env
+    python` only works when the file is executed through a Unix shell.
+    `subprocess.run(["./myscript.py"])` on Windows fails even if the file
+    has a shebang line. Always invoke Python explicitly:
+    `[sys.executable, "myscript.py"]`.
+
+13. **Shell commands in installers.** If you change `scripts/install.sh`,
+    make the equivalent change in `scripts/install.ps1`. The two scripts
+    are the canonical example of "works on Linux does not mean works on
+    Windows" and have drifted multiple times — keep them in lockstep.
+
+14. **Known paths that are OneDrive-redirected on Windows:** Desktop,
+    Documents, Pictures, Videos. The "real" path when OneDrive Backup is
+    enabled is `%USERPROFILE%\OneDrive\Desktop` (etc.), NOT
+    `%USERPROFILE%\Desktop` (which exists as an empty husk). Resolve the
+    real location via `ctypes` + `SHGetKnownFolderPath` or by reading the
+    `Shell Folders` registry key — never assume `~/Desktop`.
+
+15. **CRLF vs LF in generated scripts.** Windows `cmd.exe` and `schtasks`
+    parse line-by-line; mixed or LF-only line endings can break multi-line
+    `.cmd` / `.bat` files. Use `open(path, "w", encoding="utf-8",
+    newline="\r\n")` — or `open(path, "wb")` + explicit bytes — when
+    generating scripts Windows will execute.
+
+16. **Two different quoting schemes in one command line.** `subprocess.run
+    (["schtasks", "/TR", some_cmd])` → schtasks itself parses `/TR`, AND
+    the `some_cmd` string is re-parsed by `cmd.exe` when the task fires.
+    Different parsers, different escape rules. Use two separate quoting
+    helpers and never cross them. See `hermes_cli/gateway_windows.py::
+    _quote_cmd_script_arg` and `_quote_schtasks_arg` for the reference
+    pair.
+
+### Testing cross-platform
+
+Tests that use POSIX-only syscalls need a skip marker. Common ones:
+- Symlinks → `@pytest.mark.skipif(sys.platform == "win32", ...)`
+- `0o600` file modes → `@pytest.mark.skipif(sys.platform.startswith("win"), ...)`
+- `signal.SIGALRM` → Unix-only (see `tests/conftest.py::_enforce_test_timeout`)
+- `os.setsid` / `os.fork` → Unix-only
+- Live Winsock / Windows-specific regression tests →
+  `@pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific regression")`
+
+If you monkeypatch `sys.platform` for cross-platform tests, also patch
+`platform.system()` / `platform.release()` / `platform.mac_ver()` — each
+re-reads the real OS independently, so half-patched tests still route
+through the wrong branch on a Windows runner.
 
 ---
 
@@ -579,6 +800,47 @@ Hermes has terminal access. Security matters.
 
 If your PR affects security, note it explicitly in the description.
 
+### Dependency pinning policy (supply chain hardening)
+
+After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/issues/24512) in March 2026 and the [Mini Shai-Hulud worm campaign](https://socket.dev/blog/tanstack-npm-packages-compromised-mini-shai-hulud-supply-chain-attack) in May 2026, all dependencies must follow these rules:
+
+| Source type | Required treatment | Rationale |
+|---|---|---|
+| **PyPI package** | `>=floor,<next_major` | PyPI versions are immutable once published, but new versions can be pushed into your range. A `<next_major` ceiling stops a 1.x install from upgrading to a malicious 2.0.0. |
+| **Git URL** (atroposlib, tinker, yc-bench, Baileys) | Full commit SHA | Branches and tags are mutable refs; SHA is content-addressed. |
+| **GitHub Actions** | Full commit SHA + version comment | Action tags are mutable refs (e.g. tj-actions/changed-files March 2025). Pin as `uses: owner/action@<sha>  # vX.Y.Z` |
+| **CI-only pip installs** | `==exact` | Hermetic CI builds; churn is acceptable. |
+
+**Every new PyPI dependency in a PR must have a `<next_major` upper bound.** PRs adding unbounded `>=X.Y.Z` specs will be rejected by reviewers. The `supply-chain-audit.yml` CI workflow also flags dependency manifest changes for manual review.
+
+**How to determine the ceiling:**
+- If the package is at version `1.x.y`, use `<2`.
+- If the package is at version `0.x.y` (pre-1.0), use `<0.(current_minor + 2)` — e.g. if current is `0.29.x`, use `<0.32`. This gives ~2 minor versions of headroom while keeping the window small enough that a hostile takeover version is unlikely to land inside it.
+- Exception: packages with very stable APIs (e.g. `aiohttp-socks`) can use `<1` at reviewer discretion.
+
+**Examples:**
+```toml
+# ✅ Correct — post-1.0
+"openai>=2.21.0,<3"
+"pydantic>=2.12.5,<3"
+
+# ✅ Correct — pre-1.0 (tight minor window)
+"asyncpg>=0.29,<0.32"
+"aiosqlite>=0.20,<0.23"
+"hindsight-client>=0.4.22,<0.5"
+
+# ❌ Rejected — no upper bound
+"some-package>=1.2.3"
+
+# ❌ Rejected — too tight (blocks legitimate patches)
+"some-package==1.2.3"
+
+# ❌ Rejected — too loose for pre-1.0 (allows 80 minor versions)
+"some-package>=0.20,<1"
+```
+
+**Reference PRs:** #2796 (litellm removal), #2810 (upper bounds pass), #9801 (SHA pinning + supply-chain-audit CI).
+
 ---
 
 ## Pull Request Process
@@ -595,7 +857,7 @@ refactor/description   # Code restructuring
 
 ### Before submitting
 
-1. **Run tests**: `pytest tests/ -v`
+1. **Run tests**: `scripts/run_tests.sh` (recommended; same as CI) or `pytest tests/ -v` with the project venv activated
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.

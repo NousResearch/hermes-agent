@@ -20,6 +20,7 @@ IRCAdapter = _irc_mod.IRCAdapter
 check_requirements = _irc_mod.check_requirements
 validate_config = _irc_mod.validate_config
 register = _irc_mod.register
+_standalone_send = _irc_mod._standalone_send
 
 
 class TestIRCProtocolHelpers:
@@ -500,3 +501,224 @@ class TestIRCPluginRegistration:
         ctx.register_platform.assert_called_once()
         call_kwargs = ctx.register_platform.call_args
         assert call_kwargs[1]["name"] == "irc" or call_kwargs[0][0] == "irc" if call_kwargs[0] else call_kwargs[1]["name"] == "irc"
+
+
+# ── _standalone_send (out-of-process cron delivery) ──────────────────────
+
+
+class _FakeIRCConnection:
+    """A scripted reader/writer pair used to simulate an IRC server.
+
+    Construct with the lines the server should respond with (already
+    framed by ``\\r\\n``).  Captures every line written by the client so
+    tests can assert NICK/USER/PRIVMSG/QUIT order.
+    """
+
+    def __init__(self, scripted_lines):
+        self.writes: list[bytes] = []
+        self._closed = False
+        self._scripted = list(scripted_lines)
+        self._buffer = b""
+
+    # writer side ────────────────────────────────────────────────────
+    def write(self, data: bytes) -> None:
+        self.writes.append(data)
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self._closed = True
+
+    async def wait_closed(self) -> None:
+        return None
+
+    def is_closing(self) -> bool:
+        return self._closed
+
+    # reader side ────────────────────────────────────────────────────
+    async def readuntil(self, separator: bytes = b"\r\n") -> bytes:
+        if not self._scripted:
+            raise asyncio.IncompleteReadError(b"", None)
+        line = self._scripted.pop(0)
+        if not line.endswith(b"\r\n"):
+            line = line + b"\r\n"
+        return line
+
+    async def read(self, n: int = -1) -> bytes:
+        return b""
+
+
+class TestIRCStandaloneSend:
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_completes_handshake_and_sends_privmsg(self, monkeypatch):
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setenv("IRC_SERVER", "irc.test.net")
+        monkeypatch.setenv("IRC_CHANNEL", "#cron")
+        monkeypatch.setenv("IRC_NICKNAME", "hermesbot")
+        monkeypatch.setenv("IRC_USE_TLS", "false")
+
+        # Server greets us with 001 RPL_WELCOME, then nothing for QUIT drain.
+        conn = _FakeIRCConnection([b":server 001 hermesbot-cron :Welcome"])
+
+        async def _fake_open(host, port, **kwargs):
+            return conn, conn  # reader and writer share the same fake
+
+        monkeypatch.setattr(_irc_mod.asyncio, "open_connection", _fake_open)
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "#cron",
+            "hello from cron",
+        )
+
+        assert result["success"] is True
+        assert "message_id" in result
+
+        sent_lines = b"".join(conn.writes).decode("utf-8").splitlines()
+        # NICK uses the cron-suffixed identity to avoid colliding with the
+        # long-running gateway adapter that may already hold the nickname.
+        assert any(line.startswith("NICK hermesbot-cron") for line in sent_lines)
+        assert any(line.startswith("USER hermesbot-cron 0 * :Hermes Agent (cron)")
+                   for line in sent_lines)
+        assert any(line == "PRIVMSG #cron :hello from cron" for line in sent_lines)
+        assert any(line.startswith("QUIT ") for line in sent_lines)
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_returns_error_when_unconfigured(self, monkeypatch):
+        from gateway.config import PlatformConfig
+
+        for var in ("IRC_SERVER", "IRC_CHANNEL"):
+            monkeypatch.delenv(var, raising=False)
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "",
+            "hi",
+        )
+
+        assert "error" in result
+        assert "IRC_SERVER" in result["error"] or "IRC_CHANNEL" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_returns_error_on_registration_timeout(self, monkeypatch):
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setenv("IRC_SERVER", "irc.test.net")
+        monkeypatch.setenv("IRC_CHANNEL", "#cron")
+        monkeypatch.setenv("IRC_NICKNAME", "hermesbot")
+        monkeypatch.setenv("IRC_USE_TLS", "false")
+
+        # No 001 response: the readuntil call returns IncompleteReadError so
+        # the registration loop times out via the asyncio wait_for inside.
+        conn = _FakeIRCConnection([])
+
+        async def _fake_open(host, port, **kwargs):
+            return conn, conn
+
+        monkeypatch.setattr(_irc_mod.asyncio, "open_connection", _fake_open)
+
+        # Patch wait_for to raise TimeoutError immediately so the test is fast
+        async def _fast_timeout(coro, timeout):
+            try:
+                return await coro
+            except asyncio.IncompleteReadError:
+                raise asyncio.TimeoutError()
+
+        monkeypatch.setattr(_irc_mod.asyncio, "wait_for", _fast_timeout)
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "#cron",
+            "hi",
+        )
+
+        assert "error" in result
+        assert "registration" in result["error"].lower() or "timeout" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_rejects_crlf_in_chat_id(self, monkeypatch):
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setenv("IRC_SERVER", "irc.test.net")
+        monkeypatch.setenv("IRC_CHANNEL", "#cron")
+        monkeypatch.setenv("IRC_NICKNAME", "hermesbot")
+        monkeypatch.setenv("IRC_USE_TLS", "false")
+
+        # Attempt to inject a second IRC command via CRLF in chat_id
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "#cron\r\nKICK #cron hermesbot",
+            "hi",
+        )
+
+        assert "error" in result
+        assert "illegal IRC characters" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_strips_crlf_from_message_body(self, monkeypatch):
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setenv("IRC_SERVER", "irc.test.net")
+        monkeypatch.setenv("IRC_CHANNEL", "#cron")
+        monkeypatch.setenv("IRC_NICKNAME", "hermesbot")
+        monkeypatch.setenv("IRC_USE_TLS", "false")
+
+        conn = _FakeIRCConnection([b":server 001 hermesbot-cron :Welcome"])
+
+        async def _fake_open(host, port, **kwargs):
+            return conn, conn
+
+        monkeypatch.setattr(_irc_mod.asyncio, "open_connection", _fake_open)
+
+        # A bare \r in message content tries to inject a NICK command.
+        # Our control-char stripper must blank \r so the line stays one PRIVMSG.
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "#cron",
+            "hello\rNICK eviltwin",
+        )
+
+        sent_lines = b"".join(conn.writes).decode("utf-8").splitlines()
+        # No injected NICK command after the legitimate registration NICK
+        nick_lines = [line for line in sent_lines if line.startswith("NICK ")]
+        # Only the original registration NICK should be present (no injected one)
+        assert all(line.startswith("NICK hermesbot-cron") for line in nick_lines)
+        # The PRIVMSG should contain "hello NICK eviltwin" as one line (with \r blanked)
+        assert any("PRIVMSG #cron :hello NICK eviltwin" in line for line in sent_lines)
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_joins_channel_before_privmsg(self, monkeypatch):
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setenv("IRC_SERVER", "irc.test.net")
+        monkeypatch.setenv("IRC_CHANNEL", "#cron")
+        monkeypatch.setenv("IRC_NICKNAME", "hermesbot")
+        monkeypatch.setenv("IRC_USE_TLS", "false")
+
+        # Register, then accept JOIN with 366 RPL_ENDOFNAMES, then PRIVMSG.
+        conn = _FakeIRCConnection([
+            b":server 001 hermesbot-cron :Welcome",
+            b":server 366 hermesbot-cron #cron :End of /NAMES list.",
+        ])
+
+        async def _fake_open(host, port, **kwargs):
+            return conn, conn
+
+        monkeypatch.setattr(_irc_mod.asyncio, "open_connection", _fake_open)
+
+        result = await _standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "#cron",
+            "hello",
+        )
+
+        assert result["success"] is True
+        sent_lines = b"".join(conn.writes).decode("utf-8").splitlines()
+        join_idx = next((i for i, line in enumerate(sent_lines) if line.startswith("JOIN #cron")), None)
+        privmsg_idx = next((i for i, line in enumerate(sent_lines) if line.startswith("PRIVMSG #cron")), None)
+        assert join_idx is not None, "JOIN must be sent for channel targets"
+        assert privmsg_idx is not None
+        assert join_idx < privmsg_idx, "JOIN must precede PRIVMSG"

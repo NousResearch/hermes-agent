@@ -91,6 +91,15 @@ def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     return steps
 
 
+def _termux_install_all_fallback_notes() -> list[str]:
+    return [
+        "Termux install profile: use .[termux-all] for broad compatibility (installer default on Termux).",
+        "Matrix E2EE extra is excluded on Termux (python-olm currently fails to build).",
+        "Local faster-whisper extra is excluded on Termux (ctranslate2/av build path unavailable).",
+        "STT fallback: use Groq Whisper (set GROQ_API_KEY) or OpenAI Whisper (set VOICE_TOOLS_OPENAI_KEY).",
+    ]
+
+
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
@@ -141,6 +150,30 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
             continue
         updated_unavailable.append(item)
     return updated_available, updated_unavailable
+
+
+def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool:
+    """Return True when a direct API-key probe failure is non-blocking.
+
+    Some provider families support both a direct API-key path and a separate
+    OAuth runtime path. When the OAuth path is already healthy, doctor should
+    still show a failed API-key connectivity row, but it should not promote
+    that direct-key problem into the final blocking summary.
+    """
+    try:
+        from hermes_cli.auth import (
+            get_gemini_oauth_auth_status,
+            get_minimax_oauth_auth_status,
+        )
+    except Exception:
+        return False
+
+    normalized = (provider_label or "").strip().lower()
+    if normalized in {"google / gemini", "gemini"}:
+        return bool((get_gemini_oauth_auth_status() or {}).get("logged_in"))
+    if normalized == "minimax":
+        return bool((get_minimax_oauth_auth_status() or {}).get("logged_in"))
+    return False
 
 
 def check_ok(text: str, detail: str = ""):
@@ -236,14 +269,30 @@ def _build_apikey_providers_list() -> list:
     }
     for _label, _canonical in _name_to_canonical.items():
         _known_canonical.add(_canonical)
+    # Providers that already have a dedicated health check above the generic
+    # API-key loop (with custom headers/auth). Skip their pluggable profiles
+    # here so the generic Bearer-auth loop doesn't run a duplicate, broken
+    # check (e.g. Anthropic native API requires x-api-key, not Bearer).
+    _dedicated_canonical = {"anthropic", "openrouter", "bedrock"}
+    _known_canonical.update(_dedicated_canonical)
     try:
         from providers import list_providers
         from providers.base import ProviderProfile as _PP
+        try:
+            from hermes_cli.providers import normalize_provider as _normalize_provider
+        except Exception:  # pragma: no cover - normalization is best-effort
+            def _normalize_provider(_name: str) -> str:
+                return (_name or "").strip().lower()
         for _pp in list_providers():
             if not isinstance(_pp, _PP) or _pp.auth_type != "api_key" or not _pp.env_vars:
                 continue
             _label = _pp.display_name or _pp.name
             if _label in _known_names or _pp.name in _known_canonical:
+                continue
+            _candidates = {_normalize_provider(_pp.name)}
+            for _alias in (_pp.aliases or ()):
+                _candidates.add(_normalize_provider(_alias))
+            if _candidates & _dedicated_canonical:
                 continue
             # Separate API-key vars from base-URL override vars — the health-check
             # loop sends the first found value as Authorization: Bearer, so a URL
@@ -262,7 +311,8 @@ def _build_apikey_providers_list() -> list:
                 (_pp.models_url or (_pp.base_url.rstrip("/") + "/models"))
                 if _pp.base_url else None
             )
-            _static.append((_label, _key_vars, _models_url, _base_var, True))
+            _hc = getattr(_pp, "supports_health_check", True)
+            _static.append((_label, _key_vars, _models_url, _base_var, _hc))
     except Exception:
         pass
     return _static
@@ -271,19 +321,101 @@ def _build_apikey_providers_list() -> list:
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
+    ack_target = getattr(args, 'ack', None)
 
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `hermes`.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
-    
+
+    # Handle `hermes doctor --ack <id>` as a fast path. Persist the ack and
+    # return without running the rest of the diagnostics — the user has
+    # already seen the advisory and just wants to silence it.
+    if ack_target:
+        from hermes_cli.security_advisories import (
+            ADVISORIES,
+            ack_advisory,
+        )
+        valid_ids = {a.id for a in ADVISORIES}
+        if ack_target not in valid_ids:
+            print(color(
+                f"Unknown advisory ID: {ack_target!r}. Known IDs: "
+                f"{', '.join(sorted(valid_ids)) or '(none)'}",
+                Colors.RED,
+            ))
+            sys.exit(2)
+        if ack_advisory(ack_target):
+            print(color(
+                f"  ✓ Acknowledged advisory {ack_target}. "
+                f"It will no longer trigger startup banners.",
+                Colors.GREEN,
+            ))
+        else:
+            print(color(
+                f"  ✗ Failed to persist ack for {ack_target}. "
+                f"Check ~/.hermes/config.yaml is writable.",
+                Colors.RED,
+            ))
+            sys.exit(1)
+        return
+
     issues = []
     manual_issues = []  # issues that can't be auto-fixed
     fixed_count = 0
-    
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+
+    # =========================================================================
+    # Check: Security advisories  (RUNS FIRST — these are the most urgent)
+    # =========================================================================
+    print()
+    print(color("◆ Security Advisories", Colors.CYAN, Colors.BOLD))
+    try:
+        from hermes_cli.security_advisories import (
+            detect_compromised,
+            filter_unacked,
+            full_remediation_text,
+            get_acked_ids,
+        )
+        all_hits = detect_compromised()
+        fresh_hits = filter_unacked(all_hits)
+        if fresh_hits:
+            for hit in fresh_hits:
+                check_fail(
+                    f"{hit.advisory.title}",
+                    f"({hit.package}=={hit.installed_version})",
+                )
+                # Print the full remediation block, indented under the
+                # check_fail header so it reads as a single section.
+                for line in full_remediation_text(hit):
+                    if line:
+                        print(f"    {color(line, Colors.YELLOW)}")
+                    else:
+                        print()
+                # Funnel into the action list so the summary block surfaces it
+                # for users who scroll past the section.
+                manual_issues.append(
+                    f"Resolve security advisory {hit.advisory.id}: "
+                    f"uninstall {hit.package}=={hit.installed_version} and "
+                    f"rotate credentials, then run "
+                    f"`hermes doctor --ack {hit.advisory.id}`."
+                )
+            # Acked-but-still-installed: show as informational so the user
+            # knows the package is still on disk after the ack.
+            acked_ids = get_acked_ids()
+            for h in all_hits:
+                if h.advisory.id in acked_ids:
+                    check_warn(
+                        f"{h.package}=={h.installed_version} still installed "
+                        f"(advisory {h.advisory.id} acknowledged)",
+                    )
+        else:
+            check_ok("No active security advisories")
+    except Exception as e:
+        # Never let a bug in the advisory check block the rest of doctor.
+        check_warn(f"Security advisory check failed: {e}")
     
     # =========================================================================
     # Check: Python version
@@ -448,7 +580,7 @@ def run_doctor(args):
             if (
                 provider
                 and _resolve_auth_provider is not None
-                and provider not in ("auto", "custom")
+                and provider not in {"auto", "custom"}
             ):
                 try:
                     runtime_provider = _resolve_auth_provider(provider)
@@ -460,7 +592,7 @@ def run_doctor(args):
             if (
                 provider
                 and _resolve_provider_full is not None
-                and provider not in ("auto", "custom")
+                and provider not in {"auto", "custom"}
             ):
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
                 catalog_provider = provider_def.id if provider_def is not None else None
@@ -517,7 +649,7 @@ def run_doctor(args):
             # own env-var checks elsewhere in doctor, and get_auth_status()
             # returns a bare {logged_in: False} for anything it doesn't
             # explicitly dispatch, which would produce false positives.
-            if runtime_provider and runtime_provider not in ("auto", "custom", "openrouter"):
+            if runtime_provider and runtime_provider not in {"auto", "custom", "openrouter"}:
                 try:
                     from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
                     pconfig = PROVIDER_REGISTRY.get(runtime_provider)
@@ -548,15 +680,17 @@ def run_doctor(args):
         if fallback_config.exists():
             check_ok("cli-config.yaml exists (in project directory)")
         else:
-            example_config = PROJECT_ROOT / 'cli-config.yaml.example'
-            if should_fix and example_config.exists():
+            if should_fix:
                 config_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(str(example_config), str(config_path))
-                check_ok(f"Created {_DHH}/config.yaml from cli-config.yaml.example")
+                example_config = PROJECT_ROOT / 'cli-config.yaml.example'
+                if example_config.exists():
+                    shutil.copy2(str(example_config), str(config_path))
+                    check_ok(f"Created {_DHH}/config.yaml from cli-config.yaml.example")
+                else:
+                    from hermes_cli.config import DEFAULT_CONFIG, save_config
+                    save_config(DEFAULT_CONFIG)
+                    check_ok(f"Created {_DHH}/config.yaml from defaults")
                 fixed_count += 1
-            elif should_fix:
-                check_warn("config.yaml not found and no example to copy from")
-                manual_issues.append(f"Create {_DHH}/config.yaml manually")
             else:
                 check_warn("config.yaml not found", "(using defaults)")
 
@@ -589,7 +723,7 @@ def run_doctor(args):
         # Detect stale root-level model keys (known bug source — PR #4329)
         try:
             import yaml
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 raw_config = yaml.safe_load(f) or {}
             stale_root_keys = [k for k in ("provider", "base_url") if k in raw_config and isinstance(raw_config[k], str)]
             if stale_root_keys:
@@ -704,13 +838,12 @@ def run_doctor(args):
     hermes_home = HERMES_HOME
     if hermes_home.exists():
         check_ok(f"{_DHH} directory exists")
+    elif should_fix:
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        check_ok(f"Created {_DHH} directory")
+        fixed_count += 1
     else:
-        if should_fix:
-            hermes_home.mkdir(parents=True, exist_ok=True)
-            check_ok(f"Created {_DHH} directory")
-            fixed_count += 1
-        else:
-            check_warn(f"{_DHH} not found", "(will be created on first use)")
+        check_warn(f"{_DHH} not found", "(will be created on first use)")
     
     # Check expected subdirectories
     expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]
@@ -718,13 +851,12 @@ def run_doctor(args):
         subdir_path = hermes_home / subdir_name
         if subdir_path.exists():
             check_ok(f"{_DHH}/{subdir_name}/ exists")
+        elif should_fix:
+            subdir_path.mkdir(parents=True, exist_ok=True)
+            check_ok(f"Created {_DHH}/{subdir_name}/")
+            fixed_count += 1
         else:
-            if should_fix:
-                subdir_path.mkdir(parents=True, exist_ok=True)
-                check_ok(f"Created {_DHH}/{subdir_name}/")
-                fixed_count += 1
-            else:
-                check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
+            check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
     
     # Check for SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
@@ -930,14 +1062,12 @@ def run_doctor(args):
         else:
             check_fail("docker not found", "(required for TERMINAL_ENV=docker)")
             issues.append("Install Docker or change TERMINAL_ENV")
+    elif _safe_which("docker"):
+        check_ok("docker", "(optional)")
+    elif _is_termux():
+        check_info("Docker backend is not available inside Termux (expected on Android)")
     else:
-        if _safe_which("docker"):
-            check_ok("docker", "(optional)")
-        else:
-            if _is_termux():
-                check_info("Docker backend is not available inside Termux (expected on Android)")
-            else:
-                check_warn("docker not found", "(optional)")
+        check_warn("docker not found", "(optional)")
     
     # SSH (if using ssh backend)
     if terminal_env == "ssh":
@@ -989,7 +1119,7 @@ def run_doctor(args):
             issues.append(f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}")
 
         disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
-        if disk in ("", "0", "51200"):
+        if disk in {"", "0", "51200"}:
             check_ok("Vercel disk setting", "(uses platform default)")
         else:
             check_fail("Vercel custom disk unsupported", "(reset terminal.container_disk to 51200)")
@@ -1015,7 +1145,7 @@ def run_doctor(args):
         for line in auth_status.detail_lines:
             check_info(f"Vercel auth {line}")
 
-        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("1", "true", "yes", "on")
+        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
         if persistent:
             check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
         else:
@@ -1026,31 +1156,83 @@ def run_doctor(args):
         check_ok("Node.js")
         # Check if agent-browser is installed
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
+        agent_browser_ok = False
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
+            agent_browser_ok = True
         elif shutil.which("agent-browser"):
             check_ok("agent-browser", "(browser automation)")
-        else:
-            if _is_termux():
-                check_info("agent-browser is not installed (expected in the tested Termux path)")
-                check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
-                check_info("Termux browser setup:")
-                for step in _termux_browser_setup_steps(node_installed=True):
-                    check_info(step)
-            else:
-                check_warn("agent-browser not installed", "(run: npm install)")
-    else:
-        if _is_termux():
-            check_info("Node.js not found (browser tools are optional in the tested Termux path)")
-            check_info("Install Node.js on Termux with: pkg install nodejs")
+            agent_browser_ok = True
+        elif _is_termux():
+            check_info("agent-browser is not installed (expected in the tested Termux path)")
+            check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
             check_info("Termux browser setup:")
-            for step in _termux_browser_setup_steps(node_installed=False):
+            for step in _termux_browser_setup_steps(node_installed=True):
                 check_info(step)
         else:
-            check_warn("Node.js not found", "(optional, needed for browser tools)")
+            check_warn("agent-browser not installed", "(run: npm install)")
+
+        # Chromium presence — the browser tools silently fail to register when
+        # agent-browser is found but no Playwright-managed Chromium is on disk
+        # (tools/browser_tool.py::check_browser_requirements filters them out
+        # before the agent ever sees them).  Reuse the exact predicate it uses
+        # so the two checks cannot diverge.  Skip on Termux (not a tested
+        # path).
+        if agent_browser_ok and not _is_termux():
+            try:
+                # Lazy import: browser_tool is a ~150KB module we don't want
+                # to eagerly load in every `hermes doctor` invocation.
+                from tools.browser_tool import (
+                    _chromium_installed,
+                    _is_camofox_mode,
+                    _get_cloud_provider,
+                    _get_cdp_override,
+                    _using_lightpanda_engine,
+                )
+            except Exception:
+                # If browser_tool can't even import, that's a separate bug
+                # surfaced elsewhere; don't crash doctor.
+                pass
+            else:
+                # Only warn about Chromium if the installed engine actually
+                # requires it: Camofox, CDP override, a cloud provider, or
+                # Lightpanda all bypass the local Chromium requirement.
+                skip_chromium_check = (
+                    _is_camofox_mode()
+                    or bool(_get_cdp_override())
+                    or _get_cloud_provider() is not None
+                    or _using_lightpanda_engine()
+                )
+                if not skip_chromium_check:
+                    if _chromium_installed():
+                        check_ok("Playwright Chromium", "(browser engine)")
+                    else:
+                        check_warn(
+                            "Playwright Chromium not installed",
+                            "(browser_* tools will be hidden from the agent)",
+                        )
+                        if sys.platform == "win32":
+                            check_info(
+                                f"Install with: cd {PROJECT_ROOT} && "
+                                "npx playwright install chromium"
+                            )
+                        else:
+                            check_info(
+                                f"Install with: cd {PROJECT_ROOT} && "
+                                "npx playwright install --with-deps chromium"
+                            )
+    elif _is_termux():
+        check_info("Node.js not found (browser tools are optional in the tested Termux path)")
+        check_info("Install Node.js on Termux with: pkg install nodejs")
+        check_info("Termux browser setup:")
+        for step in _termux_browser_setup_steps(node_installed=False):
+            check_info(step)
+    else:
+        check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
-    if _safe_which("npm"):
+    _npm_bin = _safe_which("npm")
+    if _npm_bin:
         npm_dirs = [
             (PROJECT_ROOT, "Browser tools (agent-browser)"),
             (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
@@ -1059,8 +1241,10 @@ def run_doctor(args):
             if not (npm_dir / "node_modules").exists():
                 continue
             try:
+                # Use resolved absolute path so Windows can execute
+                # npm.cmd (CreateProcessW can't run bare .cmd names).
                 audit_result = subprocess.run(
-                    ["npm", "audit", "--json"],
+                    [_npm_bin, "audit", "--json"],
                     cwd=str(npm_dir),
                     capture_output=True, text=True, timeout=30,
                 )
@@ -1078,55 +1262,115 @@ def run_doctor(args):
                         f"{label} deps",
                         f"({critical} critical, {high} high, {moderate} moderate — run: cd {npm_dir} && npm audit fix)"
                     )
-                    issues.append(f"{label} has {total} npm vulnerability(ies)")
+                    issues.append(
+                        f"{label} has {total} npm "
+                        f"{'vulnerability' if total == 1 else 'vulnerabilities'}"
+                    )
                 else:
-                    check_ok(f"{label} deps", f"({moderate} moderate vulnerability(ies))")
+                    check_ok(
+                        f"{label} deps",
+                        f"({moderate} moderate "
+                        f"{'vulnerability' if moderate == 1 else 'vulnerabilities'})",
+                    )
             except Exception:
                 pass
+
+    if _is_termux():
+        check_info("Termux compatibility fallbacks:")
+        for note in _termux_install_all_fallback_notes():
+            check_info(note)
 
     # =========================================================================
     # Check: API connectivity
     # =========================================================================
     print()
     print(color("◆ API Connectivity", Colors.CYAN, Colors.BOLD))
-    
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    if openrouter_key:
-        print("  Checking OpenRouter API...", end="", flush=True)
+
+    # Refactor: every connectivity probe below is HTTP-bound and fully
+    # independent. Running them in series spent ~5s wall on a typical
+    # workstation (2s of that was boto3's IMDS lookup for AWS credentials,
+    # which times out unless you're actually on EC2). Threading them with
+    # a small executor pool collapses the section to roughly the slowest
+    # single probe — about 2s — without changing the output format.
+    #
+    # Each ``_probe_*`` helper is a pure function: takes its inputs,
+    # makes one HTTP/SDK call, returns a ``_ConnectivityResult`` carrying
+    # the line(s) to print and any issue strings to append. No globals,
+    # no shared mutable state, no printing inside the workers.
+    import concurrent.futures as _futures
+    from collections import namedtuple as _namedtuple
+
+    _ConnectivityResult = _namedtuple(
+        "_ConnectivityResult", ["label", "lines", "issues"]
+    )
+    _probes: list = []  # list of (label, callable) submitted in display order
+
+    def _probe_openrouter() -> _ConnectivityResult:
+        key = os.getenv("OPENROUTER_API_KEY")
+        if not key:
+            return _ConnectivityResult(
+                "OpenRouter API",
+                [(color("⚠", Colors.YELLOW), "OpenRouter API",
+                  color("(not configured)", Colors.DIM))],
+                [],
+            )
         try:
             import httpx
-            response = httpx.get(
+            r = httpx.get(
                 OPENROUTER_MODELS_URL,
-                headers={"Authorization": f"Bearer {openrouter_key}"},
-                timeout=10
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=10,
             )
-            if response.status_code == 200:
-                print(f"\r  {color('✓', Colors.GREEN)} OpenRouter API                          ")
-            elif response.status_code == 401:
-                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(invalid API key)', Colors.DIM)}                ")
-                issues.append("Check OPENROUTER_API_KEY in .env")
-            elif response.status_code == 402:
-                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(out of credits — payment required)', Colors.DIM)}")
-                issues.append(
-                    "OpenRouter account has insufficient credits. "
-                    "Fix: run 'hermes config set model.provider <provider>' to switch providers, "
-                    "or fund your OpenRouter account at https://openrouter.ai/settings/credits"
+            if r.status_code == 200:
+                return _ConnectivityResult(
+                    "OpenRouter API",
+                    [(color("✓", Colors.GREEN), "OpenRouter API", "")],
+                    [],
                 )
-            elif response.status_code == 429:
-                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(rate limited)', Colors.DIM)}                ")
-                issues.append("OpenRouter rate limit hit — consider switching to a different provider or waiting")
-            else:
-                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'(HTTP {response.status_code})', Colors.DIM)}                ")
+            if r.status_code == 401:
+                return _ConnectivityResult(
+                    "OpenRouter API",
+                    [(color("✗", Colors.RED), "OpenRouter API",
+                      color("(invalid API key)", Colors.DIM))],
+                    ["Check OPENROUTER_API_KEY in .env"],
+                )
+            if r.status_code == 402:
+                return _ConnectivityResult(
+                    "OpenRouter API",
+                    [(color("✗", Colors.RED), "OpenRouter API",
+                      color("(out of credits — payment required)", Colors.DIM))],
+                    ["OpenRouter account has insufficient credits. "
+                     "Fix: run 'hermes config set model.provider <provider>' "
+                     "to switch providers, or fund your OpenRouter account "
+                     "at https://openrouter.ai/settings/credits"],
+                )
+            if r.status_code == 429:
+                return _ConnectivityResult(
+                    "OpenRouter API",
+                    [(color("✗", Colors.RED), "OpenRouter API",
+                      color("(rate limited)", Colors.DIM))],
+                    ["OpenRouter rate limit hit — consider switching to "
+                     "a different provider or waiting"],
+                )
+            return _ConnectivityResult(
+                "OpenRouter API",
+                [(color("✗", Colors.RED), "OpenRouter API",
+                  color(f"(HTTP {r.status_code})", Colors.DIM))],
+                [],
+            )
         except Exception as e:
-            print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'({e})', Colors.DIM)}                ")
-            issues.append("Check network connectivity")
-    else:
-        check_warn("OpenRouter API", "(not configured)")
-    
-    from hermes_cli.auth import get_anthropic_key
-    anthropic_key = get_anthropic_key()
-    if anthropic_key:
-        print("  Checking Anthropic API...", end="", flush=True)
+            return _ConnectivityResult(
+                "OpenRouter API",
+                [(color("✗", Colors.RED), "OpenRouter API",
+                  color(f"({e})", Colors.DIM))],
+                ["Check network connectivity"],
+            )
+
+    def _probe_anthropic() -> _ConnectivityResult:
+        from hermes_cli.auth import get_anthropic_key
+        key = get_anthropic_key()
+        if not key:
+            return _ConnectivityResult("Anthropic API", [], [])
         try:
             import httpx
             from agent.anthropic_adapter import (
@@ -1135,153 +1379,260 @@ def run_doctor(args):
                 _OAUTH_ONLY_BETAS,
                 _CONTEXT_1M_BETA,
             )
-
             headers = {"anthropic-version": "2023-06-01"}
-            is_oauth = _is_oauth_token(anthropic_key)
+            is_oauth = _is_oauth_token(key)
             if is_oauth:
-                headers["Authorization"] = f"Bearer {anthropic_key}"
+                headers["Authorization"] = f"Bearer {key}"
                 headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
             else:
-                headers["x-api-key"] = anthropic_key
-            response = httpx.get(
+                headers["x-api-key"] = key
+            r = httpx.get(
                 "https://api.anthropic.com/v1/models",
-                headers=headers,
-                timeout=10
+                headers=headers, timeout=10,
             )
-            # Reactive recovery: OAuth subscriptions that don't include 1M
-            # context reject the request with 400 "long context beta is not
-            # yet available for this subscription". Retry once with that
-            # beta stripped so the doctor check doesn't falsely report the
-            # Anthropic API as unreachable for those users.
+            # Reactive recovery: OAuth subscriptions without 1M context reject the
+            # request with 400 "long context beta is not yet available for this
+            # subscription". Retry once with that beta stripped so the doctor
+            # check doesn't falsely report Anthropic as unreachable.
             if (
                 is_oauth
-                and response.status_code == 400
-                and "long context beta" in response.text.lower()
-                and "not yet available" in response.text.lower()
+                and r.status_code == 400
+                and "long context beta" in r.text.lower()
+                and "not yet available" in r.text.lower()
             ):
                 headers["anthropic-beta"] = ",".join(
-                    [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS)
+                    [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
+                    + list(_OAUTH_ONLY_BETAS)
                 )
-                response = httpx.get(
+                r = httpx.get(
                     "https://api.anthropic.com/v1/models",
-                    headers=headers,
-                    timeout=10,
+                    headers=headers, timeout=10,
                 )
-            if response.status_code == 200:
-                print(f"\r  {color('✓', Colors.GREEN)} Anthropic API                           ")
-            elif response.status_code == 401:
-                print(f"\r  {color('✗', Colors.RED)} Anthropic API {color('(invalid API key)', Colors.DIM)}                 ")
-            else:
-                msg = "(couldn't verify)"
-                print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(msg, Colors.DIM)}                 ")
+            if r.status_code == 200:
+                return _ConnectivityResult(
+                    "Anthropic API",
+                    [(color("✓", Colors.GREEN), "Anthropic API", "")],
+                    [],
+                )
+            if r.status_code == 401:
+                return _ConnectivityResult(
+                    "Anthropic API",
+                    [(color("✗", Colors.RED), "Anthropic API",
+                      color("(invalid API key)", Colors.DIM))],
+                    [],
+                )
+            return _ConnectivityResult(
+                "Anthropic API",
+                [(color("⚠", Colors.YELLOW), "Anthropic API",
+                  color("(couldn't verify)", Colors.DIM))],
+                [],
+            )
         except Exception as e:
-            print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
+            return _ConnectivityResult(
+                "Anthropic API",
+                [(color("⚠", Colors.YELLOW), "Anthropic API",
+                  color(f"({e})", Colors.DIM))],
+                [],
+            )
 
-    # -- API-key providers --
-    # Tuple: (name, env_vars, default_url, base_env, supports_models_endpoint)
-    # If supports_models_endpoint is False, we skip the health check and just show "configured"
-    # Cached at module level after first build — profiles auto-extend it.
+    def _probe_apikey_provider(pname, env_vars, default_url, base_env,
+                               supports_health_check) -> _ConnectivityResult:
+        key = ""
+        for ev in env_vars:
+            key = os.getenv(ev, "")
+            if key:
+                break
+        if not key:
+            return _ConnectivityResult(pname, [], [])
+        label = pname.ljust(20)
+        if not supports_health_check:
+            return _ConnectivityResult(
+                pname,
+                [(color("✓", Colors.GREEN), label,
+                  color("(key configured)", Colors.DIM))],
+                [],
+            )
+        try:
+            import httpx
+            base = os.getenv(base_env, "") if base_env else ""
+            # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com/coding/v1
+            # (OpenAI-compat surface, which exposes /models for health check).
+            if not base and key.startswith("sk-kimi-"):
+                base = "https://api.kimi.com/coding/v1"
+            # Anthropic-compat endpoints (/anthropic, api.kimi.com/coding
+            # with no /v1) don't support /models. Rewrite to OpenAI-compat
+            # /v1 surface for health checks.
+            if base and base.rstrip("/").endswith("/anthropic"):
+                from agent.auxiliary_client import _to_openai_base_url
+                base = _to_openai_base_url(base)
+            if base_url_host_matches(base, "api.kimi.com") and base.rstrip("/").endswith("/coding"):
+                base = base.rstrip("/") + "/v1"
+            url = (base.rstrip("/") + "/models") if base else default_url
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "User-Agent": _HERMES_USER_AGENT,
+            }
+            if base_url_host_matches(base, "api.kimi.com"):
+                headers["User-Agent"] = "claude-code/0.1.0"
+            # Google's Generative Language API (generativelanguage.googleapis.com)
+            # rejects ``Authorization: Bearer <api-key>`` with 401
+            # ``ACCESS_TOKEN_TYPE_UNSUPPORTED`` — that header is reserved for
+            # OAuth 2 access tokens, not plain API keys. Plain keys use
+            # ``x-goog-api-key`` (or ``?key=``). Without this, a perfectly valid
+            # GOOGLE_API_KEY/GEMINI_API_KEY always shows red in ``hermes doctor``.
+            if url and base_url_host_matches(url, "generativelanguage.googleapis.com"):
+                headers.pop("Authorization", None)
+                headers["x-goog-api-key"] = key
+            r = httpx.get(url, headers=headers, timeout=10)
+            if (
+                pname == "Alibaba/DashScope"
+                and not base
+                and r.status_code == 401
+            ):
+                r = httpx.get(
+                    "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+                    headers=headers, timeout=10,
+                )
+            if r.status_code == 200:
+                return _ConnectivityResult(
+                    pname,
+                    [(color("✓", Colors.GREEN), label, "")],
+                    [],
+                )
+            if r.status_code == 401:
+                return _ConnectivityResult(
+                    pname,
+                    [(color("✗", Colors.RED), label,
+                      color("(invalid API key)", Colors.DIM))],
+                    [f"Check {env_vars[0]} in .env"],
+                )
+            return _ConnectivityResult(
+                pname,
+                [(color("⚠", Colors.YELLOW), label,
+                  color(f"(HTTP {r.status_code})", Colors.DIM))],
+                [],
+            )
+        except Exception as e:
+            return _ConnectivityResult(
+                pname,
+                [(color("⚠", Colors.YELLOW), label,
+                  color(f"({e})", Colors.DIM))],
+                [],
+            )
+
+    def _probe_bedrock() -> _ConnectivityResult:
+        try:
+            from agent.bedrock_adapter import (
+                has_aws_credentials,
+                resolve_aws_auth_env_var,
+                resolve_bedrock_region,
+            )
+        except ImportError:
+            return _ConnectivityResult("AWS Bedrock", [], [])
+        if not has_aws_credentials():
+            return _ConnectivityResult("AWS Bedrock", [], [])
+        auth_var = resolve_aws_auth_env_var()
+        region = resolve_bedrock_region()
+        label = "AWS Bedrock".ljust(20)
+        try:
+            import boto3
+            from botocore.config import Config as _BotoConfig
+            # Trim retries on the actual Bedrock API call so a transient
+            # failure doesn't pad the doctor run by 30+ seconds.
+            cfg = _BotoConfig(
+                connect_timeout=5,
+                read_timeout=10,
+                retries={"max_attempts": 1},
+            )
+            client = boto3.client("bedrock", region_name=region, config=cfg)
+            resp = client.list_foundation_models()
+            n = len(resp.get("modelSummaries", []))
+            return _ConnectivityResult(
+                "AWS Bedrock",
+                [(color("✓", Colors.GREEN), label,
+                  color(f"({auth_var}, {region}, {n} models)", Colors.DIM))],
+                [],
+            )
+        except ImportError:
+            return _ConnectivityResult(
+                "AWS Bedrock",
+                [(color("⚠", Colors.YELLOW), label,
+                  color(f"(boto3 not installed — {sys.executable} -m pip install boto3)",
+                        Colors.DIM))],
+                [f"Install boto3 for Bedrock: {sys.executable} -m pip install boto3"],
+            )
+        except Exception as e:
+            err_name = type(e).__name__
+            return _ConnectivityResult(
+                "AWS Bedrock",
+                [(color("⚠", Colors.YELLOW), label,
+                  color(f"({err_name}: {e})", Colors.DIM))],
+                [f"AWS Bedrock: {err_name} — check IAM permissions for "
+                 f"bedrock:ListFoundationModels"],
+            )
+
+    # Build the probe submission list in display order
+    _probes.append(("OpenRouter API", _probe_openrouter))
+    _probes.append(("Anthropic API", _probe_anthropic))
+
     global _APIKEY_PROVIDERS_CACHE
     if _APIKEY_PROVIDERS_CACHE is None:
         _APIKEY_PROVIDERS_CACHE = _build_apikey_providers_list()
-    _apikey_providers = _APIKEY_PROVIDERS_CACHE
-    for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
-        _key = ""
-        for _ev in _env_vars:
-            _key = os.getenv(_ev, "")
-            if _key:
-                break
-        if _key:
-            _label = _pname.ljust(20)
-            # Some providers (like MiniMax) don't support /models endpoint
-            if not _supports_health_check:
-                print(f"  {color('✓', Colors.GREEN)} {_label} {color('(key configured)', Colors.DIM)}")
-                continue
-            print(f"  Checking {_pname} API...", end="", flush=True)
-            try:
-                import httpx
-                _base = os.getenv(_base_env, "") if _base_env else ""
-                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com/coding/v1
-                # (OpenAI-compat surface, which exposes /models for health check).
-                if not _base and _key.startswith("sk-kimi-"):
-                    _base = "https://api.kimi.com/coding/v1"
-                # Anthropic-compat endpoints (/anthropic, api.kimi.com/coding
-                # with no /v1) don't support /models.  Rewrite to the OpenAI-compat
-                # /v1 surface for health checks.
-                if _base and _base.rstrip("/").endswith("/anthropic"):
-                    from agent.auxiliary_client import _to_openai_base_url
-                    _base = _to_openai_base_url(_base)
-                if base_url_host_matches(_base, "api.kimi.com") and _base.rstrip("/").endswith("/coding"):
-                    _base = _base.rstrip("/") + "/v1"
-                _url = (_base.rstrip("/") + "/models") if _base else _default_url
-                _headers = {
-                    "Authorization": f"Bearer {_key}",
-                    "User-Agent": _HERMES_USER_AGENT,
-                }
-                if base_url_host_matches(_base, "api.kimi.com"):
-                    _headers["User-Agent"] = "claude-code/0.1.0"
-                _resp = httpx.get(
-                    _url,
-                    headers=_headers,
-                    timeout=10,
-                )
-                if _resp.status_code == 200:
-                    print(f"\r  {color('✓', Colors.GREEN)} {_label}                          ")
-                elif _resp.status_code == 401:
-                    print(f"\r  {color('✗', Colors.RED)} {_label} {color('(invalid API key)', Colors.DIM)}           ")
-                    issues.append(f"Check {_env_vars[0]} in .env")
-                else:
-                    print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
-            except Exception as _e:
-                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_e})', Colors.DIM)}           ")
+    for _entry in _APIKEY_PROVIDERS_CACHE:
+        _pname, _env_vars, _default_url, _base_env, _supports = _entry
+        # Capture loop vars by binding default args — without this, all closures
+        # would share the final iteration's values and every probe would hit
+        # the last provider's URL.
+        _probes.append((_pname, lambda p=_pname, e=_env_vars, u=_default_url,
+                                       b=_base_env, s=_supports:
+                                _probe_apikey_provider(p, e, u, b, s)))
 
-    # -- AWS Bedrock --
-    # Bedrock uses the AWS SDK credential chain, not API keys.
+    _probes.append(("AWS Bedrock", _probe_bedrock))
+
+    # Print a single status line so users see something happening, then
+    # fan out. ``\r`` clears it once the first real result line lands.
+    print(f"  {color(f'Running {len(_probes)} connectivity checks in parallel…', Colors.DIM)}",
+          end="", flush=True)
+
+    # Disable boto3's EC2 instance-metadata-service probe for the duration
+    # of the parallel block. boto's default credential chain tries
+    # 169.254.169.254 with a multi-second timeout when we're not on EC2,
+    # which dominated the section's wall time before this fix
+    # (~2s on a developer laptop, even with the rest parallelized).
+    # Set on the parent thread before submitting work so the env-var
+    # mutation never races with another worker. has_aws_credentials() in
+    # the bedrock probe already gates on real env-var creds, so IMDS is
+    # never the legitimate source for `hermes doctor`.
+    _imds_prev = os.environ.get("AWS_EC2_METADATA_DISABLED")
+    os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
     try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
-        if has_aws_credentials():
-            _auth_var = resolve_aws_auth_env_var()
-            _region = resolve_bedrock_region()
-            _label = "AWS Bedrock".ljust(20)
-            print(f"  Checking AWS Bedrock...", end="", flush=True)
-            try:
-                import boto3
-                _br_client = boto3.client("bedrock", region_name=_region)
-                _br_resp = _br_client.list_foundation_models()
-                _model_count = len(_br_resp.get("modelSummaries", []))
-                print(f"\r  {color('✓', Colors.GREEN)} {_label} {color(f'({_auth_var}, {_region}, {_model_count} models)', Colors.DIM)}           ")
-            except ImportError:
-                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(boto3 not installed — {sys.executable} -m pip install boto3)', Colors.DIM)}           ")
-                issues.append(f"Install boto3 for Bedrock: {sys.executable} -m pip install boto3")
-            except Exception as _e:
-                _err_name = type(_e).__name__
-                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_err_name}: {_e})', Colors.DIM)}           ")
-                issues.append(f"AWS Bedrock: {_err_name} — check IAM permissions for bedrock:ListFoundationModels")
-    except ImportError:
-        pass  # bedrock_adapter not available — skip silently
-
-    # =========================================================================
-    # Check: Submodules
-    # =========================================================================
-    print()
-    print(color("◆ Submodules", Colors.CYAN, Colors.BOLD))
-    
-    # tinker-atropos (RL training backend)
-    tinker_dir = PROJECT_ROOT / "tinker-atropos"
-    if tinker_dir.exists() and (tinker_dir / "pyproject.toml").exists():
-        if py_version >= (3, 11):
-            try:
-                __import__("tinker_atropos")
-                check_ok("tinker-atropos", "(RL training backend)")
-            except ImportError:
-                install_cmd = f"{_python_install_cmd()} -e ./tinker-atropos"
-                check_warn("tinker-atropos found but not installed", f"(run: {install_cmd})")
-                issues.append(f"Install tinker-atropos: {install_cmd}")
+        # 8 workers is plenty — each probe is a single HTTP call plus a TLS
+        # handshake. More than that wastes thread-startup cost and risks
+        # noisy output if anything ever printed from inside a worker.
+        with _futures.ThreadPoolExecutor(max_workers=8,
+                                         thread_name_prefix="doctor-probe") as _ex:
+            _futures_in_order = [_ex.submit(_fn) for _, _fn in _probes]
+            _results = [_f.result() for _f in _futures_in_order]
+    finally:
+        if _imds_prev is None:
+            os.environ.pop("AWS_EC2_METADATA_DISABLED", None)
         else:
-            check_warn("tinker-atropos requires Python 3.11+", f"(current: {py_version.major}.{py_version.minor})")
-    else:
-        check_warn("tinker-atropos not found", "(run: git submodule update --init --recursive)")
-    
+            os.environ["AWS_EC2_METADATA_DISABLED"] = _imds_prev
+
+    # Clear the "Running …" line and print all results in submission order.
+    print("\r" + " " * 70 + "\r", end="")
+    for _r in _results:
+        for _glyph, _label, _detail in _r.lines:
+            if _detail:
+                print(f"  {_glyph} {_label} {_detail}")
+            else:
+                print(f"  {_glyph} {_label}")
+        _issues_to_add = list(_r.issues)
+        if _issues_to_add and _has_healthy_oauth_fallback_for_apikey_provider(_r.label):
+            _issues_to_add = []
+        for _issue in _issues_to_add:
+            issues.append(_issue)
+
     # =========================================================================
     # Check: Tool Availability
     # =========================================================================
@@ -1372,7 +1723,7 @@ def run_doctor(args):
         import yaml as _yaml
         _mem_cfg_path = HERMES_HOME / "config.yaml"
         if _mem_cfg_path.exists():
-            with open(_mem_cfg_path) as _f:
+            with open(_mem_cfg_path, encoding="utf-8") as _f:
                 _raw_cfg = _yaml.safe_load(_f) or {}
             _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
     except Exception:

@@ -271,6 +271,10 @@ The entrypoint script (`docker/entrypoint.sh`) bootstraps the data volume on fir
 - Optionally launches `hermes dashboard` as a background side-process when `HERMES_DASHBOARD=1` (see [Running the dashboard](#running-the-dashboard))
 - Then runs `hermes` with whatever arguments you pass
 
+:::warning
+Do not override the image entrypoint unless you keep `/opt/hermes/docker/entrypoint.sh` in the command chain. The entrypoint drops root privileges to the `hermes` user before gateway state files are created. Starting `hermes gateway run` as root inside the official image is refused by default because it can leave root-owned files in `/opt/data` and break later dashboard or gateway starts. Set `HERMES_ALLOW_ROOT_GATEWAY=1` only when you intentionally accept that risk.
+:::
+
 ## Upgrading
 
 Pull the latest image and recreate the container. Your data directory is untouched.

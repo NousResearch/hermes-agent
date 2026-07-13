@@ -337,7 +337,14 @@ def session_search(
     The current session is excluded from results since the agent already has that context.
     """
     if db is None:
-        return tool_error("Session database not available.", success=False)
+        try:
+            from hermes_state import SessionDB
+
+            db = SessionDB()
+        except Exception:
+            logging.debug("SessionDB unavailable for session_search", exc_info=True)
+            from hermes_state import format_session_db_unavailable
+            return tool_error(format_session_db_unavailable(), success=False)
 
     # Defensive: models (especially open-source) may send non-int limit values
     # (None when JSON null, string "int", or even a type object).  Coerce to a

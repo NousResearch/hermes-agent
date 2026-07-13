@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
 from gateway.platforms.base import SendResult
@@ -49,6 +51,28 @@ class TestWeixinFormatting:
         adapter = _make_adapter()
 
         content = "## Snippet\n\n```python\nprint('hi')\n```"
+
+        assert adapter.format_message(content) == content
+
+    def test_format_message_wraps_long_plain_lines_for_copying(self):
+        adapter = _make_adapter()
+
+        content = (
+            "Here is a long issue template line with many copyable fields "
+            + " ".join(f"field_{idx}=value_{idx}" for idx in range(24))
+        )
+
+        formatted = adapter.format_message(content)
+
+        assert "\n" in formatted
+        assert all(len(line) <= weixin.WEIXIN_COPY_LINE_WIDTH for line in formatted.splitlines())
+        assert " ".join(formatted.split()) == " ".join(content.split())
+
+    def test_format_message_does_not_wrap_long_code_block_lines(self):
+        adapter = _make_adapter()
+
+        command = "hermes " + " ".join(f"--option-{idx}=value" for idx in range(30))
+        content = f"```bash\n{command}\n```"
 
         assert adapter.format_message(content) == content
 
@@ -279,6 +303,35 @@ class TestWeixinStatePersistence:
         assert json.loads(sync_path.read_text(encoding="utf-8")) == {"get_updates_buf": "old-sync"}
 
 
+class TestWeixinQrLogin:
+    @pytest.mark.asyncio
+    async def test_qr_login_timeout_uses_monotonic_clock(self, tmp_path):
+        first_qr = {
+            "qrcode": "qr-1",
+            "qrcode_img_content": "https://example.com/qr-1",
+        }
+        pending = {"status": "wait"}
+
+        with patch("gateway.platforms.weixin._api_get", new_callable=AsyncMock) as api_get_mock, \
+             patch("gateway.platforms.weixin.time") as mock_time, \
+             patch("gateway.platforms.weixin.AIOHTTP_AVAILABLE", True), \
+             patch("gateway.platforms.weixin.aiohttp.ClientSession", create=True) as session_cls, \
+             patch("builtins.print"):
+            api_get_mock.side_effect = [first_qr, pending]
+            mock_time.monotonic.side_effect = [1000, 1000.2, 1001.1]
+            mock_time.time.side_effect = [1000, 900, 901, 902]
+
+            session = AsyncMock()
+            session.__aenter__.return_value = session
+            session.__aexit__.return_value = False
+            session_cls.return_value = session
+
+            result = await weixin.qr_login(str(tmp_path), timeout_seconds=1)
+
+        assert result is None
+        assert api_get_mock.await_count == 2
+
+
 class TestWeixinSendMessageIntegration:
     def test_parse_target_ref_accepts_weixin_ids(self):
         assert _parse_target_ref("weixin", "wxid_test123") == ("wxid_test123", None, True)
@@ -461,7 +514,9 @@ class TestWeixinOutboundMedia:
         assert upload_url == "https://upload.example.com/media"
         assert upload_kwargs["headers"] == {"Content-Type": "application/octet-stream"}
         assert upload_kwargs["data"]
-        assert upload_kwargs["timeout"].total == 120
+        # Timeout is now enforced externally via asyncio.wait_for() rather than
+        # aiohttp.ClientTimeout, so it no longer appears as a post() kwarg.
+        assert "timeout" not in upload_kwargs
         payload = api_post_mock.await_args.kwargs["payload"]
         media = payload["msg"]["item_list"][0]["image_item"]["media"]
         assert media["encrypt_query_param"] == "enc-param"

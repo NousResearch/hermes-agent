@@ -1,11 +1,13 @@
 """Tests for gateway service management helpers."""
 
 import os
-import pwd
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+pwd = pytest.importorskip("pwd")
 
 import hermes_cli.gateway as gateway_cli
 from gateway import status
@@ -90,6 +92,13 @@ class TestSystemdServiceRefresh:
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
 
         calls = []
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_recover_pending_systemd_restart", lambda system=False, previous_pid=None: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None: calls.append(("wait", system, previous_pid)) or True,
+        )
 
         def fake_run(cmd, check=True, **kwargs):
             calls.append(cmd)
@@ -100,11 +109,12 @@ class TestSystemdServiceRefresh:
         gateway_cli.systemd_restart()
 
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
-        assert calls[:4] == [
+        assert calls[:5] == [
             ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "show", gateway_cli.get_service_name(), "--no-pager", "--property", "ActiveState,SubState,Result,ExecMainStatus"],
+            ["systemctl", "--user", "show", gateway_cli.get_service_name(), "--no-pager", "--property", "ActiveState,SubState,Result,ExecMainStatus,MainPID"],
             ["systemctl", "--user", "reset-failed", gateway_cli.get_service_name()],
-            ["systemctl", "--user", "reload-or-restart", gateway_cli.get_service_name()],
+            ["systemctl", "--user", "restart", gateway_cli.get_service_name()],
+            ("wait", False, None),
         ]
 
     def test_systemd_stop_marks_running_gateway_as_planned_stop(self, monkeypatch):
@@ -131,6 +141,68 @@ class TestSystemdServiceRefresh:
         assert markers == [321]
         assert calls == [["stop", gateway_cli.get_service_name()]]
 
+    def test_systemd_stop_timeout_prints_status_guidance(self, monkeypatch, capsys):
+        markers = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: 321)
+        monkeypatch.setattr(
+            status,
+            "write_planned_stop_marker",
+            lambda pid: markers.append(pid) or True,
+        )
+
+        def fake_run_systemctl(args, **kwargs):
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        gateway_cli.systemd_stop()
+
+        assert markers == [321]
+        output = capsys.readouterr().out
+        assert "still stopping after 90s" in output
+        assert "hermes gateway status" in output
+
+    def test_systemd_restart_timeout_prints_status_guidance(self, monkeypatch, capsys):
+        """`hermes gateway restart` must not surface a raw TimeoutExpired traceback.
+
+        The dashboard spawns `hermes gateway restart` in the background; when a
+        wedged adapter websocket pushes drain past the 90s CLI timeout, the
+        dashboard would previously show a Python traceback (issue #19937
+        follow-up: the same failure mode applies to restart, not just stop).
+        """
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: None)
+        monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_recover_pending_systemd_restart",
+            lambda system=False, previous_pid=None: False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_systemd_service_is_start_limited",
+            lambda system=False: False,
+        )
+
+        def fake_run_systemctl(args, **kwargs):
+            # reset-failed is a pre-step (check=False, 30s) — let it pass.
+            if args and args[0] == "reset-failed":
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        gateway_cli.systemd_restart()
+
+        output = capsys.readouterr().out
+        assert "still restarting after 90s" in output
+        assert "hermes gateway status" in output
 
     def test_run_gateway_refreshes_outdated_unit_on_boot(self, tmp_path, monkeypatch):
         """run_gateway() should refresh the systemd unit on boot so that
@@ -161,6 +233,60 @@ class TestSystemdServiceRefresh:
 
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert ["systemctl", "--user", "daemon-reload"] in calls
+
+    def test_refresh_refuses_to_bake_pytest_tmpdir_into_real_user_unit(
+        self, tmp_path, monkeypatch
+    ):
+        """Defense in depth: ``refresh_systemd_unit_if_needed()`` runs every
+        time ``run_gateway()`` starts. The user-scope unit path resolves
+        under ``Path.home()`` (NOT sandboxed by conftest), and
+        ``generate_systemd_unit()`` bakes ``HERMES_HOME`` into the unit's
+        ``Environment=`` line. Without this guard, any test that drives
+        ``run_gateway()`` end-to-end on a real Linux dev box silently
+        rewrites the developer's installed gateway unit with a
+        ``/tmp/pytest-of-.../hermes_test`` HERMES_HOME — silently breaking
+        their gateway on the next boot. The guard sniffs the generated
+        unit body for tmpdir markers and refuses the write. Tests that
+        legitimately exercise the refresh flow patch
+        ``generate_systemd_unit`` to return synthetic content that doesn't
+        carry those markers.
+        """
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("old unit\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+        # Realistic generated unit referencing a pytest tmpdir HERMES_HOME
+        polluted_unit = (
+            "[Service]\n"
+            'Environment="HERMES_HOME=/tmp/pytest-of-alice/pytest-42/'
+            'popen-gw0/test_x/hermes_test"\n'
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: polluted_unit,
+        )
+
+        # If the guard fails, daemon-reload would be called — record it.
+        ran = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            ran.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        result = gateway_cli.refresh_systemd_unit_if_needed(system=False)
+
+        assert result is False, "refresh should refuse to write a polluted unit"
+        assert (
+            unit_path.read_text(encoding="utf-8") == "old unit\n"
+        ), "installed unit must be left untouched"
+        assert not any(
+            "daemon-reload" in str(c) for c in ran
+        ), "daemon-reload must not run when write was refused"
 
 
 class TestRequireServiceInstalled:
@@ -611,62 +737,141 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
-    def test_systemd_restart_self_requests_graceful_restart_and_waits(self, monkeypatch, capsys):
+    def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 654,
         )
         monkeypatch.setattr(
             gateway_cli,
-            "_request_gateway_self_restart",
-            lambda pid: calls.append(("self", pid)) or True,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
         )
 
-        # Simulate: old process dies immediately, new process becomes active
-        kill_call_count = [0]
-        def fake_kill(pid, sig):
-            kill_call_count[0] += 1
-            if kill_call_count[0] >= 2:  # first call checks, second = dead
-                raise ProcessLookupError()
-        monkeypatch.setattr(os, "kill", fake_kill)
-
-        # Simulate systemctl reset-failed/start followed by an active unit
-        new_pid = [None]
+        # Simulate systemctl reset-failed/restart followed by an active unit.
+        # A plain start does not break systemd's auto-restart timer once the
+        # old gateway has exited with the planned restart code.
         def fake_subprocess_run(cmd, **kwargs):
             if "reset-failed" in cmd:
                 calls.append(("reset-failed", cmd))
                 return SimpleNamespace(stdout="", returncode=0)
-            if "start" in cmd:
-                calls.append(("start", cmd))
+            if "restart" in cmd:
+                calls.append(("restart", cmd))
                 return SimpleNamespace(stdout="", returncode=0)
-            if "show" in cmd:
-                new_pid[0] = 999
-                return SimpleNamespace(
-                    stdout="ActiveState=active\nSubState=running\nResult=success\nExecMainStatus=0\n",
-                    returncode=0,
-                )
             raise AssertionError(f"Unexpected systemctl call: {cmd}")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_subprocess_run)
-        # get_running_pid returns new PID after restart
-        pid_calls = [0]
-        def fake_get_pid():
-            pid_calls[0] += 1
-            return 999 if pid_calls[0] > 1 else 654
-        monkeypatch.setattr("gateway.status.get_running_pid", fake_get_pid)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None: calls.append(("wait", system, previous_pid)) or True,
+        )
 
         gateway_cli.systemd_restart()
 
-        assert ("self", 654) in calls
+        assert ("graceful", 654, 17.0) in calls
         assert any(call[0] == "reset-failed" for call in calls)
-        assert any(call[0] == "start" for call in calls)
+        assert any(call[0] == "restart" for call in calls)
+        assert ("wait", False, 654) in calls
         out = capsys.readouterr().out.lower()
-        assert "restarted" in out
+        assert "restarting gracefully" in out
+
+    def test_systemd_restart_uses_systemd_main_pid_when_pid_file_is_missing(self, monkeypatch, capsys):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 10.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False: {
+                "ActiveState": "active",
+                "SubState": "running",
+                "Result": "success",
+                "ExecMainStatus": "0",
+                "MainPID": "777",
+            },
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
+        )
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda args, **kwargs: calls.append(args) or SimpleNamespace(stdout="", returncode=0))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None: calls.append(("wait", system, previous_pid)) or True,
+        )
+
+        gateway_cli.systemd_restart()
+
+        assert ("graceful", 777, 15.0) in calls
+        assert ("wait", False, 777) in calls
+        assert "restarting gracefully (pid 777)" in capsys.readouterr().out.lower()
+
+    def test_wait_for_systemd_restart_waits_for_runtime_running(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False: {
+                "ActiveState": "active",
+                "SubState": "running",
+                "Result": "success",
+                "ExecMainStatus": "0",
+                "MainPID": "999",
+            },
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_gateway_runtime_status_for_pid",
+            lambda pid: {"pid": pid, "gateway_state": "running"},
+        )
+
+        assert gateway_cli._wait_for_systemd_service_restart(previous_pid=777, timeout=0.1) is True
+        assert "restarted (pid 999)" in capsys.readouterr().out.lower()
+
+    def test_systemd_restart_reports_start_limit_hit(self, monkeypatch, capsys):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_recover_pending_systemd_restart", lambda system=False, previous_pid=None: False)
+
+        def fake_run_systemctl(args, **kwargs):
+            calls.append(args)
+            if args[0] == "show":
+                return SimpleNamespace(stdout="ActiveState=inactive\nSubState=dead\nResult=success\nExecMainStatus=0\nMainPID=0\n", stderr="", returncode=0)
+            if args[0] == "reset-failed":
+                return SimpleNamespace(stdout="", stderr="", returncode=0)
+            if args[0] == "restart":
+                raise subprocess.CalledProcessError(
+                    1,
+                    ["systemctl", "--user", *args],
+                    stderr="Job failed. See result 'start-limit-hit'.",
+                )
+            raise AssertionError(f"Unexpected args: {args}")
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        gateway_cli.systemd_restart()
+
+        assert ["restart", gateway_cli.get_service_name()] in calls
+        out = capsys.readouterr().out.lower()
+        assert "rate-limited by systemd" in out
+        assert "reset-failed" in out
 
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
@@ -710,6 +915,11 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 999 if started["value"] else None,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_gateway_runtime_status_for_pid",
+            lambda pid: {"pid": pid, "gateway_state": "running"},
         )
 
         gateway_cli.systemd_restart()
@@ -1129,20 +1339,17 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_auto_detected_root_is_rejected(self, monkeypatch):
         """When root is auto-detected (not explicitly requested), raise."""
-        import pwd
         import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "root")
         monkeypatch.setenv("LOGNAME", "root")
 
-        import pytest
         with pytest.raises(ValueError, match="pass --run-as-user root to override"):
             gateway_cli._system_service_identity(run_as_user=None)
 
     def test_explicit_root_is_allowed(self, monkeypatch):
         """When root is explicitly passed via --run-as-user root, allow it."""
-        import pwd
         import grp
 
         root_info = pwd.getpwnam("root")
@@ -1154,7 +1361,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_non_root_user_passes_through(self, monkeypatch):
         """Normal non-root user works as before."""
-        import pwd
         import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)

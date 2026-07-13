@@ -40,7 +40,7 @@ That ordering matters because Hermes treats the saved model/provider choice as t
 
 ## Providers
 
-Current provider families include:
+Current provider families include (see `plugins/model-providers/` for the complete bundled set):
 
 - AI Gateway (Vercel)
 - OpenRouter
@@ -48,16 +48,27 @@ Current provider families include:
 - OpenAI Codex
 - Copilot / Copilot ACP
 - Anthropic (native)
-- Google / Gemini
-- Alibaba / DashScope
+- Google / Gemini (`gemini`, `google-gemini-cli`)
+- Alibaba / DashScope (`alibaba`, `alibaba-coding-plan`)
 - DeepSeek
 - Z.AI
-- Kimi / Moonshot
-- MiniMax
-- MiniMax China
+- Kimi / Moonshot (`kimi-coding`, `kimi-coding-cn`)
+- MiniMax (`minimax`, `minimax-cn`, `minimax-oauth`)
 - Kilo Code
 - Hugging Face
 - OpenCode Zen / OpenCode Go
+- AWS Bedrock
+- Azure Foundry
+- NVIDIA NIM
+- xAI (Grok)
+- Arcee
+- GMI Cloud
+- StepFun
+- Qwen OAuth
+- Xiaomi
+- Ollama Cloud
+- LM Studio
+- Tencent TokenHub
 - Custom (`provider: custom`) — first-class provider for any OpenAI-compatible endpoint
 - Named custom providers (`custom_providers` list in config.yaml)
 
@@ -154,7 +165,7 @@ When an auxiliary task is configured with provider `main`, Hermes resolves that 
 
 ## Fallback models
 
-Hermes supports a configured fallback model/provider pair, allowing runtime failover when the primary model encounters errors.
+Hermes supports a configured fallback provider chain — a list of `(provider, model)` entries tried in order when the primary model encounters errors. The legacy single-pair `fallback_model` dict is still accepted for back-compat (and migrated on first write).
 
 ### How it works internally
 

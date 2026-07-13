@@ -99,11 +99,11 @@ def _guess_extension(data: bytes) -> str:
 
 
 def _is_image_ext(ext: str) -> bool:
-    return ext.lower() in (".jpg", ".jpeg", ".png", ".gif", ".webp")
+    return ext.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
 def _is_audio_ext(ext: str) -> bool:
-    return ext.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".aac")
+    return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac"}
 
 
 _EXT_TO_MIME = {
@@ -446,7 +446,9 @@ class SignalAdapter(BasePlatformAdapter):
                 if sent_msg and isinstance(sent_msg, dict):
                     dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
                     sent_ts = sent_msg.get("timestamp")
-                    if dest == self._account_normalized:
+                    sent_msg_group_info = sent_msg.get("groupInfo") or {}
+                    sent_msg_group_id = sent_msg_group_info.get("groupId") if sent_msg_group_info else None
+                    if dest == self._account_normalized or sent_msg_group_id:
                         # Check if this is an echo of our own outbound reply
                         if sent_ts and sent_ts in self._recent_sent_timestamps:
                             self._recent_sent_timestamps.discard(sent_ts)
@@ -488,9 +490,19 @@ class SignalAdapter(BasePlatformAdapter):
         if not data_message:
             return
 
-        # Check for group message
+        # Check for group message.
+        # Modern Signal groups surface on dataMessage.groupV2.id; legacy V1
+        # groups still arrive under dataMessage.groupInfo.groupId. signal-cli
+        # versions differ in which field they expose for V2 groups — some
+        # forward the underlying libsignal envelope verbatim (groupV2), others
+        # normalize everything into groupInfo. Read groupV2 first and fall
+        # back to groupInfo so V2-only groups aren't misrouted as DMs.
         group_info = data_message.get("groupInfo")
-        group_id = group_info.get("groupId") if group_info else None
+        group_v2 = data_message.get("groupV2")
+        group_id = (
+            (group_v2.get("id") if isinstance(group_v2, dict) else None)
+            or (group_info.get("groupId") if isinstance(group_info, dict) else None)
+        )
         is_group = bool(group_id)
 
         # Group message filtering — derived from SIGNAL_GROUP_ALLOWED_USERS:
@@ -560,7 +572,7 @@ class SignalAdapter(BasePlatformAdapter):
         # Build session source
         source = self.build_source(
             chat_id=chat_id,
-            chat_name=group_info.get("groupName") if group_info else sender_name,
+            chat_name=(group_info.get("groupName") if isinstance(group_info, dict) else None) or sender_name,
             chat_type=chat_type,
             user_id=sender,
             user_name=sender_name or sender,
@@ -1449,7 +1461,7 @@ class SignalAdapter(BasePlatformAdapter):
            contacts from seeing the 👀 reaction (which fires before run.py's
            auth gate and would otherwise reveal that a bot is listening).
         """
-        if os.getenv("SIGNAL_REACTIONS", "true").lower() in ("false", "0", "no"):
+        if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
             return False
         if event is not None:
             sender = getattr(getattr(event, "source", None), "user_id", None)

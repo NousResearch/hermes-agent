@@ -168,8 +168,8 @@ class TextBatchAggregator:
 # Pre-compiled regexes for performance
 _RE_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _RE_ITALIC_STAR = re.compile(r"\*(.+?)\*", re.DOTALL)
-_RE_BOLD_UNDER = re.compile(r"__(.+?)__", re.DOTALL)
-_RE_ITALIC_UNDER = re.compile(r"_(.+?)_", re.DOTALL)
+_RE_BOLD_UNDER = re.compile(r"\b__(?![\s_])(.+?)(?<![\s_])__\b", re.DOTALL)
+_RE_ITALIC_UNDER = re.compile(r"\b_(?![\s_])(.+?)(?<![\s_])_\b", re.DOTALL)
 _RE_CODE_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*\n?")
 _RE_INLINE_CODE = re.compile(r"`(.+?)`")
 _RE_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
@@ -246,7 +246,7 @@ class ThreadParticipationTracker:
         thread_list = list(self._threads)
         if len(thread_list) > self._max_tracked:
             thread_list = thread_list[-self._max_tracked:]
-            self._threads = {thread_id: None for thread_id in thread_list}
+            self._threads = dict.fromkeys(thread_list)
         atomic_json_write(path, thread_list, indent=None)
 
     def mark(self, thread_id: str) -> None:

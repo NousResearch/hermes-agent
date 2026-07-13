@@ -1,6 +1,7 @@
 ---
 name: domain-intel
 description: Passive domain reconnaissance using Python stdlib. Subdomain discovery, SSL certificate inspection, WHOIS lookups, DNS records, domain availability checks, and bulk multi-domain analysis. No API keys required.
+platforms: [linux, macos, windows]
 ---
 
 # Domain Intelligence — Passive OSINT

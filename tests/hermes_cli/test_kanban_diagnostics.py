@@ -75,10 +75,13 @@ def test_hallucinated_cards_fires_on_blocked_event():
                phantom_cards=["t_bad1", "t_bad2"],
                verified_cards=["t_good1"]),
     ]
-    diags = kd.compute_task_diagnostics(task, events, [])
-    assert len(diags) == 1
-    d = diags[0]
-    assert d.kind == "hallucinated_cards"
+    # ``now=300`` keeps the synthetic event timestamps in scope without
+    # tripping the stranded_in_ready rule (events are 100/200 epoch
+    # which time.time() would treat as ~50yr old).
+    diags = kd.compute_task_diagnostics(task, events, [], now=300)
+    halluc = [d for d in diags if d.kind == "hallucinated_cards"]
+    assert len(halluc) == 1
+    d = halluc[0]
     assert d.severity == "error"
     assert d.data["phantom_ids"] == ["t_bad1", "t_bad2"]
     # Generic recovery actions always available; comment action too.
@@ -379,3 +382,176 @@ def test_broken_rule_is_isolated(monkeypatch):
     # The broken rule silently drops, the real one still fires.
     kinds = [d.kind for d in diags]
     assert "repeated_failures" in kinds
+
+
+# ---------------------------------------------------------------------------
+# stranded_in_ready
+#
+# Surfaces ready tasks that nobody has claimed within the threshold.
+# Identity-agnostic by design: catches typo'd assignees, deleted profiles,
+# down external worker pools, and misconfigured dispatchers in one rule.
+# ---------------------------------------------------------------------------
+
+
+def test_stranded_in_ready_fires_when_age_exceeds_threshold():
+    """Default threshold = 30 min. A ready task promoted 45 min ago
+    with no claim should fire as a warning."""
+    now = 100_000
+    task = _task(status="ready", assignee="demo", claim_lock=None)
+    # 45 min = 2700s, threshold = 1800s.
+    events = [_event("created", ts=now - 45 * 60)]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    stranded = [d for d in diags if d.kind == "stranded_in_ready"]
+    assert len(stranded) == 1
+    assert stranded[0].severity == "warning"
+    assert stranded[0].data["age_seconds"] == 45 * 60
+    assert stranded[0].data["assignee"] == "demo"
+
+
+def test_stranded_in_ready_silent_below_threshold():
+    """A ready task only 10 min old should NOT fire."""
+    now = 100_000
+    task = _task(status="ready", assignee="demo", claim_lock=None)
+    events = [_event("created", ts=now - 10 * 60)]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    assert [d for d in diags if d.kind == "stranded_in_ready"] == []
+
+
+def test_stranded_in_ready_skips_non_ready_status():
+    """Tasks not in ready status are out of scope (running tasks have
+    their own crash / failure rules)."""
+    now = 100_000
+    for status in ("running", "blocked", "done", "todo", "triage"):
+        task = _task(status=status, assignee="demo")
+        events = [_event("created", ts=now - 6 * 3600)]
+        diags = kd.compute_task_diagnostics(task, events, [], now=now)
+        assert [d for d in diags if d.kind == "stranded_in_ready"] == [], status
+
+
+def test_stranded_in_ready_skips_unassigned_tasks():
+    """Empty assignee = `skipped_unassigned` on the dispatcher already.
+    Don't double-flag here."""
+    now = 100_000
+    task = _task(status="ready", assignee="", claim_lock=None)
+    events = [_event("created", ts=now - 6 * 3600)]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    assert [d for d in diags if d.kind == "stranded_in_ready"] == []
+
+
+def test_stranded_in_ready_skips_claimed_tasks():
+    """A live claim_lock means a worker is on it — even an old one. Don't
+    second-guess: the run-level liveness signal owns that decision."""
+    now = 100_000
+    task = _task(
+        status="ready", assignee="demo", claim_lock="run_xyz",
+    )
+    events = [_event("created", ts=now - 6 * 3600)]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    assert [d for d in diags if d.kind == "stranded_in_ready"] == []
+
+
+def test_stranded_in_ready_uses_latest_ready_transition():
+    """When multiple ready-transition events exist, the rule should
+    age-from the most recent — a task reclaimed 20 min ago is NOT
+    stranded for 6h even if it was first created 6h ago."""
+    now = 100_000
+    task = _task(status="ready", assignee="demo")
+    events = [
+        _event("created", ts=now - 6 * 3600),       # 6 h ago
+        _event("reclaimed", ts=now - 20 * 60),      # 20 min ago — wins
+    ]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    assert [d for d in diags if d.kind == "stranded_in_ready"] == []
+
+
+def test_stranded_in_ready_severity_escalates_with_age():
+    """warning → error → critical at 2x and 6x threshold."""
+    now = 100_000
+    task = _task(status="ready", assignee="demo")
+    # Default threshold = 1800s.
+    cases = [
+        (45 * 60, "warning"),    # 1.5x → warning
+        (90 * 60, "error"),      # 3x → error
+        (4 * 3600, "critical"),  # 8x → critical
+    ]
+    for age, expected in cases:
+        events = [_event("created", ts=now - age)]
+        diags = kd.compute_task_diagnostics(task, events, [], now=now)
+        stranded = [d for d in diags if d.kind == "stranded_in_ready"]
+        assert len(stranded) == 1, f"age={age}"
+        assert stranded[0].severity == expected, (
+            f"age={age} expected {expected}, got {stranded[0].severity}"
+        )
+
+
+def test_stranded_in_ready_respects_config_override():
+    """Config override changes the threshold."""
+    now = 100_000
+    task = _task(status="ready", assignee="demo")
+    events = [_event("created", ts=now - 10 * 60)]  # 10 min
+    # Default 30 min — wouldn't fire.
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    assert [d for d in diags if d.kind == "stranded_in_ready"] == []
+    # Lower the threshold to 5 min — now it fires.
+    diags = kd.compute_task_diagnostics(
+        task, events, [], now=now,
+        config={"stranded_threshold_seconds": 5 * 60},
+    )
+    stranded = [d for d in diags if d.kind == "stranded_in_ready"]
+    assert len(stranded) == 1
+
+
+def test_stranded_in_ready_falls_back_to_created_at():
+    """When events have no ready-transition kind, the rule falls back
+    to the task's ``created_at`` so an ancient stranded task isn't
+    invisible just because its events got pruned."""
+    now = 100_000
+    task = _task(
+        status="ready", assignee="demo", created_at=now - 4 * 3600,
+    )
+    # No qualifying events.
+    events = [_event("commented", ts=now - 100)]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    stranded = [d for d in diags if d.kind == "stranded_in_ready"]
+    assert len(stranded) == 1
+    assert stranded[0].data["age_seconds"] == 4 * 3600
+
+
+def test_stranded_in_ready_works_on_real_db_row(kanban_home):
+    """Round-trip through real kanban_db.connect() — confirms the rule
+    works on sqlite3.Row objects, not just dicts."""
+    import time as _t
+    conn = kb.connect()
+    try:
+        # Create a task and force its created_at into the past.
+        tid = kb.create_task(conn, title="stranded one", assignee="ghost")
+        old_ts = int(_t.time()) - 90 * 60  # 90 min old
+        conn.execute(
+            "UPDATE tasks SET status = 'ready', created_at = ? WHERE id = ?",
+            (old_ts, tid),
+        )
+        conn.commit()
+
+        task_row = conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (tid,)
+        ).fetchone()
+        events = list(conn.execute(
+            "SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at",
+            (tid,),
+        ).fetchall())
+        # Override created event timestamps too so age calc lines up.
+        conn.execute(
+            "UPDATE task_events SET created_at = ? WHERE task_id = ?",
+            (old_ts, tid),
+        )
+        conn.commit()
+        events = list(conn.execute(
+            "SELECT * FROM task_events WHERE task_id = ?", (tid,),
+        ).fetchall())
+
+        diags = kd.compute_task_diagnostics(task_row, events, [])
+        stranded = [d for d in diags if d.kind == "stranded_in_ready"]
+        assert len(stranded) == 1
+        assert stranded[0].data["assignee"] == "ghost"
+    finally:
+        conn.close()

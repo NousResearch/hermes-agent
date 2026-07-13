@@ -207,6 +207,118 @@ class TestCLIStatusBar:
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
 
+    def test_compression_count_shown_in_wide_status_bar(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=3,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "🗜️ 3" in text
+
+    def test_compression_count_hidden_when_zero(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=0,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "🗜️" not in text
+
+    def test_compression_count_shown_in_medium_status_bar(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_400,
+            total_tokens=12_400,
+            api_calls=7,
+            context_tokens=12_400,
+            context_length=200_000,
+            compressions=2,
+        )
+
+        text = cli_obj._build_status_bar_text(width=60)
+
+        assert "🗜️ 2" in text
+
+    def test_compression_count_hidden_in_narrow_status_bar(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_400,
+            total_tokens=12_400,
+            api_calls=7,
+            context_tokens=12_400,
+            context_length=200_000,
+            compressions=5,
+        )
+
+        text = cli_obj._build_status_bar_text(width=50)
+
+        assert "🗜️" not in text
+
+    def test_compression_count_style_thresholds(self):
+        cli_obj = _make_cli()
+
+        assert cli_obj._compression_count_style(1) == "class:status-bar-dim"
+        assert cli_obj._compression_count_style(4) == "class:status-bar-dim"
+        assert cli_obj._compression_count_style(5) == "class:status-bar-warn"
+        assert cli_obj._compression_count_style(9) == "class:status-bar-warn"
+        assert cli_obj._compression_count_style(10) == "class:status-bar-bad"
+        assert cli_obj._compression_count_style(25) == "class:status-bar-bad"
+
+    def test_compression_count_in_wide_fragments(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._status_bar_visible = True
+
+        frags = cli_obj._get_status_bar_fragments()
+        frag_texts = [text for _, text in frags]
+
+        assert "🗜️ 7" in frag_texts
+        frag_styles = {text: style for style, text in frags}
+        assert frag_styles["🗜️ 7"] == "class:status-bar-warn"
+
+    def test_compression_count_absent_from_fragments_when_zero(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=0,
+        )
+        cli_obj._status_bar_visible = True
+
+        frags = cli_obj._get_status_bar_fragments()
+        frag_texts = [text for _, text in frags]
+
+        assert not any("🗜️" in t for t in frag_texts)
+
     def test_minimal_tui_chrome_threshold(self):
         cli_obj = _make_cli()
 
@@ -219,6 +331,45 @@ class TestCLIStatusBar:
         assert cli_obj._tui_input_rule_height("top", width=50) == 1
         assert cli_obj._tui_input_rule_height("bottom", width=50) == 0
         assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
+
+    def test_input_rules_hide_after_resize_until_next_input(self):
+        """When _status_bar_suppressed_after_resize is set, both rules hide.
+
+        See _recover_after_resize — column shrink reflows already-rendered
+        bars into scrollback, so we hide the separators until the user
+        submits the next input, at which point the flag is cleared.
+        """
+        cli_obj = _make_cli()
+        cli_obj._status_bar_suppressed_after_resize = True
+
+        assert cli_obj._tui_input_rule_height("top", width=90) == 0
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 0
+
+        cli_obj._status_bar_suppressed_after_resize = False
+        assert cli_obj._tui_input_rule_height("top", width=90) == 1
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
+
+    def test_scrollback_box_width_returns_viewport_width(self):
+        """Decorative scrollback boxes use the full viewport width.
+
+        The previous clamp (max 56 cols) was reverted in favour of the
+        prompt_toolkit ``_output_screen_diff`` monkey-patch landed in
+        #26137, which keeps chrome out of scrollback at the source.
+        We accept that an aggressive column-shrink may visually reflow
+        already printed Panel borders — that's a cosmetic artifact of
+        stamped scrollback history, not a live-render bug.
+        """
+        from cli import HermesCLI
+
+        # Floor at 32 — narrow terminals still get something usable
+        # (avoids negative ``'─' * (w - 2)`` math).
+        assert HermesCLI._scrollback_box_width(20) == 32
+        assert HermesCLI._scrollback_box_width(32) == 32
+        # Above the floor, return the actual viewport width — no cap.
+        assert HermesCLI._scrollback_box_width(48) == 48
+        assert HermesCLI._scrollback_box_width(80) == 80
+        assert HermesCLI._scrollback_box_width(120) == 120
+        assert HermesCLI._scrollback_box_width(200) == 200
 
     def test_agent_spacer_reclaimed_on_narrow_terminals(self):
         cli_obj = _make_cli()

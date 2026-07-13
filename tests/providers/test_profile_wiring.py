@@ -273,12 +273,13 @@ class TestRequestOverridesParity:
 
     def test_extra_body_override_merges_with_provider_body(self, transport):
         """Override extra_body merges WITH provider extra_body, not replaces."""
+        from agent.portal_tags import nous_portal_tags
         kw = transport.build_kwargs(
             model="hermes-3", messages=_msgs(), tools=None,
             provider_profile=get_provider_profile("nous"),
             request_overrides={"extra_body": {"custom": True}},
         )
-        assert kw["extra_body"]["tags"] == ["product=hermes-agent"]  # from profile
+        assert kw["extra_body"]["tags"] == nous_portal_tags()  # from profile
         assert kw["extra_body"]["custom"] is True  # from override
 
     def test_top_level_override(self, transport):

@@ -208,3 +208,19 @@ def test_docker_mount_cwd_to_workspace_is_bridged_everywhere():
     assert "docker_mount_cwd_to_workspace" in _gateway_env_map_keys()
     assert "docker_mount_cwd_to_workspace" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE" in _terminal_tool_env_var_names()
+
+
+def test_docker_env_is_bridged_everywhere():
+    """Regression pin for docker_env config key being silently ignored.
+
+    ``terminal.docker_env`` in config.yaml specifies extra env vars to inject
+    into the Docker container at runtime.  The key was present in
+    _create_environment's container_config consumer (line ~1130) but never
+    bridged from config.yaml to TERMINAL_DOCKER_ENV, so the dict was always
+    empty regardless of what the user set.  Guard all four bridging points so
+    this cannot regress.
+    """
+    assert "docker_env" in _cli_env_map_keys()
+    assert "docker_env" in _gateway_env_map_keys()
+    assert "docker_env" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()

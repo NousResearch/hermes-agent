@@ -1,12 +1,16 @@
 {
-  "schema_version": 1,
-  "name": "hermes-agent",
-  "display_name": "Hermes Agent",
-  "description": "AI agent by Nous Research with 90+ tools, persistent memory, and multi-platform support",
-  "icon": "icon.svg",
+  "id": "hermes-agent",
+  "name": "Hermes Agent",
+  "version": "0.13.0",
+  "description": "Self-improving open-source AI agent by Nous Research with ACP editor integration, persistent memory, skills, and rich tool support.",
+  "repository": "https://github.com/NousResearch/hermes-agent",
+  "website": "https://hermes-agent.nousresearch.com/docs/user-guide/features/acp",
+  "authors": ["Nous Research"],
+  "license": "MIT",
   "distribution": {
-    "type": "command",
-    "command": "hermes",
-    "args": ["acp"]
+    "uvx": {
+      "package": "hermes-agent[acp]==0.13.0",
+      "args": ["hermes-acp"]
+    }
   }
 }

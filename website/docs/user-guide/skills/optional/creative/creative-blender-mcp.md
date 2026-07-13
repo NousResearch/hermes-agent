@@ -18,6 +18,7 @@ Control Blender directly from Hermes via socket connection to the blender-mcp ad
 | Path | `optional-skills/creative/blender-mcp` |
 | Version | `1.0.0` |
 | Author | alireza78a |
+| Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 

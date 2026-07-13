@@ -122,7 +122,7 @@ your LAN through the public path).
 
 ### Camofox local mode
 
-[Camofox](https://github.com/jo-inc/camofox-browser) is a self-hosted Node.js server wrapping Camofox (a Firefox fork with C++ fingerprint spoofing). It provides local anti-detection browsing without cloud dependencies.
+[Camofox](https://github.com/jo-inc/camofox-browser) is a self-hosted Node.js server wrapping Camoufox (a Firefox fork with C++ fingerprint spoofing). It provides local anti-detection browsing without cloud dependencies.
 
 ```bash
 # Clone the Camofox browser server first

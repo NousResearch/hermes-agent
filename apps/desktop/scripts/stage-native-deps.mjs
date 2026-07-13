@@ -17,6 +17,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -78,9 +79,115 @@ function copyBuildRelease(srcDir, destDir) {
   }
 }
 
-export function stageNodePty({ platform = process.platform, arch = process.arch } = {}) {
-  const srcRoot = resolveNodePtyRoot()
-  const destRoot = resolve(projectRoot, 'dist/node_modules/node-pty')
+// ─── binary classification ───────────────────────────────────────────
+//
+// .node files are shared libraries in the target platform's native binary
+// format. By reading the first few bytes (magic) we can determine which
+// platform a given .node was compiled for, without shelling out to `file`.
+//
+//   ELF  (\x7fELF)              → linux
+//   Mach-O 32-bit (feedface)    → darwin
+//   Mach-O 64-bit (feedfacf)    → darwin
+//   Fat/Universal (cafebabe)     → darwin
+//   PE (MZ DOS header)           → win32
+//
+// Exported for unit testing.
+
+/**
+ * Classify a native binary's target platform from its magic bytes.
+ * Returns `'linux'`, `'darwin'`, `'win32'`, or `null` if unrecognized
+ * or the file cannot be read.
+ */
+export function classifyNativeBinary(filePath) {
+  let buf
+  try {
+    buf = readFileSync(filePath, { start: 0, end: 63 }) // first 64 bytes
+  } catch {
+    return null
+  }
+  if (buf.length < 4) return null
+
+  // ELF: \x7f E L F
+  if (buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46) {
+    return 'linux'
+  }
+  // Mach-O 32-bit: feedface
+  if (buf[0] === 0xfe && buf[1] === 0xed && buf[2] === 0xfa && buf[3] === 0xce) {
+    return 'darwin'
+  }
+  // Mach-O 64-bit: feedfacf
+  if (buf[0] === 0xfe && buf[1] === 0xed && buf[2] === 0xfa && buf[3] === 0xcf) {
+    return 'darwin'
+  }
+  // Fat/Universal binary: cafebabe
+  if (buf[0] === 0xca && buf[1] === 0xfe && buf[2] === 0xba && buf[3] === 0xbe) {
+    return 'darwin'
+  }
+  // PE: MZ DOS header
+  if (buf[0] === 0x4d && buf[1] === 0x5a) {
+    return 'win32'
+  }
+  return null
+}
+
+/**
+ * Scan the staged destination tree for .node files and verify each one's
+ * binary platform matches the requested target. Throws on any mismatch.
+ *
+ * This is the fail-closed safety net: even if a prebuild or build/Release
+ * somehow slipped through with the wrong platform, this catches it before
+ * the package ships a broken native binary to users.
+ */
+function validateStagedBinaries(destRoot, targetPlatform) {
+  const mismatches = []
+  function scan(dir, relPrefix) {
+    if (!existsSync(dir)) return
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        scan(join(dir, entry.name), `${relPrefix}${entry.name}/`)
+        continue
+      }
+      if (!entry.name.endsWith('.node')) continue
+      const fullPath = join(dir, entry.name)
+      const classified = classifyNativeBinary(fullPath)
+      if (classified !== targetPlatform) {
+        mismatches.push({ file: `${relPrefix}${entry.name}`, classified, expected: targetPlatform })
+      }
+    }
+  }
+  scan(join(destRoot, 'prebuilds'), 'prebuilds/')
+  scan(join(destRoot, 'build', 'Release'), 'build/Release/')
+  if (mismatches.length > 0) {
+    throw new Error(
+      `[stage-native-deps] native binary platform mismatch (target=${targetPlatform}):\n` +
+        mismatches
+          .map((m) => `  ${m.file}: expected ${m.expected}, got ${m.classified ?? 'unknown'}`)
+          .join('\n') +
+        `\nRefusing to stage a binary compiled for the wrong platform.`
+    )
+  }
+}
+
+/**
+ * Stage node-pty's native runtime dependencies into `destRoot`.
+ *
+ * Exported separately from `stageNodePty` so tests can supply a fake
+ * node-pty source tree without going through real module resolution.
+ *
+ * Strategy (fail-closed):
+ *
+ * 1. Copy the matching prebuild (`prebuilds/<platform>-<arch>/`) if present.
+ * 2. Copy `build/Release/` **only when the target matches the host** —
+ *    build/Release contains a binary compiled for the host's platform/arch,
+ *    so staging it for a different target ships a broken app.
+ * 3. If no native binary was staged:
+ *    - Same platform as host, different arch → run `electron-rebuild --arch`.
+ *    - Different platform from host → throw (cannot cross-compile native
+ *      modules; build on the target platform or provide a prebuild).
+ * 4. Validate every staged `.node` file's binary platform matches the target.
+ */
+export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platform, arch = process.arch } = {}) {
+  const hostMatch = platform === process.platform && arch === process.arch
 
   rmSync(destRoot, { recursive: true, force: true })
   mkdirSync(destRoot, { recursive: true })
@@ -117,45 +224,75 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
 
   // build/Release/* — present when node-pty was compiled locally
   // (e.g. no prebuild available for this Electron ABI/platform combo).
-  // Some installs won't have this at all if prebuild-install succeeded.
-  const buildReleaseDir = join(srcRoot, 'build/Release')
-  copyBuildRelease(buildReleaseDir, join(destRoot, 'build/Release'))
+  // Only stage this when the target matches the host, because
+  // build/Release contains a binary compiled for the *host's* platform
+  // and architecture. Staging a host binary for a different target (e.g.
+  // a macOS Mach-O .node staged for a linux-arm64 target) ships a broken
+  // app that crashes the first time a terminal is spawned.
+  if (hostMatch) {
+    const buildReleaseDir = join(srcRoot, 'build/Release')
+    copyBuildRelease(buildReleaseDir, join(destRoot, 'build/Release'))
+  }
 
-  // If neither a prebuild nor build/Release produced a .node binary for this
-  // target, run electron-rebuild to compile one from source. This happens on
-  // CI (npm ci --ignore-scripts skips postinstall) and on platforms where
-  // node-pty doesn't publish prebuilds (e.g. linux-x64).
+  // Check whether a native binary for this target was staged.
   const stagedDirs = [
     join(destRoot, 'prebuilds', `${platform}-${arch}`),
     join(destRoot, 'build/Release')
   ]
-  const hasNativeBinary = stagedDirs.some(dir => {
+  const hasNativeBinary = stagedDirs.some((dir) => {
     if (!existsSync(dir)) return false
-    return readdirSync(dir, { recursive: true }).some(name => String(name).endsWith('.node'))
+    return readdirSync(dir, { recursive: true }).some((name) => String(name).endsWith('.node'))
   })
 
   if (!hasNativeBinary) {
+    if (platform !== process.platform) {
+      throw new Error(
+        `[stage-native-deps] no prebuilt binary for ${platform}-${arch} and ` +
+          `cannot cross-compile native modules from ${process.platform}-${process.arch}. ` +
+          `Build on the target platform or provide a prebuild.`
+      )
+    }
+    // Same platform, possibly different arch — rebuild from source with
+    // the target architecture so electron-rebuild produces the correct
+    // binary rather than defaulting to the host's arch.
     console.log(
-      `[stage-native-deps] no prebuilt or compiled native binary for ${platform}-${arch}; ` +
-      `running electron-rebuild to compile from source...`
+      `[stage-native-deps] no native binary for ${platform}-${arch}; ` +
+        `running electron-rebuild (target arch: ${arch})...`
     )
-    const result = spawnSync(
-      process.execPath,
-      ['../../node_modules/.bin/electron-rebuild', '-f', '-w', 'node-pty'],
-      { cwd: projectRoot, stdio: 'inherit' }
-    )
+    const rebuildArgs = [
+      '../../node_modules/.bin/electron-rebuild',
+      '-f',
+      '-w',
+      'node-pty',
+      '--arch',
+      arch
+    ]
+    const result = spawnSync(process.execPath, rebuildArgs, {
+      cwd: projectRoot,
+      stdio: 'inherit'
+    })
     if (result.status !== 0) {
       throw new Error(
         `electron-rebuild failed for ${platform}-${arch} (exit ${result.status}). ` +
-        `Cannot stage node-pty without a native binary.`
+          `Cannot stage node-pty without a native binary.`
       )
     }
     // Re-copy build/Release after electron-rebuild populated it.
+    const buildReleaseDir = join(srcRoot, 'build/Release')
     copyBuildRelease(buildReleaseDir, join(destRoot, 'build/Release'))
   }
 
+  // Validate every staged .node binary matches the target platform.
+  validateStagedBinaries(destRoot, platform)
+
   console.log(`[stage-native-deps] staged node-pty (${platform}-${arch}) -> ${destRoot}`)
   return destRoot
+}
+
+export function stageNodePty({ platform = process.platform, arch = process.arch } = {}) {
+  const srcRoot = resolveNodePtyRoot()
+  const destRoot = resolve(projectRoot, 'dist/node_modules/node-pty')
+  return stageNodePtyInto(srcRoot, destRoot, { platform, arch })
 }
 
 // Allow direct CLI invocation: node scripts/stage-native-deps.mjs [platform] [arch]

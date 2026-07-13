@@ -541,7 +541,7 @@ def build_session_context_prompt(
                 "Do not promise to perform these actions. If the user asks, explain "
                 "that you can only read messages sent directly to you and respond."
             )
-    elif context.source.platform == Platform.BLUEBUBBLES:
+    elif context.source.platform in {Platform.BLUEBUBBLES, Platform("photon")}:
         lines.append("")
         lines.append(
             "**Platform notes:** You are responding via iMessage. "
@@ -553,6 +553,17 @@ def build_session_context_prompt(
             "If the user needs a detailed answer, give the short version first "
             "and offer to elaborate."
         )
+        if context.source.platform == Platform("photon"):
+            lines.append(
+                "For multi-step or long-running work over Photon/iMessage, use "
+                "compact supervisor-card language: start with a short status or "
+                "decision heading, then include only the current phase, boundary "
+                "(for example read-only/status-only/no production action), key "
+                "evidence, blockers, and the safest next action. Do not present "
+                "iMessage as an approval or production-execution surface; when "
+                "action is needed, provide a paste-ready prompt or instruction for "
+                "the governed execution surface instead."
+            )
     elif context.source.platform == Platform.YUANBAO:
         lines.append("")
         lines.append(

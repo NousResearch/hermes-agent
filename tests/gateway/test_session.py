@@ -213,6 +213,27 @@ class TestBuildSessionContextPrompt:
         assert "short and conversational" in prompt
         assert "blank line" in prompt
 
+    def test_photon_prompt_adds_supervisor_card_boundary_guidance(self):
+        photon = Platform("photon")
+        config = GatewayConfig(
+            platforms={
+                photon: PlatformConfig(enabled=True, extra={"project_id": "pid", "project_secret": "sec"}),
+            },
+        )
+        source = SessionSource(
+            platform=photon,
+            chat_id="any;-;+155****4567",
+            chat_name="Jeff",
+            chat_type="dm",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "responding via iMessage" in prompt
+        assert "compact supervisor-card language" in prompt
+        assert "Do not present iMessage as an approval" in prompt
+        assert "paste-ready prompt" in prompt
+
     def test_discord_prompt(self):
         config = GatewayConfig(
             platforms={

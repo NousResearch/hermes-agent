@@ -261,6 +261,32 @@ def _markdown_enabled() -> bool:
     }
 
 
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    """Coerce config bool-ish values for Photon plugin extras."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"true", "1", "yes", "on"}:
+            return True
+        if token in {"false", "0", "no", "off"}:
+            return False
+        return default
+    return bool(value)
+
+
+def _truncate_one_line(text: Optional[str], max_len: int) -> str:
+    """Return a compact single-line preview safe for an iMessage status card."""
+    if not text:
+        return ""
+    collapsed = " ".join(str(text).split())
+    if max_len > 0 and len(collapsed) > max_len:
+        return collapsed[: max_len - 1].rstrip() + "…"
+    return collapsed
+
+
 # ---------------------------------------------------------------------------
 # Adapter
 
@@ -311,6 +337,16 @@ class PhotonAdapter(BasePlatformAdapter):
         # With markdown on, format_message preserves fences and the sidecar's
         # markdown() builder renders them (or degrades them readably).
         self.supports_code_blocks = _markdown_enabled()
+        # Compact status cards make Photon/iMessage usable as a supervisor
+        # surface: instead of raw tool chrome, users see one glanceable
+        # progress bubble. This is presentation-only and can be disabled per
+        # platform config with platforms.photon.extra.mobile_cards: false.
+        self.mobile_cards = _coerce_bool(
+            extra.get("mobile_cards")
+            if "mobile_cards" in extra
+            else os.getenv("PHOTON_MOBILE_CARDS"),
+            True,
+        )
 
         # Runtime state
         self._sidecar_proc: Optional[subprocess.Popen] = None
@@ -1388,6 +1424,42 @@ class PhotonAdapter(BasePlatformAdapter):
         if _markdown_enabled():
             return content
         return strip_markdown(content)
+
+    def format_tool_event(
+        self,
+        event: Any,
+        *,
+        mode: str = "all",
+        preview_max_len: int = 40,
+    ) -> Optional[str]:
+        """Render tool progress as a compact iMessage-native status card.
+
+        Photon is usually a personal mobile channel. The base tool chrome
+        (``🔧 tool_name: preview``) is technically correct but reads like raw
+        debug output in Messages. A tiny card keeps the useful telemetry — what
+        is running, iteration, and the current target — without implying that
+        iMessage is an execution approval surface.
+        """
+        from gateway.stream_events import ToolCallChunk
+
+        if not isinstance(event, ToolCallChunk):
+            return None
+        if not self.mobile_cards:
+            return super().format_tool_event(
+                event, mode=mode, preview_max_len=preview_max_len,
+            )
+
+        preview = _truncate_one_line(event.preview, preview_max_len or 80)
+        iteration = event.index + 1 if event.index >= 0 else 1
+        lines = [
+            "⏳ **Hermes status**",
+            f"Working — iteration {iteration}",
+            f"Tool: `{event.tool_name}`",
+        ]
+        if preview:
+            lines.append(f"Current: {preview}")
+        lines.append("Boundary: status only — no approval/action taken")
+        return "\n".join(lines)
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:

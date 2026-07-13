@@ -146,6 +146,11 @@ All env vars are documented in `plugin.yaml`. The most important:
   builder; iMessage renders bold/italics/lists/code natively and other
   Spectrum platforms degrade to readable plain text. `PHOTON_MARKDOWN=false`
   reverts to stripped plain text.
+- **Mobile supervisor cards are enabled by default.** Tool-progress events are
+  rendered as compact status cards (`Hermes status`, iteration, tool, current
+  target, and an explicit `status only — no approval/action taken` boundary)
+  instead of raw debug-style tool chrome. Disable with
+  `platforms.photon.extra.mobile_cards: false` or `PHOTON_MOBILE_CARDS=false`.
 - **Reactions (tapbacks) are supported** behind `PHOTON_REACTIONS` (default
   off): the adapter tapbacks 👀 while processing and swaps it for 👍/👎 on
   completion, and a user tapback on a bot-sent message is routed to the agent

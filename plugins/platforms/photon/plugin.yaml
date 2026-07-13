@@ -82,6 +82,10 @@ optional_env:
     description: "Send agent replies as markdown — iMessage renders it natively, other Spectrum platforms degrade to plain text (true/false, default true)"
     prompt: "Render replies as markdown? (true/false)"
     password: false
+  - name: PHOTON_MOBILE_CARDS
+    description: "Render tool progress as compact supervisor status cards in iMessage (true/false, default true)"
+    prompt: "Render mobile supervisor cards? (true/false)"
+    password: false
   - name: PHOTON_REACTIONS
     description: "Tapback 👀/👍/👎 on messages as processing status and route tapbacks on bot messages to the agent (true/false, default false)"
     prompt: "Enable reaction tapbacks? (true/false)"

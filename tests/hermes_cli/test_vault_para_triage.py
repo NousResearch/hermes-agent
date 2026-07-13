@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from hermes_cli import vault_para_triage as triage
 
@@ -184,6 +185,46 @@ def test_low_confidence_action_inbox_keeps_note_in_inbox(tmp_path):
     assert summary["processed"][0]["path_after"] == "Inbox/unsure-note.md"
 
 
+def test_explicit_inbox_target_is_allowed(tmp_path):
+    vault = _make_vault(tmp_path)
+    note = vault / "Inbox" / "scratch-capture.md"
+    note.write_text("Keep this as a raw inbox capture for later sorting.\n", encoding="utf-8")
+
+    summary = triage.run_triage(
+        vault_path=vault,
+        classifier=lambda **_: {
+            "target": "Inbox",
+            "confidence": 0.93,
+            "reason": "raw capture should remain in inbox",
+            "needs_feedback": False,
+        },
+    )
+
+    staged = (
+        vault
+        / ".hermes"
+        / "note-capture"
+        / "staging"
+        / "vault"
+        / summary["processed"][0]["entry_id"]
+        / "Inbox"
+        / "scratch-capture.md"
+    )
+    assert staged.exists()
+    assert summary["processed"][0]["path_after"] == "Inbox/scratch-capture.md"
+
+    capture_event = json.loads(
+        (
+            vault
+            / ".hermes"
+            / "note-capture"
+            / "events"
+            / f"{summary['processed'][0]['entry_id']}.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert capture_event["routing"]["target"] == "Inbox"
+
+
 def test_feedback_status_includes_projection_summary(tmp_path):
     vault = _make_vault(tmp_path)
     note = vault / "Inbox" / "ops.md"
@@ -295,3 +336,134 @@ def test_projection_summary_includes_memory_hint_and_enabled_stores(tmp_path):
     projection_status = summary["projection_status"]
     assert projection_status["sync_contract"]["stores"] == ["vault"]
     assert "downstream staged projections" in projection_status["memory_hint"]
+
+
+def test_target_resolver_decision_is_used_and_preserved_in_capture_event(tmp_path):
+    vault = _make_vault(tmp_path)
+    note = vault / "Inbox" / "lab-results.md"
+    note.write_text("Need to file these blood test notes.\n", encoding="utf-8")
+
+    summary = triage.run_triage(
+        vault_path=vault,
+        target_resolver=lambda **_: {
+            "target": "Areas/Health",
+            "confidence": 0.87,
+            "reason": "resolved by runtime target registry",
+            "source": "target_resolver",
+            "needs_feedback": False,
+            "target_id": "vault.second_brain.areas.health",
+            "logical_path": "areas/health",
+            "display_path": "4.Resources/Health and Wellbeing",
+            "resolved_target_path": "Areas/Health",
+            "target_status": "active",
+        },
+        classifier=lambda **_: (_ for _ in ()).throw(AssertionError("classifier should not run")),
+    )
+
+    event_id = summary["processed"][0]["entry_id"]
+    capture_event = json.loads(
+        (vault / ".hermes" / "note-capture" / "events" / f"{event_id}.json").read_text(encoding="utf-8")
+    )
+    routing = capture_event["routing"]
+    assert routing["target"] == "Areas/Health"
+    assert routing["target_id"] == "vault.second_brain.areas.health"
+    assert routing["logical_path"] == "areas/health"
+    assert routing["display_path"] == "4.Resources/Health and Wellbeing"
+    assert routing["resolved_target_path"] == "Areas/Health"
+    assert routing["target_status"] == "active"
+    assert summary["processed"][0]["path_after"] == "Areas/Health/lab-results.md"
+
+
+def test_http_target_resolver_uses_configured_api_before_classifier(tmp_path):
+    vault = _make_vault(tmp_path)
+    note = vault / "Inbox" / "launch-plan.md"
+    note.write_text("Capture these launch notes for later reference.\n", encoding="utf-8")
+    seen: dict[str, object] = {}
+
+    class _FakeResponse:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def read(self) -> bytes:
+            return json.dumps(self._payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    def _fake_urlopen(request, timeout=0):
+        seen["url"] = request.full_url
+        seen["timeout"] = timeout
+        seen["payload"] = json.loads(request.data.decode("utf-8"))
+        return _FakeResponse(
+            {
+                "decision": {
+                    "resolved_target_path": "Resources/Reference",
+                    "confidence": 0.94,
+                    "reason": "api routed note",
+                    "needs_feedback": False,
+                    "target_id": "vault.second_brain.resources.reference",
+                }
+            }
+        )
+
+    with patch.object(triage.urllib.request, "urlopen", side_effect=_fake_urlopen):
+        summary = triage.run_triage(
+            vault_path=vault,
+            config_override={
+                "routing": {
+                    "target_resolver": {
+                        "enabled": True,
+                        "api_url": "http://resolver.test/v1/resolve-note-target",
+                        "timeout_seconds": 2.5,
+                    }
+                }
+            },
+            classifier=lambda **_: (_ for _ in ()).throw(AssertionError("classifier should not run")),
+        )
+
+    assert seen["url"] == "http://resolver.test/v1/resolve-note-target"
+    assert seen["timeout"] == 2.5
+    payload = seen["payload"]
+    assert payload["note"]["title"] == "launch plan"
+    assert payload["review_target"] == "Resources/_Inbox Review"
+    assert "Resources/Reference" in payload["allowed_targets"]
+    assert summary["processed"][0]["path_after"] == "Resources/Reference/launch-plan.md"
+
+
+def test_classifier_canonical_fields_are_preserved_in_capture_event(tmp_path):
+    vault = _make_vault(tmp_path)
+    note = vault / "Inbox" / "receipt.md"
+    note.write_text("HMRC invoice and payment confirmation.\n", encoding="utf-8")
+
+    summary = triage.run_triage(
+        vault_path=vault,
+        classifier=lambda **_: {
+            "target": "Areas/Health",
+            "confidence": 0.91,
+            "reason": "test classifier",
+            "needs_feedback": False,
+            "target_id": "vault.second_brain.areas.personal.finance.invoices_and_receipts",
+            "target_class": "obsidian_vault",
+            "logical_path": "areas/personal/finance/invoices_and_receipts",
+            "display_path": "3.Areas/Personal/Finance/Invoices and Receipts",
+            "resolved_target_path": "Areas/Health",
+            "target_status": "pending_migration",
+            "trust_boundary": "icloud_obsidian",
+        },
+    )
+
+    event_id = summary["processed"][0]["entry_id"]
+    capture_event = json.loads(
+        (vault / ".hermes" / "note-capture" / "events" / f"{event_id}.json").read_text(encoding="utf-8")
+    )
+    routing = capture_event["routing"]
+    assert routing["target_id"] == "vault.second_brain.areas.personal.finance.invoices_and_receipts"
+    assert routing["target_class"] == "obsidian_vault"
+    assert routing["logical_path"] == "areas/personal/finance/invoices_and_receipts"
+    assert routing["display_path"] == "3.Areas/Personal/Finance/Invoices and Receipts"
+    assert routing["resolved_target_path"] == "Areas/Health"
+    assert routing["target_status"] == "pending_migration"
+    assert routing["trust_boundary"] == "icloud_obsidian"

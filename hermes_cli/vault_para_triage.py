@@ -17,6 +17,8 @@ import logging
 import os
 import re
 import shlex
+import urllib.error
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +35,16 @@ DEFAULT_REVIEW_DIR = "Resources/_Inbox Review"
 DEFAULT_AUDIT_ROOT = ".hermes/para-triage"
 DEFAULT_CAPTURE_ROOT = ".hermes/note-capture"
 DEFAULT_CONFIG_REL_PATH = ".hermes/para-triage.yaml"
+
+_CANONICAL_ROUTING_FIELDS = (
+    "target_id",
+    "target_class",
+    "logical_path",
+    "display_path",
+    "resolved_target_path",
+    "target_status",
+    "trust_boundary",
+)
 
 
 def _utc_now() -> datetime:
@@ -86,6 +98,11 @@ def _default_config() -> dict[str, Any]:
             "low_confidence_action": "review",
             "example_limit": 8,
             "rules": [],
+            "target_resolver": {
+                "enabled": False,
+                "api_url": "",
+                "timeout_seconds": 5.0,
+            },
         },
         "projection": {
             "stores": {
@@ -429,14 +446,53 @@ def _rule_decision(
             continue
         if _rules_match(rule, title=title, body=body, tags=tags):
             reason = str(rule.get("reason") or f"matched routing rule {idx}").strip()
-            return {
+            decision = {
                 "target": target,
                 "confidence": float(rule.get("confidence", 0.95)),
                 "reason": reason,
                 "source": "rule",
                 "needs_feedback": bool(rule.get("needs_feedback", False)),
             }
+            for key in _CANONICAL_ROUTING_FIELDS:
+                value = rule.get(key)
+                if value not in (None, ""):
+                    decision[key] = value
+            return decision
     return None
+
+
+def _target_resolver_config(config: dict[str, Any]) -> dict[str, Any]:
+    routing = config.get("routing") or {}
+    resolver = routing.get("target_resolver") or {}
+    return resolver if isinstance(resolver, dict) else {}
+
+
+def _resolver_api_url(config: dict[str, Any]) -> str:
+    resolver = _target_resolver_config(config)
+    configured = str(resolver.get("api_url") or "").strip()
+    if configured:
+        return configured
+    for env_name in ("HERMES_NOTE_TARGET_RESOLVER_URL", "NOTE_CAPTURE_TARGET_RESOLVER_URL"):
+        value = os.getenv(env_name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolver_enabled(config: dict[str, Any]) -> bool:
+    resolver = _target_resolver_config(config)
+    if bool(resolver.get("enabled", False)):
+        return True
+    return bool(_resolver_api_url(config))
+
+
+def _resolver_timeout_seconds(config: dict[str, Any]) -> float:
+    resolver = _target_resolver_config(config)
+    try:
+        timeout = float(resolver.get("timeout_seconds", 5.0) or 5.0)
+    except (TypeError, ValueError):
+        timeout = 5.0
+    return max(timeout, 0.1)
 
 
 def _normalize_target(target: str, *, vault_path: Path, config: dict[str, Any]) -> str:
@@ -445,6 +501,7 @@ def _normalize_target(target: str, *, vault_path: Path, config: dict[str, Any]) 
         return str(config.get("review_dir") or DEFAULT_REVIEW_DIR)
     first = target.split("/", 1)[0].lower()
     allowed_roots = {str(v).split("/", 1)[0].lower() for v in (config.get("para_roots") or {}).values()}
+    allowed_roots.add(str(config.get("inbox_dir") or "Inbox").split("/", 1)[0].lower())
     allowed_roots.add(str(config.get("review_dir") or DEFAULT_REVIEW_DIR).split("/", 1)[0].lower())
     if first not in allowed_roots:
         return str(config.get("review_dir") or DEFAULT_REVIEW_DIR)
@@ -474,6 +531,123 @@ def _parse_json_object(text: str) -> dict[str, Any]:
             except json.JSONDecodeError:
                 return {}
     return {}
+
+
+def _copy_canonical_routing_fields(source: dict[str, Any], dest: dict[str, Any]) -> dict[str, Any]:
+    for key in _CANONICAL_ROUTING_FIELDS:
+        value = source.get(key)
+        if value not in (None, ""):
+            dest[key] = str(value).strip()
+    return dest
+
+
+def _normalize_resolver_decision(
+    decision: dict[str, Any],
+    *,
+    vault_path: Path,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    canonical_target = decision.get("canonical_target") or {}
+    if not isinstance(canonical_target, dict):
+        canonical_target = {}
+    merged = dict(canonical_target)
+    for key in (
+        "target",
+        "target_id",
+        "target_class",
+        "logical_path",
+        "display_path",
+        "resolved_target_path",
+        "target_status",
+        "trust_boundary",
+    ):
+        value = decision.get(key)
+        if value not in (None, "") and key not in merged:
+            merged[key] = value
+
+    raw_target = ""
+    for key in ("resolved_target_path", "target", "display_path"):
+        candidate = str(merged.get(key) or "").strip()
+        if candidate:
+            raw_target = candidate
+            break
+
+    normalized = {
+        "target": _normalize_target(raw_target, vault_path=vault_path, config=config),
+        "confidence": float(decision.get("confidence", 0.0) or 0.0),
+        "reason": str(decision.get("reason") or "resolved by target resolver").strip() or "resolved by target resolver",
+        "source": str(decision.get("source") or "target_resolver"),
+        "needs_feedback": bool(decision.get("needs_feedback", False)),
+    }
+    return _copy_canonical_routing_fields(merged, normalized)
+
+
+def _resolver_decision(
+    *,
+    title: str,
+    body: str,
+    tags: list[str],
+    targets: list[str],
+    examples: list[dict[str, Any]],
+    config: dict[str, Any],
+    vault_path: Path,
+    state_root: Path,
+    structure: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not _resolver_enabled(config):
+        return None
+
+    api_url = _resolver_api_url(config)
+    if not api_url:
+        return None
+
+    payload = {
+        "note": {
+            "title": title,
+            "tags": tags,
+            "body": body,
+            "excerpt": _excerpt(body, 1600),
+        },
+        "allowed_targets": targets,
+        "review_target": str(config.get("review_dir") or DEFAULT_REVIEW_DIR),
+        "examples": examples,
+        "vault_path": str(vault_path),
+        "state_root": str(state_root),
+        "structure": structure,
+    }
+    body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        api_url,
+        method="POST",
+        data=body_bytes,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+    )
+    timeout = _resolver_timeout_seconds(config)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read().decode("utf-8")
+
+    parsed: Any
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = _parse_json_object(raw)
+
+    if not isinstance(parsed, dict):
+        raise ValueError("target resolver returned a non-object")
+
+    decision = parsed
+    for wrapper_key in ("decision", "result", "data"):
+        wrapped = decision.get(wrapper_key)
+        if isinstance(wrapped, dict):
+            decision = wrapped
+            break
+
+    if not isinstance(decision, dict):
+        raise ValueError("target resolver returned a non-object decision")
+    return _normalize_resolver_decision(decision, vault_path=vault_path, config=config)
 
 
 def _llm_decision(
@@ -552,6 +726,7 @@ def _classify_note(
     state_root: Path,
     structure: dict[str, Any],
     classifier: Callable[..., dict[str, Any]] | None = None,
+    target_resolver: Callable[..., dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     rule_hit = _rule_decision(config, title=title, body=body, tags=tags)
     if rule_hit:
@@ -564,6 +739,35 @@ def _classify_note(
         tags=tags,
         limit=int(((config.get("routing") or {}).get("example_limit")) or 8),
     )
+
+    try:
+        resolver_decision = target_resolver(
+            title=title,
+            body=body,
+            tags=tags,
+            targets=list(structure.get("targets") or []),
+            examples=examples,
+            config=config,
+            vault_path=vault_path,
+            state_root=state_root,
+            structure=structure,
+        ) if target_resolver else _resolver_decision(
+            title=title,
+            body=body,
+            tags=tags,
+            targets=list(structure.get("targets") or []),
+            examples=examples,
+            config=config,
+            vault_path=vault_path,
+            state_root=state_root,
+            structure=structure,
+        )
+    except Exception as exc:
+        logger.warning("Vault target resolver failed: %s", exc)
+        resolver_decision = None
+
+    if isinstance(resolver_decision, dict):
+        return _normalize_resolver_decision(resolver_decision, vault_path=vault_path, config=config)
 
     try:
         decision = classifier(
@@ -598,7 +802,7 @@ def _classify_note(
         "source": str(decision.get("source") or "llm"),
         "needs_feedback": bool(decision.get("needs_feedback", False)),
     }
-    return normalized
+    return _copy_canonical_routing_fields(decision, normalized)
 
 
 def _move_note(
@@ -774,6 +978,7 @@ def run_triage(
     config_path: str | Path | None = None,
     config_override: dict[str, Any] | None = None,
     classifier: Callable[..., dict[str, Any]] | None = None,
+    target_resolver: Callable[..., dict[str, Any] | None] | None = None,
     dry_run: bool = False,
     limit: int | None = None,
 ) -> dict[str, Any]:
@@ -813,6 +1018,7 @@ def run_triage(
             state_root=state_root,
             structure=structure,
             classifier=classifier,
+            target_resolver=target_resolver,
         )
 
         target = str(decision.get("target") or config.get("review_dir") or DEFAULT_REVIEW_DIR)
@@ -903,6 +1109,10 @@ def run_triage(
             "canonical_content": rendered,
             "sync_contract": _sync_contract(config),
         }
+        for key in _CANONICAL_ROUTING_FIELDS:
+            value = decision.get(key)
+            if value not in (None, ""):
+                capture_event["routing"][key] = value
         if not dry_run:
             _json_dump(_capture_event_path(capture_root, entry_id), capture_event)
 
@@ -925,6 +1135,10 @@ def run_triage(
             "archived_path": archived_rel,
             "stores": sorted(staged_projection_paths),
         }
+        for key in _CANONICAL_ROUTING_FIELDS:
+            value = decision.get(key)
+            if value not in (None, ""):
+                event[key] = value
         processed.append(event)
         if not dry_run:
             _jsonl_append(_audit_events_path(state_root), event)

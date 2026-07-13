@@ -12425,7 +12425,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if context_length >= 1_000_000:
             ctx_display = f"{context_length / 1_000_000:.1f}M"
         elif context_length >= 1_000:
-            ctx_display = f"{context_length // 1_000}K"
+            ctx_display = f"{context_length // 1024}K"
         else:
             ctx_display = str(context_length)
 

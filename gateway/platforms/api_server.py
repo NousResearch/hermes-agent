@@ -96,6 +96,8 @@ CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 _EXTERNAL_CONVERSATION_HISTORY_ROLES = frozenset({"assistant", "user"})
+_EXTERNAL_INPUT_MESSAGE_ROLES = frozenset({"assistant", "developer", "system", "user"})
+_EXTERNAL_INPUT_INSTRUCTION_ROLES = frozenset({"developer", "system"})
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -149,6 +151,52 @@ def _normalize_external_history_role(role: Any, *, param: str) -> str:
     if normalized not in _EXTERNAL_CONVERSATION_HISTORY_ROLES:
         raise ValueError(f"{param}.role must be one of: {allowed}")
     return normalized
+
+
+def _normalize_external_input_role(role: Any, *, param: str) -> str:
+    """Validate standard Responses API message roles supplied in ``input``."""
+    allowed = ", ".join(sorted(_EXTERNAL_INPUT_MESSAGE_ROLES))
+    if not isinstance(role, str):
+        raise ValueError(f"{param}.role must be one of: {allowed}")
+    normalized = role.strip()
+    if normalized not in _EXTERNAL_INPUT_MESSAGE_ROLES:
+        raise ValueError(f"{param}.role must be one of: {allowed}")
+    return normalized
+
+
+def _promote_external_input_instructions(
+    input_messages: List[Dict[str, Any]],
+    instructions: Any,
+) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """Fold standard system/developer input messages into the dedicated prompt slot.
+
+    Responses API clients may place system or developer messages in ``input``.
+    Hermes represents caller instructions as one ephemeral system prompt, so
+    fold those messages into that prompt instead of replaying them as history.
+    """
+    conversation_messages: List[Dict[str, Any]] = []
+    input_instruction_parts: List[str] = []
+    saw_input_instruction = False
+
+    for message in input_messages:
+        if message.get("role") in _EXTERNAL_INPUT_INSTRUCTION_ROLES:
+            saw_input_instruction = True
+            text = _normalize_chat_content(message.get("content", ""))
+            if text:
+                input_instruction_parts.append(text)
+        else:
+            conversation_messages.append(message)
+
+    if not saw_input_instruction:
+        return input_messages, instructions
+
+    merged_parts: List[str] = []
+    if instructions is not None:
+        existing = _normalize_chat_content(instructions)
+        if existing:
+            merged_parts.append(existing)
+    merged_parts.extend(input_instruction_parts)
+    return conversation_messages, "\n\n".join(merged_parts) or None
 
 
 def _normalize_chat_content(
@@ -3264,7 +3312,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     input_messages.append({"role": "user", "content": item})
                 elif isinstance(item, dict):
                     try:
-                        role = _normalize_external_history_role(
+                        role = _normalize_external_input_role(
                             item.get("role", "user"),
                             param=f"input[{idx}]",
                         )
@@ -3280,6 +3328,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     input_messages.append({"role": role, "content": content})
         else:
             return web.json_response(_openai_error("'input' must be a string or array"), status=400)
+
+        input_messages, instructions = _promote_external_input_instructions(
+            input_messages,
+            instructions,
+        )
 
         # Accept explicit conversation_history from the request body.
         # This lets stateless clients supply their own history instead of
@@ -4227,12 +4280,47 @@ class APIServerAdapter(BasePlatformAdapter):
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
-        if not user_message:
-            return web.json_response(_openai_error("No user message found in input"), status=400)
-
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
+
+        input_messages: List[Dict[str, Any]] = []
+        if isinstance(raw_input, str):
+            input_messages = [{"role": "user", "content": raw_input}]
+        elif isinstance(raw_input, list):
+            for idx, item in enumerate(raw_input):
+                if isinstance(item, str):
+                    input_messages.append({"role": "user", "content": item})
+                elif isinstance(item, dict):
+                    try:
+                        role = _normalize_external_input_role(
+                            item.get("role", "user"),
+                            param=f"input[{idx}]",
+                        )
+                    except ValueError as exc:
+                        return web.json_response(
+                            _openai_error(str(exc), param=f"input[{idx}].role"),
+                            status=400,
+                        )
+                    try:
+                        content = _normalize_multimodal_content(item.get("content", ""))
+                    except ValueError as exc:
+                        return _multimodal_validation_error(exc, param=f"input[{idx}].content")
+                    input_messages.append({"role": role, "content": content})
+                else:
+                    return web.json_response(
+                        _openai_error(f"input[{idx}] must be a string or message object"),
+                        status=400,
+                    )
+        else:
+            return web.json_response(_openai_error("'input' must be a string or array"), status=400)
+
+        input_messages, instructions = _promote_external_input_instructions(
+            input_messages,
+            instructions,
+        )
+        user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
+        if not _content_has_visible_payload(user_message):
+            return web.json_response(_openai_error("No user message found in input"), status=400)
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
@@ -4276,19 +4364,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # When input is a multi-message array, extract all but the last
         # message as conversation history (the last becomes user_message).
         # Only fires when no explicit history was provided.
-        if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
-            for idx, msg in enumerate(raw_input[:-1]):
-                if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
-                    try:
-                        role = _normalize_external_history_role(
-                            msg["role"],
-                            param=f"input[{idx}]",
-                        )
-                    except ValueError as exc:
-                        return web.json_response(
-                            _openai_error(str(exc), param=f"input[{idx}].role"),
-                            status=400,
-                        )
+        if not conversation_history and len(input_messages) > 1:
+            for msg in input_messages[:-1]:
+                if msg.get("content"):
                     content = msg["content"]
                     if isinstance(content, list):
                         # Flatten multi-part content blocks to text
@@ -4296,7 +4374,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             part.get("text", "") for part in content
                             if isinstance(part, dict) and part.get("type") == "text"
                         )
-                    conversation_history.append({"role": role, "content": str(content)})
+                    conversation_history.append({"role": msg["role"], "content": str(content)})
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id

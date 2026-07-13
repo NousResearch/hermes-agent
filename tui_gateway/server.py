@@ -1713,7 +1713,8 @@ def _ensure_session_db_row(session: dict) -> None:
     # so resume restores effort + fast too, not just the model name.
     override = session.get("model_override")
     override = override if isinstance(override, dict) else {}
-    row_model = str(override.get("model") or "").strip() or _resolve_model()
+    config_model, _config_provider = _config_model_target()
+    row_model = str(override.get("model") or "").strip() or config_model
     model_config: dict = {}
     for src_key, cfg_key in (
         ("model", "model"),
@@ -5304,6 +5305,8 @@ def _(rid, params: dict) -> dict:
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
 
+    config_model, config_provider = _config_model_target()
+
     return _ok(
         rid,
         {
@@ -5315,16 +5318,18 @@ def _(rid, params: dict) -> dict:
                 # Reflect the per-session model override (desktop composer pick)
                 # in the immediate response so the client doesn't briefly clobber
                 # its sticky pick with the global default before the deferred
-                # build's session.info lands.
+                # build's session.info lands. For the global default, read the
+                # profile config before provision-time HERMES_MODEL env seeds so
+                # stale launch env cannot paint the footer with an old model.
                 "model": (
                     session_model_override.get("model")
                     if session_model_override
-                    else _resolve_model()
+                    else config_model
                 ),
                 **(
                     {"provider": session_model_override["provider"]}
                     if session_model_override and session_model_override.get("provider")
-                    else {}
+                    else ({"provider": config_provider} if config_provider else {})
                 ),
                 "tools": {},
                 "skills": {},

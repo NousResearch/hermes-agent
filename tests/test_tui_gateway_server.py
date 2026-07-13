@@ -61,6 +61,44 @@ def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
         reset_hermes_home_override(token)
 
 
+def test_session_create_info_prefers_config_model_over_stale_env(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  default: claude-sonnet-4-6\n"
+        "  provider: anthropic\n",
+        encoding="utf-8",
+    )
+    token = set_hermes_home_override(home)
+
+    def _clear_server_sessions():
+        for session in list(server._sessions.values()):
+            server._teardown_session(session)
+        server._sessions.clear()
+
+    try:
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        _clear_server_sessions()
+        monkeypatch.setenv("HERMES_MODEL", "gpt-5.5")
+        monkeypatch.setenv("HERMES_INFERENCE_MODEL", "gpt-5.5")
+        monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
+        monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+
+        response = server._methods["session.create"]("r1", {"cols": 80})
+
+        assert response["result"]["info"]["model"] == "claude-sonnet-4-6"
+        assert response["result"]["info"]["provider"] == "anthropic"
+    finally:
+        _clear_server_sessions()
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        reset_hermes_home_override(token)
+
+
 def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
     """Desktop/TUI sessions must pin the agent cwd per session.
 
@@ -2327,7 +2365,7 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
             )
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
-    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("test-model", "test-provider"))
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True})
 
@@ -2367,7 +2405,7 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
             )
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
-    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("test-model", "test-provider"))
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
 
@@ -2424,7 +2462,7 @@ def test_ensure_session_db_row_no_override_uses_global(monkeypatch):
             created.append({"model": model, "model_config": model_config})
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
-    monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("global/default", "global-provider"))
 
     server._ensure_session_db_row({"session_key": "k1", "model_override": None})
 

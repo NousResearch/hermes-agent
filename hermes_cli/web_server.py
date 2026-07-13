@@ -14057,6 +14057,159 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         db.close()
 
 
+def _usage_window_dict(window) -> Dict[str, Any]:
+    reset_at = getattr(window, "reset_at", None)
+    return {
+        "label": getattr(window, "label", ""),
+        "used_percent": getattr(window, "used_percent", None),
+        "reset_at": reset_at.isoformat() if reset_at else None,
+        "detail": getattr(window, "detail", None),
+    }
+
+
+def _account_usage_dict(snapshot) -> Dict[str, Any]:
+    if not snapshot or not getattr(snapshot, "available", False):
+        reason = getattr(snapshot, "unavailable_reason", None) if snapshot else None
+        return {"available": False, "reason": reason or "No live quota endpoint available"}
+    return {
+        "available": True,
+        "title": snapshot.title,
+        "plan": snapshot.plan,
+        "windows": [_usage_window_dict(w) for w in snapshot.windows],
+        "details": list(snapshot.details),
+    }
+
+
+def _provider_auth_summary(provider: str) -> Dict[str, bool]:
+    normalized = str(provider or "").strip().lower()
+    if not normalized:
+        return {"logged_in": False, "configured": False}
+    logged_in = False
+    configured = False
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY, get_provider_auth_state
+        state = get_provider_auth_state(normalized) or {}
+        logged_in = bool(state)
+        configured = logged_in
+        pconfig = PROVIDER_REGISTRY.get(normalized)
+        if pconfig:
+            from hermes_cli.config import get_env_value
+            configured = configured or any(
+                bool(str(get_env_value(env_var) or "").strip())
+                for env_var in pconfig.api_key_env_vars
+            )
+    except Exception:
+        _log.debug("usage quotas auth summary failed for %s", provider, exc_info=True)
+    return {"logged_in": logged_in, "configured": configured}
+
+
+def _sum_usage_window(db, *, since: float) -> Dict[str, Any]:
+    row = db._conn.execute(
+        """
+        SELECT COUNT(*) as sessions,
+               COALESCE(SUM(message_count), 0) as messages,
+               COALESCE(SUM(tool_call_count), 0) as tool_calls,
+               COALESCE(SUM(api_call_count), 0) as api_calls,
+               COALESCE(SUM(input_tokens), 0) as input_tokens,
+               COALESCE(SUM(output_tokens), 0) as output_tokens,
+               COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+               COALESCE(SUM(reasoning_tokens), 0) as reasoning_tokens
+        FROM sessions WHERE started_at > ?
+        """,
+        (since,),
+    ).fetchone()
+    return dict(row or {})
+
+
+@app.get("/api/analytics/usage-quotas")
+async def get_usage_quotas(profile: Optional[str] = None):
+    """Dashboard rollup for the custom Usage & Quotas page."""
+    from agent.account_usage import fetch_account_usage
+    from hermes_cli.fallback_config import get_fallback_chain
+
+    with _profile_scope(profile):
+        config = load_config()
+        model_cfg = config.get("model") if isinstance(config, dict) else {}
+        if isinstance(model_cfg, dict):
+            primary = {
+                "provider": str(model_cfg.get("provider") or ""),
+                "model": str(model_cfg.get("default") or model_cfg.get("name") or ""),
+                "base_url": str(model_cfg.get("base_url") or ""),
+            }
+        else:
+            primary = {"provider": "", "model": str(model_cfg or ""), "base_url": ""}
+        fallback_chain = [
+            {
+                "provider": str(entry.get("provider") or ""),
+                "model": str(entry.get("model") or ""),
+                "base_url": str(entry.get("base_url") or ""),
+            }
+            for entry in get_fallback_chain(config)
+        ]
+
+        provider_names = []
+        for entry in [primary, *fallback_chain]:
+            provider = entry.get("provider") or ""
+            if provider and provider not in provider_names:
+                provider_names.append(provider)
+        provider_auth = {provider: _provider_auth_summary(provider) for provider in provider_names}
+
+        account_usage: Dict[str, Dict[str, Any]] = {}
+        for entry in [primary, *fallback_chain]:
+            provider = entry.get("provider") or ""
+            if not provider or provider in account_usage:
+                continue
+            snapshot = fetch_account_usage(
+                provider,
+                base_url=entry.get("base_url") or None,
+                api_key=str(entry.get("api_key") or "") or None,
+            )
+            account_usage[provider] = _account_usage_dict(snapshot)
+
+    db = _open_session_db_for_profile(profile)
+    try:
+        now = time.time()
+        usage_24h = _sum_usage_window(db, since=now - 86400)
+        usage_7d = _sum_usage_window(db, since=now - (7 * 86400))
+
+        current_row = db._conn.execute(
+            """
+            SELECT id, model, billing_provider, started_at, message_count,
+                   tool_call_count, api_call_count as api_calls, input_tokens, output_tokens,
+                   cache_read_tokens, reasoning_tokens
+            FROM sessions ORDER BY started_at DESC LIMIT 1
+            """
+        ).fetchone()
+        current_session = dict(current_row) if current_row else None
+
+        providers_24h = [
+            dict(row)
+            for row in db._conn.execute(
+                """
+                SELECT COALESCE(NULLIF(billing_provider, ''), 'unknown') as provider,
+                       COUNT(*) as sessions,
+                       COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
+                FROM sessions WHERE started_at > ?
+                GROUP BY provider ORDER BY tokens DESC, sessions DESC
+                """,
+                (now - 86400,),
+            ).fetchall()
+        ]
+    finally:
+        db.close()
+
+    return {
+        "primary": primary,
+        "fallback_chain": fallback_chain,
+        "provider_auth": provider_auth,
+        "account_usage": account_usage,
+        "current_session": current_session,
+        "usage_24h": usage_24h,
+        "usage_7d": usage_7d,
+        "providers_24h": providers_24h,
+    }
+
+
 @app.get("/api/analytics/models")
 async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
     """Rich per-model analytics for the Models dashboard page.

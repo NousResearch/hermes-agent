@@ -469,6 +469,10 @@ export const api = {
     fetchJSON<AnalyticsResponse>(
       appendProfileParam(`/api/analytics/usage?days=${days}`, profile),
     ),
+  getUsageQuotas: (profile = getManagementProfile()) =>
+    fetchJSON<UsageQuotasResponse>(
+      appendProfileParam("/api/analytics/usage-quotas", profile),
+    ),
   getModelsAnalytics: (days: number, profile = getManagementProfile()) =>
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
@@ -2021,6 +2025,76 @@ export interface AnalyticsResponse {
     summary: AnalyticsSkillsSummary;
     top_skills: AnalyticsSkillEntry[];
   };
+}
+
+export interface UsageProviderModel {
+  provider: string;
+  model: string;
+  base_url?: string;
+}
+
+export interface UsageProviderAuth {
+  logged_in: boolean;
+  configured: boolean;
+}
+
+export interface UsageQuotaWindow {
+  label: string;
+  used_percent: number | null;
+  reset_at: string | null;
+  detail: string | null;
+}
+
+export type UsageQuotaStatus =
+  | {
+      available: true;
+      title: string;
+      plan: string | null;
+      windows: UsageQuotaWindow[];
+      details: string[];
+    }
+  | { available: false; reason: string };
+
+export interface UsageWindowSummary {
+  sessions: number;
+  messages: number;
+  tool_calls: number;
+  api_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  reasoning_tokens: number;
+}
+
+export interface UsageCurrentSession {
+  id: string;
+  model: string | null;
+  billing_provider: string | null;
+  started_at: number;
+  message_count: number;
+  tool_call_count: number;
+  api_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  reasoning_tokens: number;
+}
+
+export interface UsageProviderBreakdown {
+  provider: string;
+  sessions: number;
+  tokens: number;
+}
+
+export interface UsageQuotasResponse {
+  primary: UsageProviderModel;
+  fallback_chain: UsageProviderModel[];
+  provider_auth: Record<string, UsageProviderAuth>;
+  account_usage: Record<string, UsageQuotaStatus>;
+  current_session: UsageCurrentSession | null;
+  usage_24h: UsageWindowSummary;
+  usage_7d: UsageWindowSummary;
+  providers_24h: UsageProviderBreakdown[];
 }
 
 export interface ActiveProfileInfo {

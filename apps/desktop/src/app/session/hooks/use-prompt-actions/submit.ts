@@ -118,9 +118,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // Pin the session context for the whole async submit pipeline. Without
       // this, a fast session switch during session.resume / file.attach can
       // redirect the user's text into a different chat (#54527).
-      const startingActiveSessionId = activeSessionIdRef.current
-      const startingStoredSessionId = selectedStoredSessionIdRef.current
-      const startingRouteToken = getRouteToken()
+      let startingActiveSessionId = activeSessionIdRef.current
+      let startingStoredSessionId = selectedStoredSessionIdRef.current
+      let startingRouteToken = getRouteToken()
 
       const sessionContextDrifted = (): boolean =>
         selectedStoredSessionIdRef.current !== startingStoredSessionId ||
@@ -280,6 +280,20 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
           return false
         }
+
+        // createBackendSessionForSend establishes a new session and updates
+        // activeSessionIdRef / selectedStoredSessionIdRef / the route token to
+        // point at it. Re-anchor the drift baseline to the freshly-created
+        // session so the post-creation guard only catches a *real* concurrent
+        // session switch, not the creation we just performed ourselves. Without
+        // this, the very first message of a new chat always trips the drift
+        // guard (the refs were null before creation, non-null after), aborts
+        // the submit, and leaves the user's message unsent — though the session
+        // is already created with their text as the title, so Enter "works" on
+        // the second press because creation is skipped on the existing session.
+        startingActiveSessionId = activeSessionIdRef.current
+        startingStoredSessionId = selectedStoredSessionIdRef.current
+        startingRouteToken = getRouteToken()
 
         if (sessionContextDrifted()) {
           return abortForSessionSwitch(sessionId)

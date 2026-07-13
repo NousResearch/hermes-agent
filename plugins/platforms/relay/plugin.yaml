@@ -1,0 +1,47 @@
+name: relay-platform
+label: Relay
+kind: platform
+version: 0.1.0
+description: >
+  Relay messenger adapter for Hermes Agent. Your Hermes appears in Relay
+  as a contact people can text like a friend. Inbound messages arrive by
+  long-polling Relay's durable event log (GET /v1/events — no webhook, no
+  public URL, right for machines behind NAT); replies go out through
+  POST /v1/messages. No external SDK — only httpx, already a Hermes
+  dependency.
+
+  Create the agent in the Relay app ("Create your own") and copy its
+  one-time Agent Token. Delivery is at-least-once; the adapter
+  deduplicates by event_id and persists its poll cursor across restarts.
+author: Relay
+requires_env:
+  - name: RELAY_AGENT_TOKEN
+    description: "Relay Agent Token (relay_agt_live_…), shown once at agent creation"
+    prompt: "Relay agent token"
+    url: "https://docs.relayapp.im/quickstart"
+    password: true
+optional_env:
+  - name: RELAY_API_URL
+    description: "Relay API origin (default: https://api.relayapp.im)"
+    prompt: "Relay API URL"
+    password: false
+  - name: RELAY_ALLOWED_USERS
+    description: "Comma-separated Relay user ids (usr_…) allowed to talk to the bot"
+    prompt: "Allowed Relay user ids (comma-separated)"
+    password: false
+  - name: RELAY_ALLOW_ALL_USERS
+    description: "Allow any Relay user to trigger the bot (default true — Relay DMs are already scoped to users who added the contact)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: RELAY_HOME_CHANNEL
+    description: "Default conversation id (cnv_…) for cron / notification delivery"
+    prompt: "Home conversation id (or empty)"
+    password: false
+  - name: RELAY_HOME_CHANNEL_NAME
+    description: "Human label for the home channel"
+    prompt: "Home channel display name (or empty)"
+    password: false
+  - name: RELAY_CURSOR_PATH
+    description: "File to persist the event-log cursor (default: ~/.hermes/relay_cursor)"
+    prompt: "Cursor file path (or empty)"
+    password: false

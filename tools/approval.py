@@ -17,6 +17,7 @@ import os
 import re
 import shlex
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -1383,12 +1384,36 @@ def _command_detection_variants(command: str):
         yield variant
 
 
+def _is_verification_artifact_cleanup(command: str) -> bool:
+    """Return whether *command* only removes one Hermes ad-hoc temp script."""
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    if len(argv) != 3 or argv[0] != "rm" or argv[1] != "-f":
+        return False
+
+    operand = argv[2]
+    temp_dir = os.path.realpath(tempfile.gettempdir())
+    basename = os.path.basename(operand)
+    if operand != os.path.join(temp_dir, basename):
+        return False
+
+    target = os.path.realpath(operand)
+    if os.path.dirname(target) != temp_dir:
+        return False
+    return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
+    if _is_verification_artifact_cleanup(command):
+        return (False, None, None)
+
     for command_variant in _command_detection_variants(command):
         command_lower = command_variant.lower()
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
@@ -2468,15 +2493,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         _drop_entry()
         return {"resolved": False, "choice": None, "notify_failed": True}
 
-    # Block until the user responds or timeout (default 5 min). Poll in short
-    # slices so we can fire activity heartbeats every ~10s to the agent's
-    # inactivity tracker — otherwise the gateway watchdog kills the agent
-    # while the user is still responding. Mirrors _wait_for_process() cadence.
-    timeout = _get_approval_config().get("gateway_timeout", 300)
-    try:
-        timeout = int(timeout)
-    except (ValueError, TypeError):
-        timeout = 300
+    # Block until the user responds or the canonical approval timeout elapses
+    # (default 60s). Poll in short slices so we can fire activity heartbeats
+    # every ~10s to the agent's inactivity tracker — otherwise the gateway
+    # watchdog kills the agent while the user is still responding. Mirrors
+    # _wait_for_process() cadence.
+    timeout = _get_approval_timeout()
 
     try:
         from tools.environments.base import touch_activity_if_due
@@ -2745,9 +2767,9 @@ def check_all_command_guards(command: str, env_type: str,
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         verdict = _smart_approve(command, combined_desc_for_llm)
         if verdict == "approve":
-            # Auto-approve and grant session-level approval for these patterns
-            for key, _, _ in warnings:
-                approve_session(session_key, key)
+            # Approve this command only. Pattern-level persistence would let one
+            # benign command suppress review of later commands that happen to
+            # match the same broad detector category.
             logger.debug("Smart approval: auto-approved '%s' (%s)",
                          command[:60], combined_desc_for_llm)
             return {"approved": True, "message": None,

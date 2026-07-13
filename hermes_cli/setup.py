@@ -673,7 +673,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
 
 def _prompt_container_resources(config: dict):
-    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona)."""
+    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona, Tenki)."""
     terminal = config.setdefault("terminal", {})
 
     print()
@@ -1196,11 +1196,12 @@ def setup_terminal_backend(config: dict):
         "Modal - serverless cloud sandbox",
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
+        "Tenki Agent - Tenki cloud sandbox",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "tenki"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "tenki": 5}
 
-    next_idx = 5
+    next_idx = 6
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1385,6 +1386,82 @@ def setup_terminal_backend(config: dict):
         config["terminal"].setdefault(
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
+
+    elif selected_backend == "tenki":
+        print_success("Terminal backend: Tenki Agent")
+        print_info("Cloud sandboxes are created on demand and terminated by default.")
+        print_info("Requires Tenki CLI login or TENKI_AUTH_TOKEN/TENKI_API_KEY.")
+
+        try:
+            __import__("tenki_sandbox")
+        except ImportError:
+            print_info("Installing Tenki SDK...")
+            import subprocess
+
+            uv_bin = shutil.which("uv")
+            package = "tenki-sandbox==0.1.1"
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, package],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", package],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("Tenki SDK installed")
+            else:
+                print_warning("Install failed — run manually: pip install tenki-sandbox==0.1.1")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        from tools.tenki_config import (
+            has_tenki_auth,
+            resolve_tenki_api_endpoint,
+            resolve_tenki_project_id,
+            resolve_tenki_workspace_id,
+        )
+
+        terminal = config.setdefault("terminal", {})
+        endpoint = resolve_tenki_api_endpoint(terminal.get("tenki_api_endpoint", ""))
+        workspace_id = resolve_tenki_workspace_id(terminal.get("tenki_workspace_id", ""))
+        project_id = resolve_tenki_project_id(terminal.get("tenki_project_id", ""))
+
+        terminal["tenki_api_endpoint"] = endpoint
+        if workspace_id:
+            terminal["tenki_workspace_id"] = workspace_id
+        if project_id:
+            terminal["tenki_project_id"] = project_id
+        terminal.setdefault("tenki_image", "")
+        terminal.setdefault("tenki_name_prefix", "hermes")
+        terminal.setdefault("tenki_allow_inbound", False)
+        terminal.setdefault("tenki_allow_outbound", True)
+        terminal.setdefault("tenki_max_duration", 3600)
+        terminal.setdefault("tenki_idle_timeout", 0)
+        terminal.setdefault("tenki_pause_retention", 0)
+        terminal.setdefault("tenki_sync_hermes_home", False)
+        if current_backend == "tenki":
+            terminal.setdefault("container_persistent", False)
+            terminal.setdefault("cwd", "/home/tenki")
+        else:
+            terminal["container_persistent"] = False
+            terminal["cwd"] = "/home/tenki"
+
+        print_info(f"  Endpoint:  {endpoint}")
+        print_info(f"  Workspace: {workspace_id or '(not found; run tenki login)'}")
+        print_info(f"  Project:   {project_id or '(not found; run tenki login)'}")
+        if has_tenki_auth():
+            print_info("  Tenki auth: already configured")
+        else:
+            print_warning("  Tenki auth not found")
+            token = prompt("    Tenki token/API key (optional; leave blank to run tenki login)", password=True)
+            if token:
+                save_env_value("TENKI_API_KEY", token)
+                print_success("    Configured")
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

@@ -65,6 +65,35 @@ class TestTerminalRequirements:
         assert "terminal" in names
         assert "execute_code" in names
 
+    def test_tenki_requires_auth_only_for_plain_sessions(self, monkeypatch, tmp_path):
+        original_find_spec = terminal_tool_module.importlib.util.find_spec
+
+        def fake_find_spec(name):
+            if name == "tenki_sandbox":
+                return object()
+            return original_find_spec(name)
+
+        monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", fake_find_spec)
+        monkeypatch.setenv("TENKI_CONFIG_PATH", str(tmp_path / "missing.yaml"))
+        monkeypatch.delenv("TENKI_WORKSPACE_ID", raising=False)
+        monkeypatch.delenv("TENKI_WORKSPACE", raising=False)
+        monkeypatch.delenv("TENKI_PROJECT_ID", raising=False)
+        monkeypatch.delenv("TENKI_PROJECT", raising=False)
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "_get_env_config",
+            lambda: {
+                "env_type": "tenki",
+                "tenki_workspace_id": "",
+                "tenki_project_id": "",
+            },
+        )
+
+        assert terminal_tool_module.check_terminal_requirements() is False
+
+        monkeypatch.setenv("TENKI_AUTH_TOKEN", "tok")
+        assert terminal_tool_module.check_terminal_requirements() is True
+
 
 class TestCheckFnTransientFailureSuppression:
     """The check_fn TTL cache should absorb transient probe failures.

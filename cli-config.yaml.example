@@ -306,8 +306,34 @@ terminal:
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
+# -----------------------------------------------------------------------------
+# OPTION 7: Tenki cloud execution
+# Commands run in Tenki cloud sandboxes, created on demand
+# Great for: On-demand cloud compute, isolated ephemeral sandboxes
+# Requires: pip install tenki-sandbox, plus `tenki login` or the
+#           TENKI_AUTH_TOKEN / TENKI_API_KEY env var
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "tenki"
+#   cwd: "/home/tenki"               # Path INSIDE the sandbox
+#   timeout: 180
+#   lifetime_seconds: 300
+#   container_persistent: false      # Tenki default: terminate sandboxes on cleanup
+#   tenki_image: ""                  # Optional image/template; blank uses Tenki default
+#   tenki_api_endpoint: "https://api.tenki.cloud"
+#   tenki_workspace_id: ""           # Blank falls back to Tenki CLI config
+#   tenki_project_id: ""             # Blank falls back to Tenki CLI config
+#   tenki_name_prefix: "hermes"
+#   tenki_allow_inbound: false
+#   tenki_allow_outbound: true
+#   tenki_max_duration: 3600         # Max sandbox lifetime in seconds
+#   tenki_idle_timeout: 0            # Auto-pause after idle seconds (0 = disabled)
+#   tenki_pause_retention: 0         # Retention for paused sandboxes (0 = disabled)
+#   tenki_sync_hermes_home: false    # Opt-in sync of selected ~/.hermes files
+#   tenki_forward_env: []            # Env vars to forward (e.g. GITHUB_TOKEN)
+
 #
-# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
+# --- Container resource limits (docker, singularity, modal, daytona, tenki -- ignored for local/ssh) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
   container_cpu: 1              # CPU cores

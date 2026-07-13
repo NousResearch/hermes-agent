@@ -190,7 +190,7 @@ class TestIsLocalBackend:
 
         assert browser_tool._is_local_backend() is False
 
-    @pytest.mark.parametrize("backend", ["docker", "modal", "daytona", "ssh", "singularity"])
+    @pytest.mark.parametrize("backend", ["docker", "modal", "daytona", "tenki", "ssh", "singularity"])
     def test_container_terminal_backend_is_not_local(self, monkeypatch, backend):
         """Terminal running in a container → NOT local (browser on host can access internal networks)."""
         monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)

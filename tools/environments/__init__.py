@@ -2,7 +2,7 @@
 
 Each backend provides the same interface (BaseEnvironment ABC) for running
 shell commands in a specific execution context: local, Docker, SSH,
-Singularity, Modal, or Daytona. (Modal additionally has direct and
+Singularity, Modal, Daytona, or Tenki. (Modal additionally has direct and
 Nous-managed modes, selected via terminal.modal_mode.)
 
 The terminal_tool.py factory (_create_environment) selects the backend

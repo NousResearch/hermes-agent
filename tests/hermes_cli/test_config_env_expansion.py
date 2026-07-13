@@ -1,5 +1,7 @@
 """Tests for ${ENV_VAR} substitution in config.yaml values."""
 
+import os
+
 import pytest
 from hermes_cli.config import _expand_env_vars, load_config
 
@@ -196,3 +198,19 @@ class TestLoadCliConfigExpansion:
         config = load_cli_config()
 
         assert config["auxiliary"]["vision"]["api_key"] == "${UNSET_CLI_VAR_ABC}"
+
+    def test_cli_tenki_backend_overrides_stale_persistent_env(self, tmp_path, monkeypatch):
+        config_yaml = "terminal:\n  backend: tenki\n"
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(config_yaml)
+
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+        monkeypatch.setattr("cli._hermes_home", tmp_path)
+
+        from cli import load_cli_config
+        config = load_cli_config()
+
+        assert config["terminal"]["container_persistent"] is False
+        assert config["terminal"]["env_type"] == "tenki"
+        assert config["terminal"]["backend"] == "tenki"
+        assert os.environ["TERMINAL_CONTAINER_PERSISTENT"] == "False"

@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import shutil
+import importlib.util
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -1546,6 +1547,58 @@ def run_doctor(args):
                 "daytona SDK not installed",
                 "(pip install daytona)",
                 "Install daytona SDK: pip install daytona",
+                issues,
+            )
+
+    # Tenki (if using tenki backend)
+    if terminal_env == "tenki":
+        try:
+            from hermes_cli.config import load_config_readonly
+            from tools.tenki_config import (
+                has_tenki_auth,
+                resolve_tenki_project_id,
+                resolve_tenki_workspace_id,
+            )
+        except Exception:
+            load_config_readonly = lambda: {}  # noqa: E731
+            has_tenki_auth = lambda: False  # noqa: E731
+            resolve_tenki_project_id = lambda _explicit="": ""  # noqa: E731
+            resolve_tenki_workspace_id = lambda _explicit="": ""  # noqa: E731
+        terminal_cfg = load_config_readonly().get("terminal", {})
+        if not isinstance(terminal_cfg, dict):
+            terminal_cfg = {}
+
+        if has_tenki_auth():
+            check_ok("Tenki auth", "(configured)")
+        else:
+            _fail_and_issue(
+                "Tenki auth not found",
+                "(required for TERMINAL_ENV=tenki)",
+                "Run tenki login or set TENKI_AUTH_TOKEN/TENKI_API_KEY",
+                issues,
+            )
+
+        workspace_id = resolve_tenki_workspace_id(
+            os.getenv("TERMINAL_TENKI_WORKSPACE_ID") or terminal_cfg.get("tenki_workspace_id", "")
+        )
+        project_id = resolve_tenki_project_id(
+            os.getenv("TERMINAL_TENKI_PROJECT_ID") or terminal_cfg.get("tenki_project_id", "")
+        )
+        if workspace_id and project_id:
+            check_ok("Tenki workspace/project", "(configured)")
+        else:
+            check_warn(
+                "Tenki workspace/project not configured",
+                "(optional for sessions; required for volume-backed workflows)",
+            )
+
+        if importlib.util.find_spec("tenki_sandbox") is not None:
+            check_ok("tenki-sandbox SDK", "(installed)")
+        else:
+            _fail_and_issue(
+                "tenki-sandbox SDK not installed",
+                "(pip install tenki-sandbox==0.1.1)",
+                "Install Tenki SDK: pip install tenki-sandbox==0.1.1",
                 issues,
             )
 

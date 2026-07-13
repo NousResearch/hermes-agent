@@ -35,6 +35,7 @@
           "messaging"
           "modal"
           "parallel-web"
+          "tenki"
           "tts-premium"
           "voice"
         ]

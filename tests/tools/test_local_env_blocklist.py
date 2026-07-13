@@ -210,6 +210,8 @@ class TestProviderEnvBlocklist:
             "MODAL_TOKEN_ID": "modal-id",
             "MODAL_TOKEN_SECRET": "modal-secret",
             "DAYTONA_API_KEY": "daytona-key",
+            "TENKI_AUTH_TOKEN": "tenki-token",
+            "TENKI_API_KEY": "tenki-key",
         }
         result_env = _run_with_env(extra_os_env=leaked_vars)
 
@@ -459,6 +461,8 @@ class TestBlocklistCoverage:
             "MODAL_TOKEN_ID",
             "MODAL_TOKEN_SECRET",
             "DAYTONA_API_KEY",
+            "TENKI_AUTH_TOKEN",
+            "TENKI_API_KEY",
         }
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 

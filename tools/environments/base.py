@@ -189,7 +189,7 @@ def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
 class ProcessHandle(Protocol):
     """Duck type that every backend's _run_bash() must return.
 
-    subprocess.Popen satisfies this natively.  SDK backends (Modal, Daytona)
+    subprocess.Popen satisfies this natively.  SDK backends (Modal, Daytona, Tenki)
     return _ThreadedProcessHandle which adapts their blocking calls.
     """
 
@@ -205,7 +205,7 @@ class ProcessHandle(Protocol):
 
 
 class _ThreadedProcessHandle:
-    """Adapter for SDK backends (Modal, Daytona) that have no real subprocess.
+    """Adapter for SDK backends (Modal, Daytona, Tenki) that have no real subprocess.
 
     Wraps a blocking ``exec_fn() -> (output_str, exit_code)`` in a background
     thread and exposes a ProcessHandle-compatible interface.  An optional
@@ -848,7 +848,7 @@ class BaseEnvironment(ABC):
         """Parse the __HERMES_CWD_{session}__ marker from stdout output.
 
         Updates self.cwd and strips the marker from result["output"].
-        Used by remote backends (Docker, SSH, Modal, Daytona, Singularity).
+        Used by remote backends (Docker, SSH, Modal, Daytona, Tenki, Singularity).
         """
         output = result.get("output", "")
         marker = self._cwd_marker
@@ -885,7 +885,7 @@ class BaseEnvironment(ABC):
     def _before_execute(self) -> None:
         """Hook called before each command execution.
 
-        Remote backends (SSH, Modal, Daytona) override this to trigger
+        Remote backends (SSH, Modal, Daytona, Tenki) override this to trigger
         their FileSyncManager.  Bind-mount backends (Docker, Singularity)
         and Local don't need file sync — the host filesystem is directly
         visible inside the container/process.

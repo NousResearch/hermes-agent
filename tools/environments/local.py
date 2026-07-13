@@ -244,6 +244,8 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "TENKI_AUTH_TOKEN",
+        "TENKI_API_KEY",
         "GATEWAY_RELAY_ID",
         "GATEWAY_RELAY_SECRET",
         "GATEWAY_RELAY_DELIVERY_KEY",
@@ -465,6 +467,8 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",
     "DAYTONA_API_KEY",
+    "TENKI_AUTH_TOKEN",
+    "TENKI_API_KEY",
 })
 
 

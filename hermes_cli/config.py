@@ -1219,7 +1219,23 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
+        "tenki_image": "",
+        # Blank so the documented TENKI_API_ENDPOINT / TENKI_API_URL and Tenki
+        # CLI-config fallbacks in resolve_tenki_api_endpoint() are reachable. A
+        # non-blank default here is bridged as an explicit value and would mask
+        # them. Blank resolves to https://api.tenki.cloud downstream.
+        "tenki_api_endpoint": "",
+        "tenki_workspace_id": "",
+        "tenki_project_id": "",
+        "tenki_name_prefix": "hermes",
+        "tenki_allow_inbound": False,
+        "tenki_allow_outbound": True,
+        "tenki_max_duration": 3600,
+        "tenki_idle_timeout": 0,
+        "tenki_pause_retention": 0,
+        "tenki_sync_hermes_home": False,
+        "tenki_forward_env": [],
+        # Container resource limits (docker, singularity, modal, daytona, tenki — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -6608,6 +6624,31 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _normalize_terminal_backend_defaults(
+    config: Dict[str, Any],
+    raw_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Apply backend-specific terminal defaults without writing them to config.yaml."""
+    terminal = config.get("terminal")
+    if not isinstance(terminal, dict):
+        return config
+
+    backend = str(terminal.get("backend") or terminal.get("env_type") or "").lower()
+    if backend != "tenki":
+        return config
+
+    raw_terminal = raw_config.get("terminal") if isinstance(raw_config, dict) else {}
+    explicit_persistence = isinstance(raw_terminal, dict) and "container_persistent" in raw_terminal
+    if explicit_persistence:
+        return config
+
+    config = dict(config)
+    terminal = dict(terminal)
+    terminal["container_persistent"] = False
+    config["terminal"] = terminal
+    return config
+
+
 def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> Any:
     """Traverse nested dict keys safely, returning ``default`` on any miss.
 
@@ -6822,6 +6863,18 @@ TERMINAL_CONFIG_ENV_MAP = {
     "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
     "modal_image": "TERMINAL_MODAL_IMAGE",
     "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "tenki_image": "TERMINAL_TENKI_IMAGE",
+    "tenki_api_endpoint": "TERMINAL_TENKI_API_ENDPOINT",
+    "tenki_workspace_id": "TERMINAL_TENKI_WORKSPACE_ID",
+    "tenki_project_id": "TERMINAL_TENKI_PROJECT_ID",
+    "tenki_name_prefix": "TERMINAL_TENKI_NAME_PREFIX",
+    "tenki_allow_inbound": "TERMINAL_TENKI_ALLOW_INBOUND",
+    "tenki_allow_outbound": "TERMINAL_TENKI_ALLOW_OUTBOUND",
+    "tenki_max_duration": "TERMINAL_TENKI_MAX_DURATION",
+    "tenki_idle_timeout": "TERMINAL_TENKI_IDLE_TIMEOUT",
+    "tenki_pause_retention": "TERMINAL_TENKI_PAUSE_RETENTION",
+    "tenki_sync_hermes_home": "TERMINAL_TENKI_SYNC_HERMES_HOME",
+    "tenki_forward_env": "TERMINAL_TENKI_FORWARD_ENV",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",
     "ssh_port": "TERMINAL_SSH_PORT",
@@ -6877,10 +6930,20 @@ def apply_terminal_config_to_env(
     target = os.environ if env is None else env
 
     raw_config = read_raw_config()
+    raw_terminal_defaults_source: Dict[str, Any] = raw_config
+    try:
+        from hermes_cli import managed_scope
+
+        managed_config = managed_scope.load_managed_config()
+        if managed_config:
+            raw_terminal_defaults_source = _deep_merge(raw_terminal_defaults_source, managed_config)
+    except Exception:
+        pass
     file_has_terminal_config = isinstance(raw_config.get("terminal"), dict)
     should_override = file_has_terminal_config if override is None else override
 
     cfg = config if config is not None else load_config_readonly()
+    cfg = _normalize_terminal_backend_defaults(cfg, raw_terminal_defaults_source)
     terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}
     if not isinstance(terminal_cfg, dict):
         return target
@@ -6951,6 +7014,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                 return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
+        user_config: Dict[str, Any] = {}
 
         if user_sig is not None:
             try:
@@ -7014,9 +7078,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         # This deliberately inverts the usual env-over-config precedence for the
         # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
         managed_config = managed_scope.load_managed_config()
+        raw_terminal_defaults_source: Dict[str, Any] = user_config
         if managed_config:
             managed_expanded = _expand_env_vars(managed_config)
             expanded = _deep_merge(expanded, managed_expanded)
+            raw_terminal_defaults_source = _deep_merge(raw_terminal_defaults_source, managed_config)
+        expanded = _normalize_terminal_backend_defaults(expanded, raw_terminal_defaults_source)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # Cache stores a separate deepcopy so subsequent ``load_config()``
@@ -7967,6 +8034,12 @@ def show_config():
         print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
+    elif terminal.get('backend') == 'tenki':
+        print(f"  Tenki image:  {terminal.get('tenki_image') or '(Tenki default)'}")
+        print(f"  Endpoint:     {terminal.get('tenki_api_endpoint') or 'https://api.tenki.cloud'}")
+        print(f"  Workspace:    {terminal.get('tenki_workspace_id') or '(from Tenki CLI)'}")
+        print(f"  Project:      {terminal.get('tenki_project_id') or '(from Tenki CLI)'}")
+        print(f"  Sync .hermes: {'enabled' if terminal.get('tenki_sync_hermes_home') else 'disabled'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')

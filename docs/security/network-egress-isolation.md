@@ -182,7 +182,7 @@ docker compose exec gateway \
   *container's* network. If you use the default local terminal backend, tool
   commands execute inside the same container. For stronger isolation, combine
   network segmentation with a sandboxed terminal backend (Docker, Modal,
-  Daytona).
+  Daytona, Tenki).
 
 - **Platform adapters need egress:** The gateway service needs outbound access
   to reach messaging platform APIs. If you add new platform adapters, add their

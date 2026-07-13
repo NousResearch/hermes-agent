@@ -405,6 +405,21 @@ def load_cli_config() -> Dict[str, Any]:
             "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
             "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
             "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+            "tenki_image": "",
+            # Blank so the TENKI_API_ENDPOINT / TENKI_API_URL and Tenki CLI
+            # fallbacks in resolve_tenki_api_endpoint() stay reachable; a
+            # non-blank default here is bridged as explicit and would mask them.
+            "tenki_api_endpoint": "",
+            "tenki_workspace_id": "",
+            "tenki_project_id": "",
+            "tenki_name_prefix": "hermes",
+            "tenki_allow_inbound": False,
+            "tenki_allow_outbound": True,
+            "tenki_max_duration": 3600,
+            "tenki_idle_timeout": 0,
+            "tenki_pause_retention": 0,
+            "tenki_sync_hermes_home": False,
+            "tenki_forward_env": [],
             "docker_volumes": [],  # host:container volume mounts for Docker backend
             "docker_mount_cwd_to_workspace": False,  # explicit opt-in only; default off for sandbox isolation
         },
@@ -509,6 +524,7 @@ def load_cli_config() -> Dict[str, Any]:
     # overwrite env vars that were already set by .env -- only a user's config
     # file should be authoritative.
     _file_has_terminal_config = False
+    file_config: dict[str, Any] = {}
 
     # Load from file if exists
     if config_path.exists():
@@ -568,7 +584,7 @@ def load_cli_config() -> Dict[str, Any]:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
     # Expand ${ENV_VAR} references in config values before bridging to env vars.
-    from hermes_cli.config import _expand_env_vars
+    from hermes_cli.config import _deep_merge, _expand_env_vars, _normalize_terminal_backend_defaults
     defaults = _expand_env_vars(defaults)
 
     # Managed scope: overlay administrator-pinned values LAST so they win over
@@ -581,7 +597,11 @@ def load_cli_config() -> Dict[str, Any]:
     # normalization, leaf-merge) and is fail-open.
     from hermes_cli import managed_scope
 
+    managed_config = managed_scope.load_managed_config()
     defaults = managed_scope.apply_managed_overlay(defaults)
+    raw_terminal_defaults_source = file_config
+    if managed_config:
+        raw_terminal_defaults_source = _deep_merge(raw_terminal_defaults_source, managed_config)
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
@@ -591,6 +611,9 @@ def load_cli_config() -> Dict[str, Any]:
     # Accept both, with "backend" taking precedence (it's the documented key).
     if "backend" in terminal_config:
         terminal_config["env_type"] = terminal_config["backend"]
+
+    defaults = _normalize_terminal_backend_defaults(defaults, raw_terminal_defaults_source)
+    terminal_config = defaults.get("terminal", {})
     
     # CWD resolution for CLI/TUI. The gateway has its own config bridge in
     # gateway/run.py but may lazily import cli.py (triggering this code).
@@ -617,12 +640,24 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "tenki_image": "TERMINAL_TENKI_IMAGE",
+        "tenki_api_endpoint": "TERMINAL_TENKI_API_ENDPOINT",
+        "tenki_workspace_id": "TERMINAL_TENKI_WORKSPACE_ID",
+        "tenki_project_id": "TERMINAL_TENKI_PROJECT_ID",
+        "tenki_name_prefix": "TERMINAL_TENKI_NAME_PREFIX",
+        "tenki_allow_inbound": "TERMINAL_TENKI_ALLOW_INBOUND",
+        "tenki_allow_outbound": "TERMINAL_TENKI_ALLOW_OUTBOUND",
+        "tenki_max_duration": "TERMINAL_TENKI_MAX_DURATION",
+        "tenki_idle_timeout": "TERMINAL_TENKI_IDLE_TIMEOUT",
+        "tenki_pause_retention": "TERMINAL_TENKI_PAUSE_RETENTION",
+        "tenki_sync_hermes_home": "TERMINAL_TENKI_SYNC_HERMES_HOME",
+        "tenki_forward_env": "TERMINAL_TENKI_FORWARD_ENV",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (docker, singularity, modal, daytona -- ignored for local/ssh)
+        # Container resource config (docker, singularity, modal, daytona, tenki -- ignored for local/ssh)
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
         "container_disk": "TERMINAL_CONTAINER_DISK",

@@ -85,10 +85,15 @@ def test_docker_network_config_is_bridged_everywhere():
 
 
 def test_sibling_container_config_sites_carry_docker_network():
-    """Every container_config dict that carries docker_run_as_host_user must
-    also carry docker_network — otherwise that code path silently falls back
-    to networked containers while the terminal path honors the lockdown
-    (the probe/exec asymmetry reported on issue #46358).
+    """Every container_config construction site must carry docker_network —
+    otherwise that code path silently falls back to networked containers
+    while the terminal path honors the lockdown (the probe/exec asymmetry
+    reported on issue #46358).
+
+    The sibling tool modules build their container_config through the shared
+    _container_config_from_env_config() helper, so a site is either an inline
+    dict (which must carry docker_network alongside docker_run_as_host_user)
+    or a call to that helper (whose output is asserted below).
     """
     import ast
     import inspect
@@ -96,20 +101,32 @@ def test_sibling_container_config_sites_carry_docker_network():
     import tools.code_execution_tool as code_execution_tool
     import tools.file_tools as file_tools
 
+    assert terminal_tool._container_config_from_env_config({})["docker_network"] is True
+    assert (
+        terminal_tool._container_config_from_env_config({"docker_network": False})[
+            "docker_network"
+        ]
+        is False
+    )
+
     for module in (terminal_tool, file_tools, code_execution_tool):
         tree = ast.parse(inspect.getsource(module))
         sites = 0
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Dict):
-                continue
-            keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
-            if "docker_run_as_host_user" in keys:
-                sites += 1
-                assert "docker_network" in keys, (
-                    f"{module.__name__} builds a container_config with "
-                    f"docker_run_as_host_user but without docker_network "
-                    f"(line {node.lineno})"
-                )
+            if isinstance(node, ast.Dict):
+                keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
+                if "docker_run_as_host_user" in keys:
+                    sites += 1
+                    assert "docker_network" in keys, (
+                        f"{module.__name__} builds a container_config with "
+                        f"docker_run_as_host_user but without docker_network "
+                        f"(line {node.lineno})"
+                    )
+            elif isinstance(node, ast.Call):
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name == "_container_config_from_env_config":
+                    sites += 1
         assert sites >= 1, f"expected at least one container_config site in {module.__name__}"
 
 

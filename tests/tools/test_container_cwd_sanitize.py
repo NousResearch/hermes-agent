@@ -62,8 +62,33 @@ class TestIsUnusableContainerCwd:
 
     def test_container_backends_set(self):
         assert tt._CONTAINER_BACKENDS == frozenset(
-            {"docker", "singularity", "modal", "daytona"}
+            {"docker", "singularity", "modal", "daytona", "tenki"}
         )
+
+
+class TestBackendGuestSubpath:
+    """The Tenki guest home /home/tenki (and its subtree) is a real sandbox
+    path, so it must be exempt from the host-path guard even though it shares
+    the /home/ prefix that other backends reject."""
+
+    def test_tenki_guest_home_root_is_subpath(self):
+        assert tt._is_backend_guest_subpath("tenki", "/home/tenki") is True
+
+    def test_tenki_guest_home_child_is_subpath(self):
+        assert tt._is_backend_guest_subpath("tenki", "/home/tenki/project") is True
+
+    def test_tenki_unrelated_home_is_not_subpath(self):
+        # A different user's home is still a host path even on tenki.
+        assert tt._is_backend_guest_subpath("tenki", "/home/someoneelse") is False
+
+    def test_docker_has_no_guest_home_exemption(self):
+        # Docker's default cwd is /root, so /home/... stays a rejected host path.
+        assert tt._is_backend_guest_subpath("docker", "/home/tenki/project") is False
+
+    def test_tenki_guest_subpath_survives_full_guard(self):
+        # The combined check the call sites use: unusable-by-prefix but exempt.
+        assert tt._is_unusable_container_cwd("/home/tenki/project") is True
+        assert tt._is_backend_guest_subpath("tenki", "/home/tenki/project") is True
 
 
 class TestOverrideCwdSanitizedAtCallSite:
@@ -145,6 +170,62 @@ class TestOverrideCwdSanitizedAtCallSite:
         cwd = self._run_and_capture_cwd(monkeypatch, "/workspace/task42")
         assert cwd == "/workspace/task42"
 
+    def _run_tenki_and_capture_cwd(self, monkeypatch, override_cwd):
+        """Drive terminal_tool() on the tenki backend with a cwd override and
+        return the cwd that reached _create_environment."""
+        captured = {}
+        config = {
+            "env_type": "tenki",
+            "tenki_image": "",
+            "cwd": "/home/tenki",
+            "host_cwd": None,
+            "timeout": 180,
+            "lifetime_seconds": 300,
+            "container_cpu": 1,
+            "container_memory": 5120,
+            "container_disk": 51200,
+            "container_persistent": False,
+            "modal_mode": "auto",
+        }
+
+        class _DummyEnv:
+            cwd = "/home/tenki"
+
+            def execute(self, *a, **k):
+                return {"output": "", "exit_code": 0}
+
+        def fake_create_environment(env_type, image, cwd, timeout, **kwargs):
+            captured["cwd"] = cwd
+            return _DummyEnv()
+
+        monkeypatch.setattr(tt, "_get_env_config", lambda: config)
+        monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
+        monkeypatch.setattr(tt, "_check_all_guards", lambda *a, **k: {"approved": True})
+        monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+        monkeypatch.setattr(tt, "_active_environments", {})
+        monkeypatch.setattr(tt, "_last_activity", {})
+
+        task_id = "sess-tenki-cwd"
+        tt.register_task_env_overrides(task_id, {"cwd": override_cwd})
+        try:
+            tt.terminal_tool(command="pwd", task_id=task_id)
+        finally:
+            tt.clear_task_env_overrides(task_id)
+            tt._active_environments.pop(task_id, None)
+            tt._active_environments.pop("default", None)
+        return captured.get("cwd")
+
+    def test_tenki_guest_subpath_override_is_preserved(self, monkeypatch):
+        # A real Tenki guest path registered as a per-task override must NOT be
+        # collapsed to /home/tenki (the #9b override-path fix).
+        cwd = self._run_tenki_and_capture_cwd(monkeypatch, "/home/tenki/project")
+        assert cwd == "/home/tenki/project"
+
+    def test_tenki_foreign_host_override_still_sanitized(self, monkeypatch):
+        # A genuine host path is still discarded on tenki.
+        cwd = self._run_tenki_and_capture_cwd(monkeypatch, "/home/someoneelse/x")
+        assert cwd == "/home/tenki"
+
 
 class TestFileOpsCwdSanitizedAtCallSite:
     """E2E pin: file tools (_get_file_ops) must sanitize a host/relative cwd
@@ -171,6 +252,18 @@ class TestFileOpsCwdSanitizedAtCallSite:
             "singularity_image": "docker://pytorch/pytorch:latest",
             "modal_image": "pytorch/pytorch:latest",
             "daytona_image": "pytorch/pytorch:latest",
+            "tenki_image": "",
+            "tenki_api_endpoint": "",
+            "tenki_workspace_id": "",
+            "tenki_project_id": "",
+            "tenki_name_prefix": "hermes",
+            "tenki_allow_inbound": False,
+            "tenki_allow_outbound": True,
+            "tenki_max_duration": 3600,
+            "tenki_idle_timeout": 0,
+            "tenki_pause_retention": 0,
+            "tenki_sync_hermes_home": False,
+            "tenki_forward_env": [],
             "cwd": config_cwd,
             "host_cwd": None,
             "timeout": 180,
@@ -255,3 +348,15 @@ class TestFileOpsCwdSanitizedAtCallSite:
         cwd = self._run_and_capture_cwd(
             monkeypatch, "/Users/me/workspace", env_type="modal")
         assert cwd == "/workspace"
+
+    def test_tenki_guest_subpath_override_is_preserved(self, monkeypatch):
+        # File tools must honor the same Tenki guest-home exemption as the
+        # terminal tool: /home/tenki/project is a real sandbox path.
+        cwd = self._run_and_capture_cwd(
+            monkeypatch, "/home/tenki/project", env_type="tenki", config_cwd="/home/tenki")
+        assert cwd == "/home/tenki/project"
+
+    def test_tenki_foreign_host_override_still_sanitized(self, monkeypatch):
+        cwd = self._run_and_capture_cwd(
+            monkeypatch, "/home/someoneelse/x", env_type="tenki", config_cwd="/home/tenki")
+        assert cwd == "/home/tenki"

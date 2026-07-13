@@ -425,6 +425,33 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+    elif terminal_env == "tenki":
+        from tools.tenki_config import (
+            resolve_tenki_api_endpoint,
+            resolve_tenki_project_id,
+            resolve_tenki_workspace_id,
+        )
+
+        tenki_image = os.getenv("TERMINAL_TENKI_IMAGE") or terminal_cfg.get("tenki_image", "")
+        tenki_endpoint = resolve_tenki_api_endpoint(
+            os.getenv("TERMINAL_TENKI_API_ENDPOINT") or terminal_cfg.get("tenki_api_endpoint", "")
+        )
+        tenki_workspace = resolve_tenki_workspace_id(
+            os.getenv("TERMINAL_TENKI_WORKSPACE_ID") or terminal_cfg.get("tenki_workspace_id", "")
+        )
+        tenki_project = resolve_tenki_project_id(
+            os.getenv("TERMINAL_TENKI_PROJECT_ID") or terminal_cfg.get("tenki_project_id", "")
+        )
+        tenki_sync_value = os.getenv("TERMINAL_TENKI_SYNC_HERMES_HOME")
+        if tenki_sync_value is None:
+            tenki_sync = bool(terminal_cfg.get("tenki_sync_hermes_home", False))
+        else:
+            tenki_sync = tenki_sync_value.lower() in {"true", "1", "yes"}
+        print(f"  Tenki Image:  {tenki_image or '(Tenki default)'}")
+        print(f"  Endpoint:     {tenki_endpoint}")
+        print(f"  Workspace:    {tenki_workspace or '(not found)'}")
+        print(f"  Project:      {tenki_project or '(not found)'}")
+        print(f"  Sync .hermes: {check_mark(tenki_sync)} {'enabled' if tenki_sync else 'disabled'}")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

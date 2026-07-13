@@ -5,6 +5,7 @@ prefetch (auto_recall, preamble, query truncation), sync_turn (auto_retain,
 turn counting, tags), and schema completeness.
 """
 
+import asyncio
 import json
 import os
 import re
@@ -1790,6 +1791,42 @@ class TestSharedEventLoopLifecycle:
 
         mock_client.aclose.assert_called_once()
         assert provider._client is None
+
+    def test_client_recreated_when_shared_event_loop_is_replaced(
+        self, provider, monkeypatch
+    ):
+        from plugins.memory import hindsight as hindsight_mod
+
+        old_loop = asyncio.new_event_loop()
+        new_loop = asyncio.new_event_loop()
+        loops = iter((old_loop, new_loop))
+        old_client = provider._client
+        provider._client_loop = old_loop
+
+        class FakeHindsight:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        monkeypatch.setattr(hindsight_mod, "_get_loop", lambda: next(loops))
+        monkeypatch.setattr(
+            hindsight_mod, "_ensure_cloud_client_dependency", lambda: None
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hindsight_client",
+            SimpleNamespace(Hindsight=FakeHindsight),
+        )
+
+        try:
+            assert provider._get_client() is old_client
+            rebuilt_client = provider._get_client()
+
+            assert isinstance(rebuilt_client, FakeHindsight)
+            assert rebuilt_client is not old_client
+            assert provider._client_loop is new_loop
+        finally:
+            old_loop.close()
+            new_loop.close()
 
 
 class TestShutdown:

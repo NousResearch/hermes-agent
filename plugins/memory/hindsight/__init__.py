@@ -656,6 +656,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = ""
         self._turn_index = 0
         self._client = None
+        self._client_loop = None
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
@@ -1011,6 +1012,15 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _get_client(self):
         """Return the cached Hindsight client (created once, reused)."""
+        current_loop = _get_loop()
+        if self._client is not None:
+            if self._client_loop is None:
+                self._client_loop = current_loop
+            elif self._client_loop is not current_loop:
+                logger.info("Shared event loop was replaced; recreating Hindsight client")
+                self._client = None
+                self._client_loop = None
+
         if self._client is None:
             if self._mode == "local_embedded":
                 available, reason = _check_local_runtime()
@@ -1060,6 +1070,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
                              self._api_url, bool(self._api_key), kwargs["timeout"])
                 self._client = Hindsight(**kwargs)
+            self._client_loop = current_loop
         return self._client
 
     def _run_sync(self, coro):
@@ -1161,6 +1172,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 exc,
             )
             self._client = None
+            self._client_loop = None
             client = self._get_client()
             self._client = client
             return self._run_sync(operation(client))
@@ -1950,6 +1962,7 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception:
                 pass
             self._client = None
+        self._client_loop = None
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin

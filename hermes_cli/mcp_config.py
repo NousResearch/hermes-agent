@@ -33,10 +33,53 @@ logger = logging.getLogger(__name__)
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _playwright_browser_args() -> list[str]:
+    """Return extra CLI args for @playwright/mcp based on the runtime environment.
+
+    Playwright MCP defaults to system Chrome. When no system browser is found
+    on the current platform, we add --browser=chromium so Playwright falls back
+    to its own bundled Chromium rather than failing silently.
+
+    On Linux running as root (VPS, Docker, CI), Chrome refuses to launch
+    without --no-sandbox, so we add that flag when euid == 0.
+
+    We intentionally do NOT hard-code a single /opt path: Chrome can live at
+    /usr/bin/google-chrome, /usr/bin/chromium-browser, /usr/bin/chromium,
+    /snap/bin/chromium, on PATH, or in the Playwright cache. Checking shutil.which
+    and the most common Linux prefixes covers the realistic distribution.
+    """
+    import os
+    import shutil
+    import sys
+
+    extra: list[str] = []
+
+    # Root/AppArmor safety flag (Linux-only).
+    if sys.platform == "linux" and os.geteuid() == 0:
+        extra.append("--no-sandbox")
+
+    # Browser availability: if we cannot find a system browser, tell Playwright
+    # MCP to use its own bundled Chromium instead of the default (system Chrome).
+    _chrome_names = (
+        "google-chrome", "google-chrome-stable",
+        "chromium-browser", "chromium",
+        "chrome",
+    )
+    _found_system_browser = any(shutil.which(name) for name in _chrome_names)
+    if not _found_system_browser:
+        extra.append("--browser=chromium")
+
+    return extra
+
+
 _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
     "codex": {
         "command": "codex",
         "args": ["mcp-server"],
+    },
+    "playwright": {
+        "command": "npx",
+        "args": ["-y", "@playwright/mcp@latest", "--headless"] + _playwright_browser_args(),
     },
 }
 

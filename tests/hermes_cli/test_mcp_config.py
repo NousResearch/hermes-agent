@@ -1009,3 +1009,77 @@ class TestMcpReauth:
         cmd_mcp_reauth(_make_args(name="ghost", all=False))
         out = capsys.readouterr().out
         assert "not found" in out
+
+
+class TestPlaywrightMcpPreset:
+    """Regression tests for the playwright MCP preset (PR #19768).
+
+    The preset must: include both playwright and codex, use platform-aware
+    browser detection instead of a single /opt path, add --no-sandbox on
+    Linux root, and fall back to --browser=chromium only when no system
+    browser is found.
+    """
+
+    def test_playwright_preset_registered(self):
+        """playwright must be present in _MCP_PRESETS alongside codex."""
+        from hermes_cli.mcp_config import _MCP_PRESETS
+        assert "playwright" in _MCP_PRESETS, "playwright preset must be registered"
+        assert "codex" in _MCP_PRESETS, "codex preset must still be present"
+
+    def test_playwright_preset_uses_npx(self):
+        """playwright preset command must be npx."""
+        from hermes_cli.mcp_config import _MCP_PRESETS
+        assert _MCP_PRESETS["playwright"]["command"] == "npx"
+        assert "@playwright/mcp" in " ".join(_MCP_PRESETS["playwright"]["args"])
+
+    def test_playwright_browser_args_no_sandbox_on_linux_root(self, monkeypatch):
+        """On Linux as root (euid==0), --no-sandbox must be added."""
+        import sys
+        from hermes_cli.mcp_config import _playwright_browser_args
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr("os.geteuid", lambda: 0)
+        # Simulate no system browser found.
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        args = _playwright_browser_args()
+        assert "--no-sandbox" in args
+
+    def test_playwright_browser_args_no_sandbox_not_added_on_macos(self, monkeypatch):
+        """On macOS, --no-sandbox must NOT be added (AppArmor/seccomp not present)."""
+        import sys
+        from hermes_cli.mcp_config import _playwright_browser_args
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        args = _playwright_browser_args()
+        assert "--no-sandbox" not in args
+
+    def test_playwright_browser_args_chromium_fallback_when_no_system_browser(self, monkeypatch):
+        """When no system Chrome/Chromium is on PATH, --browser=chromium must be added."""
+        import sys
+        from hermes_cli.mcp_config import _playwright_browser_args
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr("os.geteuid", lambda: 1000)
+        # Simulate no system browser found.
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        args = _playwright_browser_args()
+        assert "--browser=chromium" in args
+
+    def test_playwright_browser_args_no_chromium_fallback_when_system_browser_found(self, monkeypatch):
+        """When a system browser is on PATH, --browser=chromium must NOT be added."""
+        import sys
+        from hermes_cli.mcp_config import _playwright_browser_args
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr("os.geteuid", lambda: 1000)
+        # Simulate google-chrome found on PATH.
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/google-chrome" if name == "google-chrome" else None)
+        args = _playwright_browser_args()
+        assert "--browser=chromium" not in args
+
+    def test_playwright_browser_args_usr_bin_chromium_counts_as_system_browser(self, monkeypatch):
+        """chromium-browser at /usr/bin must prevent the --browser=chromium fallback."""
+        import sys
+        from hermes_cli.mcp_config import _playwright_browser_args
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr("os.geteuid", lambda: 1000)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/chromium-browser" if name == "chromium-browser" else None)
+        args = _playwright_browser_args()
+        assert "--browser=chromium" not in args

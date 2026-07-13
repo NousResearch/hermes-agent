@@ -192,6 +192,15 @@ def _resolve_mcp_invocation(
         # The driver knows the subcommand but didn't surface its own path.
         # Keep our resolved driver_cmd; the args are still authoritative.
         return driver_cmd, args
+    # Fix #63938: translate Windows-form paths to WSL paths when running
+    # inside WSL. The cua-driver on Windows reports its own path as
+    # "C:\\Users\\...", which Linux subprocess cannot exec. Convert to
+    # "/mnt/c/..." form.
+    if sys.platform.startswith("linux"):
+        from hermes_constants import windows_path_to_wsl
+        wsl_command = windows_path_to_wsl(command)
+        if wsl_command:
+            command = wsl_command
     return command, args
 
 # Regex to parse element lines from get_window_state AX tree markdown.

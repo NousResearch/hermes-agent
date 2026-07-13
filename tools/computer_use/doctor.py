@@ -83,6 +83,12 @@ def _drive_health_report(
     malformed response, JSON-RPC error). Never raises on a `health_report`
     that has failing checks — the tool's contract is to always return a
     well-formed report with `overall` set, never to set `isError`.
+
+    Fix #63938: verify the manifest-to-MCP startup path before attempting
+    the handshake. On WSL, cua-driver's manifest may report a Windows-form
+    path (C:\\Users\\...) which Linux subprocess cannot exec; we validate
+    spawnability to surface the ENOENT early in doctor rather than only
+    at first real `computer_use` call.
     """
     args: Dict[str, Any] = {}
     if include:
@@ -90,13 +96,29 @@ def _drive_health_report(
     if skip:
         args["skip"] = list(skip)
 
+    # Verify the manifest-derived MCP invocation is spawnable.
+    # This catches Windows-form paths on WSL before the JSON-RPC handshake.
+    try:
+        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+        resolved_command, resolved_args = _resolve_mcp_invocation(binary, timeout=timeout)
+        # Check spawnability: `shutil.which` validates the command exists
+        # and is executable on the current platform (without actually spawning it).
+        if resolved_command and not shutil.which(resolved_command):
+            raise RuntimeError(
+                f"cua-driver manifest reports MCP command {resolved_command!r}, "
+                f"but it is not executable on this platform. "
+                f"Check WSL path translation (#63938) or driver installation."
+            )
+    except Exception as e:
+        raise RuntimeError(f"cua-driver MCP invocation resolution failed: {e}")
+
     # cua-driver emits UTF-8 (containing emoji in check messages on macOS
     # and arbitrary file paths on Windows). The Python default
     # text-mode encoding follows the system locale — `cp1252` on a
     # default Windows install — which raises UnicodeDecodeError on the
     # first non-ASCII byte. Pin the codec.
     proc = subprocess.Popen(
-        [binary, "mcp"],
+        [resolved_command] + resolved_args,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

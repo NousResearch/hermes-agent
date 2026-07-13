@@ -29,6 +29,7 @@ For the general MCP config shape (independent of the catalog), see the [MCP Conf
 |------|-----------|------|--------|-------------|
 | [**linear**](https://linear.app/docs/mcp) | http (remote) | oauth (native MCP) | [linear.app/docs/mcp](https://linear.app/docs/mcp) | Find, create, and update Linear issues, projects, and comments. |
 | [**n8n**](https://github.com/CyberSamuraiX/hermes-n8n-mcp) | stdio | api_key | [CyberSamuraiX/hermes-n8n-mcp](https://github.com/CyberSamuraiX/hermes-n8n-mcp) | Manage and inspect n8n workflows from Hermes (stdio bridge, no public port). |
+| [**unreal-engine**](https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor) | http (local) | none | [dev.epicgames.com](https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor) | Drive the Unreal Engine 5.8 editor over its local MCP server. |
 
 ## Trust model
 
@@ -181,6 +182,67 @@ post_install: |
   Treat them carefully.
 
   Start a new Hermes session to load the n8n tools.
+```
+
+### unreal-engine
+
+Local HTTP connection to Epic's official "Unreal MCP" plugin, which embeds an MCP server inside the running Unreal Editor 5.8+ process and binds to `127.0.0.1`. There is nothing to install on the Hermes side — the user enables the plugin in-editor and Hermes's MCP client connects to the URL. The server has no authentication of its own (Epic's experimental design accepts same-machine connections only — not for remote use), so start Hermes *after* the editor's server is running so the live tool surface is probed.
+
+```yaml
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: unreal-engine
+description: Drive the Unreal Engine 5.8 editor over its local MCP server.
+source: https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor
+
+# Epic's official "Unreal MCP" plugin (internal id ModelContextProtocol)
+# embeds an MCP server inside the running Unreal Editor process and serves it
+# over local HTTP. There is nothing to install on the Hermes side — the user
+# enables the plugin in-editor and the server binds to 127.0.0.1. Hermes's
+# MCP client just connects to the URL.
+#
+# Default bind is http://127.0.0.1:8000/mcp (port + path are configurable in
+# Editor Preferences > General > Model Context Protocol). If you change the
+# port/path in-editor, edit the url in mcp_servers.unreal-engine afterward.
+transport:
+  type: http
+  url: http://127.0.0.1:8000/mcp
+
+# The editor-embedded server accepts connections only from the same machine
+# and has no authentication of its own (Epic's experimental design — not for
+# remote use). Nothing to prompt for.
+auth:
+  type: none
+
+# Tool selection at install time:
+# The plugin advertises engine tools (spawn actors, configure lighting, create
+# material instances, inspect Slate widgets, run automation tests) and is
+# user-extensible, so the exact surface depends on the project's enabled
+# toolsets. Leave default_enabled unset — the install-time probe lists whatever
+# the live editor exposes and pre-checks all of it; users prune from there.
+
+post_install: |
+  This entry connects to Epic's official Unreal MCP plugin, which runs INSIDE
+  the Unreal Editor. Before Hermes can connect:
+
+    1. Open your project in Unreal Editor 5.8+.
+    2. Edit > Plugins, search "Unreal MCP", enable it, restart the editor
+       (the Toolset Registry dependency enables automatically).
+    3. Edit > Editor Preferences > General > Model Context Protocol, turn on
+       "Auto Start Server" (or run `ModelContextProtocol.StartServer` in the
+       editor console). It binds to http://127.0.0.1:8000/mcp by default.
+
+  Start Hermes AFTER the editor's server is running so the tools are probed.
+  If you changed the port or URL path in Editor Preferences, update the url in
+  mcp_servers.unreal-engine to match.
+
+  Status: Epic ships this as EXPERIMENTAL. The server runs Tool calls serially
+  on the engine game thread — avoid issuing overlapping calls.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure unreal-engine
 ```
 
 ## See also

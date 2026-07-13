@@ -353,7 +353,7 @@ class TestWrapCommandWindowsNativeCwd:
         captured = {}
 
         def fake_run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
-            captured["script"] = cmd_string
+            captured.setdefault("script", cmd_string)  # bootstrap only; ignore the failure-path probe
             raise RuntimeError("stop after capturing bootstrap")
 
         monkeypatch.setattr(LocalEnvironment, "_run_bash", fake_run_bash)
@@ -373,7 +373,7 @@ class TestWrapCommandWindowsNativeCwd:
         captured = {}
 
         def fake_run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
-            captured["script"] = cmd_string
+            captured.setdefault("script", cmd_string)  # bootstrap only; ignore the failure-path probe
             raise RuntimeError("stop after capturing bootstrap")
 
         monkeypatch.setattr(LocalEnvironment, "_run_bash", fake_run_bash)
@@ -402,7 +402,7 @@ class TestWrapCommandWindowsNativeCwd:
         captured = {}
 
         def fake_run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
-            captured["script"] = cmd_string
+            captured.setdefault("script", cmd_string)  # bootstrap only; ignore the failure-path probe
             raise RuntimeError("stop after capturing bootstrap")
 
         monkeypatch.setattr(LocalEnvironment, "_run_bash", fake_run_bash)

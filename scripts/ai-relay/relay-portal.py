@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """relay-portal — call AI Portal routes without requiring local vendor login."""
 import argparse
+import base64
 import json
 import os
+from pathlib import Path
 import sys
 import urllib.error
 import urllib.request
@@ -14,6 +16,17 @@ TOKEN_ENVS = {
     "codex": ("AI_PORTAL_CODEX_TOKEN", "AI_RELAY_CODEX_TOKEN", "OPENAI_API_KEY"),
     "openai": ("AI_PORTAL_CODEX_TOKEN", "AI_RELAY_CODEX_TOKEN", "OPENAI_API_KEY"),
     "grok": ("AI_PORTAL_GROK_TOKEN", "AI_RELAY_GROK_TOKEN", "GROK_API_KEY"),
+}
+
+CODEX_DEFAULT_IDENTITY = {
+    "01": {
+        "email": "jigsawaiteam@gmail.com",
+        "user_id": "user-Jcm2OkAJD6NGd8wB5KtDUHLN",
+    },
+    "02": {
+        "email": "jigsawgroupscompany@gmail.com",
+        "user_id": "user-xIuPjll2xHbeeMTCMYY84TiA",
+    },
 }
 
 DEFAULT_MODELS = {
@@ -35,12 +48,98 @@ def portal_base() -> str:
 
 
 def token_for(provider: str) -> str:
+    if provider in ("codex", "openai"):
+        routed = codex_cross_route_token()
+        if routed:
+            return routed
     for name in TOKEN_ENVS.get(provider, ()):
         value = os.environ.get(name)
         if value:
             return value
     names = ", ".join(TOKEN_ENVS.get(provider, ()))
     raise SystemExit(f"auth: missing portal token env for {provider} ({names})")
+
+
+def decode_jwt_payload(token: str | None) -> dict:
+    if not token or token.count(".") < 2:
+        return {}
+    payload = token.split(".")[1]
+    payload += "=" * ((4 - len(payload) % 4) % 4)
+    try:
+        return json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")))
+    except Exception:
+        return {}
+
+
+def codex_local_identity() -> dict:
+    forced_email = os.environ.get("AI_PORTAL_CODEX_LOGIN_EMAIL")
+    forced_user = os.environ.get("AI_PORTAL_CODEX_LOGIN_USER_ID")
+    if forced_email or forced_user:
+        return {"email": forced_email, "user_id": forced_user, "source": "env"}
+
+    path = Path(os.environ.get("CODEX_AUTH_FILE", str(Path.home() / ".codex" / "auth.json")))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"source": str(path)}
+
+    tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+    id_payload = decode_jwt_payload(tokens.get("id_token") or data.get("id_token"))
+    access_payload = decode_jwt_payload(tokens.get("access_token") or data.get("access_token"))
+    profile = access_payload.get("https://api.openai.com/profile") or {}
+    auth = (
+        id_payload.get("https://api.openai.com/auth")
+        or access_payload.get("https://api.openai.com/auth")
+        or {}
+    )
+    return {
+        "email": data.get("email") or id_payload.get("email") or profile.get("email"),
+        "user_id": data.get("user_id") or auth.get("user_id"),
+        "source": str(path),
+    }
+
+
+def codex_identity_matches(identity: dict, slot: str) -> bool:
+    email = (identity.get("email") or "").strip().lower()
+    user_id = (identity.get("user_id") or "").strip()
+    expected_email = os.environ.get(f"AI_PORTAL_CODEX_{slot}_EMAIL") or CODEX_DEFAULT_IDENTITY[slot]["email"]
+    expected_user = os.environ.get(f"AI_PORTAL_CODEX_{slot}_USER_ID") or CODEX_DEFAULT_IDENTITY[slot]["user_id"]
+    return bool(
+        (email and email == expected_email.strip().lower())
+        or (user_id and user_id == expected_user.strip())
+    )
+
+
+def codex_cross_route_token() -> str | None:
+    token_01 = os.environ.get("AI_PORTAL_CODEX_TOKEN_01")
+    token_02 = os.environ.get("AI_PORTAL_CODEX_TOKEN_02")
+    if not token_01 or not token_02:
+        return None
+
+    identity = codex_local_identity()
+    if codex_identity_matches(identity, "01"):
+        return token_02
+    if codex_identity_matches(identity, "02"):
+        return token_01
+
+    target = os.environ.get("AI_PORTAL_CODEX_DEFAULT_CROSS_TARGET", "").strip()
+    if target == "01":
+        return token_01
+    if target == "02":
+        return token_02
+    if os.environ.get("AI_PORTAL_CODEX_CROSS_ROUTE", "strict").lower() in ("0", "false", "off"):
+        return os.environ.get("AI_PORTAL_CODEX_TOKEN")
+
+    seen = ", ".join(
+        f"{key}={value}"
+        for key, value in [("email", identity.get("email")), ("user_id", identity.get("user_id")), ("source", identity.get("source"))]
+        if value
+    )
+    raise SystemExit(
+        "auth: cannot detect local Codex login for cross-route. "
+        "Set AI_PORTAL_CODEX_LOGIN_EMAIL or AI_PORTAL_CODEX_DEFAULT_CROSS_TARGET=01|02. "
+        f"Detected: {seen or 'none'}"
+    )
 
 
 def request_json(url: str, token: str, payload: dict) -> bytes:

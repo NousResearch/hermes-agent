@@ -12100,13 +12100,36 @@ def cmd_dashboard(args):
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
     except ImportError as e:
-        print("Web UI dependencies not installed (need fastapi + uvicorn).")
-        print(
-            f"Re-install the package into this interpreter so metadata updates apply:\n"
-            f"  cd {PROJECT_ROOT}\n"
-            f"  {sys.executable} -m pip install -e .\n"
-            "If `pip` is missing in this venv, use:  uv pip install -e ."
-        )
+        # Detect Windows Smart App Control / Application Control policy blocking
+        # the embedded Python runtime's SSL module. The root cause is often hidden
+        # behind generic "missing dependencies" errors, leading users to repair loops.
+        error_msg = str(e)
+        if "DLL load failed" in error_msg and "_ssl" in error_msg:
+            print("✗ Critical: Embedded Python runtime is blocked by Windows security policy.")
+            print()
+            print("Root cause: Python's SSL module (_ssl) could not be loaded.")
+            print(f"Error: {error_msg}")
+            print()
+            print("This happens when Windows Smart App Control or Application Control")
+            print("blocks the embedded Python runtime. The 'missing dependencies' message")
+            print("above is a symptom, not the actual cause.")
+            print()
+            print("Recovery options:")
+            print("  1. Use a trusted system Python installation instead of the embedded runtime")
+            print("     (if your organization allows it).")
+            print("  2. Request an exemption for the Hermes Desktop application from")
+            print("     your IT administrator (Smart App Control / Application Control).")
+            print("  3. Use the CLI or gateway version instead (they use your system Python).")
+            print()
+            print("See https://aka.ms/smartappcontrol for Windows Smart App Control details.")
+        else:
+            print("Web UI dependencies not installed (need fastapi + uvicorn).")
+            print(
+                f"Re-install the package into this interpreter so metadata updates apply:\n"
+                f"  cd {PROJECT_ROOT}\n"
+                f"  {sys.executable} -m pip install -e .\n"
+                "If `pip` is missing in this venv, use:  uv pip install -e ."
+            )
         print(f"Import error: {e}")
         sys.exit(1)
 

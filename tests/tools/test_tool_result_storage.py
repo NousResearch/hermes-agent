@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 from tools.budget_config import (
     DEFAULT_RESULT_SIZE_CHARS,
-    DEFAULT_TURN_BUDGET_CHARS,
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
 )
@@ -17,6 +16,7 @@ from tools.tool_result_storage import (
     _build_persisted_message,
     _heredoc_marker,
     _resolve_storage_dir,
+    _safe_result_filename,
     _write_to_sandbox,
     enforce_turn_budget,
     generate_preview,
@@ -164,6 +164,19 @@ class TestResolveStorageDir:
         env = MagicMock()
         env.get_temp_dir.return_value = "/data/data/com.termux/files/usr/tmp"
         assert _resolve_storage_dir(env) == "/data/data/com.termux/files/usr/tmp/hermes-results"
+
+
+class TestSafeResultFilename:
+    def test_preserves_normal_tool_call_id(self):
+        assert _safe_result_filename("tc_456") == "tc_456.txt"
+
+    def test_replaces_path_and_shell_metacharacters(self):
+        filename = _safe_result_filename("../outside/$(whoami);x")
+        assert filename.startswith("outside_whoami_x_")
+        assert filename.endswith(".txt")
+        assert "/" not in filename
+        assert "$" not in filename
+        assert ";" not in filename
 
 
 # ── _build_persisted_message ──────────────────────────────────────────
@@ -376,6 +389,28 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         assert "unique_id_abc.txt" in result
+
+    def test_tool_use_id_cannot_escape_storage_dir(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        env.get_temp_dir.return_value = ""
+        content = "x" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="../outside/$(whoami);x",
+            env=env,
+            threshold=30_000,
+        )
+        cmd = env.execute.call_args[0][0]
+        target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
+
+        assert "Full output saved to: /tmp/hermes-results/outside_whoami_x_" in result
+        assert "/tmp/hermes-results/../" not in result
+        assert target.startswith("/tmp/hermes-results/outside_whoami_x_")
+        assert "/../" not in target
+        assert "$(whoami)" not in target
+        assert ";" not in target
 
     def test_preview_included_in_persisted_output(self):
         env = MagicMock()

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -304,13 +303,16 @@ class TestTeamsMeetingPipeline:
                 MeetingArtifact(
                     artifact_type="recording",
                     artifact_id="rec-1",
-                    display_name="recording.mp4",
+                    display_name="../../nested/recording.mp4",
                     download_url="https://files.example/recording.mp4",
                 )
             ]
 
+        downloaded_targets = []
+
         async def _download(client, meeting_ref, recording, destination):
             target = Path(destination)
+            downloaded_targets.append(target)
             target.write_bytes(b"video-bytes")
             return {"path": str(target), "size_bytes": 11, "content_type": "video/mp4"}
 
@@ -376,12 +378,117 @@ class TestTeamsMeetingPipeline:
         assert job.selected_artifact_strategy == "recording_stt_fallback"
         assert job.summary_payload is not None
         assert job.summary_payload.summary == "Fallback summary"
+        assert downloaded_targets
+        assert downloaded_targets[0].name == "recording.mp4"
+        assert "nested" not in str(downloaded_targets[0])
         notion_record = store.get_sink_record("notion:meeting-456")
         teams_record = store.get_sink_record("teams:meeting-456")
         assert notion_record is not None
         assert notion_record["page_id"] == "page-1"
         assert teams_record is not None
         assert teams_record["message_id"] == "msg-1"
+
+    @pytest.mark.parametrize("crafted_name", ["..", "../", ".", ""])
+    async def test_recording_dot_only_display_name_falls_back_to_artifact_id(
+        self, tmp_path, monkeypatch, crafted_name
+    ):
+        # Path("..").name == ".." and Path(".").name == "" — so basename
+        # extraction alone does not neutralize dot-only names. Joining
+        # tmp_dir / ".." resolves to the parent directory (an escape), so
+        # the pipeline must reject these and fall back to the artifact id.
+        from plugins.teams_pipeline import pipeline as pipeline_module
+
+        monkeypatch.setattr(pipeline_module, "resolve_meeting_reference", _transcript_meeting_resolver)
+
+        async def _no_transcript(client, meeting_ref):
+            return None, None
+
+        async def _recordings(client, meeting_ref):
+            return [
+                MeetingArtifact(
+                    artifact_type="recording",
+                    artifact_id="rec-dot",
+                    display_name=crafted_name,
+                    download_url="https://files.example/recording.mp4",
+                )
+            ]
+
+        downloaded_targets = []
+
+        async def _download(client, meeting_ref, recording, destination):
+            target = Path(destination)
+            downloaded_targets.append(target)
+            target.write_bytes(b"video-bytes")
+            return {"path": str(target), "size_bytes": 11, "content_type": "video/mp4"}
+
+        async def _prepare_audio(self, recording_path):
+            audio_path = recording_path.with_suffix(".wav")
+            audio_path.write_bytes(b"audio-bytes")
+            return audio_path
+
+        def _transcribe(file_path, model):
+            return {"success": True, "transcript": "Action: Follow up.", "provider": "local"}
+
+        async def _summarize(**kwargs):
+            return pipeline_module.TeamsMeetingSummaryPayload(
+                meeting_ref=kwargs["resolved_meeting"],
+                title="Weekly Sync",
+                transcript_text=kwargs["transcript_text"],
+                summary="Fallback summary",
+                key_decisions=[],
+                action_items=["Follow up."],
+                risks=[],
+                confidence="medium",
+                confidence_notes="Generated from STT fallback.",
+                source_artifacts=kwargs["artifacts"],
+            )
+
+        class FakeNotionWriter:
+            async def write_summary(self, payload, config, existing_record=None):
+                return {"page_id": "page-1", "url": "https://notion.so/page-1"}
+
+        async def _teams_sender(payload, config, existing_record=None):
+            return {"message_id": "msg-1"}
+
+        monkeypatch.setattr(pipeline_module, "fetch_preferred_transcript_text", _no_transcript)
+        monkeypatch.setattr(pipeline_module, "list_recording_artifacts", _recordings)
+        monkeypatch.setattr(pipeline_module, "download_recording_artifact", _download)
+        monkeypatch.setattr(pipeline_module.TeamsMeetingPipeline, "_prepare_audio_path", _prepare_audio)
+        monkeypatch.setattr(pipeline_module, "enrich_meeting_with_call_record", _no_call_record)
+
+        temp_root = tmp_path / "teams-tmp"
+        store = TeamsPipelineStore(tmp_path / "teams-store.json")
+        pipeline = TeamsMeetingPipeline(
+            graph_client=FakeGraphClient(),
+            store=store,
+            config={
+                "tmp_dir": str(temp_root),
+                "notion": {"enabled": True, "database_id": "db-1"},
+                "teams_delivery": {"enabled": True, "channel_id": "channel-1"},
+            },
+            transcribe_fn=_transcribe,
+            summarize_fn=_summarize,
+            notion_writer=FakeNotionWriter(),
+            teams_sender=_teams_sender,
+        )
+
+        job = await pipeline.run_notification(
+            {
+                "id": "notif-dot",
+                "changeType": "updated",
+                "resource": "communications/onlineMeetings/meeting-dot",
+                "resourceData": {"id": "meeting-dot"},
+            }
+        )
+
+        assert job.status == "completed"
+        assert downloaded_targets
+        target = downloaded_targets[0]
+        # Fell back to the artifact id, not the crafted dot-only name.
+        assert target.name == "rec-dot.mp4"
+        # Stayed inside the generated temp recording directory (no escape).
+        assert target.resolve().parent.parent == temp_root.resolve()
+        assert target.resolve().parent.name.startswith("teams-recording-")
 
     async def test_missing_transcript_and_recording_schedules_retry(self, tmp_path, monkeypatch):
         from plugins.teams_pipeline import pipeline as pipeline_module

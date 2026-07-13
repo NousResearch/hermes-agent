@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]einmal  |  [s]sitzung  |  [d]ablehnen"
   prompt_long:     "      Auswahl [o/s/a/D]: "
   prompt_short:    "      Auswahl [o/s/D]: "
+  choose_smart_deny: "      [o]einmal  |  [d]ablehnen"
+  prompt_smart_deny: "      Auswahl [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ Zeitüberschreitung – Befehl wird abgelehnt"
   allowed_once:    "      ✓ Einmalig erlaubt"
   allowed_session: "      ✓ Für diese Sitzung erlaubt"
@@ -88,6 +92,7 @@ gateway:
     not_enough:            "Nicht genug Konversation zum Komprimieren (mindestens 4 Nachrichten erforderlich)."
     no_provider:           "Kein Anbieter konfiguriert — Komprimierung nicht möglich."
     nothing_to_do:         "Noch nichts zu komprimieren (das Transkript ist weiterhin vollständig geschützter Kontext)."
+    aggressive_unsupported: "--aggressive wird nicht unterstützt; verwende '/compress here [N]', um nur die letzten Austausche zu behalten, oder /undo, um Beiträge zu entfernen."
     focus_line:            "Fokus: \"{topic}\""
     summary_failed:        "⚠️ Zusammenfassungsgenerierung fehlgeschlagen ({error}). {count} historische Nachricht(en) wurden entfernt und durch einen Platzhalter ersetzt; früherer Kontext ist nicht mehr wiederherstellbar. Überprüfen Sie die Konfiguration des auxiliary.compression-Modells."
     aborted:               "⚠️ Komprimierung abgebrochen ({error}). Keine Nachrichten wurden entfernt — die Konversation ist unverändert. Führe /compress aus, um es erneut zu versuchen, /reset für eine neue Sitzung, oder prüfe deine auxiliary.compression-Modellkonfiguration."
@@ -106,6 +111,8 @@ gateway:
     no_pending:            "Kein ausstehender Befehl zum Ablehnen."
     denied_singular:       "❌ Befehl abgelehnt."
     denied_plural:         "❌ Befehle abgelehnt ({count} Befehle)."
+    denied_reason_singular: "❌ Befehl abgelehnt. Grund an den Agenten weitergeleitet: \"{reason}\""
+    denied_reason_plural:  "❌ Befehle abgelehnt ({count} Befehle). Grund an den Agenten weitergeleitet: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast ist nur für OpenAI-Modelle mit Priority Processing verfügbar."
@@ -149,6 +156,15 @@ gateway:
     subscribed_suffix:     "(abonniert — Sie werden benachrichtigt, wenn {task_id} abgeschlossen oder blockiert wird)"
     truncated_suffix:      "… (gekürzt; verwenden Sie `hermes kanban …` im Terminal für die vollständige Ausgabe)"
     no_output:             "(keine Ausgabe)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "Keine Persönlichkeiten in `{path}/config.yaml` konfiguriert"
@@ -219,12 +235,24 @@ gateway:
 
   resume:
     db_unavailable:        "Sitzungsdatenbank nicht verfügbar."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Keine benannten Sitzungen gefunden.\nVerwenden Sie `/title Meine Sitzung`, um die aktuelle Sitzung zu benennen, dann `/resume Meine Sitzung`, um später dorthin zurückzukehren."
     list_header:           "📋 **Benannte Sitzungen**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nVerwendung: `/resume <Sitzungsname>`"
+    list_footer_numbered:  "\nVerwendung: `/resume <Sitzungsname>` oder `/resume <Nummer>` (z. B. `/resume 1` für die zuletzt verwendete)"
     list_failed:           "Sitzungen konnten nicht aufgelistet werden: {error}"
+    out_of_range:          "Wiederaufnahme-Index {index} liegt außerhalb des gültigen Bereichs.\nVerwenden Sie `/resume` ohne Argumente, um verfügbare Sitzungen anzuzeigen."
     not_found:             "Keine Sitzung passend zu '**{name}**' gefunden.\nVerwenden Sie `/resume` ohne Argumente, um verfügbare Sitzungen zu sehen."
     already_on:            "📌 Bereits in Sitzung **{name}**."
     switch_failed:         "Sitzungswechsel fehlgeschlagen."
@@ -248,11 +276,21 @@ gateway:
 
   status:
     header:                "📊 **Hermes-Gateway-Status**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**Sitzungs-ID:** `{session_id}`"
     title:                 "**Titel:** {title}"
     created:               "**Erstellt:** {timestamp}"
     last_activity:         "**Letzte Aktivität:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    model:                 "**Modell:** `{model}`"
+    model_provider:        "**Modell:** `{model}` ({provider})"
+    context:               "**Kontext:** {used} / {total} ({pct}%)"
+    context_used:          "**Kontext:** ~{used} Tokens"
+    tokens:                "**Kumulierte API-Tokens (bei jedem Aufruf erneut gesendet):** {tokens}"
     agent_running:         "**Agent läuft:** {state}"
     state_yes:             "Ja ⚡"
     state_no:              "Nein"
@@ -287,7 +325,8 @@ gateway:
 
   undo:
     nothing:               "Nichts zum Rückgängigmachen."
-    removed:               "↩️ {count} Nachricht(en) rückgängig gemacht.\nEntfernt: \"{preview}\""
+    removed:               "↩️ {turns} Zug/Züge rückgängig gemacht ({count} Nachricht(en)).\nGesichert nach: \"{preview}\"\nKopieren/bearbeiten Sie den obigen Text und senden Sie ihn, um von hier aus erneut zu fragen."
+    invalid_count:         "Ungültige Anzahl \"{arg}\" — verwenden Sie /undo oder /undo N."
 
   update:
     platform_not_messaging:  "✗ /update ist nur auf Messaging-Plattformen verfügbar. Führen Sie `hermes update` im Terminal aus."
@@ -310,11 +349,24 @@ gateway:
     label_cost_included:      "Kosten: inbegriffen"
     label_context:            "Kontext: {used} / {total} ({pct}%)"
     label_compressions:       "Kompressionen: {count}"
+    breakdown_header: "🧩 **Kontextaufschlüsselung** _(geschätzt)_"
+    breakdown_line: "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt: "System-Prompt"
+    breakdown_cat_tool_definitions: "Tool-Definitionen"
+    breakdown_cat_rules: "Regeln"
+    breakdown_cat_skills: "Fähigkeiten"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "Subagent-Definitionen"
+    breakdown_cat_memory: "Speicher"
+    breakdown_cat_conversation: "Konversation"
     header_session_info:      "📊 **Sitzungsinfo**"
     label_messages:           "Nachrichten: {count}"
     label_estimated_context:  "Geschätzter Kontext: ~{count} Tokens"
     detailed_after_first:     "_(Detaillierte Nutzung nach der ersten Agentenantwort verfügbar)_"
     no_data:                  "Keine Nutzungsdaten für diese Sitzung verfügbar."
+
+  credits:
+    not_logged_in:            "Nicht bei Nous Portal angemeldet. Melde dich an, um dein Guthaben zu sehen und aufzuladen."
 
   verbose:
     not_enabled:           "Der Befehl `/verbose` ist für Messaging-Plattformen nicht aktiviert.\n\nIn `config.yaml` aktivieren:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -322,6 +374,7 @@ gateway:
     mode_new:              "⚙️ Tool-Fortschritt: **NEW** — angezeigt bei Tool-Wechsel (Vorschaulänge: `display.tool_preview_length`, Standard 40)."
     mode_all:              "⚙️ Tool-Fortschritt: **ALL** — jeder Tool-Aufruf wird angezeigt (Vorschaulänge: `display.tool_preview_length`, Standard 40)."
     mode_verbose:          "⚙️ Tool-Fortschritt: **VERBOSE** — jeder Tool-Aufruf mit vollständigen Argumenten."
+    mode_log:              "⚙️ Tool-Fortschritt: **LOG** — still im Chat; Tool-Aufrufe werden in ~/.hermes/logs/tool_calls.log geschrieben."
     saved_suffix:          "_(für **{platform}** gespeichert — wird ab nächster Nachricht wirksam)_"
     save_failed:           "_(konnte nicht in der Konfiguration gespeichert werden: {error})_"
 
@@ -339,6 +392,8 @@ gateway:
     label_off:             "Aus (nur Text)"
     label_voice_only:      "An (Sprachantwort auf Sprachnachrichten)"
     label_all:             "TTS (Sprachantwort auf alle Nachrichten)"
+    help:                  "{toggle}\n\n**So funktioniert /voice**\n• `/voice on` — Sprachantwort, wenn du eine Sprachnachricht sendest\n• `/voice tts` — Sprachantwort auf *jede* Nachricht\n• `/voice off` — zurück zu reinen Textantworten\n• `/voice status` — aktuellen Modus anzeigen\n• `/voice` (ohne Argument) — schnelles Umschalten zwischen an und aus{channels}"
+    help_channels:         "\n\n**Live-Sprachkanäle (Discord)**\n• Tritt zuerst einem Sprachkanal bei, dann `/voice channel` — ich trete bei, höre zu und spreche meine Antworten\n• `/voice leave` — vom Sprachkanal trennen"
 
   yolo:
     disabled:                   "⚠️ YOLO-Modus für diese Sitzung **AUS** — gefährliche Befehle benötigen eine Genehmigung."

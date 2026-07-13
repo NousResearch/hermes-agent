@@ -1,7 +1,6 @@
 """Tests for Slack Block Kit approval buttons and thread context fetching."""
 
 import asyncio
-import os
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -43,8 +42,8 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from gateway.platforms.slack import SlackAdapter
-from gateway.config import Platform, PlatformConfig
+from plugins.platforms.slack.adapter import SlackAdapter
+from gateway.config import PlatformConfig, Platform
 
 
 def _make_adapter():
@@ -57,6 +56,25 @@ def _make_adapter():
     adapter._team_bot_user_ids = {"T1": "U_BOT"}
     adapter._channel_team = {"C1": "T1"}
     return adapter
+
+
+class _AuthRunner:
+    def __init__(self, auth_fn=None):
+        self._auth_fn = auth_fn or (lambda _source: True)
+        self.seen_sources = []
+
+    async def handle(self, event):
+        return None
+
+    def _is_user_authorized(self, source):
+        self.seen_sources.append(source)
+        return self._auth_fn(source)
+
+
+def _attach_auth_runner(adapter, auth_fn=None):
+    runner = _AuthRunner(auth_fn=auth_fn)
+    adapter.set_message_handler(runner.handle)
+    return runner
 
 
 # ===========================================================================
@@ -102,6 +120,24 @@ class TestSlackExecApproval:
         # Each button carries the session key as value
         for e in elements:
             assert e["value"] == "agent:main:slack:group:C1:1111"
+
+    @pytest.mark.asyncio
+    async def test_smart_deny_owner_override_hides_persistent_buttons(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1234.5678"})
+
+        await adapter.send_exec_approval(
+            chat_id="C1", command="rm -rf /", session_key="s",
+            allow_permanent=False, smart_denied=True,
+        )
+
+        kwargs = mock_client.chat_postMessage.call_args.kwargs
+        elements = kwargs["blocks"][1]["elements"]
+        assert [element["action_id"] for element in elements] == [
+            "hermes_approve_once", "hermes_deny",
+        ]
+        assert "one operation" in kwargs["blocks"][0]["text"]["text"].lower()
 
     @pytest.mark.asyncio
     async def test_sends_in_thread(self):
@@ -155,6 +191,7 @@ class TestSlackApprovalAction:
     @pytest.mark.asyncio
     async def test_resolves_approval(self):
         adapter = _make_adapter()
+        _attach_auth_runner(adapter)
         adapter._approval_resolved["1234.5678"] = False
 
         ack = AsyncMock()
@@ -167,7 +204,7 @@ class TestSlackApprovalAction:
                 ],
             },
             "channel": {"id": "C1"},
-            "user": {"name": "norbert"},
+            "user": {"name": "norbert", "id": "U_NORBERT"},
         }
         action = {
             "action_id": "hermes_approve_once",
@@ -191,13 +228,14 @@ class TestSlackApprovalAction:
     @pytest.mark.asyncio
     async def test_prevents_double_click(self):
         adapter = _make_adapter()
+        _attach_auth_runner(adapter)
         adapter._approval_resolved["1234.5678"] = True  # Already resolved
 
         ack = AsyncMock()
         body = {
             "message": {"ts": "1234.5678", "blocks": []},
             "channel": {"id": "C1"},
-            "user": {"name": "norbert"},
+            "user": {"name": "norbert", "id": "U_NORBERT"},
         }
         action = {
             "action_id": "hermes_approve_once",
@@ -214,6 +252,7 @@ class TestSlackApprovalAction:
     @pytest.mark.asyncio
     async def test_deny_action(self):
         adapter = _make_adapter()
+        _attach_auth_runner(adapter)
         adapter._approval_resolved["1.2"] = False
 
         ack = AsyncMock()
@@ -222,7 +261,7 @@ class TestSlackApprovalAction:
                 {"type": "section", "text": {"type": "mrkdwn", "text": "cmd"}},
             ]},
             "channel": {"id": "C1"},
-            "user": {"name": "alice"},
+            "user": {"name": "alice", "id": "U_ALICE"},
         }
         action = {"action_id": "hermes_deny", "value": "session-key"}
 
@@ -235,6 +274,95 @@ class TestSlackApprovalAction:
         mock_resolve.assert_called_once_with("session-key", "deny")
         update_kwargs = mock_client.chat_update.call_args[1]
         assert "Denied by alice" in update_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_global_allowlist_blocks_unauthorized_click(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._approval_resolved["1234.5678"] = False
+        monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("SLACK_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "U_OWNER")
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "1234.5678", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "mallory", "id": "U_ATTACKER"},
+        }
+        action = {
+            "action_id": "hermes_approve_once",
+            "value": "agent:main:slack:group:C1:1111",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._handle_approval_action(ack, body, action)
+
+        ack.assert_called_once()
+        mock_resolve.assert_not_called()
+
+
+class TestSlackInteractiveAuth:
+    def test_delegates_to_gateway_runner_auth(self):
+        adapter = _make_adapter()
+        runner = _attach_auth_runner(adapter, auth_fn=lambda source: source.user_id == "U_OK")
+
+        assert adapter._is_interactive_user_authorized(
+            "U_OK",
+            channel_id="C1",
+            user_name="operator",
+        ) is True
+        assert adapter._is_interactive_user_authorized(
+            "U_BAD",
+            channel_id="C1",
+            user_name="intruder",
+        ) is False
+
+        assert len(runner.seen_sources) == 2
+        assert runner.seen_sources[0].platform == Platform.SLACK
+        assert runner.seen_sources[0].chat_id == "C1"
+        assert runner.seen_sources[0].chat_type == "group"
+
+
+class TestSlackSlashConfirmAction:
+    @pytest.mark.asyncio
+    async def test_global_allowlist_allows_authorized_click(self, monkeypatch):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+        mock_client.chat_postMessage = AsyncMock()
+        monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("SLACK_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "U_OWNER")
+
+        ack = AsyncMock()
+        body = {
+            "message": {
+                "ts": "2222.3333",
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Original prompt"}},
+                ],
+            },
+            "channel": {"id": "C1"},
+            "user": {"name": "owner", "id": "U_OWNER"},
+        }
+        action = {
+            "action_id": "hermes_confirm_once",
+            "value": "agent:main:slack:group:C1:1111|confirm-1",
+        }
+
+        with patch("tools.slash_confirm.resolve", new=AsyncMock(return_value="follow-up")) as mock_resolve:
+            await adapter._handle_slash_confirm_action(ack, body, action)
+
+        ack.assert_called_once()
+        mock_resolve.assert_awaited_once_with(
+            "agent:main:slack:group:C1:1111",
+            "confirm-1",
+            "once",
+        )
+        mock_client.chat_update.assert_called_once()
+        mock_client.chat_postMessage.assert_called_once()
 
 
 # ===========================================================================
@@ -757,3 +885,29 @@ class TestSlackReactionForwarding:
         assert len(forwarded) == 1
         assert forwarded[0]["text"] == "👍"
         assert forwarded[0]["thread_ts"] == "1000.0"
+
+    @pytest.mark.asyncio
+    async def test_reaction_on_non_bot_message_dropped(self):
+        """A reaction on a message not sent by this bot must not enter the
+        agent loop — matching the Feishu adapter's target-sender check."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [{"ts": "1000.0", "user": "U_OTHER", "text": "Not our bot"}]
+        })
+        forwarded: list[dict] = []
+
+        async def _capture(event):
+            forwarded.append(event)
+
+        with patch.object(adapter, "_handle_slack_message", new=_capture):
+            await adapter._handle_slack_reaction({
+                "type": "reaction_added",
+                "user": "U1",
+                "reaction": "thumbsup",
+                "item": {"type": "message", "channel": "C1", "ts": "1000.0"},
+                "item_user": "U_OTHER",  # not our bot
+                "event_ts": "3000.0",
+            })
+
+        assert forwarded == []

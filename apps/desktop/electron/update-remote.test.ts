@@ -20,10 +20,12 @@ import test from 'node:test'
 
 import {
   canonicalGitHubRemote,
+  isOfficialRemote,
   isOfficialSshRemote,
   isSshRemote,
   OFFICIAL_REPO_CANONICAL,
-  OFFICIAL_REPO_HTTPS_URL
+  OFFICIAL_REPO_HTTPS_URL,
+  selectUpdateRemote
 } from './update-remote'
 
 test('canonicalGitHubRemote normalizes SSH and HTTPS forms to the same value', () => {
@@ -75,4 +77,48 @@ test('isOfficialSshRemote does NOT match forks, other hosts, or HTTPS', () => {
 test('OFFICIAL_REPO_HTTPS_URL canonicalizes to OFFICIAL_REPO_CANONICAL', () => {
   // Invariant: the URL we substitute in must be the same repo we detect.
   assert.equal(canonicalGitHubRemote(OFFICIAL_REPO_HTTPS_URL), OFFICIAL_REPO_CANONICAL)
+})
+
+
+test('isOfficialRemote matches official HTTPS and SSH forms but not forks', () => {
+  assert.equal(isOfficialRemote('https://github.com/NousResearch/hermes-agent.git'), true)
+  assert.equal(isOfficialRemote('git@github.com:NousResearch/hermes-agent.git'), true)
+  assert.equal(isOfficialRemote('https://github.com/matantsevs/hermes-agent.git'), false)
+})
+
+test('selectUpdateRemote prefers official upstream when origin is a fork', () => {
+  assert.deepEqual(
+    selectUpdateRemote({
+      originUrl: 'https://github.com/matantsevs/hermes-agent.git',
+      upstreamUrl: 'https://github.com/NousResearch/hermes-agent.git'
+    }),
+    { kind: 'upstream', remote: 'upstream', ref: null }
+  )
+})
+
+test('selectUpdateRemote keeps official origin and falls back to origin without upstream', () => {
+  assert.deepEqual(
+    selectUpdateRemote({
+      originUrl: 'https://github.com/NousResearch/hermes-agent.git',
+      upstreamUrl: ''
+    }),
+    { kind: 'origin', remote: 'origin', ref: null }
+  )
+  assert.deepEqual(
+    selectUpdateRemote({
+      originUrl: 'https://github.com/matantsevs/hermes-agent.git',
+      upstreamUrl: ''
+    }),
+    { kind: 'origin', remote: 'origin', ref: null }
+  )
+})
+
+test('selectUpdateRemote uses anonymous HTTPS for official SSH remotes', () => {
+  assert.deepEqual(
+    selectUpdateRemote({
+      originUrl: 'git@github.com:matantsevs/hermes-agent.git',
+      upstreamUrl: 'git@github.com:NousResearch/hermes-agent.git'
+    }),
+    { kind: 'official-ssh', remote: OFFICIAL_REPO_HTTPS_URL, ref: 'FETCH_HEAD' }
+  )
 })

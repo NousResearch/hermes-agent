@@ -57,8 +57,36 @@ function isSshRemote(url) {
   return value.startsWith('git@') || value.startsWith('ssh://')
 }
 
-function isOfficialSshRemote(url) {
-  return isSshRemote(url) && canonicalGitHubRemote(url) === OFFICIAL_REPO_CANONICAL
+function isOfficialRemote(url) {
+  return canonicalGitHubRemote(url) === OFFICIAL_REPO_CANONICAL
 }
 
-export { canonicalGitHubRemote, isOfficialSshRemote, isSshRemote, OFFICIAL_REPO_CANONICAL, OFFICIAL_REPO_HTTPS_URL }
+function isOfficialSshRemote(url) {
+  return isSshRemote(url) && isOfficialRemote(url)
+}
+
+function selectUpdateRemote({ originUrl, upstreamUrl }) {
+  if (isOfficialSshRemote(originUrl)) {
+    return { kind: 'official-ssh', remote: OFFICIAL_REPO_HTTPS_URL, ref: 'FETCH_HEAD' }
+  }
+  if (isOfficialRemote(originUrl)) {
+    return { kind: 'origin', remote: 'origin', ref: null }
+  }
+  if (isOfficialSshRemote(upstreamUrl)) {
+    return { kind: 'official-ssh', remote: OFFICIAL_REPO_HTTPS_URL, ref: 'FETCH_HEAD' }
+  }
+  if (isOfficialRemote(upstreamUrl)) {
+    return { kind: 'upstream', remote: 'upstream', ref: null }
+  }
+  return { kind: 'origin', remote: 'origin', ref: null }
+}
+
+export {
+  canonicalGitHubRemote,
+  isOfficialRemote,
+  isOfficialSshRemote,
+  isSshRemote,
+  OFFICIAL_REPO_CANONICAL,
+  OFFICIAL_REPO_HTTPS_URL,
+  selectUpdateRemote
+}

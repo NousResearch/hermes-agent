@@ -1421,11 +1421,13 @@ class HermesACPAgent(acp.Agent):
             approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
             try:
                 from acp_adapter.edit_approval import make_acp_edit_approval_requester
+                from tools.approval import _get_approval_timeout
 
                 edit_approval_requester = make_acp_edit_approval_requester(
                     conn.request_permission,
                     loop,
                     session_id,
+                    timeout=_get_approval_timeout(),
                     auto_approve_getter=lambda: self._edit_approval_policy_for_state(state),
                 )
             except Exception:

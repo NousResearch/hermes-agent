@@ -5553,6 +5553,38 @@ def _coerce_message_text(content: Any) -> str:
     return str(content)
 
 
+_TEXT_ONLY_BUSY_PART_KINDS = frozenset({"text", "input_text", "output_text"})
+
+
+def _is_text_only_busy_payload(content: Any) -> bool:
+    """True when a busy submit carries only plain text, not attachments/media."""
+    if content is None:
+        return False
+    if isinstance(content, (str, int, float)):
+        return True
+    if isinstance(content, list):
+        if not content:
+            return False
+        for part in content:
+            if isinstance(part, str):
+                continue
+            if not isinstance(part, dict):
+                return False
+            kind = part.get("type")
+            if kind in _TEXT_ONLY_BUSY_PART_KINDS:
+                continue
+            if kind is None and isinstance(part.get("text"), str):
+                continue
+            return False
+        return True
+    if isinstance(content, dict):
+        kind = content.get("type")
+        if kind in _TEXT_ONLY_BUSY_PART_KINDS:
+            return True
+        return kind is None and isinstance(content.get("text"), str)
+    return False
+
+
 def _history_to_messages(history: list[dict]) -> list[dict]:
     messages = []
     tool_call_args = {}
@@ -5761,15 +5793,13 @@ def _handle_busy_submit(
     a turn is in flight, instead of rejecting it with ``session busy``.
 
     The old rejection forced clients into a deadline-bounded busy-retry that
-    silently dropped the send when turn teardown outlived the deadline (e.g. a
-    slow, non-interruptible tool like ``web_search`` running when the user hits
-    stop). The message is instead queued to run as the next turn — and, for the
-    default ``interrupt`` policy, the live turn is interrupted so it winds down
-    promptly. Drained in ``run``'s tail (see ``_run_prompt_submit``).
+    silently dropped the send when turn teardown outlived the deadline. The
+    default policy now redirects a capable core agent in place; older agents
+    retain the proven interrupt-and-queue path drained from ``run``'s tail.
 
-    Modes: ``interrupt`` (default) → interrupt + queue; ``queue`` → queue
-    without interrupting; ``steer`` → inject into the live turn if accepted,
-    else queue.
+    Modes: ``interrupt`` (default) → redirect the live turn, falling back to
+    hard interrupt + queue for older agents; ``queue`` → queue without
+    interrupting; ``steer`` → inject after the current atomic action.
     """
     mode = _load_busy_input_mode()
     agent = session.get("agent")
@@ -5778,14 +5808,34 @@ def _handle_busy_submit(
             # The turn ended between prompt.submit's first busy check and this
             # helper. Let the caller retry and claim the now-idle session.
             return None
-    if mode == "steer" and agent is not None and hasattr(agent, "steer"):
+    text_only = _is_text_only_busy_payload(text)
+    plain_text = _coerce_message_text(text).strip() if text_only else ""
+    if mode == "steer" and text_only and plain_text and agent is not None and hasattr(agent, "steer"):
         try:
-            if agent.steer(text):
+            if agent.steer(plain_text):
                 with session["history_lock"]:
                     session["last_active"] = time.time()
                 return _ok(rid, {"status": "steered"})
         except Exception:
             pass  # fall through to queue
+    # Text-only corrections redirect the live turn in place when the runtime
+    # supports it; media/attachment payloads and older agents fall through to
+    # the proven interrupt + queue path below.
+    if (
+        mode == "interrupt"
+        and text_only
+        and plain_text
+        and agent is not None
+        and getattr(agent, "_supports_active_turn_redirect", False) is True
+        and hasattr(agent, "redirect")
+    ):
+        try:
+            if agent.redirect(plain_text):
+                with session["history_lock"]:
+                    session["last_active"] = time.time()
+                return _ok(rid, {"status": "redirected"})
+        except Exception:
+            pass  # preserve the proven interrupt + queue fallback below
     # Queue before asking the live turn to stop. In particular, never call a
     # provider or compute-host method while holding history_lock: an interrupt
     # can wait behind the very operation it is trying to cancel.
@@ -9583,6 +9633,34 @@ def _(rid, params: dict) -> dict:
     except Exception as exc:
         return _err(rid, 5000, f"steer failed: {exc}")
     return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
+
+
+@method("session.redirect")
+def _(rid, params: dict) -> dict:
+    """Redirect the active model turn while preserving valid work/context."""
+    text = (params.get("text") or "").strip()
+    if not text:
+        return _err(rid, 4002, "text is required")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    if (
+        agent is None
+        or getattr(agent, "_supports_active_turn_redirect", False) is not True
+        or not hasattr(agent, "redirect")
+    ):
+        return _err(rid, 4010, "agent does not support active-turn redirect")
+    try:
+        accepted = agent.redirect(text)
+    except Exception as exc:
+        return _err(rid, 5000, f"redirect failed: {exc}")
+    if accepted:
+        session["last_active"] = time.time()
+    return _ok(
+        rid,
+        {"status": "redirected" if accepted else "rejected", "text": text},
+    )
 
 
 @method("terminal.resize")

@@ -41,7 +41,7 @@ import type {
   HandoffRequestResponse,
   HandoffStateResponse,
   ImageAttachResponse,
-  SessionSteerResponse
+  SessionRedirectResponse
 } from '../../../types'
 
 import {
@@ -599,11 +599,11 @@ export function usePromptActions({
     }
   }, [activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, selectedStoredSessionIdRef, updateSessionState])
 
-  // Steer = nudge the live turn without interrupting: the gateway appends the
-  // text to the next tool result so the model reads it on its next iteration
-  // (desktop parity with `/steer`). Returns false on reject (no live tool
-  // window) so the caller can fall back to queueing the words for the next turn.
-  const steerPrompt = useCallback(
+  // The desktop steering action is an immediate correction: the core cancels
+  // model generation and rebuilds the live turn with displayed reasoning and
+  // completed work intact. During a tool it waits for the safe result boundary.
+  // Returns false when the turn raced to completion so the composer can queue.
+  const redirectPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
       const text = sanitizeComposerInput(rawText).trim()
       const sessionId = activeSessionId || activeSessionIdRef.current
@@ -613,14 +613,17 @@ export function usePromptActions({
       }
 
       try {
-        const result = await requestGateway<SessionSteerResponse>('session.steer', { session_id: sessionId, text })
+        const result = await requestGateway<SessionRedirectResponse>('session.redirect', {
+          session_id: sessionId,
+          text
+        })
 
-        if (result?.status === 'queued') {
+        if (result?.status === 'redirected') {
           triggerHaptic('submit')
-          // Inline note (not a toast) so the nudge lives in the transcript next
-          // to the turn it steered. The `steer:` prefix is rendered as a codicon
-          // row by SystemMessage (see STEER_NOTE_RE), same style as slash output.
-          appendSessionTextMessage(sessionId, 'system', `steer:${text}`)
+          // Match the durable core transcript: the correction is a real user
+          // message after the interrupted assistant checkpoint, not a system
+          // note that changes role after reload.
+          appendSessionTextMessage(sessionId, 'user', text)
 
           return true
         }
@@ -806,7 +809,9 @@ export function usePromptActions({
     handoffSession,
     reloadFromMessage,
     restoreToMessage,
-    steerPrompt,
+    redirectPrompt,
+    /** @deprecated Use `redirectPrompt` — this is an active-turn redirect, not tool steer. */
+    steerPrompt: redirectPrompt,
     submitText,
     transcribeVoiceAudio
   }

@@ -173,9 +173,9 @@ export function useComposerSubmit({
     focusInput()
   }
 
-  // Steer the live turn (nudge without interrupting). Clears the draft up front
-  // for snappy feedback; if the gateway rejects (no live tool window) the words
-  // are re-queued so nothing is lost — same safety net as a plain queue.
+  // Redirect the live turn with a correction. The gateway either restarts the
+  // active model request with its displayed context or waits for the current
+  // tool boundary. If the turn already ended, queue the words instead.
   const steerDraft = () => {
     if (!onSteer || !canSteer) {
       return

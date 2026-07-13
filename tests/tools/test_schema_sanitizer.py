@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import copy
 
-from tools.schema_sanitizer import sanitize_tool_schemas, strip_pattern_and_format
+from tools.schema_sanitizer import (
+    sanitize_tool_schemas,
+    strip_pattern_and_format,
+    strip_slash_enum,
+)
 
 
 def _tool(name: str, parameters: dict) -> dict:
@@ -74,6 +78,65 @@ def test_nullable_type_array_collapsed_to_single_string():
     prop = out[0]["function"]["parameters"]["properties"]["maybe_name"]
     assert prop["type"] == "string"
     assert prop.get("nullable") is True
+
+
+def test_multitype_array_becomes_anyof_no_branch_dropped():
+    # Ported from anomalyco/opencode#31877: a genuine multi-type array such as
+    # ["number", "string"] (common in MCP tool schemas) must keep BOTH branches
+    # as an anyOf, not silently drop all but the first. Several backends
+    # (llama.cpp, Gemini via OpenAI-compatible transports) reject the array form.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "status": {"type": ["number", "string"], "description": "status filter"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["status"]
+    assert "type" not in prop
+    assert prop["anyOf"] == [{"type": "number"}, {"type": "string"}]
+    assert prop.get("nullable") is None
+    # Sibling keywords survive alongside the generated anyOf.
+    assert prop["description"] == "status filter"
+
+
+def test_multitype_array_with_null_lifts_nullable():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "v": {"type": ["integer", "boolean", "null"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["v"]
+    assert "type" not in prop
+    assert prop["anyOf"] == [{"type": "integer"}, {"type": "boolean"}]
+    assert prop.get("nullable") is True
+
+
+def test_all_null_type_array_becomes_null_type():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "n": {"type": ["null"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["n"]
+    assert prop["type"] == "null"
+
+
+def test_single_element_type_array_unwrapped():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "s": {"type": ["string"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["s"]
+    assert prop["type"] == "string"
+    assert prop.get("nullable") is None
 
 
 def test_anyof_nested_objects_sanitized():
@@ -195,6 +258,72 @@ def test_items_sanitized_in_array_schema():
     out = sanitize_tool_schemas(tools)
     items = out[0]["function"]["parameters"]["properties"]["bag"]["items"]
     assert items == {"type": "object", "properties": {}}
+
+
+def test_ref_with_default_sibling_stripped():
+    """Strict backends reject ``default`` alongside ``$ref``."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "payload": {"$ref": "#/$defs/Payload", "default": None},
+        },
+        "$defs": {
+            "Payload": {
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    payload = out[0]["function"]["parameters"]["properties"]["payload"]
+    assert payload == {"$ref": "#/$defs/Payload"}
+
+
+def test_nullable_union_collapse_does_not_leave_default_on_ref():
+    """Nullable anyOf collapse must not attach ``default`` to a ``$ref`` branch."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "input": {
+                "anyOf": [
+                    {"$ref": "#/$defs/Payload"},
+                    {"type": "null"},
+                ],
+                "default": None,
+            },
+        },
+        "$defs": {
+            "Payload": {
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["input"]
+    assert prop["$ref"] == "#/$defs/Payload"
+    assert "default" not in prop
+    assert prop.get("nullable") is True
+
+
+def test_ref_description_preserved():
+    """Annotation siblings that strict backends allow should survive."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "payload": {
+                "$ref": "#/$defs/Payload",
+                "description": "The payload",
+            },
+        },
+        "$defs": {
+            "Payload": {"type": "object", "properties": {}},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    payload = out[0]["function"]["parameters"]["properties"]["payload"]
+    assert payload["description"] == "The payload"
+    assert payload["$ref"] == "#/$defs/Payload"
 
 
 def test_empty_tools_list_returns_empty():
@@ -491,3 +620,142 @@ def test_strip_responses_mixed_formats():
     # Verify structure preserved
     assert result[0]["function"]["parameters"]["type"] == "object"
     assert result[1]["parameters"]["type"] == "object"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# strip_slash_enum — reactive recovery when xAI's /v1/responses (and
+# /v1/chat/completions) grammar-compiler rejects enum values containing
+# a forward slash. Symptom: HTTP 400 "Invalid arguments passed to the
+# model" before any token is emitted. Most commonly hit by MCP-derived
+# tools whose enum lists HuggingFace IDs like "Qwen/Qwen3.5-0.8B".
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_strip_slash_enum_removes_huggingface_id_enum():
+    """enum containing HF-style 'owner/name' IDs → stripped."""
+    tools = [_tool("train", {
+        "type": "object",
+        "properties": {
+            "model": {
+                "type": "string",
+                "enum": ["Qwen/Qwen3.5-0.8B", "openai/gpt-oss-20b"],
+            },
+        },
+    })]
+    _, stripped = strip_slash_enum(tools)
+    assert stripped == 1
+    prop = tools[0]["function"]["parameters"]["properties"]["model"]
+    assert "enum" not in prop
+    # Type + description survive so the model still gets the prompting hint.
+    assert prop["type"] == "string"
+
+
+def test_strip_slash_enum_preserves_slashless_enum():
+    """enum without any '/' → preserved."""
+    tools = [_tool("pick", {
+        "type": "object",
+        "properties": {
+            "mode": {"type": "string", "enum": ["fast", "slow"]},
+        },
+    })]
+    _, stripped = strip_slash_enum(tools)
+    assert stripped == 0
+    assert tools[0]["function"]["parameters"]["properties"]["mode"]["enum"] == ["fast", "slow"]
+
+
+def test_strip_slash_enum_partial_match_strips_whole_enum():
+    """Any single value containing '/' triggers removal of the entire enum.
+
+    Rationale: if we kept the slashless values, the model could still pick
+    them, but xAI's grammar-compile failure is all-or-nothing on the enum
+    keyword — keeping a mixed-content enum would still 400. Drop it whole.
+    """
+    tools = [_tool("pick", {
+        "type": "object",
+        "properties": {
+            "target": {"type": "string", "enum": ["local", "hf://Qwen/Qwen3"]},
+        },
+    })]
+    _, stripped = strip_slash_enum(tools)
+    assert stripped == 1
+    assert "enum" not in tools[0]["function"]["parameters"]["properties"]["target"]
+
+
+def test_strip_slash_enum_responses_format():
+    """Responses-format tools (no `function` wrapper) are also handled."""
+    tools = [{
+        "type": "function",
+        "name": "mcp_prime_lab_train_model",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "enum": ["Qwen/Qwen3.5-0.8B", "meta-llama/Llama-3.2-1B-Instruct"],
+                },
+            },
+        },
+    }]
+    _, stripped = strip_slash_enum(tools)
+    assert stripped == 1
+    assert "enum" not in tools[0]["parameters"]["properties"]["model"]
+
+
+def test_strip_slash_enum_recurses_into_anyof():
+    """enum-with-slash inside an anyOf variant is also stripped."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "value": {
+                "anyOf": [
+                    {"type": "string", "enum": ["owner/repo"]},
+                    {"type": "null"},
+                ],
+            },
+        },
+    })]
+    _, stripped = strip_slash_enum(tools)
+    assert stripped == 1
+    variants = tools[0]["function"]["parameters"]["properties"]["value"]["anyOf"]
+    assert "enum" not in variants[0]
+    assert variants[0]["type"] == "string"
+
+
+def test_strip_slash_enum_is_idempotent():
+    """Second call on already-stripped tools is a no-op."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"m": {"type": "string", "enum": ["a/b"]}},
+    })]
+    _, first = strip_slash_enum(tools)
+    _, second = strip_slash_enum(tools)
+    assert first == 1
+    assert second == 0
+
+
+def test_strip_slash_enum_empty_returns_zero():
+    tools, stripped = strip_slash_enum([])
+    assert tools == []
+    assert stripped == 0
+
+
+def test_strip_slash_enum_none_returns_zero():
+    tools, stripped = strip_slash_enum(None)
+    assert tools is None
+    assert stripped == 0
+
+
+def test_strip_slash_enum_ignores_non_string_enum_values():
+    """Integer/boolean enum values can't contain '/' — leave them alone."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "level": {"type": "integer", "enum": [1, 2, 3]},
+            "flag": {"type": "boolean", "enum": [True, False]},
+        },
+    })]
+    _, stripped = strip_slash_enum(tools)
+    assert stripped == 0
+    props = tools[0]["function"]["parameters"]["properties"]
+    assert props["level"]["enum"] == [1, 2, 3]
+    assert props["flag"]["enum"] == [True, False]

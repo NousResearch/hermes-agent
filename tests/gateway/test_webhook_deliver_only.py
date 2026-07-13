@@ -14,8 +14,6 @@ Covers:
 """
 
 import asyncio
-import hashlib
-import hmac
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 

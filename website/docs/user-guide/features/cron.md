@@ -331,6 +331,50 @@ explicit other-chat deliveries) are never made continuable. The mirror is
 written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
 the conversation history alternation-safe across all model providers.
 
+#### Deferred decision cards
+
+A continuable LLM job can finish its work and leave a decision for later
+without blocking the scheduler. Set `attach_to_session: true` on a job delivered
+exactly to `origin`. When its completed report needs a choice, the cron runtime
+instructs the model to append one strict terminal control block:
+
+````text
+Readable completed report.
+
+```hermes-deferred-decisions
+{"version":1,"cards":[{"question":"Which rollout should continue?","choices":["Canary","Regional","Pause"]}]}
+```
+````
+
+The scheduler accepts at most three cards, each with one bounded single-line
+question and 2–4 unique bounded single-line choices. The control block is
+removed from the visible report. Telegram renders the choices using the same
+rich inline-button presentation as interactive clarification, but the cron run
+has already ended—no cron worker waits for the answer.
+
+This protocol is deliberately fail-closed:
+
+- It is honored only for explicit per-job `attach_to_session: true`, exact
+  `deliver: origin`, a matching origin chat/topic, and a live adapter that
+  implements deferred cards. The global `cron.mirror_delivery` setting alone
+  does not enable buttons.
+- The clean report and a readable form of its decisions must be mirrored into
+  the continuation session before cards become clickable. If mirroring or rich
+  delivery fails, the questions and choices are delivered as ordinary numbered
+  text.
+- Malformed blocks are delivered as ordinary text. Unsupported platforms get
+  a readable numbered-text form; no callback state is created.
+- A click is authorized against the gateway allowlist and bound to the stored
+  creator, platform, chat, and topic. It injects only the job name/id and the
+  selected canonical choice into that same session. It never executes a
+  command or tool directly, so normal reasoning and approval rules still apply.
+- Pending choices are profile-scoped, single-use, survive gateway restarts, and
+  expire safely after 24 hours. Stale or tampered callbacks do nothing.
+
+Cron still disables the `clarify`, `messaging`, and `cronjob` toolsets. Deferred
+cards are a delivery protocol for a finished run, not a way to make cron
+interactive.
+
 #### Flat, in-channel continuation (Slack)
 
 The thread-preferred behaviour above mints a dedicated thread on every

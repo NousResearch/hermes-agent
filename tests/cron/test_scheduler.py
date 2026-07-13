@@ -4571,7 +4571,15 @@ class TestCronContinuableSurfaceInChannel:
         mock_cfg.platforms = {Platform.SLACK: pconfig}
         return mock_cfg
 
-    def _run_inchannel_delivery(self, extra, adapter, *, mirror_ok=True, origin=None):
+    def _run_inchannel_delivery(
+        self,
+        extra,
+        adapter,
+        *,
+        mirror_ok=True,
+        origin=None,
+        opened_thread_id=None,
+    ):
         """Drive _deliver_result down the live-adapter path for a Slack
         channel-origin job with the given ``extra`` config. Returns the
         _open_continuable_cron_thread mock and the mirror_to_session mock."""
@@ -4609,6 +4617,7 @@ class TestCronContinuableSurfaceInChannel:
              patch("cron.scheduler._open_continuable_cron_thread") as open_thread_mock, \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
              patch("gateway.mirror.mirror_to_session", return_value=mirror_ok) as mirror_mock:
+            open_thread_mock.return_value = opened_thread_id
             _deliver_result(
                 job, "Here is today's brief.",
                 adapters={Platform.SLACK: adapter}, loop=loop,
@@ -4661,6 +4670,70 @@ class TestCronContinuableSurfaceInChannel:
         assert mirror_mock.call_args[0][0] == "slack"
         assert mirror_mock.call_args[0][1] == "C123"
         assert "Here is today's brief." in mirror_mock.call_args[0][2]
+
+    def test_secondary_profile_in_channel_seed_matches_callback_resume(self):
+        """A newly-created flat session must stay in the owning profile's
+        namespace so its deferred callback resumes the row that was seeded."""
+        from gateway.config import Platform
+        from gateway.session import SessionSource, build_session_key
+
+        adapter = self._slack_adapter(supports_inchannel=True)
+        self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"},
+            adapter,
+            origin={
+                "platform": "slack",
+                "chat_id": "C123",
+                "user_id": "U_HUMAN",
+                "profile": "reviewer",
+            },
+        )
+
+        seeded = adapter._session_store.get_or_create_session.call_args.args[0]
+        callback_source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            user_id="U_HUMAN",
+            profile="reviewer",
+        )
+        assert seeded.profile == "reviewer"
+        assert build_session_key(seeded, profile=seeded.profile) == build_session_key(
+            callback_source, profile=callback_source.profile
+        )
+
+    def test_secondary_profile_dedicated_thread_seed_matches_callback_resume(self):
+        """A newly-opened dedicated thread must preserve the origin profile in
+        both its stored source and the namespace resumed by its callback."""
+        from gateway.config import Platform
+        from gateway.session import SessionSource, build_session_key
+
+        adapter = self._slack_adapter(supports_inchannel=True)
+        self._run_inchannel_delivery(
+            {"cron_continuable_surface": "thread"},
+            adapter,
+            opened_thread_id="9001",
+            origin={
+                "platform": "slack",
+                "chat_id": "C123",
+                "user_id": "U_HUMAN",
+                "profile": "reviewer",
+            },
+        )
+
+        seeded = adapter._session_store.get_or_create_session.call_args.args[0]
+        callback_source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="thread",
+            user_id="system:cron",
+            thread_id="9001",
+            profile="reviewer",
+        )
+        assert seeded.profile == "reviewer"
+        assert build_session_key(seeded, profile=seeded.profile) == build_session_key(
+            callback_source, profile=callback_source.profile
+        )
 
     def test_in_channel_dm_seeds_dm_session(self):
         """1:1 DM (chat_id starts with 'D'): the flat session is created with

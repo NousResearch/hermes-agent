@@ -4,6 +4,7 @@ Mirrors test_telegram_approval_buttons.py for the new ``send_clarify`` and
 ``cl:`` callback dispatch added in feat/clarify-gateway-buttons.
 """
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -50,7 +51,7 @@ _ensure_telegram_mock()
 
 from plugins.platforms.telegram import adapter as telegram_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 
 
 def _make_adapter(extra=None):
@@ -1051,5 +1052,413 @@ class TestBaseAdapterClarifyFallback:
             session_key="s",
         )
         assert "Free form?" in adapter.sent[0]
-        # No numbered list — choices were empty
         assert "1." not in adapter.sent[0]
+
+
+# ===========================================================================
+# Deferred cron decisions — nonblocking render and durable callback dispatch
+# ===========================================================================
+
+
+def _register_deferred_card(
+    decisions,
+    *,
+    chat_id="1200",
+    thread_id=None,
+    callback_user_id="700",
+    session_chat_type="dm",
+    session_user_id="700",
+    message_id="301",
+    profile=None,
+):
+    from gateway.session import SessionSource, build_session_key
+
+    session_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id=chat_id,
+        chat_type=session_chat_type,
+        user_id=session_user_id,
+        thread_id=thread_id,
+        profile=profile,
+    )
+    session_key = build_session_key(session_source)
+    record = decisions.register_cards(
+        job={"id": "a1b2c3d4e5f6", "name": "Release review"},
+        cards=[
+            decisions.DeferredDecisionCard("Proceed?", ("Proceed", "Pause"))
+        ],
+        platform="telegram",
+        chat_id=chat_id,
+        thread_id=thread_id,
+        user_id=callback_user_id,
+        context_ready=True,
+        session_source=session_source.to_dict(),
+        session_key=session_key,
+    )[0]
+    assert decisions.bind_message(record, message_id)
+    return record, session_source, session_key
+
+
+def _deferred_query(record, *, chat_type, message_id="301", user_id=700):
+    query = AsyncMock()
+    query.data = f"cd:a1b2c3d4e5f6:{record.decision_id}:0:1"
+    query.message = MagicMock()
+    query.message.chat_id = int(record.chat_id)
+    query.message.message_id = int(message_id)
+    query.message.message_thread_id = (
+        int(record.thread_id) if record.thread_id is not None else None
+    )
+    query.message.chat.type = chat_type
+    query.message.text = "Proceed?"
+    query.from_user = MagicMock(id=user_id, first_name="Operator")
+    return query
+
+
+class TestTelegramDeferredDecision:
+    @pytest.mark.asyncio
+    async def test_render_reuses_rich_choice_card_styles_without_other(self, monkeypatch):
+        adapter = _make_adapter()
+        message = MagicMock(message_id=301)
+        adapter._bot.send_message = AsyncMock(return_value=message)
+        buttons = []
+
+        class _Button:
+            def __init__(self, text, *, callback_data, style=None):
+                self.text = text
+                self.callback_data = callback_data
+                self.style = style
+                buttons.append(self)
+
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _Button)
+        monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", lambda rows: rows)
+
+        result = await adapter.send_deferred_decision(
+            chat_id="1200",
+            question="Choose the rollout.",
+            choices=["✅ Canary", "❌ Pause"],
+            job_id="a1b2c3d4e5f6",
+            decision_id="1122334455667788",
+            card_index=1,
+            metadata={"thread_id": "44"},
+        )
+
+        assert result.success is True
+        assert [(b.text, b.callback_data, b.style) for b in buttons] == [
+            ("✅ Canary", "cd:a1b2c3d4e5f6:1122334455667788:1:0", "success"),
+            ("❌ Pause", "cd:a1b2c3d4e5f6:1122334455667788:1:1", "danger"),
+        ]
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert kwargs["parse_mode"] == telegram_adapter.ParseMode.MARKDOWN_V2
+        assert kwargs["message_thread_id"] == 44
+        assert "Choose the rollout" in kwargs["text"]
+        assert all(len(b.callback_data.encode("utf-8")) <= 64 for b in buttons)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        (
+            "chat_id",
+            "thread_id",
+            "session_chat_type",
+            "session_user_id",
+            "query_chat_type",
+        ),
+        [
+            ("-1001200", "44", "group", "700", "supergroup"),
+            ("1200", None, "dm", "700", "private"),
+            ("1200", "55", "thread", "system:cron", "private"),
+        ],
+        ids=["group-forum-topic", "dm-mirror", "new-private-continuation-topic"],
+    )
+    async def test_callback_routes_to_exact_persisted_session_source(
+        self,
+        tmp_path,
+        monkeypatch,
+        chat_id,
+        thread_id,
+        session_chat_type,
+        session_user_id,
+        query_chat_type,
+    ):
+        from cron import deferred_decisions as decisions
+        from gateway.session import build_session_key
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        record, persisted_source, session_key = _register_deferred_card(
+            decisions,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            session_chat_type=session_chat_type,
+            session_user_id=session_user_id,
+        )
+        decisions._reset_for_tests()
+
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+        adapter.__dict__["_is_callback_user_authorized"] = lambda *a, **k: True
+        query = _deferred_query(record, chat_type=query_chat_type)
+        update = MagicMock(callback_query=query)
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.internal is True
+        assert event.source.to_dict() == persisted_source.to_dict()
+        assert build_session_key(event.source) == session_key
+        assert event.metadata == {
+            "trusted_deferred_cron_decision": True,
+            "session_key": session_key,
+        }
+        assert event.text.startswith("Deferred cron decision response.\n")
+        assert "untrusted user data" in event.text
+        assert "job_id=a1b2c3d4e5f6" in event.text
+        assert "card_index=0" in event.text
+        assert "choice_index=1" in event.text
+        assert 'selected_label_json="Pause"' in event.text
+        assert "Release review" not in event.text
+        assert not event.text.startswith("/")
+        query.answer.assert_awaited_once()
+        query.edit_message_text.assert_awaited_once()
+        assert decisions.claim_choice(
+            job_id=record.job_id,
+            decision_id=record.decision_id,
+            card_index=0,
+            choice_index=1,
+            platform="telegram",
+            chat_id=chat_id,
+            thread_id=thread_id,
+            user_id="700",
+            message_id="301",
+        ) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("profile_allowlist", "global_allow_all", "authorized"),
+        [
+            ("700", False, True),
+            ("999", True, False),
+        ],
+        ids=["profile-owner-global-deny", "profile-revoked-global-allow"],
+    )
+    async def test_multiplex_callback_uses_owning_profile_authorization(
+        self,
+        tmp_path,
+        monkeypatch,
+        profile_allowlist,
+        global_allow_all,
+        authorized,
+    ):
+        from cron import deferred_decisions as decisions
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+        if global_allow_all:
+            monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+        else:
+            monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        profile_home = tmp_path / "profiles" / "owner"
+        profile_home.mkdir(parents=True)
+        (profile_home / ".env").write_text(
+            f"TELEGRAM_ALLOWED_USERS={profile_allowlist}\n",
+            encoding="utf-8",
+        )
+
+        record, _, _ = _register_deferred_card(
+            decisions,
+            profile="owner",
+        )
+        adapter = _make_adapter()
+        runner = object.__new__(GatewayRunner)
+        runner.adapters = {}
+        runner._profile_adapters = {"owner": {Platform.TELEGRAM: adapter}}
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved.return_value = False
+        runner.pairing_stores = {"owner": runner.pairing_store}
+        runner._handle_message = AsyncMock()
+        adapter.set_message_handler(runner._make_profile_message_handler("owner"))
+        adapter.handle_message = AsyncMock()
+        adapter.set_authorization_check(
+            runner._make_adapter_auth_check(
+                Platform.TELEGRAM,
+                profile="owner",
+                profile_home=profile_home,
+            )
+        )
+        query = _deferred_query(record, chat_type="private")
+
+        await adapter._handle_callback_query(
+            MagicMock(callback_query=query), MagicMock()
+        )
+
+        if authorized:
+            adapter.handle_message.assert_awaited_once()
+            assert adapter.handle_message.await_args.args[0].source.profile == "owner"
+        else:
+            adapter.handle_message.assert_not_awaited()
+            assert "not authorized" in query.answer.await_args.kwargs["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_callback_rejects_unauthorized_without_consuming_choice(
+        self, tmp_path, monkeypatch
+    ):
+        from cron import deferred_decisions as decisions
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        record, _, _ = _register_deferred_card(decisions)
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+        adapter.__dict__["_is_callback_user_authorized"] = lambda *a, **k: False
+        query = AsyncMock()
+        query.data = f"cd:a1b2c3d4e5f6:{record.decision_id}:0:0"
+        query.message = MagicMock(chat_id=1200, message_thread_id=None)
+        query.message.message_id = 301
+        query.message.chat.type = "private"
+        query.from_user = MagicMock(id=700, first_name="Operator")
+
+        await adapter._handle_callback_query(
+            MagicMock(callback_query=query), MagicMock()
+        )
+
+        adapter.handle_message.assert_not_awaited()
+        assert "not authorized" in query.answer.await_args.kwargs["text"].lower()
+        assert decisions.claim_choice(
+            job_id="a1b2c3d4e5f6",
+            decision_id=record.decision_id,
+            card_index=0,
+            choice_index=0,
+            platform="telegram",
+            chat_id="1200",
+            thread_id=None,
+            user_id="700",
+            message_id="301",
+        ) is not None
+
+    @pytest.mark.asyncio
+    async def test_callback_is_bound_to_the_exact_card_message(
+        self, tmp_path, monkeypatch
+    ):
+        from cron import deferred_decisions as decisions
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        record, _, _ = _register_deferred_card(decisions, message_id="301")
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+        adapter.__dict__["_is_callback_user_authorized"] = lambda *a, **k: True
+        query = _deferred_query(record, chat_type="private", message_id="999")
+
+        await adapter._handle_callback_query(
+            MagicMock(callback_query=query), MagicMock()
+        )
+
+        adapter.handle_message.assert_not_awaited()
+        query.edit_message_text.assert_not_awaited()
+        assert decisions.claim_choice(
+            job_id=record.job_id,
+            decision_id=record.decision_id,
+            card_index=0,
+            choice_index=1,
+            platform="telegram",
+            chat_id="1200",
+            thread_id=None,
+            user_id="700",
+            message_id="301",
+        ) is not None
+
+    @pytest.mark.asyncio
+    async def test_dispatch_failure_releases_claim_without_marking_selected(
+        self, tmp_path, monkeypatch
+    ):
+        from cron import deferred_decisions as decisions
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        record, _, _ = _register_deferred_card(decisions)
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock(side_effect=RuntimeError("enqueue failed"))
+        adapter.__dict__["_is_callback_user_authorized"] = lambda *a, **k: True
+        query = _deferred_query(record, chat_type="private")
+
+        await adapter._handle_callback_query(
+            MagicMock(callback_query=query), MagicMock()
+        )
+
+        query.edit_message_text.assert_not_awaited()
+        assert "try again" in query.answer.await_args.kwargs["text"].lower()
+        reclaimed = decisions.claim_choice(
+            job_id=record.job_id,
+            decision_id=record.decision_id,
+            card_index=0,
+            choice_index=1,
+            platform="telegram",
+            chat_id="1200",
+            thread_id=None,
+            user_id="700",
+            message_id="301",
+        )
+        assert reclaimed is not None
+        assert decisions.release_choice(reclaimed)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_dispatch_releases_claim_without_marking_selected(
+        self, tmp_path, monkeypatch
+    ):
+        from cron import deferred_decisions as decisions
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        record, _, _ = _register_deferred_card(decisions)
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock(side_effect=asyncio.CancelledError)
+        adapter.__dict__["_is_callback_user_authorized"] = lambda *a, **k: True
+        query = _deferred_query(record, chat_type="private")
+
+        with pytest.raises(asyncio.CancelledError):
+            await adapter._handle_callback_query(
+                MagicMock(callback_query=query), MagicMock()
+            )
+
+        query.edit_message_text.assert_not_awaited()
+        reclaimed = decisions.claim_choice(
+            job_id=record.job_id,
+            decision_id=record.decision_id,
+            card_index=0,
+            choice_index=1,
+            platform="telegram",
+            chat_id="1200",
+            thread_id=None,
+            user_id="700",
+            message_id="301",
+        )
+        assert reclaimed is not None
+        assert decisions.release_choice(reclaimed)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "callback",
+        [
+            "cd:bad:1122334455667788:0:0",
+            "cd:a1b2c3d4e5f6:bad:0:0",
+            "cd:a1b2c3d4e5f6:1122334455667788:x:0",
+            "cd:a1b2c3d4e5f6:1122334455667788:0:9",
+            "cd:a1b2c3d4e5f6:1122334455667788:0:0:extra",
+        ],
+    )
+    async def test_malformed_or_stale_callback_fails_closed(self, callback):
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+        adapter.__dict__["_is_callback_user_authorized"] = lambda *a, **k: True
+        query = AsyncMock()
+        query.data = callback
+        query.message = MagicMock(chat_id=1200, message_thread_id=None)
+        query.message.chat.type = "private"
+        query.from_user = MagicMock(id=700, first_name="Operator")
+
+        await adapter._handle_callback_query(
+            MagicMock(callback_query=query), MagicMock()
+        )
+
+        adapter.handle_message.assert_not_awaited()
+        assert any(
+            word in query.answer.await_args.kwargs["text"].lower()
+            for word in ("invalid", "expired", "resolved")
+        )

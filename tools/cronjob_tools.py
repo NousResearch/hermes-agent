@@ -288,6 +288,12 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if origin_platform and origin_chat_id:
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
+        session_key = get_session_env("HERMES_SESSION_KEY") or None
+        chat_type = None
+        if session_key:
+            key_parts = session_key.split(":", 4)
+            if len(key_parts) >= 4 and key_parts[2] == origin_platform:
+                chat_type = key_parts[3]
         if thread_id:
             logger.debug(
                 "Cron origin captured thread_id=%s for %s:%s",
@@ -297,6 +303,7 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             "platform": origin_platform,
             "chat_id": origin_chat_id,
             "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
+            "chat_type": chat_type,
             "thread_id": thread_id,
             # Captured so an opt-in delivery mirror (cron.mirror_delivery /
             # attach_to_session) can resolve the exact participant's session in
@@ -304,6 +311,9 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             # send_message, which passes HERMES_SESSION_USER_ID to
             # gateway.mirror.mirror_to_session. Harmless for DMs/shared sessions.
             "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
+            "user_name": get_session_env("HERMES_SESSION_USER_NAME") or None,
+            "profile": get_session_env("HERMES_SESSION_PROFILE") or None,
+            "session_key": session_key,
         }
     return None
 
@@ -983,7 +993,9 @@ On update, passing skills=[] clears attached skills.
 
 NOTE: The agent's final response is auto-delivered to the target. Put the primary
 user-facing content in the final response. Cron jobs run autonomously with no user
-present — they cannot ask questions or request clarification.
+present — they cannot block to ask questions or request clarification. An explicitly
+continuable origin job (attach_to_session=true) may finish and leave bounded deferred
+decision cards for the user; the cron runtime supplies the strict response format.
 
 Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
     "parameters": {

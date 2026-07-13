@@ -1080,7 +1080,14 @@ Hardening invariants:
 
 Cron deliveries are **not** mirrored into the target gateway session —
 they land in their own cron session with a header/footer frame so the
-main conversation's message-role alternation stays intact.
+main conversation's message-role alternation stays intact. The explicit
+exception is a continuable origin job (`attach_to_session: true`): its clean
+delivery is mirrored as a labelled user turn at the turn boundary. Such a job
+may append a strict `hermes-deferred-decisions` final-response block; the
+scheduler validates it at the delivery boundary and a capable live adapter can
+render nonblocking cards only after that mirror succeeds. Cron still disables
+`clarify`, `messaging`, and `cronjob`; callbacks re-enter the origin session as
+trusted choice data and never execute actions directly.
 
 ---
 

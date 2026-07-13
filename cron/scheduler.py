@@ -596,7 +596,7 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
       3. False.
 
     When enabled, the cron's final output is appended to the target session as
-    an assistant turn via the existing ``gateway.mirror.mirror_to_session`` —
+    a labelled user turn via the existing ``gateway.mirror.mirror_to_session`` —
     the same primitive ``send_message`` uses — so the next user reply in that
     chat sees the brief in context (no "what is Task #2?" amnesia). This is
     alternation- and cache-safe: the append lands at a turn boundary between
@@ -655,7 +655,7 @@ def _maybe_mirror_cron_delivery(
     user_id: Optional[str] = None,
     *,
     enabled: bool = False,
-) -> None:
+) -> bool:
     """Best-effort mirror of a cron delivery into the origin chat's session.
 
     No-op unless ``enabled`` (resolved once by the caller, and already scoped to
@@ -674,10 +674,10 @@ def _maybe_mirror_cron_delivery(
     as a silent no-op — never a synthetic session is created.
     """
     if not enabled:
-        return
+        return False
     text = (mirror_text or "").strip()
     if not text:
-        return
+        return False
     try:
         from gateway.mirror import mirror_to_session
 
@@ -703,6 +703,7 @@ def _maybe_mirror_cron_delivery(
                 "Job '%s': mirrored delivery into %s:%s session transcript",
                 job.get("id", "?"), platform_name, chat_id,
             )
+            return True
         else:
             logger.debug(
                 "Job '%s': delivery mirror skipped for %s:%s "
@@ -714,6 +715,7 @@ def _maybe_mirror_cron_delivery(
             "Job '%s': delivery mirror failed for %s:%s: %s",
             job.get("id", "?"), platform_name, chat_id, e,
         )
+    return False
 
 
 def _open_continuable_cron_thread(
@@ -750,6 +752,115 @@ def _open_continuable_cron_thread(
             "DM-session mirror: %s",
             job.get("id", "?"), getattr(adapter, "name", "?"), e,
         )
+    return None
+
+
+def _cron_thread_session_source(
+    platform_name: str,
+    chat_id: str,
+    thread_id: str,
+    *,
+    chat_name: Optional[str] = None,
+    profile: Optional[str] = None,
+):
+    """Build the one source shape used to seed and later resume a new thread."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    return SessionSource(
+        platform=Platform(platform_name.lower()),
+        chat_id=str(chat_id),
+        chat_name=chat_name,
+        chat_type="thread",
+        user_id="system:cron",
+        user_name="Cron",
+        thread_id=str(thread_id),
+        profile=profile,
+    )
+
+
+def _cron_channel_session_source(
+    platform_name: str,
+    chat_id: str,
+    *,
+    is_dm: bool,
+    user_id: Optional[str],
+    chat_name: Optional[str] = None,
+    profile: Optional[str] = None,
+):
+    """Build the one source shape used to seed and resume a flat delivery."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    return SessionSource(
+        platform=Platform(platform_name.lower()),
+        chat_id=str(chat_id),
+        chat_name=chat_name,
+        chat_type="dm" if is_dm else "group",
+        user_id=str(user_id) if user_id else None,
+        thread_id=None,
+        profile=profile,
+    )
+
+
+def _origin_session_source(
+    origin: dict,
+    platform_name: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    user_id: Optional[str],
+):
+    """Recreate the source shape captured when the origin session scheduled a job."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    chat_type = str(origin.get("chat_type") or "").strip().lower()
+    captured_key = str(origin.get("session_key") or "")
+    if not chat_type and captured_key:
+        key_parts = captured_key.split(":", 4)
+        if len(key_parts) >= 4 and key_parts[2] == platform_name.lower():
+            chat_type = key_parts[3]
+    if not chat_type:
+        if platform_name.lower() == "telegram":
+            chat_type = "group" if str(chat_id).startswith("-") else "dm"
+        else:
+            chat_type = "thread" if thread_id is not None else "dm"
+    return SessionSource(
+        platform=Platform(platform_name.lower()),
+        chat_id=str(chat_id),
+        chat_name=origin.get("chat_name"),
+        chat_type=chat_type,
+        user_id=str(user_id) if user_id is not None else None,
+        user_name=origin.get("user_name"),
+        thread_id=str(thread_id) if thread_id is not None else None,
+        profile=origin.get("profile"),
+    )
+
+
+def _session_key_for_source(adapter, source, *, captured_key: Optional[str] = None) -> Optional[str]:
+    """Return the exact seeded key, preferring the origin's captured key."""
+    if captured_key:
+        return str(captured_key)
+    session_store = getattr(adapter, "_session_store", None)
+    generator = getattr(session_store, "_generate_session_key", None)
+    if callable(generator):
+        try:
+            generated = generator(source)
+            if generated:
+                return str(generated)
+        except Exception:
+            pass
+    try:
+        from gateway.session import build_session_key
+
+        extra = getattr(getattr(adapter, "config", None), "extra", {}) or {}
+        return build_session_key(
+            source,
+            group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+            profile=getattr(source, "profile", None),
+        )
+    except Exception:
         return None
 
 
@@ -761,7 +872,8 @@ def _seed_cron_thread_session(
     thread_id: str,
     mirror_text: str,
     chat_name: Optional[str] = None,
-) -> None:
+    profile: Optional[str] = None,
+) -> bool:
     """Seed the freshly-opened cron thread's session with the brief.
 
     Without this the brief is *visible* in the new thread but absent from any
@@ -778,27 +890,21 @@ def _seed_cron_thread_session(
     """
     text = (mirror_text or "").strip()
     if not text:
-        return
+        return False
     try:
-        from gateway.config import Platform
-        from gateway.session import SessionSource
-
         session_store = getattr(adapter, "_session_store", None)
         if session_store is not None:
             try:
-                platform_enum = Platform(platform_name.lower())
-            except (ValueError, KeyError):
-                platform_enum = None
-            if platform_enum is not None:
-                dest_source = SessionSource(
-                    platform=platform_enum,
-                    chat_id=str(chat_id),
+                dest_source = _cron_thread_session_source(
+                    platform_name,
+                    chat_id,
+                    thread_id,
                     chat_name=chat_name,
-                    chat_type="thread",
-                    user_id="system:cron",
-                    user_name="Cron",
-                    thread_id=str(thread_id),
+                    profile=profile,
                 )
+            except (ValueError, KeyError):
+                dest_source = None
+            if dest_source is not None:
                 # Ensure the thread-keyed session row exists so the mirror has
                 # a target and the user's later reply joins the same session.
                 session_store.get_or_create_session(dest_source)
@@ -810,7 +916,7 @@ def _seed_cron_thread_session(
         # in-thread reply produces assistant→user→... off a phantom assistant
         # message. Pass the seed user_id so the mirror resolves the exact
         # thread-keyed session row we just created.
-        mirror_to_session(
+        ok = mirror_to_session(
             platform_name,
             str(chat_id),
             f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}",
@@ -823,11 +929,13 @@ def _seed_cron_thread_session(
             "Job '%s': opened continuable thread %s on %s:%s and seeded the brief",
             job.get("id", "?"), thread_id, platform_name, chat_id,
         )
+        return bool(ok)
     except Exception as e:
         logger.debug(
             "Job '%s': seeding cron thread session failed for %s:%s:%s: %s",
             job.get("id", "?"), platform_name, chat_id, thread_id, e,
         )
+    return False
 
 
 def _seed_cron_channel_session(
@@ -840,6 +948,7 @@ def _seed_cron_channel_session(
     is_dm: bool,
     user_id: Optional[str],
     chat_name: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> bool:
     """Seed the FLAT (thread_id=None) session for an ``in_channel`` cron delivery.
 
@@ -878,25 +987,21 @@ def _seed_cron_channel_session(
     if not text:
         return False
     try:
-        from gateway.config import Platform
-        from gateway.session import SessionSource
-
         chat_type = "dm" if is_dm else "group"
         session_store = getattr(adapter, "_session_store", None)
         if session_store is not None:
             try:
-                platform_enum = Platform(platform_name.lower())
-            except (ValueError, KeyError):
-                platform_enum = None
-            if platform_enum is not None:
-                dest_source = SessionSource(
-                    platform=platform_enum,
-                    chat_id=str(chat_id),
+                dest_source = _cron_channel_session_source(
+                    platform_name,
+                    chat_id,
+                    is_dm=is_dm,
+                    user_id=user_id,
                     chat_name=chat_name,
-                    chat_type=chat_type,
-                    user_id=str(user_id) if user_id else None,
-                    thread_id=None,  # flat — the whole-channel/DM session
+                    profile=profile,
                 )
+            except (ValueError, KeyError):
+                dest_source = None
+            if dest_source is not None:
                 # Create the flat session row so the mirror has a target and the
                 # user's later plain reply joins the SAME session.
                 session_store.get_or_create_session(dest_source)
@@ -1346,6 +1451,154 @@ def _confirm_adapter_delivery(send_result) -> bool:
     return bool(getattr(send_result, "success"))
 
 
+def _deferred_decision_fallback_text(cards) -> str:
+    """Render validated decision cards as deterministic ordinary text."""
+    sections = []
+    for card in cards:
+        lines = [f"Decision: {card.question}"]
+        lines.extend(
+            f"  {index}. {choice}"
+            for index, choice in enumerate(card.choices, start=1)
+        )
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections)
+
+
+def _send_deferred_decision_cards(
+    *,
+    job: dict,
+    cards,
+    adapter,
+    chat_id: str,
+    thread_id: Optional[str],
+    user_id: Optional[str],
+    platform_name: str,
+    metadata: Optional[dict],
+    loop,
+    context_ready: bool,
+    session_source: Optional[dict],
+    session_key: Optional[str],
+) -> list:
+    """Persist and render cards, returning any cards needing text fallback."""
+    if (
+        not context_ready
+        or not session_source
+        or not session_key
+        or loop is None
+    ):
+        return list(cards)
+    try:
+        from cron.deferred_decisions import register_cards
+
+        records = register_cards(
+            job=job,
+            cards=cards,
+            platform=platform_name,
+            chat_id=str(chat_id),
+            thread_id=thread_id,
+            user_id=user_id,
+            context_ready=True,
+            session_source=session_source,
+            session_key=session_key,
+        )
+    except Exception:
+        logger.warning(
+            "Job '%s': deferred decision persistence failed closed",
+            job.get("id", "?"),
+            exc_info=True,
+        )
+        return list(cards)
+    if len(records) != len(cards):
+        return list(cards)
+
+    from cron.deferred_decisions import bind_message, discard_records
+
+    def settle_send(future, record, card_index: int) -> bool:
+        """Finalize one accepted card send without ever duplicating an in-flight send."""
+        try:
+            result = future.result()
+        except BaseException:
+            discard_records([record])
+            logger.warning(
+                "Job '%s': deferred decision card %d delivery failed",
+                job.get("id", "?"), card_index, exc_info=True,
+            )
+            return False
+        if not _confirm_adapter_delivery(result):
+            discard_records([record])
+            return False
+        message_id = getattr(result, "message_id", None)
+        if message_id is None or not bind_message(record, message_id):
+            # The card may already be visible. Revoke its unbound durable state,
+            # but do not send a numbered duplicate beside a successful card.
+            discard_records([record])
+            logger.warning(
+                "Job '%s': deferred decision card %d delivered without a durable "
+                "message binding; callback revoked",
+                job.get("id", "?"), card_index,
+            )
+        return True
+
+    failed = []
+    from agent.async_utils import safe_schedule_threadsafe
+
+    for card_index, (card, record) in enumerate(zip(cards, records)):
+        future = safe_schedule_threadsafe(
+            adapter.send_deferred_decision(
+                chat_id=str(chat_id),
+                question=card.question,
+                choices=list(card.choices),
+                job_id=str(job.get("id") or ""),
+                decision_id=record.decision_id,
+                card_index=card_index,
+                metadata=metadata,
+            ),
+            loop,
+        )
+        if future is None:
+            discard_records([record])
+            failed.append(card)
+            continue
+        try:
+            result = future.result(timeout=30)
+        except TimeoutError:
+            if future.cancel():
+                discard_records([record])
+                failed.append(card)
+                logger.warning(
+                    "Job '%s': deferred decision card %d timed out before dispatch; "
+                    "using numbered fallback",
+                    job.get("id", "?"), card_index,
+                )
+            else:
+                # Already running: the send may complete after this sync caller
+                # returns. A fallback now would race into a visible duplicate.
+                future.add_done_callback(
+                    lambda completed, saved_record=record, saved_index=card_index: (
+                        settle_send(completed, saved_record, saved_index)
+                    )
+                )
+                logger.warning(
+                    "Job '%s': deferred decision card %d timed out in flight; "
+                    "skipping numbered fallback to avoid a duplicate",
+                    job.get("id", "?"), card_index,
+                )
+            continue
+        except Exception:
+            discard_records([record])
+            logger.warning(
+                "Job '%s': deferred decision card %d delivery failed",
+                job.get("id", "?"), card_index, exc_info=True,
+            )
+            failed.append(card)
+            continue
+        completed = concurrent.futures.Future()
+        completed.set_result(result)
+        if not settle_send(completed, record, card_index):
+            failed.append(card)
+    return failed
+
+
 def _is_channel_dm_topic(
     runtime_adapter: Any,
     chat_id: Any,
@@ -1438,6 +1691,56 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
+    # Deferred decisions are an explicit final-response protocol, not a tool.
+    # Parse once. Native cards require the exact eligible delivery; valid but
+    # unsupported protocols become readable numbered text, while malformed
+    # blocks retain the original response byte-for-byte.
+    deferred_decisions = None
+    delivery_body = content
+    standalone_delivery_body = content
+    try:
+        from cron.deferred_decisions import (
+            delivery_is_eligible,
+            parse_deferred_decisions,
+        )
+
+        parsed_decisions = parse_deferred_decisions(content)
+        if parsed_decisions is not None:
+            only_target = targets[0] if len(targets) == 1 else None
+            candidate_adapter = None
+            if only_target is not None:
+                try:
+                    candidate_platform = Platform(str(only_target["platform"]).lower())
+                    candidate_adapter = (adapters or {}).get(candidate_platform)
+                except (ValueError, KeyError):
+                    candidate_adapter = None
+            if (
+                parsed_decisions.visible_text.strip()
+                and only_target is not None
+                and delivery_is_eligible(job, only_target, candidate_adapter)
+            ):
+                deferred_decisions = parsed_decisions
+                delivery_body = parsed_decisions.visible_text
+                fallback = _deferred_decision_fallback_text(parsed_decisions.cards)
+                standalone_delivery_body = "\n\n".join(
+                    part for part in (parsed_decisions.visible_text, fallback) if part
+                )
+            else:
+                # A valid protocol on an unsupported/ineligible delivery is
+                # presentation data only: render it as ordinary numbered text.
+                # No callback is persisted and no control action is honored.
+                fallback = _deferred_decision_fallback_text(parsed_decisions.cards)
+                delivery_body = "\n\n".join(
+                    part for part in (parsed_decisions.visible_text, fallback) if part
+                )
+                standalone_delivery_body = delivery_body
+    except Exception:
+        logger.warning(
+            "Job '%s': deferred decision parsing failed closed; delivering ordinary text",
+            job.get("id", "?"),
+            exc_info=True,
+        )
+
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
@@ -1449,23 +1752,32 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     except Exception:
         pass
 
-    if wrap_response:
+    def wrap_delivery(body: str) -> str:
+        if not wrap_response:
+            return body
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
-        delivery_content = (
+        return (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
-            f"{content}\n\n"
+            f"{body}\n\n"
             f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
         )
-    else:
-        delivery_content = content
+
+    delivery_content = wrap_delivery(delivery_body)
+    standalone_delivery_content = wrap_delivery(standalone_delivery_body)
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    standalone_media_files, cleaned_standalone_delivery_content = (
+        BasePlatformAdapter.extract_media(standalone_delivery_content)
+    )
+    standalone_media_files = BasePlatformAdapter.filter_media_delivery_paths(
+        standalone_media_files
+    )
 
     # Resolve the delivery-mirror gate ONCE (default off). When on, each
     # successful delivery is also appended to the target chat's gateway session
@@ -1477,7 +1789,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         mirror_enabled = False
     mirror_text = ""
     if mirror_enabled:
-        _, mirror_text = BasePlatformAdapter.extract_media(content)
+        mirror_source = delivery_body
+        if deferred_decisions is not None:
+            # The raw control block is never persisted into conversation
+            # history. Preserve its meaning as readable context so a later
+            # canonical choice is not ambiguous to the resumed agent.
+            mirror_source = "\n\n".join((
+                delivery_body,
+                _deferred_decision_fallback_text(deferred_decisions.cards),
+            ))
+        _, mirror_text = BasePlatformAdapter.extract_media(mirror_source)
         mirror_text = (mirror_text or "").strip()
 
     try:
@@ -1852,15 +2173,34 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
+                    context_ready = False
+                    context_source = None
+                    context_session_key = None
                     # Seed the thread session only now that delivery into it
                     # succeeded (deferred from thread-open above).
                     if opened_thread_id and not thread_seeded:
-                        _seed_cron_thread_session(
+                        thread_seeded = _seed_cron_thread_session(
                             job, runtime_adapter, platform_name, chat_id,
                             opened_thread_id, mirror_text,
                             chat_name=origin.get("chat_name"),
+                            profile=origin.get("profile"),
                         )
-                        thread_seeded = True
+                        context_ready = thread_seeded
+                        if context_ready:
+                            try:
+                                context_source = _cron_thread_session_source(
+                                    platform_name,
+                                    str(chat_id),
+                                    str(opened_thread_id),
+                                    chat_name=origin.get("chat_name"),
+                                    profile=origin.get("profile"),
+                                )
+                                context_session_key = _session_key_for_source(
+                                    runtime_adapter, context_source
+                                )
+                            except Exception:
+                                context_source = None
+                                context_session_key = None
                     # in_channel surface: CREATE + seed the flat channel/DM
                     # session (the shipped mirror only appends to an existing
                     # session — the flat row is otherwise absent for a
@@ -1871,12 +2211,110 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             mirror_text, is_dm=is_dm_target,
                             user_id=origin_user_id,
                             chat_name=origin.get("chat_name"),
+                            profile=origin.get("profile"),
                         )
-                    _maybe_mirror_cron_delivery(
-                        job, platform_name, chat_id, mirror_text,
-                        thread_id=thread_id, user_id=origin_user_id,
-                        enabled=mirror_this_target and not thread_seeded and not inchannel_seeded,
+                        context_ready = inchannel_seeded
+                        if context_ready:
+                            try:
+                                context_source = _cron_channel_session_source(
+                                    platform_name,
+                                    str(chat_id),
+                                    is_dm=is_dm_target,
+                                    user_id=origin_user_id,
+                                    chat_name=origin.get("chat_name"),
+                                    profile=origin.get("profile"),
+                                )
+                                context_session_key = _session_key_for_source(
+                                    runtime_adapter, context_source
+                                )
+                            except Exception:
+                                context_source = None
+                                context_session_key = None
+                    if not context_ready:
+                        context_ready = _maybe_mirror_cron_delivery(
+                            job, platform_name, chat_id, mirror_text,
+                            thread_id=thread_id, user_id=origin_user_id,
+                            enabled=(
+                                mirror_this_target
+                                and not thread_seeded
+                                and not inchannel_seeded
+                            ),
+                        )
+                        if context_ready:
+                            try:
+                                context_source = _origin_session_source(
+                                    origin,
+                                    platform_name,
+                                    str(chat_id),
+                                    str(thread_id) if thread_id is not None else None,
+                                    (
+                                        str(origin_user_id)
+                                        if origin_user_id is not None
+                                        else None
+                                    ),
+                                )
+                                context_session_key = _session_key_for_source(
+                                    runtime_adapter,
+                                    context_source,
+                                    captured_key=origin.get("session_key"),
+                                )
+                            except Exception:
+                                context_source = None
+                                context_session_key = None
+                    context_ready = bool(
+                        context_ready and context_source and context_session_key
                     )
+
+                    if deferred_decisions is not None:
+                        failed_cards = _send_deferred_decision_cards(
+                            job=job,
+                            cards=deferred_decisions.cards,
+                            adapter=runtime_adapter,
+                            chat_id=str(chat_id),
+                            thread_id=(str(thread_id) if thread_id is not None else None),
+                            user_id=(
+                                str(origin_user_id)
+                                if origin_user_id is not None else None
+                            ),
+                            platform_name=platform_name,
+                            metadata=route_metadata,
+                            loop=loop,
+                            context_ready=context_ready,
+                            session_source=(
+                                context_source.to_dict()
+                                if context_source is not None
+                                else None
+                            ),
+                            session_key=context_session_key,
+                        )
+                        if failed_cards:
+                            fallback_text = _deferred_decision_fallback_text(failed_cards)
+                            from agent.async_utils import safe_schedule_threadsafe
+
+                            fallback_future = safe_schedule_threadsafe(
+                                router._deliver_to_platform(
+                                    route_target,
+                                    fallback_text,
+                                    route_metadata,
+                                ),
+                                loop,
+                            )
+                            fallback_ok = False
+                            if fallback_future is not None:
+                                try:
+                                    fallback_result = fallback_future.result(timeout=30)
+                                    fallback_ok = _confirm_adapter_delivery(fallback_result)
+                                except Exception:
+                                    logger.warning(
+                                        "Job '%s': deferred decision text fallback failed",
+                                        job.get("id", "?"),
+                                        exc_info=True,
+                                    )
+                            if not fallback_ok:
+                                delivery_errors.append(
+                                    f"deferred decision fallback delivery failed for "
+                                    f"{platform_name}:{chat_id}"
+                                )
             except Exception as e:
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
                 if not any(err_msg in err for err in target_errors):
@@ -1900,7 +2338,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.extend(target_errors)
                 continue
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                cleaned_standalone_delivery_content,
+                thread_id=thread_id,
+                media_files=standalone_media_files,
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError as run_err:
@@ -1929,7 +2374,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        future = pool.submit(
+                            asyncio.run,
+                            _send_to_platform(
+                                platform,
+                                pconfig,
+                                chat_id,
+                                cleaned_standalone_delivery_content,
+                                thread_id=thread_id,
+                                media_files=standalone_media_files,
+                            ),
+                        )
                         result = future.result(timeout=30)
                     finally:
                         pool.shutdown(wait=False)
@@ -2273,6 +2728,19 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "Never combine [SILENT] with content — either report your "
         "findings normally, or say [SILENT] and nothing more.]\n\n"
     )
+    if job.get("attach_to_session") is True:
+        cron_hint += (
+            "[DEFERRED DECISIONS: Finish the scheduled work autonomously; do "
+            "not wait for a reply. If the completed result leaves a concrete "
+            "decision for the user, you may append exactly one terminal fenced "
+            "JSON block after the readable report using this strict shape: "
+            "```hermes-deferred-decisions\n"
+            '{"version":1,"cards":[{"question":"...","choices":["...","..."]}]}\n'
+            "```. Use 1-3 cards, each with one single-line question and 2-4 "
+            "unique single-line choices. Do not put commands, tool calls, free-"
+            "text options, or any other keys in the block. Omit the block when "
+            "no decision is needed.]\n\n"
+        )
     prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")

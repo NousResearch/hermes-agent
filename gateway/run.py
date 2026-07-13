@@ -8636,7 +8636,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
-            adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
+            adapter.set_authorization_check(
+                self._make_adapter_auth_check(
+                    adapter.platform,
+                    profile=profile_name,
+                    profile_home=profile_home,
+                )
+            )
             adapter._busy_text_mode = self._busy_text_mode
 
             try:
@@ -8813,6 +8819,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _make_adapter_auth_check(
         self,
         platform: Platform,
+        *,
+        profile: Optional[str] = None,
+        profile_home: Optional["Path"] = None,
     ) -> Callable[[str, Optional[str], Optional[str]], bool]:
         """Build a platform-bound auth callback for adapter use.
 
@@ -8824,8 +8833,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         The returned callback delegates to :meth:`_is_user_authorized` so the
         full auth chain — platform allowlists, group allowlists, pairing
-        store, allow-all flags — stays the single source of truth.
+        store, allow-all flags — stays the single source of truth. Multiplexed
+        adapters persist their profile's isolated authorization environment so
+        later callbacks cannot inherit the active profile's process globals.
         """
+        profile_auth_env = None
+        if profile_home is not None:
+            from agent.secret_scope import build_profile_secret_scope
+
+            profile_auth_env = build_profile_secret_scope(profile_home)
+
         def check(
             user_id: str,
             chat_type: Optional[str] = None,
@@ -8838,8 +8855,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_id=chat_id or "",
                 chat_type=chat_type or "group",
                 user_id=user_id,
+                profile=profile,
             )
-            return self._is_user_authorized(source)
+            if profile_auth_env is None:
+                return self._is_user_authorized(source)
+
+            def profile_getenv(name: str, default: Optional[str] = None) -> Optional[str]:
+                return profile_auth_env.get(name, default)
+
+            return self._is_user_authorized(source, getenv=profile_getenv)
         return check
 
 

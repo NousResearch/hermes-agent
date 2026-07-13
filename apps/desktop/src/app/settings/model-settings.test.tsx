@@ -1,5 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { MoaConfigResponse } from '@/hermes'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
@@ -18,6 +21,7 @@ const setModelAssignment = vi.fn()
 const getRecommendedDefaultModel = vi.fn()
 const saveMoaModels = vi.fn()
 const setEnvVar = vi.fn()
+const setApiRequestProfile = vi.fn()
 const getHermesConfigRecord = vi.fn()
 const saveHermesConfig = vi.fn()
 const startManualProviderOAuth = vi.fn()
@@ -31,6 +35,7 @@ vi.mock('@/hermes', () => ({
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
+  setApiRequestProfile: (profile: string) => setApiRequestProfile(profile),
   getHermesConfigRecord: () => getHermesConfigRecord(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config)
 }))
@@ -40,6 +45,7 @@ vi.mock('@/store/onboarding', () => ({
 }))
 
 beforeEach(() => {
+  saveMoaModels.mockReset()
   getGlobalModelInfo.mockResolvedValue({ provider: 'nous', model: 'hermes-4' })
   getGlobalModelOptions.mockResolvedValue({
     providers: [
@@ -59,6 +65,7 @@ beforeEach(() => {
   getMoaModels.mockResolvedValue(null)
   setModelAssignment.mockResolvedValue({ provider: 'nous', model: 'hermes-4', gateway_tools: [] })
   getRecommendedDefaultModel.mockResolvedValue({ provider: 'nous', model: 'hermes-4', free_tier: null })
+  saveMoaModels.mockImplementation(async body => body)
   setEnvVar.mockResolvedValue({ ok: true })
   getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'normal' } })
   saveHermesConfig.mockResolvedValue({ ok: true })
@@ -66,13 +73,99 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.clearAllMocks()
 })
 
 async function renderModelSettings() {
   const { ModelSettings } = await import('./model-settings')
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-  return render(<ModelSettings />)
+  return render(
+    <QueryClientProvider client={client}>
+      <ModelSettings />
+    </QueryClientProvider>
+  )
+}
+
+function createMoaConfig(): MoaConfigResponse {
+  const reference = { provider: 'nous', model: 'hermes-4' }
+  const aggregator = { provider: 'nous', model: 'hermes-4-mini' }
+
+  return {
+    default_preset: 'default',
+    active_preset: 'default',
+    presets: {
+      default: {
+        aggregator: { ...aggregator },
+        aggregator_temperature: 0.2,
+        enabled: true,
+        max_tokens: 4096,
+        reference_models: [{ ...reference }],
+        reference_temperature: 0.7
+      }
+    },
+    aggregator: { ...aggregator },
+    aggregator_temperature: 0.2,
+    enabled: true,
+    max_tokens: 4096,
+    reference_models: [{ ...reference }],
+    reference_temperature: 0.7
+  }
+}
+
+function configureMoa() {
+  getGlobalModelOptions.mockResolvedValue({
+    providers: [
+      {
+        name: 'Nous',
+        slug: 'nous',
+        models: ['hermes-4', 'hermes-4-mini'],
+        authenticated: true,
+        capabilities: {}
+      },
+      {
+        name: 'OpenRouter',
+        slug: 'openrouter',
+        models: ['anthropic/claude-sonnet-4.5'],
+        authenticated: true,
+        capabilities: {}
+      }
+    ]
+  })
+  getMoaModels.mockResolvedValue(createMoaConfig())
+}
+
+function getMoaRow(name: string): HTMLElement {
+  const row = screen.getByText(name).parentElement
+
+  if (!row) {
+    throw new Error(`Could not find controls for ${name}`)
+  }
+
+  return row
+}
+
+function selectMoaValue(rowName: string, selectIndex: number, optionName: string) {
+  const trigger = within(getMoaRow(rowName)).getAllByRole('combobox')[selectIndex]
+  fireEvent.click(trigger)
+  fireEvent.click(screen.getByRole('option', { name: optionName }))
+}
+
+async function flushMoaAutosave() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(601)
+  })
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(res => {
+    resolve = res
+  })
+
+  return { promise, resolve }
 }
 
 describe('ModelSettings', () => {
@@ -177,5 +270,92 @@ describe('ModelSettings', () => {
 
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
+  })
+
+  describe('MoA autosave', () => {
+    it('keeps a new reference draft and cancels its pending save when changing provider clears the model', async () => {
+      configureMoa()
+      saveMoaModels.mockResolvedValue(createMoaConfig())
+      await renderModelSettings()
+      await screen.findByText('Mixture of Agents')
+      vi.useFakeTimers()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add reference model' }))
+      expect(screen.getByText('Reference 2')).toBeTruthy()
+
+      selectMoaValue('Reference 2', 0, 'OpenRouter')
+      expect(getMoaRow('Reference 2').textContent).toContain('openrouter ·')
+      await flushMoaAutosave()
+
+      expect(saveMoaModels).not.toHaveBeenCalled()
+      expect(screen.getByText('Reference 2')).toBeTruthy()
+    })
+
+    it('saves a new reference once after its replacement provider and model are complete', async () => {
+      configureMoa()
+      await renderModelSettings()
+      await screen.findByText('Mixture of Agents')
+      vi.useFakeTimers()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add reference model' }))
+      selectMoaValue('Reference 2', 0, 'OpenRouter')
+      await flushMoaAutosave()
+      expect(saveMoaModels).not.toHaveBeenCalled()
+
+      selectMoaValue('Reference 2', 1, 'anthropic/claude-sonnet-4.5')
+      await flushMoaAutosave()
+
+      expect(saveMoaModels).toHaveBeenCalledTimes(1)
+      expect(saveMoaModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presets: expect.objectContaining({
+            default: expect.objectContaining({
+              reference_models: [
+                { provider: 'nous', model: 'hermes-4' },
+                { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5' }
+              ]
+            })
+          })
+        })
+      )
+    })
+
+    it('does not save while an aggregator provider change leaves its model empty', async () => {
+      configureMoa()
+      await renderModelSettings()
+      await screen.findByText('Mixture of Agents')
+      vi.useFakeTimers()
+
+      selectMoaValue('Aggregator', 0, 'OpenRouter')
+      expect(getMoaRow('Aggregator').textContent).toContain('openrouter ·')
+      await flushMoaAutosave()
+
+      expect(saveMoaModels).not.toHaveBeenCalled()
+      expect(getMoaRow('Aggregator').textContent).toContain('openrouter ·')
+    })
+
+    it('does not let an older save response overwrite a newer local draft', async () => {
+      configureMoa()
+      const pendingSave = createDeferred<MoaConfigResponse>()
+      saveMoaModels.mockImplementationOnce(() => pendingSave.promise)
+      await renderModelSettings()
+      await screen.findByText('Mixture of Agents')
+      vi.useFakeTimers()
+
+      selectMoaValue('Reference 1', 1, 'hermes-4-mini')
+      await flushMoaAutosave()
+      expect(saveMoaModels).toHaveBeenCalledTimes(1)
+
+      selectMoaValue('Reference 1', 0, 'OpenRouter')
+      expect(getMoaRow('Reference 1').textContent).toContain('openrouter ·')
+
+      const olderSavedConfig = saveMoaModels.mock.calls[0][0] as MoaConfigResponse
+      await act(async () => {
+        pendingSave.resolve(olderSavedConfig)
+        await pendingSave.promise
+      })
+
+      expect(getMoaRow('Reference 1').textContent).toContain('openrouter ·')
+    })
   })
 })

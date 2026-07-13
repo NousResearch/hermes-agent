@@ -1201,15 +1201,12 @@ def _setup_tts_provider(config: dict):
                 selected = "edge"
 
         if selected == "supertonic":
+            from tools.tts_tool import SUPERTONIC_LANGUAGES, SUPERTONIC_VOICES
+
             st = dict(tts_config.get("supertonic", {}))
 
             # --- Language ---
-            # All 31 Supertonic languages (+ ``na`` neutral) for validating custom input.
-            all_langs = {
-                "en", "ko", "ja", "ar", "bg", "cs", "da", "de", "el", "es", "et", "fi",
-                "fr", "hi", "hr", "hu", "id", "it", "lt", "lv", "nl", "pl", "pt", "ro",
-                "ru", "sk", "sl", "sv", "tr", "uk", "vi", "na",
-            }
+            all_langs = set(SUPERTONIC_LANGUAGES)
             curated = [
                 ("en", "English"), ("pl", "Polish"), ("de", "German"), ("es", "Spanish"),
                 ("fr", "French"), ("it", "Italian"), ("pt", "Portuguese"), ("uk", "Ukrainian"),
@@ -1236,7 +1233,7 @@ def _setup_tts_provider(config: dict):
                 "M1 — male", "M2 — male", "M3 — male", "M4 — male", "M5 — male",
                 "F1 — female", "F2 — female", "F3 — female", "F4 — female", "F5 — female",
             ]
-            voice_ids = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"]
+            voice_ids = list(SUPERTONIC_VOICES)
             cur_voice = str(st.get("voice", "M1"))
             voice_default = voice_ids.index(cur_voice) if cur_voice in voice_ids else 0
             v_idx = prompt_choice("Select voice:", voice_choices, voice_default)
@@ -1263,7 +1260,10 @@ def _setup_tts_provider(config: dict):
                 "Very High (12 steps — best quality, slowest)",
             ]
             quality_steps = [5, 8, 10, 12]
-            cur_steps = int(st.get("total_steps", 8))
+            try:
+                cur_steps = int(st.get("total_steps", 8))
+            except (TypeError, ValueError):
+                cur_steps = 8
             quality_default = quality_steps.index(cur_steps) if cur_steps in quality_steps else 1
             q_idx = prompt_choice("Select quality:", quality_choices, quality_default)
             st["total_steps"] = quality_steps[q_idx]

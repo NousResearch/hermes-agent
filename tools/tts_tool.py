@@ -2276,8 +2276,15 @@ def _generate_supertonic_tts(text: str, output_path: str, tts_config: Dict[str, 
     TTS = _import_supertonic()
 
     st_config = tts_config.get("supertonic", {}) if isinstance(tts_config, dict) else {}
-    voice = st_config.get("voice") or DEFAULT_SUPERTONIC_VOICE
-    lang = st_config.get("lang") or DEFAULT_SUPERTONIC_LANG
+    voice = str(st_config.get("voice") or DEFAULT_SUPERTONIC_VOICE).upper()
+    if voice not in SUPERTONIC_VOICES:
+        logger.warning("[Supertonic] Unknown voice %r; using %s", voice, DEFAULT_SUPERTONIC_VOICE)
+        voice = DEFAULT_SUPERTONIC_VOICE
+
+    lang = str(st_config.get("lang") or DEFAULT_SUPERTONIC_LANG).lower()
+    if lang not in SUPERTONIC_LANGUAGES:
+        logger.warning("[Supertonic] Unknown language %r; using %s", lang, DEFAULT_SUPERTONIC_LANG)
+        lang = DEFAULT_SUPERTONIC_LANG
     voice_style_path = st_config.get("voice_style_path")
 
     # Clamp tunables to the engine's supported ranges.

@@ -13,17 +13,22 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
-  rmSync
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
 } from 'node:fs'
 import { isMain } from './utils.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(here, '..')
 const require = createRequire(import.meta.url)
+const DARWIN_SHORT_HELPER_RELATIVE_PATH = '../../../bin/spawn-helper'
 
 /**
  * Locate node-pty's package root via real module resolution, so this
@@ -72,9 +77,74 @@ function copyBuildRelease(srcDir, destDir) {
       continue
     }
     if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name))
+      copyFileWithMode(join(srcDir, entry.name), join(destDir, entry.name))
     }
   }
+}
+
+function copyFileWithMode(srcPath, destPath) {
+  cpSync(srcPath, destPath)
+  chmodSync(destPath, statSync(srcPath).mode)
+}
+
+export function patchUnixTerminalForDarwinShortHelper(source) {
+  const marker = "helperPath = helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked');"
+  if (!source.includes(marker) || source.includes(DARWIN_SHORT_HELPER_RELATIVE_PATH)) {
+    return source
+  }
+
+  const injected = `${marker}
+if (process.platform === 'darwin') {
+    const shortHelperPath = path.resolve(__dirname, '${DARWIN_SHORT_HELPER_RELATIVE_PATH}');
+    try {
+        if (fs.existsSync(shortHelperPath)) {
+            helperPath = shortHelperPath;
+        }
+    } catch {
+        // Ignore fallback lookup failures and keep node-pty's default helper path.
+    }
+}`
+  return source.replace(marker, injected)
+}
+
+function patchStagedUnixTerminal(destRoot) {
+  const unixTerminalPath = join(destRoot, 'lib', 'unixTerminal.js')
+  if (!existsSync(unixTerminalPath)) {
+    return false
+  }
+
+  const original = readFileSync(unixTerminalPath, 'utf8')
+  const patched = patchUnixTerminalForDarwinShortHelper(original)
+  if (patched === original) {
+    return false
+  }
+
+  writeFileSync(unixTerminalPath, patched, 'utf8')
+  return true
+}
+
+export function stageDarwinShortSpawnHelper(
+  destRoot,
+  { platform, arch, shortHelperPath = resolve(projectRoot, 'dist/bin/spawn-helper') } = {}
+) {
+  rmSync(shortHelperPath, { force: true })
+  if (platform !== 'darwin') {
+    return null
+  }
+
+  const candidates = [
+    join(destRoot, 'prebuilds', `${platform}-${arch}`, 'spawn-helper'),
+    join(destRoot, 'build', 'Release', 'spawn-helper')
+  ]
+  const sourcePath = candidates.find(existsSync)
+  if (!sourcePath) {
+    return null
+  }
+
+  mkdirSync(dirname(shortHelperPath), { recursive: true })
+  copyFileWithMode(sourcePath, shortHelperPath)
+  patchStagedUnixTerminal(destRoot)
+  return shortHelperPath
 }
 
 export function stageNodePty({ platform = process.platform, arch = process.arch } = {}) {
@@ -110,11 +180,11 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
         continue
       }
       if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        copyFileWithMode(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
         continue
       }
       if (entry.name === 'spawn-helper') {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        copyFileWithMode(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
       }
     }
   } else {
@@ -125,6 +195,8 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
         `node-pty's published prebuilds cover ${platform}-${arch}.`
     )
   }
+
+  stageDarwinShortSpawnHelper(destRoot, { platform, arch })
 
   console.log(`[stage-native-deps] staged node-pty (${platform}-${arch}) -> ${destRoot}`)
   return destRoot

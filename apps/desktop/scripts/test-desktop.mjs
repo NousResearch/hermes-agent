@@ -89,10 +89,13 @@ function exists(target) {
 // dist/node_modules/node-pty, and dist/** is asarUnpacked (see package.json
 // build.asarUnpack), so in a packaged build it lands under
 // resources/app.asar.unpacked/dist/node_modules/node-pty — reachable by a bare
-// require('node-pty') from the bundle. Upstream node-pty 1.x is N-API based and
-// ships per-arch prebuilts under prebuilds/<platform>-<arch>/; nix/local builds
-// instead compile from source into build/Release/. The stage script copies
-// whichever is present, so we accept either as the native payload.
+// require('node-pty') from the bundle. On darwin we also ship a shorter
+// dist/bin/spawn-helper fallback and patch unixTerminal.js to prefer it, so
+// macOS 26 doesn't trip over the deeply nested helper path inside the app
+// bundle. Upstream node-pty 1.x is N-API based and ships per-arch prebuilts
+// under prebuilds/<platform>-<arch>/; nix/local builds instead compile from
+// source into build/Release/. The stage script copies whichever is present, so
+// we accept either as the native payload.
 function expectedNativeDepPaths() {
   const root = path.join(APP.resourcesPath, 'app.asar.unpacked', 'dist', 'node_modules', 'node-pty')
   const prebuildsDir = path.join(root, 'prebuilds', `${PLATFORM}-${ARCH}`)
@@ -101,7 +104,9 @@ function expectedNativeDepPaths() {
     packageJson: path.join(root, 'package.json'),
     prebuildsDir,
     buildReleaseDir,
-    libIndex: path.join(root, 'lib', 'index.js')
+    libIndex: path.join(root, 'lib', 'index.js'),
+    shortHelperPath: path.join(APP.resourcesPath, 'app.asar.unpacked', 'dist', 'bin', 'spawn-helper'),
+    unixTerminal: path.join(root, 'lib', 'unixTerminal.js')
   }
 }
 
@@ -356,6 +361,13 @@ function validateBundle() {
       .find(exists)
     if (!spawnHelper) {
       die(`Missing node-pty spawn-helper (required on darwin) in: ${nativeBinaryDirs.join(', ')}`)
+    }
+    if (!exists(native.shortHelperPath)) {
+      die(`Missing short-path darwin spawn-helper fallback: ${native.shortHelperPath}`)
+    }
+    const unixTerminal = fs.readFileSync(native.unixTerminal, 'utf8')
+    if (!unixTerminal.includes('../../../bin/spawn-helper')) {
+      die(`Missing darwin short-helper fallback patch in ${native.unixTerminal}`)
     }
   }
 

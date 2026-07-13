@@ -2011,7 +2011,10 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(
+    script_path: str,
+    job_profile: str | None = None,
+) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2037,12 +2040,23 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        job_profile: If set, resolve relative scripts against the
+            specified profile's scripts dir instead of the active
+            HERMES_HOME.  This ensures a job tagged ``"profile": "X"``
+            always finds its scripts under ``~/.hermes/profiles/X/scripts/``
+            regardless of which profile context the scheduler is running in
+            (#54288).
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    scripts_dir = _get_hermes_home() / "scripts"
+    if job_profile:
+        from hermes_constants import get_default_hermes_root
+
+        scripts_dir = get_default_hermes_root() / "profiles" / job_profile / "scripts"
+    else:
+        scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
@@ -2188,7 +2202,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path)
+            success, script_output = _run_job_script(
+                script_path, job_profile=job.get("profile")
+            )
         if success:
             if script_output:
                 prompt = (
@@ -2542,7 +2558,9 @@ def run_job(
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script(
+                script_path, job_profile=job.get("profile")
+            )
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2689,7 +2707,7 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        prerun_script = _run_job_script(script_path, job_profile=job.get("profile"))
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(

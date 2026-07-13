@@ -33,7 +33,13 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
-from utils import atomic_replace, _preserve_file_mode, _restore_file_mode
+from utils import (
+    atomic_replace,
+    _preserve_file_mode,
+    _preserve_file_owner,
+    _restore_file_mode,
+    _restore_file_owner,
+)
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -765,12 +771,13 @@ class MemoryStore:
         concurrent readers see an empty file. Atomic rename avoids this:
         readers always see either the old complete file or the new one.
 
-        Preserves existing file permissions so group-shared deployments
-        (e.g. NixOS, Docker volumes) don't lose their permission bits
-        after every memory update (#22889).
+        Preserves existing file permissions and ownership so group-shared
+        deployments (e.g. NixOS, Docker volumes) don't lose access after
+        every memory update (#22889).
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         original_mode = _preserve_file_mode(path)
+        original_owner = _preserve_file_owner(path)
         try:
             # Write to temp file in same directory (same filesystem for atomic rename)
             fd, tmp_path = tempfile.mkstemp(
@@ -782,7 +789,9 @@ class MemoryStore:
                     f.flush()
                     os.fsync(f.fileno())
                 real_path = atomic_replace(tmp_path, path)
-                _restore_file_mode(Path(real_path), original_mode)
+                real_path_obj = Path(real_path)
+                _restore_file_owner(real_path_obj, original_owner)
+                _restore_file_mode(real_path_obj, original_mode)
             except BaseException:
                 # Clean up temp file on any failure
                 try:
@@ -1152,7 +1161,6 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 

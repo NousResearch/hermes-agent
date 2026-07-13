@@ -11,6 +11,8 @@ import stat
 import tempfile
 from pathlib import Path
 
+import pytest
+
 
 class TestMemoryPermissionPreservation:
     """Tests that MemoryStore preserves existing file permissions."""
@@ -104,6 +106,34 @@ class TestMemoryPermissionPreservation:
                 MemoryStore._write_file(p, [f"entry {i}"])
                 after = stat.S_IMODE(p.stat().st_mode)
                 assert after == 0o664, f"Write {i+1} changed permissions: {oct(after)}"
+
+    def test_write_file_restores_owner_on_real_symlink_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Symlinked files should restore uid/gid on the real target."""
+        if os.name != "posix":
+            pytest.skip("POSIX-only")
+
+        from tools.memory_tool import MemoryStore
+
+        real = tmp_path / "MEMORY.md"
+        link = tmp_path / "memory-link.md"
+        real.write_text("old content", encoding="utf-8")
+        link.symlink_to(real)
+
+        chown_calls: list[tuple[Path, int, int]] = []
+        monkeypatch.setattr(
+            "tools.memory_tool._preserve_file_owner", lambda _path: (123, 456)
+        )
+        monkeypatch.setattr(
+            "utils.os.chown",
+            lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
+        )
+
+        MemoryStore._write_file(link, ["new entry"])
+
+        assert link.is_symlink()
+        assert chown_calls == [(real, 123, 456)]
 
 
 if __name__ == "__main__":

@@ -8336,7 +8336,12 @@ def _install_hangup_protection(gateway_mode: bool = False):
         state["installed"] = True
     except Exception:
         # Leave stdio untouched on any setup failure.  Update continues
-        # without mirroring.
+        # without mirroring.  If the streams were partially replaced
+        # (wrapping succeeded but state["installed"] wasn't set), restore
+        # them so the test's isinstance check doesn't get confused.
+        if state.get("log_file") is not None and not state.get("installed"):
+            sys.stdout = state.get("prev_stdout", sys.stdout)
+            sys.stderr = state.get("prev_stderr", sys.stderr)
         state["log_file"] = None
 
     return state

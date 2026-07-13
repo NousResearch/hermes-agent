@@ -74,6 +74,13 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
             metadata["slack_team_id"] = str(scope_id)
     if not metadata:
         return None
+# Forward chat_type so adapters can apply per-chat-class routing rules
+    # (e.g. Feishu must never reply-in-thread on DMs even when the gateway
+    # stamps a routing thread_id). Each adapter falls back to its own
+    # resolution when the key is absent.
+    source_chat_type = getattr(source, "chat_type", None)
+    if source_chat_type is not None and "chat_type" not in metadata:
+        metadata["chat_type"] = str(source_chat_type)
     if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)

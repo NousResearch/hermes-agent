@@ -4627,24 +4627,20 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_type = (md.get("chat_type") or "").strip().lower()
         is_dm = chat_type in {"p2p", "dm", "direct_message"}
         reply_in_thread_enabled = bool(self.config.extra.get("reply_in_thread", True))
+        # Note: we intentionally do NOT try to detect "synthetic" thread_ids
+        # by comparing ``reply_to_message_id`` against ``thread_id``. Inbound
+        # processing maps ``root_id`` into BOTH fields for genuine root-topic
+        # replies (``plugins/platforms/feishu/adapter.py`` ~3252), so an
+        # equality check would mistakenly suppress real topic replies.
+        # The chat_type DM rule + the ``extra.reply_in_thread`` knob are the
+        # two sufficient signals the adapter needs.
         reply_in_thread = bool(thread_id) and reply_in_thread_enabled and not is_dm
 
-        # Only reply-in-thread (use the reply API) when we *also* have a real
-        # reply anchor. The Slack adapter detects synthetic threads by
-        # checking thread_id == reply_to and falls back to a direct channel
-        # reply. We mirror that heuristic: when the only reply anchor and
-        # the thread_id are the same identifier, the thread stamp was a
-        # routing-only synth and we should land the message at the thread
-        # root, not open a reply chain.
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
-        anchored_thread_id = md.get("reply_to_message_id")
-        synthetic_thread_only = bool(thread_id) and bool(anchored_thread_id) and str(
-            anchored_thread_id
-        ) == str(thread_id)
 
-        if effective_reply_to and reply_in_thread and not synthetic_thread_only:
+        if effective_reply_to and reply_in_thread:
             body = self._build_reply_message_body(
                 content=payload,
                 msg_type=msg_type,
@@ -4660,7 +4656,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # reply chain that opens a fresh thread. Critically, DM targets
         # must NOT use thread_id as receive_id either — that would create
         # a fresh p2p topic inside the DM.
-        if thread_id and not synthetic_thread_only and not is_dm:
+        if thread_id and not is_dm:
             body = self._build_create_message_body(
                 receive_id=thread_id,
                 msg_type=msg_type,

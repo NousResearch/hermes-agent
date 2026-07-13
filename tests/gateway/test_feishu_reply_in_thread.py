@@ -6,14 +6,21 @@ These tests pin down the behaviour that:
    lives in a Feishu topic still uses the reply API with ``reply_in_thread=True``.
 2. When ``reply_in_thread`` is explicitly disabled via the platform ``extra``
    config, a reply to a top-level channel message skips the reply-in-thread
-   path entirely — the response lands in the main chat, not a synthetic
-   thread (mirrors the Slack adapter's behaviour at
-   ``plugins/platforms/slack/adapter.py`` lines 1435+).
+   path entirely — the response lands in the main chat (mirrors the Slack
+   adapter's behaviour at ``plugins/platforms/slack/adapter.py`` lines 1435+).
 3. When the target is a Feishu DM (``chat_type`` in metadata is ``"p2p"`` /
    ``"dm"``), the adapter must NEVER reply-in-thread even if ``reply_in_thread``
    is left at its default — the Feishu reply API renders reply_in_thread=true
    as a fresh discussion surface in p2p chats, which the client then shows
    as a "started a thread" UX.
+4. A genuine root-topic reply (where ``thread_id`` equals
+   ``reply_to_message_id`` because inbound maps ``root_id`` into both) still
+   uses the reply API. The adapter must NOT try to detect "synthetic" threads
+   via that equality check — it would suppress real topic replies.
+5. The primary final-reply path (which routes through
+   ``gateway.platforms.base._thread_metadata_for_source``) carries
+   ``chat_type`` into the metadata dict, so a p2p source with a routing
+   thread_id reaches the adapter as a DM and the rule in (3) fires.
 
 The original bug is summarised in
 ``plugins/platforms/feishu/adapter.py::_send_raw_message``: the legacy
@@ -191,12 +198,16 @@ class TestFeishuReplyInThread(unittest.TestCase):
             )
 
     @patch.dict("os.environ", {}, clear=True)
-    def test_synthetic_thread_does_not_open_reply_chain(self):
-        """When the gateway stamps thread_id == reply_to_message_id (a purely
-        routing stamp where the only reply anchor and the thread_id point at
-        the same message), the adapter must detect the synthetic topic and
-        skip the reply API. This mirrors the Slack adapter's
-        ``thread_id == reply_to`` fallback (slack/adapter.py:1457)."""
+    def test_root_topic_reply_with_equality_still_uses_reply_api(self):
+        """Inbound processing maps ``root_id`` into BOTH ``thread_id`` and
+        ``reply_to_message_id`` (``plugins/platforms/feishu/adapter.py``
+        ~3252). For a genuine root-topic reply those two fields are
+        therefore equal. The adapter MUST treat this as a real topic
+        reply, not a synthetic thread stamp, and call the reply API.
+
+        This is the regression that nukes the previous
+        ``thread_id == reply_to_message_id`` synthetic detector.
+        """
         adapter = self._build_adapter()
         client = _ReplyCapturingClient()
         self._attach_client(adapter, client)
@@ -208,27 +219,100 @@ class TestFeishuReplyInThread(unittest.TestCase):
             result = asyncio.run(
                 adapter.send(
                     chat_id="oc_chat",
-                    content="hi",
-                    # A real reply anchor pointing at the synthetic thread
-                    # stamp — adapter should detect this as synthetic and
-                    # route via the create API instead.
-                    reply_to="omt-synthetic",
+                    content="root-topic reply",
+                    # Inbound lays these out identically for root-topic
+                    # replies — adapter must NOT short-circuit this.
+                    reply_to="omt-topic",
                     metadata={
-                        "thread_id": "omt-synthetic",
+                        "thread_id": "omt-topic",
+                        "reply_to_message_id": "omt-topic",
                         "chat_type": "group",
-                        "reply_to_message_id": "omt-synthetic",
                     },
                 )
             )
 
         self.assertTrue(result.success)
-        # Synthetic thread stamp must skip the reply API.
-        self.assertEqual(len(client.replies), 0)
+        self.assertEqual(
+            len(client.replies),
+            1,
+            "root-topic reply (thread_id == reply_to_message_id) must still "
+            "go through the reply API",
+        )
+        body = client.replies[0].request_body
+        self.assertTrue(
+            body.reply_in_thread,
+            "root-topic reply must set reply_in_thread=True",
+        )
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_dm_metadata_via_base_helper_keeps_p2p_final_reply_flat(self):
+        """End-to-end check that the *primary* final-reply path now feeds
+        ``chat_type`` to the adapter. The base helper
+        ``gateway.platforms.base._thread_metadata_for_source`` is what
+        the final-reply path uses to build the metadata dict; a p2p
+        source with a routing thread_id must produce metadata that the
+        adapter recognises as DM and routes flat, with no reply API
+        call and no ``thread_id`` as receive_id.
+        """
+        from types import SimpleNamespace
+        from gateway.platforms.base import _thread_metadata_for_source
+
+        adapter = self._build_adapter()
+        client = _ReplyCapturingClient()
+        self._attach_client(adapter, client)
+
+        source = SimpleNamespace(
+            platform="feishu",
+            chat_type="p2p",
+            thread_id="omt-leaked",
+            chat_id="oc_chat",
+        )
+        metadata = _thread_metadata_for_source(source, reply_to_message_id="om_parent")
+        # The helper must now carry chat_type through — that's the
+        # primary-path signal the adapter needs to enforce the DM rule.
+        self.assertEqual(
+            metadata.get("chat_type"),
+            "p2p",
+            "base helper must forward chat_type on the primary final-reply path",
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="hi there",
+                    reply_to="om_parent",
+                    metadata=metadata,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            len(client.replies),
+            0,
+            "p2p final reply must skip the reply API even with a routing thread_id",
+        )
         self.assertGreater(
             len(client.creates),
             0,
-            "synthetic thread stamp must route through message.create",
+            "p2p final reply must fall through to message.create",
         )
+        for req in client.creates:
+            body = getattr(req, "request_body", None)
+            receive_id = getattr(body, "receive_id", None) if body else None
+            self.assertNotEqual(
+                receive_id,
+                "omt-leaked",
+                "p2p create fallback must not address a leaked thread_id",
+            )
+            self.assertEqual(
+                receive_id,
+                "oc_chat",
+                "p2p final reply must address the chat_id, not the thread stamp",
+            )
 
 
 if __name__ == "__main__":

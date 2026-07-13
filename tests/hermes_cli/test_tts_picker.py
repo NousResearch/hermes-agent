@@ -185,3 +185,49 @@ class TestVisibleProvidersInjectsTTSPlugins:
         assert all(not row.get("tts_plugin_name") for row in visible)
         # Hardcoded rows still present (sample one of the always-visible ones)
         assert "Microsoft Edge TTS" in names
+
+
+class TestBuiltinTTSSurfaceParity:
+    """Every built-in TTS provider must be reachable from both CLI selection
+    surfaces — the interactive ``hermes setup tts`` menu and the ``hermes
+    tools`` picker (issue #35439).
+
+    ``tests/agent/test_tts_registry.py::TestBuiltinSync`` already guards the
+    two runtime-internal lists (``_BUILTIN_NAMES`` vs
+    ``BUILTIN_TTS_PROVIDERS``); these tests extend the same guarantee to the
+    user-facing menus, which had drifted: ``piper`` was missing from
+    ``setup tts`` and ``minimax`` / ``neutts`` were missing from the picker.
+    """
+
+    @staticmethod
+    def _picker_builtin_providers() -> set:
+        return {
+            row["tts_provider"]
+            for row in tools_config.TOOL_CATEGORIES["tts"]["providers"]
+            if row.get("tts_provider")
+        }
+
+    def test_setup_menu_offers_every_builtin_provider(self):
+        from hermes_cli.setup import SETUP_TTS_BUILTIN_PROVIDERS
+        from tools.tts_tool import BUILTIN_TTS_PROVIDERS
+
+        menu = set(SETUP_TTS_BUILTIN_PROVIDERS)
+        assert menu == BUILTIN_TTS_PROVIDERS, (
+            "`hermes setup tts` menu drifted from BUILTIN_TTS_PROVIDERS:\n"
+            f"  missing from menu: {sorted(BUILTIN_TTS_PROVIDERS - menu)}\n"
+            f"  extra in menu:     {sorted(menu - BUILTIN_TTS_PROVIDERS)}"
+        )
+
+    def test_setup_menu_has_no_duplicates(self):
+        from hermes_cli.setup import SETUP_TTS_BUILTIN_PROVIDERS
+
+        assert len(SETUP_TTS_BUILTIN_PROVIDERS) == len(set(SETUP_TTS_BUILTIN_PROVIDERS))
+
+    def test_tools_picker_offers_every_builtin_provider(self):
+        from tools.tts_tool import BUILTIN_TTS_PROVIDERS
+
+        missing = BUILTIN_TTS_PROVIDERS - self._picker_builtin_providers()
+        assert not missing, (
+            "`hermes tools` TTS picker is missing built-in providers: "
+            f"{sorted(missing)}"
+        )

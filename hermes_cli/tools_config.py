@@ -307,6 +307,15 @@ TOOL_CATEGORIES = {
                 "tts_provider": "gemini",
             },
             {
+                "name": "MiniMax TTS",
+                "badge": "paid",
+                "tag": "High quality with voice cloning",
+                "env_vars": [
+                    {"key": "MINIMAX_API_KEY", "prompt": "MiniMax API key", "url": "https://www.minimax.io/platform/user-center/basic-information/interface-key"},
+                ],
+                "tts_provider": "minimax",
+            },
+            {
                 "name": "KittenTTS",
                 "badge": "local · free",
                 "tag": "Lightweight local ONNX TTS (~25MB), no API key",
@@ -321,6 +330,14 @@ TOOL_CATEGORIES = {
                 "env_vars": [],
                 "tts_provider": "piper",
                 "post_setup": "piper",
+            },
+            {
+                "name": "NeuTTS",
+                "badge": "local · free",
+                "tag": "Local on-device, ~300MB model (needs espeak-ng)",
+                "env_vars": [],
+                "tts_provider": "neutts",
+                "post_setup": "neutts",
             },
         ],
     },
@@ -1331,6 +1348,38 @@ def _run_post_setup(post_setup_key: str):
         _print_info("    Default voice: en_US-lessac-medium (downloaded on first TTS call)")
         _print_info("    Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md")
         _print_info("    Switch voices by setting tts.piper.voice in ~/.hermes/config.yaml")
+
+    elif post_setup_key == "neutts":
+        try:
+            __import__("neutts")
+            _print_success("    neutts is already installed")
+        except ImportError:
+            # NeuTTS phonemizes through espeak-ng. The picker installs only
+            # Python packages, so warn (instead of sudo-installing a system
+            # package) and point at the platform command, mirroring how
+            # `hermes setup tts` documents the espeak-ng requirement.
+            if not (shutil.which("espeak-ng") or shutil.which("espeak")):
+                _print_warning("    neutts needs the espeak-ng system package for phonemization.")
+                if sys.platform == "darwin":
+                    _print_info("    Install with: brew install espeak-ng")
+                elif sys.platform == "win32":
+                    _print_info("    Install with: choco install espeak-ng")
+                else:
+                    _print_info("    Install with: sudo apt install espeak-ng")
+            _print_info("    Installing neutts (~50MB install + ~300MB model on first use)...")
+            try:
+                result = _pip_install(["-U", "neutts[all]", "--quiet"], timeout=300)
+                if result.returncode == 0:
+                    _print_success("    neutts installed")
+                else:
+                    _print_warning("    neutts install failed:")
+                    _print_info(f"      {(result.stderr or '').strip()[:300]}")
+                    _print_info("    Run manually: uv pip install -U 'neutts[all]'")
+                    return
+            except subprocess.TimeoutExpired:
+                _print_warning("    neutts install timed out (>5min)")
+                _print_info("    Run manually: uv pip install -U 'neutts[all]'")
+                return
 
     elif post_setup_key == "ddgs":
         try:

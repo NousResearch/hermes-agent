@@ -64,8 +64,10 @@ jobs:
               echo "triggered deploy on attempt $i"
               exit 0
             fi
-            echo "attempt $i to trigger deploy failed; backing off"
-            sleep $((5 * 2 ** (i - 1)))
+            if [ "$i" -lt 5 ]; then
+              echo "attempt $i to trigger deploy failed; backing off"
+              sleep $((5 * 2 ** (i - 1)))
+            fi
           done
           echo "::error::failed to trigger deploy-site.yml after 5 attempts"
           exit 1

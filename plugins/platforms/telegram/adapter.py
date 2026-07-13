@@ -581,6 +581,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
+        self._polling_generation: int = 0
+        self._polling_progress_event = asyncio.Event()
+        self._polling_progress_accepting: bool = False
+        self._polling_progress_verifier_task: Optional[asyncio.Task] = None
         self._polling_error_callback_ref = None
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
         # Consecutive heartbeat probes that saw queued updates the running
@@ -1892,6 +1896,43 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, exc_info=True,
             )
 
+    def _begin_polling_generation(self) -> tuple[int, asyncio.Event]:
+        """Start accepting progress for a new getUpdates polling generation."""
+        verifier = self._polling_progress_verifier_task
+        if verifier is not None and not verifier.done():
+            verifier.cancel()
+        self._polling_progress_verifier_task = None
+        self._polling_generation += 1
+        self._polling_progress_event = asyncio.Event()
+        self._polling_progress_accepting = True
+        self._send_path_degraded = True
+        return self._polling_generation, self._polling_progress_event
+
+    def _record_polling_progress(self, generation: int) -> None:
+        """Record successful getUpdates I/O for the current generation only."""
+        if not self._polling_progress_accepting:
+            return
+        if generation != self._polling_generation:
+            return
+        self._polling_progress_event.set()
+        self._polling_network_error_count = 0
+        self._send_path_degraded = False
+
+    def _instrument_polling_request(self, request):
+        """Wrap one dedicated PTB getUpdates request with progress tracking."""
+        do_request = request.do_request
+
+        async def _do_request(*args, **kwargs):
+            generation = self._polling_generation
+            result = await do_request(*args, **kwargs)
+            status_code, _ = result
+            if 200 <= status_code < 300:
+                self._record_polling_progress(generation)
+            return result
+
+        request.do_request = _do_request
+        return request
+
     def _get_general_request_drain_lock(self) -> asyncio.Lock:
         lock = getattr(self, "_general_request_drain_lock", None)
         if lock is None:
@@ -3194,6 +3235,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     **request_kwargs, httpx_kwargs=_with_limits()
                 )
 
+            get_updates_request = self._instrument_polling_request(get_updates_request)
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot

@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any
 
 TOOL_NAME = "route_research_mode"
+RESEARCH_READ_ONLY_TOOLS = frozenset({"web_search", "web_extract"})
 
 # This immutable-by-convention schema is copied into each enabled agent once.
 ROUTE_RESEARCH_MODE_TOOL = {
@@ -82,6 +83,24 @@ def disable_research_mode_tool(agent: Any) -> None:
     valid_tool_names = getattr(agent, "valid_tool_names", None)
     if isinstance(valid_tool_names, set):
         valid_tool_names.discard(TOOL_NAME)
+
+
+def apply_trusted_tool_allowlist(agent: Any, tools: list | None = None) -> list:
+    """Filter a tool snapshot through an agent's exact trusted-name policy."""
+    source = getattr(agent, "tools", []) if tools is None else tools
+    allowlist = getattr(agent, "_trusted_tool_allowlist", None)
+    if not isinstance(allowlist, (set, frozenset)):
+        return source
+    filtered = [
+        tool for tool in source
+        if tool.get("function", {}).get("name") in allowlist
+    ]
+    if tools is None:
+        agent.tools = filtered
+        agent.valid_tool_names = {
+            tool["function"]["name"] for tool in filtered
+        }
+    return filtered
 
 
 def validate_arguments(arguments: dict[str, Any]) -> str | None:

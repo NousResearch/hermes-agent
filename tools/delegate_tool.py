@@ -1375,9 +1375,16 @@ def _build_child_agent(
         iteration_budget=None,  # fresh budget per subagent
         **child_optional_kwargs,
     )
+    from agent.research_mode_tool import (
+        RESEARCH_READ_ONLY_TOOLS,
+        apply_trusted_tool_allowlist,
+        disable_research_mode_tool,
+    )
+    if mode == "research-analysis":
+        setattr(child, "_trusted_tool_allowlist", RESEARCH_READ_ONLY_TOOLS)
     if effective_role == "leaf":
-        from agent.research_mode_tool import disable_research_mode_tool
         disable_research_mode_tool(child)
+    apply_trusted_tool_allowlist(child)
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).

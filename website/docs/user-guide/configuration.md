@@ -94,8 +94,9 @@ When enabled:
 
 - exploratory thinking remains in the parent conversation;
 - substantial research may use a synchronous `research-analysis` child;
-- the child receives only the read-only `web` toolset (`web_search` and
-  `web_extract`), intersected with the parent's enabled capabilities;
+- the child is filtered to the exact read-only names `web_search` and
+  `web_extract`, intersected with the parent's enabled capabilities; dynamic
+  plugin or MCP registration cannot widen that final capability allowlist;
 - interactive browser automation and inherited MCP toolsets are excluded from
   trusted research routes;
 - leaf children do not receive the automatic router, preventing recursive mode

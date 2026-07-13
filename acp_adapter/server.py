@@ -847,6 +847,14 @@ class HermesACPAgent(acp.Agent):
             context_engine_names = _reinject_post_build_tools(
                 state.agent, state.agent.tools, staged_names,
             )
+            from agent.research_mode_tool import apply_trusted_tool_allowlist
+            state.agent.tools = apply_trusted_tool_allowlist(
+                state.agent, state.agent.tools,
+            )
+            staged_names = {
+                tool["function"]["name"] for tool in state.agent.tools or []
+            }
+            context_engine_names.intersection_update(staged_names)
             state.agent.valid_tool_names = staged_names
             existing_context_names = getattr(state.agent, "_context_engine_tool_names", None)
             if isinstance(existing_context_names, set):

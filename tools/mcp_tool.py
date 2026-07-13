@@ -5318,9 +5318,15 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
-    # The shared post-build helper also canonicalizes private operational
-    # schemas after every provider family has been appended.
+    # Trusted children keep an exact name-level capability policy even when a
+    # plugin or MCP refresh registers additional tools into an allowed toolset.
+    from agent.research_mode_tool import apply_trusted_tool_allowlist
+    new_defs = apply_trusted_tool_allowlist(agent, new_defs)
     new_names = {t["function"]["name"] for t in new_defs}
+    staged_engine_names.intersection_update(new_names)
+
+    # The allowlist runs after all post-build operational schemas are restored,
+    # so the published snapshot and validation names remain capability-exact.
 
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a

@@ -358,9 +358,13 @@ def test_leaf_child_has_automatic_router_removed_after_construction():
     child._mode_router_enabled = True
     child.tools = [
         {"type": "function", "function": {"name": "web_search"}},
+        {"type": "function", "function": {"name": "web_extract"}},
+        {"type": "function", "function": {"name": "plugin_web_write"}},
         {"type": "function", "function": {"name": "route_research_mode"}},
     ]
-    child.valid_tool_names = {"web_search", "route_research_mode"}
+    child.valid_tool_names = {
+        "web_search", "web_extract", "plugin_web_write", "route_research_mode",
+    }
 
     with patch("run_agent.AIAgent", return_value=child):
         built = _build_child_agent(
@@ -378,8 +382,10 @@ def test_leaf_child_has_automatic_router_removed_after_construction():
 
     assert built is child
     assert child._mode_router_enabled is False
-    assert child.valid_tool_names == {"web_search"}
-    assert [tool["function"]["name"] for tool in child.tools] == ["web_search"]
+    assert child.valid_tool_names == {"web_search", "web_extract"}
+    assert [tool["function"]["name"] for tool in child.tools] == [
+        "web_search", "web_extract",
+    ]
 
 
 def test_trusted_seam_does_not_change_model_facing_schema():

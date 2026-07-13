@@ -90,6 +90,33 @@ def test_refresh_feature_off_keeps_exact_registry_snapshot(monkeypatch):
     assert all(t["function"]["name"] != "route_research_mode" for t in agent.tools)
 
 
+def test_refresh_preserves_exact_trusted_tool_name_allowlist(monkeypatch):
+    agent = _agent(["web_search", "web_extract"])
+    agent._mode_router_enabled = False
+    agent._trusted_tool_allowlist = frozenset({"web_search", "web_extract"})
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kw: [
+            _tool("web_search"),
+            _tool("web_extract"),
+            _tool("plugin_web_write"),
+            _tool("mcp_new_tool"),
+            _tool("route_research_mode"),
+        ],
+    )
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert added == set()
+    assert agent.valid_tool_names == {"web_search", "web_extract"}
+    assert [tool["function"]["name"] for tool in agent.tools] == [
+        "web_search", "web_extract",
+    ]
+
+
 def test_refresh_no_change_returns_empty_and_leaves_agent_untouched(monkeypatch):
     """No new tools → empty set, and the snapshot object is not swapped."""
     agent = _agent(["read_file", "terminal"])

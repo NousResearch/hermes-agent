@@ -1875,6 +1875,34 @@ class TestRegisterSessionMcpServers:
         assert state.agent.valid_tool_names == {"terminal", TOOL_NAME}
 
     @pytest.mark.asyncio
+    async def test_refresh_preserves_exact_trusted_tool_name_allowlist(self, agent, mock_manager):
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["web"]
+        state.agent.disabled_toolsets = None
+        state.agent._mode_router_enabled = False
+        state.agent._trusted_tool_allowlist = frozenset({"web_search", "web_extract"})
+        state.agent._memory_manager = None
+        registry_tools = [
+            {"function": {"name": "web_search"}},
+            {"function": {"name": "web_extract"}},
+            {"function": {"name": "plugin_web_write"}},
+            {"function": {"name": "mcp_new_tool"}},
+            {"function": {"name": "route_research_mode"}},
+        ]
+        server = McpServerStdio(name="srv", command="/bin/test", args=[], env=[])
+
+        with patch("tools.mcp_tool.register_mcp_servers", return_value=[]), \
+             patch("model_tools.get_tool_definitions", return_value=registry_tools):
+            await agent._register_session_mcp_servers(state, [server])
+
+        assert [tool["function"]["name"] for tool in state.agent.tools] == [
+            "web_search", "web_extract",
+        ]
+        assert state.agent.valid_tool_names == {"web_search", "web_extract"}
+
+    @pytest.mark.asyncio
     async def test_refresh_reinjects_full_post_build_surface_and_context_routing(self, agent, mock_manager):
         """ACP rebuild retains memory/context tools and publishes router last."""
         from acp.schema import McpServerStdio

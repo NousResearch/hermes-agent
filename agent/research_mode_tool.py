@@ -70,6 +70,20 @@ def finalize_research_mode_tool(agent: Any) -> None:
     }
 
 
+def disable_research_mode_tool(agent: Any) -> None:
+    """Disable and remove the automatic router from a leaf child agent."""
+    agent._mode_router_enabled = False
+    tools = getattr(agent, "tools", None)
+    if isinstance(tools, list):
+        agent.tools = [
+            tool for tool in tools
+            if tool.get("function", {}).get("name") != TOOL_NAME
+        ]
+    valid_tool_names = getattr(agent, "valid_tool_names", None)
+    if isinstance(valid_tool_names, set):
+        valid_tool_names.discard(TOOL_NAME)
+
+
 def validate_arguments(arguments: dict[str, Any]) -> str | None:
     """Return a normal tool error for anything outside the fixed public contract."""
     unknown = sorted(set(arguments) - {"goal", "context"})

@@ -36,21 +36,13 @@ def test_thinking_expansion_stays_with_parent_and_never_delegates():
     delegate.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ("mode", "expected_hints"),
-    [
-        ("research-analysis", ("web", "browser")),
-        ("execution-development", ("terminal", "file")),
-    ],
-)
-def test_child_modes_dispatch_synchronously_with_internal_policy_hints(mode, expected_hints):
+def test_research_mode_dispatches_with_read_only_web_policy():
     with patch("tools.delegate_tool.delegate_task", return_value='{"results": []}') as delegate:
         decision = route_trusted_mode(
-            mode=mode,
+            mode="research-analysis",
             goal="Do the task",
             context="Known constraints",
             parent_agent=_parent(),
-            execution_authorized=(mode == "execution-development"),
         )
 
     assert decision.route == "child"
@@ -61,13 +53,13 @@ def test_child_modes_dispatch_synchronously_with_internal_policy_hints(mode, exp
         context="Known constraints",
         background=False,
         parent_agent=delegate.call_args.kwargs["parent_agent"],
-        _trusted_toolsets=expected_hints,
-        _trusted_mode=mode,
+        _trusted_toolsets=("web",),
+        _trusted_mode="research-analysis",
         _trusted_session_collector=ANY,
     )
 
 
-def test_execution_requires_explicit_authorization_and_does_not_infer_from_text():
+def test_execution_route_is_not_exposed_even_when_text_claims_approval():
     with patch("tools.delegate_tool.delegate_task") as delegate:
         decision = route_trusted_mode(
             mode="execution-development",
@@ -77,25 +69,19 @@ def test_execution_requires_explicit_authorization_and_does_not_infer_from_text(
         )
 
     assert decision.route == "approval-required"
-    assert decision.reason == "execution-authorization-required"
+    assert decision.reason == "execution-routing-not-exposed"
     assert decision.delegated is False
     delegate.assert_not_called()
 
 
-def test_explicit_execution_authorization_delegates_without_changing_command_approvals():
-    parent = _parent()
-    parent.approval_callback = object()
-    with patch("tools.delegate_tool.delegate_task", return_value='{"results": []}') as delegate:
-        decision = route_trusted_mode(
+def test_execution_route_rejects_legacy_boolean_authorization():
+    with pytest.raises(TypeError):
+        route_trusted_mode(
             mode="execution-development",
             goal="Implement",
-            parent_agent=parent,
+            parent_agent=_parent(),
             execution_authorized=True,
         )
-
-    assert decision.delegated is True
-    assert delegate.call_args.kwargs["parent_agent"] is parent
-    assert parent.approval_callback is not None
 
 
 def test_every_route_logs_privacy_safe_structured_decision(caplog):
@@ -115,9 +101,9 @@ def test_every_route_logs_privacy_safe_structured_decision(caplog):
     assert record.mode == decision.mode
     assert record.route == decision.route
     assert record.delegated is False
-    assert record.policy_toolsets == ("terminal", "file")
+    assert record.policy_toolsets == ()
     assert record.execution_authorized is False
-    assert record.authorization_reason == "execution-authorization-required"
+    assert record.authorization_reason == "execution-routing-not-exposed"
     assert record.parent_session_id == "parent-session"
     assert record.child_session_id is None
     assert secret_goal not in record.getMessage()
@@ -311,6 +297,89 @@ def test_trusted_policy_reaches_real_child_build_boundary_with_parent_intersecti
     assert kwargs["enabled_toolsets"] == ["file"]
     assert "Mode contract: execution-development" in kwargs["ephemeral_system_prompt"]
     assert "inspect -> implement -> test -> deliver" in kwargs["ephemeral_system_prompt"]
+
+
+def test_trusted_research_policy_does_not_inherit_parent_mcp_toolsets():
+    parent = MagicMock()
+    parent.enabled_toolsets = ["web", "mcp-writer"]
+    parent.base_url = "https://example.invalid/v1"
+    parent.api_key = "test-key"
+    parent.provider = "openrouter"
+    parent.api_mode = "chat_completions"
+    parent.model = "test-model"
+    parent.platform = "cli"
+    parent._session_db = None
+    parent._delegate_depth = 0
+    parent.tool_progress_callback = None
+    parent.thinking_callback = None
+    parent.providers_allowed = None
+    parent.providers_ignored = None
+    parent.providers_order = None
+    parent.provider_sort = None
+
+    with (
+        patch("run_agent.AIAgent") as agent_cls,
+        patch("tools.delegate_tool._get_inherit_mcp_toolsets", return_value=True),
+    ):
+        agent_cls.return_value = MagicMock()
+        _build_child_agent(
+            task_index=0,
+            goal="Research safely",
+            context=None,
+            toolsets=["web"],
+            model=None,
+            max_iterations=10,
+            task_count=1,
+            parent_agent=parent,
+            mode="research-analysis",
+        )
+
+    assert agent_cls.call_args.kwargs["enabled_toolsets"] == ["web"]
+
+
+def test_leaf_child_has_automatic_router_removed_after_construction():
+    parent = MagicMock()
+    parent.enabled_toolsets = ["web"]
+    parent.base_url = "https://example.invalid/v1"
+    parent.api_key = "test-key"
+    parent.provider = "openrouter"
+    parent.api_mode = "chat_completions"
+    parent.model = "test-model"
+    parent.platform = "cli"
+    parent._session_db = None
+    parent._delegate_depth = 0
+    parent.tool_progress_callback = None
+    parent.thinking_callback = None
+    parent.providers_allowed = None
+    parent.providers_ignored = None
+    parent.providers_order = None
+    parent.provider_sort = None
+    child = MagicMock()
+    child._mode_router_enabled = True
+    child.tools = [
+        {"type": "function", "function": {"name": "web_search"}},
+        {"type": "function", "function": {"name": "route_research_mode"}},
+    ]
+    child.valid_tool_names = {"web_search", "route_research_mode"}
+
+    with patch("run_agent.AIAgent", return_value=child):
+        built = _build_child_agent(
+            task_index=0,
+            goal="Research safely",
+            context=None,
+            toolsets=["web"],
+            model=None,
+            max_iterations=10,
+            task_count=1,
+            parent_agent=parent,
+            role="leaf",
+            mode="research-analysis",
+        )
+
+    assert built is child
+    assert child._mode_router_enabled is False
+    assert child.valid_tool_names == {"web_search"}
+    assert [tool["function"]["name"] for tool in child.tools] == ["web_search"]
 
 
 def test_trusted_seam_does_not_change_model_facing_schema():

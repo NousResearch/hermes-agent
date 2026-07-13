@@ -94,8 +94,12 @@ When enabled:
 
 - exploratory thinking remains in the parent conversation;
 - substantial research may use a synchronous `research-analysis` child;
-- the child receives only policy-controlled research capabilities that also
-  remain bounded by the parent's enabled capabilities;
+- the child receives only the read-only `web` toolset (`web_search` and
+  `web_extract`), intersected with the parent's enabled capabilities;
+- interactive browser automation and inherited MCP toolsets are excluded from
+  trusted research routes;
+- leaf children do not receive the automatic router, preventing recursive mode
+  routing through a separate child surface;
 - mode decisions and session linkage are recorded in normal profile-aware logs
   without task prompts, external content, or secrets.
 

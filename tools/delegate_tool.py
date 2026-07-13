@@ -1141,7 +1141,7 @@ def _build_child_agent(
         # toolset names (e.g. web, terminal) are recognised during intersection.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
-        if _get_inherit_mcp_toolsets():
+        if mode is None and _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
             )
@@ -1375,6 +1375,9 @@ def _build_child_agent(
         iteration_budget=None,  # fresh budget per subagent
         **child_optional_kwargs,
     )
+    if effective_role == "leaf":
+        from agent.research_mode_tool import disable_research_mode_tool
+        disable_research_mode_tool(child)
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
@@ -3383,8 +3386,7 @@ def _build_role_param_description() -> str:
 
 
 _MODE_CHILD_TOOLSET_POLICY = {
-    "research-analysis": ("web", "browser"),
-    "execution-development": ("terminal", "file"),
+    "research-analysis": ("web",),
 }
 
 
@@ -3432,7 +3434,6 @@ def route_trusted_mode(
     goal: str,
     context: Optional[str] = None,
     parent_agent,
-    execution_authorized: bool = False,
 ):
     """Execute a code-selected mode route without creating a model tool."""
     from agent.mode_router import ModeRoutingDecision, UnknownModeError, get_mode
@@ -3448,7 +3449,7 @@ def route_trusted_mode(
         raise
 
     policy_toolsets = _MODE_CHILD_TOOLSET_POLICY.get(contract.name, ())
-    authorized = execution_authorized is True
+    authorized = False
     if not getattr(parent_agent, "_mode_router_enabled", False):
         decision = ModeRoutingDecision(
             contract.name, goal, "direct-parent", "mode-router-disabled"
@@ -3469,9 +3470,9 @@ def route_trusted_mode(
             authorization_reason="not-applicable", parent_agent=parent_agent,
         )
         return decision
-    if contract.name == "execution-development" and not authorized:
+    if contract.name == "execution-development":
         decision = ModeRoutingDecision(
-            contract.name, goal, "approval-required", "execution-authorization-required"
+            contract.name, goal, "approval-required", "execution-routing-not-exposed"
         )
         _log_trusted_mode_decision(
             mode=contract.name, route=decision.route, delegated=False,
@@ -3480,11 +3481,7 @@ def route_trusted_mode(
         )
         return decision
 
-    authorization_reason = (
-        "explicitly-authorized"
-        if contract.name == "execution-development"
-        else "not-required"
-    )
+    authorization_reason = "not-required"
     # delegate_task remains authoritative for child capability intersection and
     # dangerous-command approvals.
     child_session = None

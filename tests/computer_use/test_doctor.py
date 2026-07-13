@@ -301,13 +301,17 @@ class TestDriverCmdResolution:
             {"jsonrpc": "2.0", "id": 1, "result": {}},
             {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
         )
+        # Mock _resolve_mcp_invocation to pass through the binary unchanged
+        # (the spawnability check in _drive_health_report calls it).
         with patch("shutil.which", return_value="/fake/explicit-binary") as which_mock, \
              patch("subprocess.Popen", return_value=proc), \
+             patch("tools.computer_use.cua_backend._resolve_mcp_invocation",
+                   return_value=("/fake/explicit-binary", ["mcp"])), \
              patch("sys.stdout", new_callable=StringIO):
             doctor.run_doctor(driver_cmd="/custom/path/cua-driver")
         # shutil.which should have been called with the explicit arg, not
         # the env-var / default resolver.
-        which_mock.assert_called_with("/custom/path/cua-driver")
+        which_mock.assert_any_call("/custom/path/cua-driver")
 
     def test_env_var_used_when_no_arg_given(self, monkeypatch):
         from tools.computer_use import doctor
@@ -319,7 +323,9 @@ class TestDriverCmdResolution:
         )
         with patch("shutil.which", return_value="/env/path/cua-driver") as which_mock, \
              patch("subprocess.Popen", return_value=proc), \
+             patch("tools.computer_use.cua_backend._resolve_mcp_invocation",
+                   return_value=("/env/path/cua-driver", ["mcp"])), \
              patch("sys.stdout", new_callable=StringIO):
             doctor.run_doctor()
-        # First (and only) which call should have used the env var.
-        which_mock.assert_called_with("/env/path/cua-driver")
+        # shutil.which should have been called with the env var.
+        which_mock.assert_any_call("/env/path/cua-driver")

@@ -520,7 +520,10 @@ def test_model_flow_anthropic_passes_live_discovery_list_to_picker(tmp_path, mon
 
     import yaml
 
-    config = yaml.safe_load(config_path.read_text()) or {}
+    # save_config() writes UTF-8 (template comments include non-ASCII box
+    # drawing); pin the read encoding so the assertion also passes on
+    # Windows locales like cp949.
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     assert config["model"]["default"] == live_only_sentinel
 
 

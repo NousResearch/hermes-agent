@@ -175,6 +175,30 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_mobile_mutation_receipt_tags_bind_exactly_one_user_turn():
+    agent = _FakeAgent()
+    agent._pending_mobile_mutation_receipt_tags = ["proof-a", "proof-b"]
+
+    def persist(messages, *_args, **_kwargs):
+        messages[-1]["_db_persisted"] = True
+
+    agent._persist_session = persist
+
+    tagged = _build(agent)
+    following = _build(agent, user_message="later")
+
+    assert tagged.messages[-1]["_mobile_mutation_receipt_tags"] == [
+        "proof-a",
+        "proof-b",
+    ]
+    assert "_mobile_mutation_receipt_tags" not in following.messages[-1]
+    assert agent._pending_mobile_mutation_receipt_tags == []
+    assert agent._durable_mobile_mutation_receipt_tags == {
+        "proof-a",
+        "proof-b",
+    }
+
+
 def test_applies_agent_side_effects():
     agent = _FakeAgent()
     _build(agent)
@@ -363,4 +387,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-

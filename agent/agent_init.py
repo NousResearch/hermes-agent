@@ -744,6 +744,12 @@ def init_agent(
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = None
     agent._persist_user_message_timestamp = None
+    # Gateway-only receipt proof tags copied onto the next user message. The
+    # underscore-prefixed field never leaves the process or persists to SQLite;
+    # it binds the in-memory `_db_persisted` proof to an exact mobile mutation.
+    agent._pending_mobile_mutation_receipt_tags: list[str] = []
+    agent._durable_mobile_mutation_receipt_tags: set[str] = set()
+    agent._mobile_mutation_receipt_condition = None
 
     # Cache anthropic image-to-text fallbacks per image payload/URL so a
     # single tool loop does not repeatedly re-run auxiliary vision on the

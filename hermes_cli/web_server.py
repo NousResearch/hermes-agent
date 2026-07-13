@@ -14501,8 +14501,10 @@ def _ws_auth_mode() -> str:
     return "loopback"
 
 
-def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
-    """Validate WS-upgrade auth; return ``(reason, credential)``.
+def _ws_auth_result(
+    ws: "WebSocket",
+) -> tuple[Optional[str], str, Optional[Dict[str, Any]]]:
+    """Validate WS-upgrade auth and return its effective authorization grant.
 
     ``reason`` is None when the credential is accepted, else a short
     machine-parseable token explaining the rejection (``no_credential``,
@@ -14510,15 +14512,18 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     ``credential`` names which credential type was presented (``ticket``,
     ``internal``, ``token``, or ``none``) so the accepted path can log *how*
     a peer authed, not just that it did.
+    ``authorization`` is the server-derived grant carried by an accepted
+    credential; it is ``None`` for every rejected request.
 
     Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
     parameter, constant-time compared.
 
     Gated (public bind, no ``--insecure``): one of two credentials —
 
-    * ``?ticket=<single-use>`` — a browser-minted, single-use, 30s-TTL ticket
-      consumed against the dashboard-auth ticket store. This is what the SPA
-      (and native clients) use.
+    * ``?ticket=<single-use>`` — a client-minted, single-use, 30s-TTL ticket
+      consumed against the dashboard-auth ticket store. The bodyless SPA flow
+      retains legacy dashboard authority. A native mobile ticket is restricted
+      to ``/api/ws`` and carries explicit scopes into its dispatcher.
     * ``?internal=<process-credential>`` — the process-lifetime internal
       credential, used only by WS clients the server spawns itself (the
       embedded-TUI PTY child attaching to ``/api/ws`` and ``/api/pub``). It
@@ -14550,8 +14555,8 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         internal = ws.query_params.get("internal", "")
         if internal:
             try:
-                consume_internal_credential(internal)
-                return None, "internal"
+                grant = consume_internal_credential(internal)
+                return None, "internal", grant
             except TicketInvalid as exc:
                 audit_log(
                     AuditEvent.WS_TICKET_REJECTED,
@@ -14559,15 +14564,26 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                     ip=(ws.client.host if ws.client else ""),
                     path=ws.url.path,
                 )
-                return "internal_invalid", "internal"
+                return "internal_invalid", "internal", None
 
         ticket = ws.query_params.get("ticket", "")
         if not ticket:
-            return "no_credential", "none"
+            return "no_credential", "none", None
 
         try:
-            consume_ticket(ticket)
-            return None, "ticket"
+            grant = consume_ticket(ticket)
+            if (
+                grant.get("audience") == "hermes.mobile"
+                and ws.url.path != "/api/ws"
+            ):
+                audit_log(
+                    AuditEvent.WS_TICKET_REJECTED,
+                    reason="mobile ticket used outside /api/ws",
+                    ip=(ws.client.host if ws.client else ""),
+                    path=ws.url.path,
+                )
+                return "ticket_audience_mismatch", "ticket", None
+            return None, "ticket", grant
         except TicketInvalid as exc:
             audit_log(
                 AuditEvent.WS_TICKET_REJECTED,
@@ -14575,14 +14591,29 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                 ip=(ws.client.host if ws.client else ""),
                 path=ws.url.path,
             )
-            return "ticket_invalid", "ticket"
+            return "ticket_invalid", "ticket", None
 
     token = ws.query_params.get("token", "")
     if not token:
-        return "no_credential", "none"
+        return "no_credential", "none", None
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
-        return None, "token"
-    return "token_mismatch", "token"
+        return (
+            None,
+            "token",
+            {
+                "user_id": "loopback",
+                "provider": "loopback",
+                "audience": "dashboard",
+                "scopes": ("*",),
+            },
+        )
+    return "token_mismatch", "token", None
+
+
+def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
+    """Compatibility view of :func:`_ws_auth_result` for non-gateway sockets."""
+    reason, credential, _authorization = _ws_auth_result(ws)
+    return reason, credential
 
 
 def _ws_auth_ok(ws: "WebSocket") -> bool:
@@ -15672,7 +15703,8 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    auth_reason, _credential, authorization = _ws_auth_result(ws)
+    if auth_reason is not None:
         await ws.close(code=4401)
         return
 
@@ -15682,7 +15714,7 @@ async def gateway_ws(ws: WebSocket) -> None:
 
     from tui_gateway.ws import handle_ws
 
-    await handle_ws(ws)
+    await handle_ws(ws, authorization=authorization)
 
 
 # ---------------------------------------------------------------------------

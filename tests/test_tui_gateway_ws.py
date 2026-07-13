@@ -1,10 +1,145 @@
 import asyncio
+import json
 import threading
 import time
 
 from hermes_cli import mcp_startup
+from tui_gateway import mobile_contract
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
+
+
+def test_gateway_ready_advertises_versioned_mobile_contract_and_authorization(
+    monkeypatch,
+):
+    sent = []
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **_kw: None)
+    monkeypatch.setattr(server, "resolve_skin", lambda: "test-skin")
+    monkeypatch.setattr(mobile_contract, "SERVER_VERSION", "test-version")
+    monkeypatch.setattr(mobile_contract, "SERVER_RELEASE_DATE", "test-release")
+    monkeypatch.setattr(mobile_contract, "SERVER_INSTANCE_ID", "test-instance")
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+        async def receive_text(self):
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    authorization = {
+        "subject": "user-1",
+        "provider": "stub",
+        "audience": "hermes.mobile",
+        "scopes": ("conversation.read", "conversation.write"),
+    }
+
+    asyncio.run(ws_mod.handle_ws(FakeWS(), authorization=authorization))
+
+    assert sent[0] == {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+            "type": "gateway.ready",
+            "payload": {
+                "skin": "test-skin",
+                "server": {
+                    "version": "test-version",
+                    "release_date": "test-release",
+                    "instance_id": "test-instance",
+                },
+                "protocol": {"name": "hermes.tui.jsonrpc", "major": 1},
+                "contract": {"name": "hermes.mobile", "major": 1},
+                    "schemas": {
+                        "gateway.ready": 1,
+                        "authorization.grant": 1,
+                        "authorization.error": 1,
+                        "mutation.receipt": 1,
+                    },
+                    "capabilities": {
+                        "auth.ws_scopes": {"version": 1},
+                        "mutation.idempotency": {
+                            "version": 1,
+                            "methods": [
+                                "prompt.submit",
+                                "session.interrupt",
+                                "session.delete",
+                            ],
+                            "status_method": "mutation.status",
+                        },
+                    },
+                "authorization": {
+                    "subject": "user-1",
+                    "provider": "stub",
+                    "audience": "hermes.mobile",
+                    "scopes": ["conversation.read", "conversation.write"],
+                },
+            },
+        },
+    }
+
+
+def test_mobile_authorization_is_enforced_on_requests_from_the_live_socket(
+    monkeypatch,
+):
+    sent = []
+    received = False
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **_kw: None)
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+        async def receive_text(self):
+            nonlocal received
+            if not received:
+                received = True
+                return json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "mobile-request",
+                        "method": "not.a.mobile.method",
+                        "params": {},
+                    }
+                )
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    asyncio.run(
+        ws_mod.handle_ws(
+            FakeWS(),
+            authorization={
+                "subject": "user-1",
+                "provider": "stub",
+                "audience": "hermes.mobile",
+                "scopes": ("conversation.read",),
+            },
+        )
+    )
+
+    assert sent[1]["error"] == {
+        "code": 4030,
+        "message": "insufficient authorization scope",
+        "data": {
+            "reason": "method_not_available_to_mobile",
+            "method": "not.a.mobile.method",
+            "required_scope": "mobile.unavailable",
+            "required_scopes": ["mobile.unavailable"],
+            "missing_scopes": ["mobile.unavailable"],
+            "granted_scopes": ["conversation.read"],
+            "grantable": False,
+        },
+    }
 
 
 def test_ws_startup_starts_background_mcp_discovery(monkeypatch):

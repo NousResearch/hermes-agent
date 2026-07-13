@@ -5,10 +5,10 @@ The dashboard's WS endpoints (``/api/pty``, ``/api/console``, ``/api/ws``,
 loopback mode it accepts ``?token=<_SESSION_TOKEN>``; in gated mode it accepts
 a single-use ``?ticket=`` minted by ``POST /api/auth/ws-ticket``.
 
-These tests exercise the helper at the unit level (no actual WS upgrade)
-plus the ticket-mint endpoint under realistic gated-mode setup. We don't
-test the full WS upgrade because the starlette TestClient WS path has a
-pre-existing regression unrelated to dashboard-auth.
+These tests exercise the helper at the unit level, the ticket-mint endpoint
+under realistic gated-mode setup, and one public mint-to-upgrade-to-dispatch
+round trip. The full upgrade supplies explicit Host/Origin headers because
+Starlette's WebSocket TestClient does not inherit the HTTP ``base_url`` host.
 """
 
 from __future__ import annotations
@@ -20,14 +20,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
+from hermes_cli import mcp_startup
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.ws_tickets import (
     _reset_for_tests,
+    consume_ticket,
     consume_internal_credential,
     internal_ws_credential,
     mint_ticket,
 )
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+from tui_gateway import server as tui_server
 
 
 # ---------------------------------------------------------------------------
@@ -116,10 +119,13 @@ class TestWsTicketEndpoint:
         r = gated_app.post("/api/auth/ws-ticket")
         assert r.status_code == 200
         body = r.json()
-        assert "ticket" in body
+        assert set(body) == {"ticket", "ttl_seconds"}
         assert isinstance(body["ticket"], str)
         assert len(body["ticket"]) >= 32
         assert body["ttl_seconds"] == 30
+        grant = consume_ticket(body["ticket"])
+        assert grant["audience"] == "dashboard"
+        assert grant["scopes"] == ("*",)
 
     def test_unauthenticated_returns_401_or_redirect(self, gated_app):
         r = gated_app.post("/api/auth/ws-ticket", follow_redirects=False)
@@ -132,6 +138,87 @@ class TestWsTicketEndpoint:
         tickets = {gated_app.post("/api/auth/ws-ticket").json()["ticket"]
                    for _ in range(5)}
         assert len(tickets) == 5
+
+    def test_mobile_ticket_returns_and_preserves_the_granted_scopes(self, gated_app):
+        _logged_in(gated_app)
+
+        response = gated_app.post(
+            "/api/auth/ws-ticket",
+            json={
+                "audience": "hermes.mobile",
+                "scopes": ["conversation.read", "conversation.write"],
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["audience"] == "hermes.mobile"
+        assert body["granted_scopes"] == [
+            "conversation.read",
+            "conversation.write",
+        ]
+        grant = consume_ticket(body["ticket"])
+        assert grant["audience"] == "hermes.mobile"
+        assert grant["scopes"] == ("conversation.read", "conversation.write")
+
+    @pytest.mark.parametrize("scope", ["approval.respond", "shell.exec"])
+    def test_mobile_ticket_rejects_scopes_not_enforced_by_this_contract(
+        self,
+        gated_app,
+        scope,
+    ):
+        _logged_in(gated_app)
+
+        response = gated_app.post(
+            "/api/auth/ws-ticket",
+            json={"audience": "hermes.mobile", "scopes": [scope]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == f"unsupported mobile scope: {scope}"
+
+    def test_scopes_without_a_mobile_audience_do_not_mint_legacy_authority(
+        self,
+        gated_app,
+    ):
+        _logged_in(gated_app)
+
+        response = gated_app.post(
+            "/api/auth/ws-ticket",
+            json={"scopes": ["conversation.read"]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "audience is required when scopes are requested"
+
+    def test_nonempty_request_without_an_audience_does_not_mint_legacy_authority(
+        self,
+        gated_app,
+    ):
+        _logged_in(gated_app)
+
+        response = gated_app.post("/api/auth/ws-ticket", json={})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "audience is required for a non-empty ticket request"
+        )
+
+    def test_mobile_write_grant_requires_read_scope(self, gated_app):
+        _logged_in(gated_app)
+
+        response = gated_app.post(
+            "/api/auth/ws-ticket",
+            json={
+                "audience": "hermes.mobile",
+                "scopes": ["conversation.write"],
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "conversation.read is required for every mobile WebSocket grant"
+        )
 
     def test_get_method_is_not_allowed(self, gated_app):
         _logged_in(gated_app)
@@ -150,6 +237,49 @@ class TestWsTicketEndpoint:
             f"GET /api/auth/ws-ticket leaked a ticket (status={r.status_code}, "
             f"body[:200]={body[:200]!r})"
         )
+
+
+def test_scoped_ticket_grant_reaches_gateway_ready_and_dispatch(gated_app, monkeypatch):
+    monkeypatch.setattr(web_server, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **_kw: None)
+    monkeypatch.setattr(tui_server, "resolve_skin", lambda: "test-skin")
+
+    _logged_in(gated_app)
+    minted = gated_app.post(
+        "/api/auth/ws-ticket",
+        json={
+            "audience": "hermes.mobile",
+            "scopes": ["conversation.read"],
+        },
+    )
+    assert minted.status_code == 200
+
+    with gated_app.websocket_connect(
+        f"/api/ws?ticket={minted.json()['ticket']}",
+        headers={
+            "Host": "fly-app.fly.dev",
+            "Origin": "https://fly-app.fly.dev",
+        },
+    ) as socket:
+        ready = socket.receive_json()
+        authorization = ready["params"]["payload"]["authorization"]
+        assert authorization == {
+            "subject": "stub-user-1",
+            "provider": "stub",
+            "audience": "hermes.mobile",
+            "scopes": ["conversation.read"],
+        }
+
+        socket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "denied-write",
+                "method": "prompt.submit",
+                "params": {},
+            }
+        )
+        denied = socket.receive_json()
+        assert denied["error"]["data"]["required_scope"] == "conversation.write"
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +358,26 @@ class TestWsAuthOkGated:
         ticket = mint_ticket(user_id="u1", provider="stub")
         ws = _fake_ws(query={"ticket": ticket})
         assert web_server._ws_auth_ok(ws) is True
+
+    @pytest.mark.parametrize("path", ["/api/pty", "/api/console", "/api/pub", "/api/events"])
+    def test_mobile_ticket_cannot_authenticate_non_gateway_websockets(
+        self,
+        gated_app,
+        path,
+    ):
+        ticket = mint_ticket(
+            user_id="mobile-user",
+            provider="stub",
+            audience="hermes.mobile",
+            scopes=("conversation.read",),
+        )
+        ws = _fake_ws(query={"ticket": ticket}, path=path)
+
+        reason, credential, authorization = web_server._ws_auth_result(ws)
+
+        assert reason == "ticket_audience_mismatch"
+        assert credential == "ticket"
+        assert authorization is None
 
     def test_consumed_ticket_rejected(self, gated_app):
         ticket = mint_ticket(user_id="u1", provider="stub")

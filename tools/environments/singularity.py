@@ -245,6 +245,71 @@ class SingularityEnvironment(BaseEnvironment):
 
         return _popen_bash(cmd, stdin_data)
 
+    # ------------------------------------------------------------------
+    # Out-of-band instance removal recovery (idle reaper, OOM kill, host
+    # reboot) — same shape as DockerEnvironment's container recovery.
+    # ------------------------------------------------------------------
+
+    # Apptainer/Singularity uses exit code 255 for starter/wrapper-level
+    # failures (e.g. "FATAL: while executing starter: ... exit status 255"),
+    # distinct from the exec'd command's own exit code — the same convention
+    # ssh uses. These phrases aren't independently confirmed against a live
+    # apptainer install (not available in this environment); if the exact
+    # wording differs, recovery simply won't trigger — no worse than today.
+    _INSTANCE_GONE_PATTERNS = (
+        "no such instance",
+        "instance does not exist",
+        "instance not found",
+        "no instance found",
+        "failed to get instance",
+    )
+
+    def _is_instance_gone(self, returncode: int, output: str) -> bool:
+        """Return True if `output` indicates the instance no longer exists."""
+        if returncode != 255:
+            return False
+        lowered = output.lower()
+        return any(p in lowered for p in self._INSTANCE_GONE_PATTERNS)
+
+    def _recreate_instance(self) -> bool:
+        """Start a fresh instance after the old one was reaped out-of-band.
+
+        Reuses the same (persistent) overlay dir if one is configured, so
+        filesystem state survives. Returns True on success, False if
+        recreation fails (caller should surface the original error).
+        """
+        old_id = self.instance_id
+        logger.warning(
+            "Singularity instance %s appears gone — attempting recovery", old_id,
+        )
+        self._instance_started = False
+        self.instance_id = f"hermes_{uuid.uuid4().hex[:12]}"
+        try:
+            self._start_instance()
+        except Exception as e:
+            logger.error("Recovery: failed to restart Singularity instance: %s", e)
+            return False
+
+        try:
+            self._snapshot_ready = False
+            self.init_session()
+        except Exception as e:
+            logger.error("Recovery: init_session failed in new instance: %s", e)
+            return False
+
+        logger.info("Recovery successful — new Singularity instance %s", self.instance_id)
+        return True
+
+    def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
+        """Execute a command, auto-recovering from an instance that was
+        stopped or reaped out-of-band before retrying once.
+        """
+        result = super().execute(command, cwd, **kwargs)
+        if self._is_instance_gone(result.get("returncode", 0), result.get("output", "")):
+            if self._recreate_instance():
+                result = super().execute(command, cwd, **kwargs)
+        return result
+
     def cleanup(self):
         """Stop the instance. If persistent, the overlay dir survives."""
         if self._instance_started:

@@ -191,7 +191,7 @@ class TestDeepSeekAnthropicPreservesThinking:
             if not isinstance(m.get("content"), list):
                 continue
             for b in m["content"]:
-                if isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking"):
+                if isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}:
                     assert "cache_control" not in b
 
     def test_openai_compat_deepseek_base_is_not_matched(self) -> None:

@@ -88,8 +88,10 @@ gateway:
     not_enough:            "对话内容不足，无法压缩（至少需要 4 条消息）。"
     no_provider:           "未配置提供方 — 无法压缩。"
     nothing_to_do:         "暂无可压缩内容（对话记录仍全部为受保护上下文）。"
+    aggressive_unsupported: "不支持 --aggressive；请使用 '/compress here [N]' 只保留最近的对话，或使用 /undo 删除回合。"
     focus_line:            "聚焦：\"{topic}\""
     summary_failed:        "⚠️ 摘要生成失败（{error}）。{count} 条历史消息已被移除并替换为占位符；之前的上下文已无法恢复。建议检查 auxiliary.compression 模型配置。"
+    aborted:               "⚠️ 压缩已中止 ({error})。未删除任何消息 — 对话保持不变。运行 /compress 重试，运行 /reset 开始新会话，或检查你的 auxiliary.compression 模型配置。"
     aux_failed:            "ℹ️ 配置的压缩模型 `{model}` 失败（{error}）。已使用主模型恢复 — 上下文完好 — 但您可能想检查 config.yaml 中的 `auxiliary.compression.model`。"
     failed:                "压缩失败：{error}"
 
@@ -105,6 +107,8 @@ gateway:
     no_pending:            "没有待拒绝的命令。"
     denied_singular:       "❌ 命令已拒绝。"
     denied_plural:         "❌ 命令已拒绝（{count} 条命令）。"
+    denied_reason_singular: "❌ 命令已拒绝。 已将原因转达给代理: \"{reason}\""
+    denied_reason_plural:  "❌ 命令已拒绝（{count} 条命令）。 已将原因转达给代理: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast 仅适用于支持优先处理（Priority Processing）的 OpenAI 模型。"
@@ -148,6 +152,15 @@ gateway:
     subscribed_suffix:     "（已订阅 — 当 {task_id} 完成或被阻塞时将通知您）"
     truncated_suffix:      "…（已截断；如需完整输出请在终端运行 `hermes kanban …`）"
     no_output:             "（无输出）"
+    wake:
+      completed:           "已完成"
+      gave_up:             "已放弃（重试次数耗尽）"
+      crashed:             "崩溃（worker 异常退出），dispatcher 将重试"
+      timed_out:           "超时，dispatcher 将重试"
+      blocked:             "被阻塞，需要处理"
+      status_default:      "状态变化"
+      status_joiner:       "，"
+      message:             "[kanban] 任务 {task_id} {status}。\n标题: {title}\n执行者: @{assignee}\n看板: {board}\n\n请检查结果或决定下一步动作。"
 
   personality:
     none_configured:       "`{path}/config.yaml` 中未配置人格设定"
@@ -218,12 +231,24 @@ gateway:
 
   resume:
     db_unavailable:        "会话数据库不可用。"
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "未找到已命名的会话。\n使用 `/title 我的会话` 为当前会话命名，然后用 `/resume 我的会话` 返回。"
     list_header:           "📋 **已命名会话**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\n用法：`/resume <会话名称>`"
+    list_footer_numbered:  "\n用法：`/resume <会话名称>` 或 `/resume <编号>`（例如，`/resume 1` 表示最近的会话）"
     list_failed:           "无法列出会话：{error}"
+    out_of_range:          "恢复索引 {index} 超出范围。\n请使用不带参数的 `/resume` 查看可用会话。"
     not_found:             "未找到匹配 '**{name}**' 的会话。\n使用不带参数的 `/resume` 查看可用会话。"
     already_on:            "📌 已在会话 **{name}** 上。"
     switch_failed:         "切换会话失败。"
@@ -247,10 +272,20 @@ gateway:
 
   status:
     header:                "📊 **Hermes 网关状态**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**会话 ID：** `{session_id}`"
     title:                 "**标题：** {title}"
     created:               "**创建时间：** {timestamp}"
     last_activity:         "**最近活动：** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Token 数：** {tokens}"
     agent_running:         "**代理运行中：** {state}"
     state_yes:             "是 ⚡"
@@ -286,7 +321,8 @@ gateway:
 
   undo:
     nothing:               "没有可撤销的内容。"
-    removed:               "↩️ 已撤销 {count} 条消息。\n已移除：「{preview}」"
+    removed:               "↩️ 已撤销 {turns} 个回合（{count} 条消息）。\n已备份到：「{preview}」\n复制/编辑上面的文本并发送，即可从此处重新提问。"
+    invalid_count:         "无效的数量「{arg}」—— 请使用 /undo 或 /undo N。"
 
   update:
     platform_not_messaging:  "✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。"
@@ -309,11 +345,24 @@ gateway:
     label_cost_included:      "费用：已包含"
     label_context:            "上下文：{used} / {total}（{pct}%）"
     label_compressions:       "压缩次数：{count}"
+    breakdown_header: "🧩 **上下文明细** _(估算)_"
+    breakdown_line: "• {label}：约 {count} ({pct}%)"
+    breakdown_cat_system_prompt: "系统提示词"
+    breakdown_cat_tool_definitions: "工具定义"
+    breakdown_cat_rules: "规则"
+    breakdown_cat_skills: "技能"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "子代理定义"
+    breakdown_cat_memory: "记忆"
+    breakdown_cat_conversation: "对话"
     header_session_info:      "📊 **会话信息**"
     label_messages:           "消息数：{count}"
     label_estimated_context:  "估计上下文：~{count} 个令牌"
     detailed_after_first:     "_（首次代理响应后可查看详细使用情况）_"
     no_data:                  "此会话暂无使用数据。"
+
+  credits:
+    not_logged_in:            "未登录 Nous Portal。登录后即可查看额度余额并充值。"
 
   verbose:
     not_enabled:           "`/verbose` 命令未在消息平台启用。\n\n请在 `config.yaml` 中启用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -321,6 +370,7 @@ gateway:
     mode_new:              "⚙️ 工具进度：**NEW** — 工具变化时显示（预览长度：`display.tool_preview_length`，默认 40）。"
     mode_all:              "⚙️ 工具进度：**ALL** — 显示每次工具调用（预览长度：`display.tool_preview_length`，默认 40）。"
     mode_verbose:          "⚙️ 工具进度：**VERBOSE** — 显示每次工具调用及完整参数。"
+    mode_log:              "⚙️ 工具进度：**LOG** — 聊天中保持静默；工具调用写入 ~/.hermes/logs/tool_calls.log。"
     saved_suffix:          "_（已为 **{platform}** 保存 — 下一条消息生效）_"
     save_failed:           "_（无法保存到配置：{error}）_"
 
@@ -338,6 +388,8 @@ gateway:
     label_off:             "关闭（仅文本）"
     label_voice_only:      "开启（仅对语音消息进行语音回复）"
     label_all:             "TTS（对所有消息进行语音回复）"
+    help:                  "{toggle}\n\n**/voice 用法**\n• `/voice on` — 当你发送语音消息时用语音回复\n• `/voice tts` — 对*每条*消息都用语音回复\n• `/voice off` — 恢复为纯文本回复\n• `/voice status` — 显示当前模式\n• `/voice`（无参数）— 在开启和关闭之间快速切换{channels}"
+    help_channels:         "\n\n**实时语音频道 (Discord)**\n• 先加入一个语音频道，然后 `/voice channel` — 我会加入、聆听并用语音回复\n• `/voice leave` — 断开语音频道"
 
   yolo:
     disabled:                   "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"

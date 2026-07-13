@@ -10,7 +10,6 @@ The fix creates the AsyncOpenAI client lazily via _get_async_client() so
 each asyncio.run() gets a client bound to the current loop.
 """
 
-import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 

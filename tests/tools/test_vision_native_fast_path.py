@@ -11,10 +11,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from tools.vision_tools import (
     _build_native_vision_tool_result,
@@ -121,7 +119,9 @@ class TestVisionAnalyzeNative:
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert parsed.get("success") is False
-        assert "Invalid image source" in parsed.get("error", "")
+        # Unified resolver: local backend reports a clean not-found.
+        err = parsed.get("error", "").lower()
+        assert "image file not found" in err or "no active sandbox" in err
 
     def test_empty_image_url_returns_error(self):
         result = asyncio.get_event_loop().run_until_complete(
@@ -141,6 +141,44 @@ class TestVisionAnalyzeNative:
         assert isinstance(result, dict)
         assert result.get("_multimodal") is True
 
+    def test_oversized_image_resized_under_embed_cap(self, tmp_path):
+        """Regression for the wedged-session incident (May 2026).
+
+        A vision tool-result image is baked into conversation history and
+        re-sent on every subsequent turn.  Anthropic rejects any single
+        base64 image over 5 MB with a 400, and immutable history means the
+        bad bytes can't be cleared by retrying — the session is permanently
+        wedged.  The native fast path must proactively resize down to the
+        embed cap (well under 5 MB) BEFORE embedding, not just at the 20 MB
+        hard ceiling.  Skips if Pillow isn't available (resize is a no-op).
+        """
+        pytest = __import__("pytest")
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed — proactive resize is a no-op")
+
+        from tools.vision_tools import _EMBED_TARGET_BYTES
+
+        # Noisy PNG that base64-encodes to well over 5 MB (won't compress much).
+        big = tmp_path / "big.png"
+        Image.effect_noise((2600, 2600), 80).convert("RGB").save(big, format="PNG")
+        assert big.stat().st_size * 4 // 3 > 5 * 1024 * 1024, "test image not big enough"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(big), "describe")
+        )
+        assert isinstance(result, dict) and result.get("_multimodal") is True
+        url = next(
+            p["image_url"]["url"]
+            for p in result["content"]
+            if p.get("type") == "image_url"
+        )
+        assert len(url) <= _EMBED_TARGET_BYTES, (
+            f"embedded image {len(url) / 1024 / 1024:.1f} MB exceeds embed cap "
+            f"{_EMBED_TARGET_BYTES / 1024 / 1024:.0f} MB — would wedge sessions on Anthropic"
+        )
+
 
 # ─── _handle_vision_analyze fast-path gating ─────────────────────────────────
 
@@ -157,8 +195,14 @@ class TestHandleVisionAnalyzeFastPath:
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
         set_runtime_main("openrouter", "anthropic/claude-opus-4.6")
         try:
-            coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
-            result = asyncio.get_event_loop().run_until_complete(coro)
+            # Mock decide_image_input_mode to always return "native" so the
+            # fast path fires regardless of model-catalog state in CI.
+            with patch(
+                "agent.image_routing.decide_image_input_mode",
+                return_value="native",
+            ):
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
         finally:
             clear_runtime_main()
 
@@ -205,3 +249,57 @@ class TestHandleVisionAnalyzeFastPath:
 
         assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
             "Fast path fired for unknown provider; should have fallen through"
+
+    def test_supports_vision_override_bypasses_provider_allowlist(self, tmp_path):
+        """supports_vision=true enables the fast path on an unlisted provider."""
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        async def _aux_sentinel(*args, **kwargs):
+            return '{"sentinel": "aux-path"}'
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("brand-new-provider", "llava-v1.6")
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"supports_vision": True}},
+            ), patch(
+                "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
+            ) as mock_aux:
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        assert isinstance(result, dict) and result.get("_multimodal") is True
+        mock_aux.assert_not_called()
+
+    def test_text_mode_wins_over_supports_vision_override(self, tmp_path):
+        """Explicit text routing blocks the fast path even with supports_vision."""
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        async def _aux_sentinel(*args, **kwargs):
+            return '{"sentinel": "aux-path"}'
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("brand-new-provider", "llava-v1.6")
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "agent": {"image_input_mode": "text"},
+                    "model": {"supports_vision": True},
+                },
+            ), patch(
+                "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
+            ) as mock_aux:
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        assert isinstance(result, str)
+        assert json.loads(result) == {"sentinel": "aux-path"}
+        mock_aux.assert_called_once()

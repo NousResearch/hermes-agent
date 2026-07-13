@@ -980,6 +980,34 @@ def _normalize_job_optional_text(value: Any, *, strip_trailing_slash: bool = Fal
     return text or None
 
 
+def normalize_repeat(repeat):
+    """Validate and normalize the repeat count.
+
+    Accepts an int, or a digit-string like "5" (coerced to int).
+    Returns None for 0/negative (infinite) or when repeat is None;
+    raises ValueError on any other type so the caller's tool_error
+    handler surfaces a clean message.
+    """
+    if repeat is None:
+        return None
+    if isinstance(repeat, bool):                # bool is a subclass of int so reject explicitly
+        raise ValueError(
+            f"repeat must be an integer, got bool: {repeat!r}. "
+            "Omit for default or pass an integer like 5."
+        )
+    
+    if isinstance(repeat, int):
+        pass
+    elif isinstance(repeat, str) and repeat.strip().isdigit():
+        repeat = int(repeat.strip())
+    else:
+        raise ValueError(
+            f"repeat must be an integer, got {type(repeat).__name__}: {repeat!r}. "
+            "Omit for default or pass an integer like 5."
+        )
+    return None if repeat <= 0 else repeat
+
+
 def _compute_provider_model_snapshots(
     *,
     provider: Any,
@@ -1104,18 +1132,7 @@ def create_job(
     parsed_schedule = parse_schedule(schedule)
 
     # Normalize repeat: treat 0 or negative values as None (infinite)
-    if repeat is not None:
-        if isinstance(repeat, int):
-            pass  # valid
-        elif isinstance(repeat, str) and repeat.isdigit():
-            repeat = int(repeat)
-        else:
-            raise ValueError(
-                f"repeat must be an integer, got {type(repeat).__name__}: {repeat!r}. "
-                "Omit for default or pass an integer like 5."
-            )
-        if repeat <= 0:
-            repeat = None
+    repeat = normalize_repeat(repeat)
 
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:

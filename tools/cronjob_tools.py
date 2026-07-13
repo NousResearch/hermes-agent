@@ -32,6 +32,7 @@ from cron.jobs import (
     resolve_job_ref,
     resume_job,
     update_job,
+    normalize_repeat,
 )
 
 
@@ -360,8 +361,18 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
         raw_items = [skill] if skill else []
     elif isinstance(skills, str):
         raw_items = [skills]
-    else:
+    elif isinstance(skills, dict):
+        raise TypeError(
+            f"skills must be a list of strings, got a mapping: {skills!r}. "
+            "Pass skill names as a list, e.g. skills=['my-skill']."
+        )
+    elif isinstance(skills, (list, tuple)):
         raw_items = list(skills)
+    else:
+        raise TypeError(
+            f"skills must be a list of strings, got {type(skills).__name__}: {skills!r}. "
+            "Pass skill names as a list, e.g. skills=['my-skill']."
+        )
 
     normalized: List[str] = []
     for item in raw_items:
@@ -374,8 +385,6 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
         if text and text not in normalized:
             normalized.append(text)
     return normalized
-
-
 
 
 def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
@@ -711,27 +720,8 @@ def cronjob(
                 return tool_error("create requires either prompt or at least one skill", success=False)
 
             # Validate repeat type early
-            if repeat is not None:
-                if isinstance(repeat, int):
-                    pass  # valid
-                elif isinstance(repeat, str) and repeat.isdigit():
-                    repeat = int(repeat)
-                else:
-                    return tool_error(
-                        f"repeat must be an integer, got {type(repeat).__name__}: {repeat!r}. "
-                        "Omit for default or pass an integer like 5.",
-                        success=False,
-                    )
+            repeat = normalize_repeat(repeat)
 
-            # Validate skills list element types (defense-in-depth)
-            if skills is not None:
-                for i, item in enumerate(skills):
-                    if not isinstance(item, str):
-                        return tool_error(
-                            f"skills items must be strings, got {type(item).__name__}: {item!r}. "
-                            "Pass skill names as strings, e.g. skills=['my-skill'].",
-                            success=False,
-                        )
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
@@ -971,7 +961,7 @@ def cronjob(
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                normalized_repeat = normalize_repeat(repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state

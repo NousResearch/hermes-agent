@@ -26,6 +26,7 @@ class TelegramTopic:
     title: str
     chat_id: str
     thread_id: str
+    contract: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -97,11 +98,13 @@ def validate_telegram_topology(data: dict[str, Any]) -> TelegramTopology:
         title = str(raw.get("title", "")).strip()
         if not title:
             raise ValueError(f"topics.{key}.title is required")
+        contract = str(raw.get("contract", "")).strip() or None
         topics[key] = TelegramTopic(
             key=key,
             title=title,
             chat_id=chat_id,
             thread_id=thread_id,
+            contract=contract,
         )
 
     return TelegramTopology(
@@ -148,3 +151,26 @@ def operator_target_for_command(source: Any, home: Optional[Path] = None) -> Opt
         return None
 
     return {"chat_id": operator.chat_id, "thread_id": operator.thread_id}
+
+
+def topic_contract_for_source(source: Any, home: Optional[Path] = None) -> Optional[str]:
+    """Return the configured behavioral contract for an exact Telegram topic."""
+    topology = load_telegram_topology(home)
+    if topology is None:
+        return None
+
+    platform = getattr(source, "platform", None)
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value).lower() != "telegram":
+        return None
+    if str(getattr(source, "chat_id", "")).strip() != topology.chat_id:
+        return None
+
+    thread_id = getattr(source, "thread_id", None)
+    if thread_id is None:
+        return None
+    thread_id = str(thread_id).strip()
+    for topic in topology.topics.values():
+        if topic.thread_id == thread_id:
+            return topic.contract
+    return None

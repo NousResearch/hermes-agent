@@ -194,6 +194,27 @@ class TestBuildSessionContextPrompt:
         assert "Telegram" in prompt
         assert "Home Chat" in prompt
 
+    def test_telegram_topic_contract_is_injected_into_session_prompt(self):
+        config = GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")},
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1004298945366",
+            chat_name="ГЕРМЕС-групс",
+            chat_type="group",
+            thread_id="2671",
+        )
+        ctx = build_session_context(source, config)
+        with patch(
+            "gateway.telegram_topology.topic_contract_for_source",
+            return_value="CONTENT MODE: create and refine publication materials.",
+        ):
+            prompt = build_session_context_prompt(ctx)
+
+        assert "Telegram topic mode" in prompt
+        assert "CONTENT MODE" in prompt
+
     def test_bluebubbles_prompt_mentions_short_conversational_i_message_format(self):
         config = GatewayConfig(
             platforms={

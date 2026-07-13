@@ -6,7 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from gateway.platforms.base import SendResult
-from gateway.telegram_topology import operator_target_for_command, validate_telegram_topology
+from gateway.telegram_topology import (
+    operator_target_for_command,
+    topic_contract_for_source,
+    validate_telegram_topology,
+)
 
 
 CHAT_ID = "-1004298945366"
@@ -19,7 +23,11 @@ def valid_topology() -> dict:
         "chat_id": CHAT_ID,
         "topics": {
             "operator": {"title": "💬 Оператор", "thread_id": "2654"},
-            "briefings": {"title": "☀️ Брифінги", "thread_id": "2657"},
+            "briefings": {
+                "title": "☀️ Брифінги",
+                "thread_id": "2657",
+                "contract": "BRIEFING MODE: concise daily status only.",
+            },
             "alerts": {"title": "🔔 Алерти", "thread_id": "2661"},
             "input": {"title": "🎙 Вхід", "thread_id": "2664"},
             "reviews": {"title": "📊 Огляди", "thread_id": "2668"},
@@ -55,6 +63,29 @@ class TelegramC2TopologyTests(unittest.TestCase):
         self.assertEqual(len(topo.topics), 7)
         self.assertEqual(operator.thread_id, "2654")
         self.assertEqual(len({topic.thread_id for topic in topo.topics.values()}), 7)
+        self.assertEqual(
+            topo.topic("briefings").contract,
+            "BRIEFING MODE: concise daily status only.",
+        )
+
+    def test_topic_contract_matches_exact_telegram_chat_and_thread(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            write_topology(home, valid_topology())
+            self.assertEqual(
+                topic_contract_for_source(source("2657"), home=home),
+                "BRIEFING MODE: concise daily status only.",
+            )
+
+    def test_topic_contract_ignores_general_unknown_and_other_chat(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            write_topology(home, valid_topology())
+            self.assertIsNone(topic_contract_for_source(source("1"), home=home))
+            self.assertIsNone(topic_contract_for_source(source("9999"), home=home))
+            other = source("2657")
+            other.chat_id = "-1000000000000"
+            self.assertIsNone(topic_contract_for_source(other, home=home))
 
     def test_missing_topic_fails(self):
         data = valid_topology()

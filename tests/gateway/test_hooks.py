@@ -1,5 +1,6 @@
 """Tests for gateway/hooks.py — event hook system."""
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -97,6 +98,28 @@ class TestDiscoverAndLoad:
             reg.discover_and_load()
 
         assert len(reg.loaded_hooks) == 0
+
+    def test_skips_disabled_hook(self, tmp_path):
+        hook_dir = tmp_path / "disabled-hook"
+        hook_dir.mkdir()
+        (hook_dir / "HOOK.yaml").write_text(
+            "name: disabled-hook\n"
+            "description: This hook is disabled\n"
+            "events:\n"
+            "  - agent:start\n"
+            "enabled: false\n"
+        )
+        (hook_dir / "handler.py").write_text(
+            "def handle(event_type, context):\n    pass\n"
+        )
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+            reg.discover_and_load()
+
+        assert len(reg.loaded_hooks) == 0
+        assert "agent:start" not in reg._handlers
+        assert "hermes_hook_disabled-hook" not in sys.modules
 
     def test_multiple_hooks(self, tmp_path):
         _create_hook(tmp_path, "hook-a", '["agent:start"]',

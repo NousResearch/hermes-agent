@@ -40,9 +40,12 @@ events:
   - agent:start
   - agent:end
   - agent:step
+enabled: true  # optional, defaults to true
 ```
 
 The `events` list determines which events trigger your handler. You can subscribe to any combination of events, including wildcards like `command:*`.
+
+The optional `enabled` field controls whether the hook is loaded on gateway startup. It defaults to `true`; setting it to `false` skips handler loading entirely — the hook will not appear in `loaded_hooks` and its handler will not be registered for any events.
 
 #### handler.py
 

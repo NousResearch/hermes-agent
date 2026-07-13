@@ -3280,7 +3280,7 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 
 
 def recompute_ready(
-    conn: sqlite3.Connection, failure_limit: int = None,
+    conn: sqlite3.Connection, failure_limit: Optional[int] = None,
 ) -> int:
     """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
 
@@ -6034,16 +6034,27 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
+    wifexited = getattr(os, "WIFEXITED", None)
+    wexitstatus = getattr(os, "WEXITSTATUS", None)
+    wifsignaled = getattr(os, "WIFSIGNALED", None)
+    wtermsig = getattr(os, "WTERMSIG", None)
+    if (
+        wifexited is None
+        or wexitstatus is None
+        or wifsignaled is None
+        or wtermsig is None
+    ):
+        return ("unknown", None)
     try:
-        if os.WIFEXITED(raw):
-            code = os.WEXITSTATUS(raw)
+        if wifexited(raw):
+            code = wexitstatus(raw)
             if code == 0:
                 return ("clean_exit", 0)
             if code == KANBAN_RATE_LIMIT_EXIT_CODE:
                 return ("rate_limited", code)
             return ("nonzero_exit", code)
-        if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
+        if wifsignaled(raw):
+            return ("signaled", wtermsig(raw))
     except Exception:
         pass
     return ("unknown", None)
@@ -6770,7 +6781,7 @@ def _record_task_failure(
     error: str,
     *,
     outcome: str,
-    failure_limit: int = None,
+    failure_limit: Optional[int] = None,
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
@@ -6925,7 +6936,7 @@ def _record_spawn_failure(
     task_id: str,
     error: str,
     *,
-    failure_limit: int = None,
+    failure_limit: Optional[int] = None,
 ) -> bool:
     return _record_task_failure(
         conn, task_id, error,
@@ -8477,8 +8488,9 @@ def task_age(task: Task) -> dict:
     _co = _to_epoch(task.completed_at)
     age_since_created = now - _c if _c is not None else None
     age_since_started = now - _s if _s is not None else None
+    _start = _s if _s is not None else _c
     time_to_complete = (
-        _co - (_s or _c) if _co is not None else None
+        _co - _start if _co is not None and _start is not None else None
     )
     return {
         "created_age_seconds": age_since_created,

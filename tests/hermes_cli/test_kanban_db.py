@@ -3682,6 +3682,19 @@ def test_task_age_handles_corrupt_started_and_completed():
     assert age["time_to_complete_seconds"] is None
 
 
+def test_task_age_handles_completed_without_start_or_created():
+    """Completed-only corrupt rows should not try to subtract None."""
+    t = _make_task(
+        created_at=None,
+        started_at=None,
+        completed_at=1700000000,
+    )
+    age = kb.task_age(t)
+    assert age["created_age_seconds"] is None
+    assert age["started_age_seconds"] is None
+    assert age["time_to_complete_seconds"] is None
+
+
 def test_task_age_well_formed_task():
     """Regression: the safe-int path must not change behavior for normal data."""
     import time

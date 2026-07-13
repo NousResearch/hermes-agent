@@ -141,7 +141,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -887,7 +887,7 @@ END;
 FTS_TRIGRAM_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,
-    tokenize='trigram'
+    tokenize='simple'
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
@@ -953,6 +953,7 @@ class SessionDB:
         self._fts_enabled = False
         self._trigram_available = False
         self._simple_loaded = False
+        self._hermes_home = get_hermes_home()
         self._fts_unavailable_warned = False
         self._conn = None
         try:
@@ -974,6 +975,15 @@ class SessionDB:
                 )
                 self._conn.row_factory = sqlite3.Row
                 self._apply_read_pragmas()
+                if self._hermes_home:
+                    try:
+                        self._conn.enable_load_extension(True)
+                        simple_so = self._hermes_home / "libsimple" / "libsimple.so"
+                        if simple_so.exists():
+                            self._conn.load_extension(str(simple_so))
+                        self._conn.enable_load_extension(False)
+                    except Exception:
+                        pass
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1400,8 +1410,8 @@ class SessionDB:
             self._conn.execute("PRAGMA cache_size=-64000")       # 64 MB page cache
             self._conn.execute("PRAGMA mmap_size=2147483648")     # 2 GB mmap (address space, not RAM)
             self._conn.execute("PRAGMA temp_store=MEMORY")        # temp tables/storage in memory
-        except sqlite3.OperationalError:
-            pass  # read-only connection, acceptable
+        except sqlite3.OperationalError as exc:
+            logger.debug("read PRAGMAs not fully applied (read-only?): %s", exc)
 
     def _load_simple_extension(self):
         """Load the ``simple`` FTS5 tokenizer extension (jieba-based CJK).
@@ -1691,6 +1701,20 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 21:
+                # v21: migrate messages_fts_trigram from trigram to simple
+                # tokenizer for Chinese word segmentation.  The built-in
+                # trigram tokenizer splits CJK into individual characters
+                # producing false positives on multi-character queries.
+                # Drop the old table so _ensure_fts_schema recreates it
+                # with tokenize='simple' (FTS_TRIGRAM_SQL now uses
+                # tokenize='simple').  Triggers are dropped with the
+                # table and recreated below.
+                if self._simple_loaded and fts5_available:
+                    try:
+                        cursor.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+                    except sqlite3.OperationalError:
+                        pass
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",

@@ -49,6 +49,7 @@ def _make_context(
     chat_id="telegram:99999",
     platform=Platform.TELEGRAM,
     home_channels=None,
+    thread_id=None,
 ):
     source = SessionSource(
         platform=platform,
@@ -56,6 +57,7 @@ def _make_context(
         chat_type="dm",
         user_id=user_id,
         user_name=user_name,
+        thread_id=thread_id,
     )
     return SessionContext(
         source=source,
@@ -108,6 +110,61 @@ class TestBuildSessionContextPromptRedaction:
         ctx = _make_context(home_channels=hc)
         prompt = build_session_context_prompt(ctx, redact_pii=False)
         assert "99999" in prompt
+
+    def test_thread_target_uses_source_chat_not_home_channel(self):
+        """A thread outside home must not be advertised as a home-channel thread."""
+        home = {
+            Platform.TELEGRAM: HomeChannel(
+                platform=Platform.TELEGRAM,
+                chat_id="home-chat",
+                name="Home Chat",
+            )
+        }
+        ctx = _make_context(
+            chat_id="-1001234567890",
+            thread_id="456",
+            home_channels=home,
+        )
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert '`"telegram:-1001234567890:456"` → This thread' in prompt
+        assert '"telegram:home-chat:456"' not in prompt
+        assert "When sending to this thread" in prompt
+        assert "When sending to Telegram" not in prompt
+
+    def test_thread_target_does_not_require_home_channel(self):
+        ctx = _make_context(
+            chat_id="-1001234567890",
+            thread_id="456",
+            home_channels={},
+        )
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert '`"telegram:-1001234567890:456"` → This thread' in prompt
+
+    def test_redaction_omits_unusable_thread_target(self):
+        home = {
+            Platform.TELEGRAM: HomeChannel(
+                platform=Platform.TELEGRAM,
+                chat_id="home-chat",
+                name="Home Chat",
+            )
+        }
+        ctx = _make_context(
+            chat_id="source-chat-123",
+            thread_id="source-thread-456",
+            home_channels=home,
+        )
+
+        prompt = build_session_context_prompt(ctx, redact_pii=True)
+
+        assert "source-chat-123" not in prompt
+        assert "source-thread-456" not in prompt
+        assert "→ This thread" not in prompt
+        assert "explicit target for this thread is omitted" in prompt
+        assert 'Use `"origin"` for scheduled delivery' in prompt
 
     def test_redaction_is_deterministic(self):
         ctx = _make_context(user_id="+15551234567")

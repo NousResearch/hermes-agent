@@ -235,6 +235,30 @@ class TestBuildSessionContextPrompt:
         assert "Discord" in prompt
         assert "cannot search" in prompt.lower() or "do not have access" in prompt.lower()
 
+    def test_discord_thread_prompt_advertises_explicit_source_target(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    token="fake-discord-token",
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="123456789012345678",
+            chat_name="Server / thread",
+            chat_type="thread",
+            thread_id="123456789012345678",
+        )
+
+        prompt = build_session_context_prompt(build_session_context(source, config))
+
+        assert (
+            '`"discord:123456789012345678:123456789012345678"` → This thread'
+            in prompt
+        )
+
     def test_discord_prompt_stable_across_message_id(self):
         """The cached system prompt must NOT vary with the triggering message_id.
 

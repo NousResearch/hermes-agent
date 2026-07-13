@@ -3600,6 +3600,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         return True
 
+    def _is_telegram_dm_topic_thread(self, source: SessionSource) -> bool:
+        """True for a concrete non-General topic in a Telegram private chat.
+
+        Unlike ``_is_telegram_topic_lane``, this does not require Hermes topic
+        mode. Telegram clients can create DM topics independently, and their
+        visible titles should still mirror the generated session title.
+        """
+        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
+            return False
+        tid = str(source.thread_id or "")
+        return bool(tid and tid not in self._TELEGRAM_GENERAL_TOPIC_IDS)
+
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
 
     def _should_send_telegram_lobby_reminder(self, source: SessionSource) -> bool:
@@ -13818,7 +13830,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         title: str,
     ) -> None:
         """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
-        if not await asyncio.to_thread(self._is_telegram_topic_lane, source) or not source.chat_id or not source.thread_id:
+        if not await asyncio.to_thread(self._is_telegram_dm_topic_thread, source) or not source.chat_id or not source.thread_id:
             return
 
         # Operator can fully disable per-topic auto-rename via
@@ -13926,7 +13938,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         title: str,
     ) -> None:
         """Schedule a topic rename from the auto-title background thread."""
-        if not title or not self._is_telegram_topic_lane(source):
+        if not title or not self._is_telegram_dm_topic_thread(source):
             return
         if self._telegram_topic_auto_rename_disabled(source):
             return
@@ -19316,7 +19328,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "api_mode": getattr(agent, "api_mode", None),
                         } if agent else None,
                     }
-                    if self._is_telegram_topic_lane(source):
+                    if self._is_telegram_dm_topic_thread(source):
                         maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
                             source,
                             effective_session_id,

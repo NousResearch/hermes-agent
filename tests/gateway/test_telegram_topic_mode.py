@@ -914,6 +914,30 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_auto_generated_title_renames_dm_thread_without_topic_mode(tmp_path):
+    """Client-created DM topics should not depend on Hermes topic-mode state."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    runner = _make_runner(session_db=db)
+    source = _make_source(thread_id="42")
+
+    assert runner._is_telegram_topic_lane(source) is False
+    assert runner._is_telegram_dm_topic_thread(source) is True
+
+    await runner._rename_telegram_topic_for_session_title(
+        source,
+        "sess-topic",
+        "Recovered Topic Title",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="Recovered Topic Title",
+    )
+
+
+@pytest.mark.asyncio
 async def test_auto_generated_title_does_not_rename_topic_bound_to_other_session(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.apply_telegram_topic_migration()

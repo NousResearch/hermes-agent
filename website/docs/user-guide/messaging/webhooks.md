@@ -6,7 +6,7 @@ description: "Receive events from GitHub, GitLab, and other services to trigger 
 
 # Webhooks
 
-Receive events from external services (GitHub, GitLab, JIRA, Stripe, etc.) and trigger Hermes agent runs automatically. The webhook adapter runs an HTTP server that accepts POST requests, validates HMAC signatures, transforms payloads into agent prompts, and routes responses back to the source or to another configured platform.
+Receive events from external services (GitHub, GitLab, JIRA, Stripe, etc.) and trigger Hermes agent runs automatically. The webhook adapter runs an HTTP server that accepts POST requests, validates route authentication, transforms payloads into agent prompts, and routes responses back to the source or to another configured platform.
 
 The agent processes the event and can respond by posting comments on PRs, sending messages to Telegram/Discord, or logging the result.
 
@@ -68,6 +68,37 @@ Expected response:
 {"status": "ok", "platform": "webhook"}
 ```
 
+For direct-delivery routes, also check target readiness:
+
+```bash
+curl http://localhost:8644/ready
+```
+
+`GET /ready` returns `200 OK` when every `deliver_only` route has a usable delivery target and `503 Service Unavailable` when any direct-delivery route is not ready. The JSON body includes per-route and per-target status, for example:
+
+```json
+{
+  "status": "not_ready",
+  "platform": "webhook",
+  "routes": {
+    "ops-alerts": {
+      "status": "not_ready",
+      "deliver": "discord",
+      "reason": "platform discord not connected"
+    }
+  },
+  "targets": {
+    "discord": {
+      "status": "not_ready",
+      "routes": ["ops-alerts"],
+      "reason": "platform discord not connected"
+    }
+  }
+}
+```
+
+Only `deliver_only` routes are included because agent-mode routes can accept the event before the final delivery target is used. `github_comment` routes are considered ready here because the `gh` CLI is checked at delivery time.
+
 ---
 
 ## Configuring Routes {#configuring-routes}
@@ -79,8 +110,9 @@ Routes define how different webhook sources are handled. Each route is a named e
 | Property | Required | Description |
 |----------|----------|-------------|
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
-| `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
+| `secret` | **Yes** | Shared route secret. Preferred use is HMAC signature validation. Static bearer-token headers can use the same secret only for producers that cannot compute HMACs and only inside the enforced trusted-network boundary; see [Static bearer-token auth](#static-bearer-token-auth). Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for local testing only (skips validation). |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
+| `formatter` | No | Deterministic formatter for the rendered message. Set `formatter: alert_event` for compact operational alert/digest messages instead of a free-form `prompt` template. See [Alert event formatter](#alert-event-formatter). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
 | `script` | No | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
 | `skills` | No | List of skill names to load for the agent run. |
@@ -206,6 +238,65 @@ prompt: "PR #{pull_request.number} by {pull_request.user.login}: {__raw__}"
 If no `prompt` template is configured for a route, the entire payload is dumped as indented JSON (truncated at 4000 characters).
 
 The same dot-notation templates work in `deliver_extra` values.
+
+### Alert event formatter {#alert-event-formatter}
+
+Set `formatter: alert_event` when a route receives structured operational alerts and should produce a compact, deterministic chat message without invoking the agent or dumping raw JSON. This is most useful with `deliver_only: true` routes that forward monitoring alerts or digest events to Discord, Telegram, Slack, or another chat platform.
+
+When `formatter: alert_event` is set, the formatter ignores `prompt` and renders the payload using this schema:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `source` | No | Producer or watcher name, such as `rack-util/librenms-heartbeat`. Defaults to the route name. |
+| `kind` | No | Machine-readable event kind, such as `monitor_target_down`, `heartbeat_alive`, or `backup_failed`. Defaults to `event`. |
+| `severity` | No | Display severity. Known values include `critical`, `error`, `warning`, `warn`, `digest`, `summary`, `info`, and `ok`. Controls the leading icon. Defaults to `info`. |
+| `state` | No | Event state, such as `firing`, `recovered`, `resolved`, `ok`, or `summary`. Recovered/OK states force a success icon; `summary` is omitted from the metadata line. |
+| `summary` | No | Human-readable one-line summary. Defaults to a title-cased version of `kind`. |
+| `host` | No | Host or device involved in the alert. Included in the metadata line when present. |
+| `details` | No | Object of additional scalar details. Preferred keys (`target_ip`, `checked_at`, `since`, `recovered`, `downtime_since`, `fails`, `threshold`, `note`) are shown first; other keys are sorted and included compactly. |
+
+Example route:
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        ops-alerts:
+          secret: "ops-alert-secret"
+          deliver: "discord"
+          deliver_only: true
+          formatter: "alert_event"
+          deliver_extra:
+            chat_id: "123456789012345678"
+```
+
+Example payload:
+
+```json
+{
+  "source": "rack-util/librenms-heartbeat",
+  "kind": "monitor_target_down",
+  "severity": "critical",
+  "state": "firing",
+  "summary": "LibreNMS heartbeat failed 3 consecutive checks on rack-util",
+  "host": "rack-util",
+  "details": {
+    "target_ip": "10.10.99.60",
+    "fails": 3,
+    "threshold": 3
+  }
+}
+```
+
+Rendered message:
+
+```text
+🚨 **LibreNMS heartbeat failed 3 consecutive checks on rack-util**
+source: `rack-util/librenms-heartbeat` · host: `rack-util` · state: `firing` · kind: `monitor_target_down`
+target_ip: `10.10.99.60` · fails: `3` · threshold: `3`
+```
 
 ### Forum Topic Delivery
 
@@ -338,8 +429,9 @@ Benefits:
 
 - **Zero LLM tokens** — the agent is never invoked
 - **Sub-second delivery** — a single adapter call, no reasoning loop
-- **Same security as agent mode** — HMAC auth, rate limits, idempotency, and body-size limits all still apply
+- **Same security as agent mode** — route auth, rate limits, idempotency, and body-size limits all still apply
 - **Synchronous response** — the POST returns `200 OK` once delivery succeeds, or `502` if the target rejects it, so your upstream service can retry intelligently
+- **Readiness probe** — `GET /ready` reports whether direct-delivery routes can reach their target platform before producers start sending alerts
 
 ### Example: Telegram push from Supabase
 
@@ -379,19 +471,21 @@ hermes webhook subscribe antenna-matches \
 |--------|---------|
 | `200 OK` | Delivered successfully. Body: `{"status": "delivered", "route": "...", "target": "...", "delivery_id": "..."}` |
 | `200 OK` (status=duplicate) | Duplicate `X-GitHub-Delivery` ID within the idempotency TTL (1 hour). Not re-delivered. |
-| `401 Unauthorized` | HMAC signature invalid or missing. |
+| `401 Unauthorized` | Route auth invalid or missing: HMAC signature failed, static token mismatched, or static token was sent from outside the trusted-network boundary. |
 | `400 Bad Request` | Malformed JSON body. |
 | `404 Not Found` | Unknown route name. |
 | `413 Payload Too Large` | Body exceeded `max_body_bytes`. |
 | `429 Too Many Requests` | Route rate limit exceeded. |
 | `502 Bad Gateway` | Target adapter rejected the message or raised. The error is logged server-side; the response body is a generic `Delivery failed` to avoid leaking adapter internals. |
+| `503 Service Unavailable` | `GET /ready` found at least one `deliver_only` route whose target platform is not connected/running or whose target is unknown. |
 
 ### Configuration gotchas
 
 - `deliver_only: true` requires `deliver` to be a real target. `deliver: log` (or omitting `deliver`) is rejected at startup — the adapter refuses to start if it finds a misconfigured route.
 - The `skills` field is ignored in direct delivery mode (no agent runs, so there's nothing to inject skills into).
-- Template rendering uses the same `{dot.notation}` syntax as agent mode, including the `{__raw__}` token.
+- Template rendering uses the same `{dot.notation}` syntax as agent mode, including the `{__raw__}` token, unless `formatter: alert_event` is set.
 - Idempotency uses the same `X-GitHub-Delivery` / `X-Request-ID` header — retries with the same ID return `status=duplicate` and do NOT re-deliver.
+- Use `GET /ready` in monitoring/producer startup checks when delivery loss matters. A healthy `/health` response only proves the webhook HTTP server is alive; it does not prove Discord/Telegram/etc. is connected.
 
 ---
 
@@ -449,16 +543,43 @@ The agent can create subscriptions via the terminal tool when guided by the `web
 
 The webhook adapter includes multiple layers of security:
 
-### HMAC signature validation
+### Route authentication
 
-The adapter validates incoming webhook signatures using the appropriate method for each source:
+The adapter validates every authenticated route with one of the supported mechanisms below. **HMAC is preferred** because it proves both possession of the secret and integrity of the exact request body.
 
 - **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
 - **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
 - **Generic (V1, legacy)**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest of the body only. Still accepted for backward compatibility, but it has no replay protection (a captured request replays indefinitely); the gateway logs a deprecation warning once per route. Switch senders to V2.
+- **Static bearer token (restricted fallback)**: the `Authorization` header with the `Bearer` scheme, or `X-Webhook-Token`, where the supplied value exactly matches the route secret. Use only for producers that cannot compute HMACs.
 
-If a secret is configured but no recognized signature header is present, the request is rejected.
+If a secret is configured but no recognized auth header is present, the request is rejected.
+
+### Static bearer-token auth {#static-bearer-token-auth}
+
+Static bearer-token auth exists for webhook producers that can set a fixed HTTP header but cannot compute an HMAC over the request body. HMAC remains the safer default and should be used whenever the producer supports it.
+
+Supported static-token headers:
+
+```http
+Authorization: Bearer <route-secret>
+X-Webhook-Token: <route-secret>
+```
+
+The static token is the same value as the route's `secret` (or the global fallback `secret`). Do not use both static-token headers and HMAC headers on the same producer; choose one mode and monitor failures clearly.
+
+:::warning
+Static bearer tokens are replayable. Anyone who captures the header can resend it until the route secret is rotated, and the token does not prove that the request body was not modified. Use static-token auth only when all of these are true:
+
+- The producer cannot compute HMAC signatures.
+- The webhook request travels over HTTPS or a private, trusted network path.
+- The gateway's enforced boundary accepts the request as trusted only when every visible source address is local/private/link-local. Hermes checks the actual peer address observed by the webhook server plus any `X-Forwarded-For` entries and `Forwarded` `for=` values; all of them must parse as loopback, private/non-public, or link-local addresses. A public address in any visible hop is rejected for static-token auth.
+- Forwarding headers do not make a request trusted by themselves; they are treated as additional evidence that can only narrow acceptance. If you terminate TLS at a proxy, run the webhook listener on loopback/private networking behind that proxy and do not expose the listener directly to the internet.
+
+HMAC signatures do not have this trusted-network restriction and remain the correct choice for internet-facing webhooks.
+:::
+
+This boundary is intentionally narrow: it preserves static headers for LAN-only appliances while preventing a replayable bearer secret from becoming a public webhook credential on the default `0.0.0.0` bind.
 
 ### Secret is required
 
@@ -497,7 +618,7 @@ platforms:
 ### Authenticated does not mean trusted
 
 :::warning
-**HMAC validation authenticates the _sender_, not the _content_.** A valid signature only proves the request came from a party holding the route's secret (e.g. GitHub). It says nothing about who wrote the _business fields_ inside the payload — PR titles, commit messages, issue descriptions, and any other upstream text are authored by arbitrary third parties and must be treated as untrusted.
+**Webhook authentication authenticates the _sender_, not the _content_.** A valid HMAC signature or accepted static token only proves the request came from a party holding the route's secret (e.g. GitHub or a trusted LAN appliance). It says nothing about who wrote the _business fields_ inside the payload — PR titles, commit messages, issue descriptions, alert summaries, and any other upstream text are authored by arbitrary third parties and must be treated as untrusted.
 
 This is the same trust model that applies to everything the agent reads: web pages, files, and tool output are all untrusted input. Hermes does not — and cannot reliably — sanitize untrusted text with a blocklist; phrasing, encoding, and translation make that trivially bypassable. **The trust boundary is the agent's capability surface, not the input channel.** Harden there:
 
@@ -517,13 +638,24 @@ This is the same trust model that applies to everything the agent reads: web pag
 - Check firewall rules — port `8644` (or your configured port) must be open
 - Verify the URL path matches: `http://your-server:8644/webhooks/<route-name>`
 - Use the `/health` endpoint to confirm the server is running
+- For `deliver_only` routes, use `/ready` to confirm the target platform is connected/running before sending production alerts
 
-### Signature validation failing
+### Auth validation failing
 
 - Ensure the secret in your route config exactly matches the secret configured in the webhook source
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
-- Check gateway logs for `Invalid signature` warnings
+- For generic producers, prefer `X-Webhook-Signature-V2` + `X-Webhook-Timestamp`
+- For static-token producers, verify the header is either `Authorization` using the `Bearer` scheme or `X-Webhook-Token`, and verify the request reaches the webhook server from an allowed loopback/private/link-local peer address. Public-source static-token requests are rejected even when the token is correct.
+- Check gateway logs for `Invalid auth` or `Invalid signature` warnings
+
+### `/ready` returns `not_ready`
+
+- Inspect the `routes` object in the response; each `deliver_only` route includes the target and reason.
+- `platform <name> not connected` means the target gateway adapter is not connected. Enable/configure that platform and restart the gateway if needed.
+- `platform <name> not running` or `platform <name> fatal error` means the target adapter exists but is not usable; check gateway logs for the platform-specific failure.
+- `unknown delivery platform` means the route's `deliver` value is not a known gateway platform or plugin platform.
+- `github_comment` routes are intentionally considered ready by `/ready`; install/authenticate `gh` separately because it is checked at delivery time.
 
 ### Event being ignored
 

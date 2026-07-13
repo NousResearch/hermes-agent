@@ -292,13 +292,105 @@ class TestSignatureBeforeRateLimit:
 class TestBearerTokenAuth:
     """Static bearer-token auth for producers that cannot compute HMAC."""
 
+    @pytest.mark.parametrize(
+        "auth_headers",
+        [
+            pytest.param({"Authorization": "Bearer TOKEN"}, id="authorization-bearer"),
+            pytest.param({"X-Webhook-Token": "TOKEN"}, id="x-webhook-token"),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_bearer_token_auth_accepts_valid_token(self):
+    async def test_static_token_auth_accepts_valid_token_from_trusted_source(
+        self, auth_headers
+    ):
         secret = "test-bearer-token"
         route_name = "pbs-alerts"
         routes = {
             route_name: {
                 "secret": secret,
+                "prompt": "Event: {event}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        captured_events = []
+
+        async def _capture(event):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+        body = json.dumps(SIMPLE_PAYLOAD).encode()
+        headers = {
+            "Content-Type": "application/json",
+            "X-Request-ID": "static-token-good-001",
+        }
+        headers.update({k: v.replace("TOKEN", secret) for k, v in auth_headers.items()})
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/webhooks/{route_name}",
+                data=body,
+                headers=headers,
+            )
+            assert resp.status == 202
+
+        assert len(captured_events) == 1
+
+    @pytest.mark.parametrize(
+        "auth_headers",
+        [
+            pytest.param({"Authorization": "Bearer TOKEN"}, id="authorization-bearer"),
+            pytest.param({"X-Webhook-Token": "TOKEN"}, id="x-webhook-token"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_static_token_auth_rejects_public_forwarded_source(
+        self, auth_headers
+    ):
+        secret = "test-bearer-token"
+        route_name = "pbs-alerts"
+        routes = {
+            route_name: {
+                "secret": secret,
+                "prompt": "Event: {event}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        captured_events = []
+
+        async def _capture(event):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+        body = json.dumps(SIMPLE_PAYLOAD).encode()
+        headers = {
+            "Content-Type": "application/json",
+            "X-Forwarded-For": "8.8.8.8",
+            "X-Request-ID": "static-token-public-001",
+        }
+        headers.update({k: v.replace("TOKEN", secret) for k, v in auth_headers.items()})
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/webhooks/{route_name}",
+                data=body,
+                headers=headers,
+            )
+            assert resp.status == 401
+
+        assert captured_events == []
+
+    @pytest.mark.asyncio
+    async def test_hmac_signature_accepts_public_forwarded_source(self):
+        secret = "test-hmac-secret"
+        route_name = "github-alerts"
+        routes = {
+            route_name: {
+                "secret": secret,
+                "events": ["push"],
                 "prompt": "Event: {event}",
                 "deliver": "log",
             }
@@ -319,8 +411,10 @@ class TestBearerTokenAuth:
                 data=body,
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {secret}",
-                    "X-Request-ID": "bearer-good-001",
+                    "X-GitHub-Event": "push",
+                    "X-Hub-Signature-256": _github_signature(body, secret),
+                    "X-Forwarded-For": "8.8.8.8",
+                    "X-GitHub-Delivery": "hmac-public-001",
                 },
             )
             assert resp.status == 202

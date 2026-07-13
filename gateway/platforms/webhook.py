@@ -35,6 +35,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import re
@@ -104,6 +105,67 @@ def _is_loopback_host(host: str) -> bool:
     if not host:
         return False
     return host.strip().lower() in _LOOPBACK_HOSTS
+
+
+def _normalize_ip_literal(value: str) -> str:
+    """Extract a bare IP literal from forwarded/peer address header values."""
+    value = value.strip().strip('"')
+    if not value:
+        return ""
+    if value.startswith("["):
+        end = value.find("]")
+        if end != -1:
+            return value[1:end]
+    if value.count(":") == 1 and value.rsplit(":", 1)[1].isdigit():
+        return value.rsplit(":", 1)[0]
+    return value
+
+
+def _is_trusted_static_token_source(value: str) -> bool:
+    """Return true for source IPs that are suitable for static-token auth."""
+    literal = _normalize_ip_literal(value)
+    if not literal:
+        return False
+    try:
+        ip = ipaddress.ip_address(literal)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+def _static_token_request_sources(request: Any) -> list[str]:
+    """Return client/proxy source addresses relevant to static-token auth.
+
+    Static bearer tokens are intentionally weaker than HMAC signatures. When
+    a reverse proxy forwards a public request to a loopback-bound Hermes
+    gateway, `request.remote` alone looks safe. Include common forwarding
+    headers and require every visible hop to be private/link-local/loopback so
+    a public client cannot be laundered through a local proxy.
+    """
+    sources: list[str] = []
+
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    if forwarded_for:
+        sources.extend(part.strip() for part in forwarded_for.split(",") if part.strip())
+
+    forwarded = request.headers.get("Forwarded", "")
+    if forwarded:
+        for entry in forwarded.split(","):
+            for part in entry.split(";"):
+                key, sep, header_value = part.strip().partition("=")
+                if sep and key.lower() == "for":
+                    sources.append(header_value.strip())
+
+    if request.remote:
+        sources.append(request.remote)
+
+    return sources
+
+
+def _is_trusted_static_token_request(request: Any) -> bool:
+    """True when a static token arrived only from trusted local/LAN sources."""
+    sources = _static_token_request_sources(request)
+    return bool(sources) and all(_is_trusted_static_token_source(src) for src in sources)
 
 
 def check_webhook_requirements() -> bool:
@@ -989,10 +1051,22 @@ class WebhookAdapter(BasePlatformAdapter):
         auth = request.headers.get("Authorization", "")
         prefix = "Bearer "
         if auth.startswith(prefix):
+            if not _is_trusted_static_token_request(request):
+                logger.warning(
+                    "[webhook] Static bearer token rejected for untrusted source(s): %s",
+                    _static_token_request_sources(request),
+                )
+                return False
             return hmac.compare_digest(auth[len(prefix) :], secret)
 
         token = request.headers.get("X-Webhook-Token", "")
         if token:
+            if not _is_trusted_static_token_request(request):
+                logger.warning(
+                    "[webhook] Static X-Webhook-Token rejected for untrusted source(s): %s",
+                    _static_token_request_sources(request),
+                )
+                return False
             return hmac.compare_digest(token, secret)
 
         return self._validate_signature(request, body, secret)

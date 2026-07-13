@@ -325,6 +325,160 @@ class TestChannelInfo:
 
 
 # ---------------------------------------------------------------------------
+# Action: create_channel
+# ---------------------------------------------------------------------------
+
+class TestCreateChannel:
+    @patch("tools.discord_tool._discord_request")
+    def test_create_text_channel_request_and_response(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.return_value = {
+            "id": "900",
+            "name": "ops_alerts",
+            "type": 0,
+            "guild_id": "111",
+            "parent_id": "10",
+            "topic": "Operational alerts",
+        }
+
+        result = json.loads(discord_admin_handler(
+            action="create_channel",
+            guild_id="111",
+            name="Ops_Alerts",
+            channel_type="text",
+            topic="Operational alerts",
+            parent_id="10",
+        ))
+
+        assert result == {
+            "success": True,
+            "channel_id": "900",
+            "name": "ops_alerts",
+            "type": "text",
+            "guild_id": "111",
+            "parent_id": "10",
+            "topic": "Operational alerts",
+        }
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/channels", "test-token",
+            body={
+                "name": "ops_alerts",
+                "type": 0,
+                "topic": "Operational alerts",
+                "parent_id": "10",
+            },
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_voice_channel_ignores_topic(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.return_value = {
+            "id": "901", "name": "standup", "type": 2, "guild_id": "111",
+            "parent_id": "10",
+        }
+
+        result = json.loads(discord_admin_handler(
+            action="create_channel",
+            guild_id="111",
+            name="standup",
+            channel_type="voice",
+            topic="voice channels cannot have a topic",
+            parent_id="10",
+        ))
+
+        assert result["success"] is True
+        assert result["type"] == "voice"
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/111/channels", "test-token",
+            body={"name": "standup", "type": 2, "parent_id": "10"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_channel_requires_guild_id_and_name(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+
+        missing_guild = json.loads(discord_admin_handler(
+            action="create_channel", name="ops-alerts",
+        ))
+        missing_name = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111",
+        ))
+
+        assert "guild_id" in missing_guild["error"]
+        assert "name" in missing_name["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_channel_rejects_unsupported_channel_type_without_api_call(
+        self, mock_req, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+
+        result = json.loads(discord_admin_handler(
+            action="create_channel",
+            guild_id="111",
+            name="ops-alerts",
+            channel_type="thread",
+        ))
+
+        assert "Unsupported channel_type" in result["error"]
+        assert "text" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_channel_rejects_invalid_name_without_api_call(
+        self, mock_req, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+
+        result = json.loads(discord_admin_handler(
+            action="create_channel",
+            guild_id="111",
+            name="bad channel name!",
+        ))
+
+        assert "Invalid channel name" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_channel_403_is_enriched(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.side_effect = DiscordAPIError(403, '{"message":"Missing Permissions"}')
+
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="ops-alerts",
+        ))
+
+        assert "error" in result
+        assert "MANAGE_CHANNELS" in result["error"]
+        assert "Missing Permissions" in result["error"]
+
+
+# ---------------------------------------------------------------------------
 # Action: list_roles
 # ---------------------------------------------------------------------------
 
@@ -616,6 +770,19 @@ class TestRegistration:
         assert props["limit"]["maximum"] == 100
         assert props["auto_archive_duration"]["enum"] == [60, 1440, 4320, 10080]
 
+    def test_admin_schema_create_channel_parameters(self):
+        from tools.registry import registry
+        entry = registry._tools["discord_admin"]
+        props = entry.schema["parameters"]["properties"]
+        actions = entry.schema["parameters"]["properties"]["action"]["enum"]
+        assert "create_channel" in actions
+        assert props["channel_type"]["enum"] == [
+            "text", "voice", "category", "announcement", "forum", "media",
+        ]
+        assert props["topic"]["description"] == "Channel topic for create_channel."
+        assert props["parent_id"]["description"] == "Category parent ID for create_channel."
+        assert "create_channel" in props["name"]["description"]
+
     def test_core_schema_description(self):
         """Core schema description should mention core actions."""
         from tools.registry import registry
@@ -634,6 +801,7 @@ class TestRegistration:
         entry = registry._tools["discord_admin"]
         desc = entry.schema["description"]
         assert "list_guilds()" in desc
+        assert "create_channel(guild_id, name)" in desc
         assert "add_role(guild_id, user_id, role_id)" in desc
         assert "delete_message(channel_id, message_id)" in desc
         # Core actions should NOT be in admin description
@@ -1191,6 +1359,22 @@ class TestRuntimeAllowlistEnforcement:
         result = json.loads(discord_admin_handler(action="list_guilds"))
         assert "guilds" in result
 
+    @patch("tools.discord_tool._discord_request")
+    def test_create_channel_is_governed_by_runtime_allowlist(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": "list_guilds"}},
+        )
+
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="111", name="ops-alerts",
+        ))
+
+        assert "disabled by config" in result["error"]
+        assert "list_guilds" in result["error"]
+        mock_req.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # 403 enrichment
@@ -1206,6 +1390,11 @@ class Test403Enrichment:
         msg = _enrich_403("some_new_action", '{"message":"weird"}')
         assert "some_new_action" in msg
         assert "weird" in msg
+
+    def test_create_channel_enrichment_mentions_manage_channels(self):
+        msg = _enrich_403("create_channel", '{"message":"Missing Permissions"}')
+        assert "MANAGE_CHANNELS" in msg
+        assert "Missing Permissions" in msg
 
     @patch("tools.discord_tool._discord_request")
     def test_403_in_runtime_is_enriched(self, mock_req, monkeypatch):

@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  applyZoomLevel,
   clampZoomLevel,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
@@ -118,31 +119,42 @@ test('unknown window kinds default to chat (zoom enabled)', () => {
   assert.deepEqual(zoomWiringForWindowKind('unknown'), { zoom: true })
   assert.deepEqual(zoomWiringForWindowKind(undefined), { zoom: true })
 })
-// Source assertion, same pattern as the pet-overlay test above: verifies the
-// fix for the UI Scale settings control drifting out of sync after a restart.
-// restorePersistedZoomLevel correctly re-applies the persisted zoom level to
-// the window, but must also notify the renderer — otherwise the renderer's
-// $zoomPercent store (see store/zoom.ts), which only updates from zoom.get()
-// (called once on load) and 'hermes:zoom:changed' events, can be left with a
-// stale value if zoom.get() resolves before the restore finishes, leaving the
-// Appearance settings UI Scale control showing the wrong preset even though
-// the window's actual zoom level was correctly restored.
-test('restorePersistedZoomLevel notifies the renderer, same as setAndPersistZoomLevel', () => {
-  const electronDir = path.dirname(fileURLToPath(import.meta.url))
-  const source = fs.readFileSync(path.join(electronDir, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
 
-  const restoreStart = source.indexOf('function restorePersistedZoomLevel(window)')
-  assert.notEqual(restoreStart, -1, 'missing restorePersistedZoomLevel')
+// The UI Scale settings control drifts out of sync after a restart when zoom
+// is applied to the window but the renderer is never told: its $zoomPercent
+// store (see store/zoom.ts) only updates from zoom.get() (once, on load) and
+// 'hermes:zoom:changed' events. applyZoomLevel is the single funnel every zoom
+// path (user set, restore-on-load, lifecycle re-assert) shares, so applying a
+// level always notifies — the regression can't come back by forgetting a send.
+function fakeWebContents() {
+  const calls: Array<[string, ...unknown[]]> = []
 
-  const snippet = source.slice(restoreStart, restoreStart + 600)
-  const setZoomIndex = snippet.indexOf('window.webContents.setZoomLevel(level)')
-  const sendIndex = snippet.indexOf("window.webContents.send('hermes:zoom:changed'")
+  return {
+    calls,
+    setZoomLevel: (level: number) => calls.push(['setZoomLevel', level]),
+    send: (channel: string, payload: unknown) => calls.push(['send', channel, payload])
+  }
+}
 
-  assert.notEqual(setZoomIndex, -1, 'restorePersistedZoomLevel must apply the restored zoom level')
-  assert.notEqual(
-    sendIndex,
-    -1,
-    'restorePersistedZoomLevel must notify the renderer after restoring zoom, or the UI Scale control can show a stale preset'
-  )
-  assert.ok(sendIndex > setZoomIndex, 'the renderer notification must happen after the zoom level is applied')
+test('applyZoomLevel applies the level then notifies the renderer', () => {
+  const wc = fakeWebContents()
+  const applied = applyZoomLevel(wc, 3)
+
+  assert.equal(applied, 3)
+  assert.deepEqual(wc.calls, [
+    ['setZoomLevel', 3],
+    ['send', 'hermes:zoom:changed', { level: 3, percent: zoomLevelToPercent(3) }]
+  ])
+})
+
+test('applyZoomLevel clamps garbage before applying and notifying', () => {
+  const wc = fakeWebContents()
+  const applied = applyZoomLevel(wc, 999)
+  const clamped = clampZoomLevel(999)
+
+  assert.equal(applied, clamped)
+  assert.deepEqual(wc.calls, [
+    ['setZoomLevel', clamped],
+    ['send', 'hermes:zoom:changed', { level: clamped, percent: zoomLevelToPercent(clamped) }]
+  ])
 })

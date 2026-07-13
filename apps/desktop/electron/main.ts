@@ -4705,7 +4705,7 @@ function installPreviewShortcut(window) {
 // process owns setZoomLevel, so we mirror each change into localStorage and
 // read it back on did-finish-load to re-apply after reloads or crash recovery.
 import {
-  clampZoomLevel,
+  applyZoomLevel,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
   ZOOM_STORAGE_KEY,
@@ -4718,11 +4718,9 @@ function setAndPersistZoomLevel(window, zoomLevel) {
     return
   }
 
-  const next = clampZoomLevel(zoomLevel)
-  window.webContents.setZoomLevel(next)
-  // Keep any open settings UI in sync, including changes made via the
-  // keyboard shortcuts or the View menu.
-  window.webContents.send('hermes:zoom:changed', { level: next, percent: zoomLevelToPercent(next) })
+  // Apply + notify in one funnel so the settings UI stays in sync, including
+  // changes made via the keyboard shortcuts or the View menu.
+  const next = applyZoomLevel(window.webContents, zoomLevel)
   window.webContents
     .executeJavaScript(
       `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`
@@ -4744,9 +4742,9 @@ function restorePersistedZoomLevel(window) {
         return
       }
 
-      const level = clampZoomLevel(Number(stored))
-      window.webContents.setZoomLevel(level)
-	  window.webContents.send('hermes:zoom:changed', { level, percent: zoomLevelToPercent(level) })
+      // Notify the renderer too — otherwise the Appearance UI Scale control
+      // can stay stuck at 100% even though the window zoom was restored.
+      applyZoomLevel(window.webContents, Number(stored))
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
 }

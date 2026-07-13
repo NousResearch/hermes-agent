@@ -125,6 +125,7 @@ class TestSlackFullManifest:
 
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         assert "app_home_opened" in bot_events
+        assert "app_context_changed" in bot_events
         assert "message.im" in bot_events
         assert "assistant_thread_started" not in bot_events
         assert "assistant_thread_context_changed" not in bot_events

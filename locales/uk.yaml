@@ -88,6 +88,7 @@ gateway:
     not_enough:            "Недостатньо розмови для стиснення (потрібно щонайменше 4 повідомлення)."
     no_provider:           "Постачальника не налаштовано — неможливо стиснути."
     nothing_to_do:         "Поки що немає що стискати (стенограма все ще є повністю захищеним контекстом)."
+    aggressive_unsupported: "--aggressive не підтримується; використовуйте '/compress here [N]', щоб зберегти лише останні обміни, або /undo, щоб видалити ходи."
     focus_line:            "Фокус: \"{topic}\""
     summary_failed:        "⚠️ Не вдалося згенерувати зведення ({error}). {count} історичних повідомлень було видалено та замінено заповнювачем; попередній контекст більше не можна відновити. Перевірте конфігурацію моделі auxiliary.compression."
     aborted:               "⚠️ Стиснення скасовано ({error}). Жодне повідомлення не було видалено — розмова не змінилася. Виконайте /compress, щоб повторити спробу, /reset для нової сесії, або перевірте конфігурацію моделі auxiliary.compression."
@@ -106,6 +107,8 @@ gateway:
     no_pending:            "Немає команди для відхилення."
     denied_singular:       "❌ Команду відхилено."
     denied_plural:         "❌ Команди відхилено ({count} команд)."
+    denied_reason_singular: "❌ Команду відхилено. Причину передано агентові: \"{reason}\""
+    denied_reason_plural:  "❌ Команди відхилено ({count} команд). Причину передано агентові: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast доступний лише для моделей OpenAI, які підтримують Priority Processing."
@@ -149,6 +152,15 @@ gateway:
     subscribed_suffix:     "(підписано — ви отримаєте сповіщення, коли {task_id} завершиться або буде заблоковано)"
     truncated_suffix:      "… (скорочено; використовуйте `hermes kanban …` у терміналі для повного виводу)"
     no_output:             "(немає виводу)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "У `{path}/config.yaml` не налаштовано жодної особистості"
@@ -227,6 +239,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Іменованих сеансів не знайдено.\nВикористайте `/title Мій сеанс`, щоб назвати поточний сеанс, потім `/resume Мій сеанс`, щоб повернутися до нього."
     list_header:           "📋 **Іменовані сеанси**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -269,6 +282,10 @@ Future messages in this room will use that transcript until `/reset` or another 
     title:                 "**Назва:** {title}"
     created:               "**Створено:** {timestamp}"
     last_activity:         "**Остання активність:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Токени:** {tokens}"
     agent_running:         "**Агент активний:** {state}"
     state_yes:             "Так ⚡"
@@ -328,11 +345,24 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_cost_included:      "Вартість: включено"
     label_context:            "Контекст: {used} / {total} ({pct}%)"
     label_compressions:       "Стиснень: {count}"
+    breakdown_header: "🧩 **Розбивка контексту** _(оцінка)_"
+    breakdown_line: "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt: "Системний промпт"
+    breakdown_cat_tool_definitions: "Визначення інструментів"
+    breakdown_cat_rules: "Правила"
+    breakdown_cat_skills: "Навички"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "Визначення субагентів"
+    breakdown_cat_memory: "Пам'ять"
+    breakdown_cat_conversation: "Розмова"
     header_session_info:      "📊 **Інформація про сеанс**"
     label_messages:           "Повідомлень: {count}"
     label_estimated_context:  "Орієнтовний контекст: ~{count} токенів"
     detailed_after_first:     "_(Детальне використання доступне після першої відповіді агента)_"
     no_data:                  "Дані про використання для цього сеансу відсутні."
+
+  credits:
+    not_logged_in:            "Ви не ввійшли в Nous Portal. Увійдіть, щоб переглянути баланс кредитів і поповнити його."
 
   verbose:
     not_enabled:           "Команду `/verbose` не ввімкнено для платформ обміну повідомленнями.\n\nУвімкніть у `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -340,6 +370,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     mode_new:              "⚙️ Прогрес інструментів: **NEW** — показується при зміні інструмента (довжина попереднього перегляду: `display.tool_preview_length`, за замовчуванням 40)."
     mode_all:              "⚙️ Прогрес інструментів: **ALL** — показується кожен виклик інструмента (довжина попереднього перегляду: `display.tool_preview_length`, за замовчуванням 40)."
     mode_verbose:          "⚙️ Прогрес інструментів: **VERBOSE** — кожен виклик інструмента з повними аргументами."
+    mode_log:              "⚙️ Прогрес інструментів: **LOG** — тихо в чаті; виклики інструментів записуються до ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(збережено для **{platform}** — набуде чинності з наступного повідомлення)_"
     save_failed:           "_(не вдалося зберегти у конфігурацію: {error})_"
 

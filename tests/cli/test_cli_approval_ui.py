@@ -354,9 +354,11 @@ class TestCliApprovalUi:
             chat_console.return_value.print = MagicMock()
             cli._handle_background_command("/btw check weather")
 
-            deadline = time.time() + 2
-            while cli._background_tasks and time.time() < deadline:
-                time.sleep(0.01)
+            # Join the worker thread deterministically rather than polling a
+            # wall-clock deadline — under load the thread's finally-block pop
+            # of _background_tasks can lag a fixed timeout, which flaked CI.
+            for _thread in list(cli._background_tasks.values()):
+                _thread.join(timeout=10)
 
         assert seen["approval"].__self__ is cli
         assert seen["approval"].__func__ is HermesCLI._approval_callback
@@ -565,3 +567,173 @@ class TestApprovalCallbackThreadLocalWiring:
         # would hold a stale reference to a disposed CLI instance.
         assert seen["approval_after"] is None
         assert seen["sudo_after"] is None
+
+
+class TestPersistPromptSummary:
+    """display.persist_prompts — one-line scrollback record of resolved modals."""
+
+    def _resolve_approval(self, cli, answer, command="rm -rf /tmp/scratch"):
+        result = {}
+
+        def _run():
+            result["value"] = cli._approval_callback(command, "danger")
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        deadline = time.time() + 2
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+        cli._approval_state["response_queue"].put(answer)
+        t.join(timeout=2)
+        return result["value"]
+
+    def test_approval_resolution_prints_summary_line(self):
+        cli = _make_cli_stub()
+        printed = []
+        with patch.object(cli_module, "_cprint", printed.append):
+            verdict = self._resolve_approval(cli, "session")
+        assert verdict == "session"
+        summary = "\n".join(printed)
+        assert "Approval" in summary
+        assert "rm -rf /tmp/scratch" in summary
+        assert "allowed for session" in summary
+
+    def test_approval_summary_truncates_long_command(self):
+        cli = _make_cli_stub()
+        printed = []
+        long_cmd = "sudo " + ("x" * 300)
+        with patch.object(cli_module, "_cprint", printed.append):
+            self._resolve_approval(cli, "deny", command=long_cmd)
+        summary = "\n".join(printed)
+        assert "denied" in summary
+        assert "…" in summary
+        # The raw 300-char tail must not be dumped wholesale.
+        assert "x" * 200 not in summary
+
+    def test_persist_prompts_false_suppresses_summary(self):
+        cli = _make_cli_stub()
+        printed = []
+        with patch.dict(cli_module.CLI_CONFIG.get("display", {}), {"persist_prompts": False}), \
+             patch.object(cli_module, "_cprint", printed.append):
+            verdict = self._resolve_approval(cli, "once")
+        assert verdict == "once"
+        assert not any("Approval" in p for p in printed)
+
+    def test_clarify_resolution_prints_summary_line(self):
+        cli = _make_cli_stub()
+        cli._clarify_state = None
+        cli._clarify_freetext = False
+        cli._clarify_deadline = 0
+        printed = []
+        result = {}
+
+        def _run():
+            result["value"] = cli._clarify_callback("Pick a path?", ["A", "B"])
+
+        with patch.object(cli_module, "_cprint", printed.append):
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            deadline = time.time() + 2
+            while cli._clarify_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            cli._clarify_state["response_queue"].put("B")
+            t.join(timeout=2)
+
+        assert result["value"] == "B"
+        summary = "\n".join(printed)
+        assert "Clarify" in summary
+        assert "Pick a path?" in summary
+        assert "B" in summary
+
+
+class TestClearOverlaysForInterrupt:
+    """Regression tests for #14026 — interrupting a running agent must clear
+    every input-blocking overlay (approval/clarify/sudo/secret) so the CLI
+    isn't left frozen with no thread servicing the prompt."""
+
+    def _make_cli(self):
+        cli = _make_cli_stub()
+        # Attributes the helper touches that the base stub doesn't set.
+        cli._clarify_state = None
+        cli._clarify_freetext = False
+        cli._secret_state = None
+        cli._secret_deadline = 0
+        cli._paint_now = MagicMock()
+        return cli
+
+    def test_clears_all_four_overlays_and_unblocks_queues(self):
+        cli = self._make_cli()
+        approval_q = queue.Queue()
+        clarify_q = queue.Queue()
+        sudo_q = queue.Queue()
+        secret_q = queue.Queue()
+        cli._approval_state = {"response_queue": approval_q}
+        cli._clarify_state = {"response_queue": clarify_q}
+        cli._clarify_freetext = True
+        cli._sudo_state = {"response_queue": sudo_q, "timeout": 60}
+        cli._sudo_deadline = 99999.0
+        cli._secret_state = {"response_queue": secret_q, "var_name": "X"}
+
+        cli._clear_active_overlays_for_interrupt()
+
+        # All states nilled out.
+        assert cli._approval_state is None
+        assert cli._clarify_state is None
+        assert cli._clarify_freetext is False
+        assert cli._sudo_state is None
+        assert cli._sudo_deadline == 0
+        assert cli._secret_state is None
+
+        # Each blocked thread would have received a terminal value.
+        assert approval_q.get_nowait() == "deny"
+        assert clarify_q.get_nowait()  # cancellation sentinel string
+        assert sudo_q.get_nowait() == ""
+        assert secret_q.get_nowait() == ""
+
+    def test_noop_when_no_overlays_active(self):
+        cli = self._make_cli()
+        cli._clear_active_overlays_for_interrupt()
+        assert cli._approval_state is None
+        assert cli._clarify_state is None
+        assert cli._sudo_state is None
+        assert cli._secret_state is None
+
+    def test_dead_queue_does_not_block_clearing_others(self):
+        """A queue that raises on put() must not prevent the remaining
+        overlays from being cleared."""
+        cli = self._make_cli()
+
+        class _DeadQueue:
+            def put(self, *_a, **_k):
+                raise RuntimeError("queue gone")
+
+        clarify_q = queue.Queue()
+        cli._approval_state = {"response_queue": _DeadQueue()}
+        cli._clarify_state = {"response_queue": clarify_q}
+
+        cli._clear_active_overlays_for_interrupt()
+
+        assert cli._approval_state is None  # cleared despite dead queue
+        assert cli._clarify_state is None
+        assert clarify_q.get_nowait()
+
+    def test_interrupt_unblocks_thread_blocked_on_approval(self):
+        """End-to-end: a worker blocked on the approval queue unblocks when the
+        interrupt helper drains it."""
+        cli = self._make_cli()
+        approval_q = queue.Queue()
+        cli._approval_state = {"response_queue": approval_q}
+        result = {}
+
+        def _worker():
+            result["value"] = approval_q.get(timeout=2)
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        time.sleep(0.05)
+        cli._clear_active_overlays_for_interrupt()
+        t.join(timeout=2)
+
+        assert not t.is_alive(), "worker thread never unblocked"
+        assert result["value"] == "deny"
+

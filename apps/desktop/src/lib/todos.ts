@@ -49,3 +49,40 @@ function parse(value: unknown, depth: number): null | TodoItem[] {
 }
 
 export const parseTodos = (value: unknown): null | TodoItem[] => parse(value, 0)
+
+/** Latest parseable todo list from one message's aui content parts (tool-call
+ *  parts named `todo`; live parts carry `todos`, hydrated ones args/result). */
+export function todosFromMessageContent(content: unknown): null | TodoItem[] {
+  if (!Array.isArray(content)) {
+    return null
+  }
+
+  let latest: null | TodoItem[] = null
+
+  for (const part of content) {
+    if (!isRecord(part) || part.type !== 'tool-call' || part.toolName !== 'todo') {
+      continue
+    }
+
+    const parsed = parseTodos(part.todos) ?? parseTodos(part.result) ?? parseTodos(part.args)
+
+    if (parsed !== null) {
+      latest = parsed
+    }
+  }
+
+  return latest
+}
+
+/** Current todo state for a whole transcript — the last list wins. */
+export function latestSessionTodos(messages: readonly { parts?: unknown }[]): null | TodoItem[] {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const todos = todosFromMessageContent(messages[i]?.parts)
+
+    if (todos !== null) {
+      return todos
+    }
+  }
+
+  return null
+}

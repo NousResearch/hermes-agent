@@ -6,7 +6,7 @@ fails inside the published image and ``hermes dump`` used to report
 ``$HERMES_GIT_SHA`` build-arg to ``/opt/hermes/.hermes_build_sha`` and
 ``hermes_cli/build_info.py`` reads it as a fallback.
 
-CI (``.github/workflows/docker-publish.yml``) always sets the build-arg
+CI (``.github/workflows/docker.yml``) always sets the build-arg
 to ``${{ github.sha }}``.  Local ``docker build`` (the ``built_image``
 fixture in ``tests/docker/conftest.py``) does NOT — so locally the file
 is absent and ``hermes dump`` correctly falls back to ``(unknown)``.

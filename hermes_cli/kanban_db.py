@@ -1088,6 +1088,23 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class TaskStatusBinding:
+    """Persistent binding between one Kanban task and one living message."""
+
+    kanban_task_id: str
+    platform: str
+    chat_id: str
+    message_thread_id: str
+    message_id: str
+    session_id: str
+    linear_issue_key: Optional[str]
+    lifecycle_state: str
+    state_version: int
+    created_at: int
+    updated_at: int
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1263,6 +1280,56 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Opt-in living task-status messages. One canonical task owns one message;
+-- duplicate creates are rejected before transport so message ids cannot be
+-- orphaned by a last-write-wins race.
+CREATE TABLE IF NOT EXISTS task_status_bindings (
+    kanban_task_id    TEXT PRIMARY KEY,
+    platform          TEXT NOT NULL,
+    chat_id           TEXT NOT NULL,
+    message_thread_id TEXT NOT NULL DEFAULT '',
+    message_id        TEXT NOT NULL,
+    session_id        TEXT NOT NULL,
+    linear_issue_key  TEXT,
+    lifecycle_state   TEXT NOT NULL,
+    state_version     INTEGER NOT NULL,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL
+);
+
+-- Composite publication dedup. Rows are short-lived and opportunistically
+-- pruned whenever a publisher claims a key.
+CREATE TABLE IF NOT EXISTS task_status_publication_dedup (
+    dedup_key       TEXT PRIMARY KEY,
+    kanban_task_id TEXT NOT NULL,
+    created_at      INTEGER NOT NULL
+);
+
+-- Exact non-living messages that carry task decision buttons (for example a
+-- decision push in the configured control topic). These rows let callbacks
+-- prove the Telegram message destination instead of accepting task/version
+-- correlation alone.
+CREATE TABLE IF NOT EXISTS task_status_callback_messages (
+    platform          TEXT NOT NULL,
+    chat_id           TEXT NOT NULL,
+    message_thread_id TEXT NOT NULL DEFAULT '',
+    message_id        TEXT NOT NULL,
+    kanban_task_id    TEXT NOT NULL,
+    state_version     INTEGER NOT NULL,
+    created_at        INTEGER NOT NULL,
+    PRIMARY KEY (platform, chat_id, message_id)
+);
+
+-- At-most-once claims for correlated decision callbacks. The exact task,
+-- state version, and action are claimed only after all binding checks pass.
+CREATE TABLE IF NOT EXISTS task_status_callback_claims (
+    kanban_task_id TEXT NOT NULL,
+    state_version  INTEGER NOT NULL,
+    action         TEXT NOT NULL,
+    created_at     INTEGER NOT NULL,
+    PRIMARY KEY (kanban_task_id, state_version)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1273,6 +1340,12 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_status_dedup_time ON task_status_publication_dedup(created_at);
+CREATE INDEX IF NOT EXISTS idx_task_status_callback_message_task
+    ON task_status_callback_messages(kanban_task_id, state_version);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_status_message
+    ON task_status_bindings(platform, chat_id, message_id)
+    WHERE message_id != '';
 """
 
 
@@ -3119,6 +3192,85 @@ def _append_event(
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+
+
+def append_task_status_publication(
+    conn: sqlite3.Connection,
+    task_id: str,
+    publication: dict,
+) -> None:
+    """Append one exact-destination task-status request to the native event log."""
+    if get_task(conn, task_id) is None:
+        raise ValueError(f"unknown Kanban task {task_id!r}")
+    if not isinstance(publication, dict):
+        raise ValueError("task-status publication must be an object")
+    payload_task_id = str(publication.get("kanban_task_id") or "")
+    if payload_task_id != task_id:
+        raise ValueError(
+            "task-status publication kanban_task_id must exactly match its event task"
+        )
+    operation = str(publication.get("operation") or "")
+    normalized = dict(publication)
+    destination = publication.get("destination")
+    if operation == "create":
+        if not isinstance(destination, dict) or (
+            "chat_id" not in destination
+            or "message_thread_id" not in destination
+        ):
+            raise ValueError(
+                "task-status create event requires an exact destination with "
+                "chat_id and message_thread_id"
+            )
+        chat_id = str(destination.get("chat_id") or "")
+        thread_id = str(destination.get("message_thread_id") or "")
+        if not chat_id.strip():
+            raise ValueError("task-status create event destination chat_id is required")
+    elif operation == "update":
+        binding = get_task_status_binding(conn, task_id)
+        if binding is None or not binding.message_id:
+            raise ValueError(
+                f"no complete task-status binding for Kanban task {task_id}"
+            )
+        chat_id = binding.chat_id
+        thread_id = binding.message_thread_id
+        if destination is not None:
+            if not isinstance(destination, dict) or (
+                "chat_id" not in destination
+                or "message_thread_id" not in destination
+            ):
+                raise ValueError(
+                    "task-status update destination requires exact chat_id "
+                    "and message_thread_id"
+                )
+            if (
+                str(destination.get("chat_id") or "") != chat_id
+                or str(destination.get("message_thread_id") or "")
+                != thread_id
+            ):
+                raise ValueError(
+                    "task-status update destination does not match the binding"
+                )
+    else:
+        raise ValueError("task-status event operation must be create or update")
+
+    exact_sub = conn.execute(
+        """
+        SELECT 1 FROM kanban_notify_subs
+         WHERE task_id = ? AND platform = 'telegram'
+           AND chat_id = ? AND thread_id = ?
+        """,
+        (task_id, chat_id, thread_id),
+    ).fetchone()
+    if exact_sub is None:
+        raise ValueError(
+            "task-status event has no exact Telegram subscription for its destination"
+        )
+    normalized["destination"] = {
+        "chat_id": chat_id,
+        "message_thread_id": thread_id,
+    }
+    with write_txn(conn):
+        _append_event(conn, task_id, "task_status", normalized)
 
 
 def _end_run(
@@ -5252,6 +5404,22 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        conn.execute(
+            "DELETE FROM task_status_callback_claims WHERE kanban_task_id = ?",
+            (task_id,),
+        )
+        conn.execute(
+            "DELETE FROM task_status_callback_messages WHERE kanban_task_id = ?",
+            (task_id,),
+        )
+        conn.execute(
+            "DELETE FROM task_status_publication_dedup WHERE kanban_task_id = ?",
+            (task_id,),
+        )
+        conn.execute(
+            "DELETE FROM task_status_bindings WHERE kanban_task_id = ?",
+            (task_id,),
+        )
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return cur.rowcount == 1
 
@@ -5275,6 +5443,22 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        conn.execute(
+            "DELETE FROM task_status_callback_claims WHERE kanban_task_id = ?",
+            (task_id,),
+        )
+        conn.execute(
+            "DELETE FROM task_status_callback_messages WHERE kanban_task_id = ?",
+            (task_id,),
+        )
+        conn.execute(
+            "DELETE FROM task_status_publication_dedup WHERE kanban_task_id = ?",
+            (task_id,),
+        )
+        conn.execute(
+            "DELETE FROM task_status_bindings WHERE kanban_task_id = ?",
+            (task_id,),
+        )
     recompute_ready(conn)
     return True
 
@@ -8254,6 +8438,310 @@ def task_age(task: Task) -> dict:
         "started_age_seconds": age_since_started,
         "time_to_complete_seconds": time_to_complete,
     }
+
+
+# ---------------------------------------------------------------------------
+# Living task-status bindings (opt-in gateway publication primitive)
+# ---------------------------------------------------------------------------
+
+def _task_status_binding_from_row(row: sqlite3.Row) -> TaskStatusBinding:
+    return TaskStatusBinding(
+        kanban_task_id=str(row["kanban_task_id"]),
+        platform=str(row["platform"]),
+        chat_id=str(row["chat_id"]),
+        message_thread_id=str(row["message_thread_id"] or ""),
+        message_id=str(row["message_id"] or ""),
+        session_id=str(row["session_id"]),
+        linear_issue_key=(
+            str(row["linear_issue_key"]) if row["linear_issue_key"] is not None else None
+        ),
+        lifecycle_state=str(row["lifecycle_state"]),
+        state_version=int(row["state_version"]),
+        created_at=int(row["created_at"]),
+        updated_at=int(row["updated_at"]),
+    )
+
+
+def get_task_status_binding(
+    conn: sqlite3.Connection, kanban_task_id: str,
+) -> Optional[TaskStatusBinding]:
+    row = conn.execute(
+        "SELECT * FROM task_status_bindings WHERE kanban_task_id = ?",
+        (kanban_task_id,),
+    ).fetchone()
+    return _task_status_binding_from_row(row) if row else None
+
+
+def reserve_task_status_binding(
+    conn: sqlite3.Connection,
+    *,
+    kanban_task_id: str,
+    platform: str,
+    chat_id: str,
+    message_thread_id: str,
+    session_id: str,
+    linear_issue_key: Optional[str],
+    lifecycle_state: str,
+    state_version: int,
+) -> TaskStatusBinding:
+    """Reserve a canonical binding before transport sends the first message.
+
+    ``message_id=''`` is an internal pending marker. A second creator loses the
+    primary-key race before it can send, preventing orphaned Telegram messages.
+    """
+    if get_task(conn, kanban_task_id) is None:
+        raise ValueError(f"unknown Kanban task {kanban_task_id!r}")
+    if not str(chat_id).strip():
+        raise ValueError("task-status chat_id is required")
+    if not str(session_id).strip():
+        raise ValueError("task-status session_id is required")
+    if not str(lifecycle_state).strip():
+        raise ValueError("task-status lifecycle_state is required")
+    if int(state_version) < 1:
+        raise ValueError("task-status state_version must be at least 1")
+    now = int(time.time())
+    try:
+        with write_txn(conn):
+            conn.execute(
+                """
+                INSERT INTO task_status_bindings (
+                    kanban_task_id, platform, chat_id, message_thread_id,
+                    message_id, session_id, linear_issue_key, lifecycle_state,
+                    state_version, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    kanban_task_id, platform, str(chat_id),
+                    str(message_thread_id or ""), str(session_id),
+                    linear_issue_key, str(lifecycle_state), int(state_version),
+                    now, now,
+                ),
+            )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError(
+            f"Kanban task {kanban_task_id} is already bound to a task-status message"
+        ) from exc
+    binding = get_task_status_binding(conn, kanban_task_id)
+    if binding is None:  # pragma: no cover - defensive
+        raise RuntimeError("task-status binding reservation disappeared")
+    return binding
+
+
+def finalize_task_status_binding(
+    conn: sqlite3.Connection, *, kanban_task_id: str, message_id: str,
+) -> TaskStatusBinding:
+    if not str(message_id).strip():
+        raise ValueError("task-status transport returned no message_id")
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE task_status_bindings
+               SET message_id = ?, updated_at = ?
+             WHERE kanban_task_id = ? AND message_id = ''
+            """,
+            (str(message_id), int(time.time()), kanban_task_id),
+        )
+        if cur.rowcount != 1:
+            raise ValueError(
+                f"Kanban task {kanban_task_id} has no pending task-status binding"
+            )
+    binding = get_task_status_binding(conn, kanban_task_id)
+    if binding is None:  # pragma: no cover - defensive
+        raise RuntimeError("task-status binding finalization disappeared")
+    return binding
+
+
+def delete_pending_task_status_binding(
+    conn: sqlite3.Connection, kanban_task_id: str,
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "DELETE FROM task_status_bindings "
+            "WHERE kanban_task_id = ? AND message_id = ''",
+            (kanban_task_id,),
+        )
+
+
+def advance_task_status_binding(
+    conn: sqlite3.Connection,
+    *,
+    kanban_task_id: str,
+    expected_version: int,
+    lifecycle_state: str,
+    state_version: int,
+) -> TaskStatusBinding:
+    """CAS-update a binding by exactly one monotonic state version."""
+    if int(state_version) != int(expected_version) + 1:
+        raise ValueError("task-status state_version must advance by exactly one")
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE task_status_bindings
+               SET lifecycle_state = ?, state_version = ?, updated_at = ?
+             WHERE kanban_task_id = ? AND state_version = ? AND message_id != ''
+            """,
+            (
+                str(lifecycle_state), int(state_version), int(time.time()),
+                kanban_task_id, int(expected_version),
+            ),
+        )
+        if cur.rowcount != 1:
+            raise ValueError(
+                f"stale task-status update for {kanban_task_id}: "
+                f"expected version {expected_version}"
+            )
+    binding = get_task_status_binding(conn, kanban_task_id)
+    if binding is None:  # pragma: no cover - defensive
+        raise RuntimeError("task-status binding update disappeared")
+    return binding
+
+
+def claim_task_status_publication(
+    conn: sqlite3.Connection,
+    *,
+    dedup_key: str,
+    kanban_task_id: str,
+    window_seconds: int = 180,
+    now: Optional[int] = None,
+) -> bool:
+    """Atomically accept the first composite publication key in the window."""
+    timestamp = int(time.time()) if now is None else int(now)
+    cutoff = timestamp - max(1, int(window_seconds))
+    with write_txn(conn):
+        conn.execute(
+            "DELETE FROM task_status_publication_dedup WHERE created_at <= ?",
+            (cutoff,),
+        )
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO task_status_publication_dedup
+                (dedup_key, kanban_task_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (dedup_key, kanban_task_id, timestamp),
+        )
+    return cur.rowcount == 1
+
+
+def release_task_status_publication(
+    conn: sqlite3.Connection, dedup_key: str,
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "DELETE FROM task_status_publication_dedup WHERE dedup_key = ?",
+            (dedup_key,),
+        )
+
+
+def register_task_status_callback_message(
+    conn: sqlite3.Connection,
+    *,
+    kanban_task_id: str,
+    state_version: int,
+    platform: str,
+    chat_id: str,
+    message_thread_id: str,
+    message_id: str,
+) -> None:
+    """Persist one exact Telegram message that carries decision buttons."""
+    binding = get_task_status_binding(conn, kanban_task_id)
+    if binding is None or not binding.message_id:
+        raise ValueError(
+            f"no complete task-status binding for Kanban task {kanban_task_id}"
+        )
+    if binding.state_version != int(state_version):
+        raise ValueError(
+            f"callback message version {state_version} does not match current "
+            f"task-status version {binding.state_version}"
+        )
+    if not str(chat_id).strip() or not str(message_id).strip():
+        raise ValueError("callback message requires exact chat_id and message_id")
+    try:
+        with write_txn(conn):
+            conn.execute(
+                """
+                INSERT INTO task_status_callback_messages (
+                    platform, chat_id, message_thread_id, message_id,
+                    kanban_task_id, state_version, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(platform),
+                    str(chat_id),
+                    str(message_thread_id or ""),
+                    str(message_id),
+                    kanban_task_id,
+                    int(state_version),
+                    int(time.time()),
+                ),
+            )
+    except sqlite3.IntegrityError as exc:
+        row = conn.execute(
+            """
+            SELECT kanban_task_id, state_version, message_thread_id
+              FROM task_status_callback_messages
+             WHERE platform = ? AND chat_id = ? AND message_id = ?
+            """,
+            (str(platform), str(chat_id), str(message_id)),
+        ).fetchone()
+        if row and (
+            str(row["kanban_task_id"]) == kanban_task_id
+            and int(row["state_version"]) == int(state_version)
+            and str(row["message_thread_id"] or "")
+            == str(message_thread_id or "")
+        ):
+            return
+        raise ValueError(
+            "callback message is already correlated to a different task or version"
+        ) from exc
+
+
+def matches_task_status_callback_message(
+    conn: sqlite3.Connection,
+    *,
+    kanban_task_id: str,
+    state_version: int,
+    platform: str,
+    chat_id: str,
+    message_thread_id: str,
+    message_id: str,
+) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+          FROM task_status_callback_messages
+         WHERE platform = ? AND chat_id = ? AND message_thread_id = ?
+           AND message_id = ? AND kanban_task_id = ? AND state_version = ?
+        """,
+        (
+            str(platform),
+            str(chat_id),
+            str(message_thread_id or ""),
+            str(message_id),
+            kanban_task_id,
+            int(state_version),
+        ),
+    ).fetchone()
+    return row is not None
+
+
+def claim_task_status_callback(
+    conn: sqlite3.Connection,
+    *,
+    kanban_task_id: str,
+    state_version: int,
+    action: str,
+) -> bool:
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO task_status_callback_claims
+                (kanban_task_id, state_version, action, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (kanban_task_id, int(state_version), action, int(time.time())),
+        )
+    return cur.rowcount == 1
 
 
 # ---------------------------------------------------------------------------

@@ -119,8 +119,10 @@ class GatewayKanbanWatchersMixin:
         stored cursor with kind in the terminal set (``completed``,
         ``blocked``, ``gave_up``, ``crashed``, ``timed_out``). Sends one
         message per new event to ``(platform, chat_id, thread_id)``,
-        then advances the cursor. When a task reaches a terminal state
-        (``completed`` / ``archived``), the subscription is removed.
+        then advances the cursor. Legacy subscriptions are removed when a
+        task reaches a terminal state (``completed`` / ``archived``). In
+        task-status mode, the exact Telegram route remains until an explicit
+        accepted-completion publication succeeds.
 
         Runs in the gateway event loop; all SQLite work is pushed to a
         thread via ``asyncio.to_thread`` so the loop never blocks on the
@@ -155,6 +157,16 @@ class GatewayKanbanWatchersMixin:
                 "kanban notifier: disabled via config kanban.dispatch_in_gateway=false"
             )
             return
+        task_status_cfg = (
+            kanban_cfg.get("task_status", {})
+            if isinstance(kanban_cfg.get("task_status"), dict)
+            else {}
+        )
+        task_status_enabled = bool(task_status_cfg.get("enabled", False))
+        task_status_worker_noise_suppressed = task_status_enabled and (
+            not task_status_cfg.get("raw_event_pushes", False)
+            or not task_status_cfg.get("worker_lifecycle_pushes", False)
+        )
         from gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb
@@ -164,7 +176,10 @@ class GatewayKanbanWatchersMixin:
 
         # "status" covers dashboard drag-drop and `_set_status_direct()`
         # writes — surface those transitions to subscribers too.
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
+        TERMINAL_KINDS = (
+            "completed", "blocked", "gave_up", "crashed", "timed_out",
+            "status", "archived", "unblocked",
+        ) + (("task_status",) if task_status_enabled else ())
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -336,8 +351,95 @@ class GatewayKanbanWatchersMixin:
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
                     board_tag = f"[{board_slug}] " if board_slug else ""
+                    accepted_completion_published = False
                     for ev in d["events"]:
                         kind = ev.kind
+                        if task_status_enabled and kind == "task_status":
+                            if platform_str != "telegram":
+                                # Structured task-status events are Telegram-only;
+                                # other platform subscriptions retain legacy raw
+                                # lifecycle notifications and ignore this event.
+                                continue
+                            publication_result = None
+                            publication_error = None
+                            status_conn = None
+                            try:
+                                from gateway.task_status import (
+                                    PublicationKind,
+                                    TaskStatusPublication,
+                                    TaskStatusPublisher,
+                                )
+
+                                publication = TaskStatusPublication.from_event_payload(
+                                    ev.payload or {}
+                                )
+                                if publication.kanban_task_id != sub["task_id"]:
+                                    raise ValueError(
+                                        "task-status event task id does not match its subscription"
+                                    )
+                                if publication.destination is None:
+                                    raise ValueError(
+                                        "task-status event has no exact destination"
+                                    )
+                                if (
+                                    publication.destination.chat_id
+                                    != str(sub["chat_id"])
+                                    or publication.destination.message_thread_id
+                                    != str(sub.get("thread_id") or "")
+                                ):
+                                    # This event belongs to another explicitly
+                                    # bound Telegram subscription. Do not mirror.
+                                    continue
+                                status_conn = _kb.connect(board=board_slug)
+                                publication_result = await TaskStatusPublisher(
+                                    conn=status_conn,
+                                    adapter=adapter,
+                                    config=task_status_cfg,
+                                    profile_name=sub_profile or notifier_profile,
+                                ).publish(publication)
+                                if not publication_result.ok:
+                                    publication_error = publication_result.error
+                            except Exception as exc:
+                                publication_error = str(exc)
+                            finally:
+                                if status_conn is not None:
+                                    status_conn.close()
+                            if publication_error:
+                                logger.warning(
+                                    "kanban task-status publication failed closed for %s "
+                                    "on board %s: %s",
+                                    sub["task_id"], board_slug, publication_error,
+                                )
+                                await asyncio.to_thread(
+                                    self._kanban_rewind,
+                                    sub,
+                                    d["cursor"],
+                                    d.get("old_cursor", 0),
+                                    board_slug,
+                                )
+                                break
+                            logger.debug(
+                                "kanban task-status publication delivered for %s "
+                                "on board %s (deduplicated=%s pushed=%s)",
+                                sub["task_id"],
+                                board_slug,
+                                publication_result.deduplicated,
+                                publication_result.pushed,
+                            )
+                            if (
+                                publication.kind
+                                == PublicationKind.ACCEPTED_COMPLETION
+                            ):
+                                accepted_completion_published = True
+                            continue
+                        if (
+                            task_status_worker_noise_suppressed
+                            and platform_str == "telegram"
+                        ):
+                            # In living-card mode, raw worker/card transitions
+                            # remain Kanban evidence. Only explicit structured
+                            # task_status events may publish to Telegram.
+                            continue
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
@@ -481,16 +583,22 @@ class GatewayKanbanWatchersMixin:
                         await asyncio.to_thread(
                             self._kanban_advance, sub, d["cursor"], board_slug,
                         )
-                        # Unsubscribe only when the task has reached a truly
-                        # final status (done / archived). For blocked /
-                        # gave_up / crashed / timed_out the subscription is
-                        # kept alive so the user gets notified again if the
-                        # dispatcher respawns the task and it cycles into the
-                        # same state. See the longer comment on TERMINAL_KINDS
-                        # above for the failure mode this prevents.
+                        # Legacy subscriptions end at done / archived. A
+                        # task-status Telegram route instead survives raw card
+                        # completion and ends only after explicit accepted
+                        # completion publishes successfully.
                         task_terminal = task and task.status in {"done", "archived"}
                         _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
-                        _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
+                        _wake_kinds = (
+                            set()
+                            if task_status_worker_noise_suppressed
+                            and platform_str == "telegram"
+                            else {
+                                ev.kind
+                                for ev in d["events"]
+                                if ev.kind in _WAKE_KINDS
+                            }
+                        )
                         if _wake_kinds:
                             try:
                                 _session_key = getattr(task, "session_id", None) or ""
@@ -561,7 +669,12 @@ class GatewayKanbanWatchersMixin:
                                     "kanban notifier: wakeup injection failed for %s: %s",
                                     sub["task_id"], _wk_err, exc_info=True,
                                 )
-                        if task_terminal:
+                        should_unsubscribe = (
+                            accepted_completion_published
+                            if task_status_enabled and platform_str == "telegram"
+                            else task_terminal
+                        )
+                        if should_unsubscribe:
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,
                             )

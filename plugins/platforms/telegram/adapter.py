@@ -651,6 +651,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Optional policy-owned handler for exact task/status decision callbacks.
+        # Core validates correlation and authorization; it does not decide what
+        # approve/deny means. Without an injected handler callbacks fail closed.
+        self._task_status_action_handler = None
+        self._task_status_allowed_actions: tuple[str, ...] = ()
+        self._task_status_board: Optional[str] = None
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -765,6 +771,22 @@ class TelegramAdapter(BasePlatformAdapter):
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or normalized_user_id in allowed_ids
+
+    def set_task_status_action_handler(
+        self,
+        handler,
+        *,
+        allowed_actions,
+        board: Optional[str] = None,
+    ) -> None:
+        """Install a policy-owned consequential task-status callback handler."""
+        self._task_status_action_handler = handler
+        self._task_status_allowed_actions = tuple(
+            str(action).strip().lower()
+            for action in allowed_actions
+            if str(action).strip()
+        )
+        self._task_status_board = str(board).strip() if board else None
 
     def _source_from_message_for_auth(self, message: Message):
         """Build the same Telegram source shape the gateway auth path expects.
@@ -3891,6 +3913,153 @@ class TelegramAdapter(BasePlatformAdapter):
                 error_kind=error_kind,
             )
 
+    @staticmethod
+    def _task_status_thread_metadata_error(
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        if not isinstance(metadata, dict):
+            return "task-status delivery requires exact thread_id metadata"
+        if "thread_id" not in metadata and "message_thread_id" not in metadata:
+            return "task-status delivery requires exact thread_id metadata"
+        return None
+
+    @staticmethod
+    def _task_status_markup(buttons: List[Dict[str, str]]):
+        if not buttons:
+            return None
+        rows = []
+        row = []
+        for button in buttons:
+            label = str(button.get("label") or "").strip()
+            callback_data = str(button.get("callback_data") or "")
+            if not label:
+                raise ValueError("task-status button label is required")
+            if not callback_data or len(callback_data.encode("utf-8")) > 64:
+                raise ValueError(
+                    "task-status callback_data must be between 1 and 64 bytes"
+                )
+            row.append(InlineKeyboardButton(label, callback_data=callback_data))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        return InlineKeyboardMarkup(rows)
+
+    async def _send_exact_task_status(
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        buttons: List[Dict[str, str]],
+        metadata: Optional[Dict[str, Any]],
+    ) -> SendResult:
+        """Send one exact-destination card without any topic fallback."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        metadata_error = self._task_status_thread_metadata_error(metadata)
+        if metadata_error:
+            return SendResult(success=False, error=metadata_error)
+        if not content or not content.strip():
+            return SendResult(success=False, error="task-status content is required")
+        if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
+            return SendResult(
+                success=False,
+                error="task-status content exceeds Telegram's single-message limit",
+            )
+        try:
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(
+                None, metadata, reply_to_mode=self._reply_to_mode
+            )
+            kwargs: Dict[str, Any] = {
+                "chat_id": normalize_telegram_chat_id(chat_id),
+                "text": self.format_message(content),
+                "parse_mode": ParseMode.MARKDOWN_V2,
+                "reply_markup": self._task_status_markup(buttons),
+                "reply_to_message_id": reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                ),
+                **self._link_preview_kwargs(),
+                **self._notification_kwargs(metadata),
+            }
+            message = await self._bot.send_message(**kwargs)
+            return SendResult(success=True, message_id=str(message.message_id))
+        except Exception as exc:
+            return SendResult(
+                success=False,
+                error=_redact_telegram_error_text(exc),
+                retryable=False,
+            )
+
+    async def send_task_status(
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        buttons: List[Dict[str, str]],
+        metadata: Optional[Dict[str, Any]],
+    ) -> SendResult:
+        return await self._send_exact_task_status(
+            chat_id, content, buttons=buttons, metadata=metadata
+        )
+
+    async def send_task_status_push(
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        buttons: List[Dict[str, str]],
+        metadata: Optional[Dict[str, Any]],
+    ) -> SendResult:
+        return await self._send_exact_task_status(
+            chat_id, content, buttons=buttons, metadata=metadata
+        )
+
+    async def edit_task_status(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        buttons: List[Dict[str, str]],
+        metadata: Optional[Dict[str, Any]],
+    ) -> SendResult:
+        """Edit exactly the bound message; never create a fallback message."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        metadata_error = self._task_status_thread_metadata_error(metadata)
+        if metadata_error:
+            return SendResult(success=False, error=metadata_error)
+        if not content or not content.strip():
+            return SendResult(success=False, error="task-status content is required")
+        if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
+            return SendResult(
+                success=False,
+                error="task-status content exceeds Telegram's single-message limit",
+            )
+        try:
+            await self._bot.edit_message_text(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                message_id=int(message_id),
+                text=self.format_message(content),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=self._task_status_markup(buttons),
+                **self._link_preview_kwargs(),
+            )
+            return SendResult(success=True, message_id=str(message_id))
+        except Exception as exc:
+            return SendResult(
+                success=False,
+                error=_redact_telegram_error_text(exc),
+                retryable=False,
+            )
+
     async def send_or_update_status(
         self,
         chat_id: str,
@@ -5327,6 +5496,73 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Correlated task-status callbacks (ts:action:task_id:version) ---
+        if data.startswith("ts:"):
+            handler = getattr(self, "_task_status_action_handler", None)
+            allowed_actions = getattr(self, "_task_status_allowed_actions", ())
+            if not callable(handler) or not allowed_actions:
+                await query.answer(
+                    text="Task decision handling is not configured; no action was taken."
+                )
+                return
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=str(query_chat_id) if query_chat_id is not None else None,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(
+                    text="⛔ You are not authorized to decide this task."
+                )
+                return
+            if query_chat_id is None or query_message is None:
+                await query.answer(
+                    text="Task decision is missing its exact message destination."
+                )
+                return
+            from gateway.task_status import (
+                invoke_task_status_action,
+                resolve_task_status_callback_across_boards,
+            )
+
+            resolution = resolve_task_status_callback_across_boards(
+                callback_data=data,
+                chat_id=str(query_chat_id),
+                message_thread_id=str(query_thread_id or ""),
+                message_id=str(getattr(query_message, "message_id", "")),
+                allowed_actions=allowed_actions,
+                board=getattr(self, "_task_status_board", None),
+            )
+            if not resolution.ok:
+                await query.answer(
+                    text=f"No action taken: {(resolution.error or 'invalid task decision')[:160]}"
+                )
+                return
+            try:
+                await invoke_task_status_action(handler, resolution)
+            except Exception as exc:
+                logger.error(
+                    "[%s] task-status action handler failed for %s v%s: %s",
+                    self.name,
+                    resolution.kanban_task_id,
+                    resolution.state_version,
+                    exc,
+                    exc_info=True,
+                )
+                await query.answer(
+                    text="Task decision handler failed; the action was not retried."
+                )
+                return
+            await query.answer(
+                text=(
+                    f"Task {resolution.kanban_task_id} v{resolution.state_version}: "
+                    f"{resolution.action} recorded."
+                )[:180]
+            )
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):

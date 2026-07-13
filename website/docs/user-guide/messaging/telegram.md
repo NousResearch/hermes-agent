@@ -1304,6 +1304,121 @@ HERMES_TELEGRAM_NOTIFICATIONS=all
 
 Unknown values log a warning and fall back to `important`.
 
+## Opt-in living Kanban task-status messages
+
+Hermes can maintain one living Telegram status card for one canonical Kanban
+task. This is an opt-in control primitive for policy integrations; it does not
+turn Telegram topics into profiles, add topic-to-agent routing, or replace the
+Kanban board. A topic remains a conversation/session workspace, while Kanban
+remains the detailed execution and evidence source of truth.
+
+Only the configured publisher profile may create, edit, or push a task-status
+publication. Specialist workers should leave progress, test output, blockers,
+and terminal handoffs in Kanban. With `raw_event_pushes: false` (the default),
+the gateway does not copy raw worker/card events into Telegram while living-card
+mode is enabled.
+
+Each binding is stored in the task's board SQLite database with these fields:
+
+- Telegram `chat_id`, `message_thread_id`, and returned `message_id`
+- Hermes `session_id`
+- canonical `kanban_task_id`
+- optional Linear issue key
+- lifecycle state and monotonic state version
+
+Button-bearing decision pushes are additionally correlated in a small callback
+message table by task ID, state version, chat, topic, and returned message ID.
+This does not create a second living card; it lets a callback from the control
+topic prove which exact push message it came from.
+
+The first structured publication sends one card and stores Telegram's returned
+message ID. Routine updates edit exactly that message. A duplicate create is
+rejected before transport, and an update with a missing binding, mismatched
+session/destination, stale version, or skipped version fails closed. Schema
+creation is idempotent on existing boards; the feature is disabled by default,
+so migration does not change legacy notification behavior.
+
+Fresh pushes are restricted to four correlated publication kinds:
+
+| Kind | Destination |
+| --- | --- |
+| decision or blocker | Exact configured `control` chat/topic |
+| material scope/risk/outcome change | Exact originating project chat/topic |
+| accepted completion | Exact originating project chat/topic |
+| routine stage change | No fresh push; edit the living card only |
+
+Briefings and system/root routes are also configured explicitly for the policy
+layer. A missing `chat_id` or `thread_id` key is an error; root is represented
+by an explicit empty `thread_id`. Hermes never falls back to a topic title,
+color, current/latest session, latest chat, or newest task, and one publication
+is never mirrored to a second topic.
+
+Decision buttons use callback data in the form
+`ts:<action>:<kanban_task_id>:<state_version>`, bounded by Telegram's 64-byte
+limit. Before an injected policy handler runs, Hermes verifies the authorized
+caller, exact task, chat, topic, message ID, current state version, and allowed
+action. Bare replies such as `1`, `approve`, or `continue`, stale versions,
+wrong-task/wrong-message callbacks, unknown actions, ambiguous cross-board
+bindings, and callback replays take no consequential action.
+
+Equivalent publications are suppressed for 180 seconds using the canonical
+task ID, lifecycle state, state version, destination chat/topic, and recommended
+action. A changed state, version, destination, or recommended action is material
+and can publish.
+
+### Protected pilot setup
+
+Keep this disabled until the publisher profile and every destination have been
+reviewed:
+
+```yaml
+kanban:
+  task_status:
+    enabled: true
+    publisher_profile: default
+    dedup_seconds: 180
+    worker_lifecycle_pushes: false
+    raw_event_pushes: false
+    routes:
+      control:
+        chat_id: "-1001234567890"
+        thread_id: "900"
+      briefings:
+        chat_id: "-1001234567890"
+        thread_id: "901"
+      system:
+        chat_id: "-1001234567890"
+        thread_id: ""
+```
+
+The policy integration appends an explicit structured event with
+`hermes_cli.kanban_db.append_task_status_publication()`. A create event must
+carry `destination: {chat_id, message_thread_id}` and have an exact matching
+Telegram notification subscription for that task. Update events are normalized
+to the persisted binding before they enter the event log. The gateway publishes
+only through the matching subscription; another Telegram subscription is not a
+mirror destination, and non-Telegram subscriptions keep their legacy behavior.
+If decision buttons are used, the integration injects an allowed action handler
+with `TelegramAdapter.set_task_status_action_handler()`. Core does not assign
+business meaning to approve/deny and does not infer a handler. A missing handler
+fails closed.
+
+For a low-noise pilot, keep Telegram push behavior at the documented display
+path (not under `gateway.telegram`):
+
+```yaml
+display:
+  platforms:
+    telegram:
+      notifications: important
+```
+
+Restart the gateway after configuration changes and begin a fresh session.
+Validate with a non-production task and topic first. Transport success is not
+operational acceptance; the protected pilot still requires a real user-originated
+Telegram request and confirmation that the expected topic received exactly one
+living card, routine edits, and only the allowed correlated pushes.
+
 ## Status messages edited in place
 
 The Telegram adapter routes recurring agent status callbacks (e.g. "Compressing context…", "Calling tool…") through `send_or_update_status()`, which keeps a `{(chat_id, status_key) → message_id}` cache and **edits the existing bubble** on subsequent emits instead of appending a new one each time. Distinct `status_key` values get their own messages; distinct chats never collide. If the edit fails (e.g. the user deleted the message, or it's older than Telegram allows for edits), the cache entry is dropped and the next emit posts a fresh message and re-caches its ID. No config required — this is the default Telegram behavior. Other adapters that don't implement `send_or_update_status` fall through to plain `send()` unchanged.

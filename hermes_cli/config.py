@@ -2755,6 +2755,27 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # One persistent, explicitly bound task-status message. Disabled by
+        # default so existing Kanban terminal notifications remain unchanged.
+        "task_status": {
+            "enabled": False,
+            # Only this profile may publish living cards or correlated pushes.
+            # The generic core primitive owns no Donna-specific wording/policy.
+            "publisher_profile": "default",
+            "dedup_seconds": 180,
+            # Noise controls for opt-in mode: specialist stages and raw event
+            # summaries remain Kanban evidence instead of becoming Telegram
+            # push messages.
+            "worker_lifecycle_pushes": False,
+            "raw_event_pushes": False,
+            # Exact destinations. Empty chat ids deliberately fail closed.
+            # Root/system routing uses an explicit empty thread_id.
+            "routes": {
+                "control": {"chat_id": "", "thread_id": ""},
+                "briefings": {"chat_id": "", "thread_id": ""},
+                "system": {"chat_id": "", "thread_id": ""},
+            },
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

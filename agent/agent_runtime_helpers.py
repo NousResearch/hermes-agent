@@ -2156,7 +2156,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
-                 tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None) -> str:
+                 tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
+                 originating_turn_id: Optional[str] = None) -> str:
     """Invoke a single tool and return the result string. No display logic.
 
     Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -2165,6 +2166,14 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     """
     if not isinstance(function_args, dict):
         function_args = {}
+    if originating_turn_id is None:
+        originating_turn_id = str(getattr(agent, "_current_turn_id", "") or "")
+    _model_reasoning_present = function_name == "todo" and "reasoning" in function_args
+    _model_reasoning_directive = (
+        copy.deepcopy(function_args.get("reasoning"))
+        if _model_reasoning_present
+        else None
+    )
 
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:
@@ -2184,6 +2193,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             _tool_middleware_trace = _tool_request_mw.trace
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
+    if function_name == "todo":
+        if _model_reasoning_present:
+            function_args["reasoning"] = copy.deepcopy(_model_reasoning_directive)
+        else:
+            function_args.pop("reasoning", None)
 
     # Check plugin hooks for a block or approval directive before executing.
     block_message: Optional[str] = None
@@ -2248,20 +2262,27 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
     if function_name == "todo":
         def _execute(next_args: dict) -> Any:
+            from agent.adaptive_reasoning import attach_reasoning_receipt
             from tools.todo_tool import todo_tool as _todo_tool
+            result = _todo_tool(
+                todos=next_args.get("todos"),
+                merge=next_args.get("merge", False),
+                store=agent._todo_store,
+                plan_approval=next_args.get("plan_approval"),
+                goal_outcome=next_args.get("goal_outcome"),
+                session_key=str(
+                    getattr(agent, "_gateway_session_key", None)
+                    or agent.session_id
+                    or ""
+                ),
+                user_id=str(getattr(agent, "user_id", None) or ""),
+            )
             return _finish_agent_tool(
-                _todo_tool(
-                    todos=next_args.get("todos"),
-                    merge=next_args.get("merge", False),
-                    store=agent._todo_store,
-                    plan_approval=next_args.get("plan_approval"),
-                    goal_outcome=next_args.get("goal_outcome"),
-                    session_key=str(
-                        getattr(agent, "_gateway_session_key", None)
-                        or agent.session_id
-                        or ""
-                    ),
-                    user_id=str(getattr(agent, "user_id", None) or ""),
+                attach_reasoning_receipt(
+                    agent,
+                    result,
+                    _model_reasoning_directive if _model_reasoning_present else None,
+                    originating_turn_id=originating_turn_id,
                 ),
                 next_args,
             )

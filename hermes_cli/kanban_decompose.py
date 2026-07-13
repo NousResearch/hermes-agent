@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_planning_policy as planning_policy
 from hermes_cli import profiles as profiles_mod
 
 logger = logging.getLogger(__name__)
@@ -281,6 +282,14 @@ def decompose_task(
     configured, API error, malformed response, decomposer returned
     fanout=true with empty task list) — those surface via ``ok=False``.
     """
+    cfg = _load_config()
+    if not planning_policy.auxiliary_planning_enabled(cfg):
+        return DecomposeOutcome(
+            task_id,
+            False,
+            planning_policy.AUXILIARY_PLANNING_DISABLED_REASON,
+        )
+
     with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
     if task is None:
@@ -290,7 +299,6 @@ def decompose_task(
             task_id, False, f"task is not in triage (status={task.status!r})"
         )
 
-    cfg = _load_config()
     orchestrator = _resolve_orchestrator_profile(cfg)
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}

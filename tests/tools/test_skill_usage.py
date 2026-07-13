@@ -20,9 +20,8 @@ def _bump_view_many(hermes_home: str, skill_name: str, iterations: int) -> None:
 def skills_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with a clean skills/ dir for each test.
 
-    Pins ``curator.prune_builtins`` OFF so the bundled/hub-protection tests in
-    this module exercise the off-path semantics regardless of the shipped
-    default. Tests that want built-ins to be curation-eligible flip it back on
+    Pins ``curator.prune_builtins`` OFF so bundled/hub-protection tests are
+    isolated from per-test config. Tests that want built-ins to be eligible opt in
     explicitly via ``monkeypatch.setattr(mod, "_prune_builtins_enabled", ...)``.
     """
     home = tmp_path / ".hermes"
@@ -56,6 +55,28 @@ description: test skill
         encoding="utf-8",
     )
     return d
+
+
+@pytest.mark.parametrize("value", ["false", "true", 1, [], {}])
+def test_prune_builtins_config_requires_exact_boolean_true(
+    skills_home,
+    monkeypatch,
+    value,
+):
+    import hermes_cli.config as config_mod
+    import tools.skill_usage as mod
+
+    # The fixture pins this helper for unrelated provenance tests; restore the
+    # real function so this test covers the config-reading boundary itself.
+    import importlib
+
+    mod = importlib.reload(mod)
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"curator": {"prune_builtins": value}},
+    )
+    assert mod._prune_builtins_enabled() is False
 
 
 # ---------------------------------------------------------------------------

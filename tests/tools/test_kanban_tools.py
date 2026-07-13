@@ -955,6 +955,20 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_model_authored_create_unaffected_by_auxiliary_planning_default(worker_env):
+    """The main model's explicit Kanban write path stays available."""
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_create({
+        "title": "model-authored follow-up",
+        "assignee": "peer",
+        "body": "Explicit plan step authored by the main model.",
+        "idempotency_key": "model-authored-aux-gate-off",
+    }))
+    assert out["ok"] is True
+    assert out["task_id"]
+
+
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     """A worker scoped to a dir: task that spawns a child without a
     workspace arg inherits the dir, not scratch (so follow-up code-gen

@@ -139,17 +139,79 @@ class TestCatalog:
         assert len(first) >= 1
         assert second == []  # already present -> nothing new
 
-    def test_monitor_entry_references_classifier_script(self):
+    def test_monitor_entry_keeps_semantic_decision_in_primary_agent(self):
         from cron.suggestion_catalog import CATALOG, classify_items_script_path
 
         monitor = next(e for e in CATALOG if e.key == "catalog:important-mail-monitor")
-        # The prompt must reference the classifier by module path (resolvable
-        # at run time on any backend), never by a baked-in absolute path —
-        # absolute paths go stale after relocation and don't exist on remote
-        # terminal backends (Docker/Modal).
-        assert "cron.scripts.classify_items" in monitor.job_spec["prompt"]
+        prompt = monitor.job_spec["prompt"]
+        assert "cron.scripts.classify_items" not in prompt
+        assert "auxiliary classifier" in prompt
+        assert "full task context" in prompt
+        assert "exactly [SILENT]" in prompt
+        # Compatibility API remains available for old explicitly-authored jobs.
         assert classify_items_script_path() not in monitor.job_spec["prompt"]
         assert Path(classify_items_script_path()).name == "classify_items.py"
+
+    def test_stale_pending_monitor_is_reconciled_before_accept(self, store):
+        from cron.suggestion_catalog import IMPORTANT_MAIL_CATALOG_KEY
+
+        stale = store.add_suggestion(
+            title="Important-mail monitor",
+            description="old catalog copy",
+            source="catalog",
+            job_spec={
+                "prompt": "run python3 -m cron.scripts.classify_items",
+                "schedule": "every 30m",
+                "name": "Important-mail monitor",
+                "deliver": "origin",
+            },
+            dedup_key=IMPORTANT_MAIL_CATALOG_KEY,
+        )
+        assert stale is not None
+        created = {}
+
+        with patch(
+            "cron.jobs.create_job",
+            lambda **kwargs: created.update(kwargs) or {"id": "job"},
+        ):
+            assert store.accept_suggestion(stale["id"]) is not None
+
+        assert "classify_items" not in created["prompt"]
+        assert "auxiliary classifier" in created["prompt"]
+        record = store.get_suggestion(stale["id"])
+        assert record["status"] == "accepted"
+        assert record["catalog_revision"] == 2
+
+    @pytest.mark.parametrize("source,status", [("usage", "pending"), ("catalog", "dismissed"), ("catalog", "accepted")])
+    def test_monitor_reconciliation_does_not_touch_nonpending_or_user_records(
+        self,
+        store,
+        source,
+        status,
+    ):
+        from cron.suggestion_catalog import (
+            IMPORTANT_MAIL_CATALOG_KEY,
+            reconcile_pending_important_mail_suggestion,
+        )
+
+        rec = store.add_suggestion(
+            title="Keep me",
+            description="unchanged",
+            source=source,
+            job_spec={"prompt": "legacy", "schedule": "every 30m"},
+            dedup_key=IMPORTANT_MAIL_CATALOG_KEY,
+        )
+        assert rec is not None
+        if status != "pending":
+            assert store._set_status(rec["id"], status) is True
+
+        before = dict(store.get_suggestion(rec["id"]))
+        changed = reconcile_pending_important_mail_suggestion(
+            reconcile_fn=store.reconcile_pending_catalog_suggestion,
+        )
+        after = store.get_suggestion(rec["id"])
+        assert changed is False
+        assert after == before
 
 
 class TestBlueprintBridge:

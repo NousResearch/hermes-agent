@@ -1276,20 +1276,32 @@ Control how much "thinking" the model does before responding:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # empty = medium (default). Options: none, minimal, low, medium, high, xhigh (max)
+  reasoning_effort: ""   # Provider default. Options: none, minimal, low, medium, high, xhigh, max
+  adaptive_reasoning:
+    enabled: true
+    max_effort: "xhigh"
 ```
 
-When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
+When unset, existing providers retain their historical default (`medium` on
+the standard paths). The exact GPT-5.6 Responses path uses a model-gated
+quality-first baseline of `high`; it does not change defaults for other models.
+For that path, `adaptive_reasoning.enabled` lets the model request a deeper
+effort for later calls in the current turn through the existing `todo` tool.
+Hermes does not classify the task or choose effort outside the model: runtime
+code only checks the operator's baseline and cap. The default adaptive cap is
+`xhigh`; `max` remains closed until explicitly enabled and verified for the
+production backend. Adaptive Pro mode is not transmitted until its exact
+endpoint contract is canaried. The request expires at the end of the turn.
 
 :::note Adaptive-thinking models (Claude 4.6+, Fable/Mythos-class) over OpenRouter
 These models use *adaptive* thinking and don't accept the usual `reasoning.effort`
 field — OpenRouter ignores it for them. Hermes transparently routes your
 `reasoning_effort` to OpenRouter's `verbosity` parameter instead (which maps to
 Anthropic's `output_config.effort`), so the same `low`/`medium`/`high`/`xhigh`
-knob keeps working — no extra configuration needed. `none` (or unset) leaves the
-model on its own adaptive default. (`max` is accepted on the wire but is not a
-selectable `reasoning_effort` value; `xhigh` is the configurable ceiling.) The
-native Anthropic provider already controls effort directly and is unaffected.
+knob keeps working — no extra configuration needed. `none` leaves the model on
+its own adaptive default. `max` is available when the selected backend supports
+it. The native Anthropic provider already controls effort directly and is
+unaffected.
 :::
 
 You can also change the reasoning effort at runtime with the `/reasoning` command:
@@ -1297,6 +1309,7 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 ```
 /reasoning           # Show current effort level and display state
 /reasoning high      # Set reasoning effort to high
+/reasoning max       # Use max when the active backend supports it
 /reasoning none      # Disable reasoning
 /reasoning show      # Show model thinking above each response
 /reasoning hide      # Hide model thinking

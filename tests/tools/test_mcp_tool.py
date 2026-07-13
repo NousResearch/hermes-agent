@@ -3538,7 +3538,7 @@ class TestMCPServerTaskSamplingIntegration:
         # sampling setup portion directly.
         server._config = config
         sampling_config = config.get("sampling", {})
-        if sampling_config.get("enabled", True) and _MCP_SAMPLING_TYPES:
+        if sampling_config.get("enabled", False) and _MCP_SAMPLING_TYPES:
             server._sampling = SamplingHandler(server.name, sampling_config)
         else:
             server._sampling = None
@@ -3559,12 +3559,45 @@ class TestMCPServerTaskSamplingIntegration:
         }
         server._config = config
         sampling_config = config.get("sampling", {})
-        if sampling_config.get("enabled", True) and _MCP_SAMPLING_TYPES:
+        if sampling_config.get("enabled", False) and _MCP_SAMPLING_TYPES:
             server._sampling = SamplingHandler(server.name, sampling_config)
         else:
             server._sampling = None
 
         assert server._sampling is None
+
+    def test_sampling_handler_none_when_config_omits_sampling(self):
+        """Server-initiated inference requires explicit per-server opt-in."""
+        from tools.mcp_tool import MCPServerTask, _MCP_SAMPLING_TYPES
+
+        server = MCPServerTask("int_test_default_off")
+        config = {"command": "fake"}
+        server._config = config
+        sampling_config = config.get("sampling", {})
+        if sampling_config.get("enabled", False) and _MCP_SAMPLING_TYPES:
+            server._sampling = SamplingHandler(server.name, sampling_config)
+        else:
+            server._sampling = None
+
+        assert server._sampling is None
+
+    @pytest.mark.parametrize(
+        "sampling",
+        [None, True, False, "enabled", [], {"enabled": "false"}, {"enabled": 1}],
+    )
+    def test_sampling_requires_exact_boolean_true_and_mapping(self, sampling):
+        from tools.mcp_tool import _enabled_sampling_config
+
+        assert _enabled_sampling_config({"sampling": sampling}) is None
+
+    def test_sampling_explicit_true_preserves_configuration(self):
+        from tools.mcp_tool import _enabled_sampling_config
+
+        config = {"sampling": {"enabled": True, "max_rpm": 7}}
+        assert _enabled_sampling_config(config) == {
+            "enabled": True,
+            "max_rpm": 7,
+        }
 
     def test_session_kwargs_used_in_stdio(self):
         """When sampling is set, session_kwargs() are passed to ClientSession."""

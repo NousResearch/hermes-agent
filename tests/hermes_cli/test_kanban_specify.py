@@ -23,6 +23,10 @@ from hermes_cli import kanban_specify as spec
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n  auxiliary_planning_enabled: true\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
@@ -110,6 +114,37 @@ def test_specify_task_happy_path(kanban_home):
     assert task.status == "ready"
     assert task.title == "Refined rough"
     assert "**Goal**" in (task.body or "")
+
+
+def test_specify_task_default_policy_blocks_before_auxiliary_or_db_write(
+    kanban_home,
+    monkeypatch,
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+
+    monkeypatch.setattr(
+        spec.planning_policy,
+        "_load_config",
+        lambda: {"kanban": {}},
+    )
+    with patch(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        side_effect=AssertionError("auxiliary client must not be resolved"),
+    ), patch.object(
+        kb,
+        "specify_triage_task",
+        side_effect=AssertionError("semantic DB write must not run"),
+    ):
+        outcome = spec.specify_task(tid)
+
+    assert outcome.ok is False
+    assert "auxiliary planning is disabled" in outcome.reason.lower()
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "triage"
+    assert task.body is None
 
 
 def test_specify_task_falls_back_to_body_only_on_bad_json(kanban_home):

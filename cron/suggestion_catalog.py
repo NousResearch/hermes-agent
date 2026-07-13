@@ -5,10 +5,10 @@ the ``catalog`` source of the unified suggestion surface. Each entry is a
 ready-to-run ``cron.jobs.create_job`` spec wrapped as a suggestion; the user
 accepts via ``/suggestions``. Nothing here auto-schedules.
 
-The "important-mail monitor" entry is where the old proactive-monitor engine
-lives now: its ``classify_items.py`` (poll a source -> LLM-score urgency ->
-surface only above-threshold) is ONE catalog automation, not a standalone
-feature.
+The important-mail entry deliberately leaves semantic importance decisions to
+the scheduled primary AIAgent. The legacy ``classify_items.py`` helper remains
+available only for explicit backwards-compatible use; catalog suggestions do
+not invoke it.
 
 Adding a catalog entry: append a CatalogEntry. Keep prompts self-contained
 (cron jobs run with no chat context) and schedules sensible. The ``job_spec``
@@ -21,11 +21,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-__all__ = ["CatalogEntry", "CATALOG", "seed_catalog_suggestions", "classify_items_script_path"]
+__all__ = [
+    "CatalogEntry",
+    "CATALOG",
+    "IMPORTANT_MAIL_CATALOG_KEY",
+    "IMPORTANT_MAIL_CATALOG_REVISION",
+    "canonical_important_mail_job_spec",
+    "reconcile_pending_important_mail_suggestion",
+    "seed_catalog_suggestions",
+    "classify_items_script_path",
+]
+
+
+IMPORTANT_MAIL_CATALOG_KEY = "catalog:important-mail-monitor"
+IMPORTANT_MAIL_CATALOG_REVISION = 2
 
 
 def classify_items_script_path() -> str:
-    """Absolute path to the urgency classifier script shipped with cron/."""
+    """Return the deprecated compatibility helper path for existing callers."""
     return str((Path(__file__).resolve().parent / "scripts" / "classify_items.py"))
 
 
@@ -61,21 +74,19 @@ CATALOG: List[CatalogEntry] = [
         },
     ),
     CatalogEntry(
-        key="catalog:important-mail-monitor",
+        key=IMPORTANT_MAIL_CATALOG_KEY,
         title="Important-mail monitor",
         description="Check your inbox periodically and ping you ONLY about mail "
         "that actually needs attention — never the newsletters.",
         job_spec={
             "prompt": (
                 "Check the user's inbox for new messages since the last run. "
-                "For each candidate, judge urgency against this rule: surface "
+                "Using your full task context, judge each candidate against this rule: surface "
                 "only mail that needs a reply today, is from a manager/family "
-                "member, or mentions a deadline. Pipe candidates through the "
-                "urgency classifier (run `python3 -m cron.scripts.classify_items "
-                "--threshold 7 --criteria ...` from the hermes-agent install — "
-                "resolve the script path at run time, do not assume a fixed "
-                "location) and deliver ONLY what it returns. If nothing "
-                "clears the bar, respond with [SILENT] so the user is not "
+                "member, or mentions a deadline. Do not delegate importance or "
+                "delivery decisions to an auxiliary classifier. Deliver only "
+                "the messages you determine match. If nothing matches, respond "
+                "with exactly [SILENT] so the user is not "
                 "pinged. Requires a connected mail source; if none is "
                 "configured, explain how to connect one and then stop."
             ),
@@ -121,6 +132,37 @@ CATALOG: List[CatalogEntry] = [
 ]
 
 
+def _important_mail_entry() -> CatalogEntry:
+    return next(entry for entry in CATALOG if entry.key == IMPORTANT_MAIL_CATALOG_KEY)
+
+
+def canonical_important_mail_job_spec() -> Dict[str, Any]:
+    """Return a copy of the current model-authored important-mail job spec."""
+    return dict(_important_mail_entry().job_spec)
+
+
+def reconcile_pending_important_mail_suggestion(*, reconcile_fn=None) -> bool:
+    """Refresh only the still-pending built-in important-mail suggestion.
+
+    Accepted/dismissed records and suggestions from non-catalog sources are
+    intentionally outside this migration boundary.
+    """
+    if reconcile_fn is None:
+        from cron.suggestions import reconcile_pending_catalog_suggestion
+
+        reconcile_fn = reconcile_pending_catalog_suggestion
+    entry = _important_mail_entry()
+    return bool(
+        reconcile_fn(
+            dedup_key=entry.key,
+            title=entry.title,
+            description=entry.description,
+            job_spec=dict(entry.job_spec),
+            catalog_revision=IMPORTANT_MAIL_CATALOG_REVISION,
+        )
+    )
+
+
 def seed_catalog_suggestions(
     *,
     add_fn: Optional[Callable[..., Optional[Dict[str, Any]]]] = None,
@@ -134,14 +176,22 @@ def seed_catalog_suggestions(
     are skipped by the store, so re-seeding is safe and idempotent. Returns the
     list of suggestion records actually created.
     """
+    reconcile_fn = None
     if add_fn is None:
         from cron.suggestions import add_suggestion as add_fn  # type: ignore[assignment]
+        from cron.suggestions import reconcile_pending_catalog_suggestion
+
+        reconcile_fn = reconcile_pending_catalog_suggestion
 
     wanted = set(keys) if keys else None
     created: List[Dict[str, Any]] = []
     for entry in CATALOG:
         if wanted is not None and entry.key not in wanted:
             continue
+        if entry.key == IMPORTANT_MAIL_CATALOG_KEY and reconcile_fn is not None:
+            reconcile_pending_important_mail_suggestion(
+                reconcile_fn=reconcile_fn,
+            )
         rec = add_fn(
             title=entry.title,
             description=entry.description,
@@ -151,4 +201,8 @@ def seed_catalog_suggestions(
         )
         if rec is not None:
             created.append(rec)
+            if entry.key == IMPORTANT_MAIL_CATALOG_KEY and reconcile_fn is not None:
+                reconcile_pending_important_mail_suggestion(
+                    reconcile_fn=reconcile_fn,
+                )
     return created

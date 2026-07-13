@@ -1653,13 +1653,28 @@ def test_dispatch_dry_run_does_not_claim(kanban_home, all_assignees_spawnable):
         assert kb.get_task(conn, t2).status == "ready"
 
 
-def test_dispatch_skips_unassigned(kanban_home):
+def test_dispatch_skips_unassigned_when_default_assignee_empty(kanban_home):
+    spawn_calls = []
+
+    def unexpected_spawn(task, workspace):
+        spawn_calls.append((task.id, workspace))
+        return 12345
+
     with kb.connect() as conn:
         t = kb.create_task(conn, title="floater")
-        res = kb.dispatch_once(conn, dry_run=True)
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=unexpected_spawn,
+            default_assignee="",
+        )
+        task = kb.get_task(conn, t)
     assert t in res.skipped_unassigned
     assert t not in res.skipped_nonspawnable
     assert not res.spawned
+    assert spawn_calls == []
+    assert task is not None
+    assert task.status == "ready"
+    assert task.assignee is None
 
 
 def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypatch):

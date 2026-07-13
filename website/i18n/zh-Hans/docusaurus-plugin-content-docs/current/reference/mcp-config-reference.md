@@ -51,7 +51,7 @@ mcp_servers:
 | `supports_parallel_tool_calls` | bool | 两者 | 允许该服务器的工具并发执行 |
 | `tools` | mapping | 两者 | 过滤及工具策略 |
 | `auth` | string | HTTP | 认证方式。设为 `oauth` 可启用带 PKCE 的 OAuth 2.1 |
-| `sampling` | mapping | 两者 | 服务器发起的 LLM 请求策略（参见 MCP 指南） |
+| `sampling` | mapping | 两者 | 服务器发起的 LLM 请求策略；默认关闭，除非显式设置 `sampling.enabled: true`（参见 MCP 指南） |
 
 ## `tools` 策略键
 

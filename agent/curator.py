@@ -192,13 +192,12 @@ def get_archive_after_days() -> int:
 def get_prune_builtins() -> bool:
     """Whether the curator may prune (archive) bundled built-in skills too.
 
-    ON by default. When on, built-ins become curation candidates and are
-    archived after the same inactivity period as agent-created skills, with a
-    suppression list keeping them archived across `hermes update` re-seeds.
-    Hub-installed skills are never pruned regardless of this flag.
+    OFF by default. Built-ins become curation candidates only after an explicit
+    opt-in; when enabled, a suppression list keeps archived built-ins from being
+    restored by `hermes update`. Hub-installed skills are never pruned.
     """
     cfg = _load_config()
-    return bool(cfg.get("prune_builtins", True))
+    return cfg.get("prune_builtins") is True
 
 
 def get_consolidate() -> bool:

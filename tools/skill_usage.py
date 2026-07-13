@@ -242,11 +242,10 @@ def _read_hub_installed_names() -> Set[str]:
 def _prune_builtins_enabled() -> bool:
     """Whether bundled built-in skills are eligible for curator pruning.
 
-    Reads ``curator.prune_builtins`` from config (default True). Lazy import
+    Reads ``curator.prune_builtins`` from config (default False). Lazy import
     keeps this module importable without the CLI config layer (e.g. in the
-    update/sync context); on any failure we fall back to the default. The real
-    safety against a mass-prune is the curator's seed-on-first-sight, not this
-    flag — built-ins only archive after a fresh inactivity window.
+    update/sync context); on any failure we fail off so bundled capabilities
+    cannot become pruning candidates because configuration was unavailable.
     """
     try:
         from hermes_cli.config import load_config
@@ -254,10 +253,10 @@ def _prune_builtins_enabled() -> bool:
         cfg = load_config()
         cur = cfg.get("curator") if isinstance(cfg, dict) else None
         if isinstance(cur, dict):
-            return bool(cur.get("prune_builtins", True))
+            return cur.get("prune_builtins") is True
     except Exception as e:  # pragma: no cover — best-effort config read
         logger.debug("Failed to read curator.prune_builtins: %s", e)
-    return True
+    return False
 
 
 def _suppressed_file() -> Path:

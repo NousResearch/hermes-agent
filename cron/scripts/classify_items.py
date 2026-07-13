@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Classify candidate items by urgency/importance and emit only the urgent ones.
+"""Deprecated explicit classifier compatibility helper.
+
+Built-in cron catalogs no longer invoke this auxiliary-model path. Scheduled
+primary AIAgents judge importance directly so task meaning and delivery stay
+with the main agent. This script remains callable for existing user-authored
+jobs that explicitly opted into its score-and-threshold behavior.
 
 The proactive-monitor pattern: a fetch step (a watcher script, an inbox dump, a
 feed) produces a list of candidate items; this script scores each with a cheap

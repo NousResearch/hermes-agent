@@ -177,6 +177,42 @@ def add_suggestion(
         return record
 
 
+def reconcile_pending_catalog_suggestion(
+    *,
+    dedup_key: str,
+    title: str,
+    description: str,
+    job_spec: Dict[str, Any],
+    catalog_revision: int,
+) -> bool:
+    """Refresh one pending catalog-owned record without widening mutation.
+
+    Accepted/dismissed records, non-catalog sources, and unrelated catalog keys
+    are never changed. Returns whether a record was updated.
+    """
+    with _suggestions_lock:
+        suggestions = _load_raw().get("suggestions", [])
+        for record in suggestions:
+            if record.get("dedup_key") != dedup_key:
+                continue
+            if record.get("source") != "catalog":
+                return False
+            if record.get("status") != _STATUS_PENDING:
+                return False
+            desired = {
+                "title": title.strip(),
+                "description": description.strip(),
+                "job_spec": dict(job_spec),
+                "catalog_revision": int(catalog_revision),
+            }
+            if all(record.get(key) == value for key, value in desired.items()):
+                return False
+            record.update(desired)
+            _save_raw(suggestions)
+            return True
+    return False
+
+
 def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
     """Resolve a suggestion by id, 1-based pending index, or title (exact)."""
     suggestions = load_suggestions()
@@ -228,6 +264,24 @@ def accept_suggestion(ref: str, *, origin: Optional[Dict[str, Any]] = None) -> O
     an ``origin`` (platform/chat) is merged so "origin" delivery routes back to
     the chat where the user accepted.
     """
+    # Upgrade only the still-pending built-in important-mail proposal before it
+    # can become a job. This leaves accepted/dismissed and user-authored records
+    # untouched while preventing an old classifier prompt from being accepted.
+    try:
+        from cron.suggestion_catalog import (
+            IMPORTANT_MAIL_CATALOG_KEY,
+            canonical_important_mail_job_spec,
+            reconcile_pending_important_mail_suggestion,
+        )
+
+        reconcile_pending_important_mail_suggestion(
+            reconcile_fn=reconcile_pending_catalog_suggestion,
+        )
+    except Exception as exc:
+        logger.warning("important-mail catalog reconciliation failed: %s", exc)
+        IMPORTANT_MAIL_CATALOG_KEY = "catalog:important-mail-monitor"
+        canonical_important_mail_job_spec = None  # type: ignore[assignment]
+
     s = get_suggestion(ref)
     if not s or s.get("status") != _STATUS_PENDING:
         return None
@@ -235,6 +289,15 @@ def accept_suggestion(ref: str, *, origin: Optional[Dict[str, Any]] = None) -> O
     from cron.jobs import create_job
 
     spec = dict(s.get("job_spec") or {})
+    if (
+        s.get("source") == "catalog"
+        and s.get("dedup_key") == IMPORTANT_MAIL_CATALOG_KEY
+    ):
+        # Fail closed if the canonical catalog could not be loaded: accepting
+        # the stale privileged-classifier prompt would violate the new policy.
+        if canonical_important_mail_job_spec is None:
+            return None
+        spec = canonical_important_mail_job_spec()
     if origin is not None and "origin" not in spec:
         spec["origin"] = origin
 

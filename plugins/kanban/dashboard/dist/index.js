@@ -1623,7 +1623,8 @@
     // every tick. Manual = pre-PR behavior, the user clicks ⚗ Decompose on
     // each triage card (or runs `hermes kanban decompose <id>`) and tasks
     // stay in triage until then.
-    const autoOn = !!(settings && settings.auto_decompose);
+    const planningOn = !!(settings && settings.auxiliary_planning_enabled);
+    const autoOn = !!(settings && settings.effective_auto_decompose);
     const modePillTitle = settings === null
       ? "Loading mode…"
       : (autoOn
@@ -1633,7 +1634,9 @@
       type: "button",
       onClick: function () {
         if (settings === null) return;  // not loaded yet
-        saveSettings({ auto_decompose: !autoOn });
+        saveSettings(autoOn
+          ? { auto_decompose: false }
+          : { auxiliary_planning_enabled: true, auto_decompose: true });
       },
       disabled: settings === null,
       title: modePillTitle,
@@ -1680,7 +1683,7 @@
           className: msg.ok ? "hermes-kanban-msg-ok" : "hermes-kanban-msg-err",
         }, msg.text) : null,
 
-        settings ? h("div", { className: "grid gap-3 sm:grid-cols-3" },
+        settings ? h("div", { className: "grid gap-3 sm:grid-cols-4" },
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
               "Orchestrator profile"),
@@ -1717,20 +1720,44 @@
           ),
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
+              "Auxiliary planning"),
+            h("label", { className: "flex items-center gap-2 text-xs h-8" },
+              h(Checkbox, {
+                checked: planningOn,
+                onCheckedChange: function (checked) {
+                  saveSettings({
+                    auxiliary_planning_enabled: checked === true,
+                    auto_decompose: false,
+                  });
+                },
+              }),
+              "Enable legacy helpers",
+            ),
+            h("div", { className: "text-[10px] text-muted-foreground" },
+              planningOn
+                ? "Manual Decompose, Specify, and profile auto-describe are available."
+                : "Off by default; the main Hermes model owns semantic planning."),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs text-muted-foreground" },
               "Orchestration mode"),
             h("label", { className: "flex items-center gap-2 text-xs h-8" },
               h(Checkbox, {
-                checked: !!settings.auto_decompose,
+                checked: autoOn,
                 onCheckedChange: function (checked) {
-                  saveSettings({ auto_decompose: checked === true });
+                  saveSettings(checked === true
+                    ? { auxiliary_planning_enabled: true, auto_decompose: true }
+                    : { auto_decompose: false });
                 },
               }),
               "Auto-decompose triage tasks",
             ),
             h("div", { className: "text-[10px] text-muted-foreground" },
-              settings.auto_decompose
+              autoOn
                 ? "The dispatcher decomposes new triage tasks automatically."
-                : "Triage tasks stay in triage until you click ⚗ Decompose."),
+                : (planningOn
+                    ? "Triage stays manual until you click ⚗ Decompose."
+                    : "Auxiliary planning is off; auto-decompose cannot run.")),
           ),
         ) : h("div", { className: "text-xs text-muted-foreground" },
           "Loading…"),

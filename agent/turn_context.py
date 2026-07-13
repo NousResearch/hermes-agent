@@ -218,6 +218,12 @@ def build_turn_context(
     turn_id = f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
     agent._current_turn_id = turn_id
     agent._current_api_request_id = ""
+    # A model-authored reasoning directive is authority for this exact turn
+    # only. Bind an empty state after minting the fresh turn id so cached agents,
+    # early-return paths, restarts, and resumes cannot inherit it.
+    from agent.adaptive_reasoning import reset_adaptive_reasoning_turn
+
+    reset_adaptive_reasoning_turn(agent, turn_id)
 
     # Reset retry counters and iteration budget at the start of each turn.
     agent._invalid_tool_retries = 0

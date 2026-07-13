@@ -3539,6 +3539,26 @@ class TestBuildSchemaFromConfig:
             assert "options" in entry
             assert "local" in entry["options"]
 
+    def test_approvals_mode_options_match_config_values(self):
+        """approvals.mode select options must match the values accepted by config.py.
+
+        Previously the dashboard showed ['ask', 'yolo', 'deny'] which are stale
+        names that don't correspond to any real config value. The correct values
+        are 'manual', 'smart', and 'off' (see hermes_cli/config.py).
+        'smart' was missing entirely, making it unreachable from the UI.
+        """
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        entry = CONFIG_SCHEMA["approvals.mode"]
+        assert entry["type"] == "select"
+        options = entry["options"]
+        assert "manual" in options, "'manual' missing from approvals.mode options"
+        assert "smart" in options, "'smart' missing from approvals.mode options"
+        assert "off" in options, "'off' missing from approvals.mode options"
+        # Stale names that were previously shown but don't match config values
+        assert "ask" not in options, "stale option 'ask' should not appear"
+        assert "yolo" not in options, "stale option 'yolo' should not appear"
+        assert "deny" not in options, "stale option 'deny' should not appear"
+
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config
         test_config = {"model": "test", "nested": {"key": "val"}}

@@ -264,6 +264,48 @@ def test_block_and_respond(capture):
     assert result[0] == "my_answer"
 
 
+@pytest.mark.parametrize("event", ["secret.request", "sudo.request"])
+def test_sensitive_prompt_timeout_emits_expiry(capture, event):
+    server, buf = capture
+
+    assert server._block(event, "s1", {}, timeout=0) == ""
+
+    messages = [json.loads(line) for line in buf.getvalue().splitlines()]
+    request, expiry = [message["params"] for message in messages]
+    assert request["type"] == event
+    assert expiry["type"] == event.removesuffix(".request") + ".expire"
+    assert expiry["session_id"] == "s1"
+    assert expiry["payload"]["request_id"] == request["payload"]["request_id"]
+
+
+@pytest.mark.parametrize(
+    ("method", "value_key"),
+    [("secret.respond", "value"), ("sudo.respond", "password")],
+)
+def test_late_sensitive_prompt_response_is_idempotent(server, method, value_key):
+    response = server.handle_request(
+        {
+            "id": "late-response",
+            "method": method,
+            "params": {"request_id": "expired-request", value_key: ""},
+        }
+    )
+
+    assert response["result"] == {"status": "expired"}
+
+
+def test_late_clarify_response_remains_protocol_error(server):
+    response = server.handle_request(
+        {
+            "id": "late-clarify",
+            "method": "clarify.respond",
+            "params": {"request_id": "expired-request", "answer": ""},
+        }
+    )
+
+    assert response["error"]["code"] == 4009
+
+
 def test_clear_pending(server):
     ev = threading.Event()
     # _pending values are (sid, Event) tuples

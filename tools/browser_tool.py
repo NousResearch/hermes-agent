@@ -70,6 +70,8 @@ from hermes_constants import agent_browser_runnable, get_hermes_home
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli._subprocess_compat import windows_hide_flags
+from tools.browser_autonomy import annotate_browser_response
+from tools.browser_exit_recovery import build_exit_recovery_hint, recover_browser_exit
 
 # Browser-specific tool keys passed through to the agent-browser subprocess
 # AFTER credential stripping.  agent-browser is a Node process loading npm
@@ -1927,7 +1929,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_vision",
-        "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
+        "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for human handoff on CAPTCHAs or visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. Do not solve or bypass verification challenges; ask the user to complete them or use an official API/auth route. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2691,6 +2693,75 @@ def _redact_browser_output(value: Any) -> Any:
 # Browser Tool Functions
 # ============================================================================
 
+def _browser_exit_recovery_config() -> dict:
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        exit_cfg = cfg_get(cfg, "browser", "exit_recovery", default={})
+        return exit_cfg if isinstance(exit_cfg, dict) else {}
+    except Exception:
+        return DEFAULT_CONFIG.get("browser", {}).get("exit_recovery", {})
+
+
+def _browser_exit_auto_recovery_enabled() -> bool:
+    return is_truthy_value(
+        _browser_exit_recovery_config().get("auto_recover"),
+        default=False,
+    )
+
+
+def _browser_exit_recovery_preferred_exit() -> str:
+    preferred = str(_browser_exit_recovery_config().get("preferred_exit") or "").strip()
+    return preferred or "residential"
+
+
+def _browser_exit_recovery_allow_direct() -> bool:
+    return is_truthy_value(
+        _browser_exit_recovery_config().get("allow_direct_fallback"),
+        default=False,
+    )
+
+
+def _maybe_recover_failed_navigation(
+    *,
+    nav_session_key: str,
+    url: str,
+    error: str,
+) -> tuple[dict, dict]:
+    """Return (navigation_result, ip_recovery_hint) after optional exit failover."""
+    auto_enabled = _browser_exit_auto_recovery_enabled()
+    hint = build_exit_recovery_hint(
+        error=error,
+        url=url,
+        auto_recovery_enabled=auto_enabled,
+    )
+    failed = {"success": False, "error": error}
+
+    if not hint.get("eligible") or not auto_enabled:
+        return failed, hint
+
+    attempt = recover_browser_exit(
+        reason=error,
+        url=url,
+        preferred_exit=_browser_exit_recovery_preferred_exit(),
+        allow_direct=_browser_exit_recovery_allow_direct(),
+    )
+    hint["attempt"] = attempt
+    if not attempt.get("success"):
+        return failed, hint
+
+    hint["retried_navigation"] = True
+    retry_result = _run_browser_command(
+        nav_session_key,
+        "open",
+        [url],
+        timeout=max(_get_command_timeout(), 60),
+    )
+    hint["retry_success"] = retry_result.get("success", False)
+    return retry_result, hint
+
+
 def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
@@ -2814,6 +2885,20 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         timeout=_get_open_command_timeout(first_open=is_first_nav),
     )
 
+    ip_recovery_hint = None
+    if not result.get("success"):
+        nav_error = result.get("error", "Navigation failed")
+        result, ip_recovery_hint = _maybe_recover_failed_navigation(
+            nav_session_key=nav_session_key,
+            url=url,
+            error=nav_error,
+        )
+        if not result.get("success"):
+            failure = {"success": False, "error": nav_error}
+            if ip_recovery_hint is not None:
+                failure["ip_recovery"] = ip_recovery_hint
+            return json.dumps(failure, ensure_ascii=False)
+
     if result.get("success"):
         data = result.get("data", {})
         title = data.get("title", "")
@@ -2863,24 +2948,6 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         _last_active_session_key[effective_task_id] = nav_session_key
         _copy_fallback_warning(response, result)
 
-        # Detect common "blocked" page patterns from title/url
-        blocked_patterns = [
-            "access denied", "access to this page has been denied",
-            "blocked", "bot detected", "verification required",
-            "please verify", "are you a robot", "captcha",
-            "cloudflare", "ddos protection", "checking your browser",
-            "just a moment", "attention required"
-        ]
-        title_lower = title.lower()
-
-        if any(pattern in title_lower for pattern in blocked_patterns):
-            response["bot_detection_warning"] = (
-                f"Page title '{title}' suggests bot detection. The site may have blocked this request. "
-                "Options: 1) Try adding delays between actions, 2) Access different pages first, "
-                "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
-                "4) Some sites have very aggressive bot detection that may be unavoidable."
-            )
-
         # Include feature info on first navigation so model knows what's active
         if is_first_nav and "features" in session_info:
             features = session_info["features"]
@@ -2908,6 +2975,15 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                     _copy_fallback_warning(response, snap_result)
         except Exception as e:
             logger.debug("Auto-snapshot after navigate failed: %s", e)
+
+        annotate_browser_response(
+            response,
+            url=response.get("url", url),
+            title=response.get("title", ""),
+            snapshot=response.get("snapshot", ""),
+        )
+        if ip_recovery_hint is not None:
+            response["ip_recovery"] = ip_recovery_hint
 
         return json.dumps(response, ensure_ascii=False)
     else:
@@ -2994,6 +3070,8 @@ def browser_snapshot(
             "element_count": len(refs) if refs else 0
         }
         _copy_fallback_warning(response, result)
+
+        annotate_browser_response(response, snapshot=snapshot_text)
 
         # Merge supervisor state (pending dialogs + frame tree) when a CDP
         # supervisor is attached to this task. No-op otherwise. See

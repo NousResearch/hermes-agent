@@ -577,6 +577,54 @@ async def test_reconnect_preserves_pending_updates(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_polling_conflict_retry_routes_network_errors_to_network_handler(monkeypatch):
+    """A conflict retry that fails with Bad Gateway must not recurse as conflict."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._handle_polling_network_error = AsyncMock()
+    adapter._polling_conflict_count = 0
+
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    monkeypatch.setattr(adapter, "_drain_polling_connections", AsyncMock())
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=Exception("Bad Gateway")),
+        stop=AsyncMock(),
+        running=True,
+    )
+    adapter._app = SimpleNamespace(updater=updater)
+
+    conflict = type("Conflict", (Exception,), {})
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
+    if adapter._polling_error_task is not None:
+        await adapter._polling_error_task
+
+    adapter._handle_polling_network_error.assert_awaited_once()
+    err = adapter._handle_polling_network_error.await_args.args[0]
+    assert "Bad Gateway" in str(err)
+    assert adapter.has_fatal_error is False
+
+
+@pytest.mark.asyncio
+async def test_polling_conflict_entry_routes_plain_network_errors(monkeypatch):
+    """Plain API outages must not consume conflict retry budget."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._handle_polling_network_error = AsyncMock()
+
+    try:
+        from telegram.error import NetworkError
+        error = NetworkError("Bad Gateway")
+    except ImportError:
+        error = Exception("Bad Gateway")
+
+    await adapter._handle_polling_conflict(error)
+
+    adapter._handle_polling_network_error.assert_awaited_once_with(error)
+    assert adapter._polling_conflict_count == 0
+
+
+@pytest.mark.asyncio
 async def test_disarm_sets_ptb_stop_event():
     """_disarm_ptb_retry_loop sets PTB's name-mangled polling stop_event.
 
@@ -683,4 +731,3 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
     for _ in range(10):
         await asyncio.sleep(0)
     await _cancel_heartbeat(adapter)
-

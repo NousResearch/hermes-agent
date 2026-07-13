@@ -1302,6 +1302,16 @@ DEFAULT_CONFIG = {
             "rewrite_loopback_urls": False,
             "loopback_host_alias": "host.docker.internal",
         },
+        # Safe browser network-exit failover for proxy/tunnel/DNS/TLS health
+        # failures. Never used for CAPTCHA, bot walls, or access-control blocks.
+        "exit_recovery": {
+            "auto_recover": False,
+            "preferred_exit": "residential",
+            "fallback_exits": ["residential", "vpn"],
+            "allow_direct_fallback": False,
+            "controller": "",
+            "timeout_s": 45,
+        },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.

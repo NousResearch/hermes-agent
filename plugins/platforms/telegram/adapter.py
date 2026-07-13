@@ -1204,7 +1204,27 @@ class TelegramAdapter(BasePlatformAdapter):
                 return True
         except ImportError:
             pass
-        return isinstance(error, OSError)
+        if isinstance(error, OSError):
+            return True
+        text = str(error).lower()
+        return any(
+            phrase in text
+            for phrase in (
+                "bad gateway",
+                "gateway timeout",
+                "service unavailable",
+                "connection reset",
+                "connection refused",
+                "connection timed out",
+                "temporarily unavailable",
+                " 502 ",
+                " 503 ",
+                " 504 ",
+                "502 bad gateway",
+                "503 service unavailable",
+                "504 gateway timeout",
+            )
+        )
 
     @staticmethod
     def _looks_like_connect_timeout(error: Exception) -> bool:
@@ -2445,6 +2465,12 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
+        # Transient Telegram API outages (502 Bad Gateway, etc.) are not 409
+        # conflicts. Route them through the network reconnect ladder instead of
+        # burning conflict retry budget with the wrong recovery strategy.
+        if self._looks_like_network_error(error) and not self._looks_like_polling_conflict(error):
+            await self._handle_polling_network_error(error)
+            return
         # Transient 409 Conflict errors arise when the previous gateway process
         # has been killed (e.g. during `hermes update` or `--replace` handoffs)
         # but its long-poll connection hasn't yet expired on Telegram's servers.
@@ -2554,9 +2580,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     # context without an attached loop (which can happen when PTB
                     # dispatches this error callback). Use get_running_loop().
                     loop = asyncio.get_running_loop()
-                    self._polling_error_task = loop.create_task(
-                        self._handle_polling_conflict(retry_err)
-                    )
+                    if self._looks_like_network_error(retry_err) and not self._looks_like_polling_conflict(retry_err):
+                        self._polling_error_task = loop.create_task(
+                            self._handle_polling_network_error(retry_err)
+                        )
+                    else:
+                        self._polling_error_task = loop.create_task(
+                            self._handle_polling_conflict(retry_err)
+                        )
                     return
                 # Fall through to fatal on the last retry.
 
@@ -2586,14 +2617,23 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
         try:
-            if self._app and self._app.updater:
-                await asyncio.wait_for(self._app.updater.stop(), timeout=_UPDATER_STOP_TIMEOUT)
+            if self._app and self._app.updater and self._app.updater.running:
+                await asyncio.wait_for(
+                    self._app.updater.stop(),
+                    timeout=_UPDATER_STOP_TIMEOUT,
+                )
         except asyncio.TimeoutError:
             logger.warning(
                 "[%s] updater.stop() timed out after exhausting conflict "
                 "retries (likely CLOSE-WAIT socket); proceeding to fatal notify",
                 self.name,
             )
+        except RuntimeError as stop_error:
+            if "not running" not in str(stop_error).lower():
+                logger.warning(
+                    "[%s] Failed stopping Telegram updater after exhausting conflict retries: %s",
+                    self.name, stop_error, exc_info=True,
+                )
         except Exception as stop_error:
             logger.warning(
                 "[%s] Failed stopping Telegram updater after exhausting conflict retries: %s",

@@ -7092,7 +7092,7 @@ def _dispatch_once_locked(
     # they sit in status='running' until the worker calls
     # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
     running_count = 0
-    if max_spawn is not None:
+    if max_spawn is not None or max_in_progress is not None:
         running_count = int(
             conn.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
@@ -7115,9 +7115,8 @@ def _dispatch_once_locked(
         if in_progress >= max_in_progress:
             return result
         # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
-        if max_spawn is None or max_spawn > remaining:
-            max_spawn = remaining
+        if max_spawn is None or max_spawn > max_in_progress:
+            max_spawn = max_in_progress
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn

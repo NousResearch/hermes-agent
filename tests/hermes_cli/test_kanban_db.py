@@ -3686,6 +3686,34 @@ def test_dispatch_max_in_progress_none_is_unlimited(kanban_home, all_assignees_s
 
     assert len(spawns) == 4, f"expected 4 spawns (unlimited), got {len(spawns)}"
 
+
+def test_dispatch_combined_live_caps_leave_remaining_slot_spawnable(
+    kanban_home, all_assignees_spawnable
+):
+    """#63466: When both max_spawn and max_in_progress are set and a slot is
+    available, the dispatcher must not double-count the running task against
+    both caps and strand the ready queue."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        kb.claim_task(conn, running)
+        kb.create_task(conn, title="next", assignee="bob")
+        kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            max_spawn=2,
+            max_in_progress=2,
+        )
+
+    assert len(spawns) == 1, (
+        f"expected 1 spawn (1 running + 1 ready, cap 2), got {len(spawns)}"
+    )
+
+
 # Review column dispatch
 # ---------------------------------------------------------------------------
 

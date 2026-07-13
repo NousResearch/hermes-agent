@@ -7,17 +7,18 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
-import threading
 import time
+from unittest.mock import patch
 from typing import Any, Optional
 
 import pytest
 
+import agent.transports.codex_app_server_session as session_mod
 from agent.transports.codex_app_server_session import (
     CodexAppServerSession,
-    TurnResult,
     _ServerRequestRouting,
     _approval_choice_to_codex_decision,
+    _coerce_turn_input_text,
 )
 
 
@@ -126,6 +127,15 @@ class TestApprovalChoiceMapping:
         assert _approval_choice_to_codex_decision(choice) == expected
 
 
+class TestTurnInputCoercion:
+    def test_list_content_keeps_text_and_marks_images(self):
+        text = _coerce_turn_input_text([
+            {"type": "text", "text": "caption"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ])
+        assert text == "caption\n\n[image attached]"
+
+
 # ---- lifecycle ----
 
 class TestLifecycle:
@@ -186,6 +196,69 @@ class TestRunTurn:
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
 
+    def test_token_usage_notification_is_captured(self):
+        client = FakeClient()
+        client.queue_notification(
+            "thread/tokenUsage/updated",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            tokenUsage={
+                "last": {
+                    "totalTokens": 130,
+                    "inputTokens": 80,
+                    "cachedInputTokens": 20,
+                    "outputTokens": 25,
+                    "reasoningOutputTokens": 5,
+                },
+                "total": {
+                    "totalTokens": 500,
+                    "inputTokens": 300,
+                    "cachedInputTokens": 75,
+                    "outputTokens": 100,
+                    "reasoningOutputTokens": 25,
+                },
+                "modelContextWindow": 200000,
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        r = make_session(client).run_turn("hi", turn_timeout=2.0)
+        assert r.token_usage_last["totalTokens"] == 130
+        assert r.token_usage_total["totalTokens"] == 500
+        assert r.model_context_window == 200000
+
+    def test_rich_content_turn_is_collapsed_to_text_payload(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client)
+        r = s.run_turn(
+            [
+                {
+                    "type": "text",
+                    "text": "look at this\n\n[Image attached at: /tmp/a.png]",
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,abc"},
+                },
+            ],
+            turn_timeout=2.0,
+        )
+        assert r.error is None
+        method, params = next(req for req in client.requests if req[0] == "turn/start")
+        assert method == "turn/start"
+        text = params["input"][0]["text"]
+        assert isinstance(text, str)
+        assert "[Image attached at: /tmp/a.png]" in text
+        assert "[image attached]" in text
+
     def test_tool_iteration_counter_ticks(self):
         client = FakeClient()
         # Two completed exec items + one final agent message
@@ -231,6 +304,86 @@ class TestRunTurn:
         assert "bad input" in r.error
         assert r.final_text == ""
 
+    def test_turn_start_failure_attaches_redacted_stderr_tail(self):
+        """When codex stderr has content (non-OAuth), the tail gets attached
+        to the user-facing error so config/provider problems are debuggable
+        instead of just 'Internal error'. Credential-shaped values in stderr
+        are redacted via agent.redact(force=True); web-URL query params pass
+        through (see fix(redact): pass web URLs through unchanged)."""
+        client = FakeClient()
+        client.set_stderr_tail([
+            "ERROR: provider auth failed",
+            "Authorization: Bearer sk-live-deadbeefdeadbeef",
+            "url=https://api.example.com/v1?token=querysecret12345",
+        ])
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        def boom(method, params):
+            if method == "turn/start":
+                raise CodexAppServerError(code=-32603, message="Internal error")
+            return {"thread": {"id": "t"}, "activePermissionProfile": {"id": "x"}}
+
+        client._request_handler = boom
+        s = make_session(client)
+        r = s.run_turn("hi", turn_timeout=2.0)
+        assert r.error is not None
+        assert "turn/start failed" in r.error
+        assert "Internal error" in r.error
+        # Stderr tail attached
+        assert "codex stderr" in r.error
+        assert "provider auth failed" in r.error
+        # Credential-shaped values still redacted (sk- prefix + Bearer header)
+        assert "sk-live-deadbeefdeadbeef" not in r.error
+        # Non-OAuth → should NOT retire (subprocess JSON-RPC is still healthy).
+        assert r.should_retire is False
+
+    def test_turn_start_timeout_attaches_redacted_stderr_tail(self):
+        """A non-OAuth TimeoutError on turn/start surfaces with codex stderr
+        context attached and marks the session for retirement."""
+        client = FakeClient()
+        client.set_stderr_tail([
+            "WARN: provider request stalled",
+            "Authorization: Bearer sk-stalled-secret-abc123",
+        ])
+
+        def stall(method, params):
+            if method == "turn/start":
+                raise TimeoutError("codex method 'turn/start' timed out after 10s")
+            return {"thread": {"id": "t"}, "activePermissionProfile": {"id": "x"}}
+
+        client._request_handler = stall
+        s = make_session(client)
+        r = s.run_turn("hi", turn_timeout=2.0)
+        assert r.error is not None
+        assert "turn/start timed out" in r.error
+        assert "provider request stalled" in r.error
+        assert "sk-stalled-secret-abc123" not in r.error
+        assert r.should_retire is True
+
+    def test_startup_failure_returns_error_with_stderr(self):
+        """Codex thread/start failures during ensure_started() used to bubble
+        up as uncaught exceptions. Now they return a TurnResult.error so
+        AIAgent surfaces a clean diagnostic instead of crashing the turn."""
+        client = FakeClient()
+        client.set_stderr_tail([
+            "FATAL: model_provider 'azure_foundry' not configured",
+        ])
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        def boom(method, params):
+            if method == "thread/start":
+                raise CodexAppServerError(code=-32603, message="Internal error")
+            return {}
+
+        client._request_handler = boom
+        s = make_session(client)
+        r = s.run_turn("hi", turn_timeout=2.0)
+        assert r.error is not None
+        assert "startup failed" in r.error
+        assert "model_provider 'azure_foundry' not configured" in r.error
+        assert r.should_retire is True
+        assert r.final_text == ""
+
     def test_interrupt_during_turn_issues_turn_interrupt(self):
         client = FakeClient()
         # Don't queue turn/completed — the loop has to interrupt out
@@ -264,6 +417,23 @@ class TestRunTurn:
         assert r.interrupted is True
         assert r.error and "timed out" in r.error
 
+    def test_deadline_uses_monotonic_clock(self):
+        client = FakeClient()
+        s = make_session(client)
+        monotonic_values = iter([1000.0, 999.0, 999.0, 1001.0])
+        with patch.object(
+            session_mod.time,
+            "monotonic",
+            side_effect=lambda: next(monotonic_values),
+        ):
+            r = s.run_turn(
+                "never finishes",
+                turn_timeout=0.1,
+                notification_poll_timeout=0.0,
+            )
+        assert r.interrupted is True
+        assert r.error and "timed out" in r.error
+
     def test_failed_turn_records_error_from_turn_completed(self):
         client = FakeClient()
         client.queue_notification(
@@ -274,6 +444,125 @@ class TestRunTurn:
         s = make_session(client)
         r = s.run_turn("x", turn_timeout=1.0)
         assert r.error and "model error" in r.error
+
+    def test_run_turn_records_native_compaction_item(self):
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            item={"type": "contextCompaction", "id": "compact-item-1"},
+        )
+        client.queue_notification(
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        r = make_session(client).run_turn("x", turn_timeout=1.0)
+
+        assert r.compacted is True
+        assert r.thread_id == "thread-fake-001"
+        assert r.turn_id == "turn-fake-001"
+
+    def test_run_turn_records_deprecated_thread_compacted_notification(self):
+        client = FakeClient()
+        client.queue_notification(
+            "thread/compacted",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        r = make_session(client).run_turn("x", turn_timeout=1.0)
+
+        assert r.compacted is True
+
+
+class TestCompactThread:
+    def test_compact_thread_sends_rpc_and_waits_for_completion(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={"type": "contextCompaction", "id": "compact-item-1"},
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={"type": "agentMessage", "id": "m1", "text": "compacted"},
+        )
+        client.queue_notification(
+            "thread/tokenUsage/updated",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            tokenUsage={
+                "last": {"inputTokens": 10, "outputTokens": 2, "totalTokens": 12},
+                "total": {"inputTokens": 100, "outputTokens": 20, "totalTokens": 120},
+                "modelContextWindow": 200000,
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        r = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert ("thread/compact/start", {"threadId": "thread-fake-001"}) in client.requests
+        assert r.error is None
+        assert r.thread_id == "thread-fake-001"
+        assert r.turn_id == "compact-turn-1"
+        assert r.compacted is True
+        assert r.final_text == "compacted"
+        assert r.token_usage_last["totalTokens"] == 12
+        assert r.model_context_window == 200000
+
+    def test_compact_thread_interrupted_returns_non_success(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "interrupted", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.interrupted is True
+        assert result.error == "compact turn interrupted"
+
+    def test_compact_thread_failure_returns_error(self):
+        client = FakeClient()
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        def boom(method, params):
+            if method == "thread/compact/start":
+                raise CodexAppServerError(code=-32603, message="compact unavailable")
+            if method == "thread/start":
+                return {"thread": {"id": "thread-fake-001"}}
+            return {}
+
+        client._request_handler = boom
+        r = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert r.error is not None
+        assert "compact unavailable" in r.error
+        assert r.should_retire is False
 
 
 # ---- approval bridge ----
@@ -558,6 +847,33 @@ class TestSessionRetirement:
         r = s.run_turn("hi", turn_timeout=1.0)
         assert r.should_retire is False
 
+    def test_final_agent_message_without_turn_completed_is_recovered(self):
+        """A completed assistant item is still a usable terminal response when
+        codex omits turn/completed and then goes quiet.
+        """
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m1", "text": "done"},
+            threadId="t",
+            turnId="tu1",
+        )
+        s = make_session(client)
+        r = s.run_turn(
+            "hi",
+            turn_timeout=0.05,
+            notification_poll_timeout=0.01,
+        )
+        assert r.final_text == "done"
+        assert r.interrupted is False
+        assert r.error is None
+        assert r.should_retire is False
+        assert any(
+            msg["role"] == "assistant" and msg.get("content") == "done"
+            for msg in r.projected_messages
+        )
+        assert not any(method == "turn/interrupt" for method, _ in client.requests)
+
     def test_post_tool_quiet_watchdog_trips_and_retires(self):
         client = FakeClient()
         # One tool completion, then total silence — no further events,
@@ -585,6 +901,35 @@ class TestSessionRetirement:
         assert r.error and "silent" in r.error
         # Confirm we issued turn/interrupt to free codex compute
         assert any(method == "turn/interrupt" for (method, _) in client.requests)
+
+    def test_post_tool_watchdog_uses_monotonic_clock(self):
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "commandExecution", "id": "ex1",
+                "command": "echo hi", "cwd": "/tmp",
+                "status": "completed", "aggregatedOutput": "hi",
+                "exitCode": 0, "commandActions": [],
+            },
+            threadId="t", turnId="tu1",
+        )
+        s = make_session(client)
+        monotonic_values = iter([1000.0, 999.0, 999.0, 999.0, 1000.2])
+        with patch.object(
+            session_mod.time,
+            "monotonic",
+            side_effect=lambda: next(monotonic_values),
+        ):
+            r = s.run_turn(
+                "tool then silence",
+                turn_timeout=5.0,
+                notification_poll_timeout=0.0,
+                post_tool_quiet_timeout=0.15,
+            )
+        assert r.interrupted is True
+        assert r.should_retire is True
+        assert r.error and "silent" in r.error
 
     def test_post_tool_watchdog_resets_on_further_activity(self):
         """A tool completion followed by an agent message should NOT trip

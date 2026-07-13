@@ -117,7 +117,7 @@ class TestEndToEnd:
              patch("tools.web_tools._get_extract_backend", return_value="fake"), \
              patch("tools.web_tools.async_is_safe_url", new=_AsyncTrue()), \
              patch("agent.web_search_registry.get_provider", return_value=FakeProvider()):
-            result = json.loads(asyncio.new_event_loop().run_until_complete(
+            result = json.loads(asyncio.run(
                 wt.web_extract_tool(["https://example.com/big"], char_limit=5000)
             ))
 
@@ -128,6 +128,48 @@ class TestEndToEnd:
         # No LLM was involved: para 0 (head) and the last para (tail) are verbatim.
         assert "para 0 " in content
         assert "para 2999 " in content
+
+    def test_web_extract_blocks_provider_reported_private_final_url(self):
+        class FakeProvider:
+            name = "fake"
+            display_name = "Fake"
+
+            def supports_extract(self):
+                return True
+
+            async def extract(self, urls, **kwargs):
+                assert urls == ["https://example.com/redirect"]
+                return [
+                    {
+                        "url": "http://169.254.169.254/latest/meta-data/",
+                        "title": "metadata",
+                        "content": "SECRET_METADATA",
+                        "raw_content": "SECRET_METADATA",
+                        "metadata": {},
+                    }
+                ]
+
+        seen = []
+
+        async def fake_safe(url):
+            seen.append(url)
+            return url == "https://example.com/redirect"
+
+        with patch("tools.web_tools._ensure_web_plugins_loaded"), \
+             patch("tools.web_tools._get_extract_backend", return_value="fake"), \
+             patch("tools.web_tools.async_is_safe_url", new=fake_safe), \
+             patch("agent.web_search_registry.get_provider", return_value=FakeProvider()):
+            result = json.loads(asyncio.run(
+                wt.web_extract_tool(["https://example.com/redirect"], char_limit=5000)
+            ))
+
+        assert seen == [
+            "https://example.com/redirect",
+            "http://169.254.169.254/latest/meta-data/",
+        ]
+        entry = result["results"][0]
+        assert entry["error"] == "Blocked: URL targets a private or internal network address"
+        assert "SECRET_METADATA" not in json.dumps(result)
 
 
 def _make_awaitable(value):

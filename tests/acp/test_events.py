@@ -95,29 +95,39 @@ class TestToolGenerationCallback:
 
         gen_cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
         progress_cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+        step_cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
 
         with patch("acp_adapter.events.make_tool_call_id", side_effect=["tc-gen-1", "tc-gen-2"]), \
-             patch("acp_adapter.events._send_update") as mock_send:
+             patch("acp_adapter.events._send_update") as mock_send, \
+             patch("acp_adapter.events.build_tool_complete") as mock_complete:
             gen_cb("read_file")
             gen_cb("read_file")
             progress_cb("tool.started", "read_file", "reading a.py", {"path": "a.py"})
             progress_cb("tool.started", "read_file", "reading b.py", {"path": "b.py"})
+            assert list(tool_call_ids["read_file"]) == ["tc-gen-1", "tc-gen-2"]
+            assert tool_call_meta["tc-gen-1"] == {
+                "args": {"path": "a.py"},
+                "snapshot": None,
+            }
+            assert tool_call_meta["tc-gen-2"] == {
+                "args": {"path": "b.py"},
+                "snapshot": None,
+            }
+            updates = [call.args[3] for call in mock_send.call_args_list]
+            assert [getattr(update, "session_update", None) for update in updates] == [
+                "tool_call",
+                "tool_call",
+                "tool_call_update",
+                "tool_call_update",
+            ]
+            step_cb(1, [{"name": "read_file", "result": "contents of a.py"}])
+            step_cb(2, [{"name": "read_file", "result": "contents of b.py"}])
 
-        assert list(tool_call_ids["read_file"]) == ["tc-gen-1", "tc-gen-2"]
-        assert tool_call_meta["tc-gen-1"] == {
-            "args": {"path": "a.py"},
-            "snapshot": None,
-        }
-        assert tool_call_meta["tc-gen-2"] == {
-            "args": {"path": "b.py"},
-            "snapshot": None,
-        }
-        updates = [call.args[3] for call in mock_send.call_args_list]
-        assert [getattr(update, "session_update", None) for update in updates] == [
-            "tool_call",
-            "tool_call",
-            "tool_call_update",
-            "tool_call_update",
+        assert "read_file" not in tool_call_ids
+        assert [call.args[0] for call in mock_complete.call_args_list] == ["tc-gen-1", "tc-gen-2"]
+        assert [call.kwargs["function_args"] for call in mock_complete.call_args_list] == [
+            {"path": "a.py"},
+            {"path": "b.py"},
         ]
 
 

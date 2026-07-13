@@ -1399,6 +1399,8 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": chunk,
                     "mrkdwn": True,
                 }
+                if i == 0 and metadata and metadata.get("client_msg_id"):
+                    kwargs["client_msg_id"] = str(metadata["client_msg_id"])
                 if blocks and i == 0:
                     kwargs["blocks"] = blocks
                 if thread_ts:

@@ -3242,6 +3242,13 @@ class TestMessageSplitting:
         assert adapter._app.client.chat_postMessage.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_send_forwards_event_scoped_client_message_id(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        await adapter.send("C123", "done", metadata={"client_msg_id": "stable-event-id"})
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["client_msg_id"] == "stable-event-id"
+
+    @pytest.mark.asyncio
     async def test_send_preserves_blockquote_formatting(self, adapter):
         """Blockquote '>' markers must survive format → chunk → send pipeline."""
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})

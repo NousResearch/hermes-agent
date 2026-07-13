@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 
 from gateway.config import Platform
@@ -13,6 +14,7 @@ class RecordingAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+        return SimpleNamespace(success=True, message_id=f"receipt-{len(self.sent)}")
 
 
 class DisconnectedAdapters(dict):
@@ -84,8 +86,100 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 1
-    assert "Kanban" in adapter.sent[0]["text"]
-    assert tid in adapter.sent[0]["text"]
+    assert adapter.sent[0]["text"] == "notify once fertig."
+    assert tid not in adapter.sent[0]["text"]
+
+
+def test_coding_completion_reaches_done_only_after_receipt(tmp_path, monkeypatch):
+    db_path = tmp_path / "coding-receipt.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    metadata = {
+        "delivery": {
+            "review": {"verdict": "PASS", "head": "abc123"},
+            "merge": {"commit": "merge123"},
+            "production": {"deployed": True, "evidence": "release"},
+            "migration": {"required": False},
+            "e2e": {"passed": True, "evidence": "smoke"},
+        }
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship coding task",
+            assignee="worker",
+            workspace_kind="worktree",
+            workspace_path=str(tmp_path / "worktree"),
+        )
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        assert kb.complete_task(conn, tid, summary="merged production verified", metadata=metadata)
+        pending = kb.get_task(conn, tid)
+        assert pending is not None and pending.status == "review"
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert task is not None and task.status == "done"
+    assert len(adapter.sent) == 1
+    assert [e.kind for e in events].count("completion_acknowledged") == 1
+
+
+def test_notifier_recovers_post_send_crash_without_duplicate(tmp_path, monkeypatch):
+    db_path = tmp_path / "post-send-crash.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    metadata = {
+        "delivery": {
+            "review": {"verdict": "PASS", "head": "abc123"},
+            "merge": {"commit": "merge123"},
+            "production": {"deployed": True, "evidence": "release"},
+            "migration": {"required": False},
+            "e2e": {"passed": True, "evidence": "smoke"},
+        }
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="crash-safe completion",
+            assignee="worker",
+            workspace_kind="worktree",
+            workspace_path=str(tmp_path / "worktree"),
+        )
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        assert kb.complete_task(conn, tid, summary="verified", metadata=metadata)
+        _, _, events = kb.claim_unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            kinds=["completed"],
+        )
+        assert len(events) == 1
+        assert kb.ack_completion_notification(
+            conn,
+            tid,
+            event_id=events[0].id,
+            platform="telegram",
+            chat_id="chat-1",
+            message_id="receipt-before-crash",
+        )
+        conn.execute(
+            "UPDATE kanban_notify_subs SET pending_claimed_at = 0 "
+            "WHERE task_id = ?",
+            (tid,),
+        )
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn) == []
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "done"
+    assert adapter.sent == []
 
 
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):

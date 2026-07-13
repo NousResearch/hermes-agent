@@ -13,8 +13,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -23,6 +25,26 @@ from agent.i18n import t
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
+
+
+def _format_completed_message(title: str, summary: str = "") -> str:
+    """Render one short completion line without internal task/commit ids."""
+    clean_title = re.sub(
+        r"\b(?:t_[0-9a-f]{8,}|[0-9a-f]{7,40})\b", "", title,
+        flags=re.IGNORECASE,
+    )
+    clean_title = re.sub(r"\s+", " ", clean_title).strip(" -–—:,.\t\r\n") or "Aufgabe"
+    first = f"{clean_title[:120].rstrip()} fertig."
+    pr = re.search(r"PR\s*#(\d+)", summary, re.IGNORECASE)
+    merged = bool(re.search(r"\b(?:gemerged|merged)\b", summary, re.IGNORECASE))
+    production = bool(re.search(r"\bproduction\b", summary, re.IGNORECASE))
+    checked = bool(re.search(r"\b(?:geprüft|verified|ready|success)\b", summary, re.IGNORECASE))
+    details = []
+    if pr and merged:
+        details.append(f"PR #{pr.group(1)} gemerged")
+    if production and checked:
+        details.append("Production geprüft")
+    return first + (" " + ", ".join(details) + "." if details else "")
 
 
 def _resolve_auto_decompose_settings(
@@ -336,34 +358,34 @@ class GatewayKanbanWatchersMixin:
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
                     board_tag = f"[{board_slug}] " if board_slug else ""
+                    receipt_id = None
+                    receipt_event_id = None
+                    completion_finalized = False
                     for ev in d["events"]:
                         kind = ev.kind
+                        if kind == "completed":
+                            existing_receipt = await asyncio.to_thread(
+                                self._kanban_completion_receipt,
+                                sub,
+                                ev.id,
+                                board_slug,
+                            )
+                            if existing_receipt:
+                                receipt_id, receipt_event_id = existing_receipt, ev.id
+                                completion_finalized = True
+                                continue
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
                         if kind == "completed":
-                            # Prefer the run's summary (the worker's
-                            # intentional human-facing handoff, carried
-                            # in the event payload), then fall back to
-                            # task.result for legacy rows written before
-                            # runs shipped.
-                            handoff = ""
                             payload_summary = None
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
-                            if payload_summary:
-                                lines = payload_summary.strip().splitlines()
-                                h = lines[0][:200] if lines else payload_summary[:200]
-                                handoff = f"\n{h}"
-                            elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
-                                handoff = f"\n{r}"
-                            msg = (
-                                f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
+                            msg = _format_completed_message(
+                                title,
+                                payload_summary or (task.result if task else "") or "",
                             )
                         elif kind == "blocked":
                             reason = ""
@@ -405,7 +427,13 @@ class GatewayKanbanWatchersMixin:
                             # internal transition. They are also excluded from
                             # _WAKE_KINDS below, so they never wake the creator.
                             continue
-                        metadata: dict[str, Any] = {}
+                        metadata: dict[str, Any] = {
+                            "client_msg_id": str(uuid.uuid5(
+                                uuid.NAMESPACE_URL,
+                                f"hermes-kanban:{board_slug}:{sub['task_id']}:{ev.id}:"
+                                f"{sub['platform']}:{sub['chat_id']}:{sub.get('thread_id') or ''}",
+                            )),
+                        }
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
                         sub_key = (
@@ -413,9 +441,35 @@ class GatewayKanbanWatchersMixin:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
+                            send_result = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
+                            if getattr(send_result, "success", True) is False:
+                                raise RuntimeError(
+                                    getattr(send_result, "error", None)
+                                    or "notification send failed"
+                                )
+                            message_id = getattr(send_result, "message_id", None)
+                            if platform_str == "slack" and kind == "completed" and not message_id:
+                                raise RuntimeError("Slack completion send returned no message receipt")
+                            if message_id:
+                                receipt_id, receipt_event_id = str(message_id), ev.id
+                            if (
+                                kind == "completed"
+                                and ev.payload
+                                and ev.payload.get("pending_notification_ack")
+                            ):
+                                if not message_id:
+                                    raise RuntimeError("coding completion send returned no message receipt")
+                                completion_finalized = await asyncio.to_thread(
+                                    self._kanban_ack_completion,
+                                    sub,
+                                    ev.id,
+                                    str(message_id),
+                                    board_slug,
+                                )
+                                if not completion_finalized:
+                                    raise RuntimeError("coding completion receipt was not acknowledged")
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
@@ -454,32 +508,23 @@ class GatewayKanbanWatchersMixin:
                                 sub["task_id"], platform_str, fails,
                                 MAX_SEND_FAILURES, exc,
                             )
-                            if fails >= MAX_SEND_FAILURES:
-                                logger.warning(
-                                    "kanban notifier: dropping subscription "
-                                    "%s on %s after %d consecutive send failures",
-                                    sub["task_id"], platform_str, fails,
-                                )
-                                await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
-                                sub_fail_counts.pop(sub_key, None)
-                            else:
-                                await asyncio.to_thread(
-                                    self._kanban_rewind,
-                                    sub,
-                                    d["cursor"],
-                                    d.get("old_cursor", 0),
-                                    board_slug,
-                                )
-                            # Rewind the pre-send claim on transient failure so
-                            # a later tick can retry. After too many failures,
-                            # dropping the subscription is the terminal action.
+                            await asyncio.to_thread(
+                                self._kanban_rewind,
+                                sub,
+                                d["cursor"],
+                                d.get("old_cursor", 0),
+                                board_slug,
+                            )
+                            # Never delete the only durable delivery route after
+                            # an adapter failure. The event-scoped client_msg_id
+                            # makes repeated sends idempotent.
                             break
                     else:
-                        # All events delivered; advance cursor. The cursor
-                        # is the dedup mechanism — it prevents re-delivery
-                        # of the same event on subsequent ticks.
+                        # All events delivered; acknowledge the lease and retain
+                        # the real platform receipt before terminal unsubscribe.
                         await asyncio.to_thread(
                             self._kanban_advance, sub, d["cursor"], board_slug,
+                            receipt_id, receipt_event_id,
                         )
                         # Unsubscribe only when the task has reached a truly
                         # final status (done / archived). For blocked /
@@ -488,7 +533,9 @@ class GatewayKanbanWatchersMixin:
                         # dispatcher respawns the task and it cycles into the
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
-                        task_terminal = task and task.status in {"done", "archived"}
+                        task_terminal = completion_finalized or (
+                            task and task.status in {"done", "cancelled", "archived"}
+                        )
                         _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
                         _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
                         if _wake_kinds:
@@ -575,6 +622,8 @@ class GatewayKanbanWatchersMixin:
 
     def _kanban_advance(
         self, sub: dict, cursor: int, board: Optional[str] = None,
+        message_id: Optional[str] = None,
+        message_event_id: Optional[int] = None,
     ) -> None:
         """Sync helper: advance a subscription's cursor. Runs in to_thread.
 
@@ -591,6 +640,42 @@ class GatewayKanbanWatchersMixin:
                 chat_id=sub["chat_id"],
                 thread_id=sub.get("thread_id") or "",
                 new_cursor=cursor,
+                message_id=message_id,
+                message_event_id=message_event_id,
+            )
+        finally:
+            conn.close()
+
+    def _kanban_completion_receipt(
+        self,
+        sub: dict,
+        event_id: int,
+        board: Optional[str] = None,
+    ) -> Optional[str]:
+        from hermes_cli import kanban_db as _kb
+        conn = _kb.connect(board=board)
+        try:
+            return _kb.completion_receipt_for_event(conn, sub["task_id"], event_id)
+        finally:
+            conn.close()
+
+    def _kanban_ack_completion(
+        self,
+        sub: dict,
+        event_id: int,
+        message_id: str,
+        board: Optional[str] = None,
+    ) -> bool:
+        from hermes_cli import kanban_db as _kb
+        conn = _kb.connect(board=board)
+        try:
+            return _kb.ack_completion_notification(
+                conn,
+                sub["task_id"],
+                event_id=event_id,
+                platform=sub["platform"],
+                chat_id=sub["chat_id"],
+                message_id=message_id,
             )
         finally:
             conn.close()

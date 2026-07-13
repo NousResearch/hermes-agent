@@ -662,7 +662,15 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            task = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=task.status if task else None,
+                notification_ack_pending=bool(
+                    task and task.pending_completion_event_id is not None
+                ),
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -827,6 +835,16 @@ def _handle_comment(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            task = kb.get_task(conn, tid)
+            if (
+                tid == os.environ.get("HERMES_KANBAN_TASK")
+                and task
+                and task.status in {"done", "cancelled", "archived"}
+            ):
+                return tool_error(
+                    f"kanban_comment: {tid} is terminal ({task.status}); "
+                    "reopen it explicitly before continuing work"
+                )
             cid = kb.add_comment(conn, tid, author=author, body=str(body))
             return _ok(task_id=tid, comment_id=cid)
         finally:

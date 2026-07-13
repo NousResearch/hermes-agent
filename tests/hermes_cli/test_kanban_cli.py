@@ -494,6 +494,24 @@ def test_run_slash_specify_help_is_reachable(kanban_home):
     assert not out.startswith("⚠")
 
 
+def test_run_slash_cancel_and_reopen_are_explicit(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="stop me", assignee="developer")
+
+    assert "Cancelled" in kc.run_slash(f"cancel {tid} no longer needed")
+    with kb.connect() as conn:
+        cancelled = kb.get_task(conn, tid)
+        assert cancelled is not None and cancelled.status == "cancelled"
+
+    assert "Reopened" in kc.run_slash(
+        f"reopen {tid} requirements changed --actor mika"
+    )
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "running"
+        assert task.handoff_version == 2
+
+
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------

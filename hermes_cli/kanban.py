@@ -533,6 +533,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
 
+    p_cancel = sub.add_parser("cancel", help="Terminate a task without marking it successful")
+    p_cancel.add_argument("task_id")
+    p_cancel.add_argument("reason", nargs="+", help="Auditable cancellation reason")
+
+    p_reopen = sub.add_parser("reopen", help="Explicitly reopen a done/cancelled task")
+    p_reopen.add_argument("task_id")
+    p_reopen.add_argument("reason", nargs="+", help="Reason for the new handoff generation")
+    p_reopen.add_argument("--actor", default=None,
+                          help="Actor authorizing the reopen (default: active profile)")
+
     p_edit = sub.add_parser(
         "edit",
         help="Edit recovery fields on an already-completed task",
@@ -952,6 +962,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "claim":    _cmd_claim,
             "comment":  _cmd_comment,
             "complete": _cmd_complete,
+            "cancel":   _cmd_cancel,
+            "reopen":   _cmd_reopen,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
@@ -1894,18 +1906,52 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if not kb.complete_task(
-                conn, tid,
-                result=args.result,
-                summary=summary,
-                metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
-            ):
+            try:
+                ok = kb.complete_task(
+                    conn, tid,
+                    result=args.result,
+                    summary=summary,
+                    metadata=metadata,
+                    expected_run_id=_worker_run_id_for(tid),
+                )
+            except kb.CompletionGateError as exc:
+                failed.append(tid)
+                print(str(exc), file=sys.stderr)
+                continue
+            if not ok:
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
             else:
                 print(f"Completed {tid}")
     return 0 if not failed else 1
+
+
+def _cmd_cancel(args: argparse.Namespace) -> int:
+    reason = " ".join(args.reason).strip()
+    with kb.connect_closing() as conn:
+        ok = kb.cancel_task(
+            conn,
+            args.task_id,
+            reason=reason,
+            expected_run_id=_worker_run_id_for(args.task_id),
+        )
+    if not ok:
+        print(f"cannot cancel {args.task_id} (unknown id or terminal state)", file=sys.stderr)
+        return 1
+    print(f"Cancelled {args.task_id}")
+    return 0
+
+
+def _cmd_reopen(args: argparse.Namespace) -> int:
+    reason = " ".join(args.reason).strip()
+    actor = args.actor or _profile_author()
+    with kb.connect_closing() as conn:
+        ok = kb.reopen_task(conn, args.task_id, actor=actor, reason=reason)
+    if not ok:
+        print(f"cannot reopen {args.task_id} (not done/cancelled)", file=sys.stderr)
+        return 1
+    print(f"Reopened {args.task_id}")
+    return 0
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:

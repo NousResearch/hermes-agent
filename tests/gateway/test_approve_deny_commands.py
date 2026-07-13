@@ -76,6 +76,25 @@ def _clear_approval_state():
     mod._pending.clear()
 
 
+def _wait_until(predicate, timeout=30.0, interval=0.02):
+    """Wait until *predicate()* is truthy or *timeout* elapses; return its value.
+
+    Replaces the fixed-iteration ``for _ in range(N): sleep(0.05)`` polls these
+    E2E tests used to wait for a background agent thread to reach the gateway
+    approval notify. Those budgets (2.5-5s) race the scheduler: under CI worker
+    contention the thread can be starved past the deadline, so the notify fires
+    after the poll gives up and the assertion sees an empty list. The generous
+    ceiling here is only reached on genuine failure; the common path returns the
+    instant the condition holds, adding no latency to green runs.
+    """
+    deadline = time.monotonic() + timeout
+    result = predicate()
+    while not result and time.monotonic() < deadline:
+        time.sleep(interval)
+        result = predicate()
+    return result
+
+
 # ------------------------------------------------------------------
 # Blocking gateway approval infrastructure (tools/approval.py)
 # ------------------------------------------------------------------
@@ -470,10 +489,7 @@ class TestBlockingApprovalE2E:
         t = threading.Thread(target=agent_thread)
         t.start()
 
-        for _ in range(50):
-            if notified:
-                break
-            time.sleep(0.05)
+        assert _wait_until(lambda: notified), "gateway approval notify never fired"
 
         assert len(notified) == 1
         assert "rm -rf /important" in notified[0]["command"]
@@ -517,10 +533,7 @@ class TestBlockingApprovalE2E:
 
         t = threading.Thread(target=agent_thread)
         t.start()
-        for _ in range(50):
-            if notified:
-                break
-            time.sleep(0.05)
+        assert _wait_until(lambda: notified), "gateway approval notify never fired"
 
         resolve_gateway_approval(session_key, "deny")
         t.join(timeout=5)
@@ -626,10 +639,7 @@ class TestBlockingApprovalE2E:
             t.start()
 
         # Wait for all 3 to block
-        for _ in range(100):
-            if len(notified) >= 3:
-                break
-            time.sleep(0.05)
+        assert _wait_until(lambda: len(notified) >= 3), "not all agents reached notify"
 
         assert len(notified) == 3
         assert len(_gateway_queues.get(session_key, [])) == 3
@@ -683,13 +693,11 @@ class TestBlockingApprovalE2E:
 
         # Wait for both threads to register pending approvals instead of
         # relying on a fixed sleep.  The approval module stores entries in
-        # _gateway_queues[session_key] — poll until we see 2 entries.
+        # _gateway_queues[session_key] — wait until we see 2 entries.
         from tools.approval import _gateway_queues
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if len(_gateway_queues.get(session_key, [])) >= 2:
-                break
-            time.sleep(0.05)
+        assert _wait_until(
+            lambda: len(_gateway_queues.get(session_key, [])) >= 2
+        ), "both agents did not enqueue their approvals"
 
         # Approve first, deny second
         resolve_gateway_approval(session_key, "once")   # oldest
@@ -865,10 +873,9 @@ class TestCrossSessionApprovalIsolation:
         t = threading.Thread(target=worker_a)
         t.start()
         try:
-            for _ in range(50):
-                if notified_a or notified_b:
-                    break
-                time.sleep(0.05)
+            assert _wait_until(
+                lambda: notified_a or notified_b
+            ), "no approval notify fired for either session"
 
             # The prompt must land in session A (the originator), never B.
             assert len(notified_a) == 1, "approval prompt did not route to session A"
@@ -930,11 +937,10 @@ class TestCrossSessionApprovalIsolation:
         tb.start()
         try:
             # Wait until both sessions have a pending approval in their queue.
-            for _ in range(100):
-                if (len(_gateway_queues.get("sess-A", [])) >= 1
-                        and len(_gateway_queues.get("sess-B", [])) >= 1):
-                    break
-                time.sleep(0.05)
+            assert _wait_until(
+                lambda: len(_gateway_queues.get("sess-A", [])) >= 1
+                and len(_gateway_queues.get("sess-B", [])) >= 1
+            ), "both sessions did not enqueue their approvals"
 
             # Each command must be parked in its OWN session queue.
             qa = _gateway_queues.get("sess-A", [])

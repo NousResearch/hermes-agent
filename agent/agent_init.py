@@ -50,7 +50,7 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from utils import base_url_host_matches, is_truthy_value
+from utils import base_url_host_matches, expand_fallback_base_url, is_truthy_value
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
 # capture our warnings.  (run_agent.py also does
@@ -1034,7 +1034,7 @@ def init_agent(
                                 _fb_explicit_key = os.getenv(_fb_key_env, "").strip() or None
                         _fb_client, _fb_model = resolve_provider_client(
                             _fb["provider"], model=_fb["model"], raw_codex=True,
-                            explicit_base_url=_fb.get("base_url"),
+                            explicit_base_url=expand_fallback_base_url(_fb.get("base_url")),
                             explicit_api_key=_fb_explicit_key,
                         )
                         if _fb_client is not None:

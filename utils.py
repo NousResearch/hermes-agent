@@ -544,3 +544,13 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+
+
+def expand_fallback_base_url(raw_url: str | None) -> str | None:
+    """Expand ``${VAR}`` references in a fallback-chain ``base_url``.
+
+    Centralised so runtime, init-time, and gateway auth fallback paths all
+    behave identically.  Mirrors the ``key_env`` pattern already used for
+    ``api_key`` — lets configs reference ``${OLLAMA_HOST}/v1`` etc.
+    """
+    return os.path.expandvars((raw_url or "").strip()) or None

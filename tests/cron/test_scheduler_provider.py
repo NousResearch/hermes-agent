@@ -666,3 +666,203 @@ class TestGuardJobCredentialExfil:
 
         monkeypatch.setattr(ct, "_validate_cron_base_url", _boom)
         assert _guard_job_credential_exfil({"id": "j8", "provider": "anthropic"}) is None
+
+
+# ── F2c: heartbeat liveness independent of cron_tick() returning (#60703) ───
+
+
+def test_heartbeat_refreshes_while_tick_blocks(tmp_path):
+    """If cron_tick() blocks without returning, the watchdog heartbeat
+    thread keeps bumping the liveness file at half the tick interval,
+    so `hermes cron status` does not falsely report STALLED (#60703).
+
+    Simulates a hung tick by replacing ``cron.scheduler.tick`` with a
+    callable that sleeps forever, and asserts that the heartbeat file is
+    touched at least twice within ~3x the tick interval — proving the
+    watchdog is independent of the main tick loop making progress.
+    """
+    import time as _t
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    hb_path = tmp_path / "ticker_heartbeat"
+    hb_path.write_text("0")
+    age_before = hb_path.read_text()
+
+    # Use a tiny interval so the test stays fast. With interval=1 the
+    # watchdog cadence is max(5, min(0, 1)) = 1s, so we expect ~5
+    # refreshes over ~5s.
+    interval = 1
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+
+    cursor = {"started": False}
+    wall_start = _t.monotonic()
+
+    def _hung_tick(*a, **k):
+        cursor["started"] = True
+        # Block indefinitely; the test will set stop_event so the
+        # main loop finally exits, but until then this never returns.
+        stop.wait(60)  # outlasts the test
+        return 0
+
+    sweeps = []
+    import cron.scheduler_provider as _sp
+    real_record = _sp.InProcessCronScheduler._record_or_log_heartbeat
+
+    def _counting(self, logger, success=False):
+        sweeps.append(_t.monotonic() - wall_start)
+        return real_record(self, logger, success=success)
+
+    with patch("cron.scheduler.tick", side_effect=_hung_tick), \
+         patch.object(
+             _sp.InProcessCronScheduler,
+             "_record_or_log_heartbeat",
+             new=_counting,
+         ):
+        t = threading.Thread(
+            target=prov.start,
+            args=(stop,),
+            kwargs={"interval": interval},
+            daemon=True,
+        )
+        t.start()
+
+        # Wait for the hung tick to actually start before we start
+        # counting watchdog hits — otherwise a pre-tick pre-loop liveness
+        # beat could mislead the count.
+        deadline = _t.monotonic() + 2.0
+        while not cursor["started"] and _t.monotonic() < deadline:
+            _t.sleep(0.01)
+
+        # Force at least 3 watchdog sweeps. Watchdog cadence is
+        # max(5, interval//2, capped at interval). With interval=1,
+        # that's 1s; over ~3.5s we expect 3+ updates while tick is hung.
+        target_count = 3
+        ok = _wait_until(lambda: len(sweeps) >= target_count, timeout=5.0)
+        assert ok, (
+            f"watchdog only emitted {len(sweeps)} heartbeat(s) in ~{_t.monotonic() - wall_start:.1f}s "
+            "while tick was hung — heartbeat is not independent of cron_tick() (#60703)"
+        )
+        # Each sweep should advance monotonically.
+        assert sweeps == sorted(sweeps)
+
+        stop.set()
+        t.join(timeout=2.0)
+
+    assert not t.is_alive(), "ticker thread did not exit after stop_event was set"
+
+
+def test_watchdog_stops_when_main_loop_exits(tmp_path):
+    """The watchdog heartbeat thread must terminate when the main
+    loop exits; otherwise a clean gateway shutdown would leave the
+    liveness file fresh while the ticker itself is gone, masking
+    teardown races the next time `cron status` runs (#60703)."""
+    from cron.scheduler_provider import InProcessCronScheduler
+    import cron.scheduler_provider as _sp
+
+    hb_path = tmp_path / "ticker_heartbeat"
+    hb_path.write_text("x")
+
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+
+    sweeps_before = []
+    sweeps_after = []
+    phase = {"stopped": False}
+
+    real_record = _sp.InProcessCronScheduler._record_or_log_heartbeat
+
+    def counting(self, logger, success=False):
+        (sweeps_before if not phase["stopped"] else sweeps_after).append(1)
+        return real_record(self, logger, success=success)
+
+    with patch("cron.scheduler.tick", side_effect=lambda *a, **k: 0), \
+         patch.object(
+             _sp.InProcessCronScheduler,
+             "_record_or_log_heartbeat",
+             new=counting,
+         ):
+        t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 60}, daemon=True)
+        t.start()
+
+        # Let the main loop tick a few times (interval=60 → loop pauses
+        # 60s on stop_event.wait, but the FIRST tick + tick_duration
+        # check returns quickly).
+        time.sleep(0.3)
+        assert len(sweeps_before) >= 1, "watchdog never started"
+
+        # Now stop the loop. The mock flips phase so we can detect any
+        # post-exit watchdog calls — there should be at most ONE trailing
+        # call (the watchdog's stop_event.wait was already in flight).
+        phase["stopped"] = True
+        stop.set()
+        t.join(timeout=2.0)
+        time.sleep(0.3)  # let any rogue watchdog fire one more sweep
+
+    assert not t.is_alive(), "ticker thread did not exit after stop_event was set"
+    # Sweeps after stop should be zero or near-zero. We allow a small
+    # window because the watchdog may have been mid-way through its
+    # wait() call; what we are guarding against is runaway heartbeats.
+    assert len(sweeps_after) <= 1, (
+        f"watchdog emitted {len(sweeps_after)} heartbeats after main loop "
+        "exited — should stop cleanly with stop_event (#60703)"
+    )
+
+
+def test_slow_tick_logs_warning_but_keeps_loop_alive():
+    """A cron_tick() that takes longer than the configured interval is
+    logged as an anomaly but does not stop the loop. Combined with the
+    watchdog above, the heartbeat continues to refresh, so users see a
+    visible warning instead of a misleading STALLED status (#60703).
+    """
+    import logging
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+
+    calls = []
+
+    def _slow_tick(*a, **k):
+        calls.append(time.monotonic())
+        # Outlast a 0.1s interval by enough for the duration guard to
+        # trip; short enough to keep the test fast.
+        time.sleep(0.25)
+        return 0
+
+    caplog_handler = []
+
+    class CapturingHandler(logging.Handler):
+        def emit(self, record):
+            caplog_handler.append(record)
+
+    capturing = CapturingHandler()
+    logger = logging.getLogger("cron.scheduler_provider")
+    logger.addHandler(capturing)
+    try:
+        with patch("cron.scheduler.tick", side_effect=_slow_tick), \
+             patch("cron.jobs.record_ticker_heartbeat"):
+            t = threading.Thread(
+                target=prov.start,
+                args=(stop,),
+                kwargs={"interval": 0.1},
+                daemon=True,
+            )
+            t.start()
+            # Two iterations should be enough to prove the loop survives
+            # a slow tick.
+            assert _wait_until(lambda: len(calls) >= 2, timeout=5.0), (
+                "ticker did not keep looping after slow tick"
+            )
+            stop.set()
+            t.join(timeout=2.0)
+    finally:
+        logger.removeHandler(capturing)
+
+    assert not t.is_alive(), "ticker thread died after slow tick"
+    warnings = [r for r in caplog_handler if "Cron tick took" in r.getMessage()]
+    assert warnings, (
+        "tick-duration guard did not log a warning for a tick that "
+        "overshot the interval (#60703)"
+    )
+

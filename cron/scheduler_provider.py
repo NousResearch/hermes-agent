@@ -165,30 +165,130 @@ class InProcessCronScheduler(CronScheduler):
 
     def start(self, stop_event, *, adapters=None, loop=None, interval=60):
         import logging
+        import threading
+        import time
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
+
         # Heartbeat once before the first sleep so `hermes cron status` sees a
         # live ticker immediately after startup, not only after the first tick.
-        record_ticker_heartbeat()
-        while not stop_event.is_set():
-            ok = False
+        self._record_or_log_heartbeat(logger, success=False)
+
+        # Independent watchdog: bump the heartbeat on a fixed cadence that
+        # does NOT depend on cron_tick() returning. The main loop only
+        # records heartbeats after each tick, so a single tick that blocks
+        # (e.g. on .tick.lock contention, slow jobs.json I/O, or a long-
+        # running synchronous code path) leaves the previous heartbeat to
+        # age until the next iteration finally returns — easily minutes,
+        # which cron status then reports as "STALLED" (#60703). The watchdog
+        # runs at half the tick interval, so the heartbeat refreshes at
+        # least twice per cadence as long as THIS thread is runnable,
+        # independently of whether cron_tick is making progress. The
+        # watchdog marks success=False; the main loop's success-marker
+        # bumps remain the source of truth for "did a tick actually fire".
+        # Cleans up via stop_event, not atexit — gateway shutdown sets it,
+        # and we never want an atexit hook racing interpreter finalisation
+        # while the thread is mid-write.
+        watchdog_stop = threading.Event()
+
+        def _watchdog() -> None:
+            # Half-cadence refresh; cap to at least 5s and at most the
+            # tick interval itself so a misconfigured 1s interval can't
+            # spam the heartbeat file.
+            cadence = max(5, min(interval // 2, interval))
+            while not watchdog_stop.is_set():
+                self._record_or_log_heartbeat(logger, success=False)
+                watchdog_stop.wait(cadence)
+
+        watchdog_thread = threading.Thread(
+            target=_watchdog,
+            name="cron-ticker-heartbeat",
+            daemon=True,
+        )
+        watchdog_thread.start()
+
+        try:
+            while not stop_event.is_set():
+                ok = False
+                # Tick-duration guard: if cron_tick overshoots the configured
+                # interval we surface it as an anomaly instead of letting the
+                # loop appear hung. The watchdog above keeps the liveness
+                # signal fresh either way, so an overshoot reports as a logged
+                # warning, not a missed heartbeat (#60703).
+                tick_started = time.monotonic()
+                try:
+                    cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
+                    ok = True
+                except BaseException as e:
+                    # Catch BaseException (not just Exception) so a SystemExit from
+                    # a misbehaving provider SDK / agent retry path does not kill
+                    # the ticker thread silently (#32612). KeyboardInterrupt is
+                    # intentionally caught here too — gateway shutdown is driven by
+                    # stop_event (set by the main thread's signal handler), not by
+                    # an exception in this daemon thread, so swallowing it and
+                    # re-checking stop_event keeps shutdown clean.
+                    logger.error("Cron tick error: %s", e, exc_info=True)
+                finally:
+                    tick_elapsed = time.monotonic() - tick_started
+                    if tick_elapsed > interval:
+                        logger.warning(
+                            "Cron tick took %.1fs (interval=%ds) — gateway "
+                            "process is alive but the ticker is slow; jobs "
+                            "are firing, just late. Check for long-running "
+                            "synchronous code paths or filesystem stalls "
+                            "(#60703).",
+                            tick_elapsed,
+                            interval,
+                        )
+                # Record liveness every iteration; bump the success marker only on a
+                # clean tick, so status can tell "alive but failing every tick" from
+                # "actually firing jobs" (#32612, #32895).
+                self._record_or_log_heartbeat(logger, success=ok)
+                stop_event.wait(interval)
+        finally:
+            # Stop the watchdog so its heartbeat doesn't keep refreshing
+            # after the main loop exits; otherwise a clean gateway
+            # shutdown would leave the heartbeat fresh while the ticker
+            # itself is gone, masking teardown races the next time
+            # `cron status` runs.
+            watchdog_stop.set()
+            # Bound the join so a slow filesystem write can't stall
+            # shutdown; the thread is daemon=True and will be reaped
+            # with the process regardless.
+            watchdog_thread.join(timeout=1.0)
+
+    # Defined as a regular method (NOT @staticmethod) so the in-loop
+    # `self._record_or_log_heartbeat(...)` calls work — the heartbeat
+    # thread, the pre-loop liveness beat, and the post-tick success beat
+    # all share this single logger handle carried on `self`. A pure
+    # staticmethod would force the caller to thread the logger through
+    # every site, which invites drift if a future caller forgets to
+    # pass one.
+    def _record_or_log_heartbeat(self, logger, success: bool) -> None:
+        """Heartbeat write that surfaces failures instead of swallowing them.
+
+        ``record_ticker_heartbeat`` is intentionally best-effort and
+        silent — a transient disk error must never break the tick loop.
+        But when the SILENT best-effort path becomes the proximate cause
+        of a stall report (\"no heartbeat for Ns\" → \"check the
+        filesystem\"), we want an error-level breadcrumb in the gateway
+        log. Keeps the lightweight contract for callers while giving the
+        built-in ticker a chance to leave forensic evidence (#60703).
+        """
+        try:
+            from cron.jobs import record_ticker_heartbeat
+            record_ticker_heartbeat(success=success)
+        except Exception as exc:
             try:
-                cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
-                ok = True
-            except BaseException as e:
-                # Catch BaseException (not just Exception) so a SystemExit from
-                # a misbehaving provider SDK / agent retry path does not kill
-                # the ticker thread silently (#32612). KeyboardInterrupt is
-                # intentionally caught here too — gateway shutdown is driven by
-                # stop_event (set by the main thread's signal handler), not by
-                # an exception in this daemon thread, so swallowing it and
-                # re-checking stop_event keeps shutdown clean.
-                logger.error("Cron tick error: %s", e, exc_info=True)
-            # Record liveness every iteration; bump the success marker only on a
-            # clean tick, so status can tell "alive but failing every tick" from
-            # "actually firing jobs" (#32612, #32895).
-            record_ticker_heartbeat(success=ok)
-            stop_event.wait(interval)
+                logger.error(
+                    "Ticker heartbeat write failed (success=%s): %s",
+                    success, exc,
+                )
+            except Exception:
+                # Logger itself may be torn down during interpreter
+                # finalisation; swallow so the loop itself is never
+                # jeopardised.
+                pass

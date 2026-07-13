@@ -2952,6 +2952,18 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
     )
 
 
+def _is_volcano_ark_base_url(base_url: Optional[str]) -> bool:
+    """Check if the base URL belongs to Volcano Ark / Volcengine.
+
+    Volcano Ark Agent Plan endpoints (``api/plan/v3``) do not expose a
+    standard ``/models`` listing, but chat completions still work.  This
+    avoids suggesting a ``/v1`` suffix that is known to be misleading for
+    these endpoints.
+    """
+    normalized = (base_url or "").strip().rstrip("/").lower()
+    return "volces.com" in normalized or "volcengine.com" in normalized or "volcano" in normalized
+
+
 def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
     """Return the LM Studio server root for native ``/api/v1`` endpoints.
 
@@ -3931,14 +3943,21 @@ def validate_requested_model(
 
         message = (
             f"Note: could not reach this custom endpoint's model listing at `{probe.get('probed_url')}`. "
-            f"Hermes will still save `{requested}`, but the endpoint should expose `/models` for verification."
+            f"Chat /completions calls may still work — only model-list verification failed. "
+            f"Hermes will still save `{requested}`."
         )
-        if api_mode == "anthropic_messages":
+        if _is_volcano_ark_base_url(base_url):
+            message += (
+                "\n  This URL looks like a Volcano Ark / Volcengine endpoint. These endpoints "
+                "do not expose a standard `/models` listing, but chat calls to the base URL "
+                "work normally. Set the model name you want (e.g. `deepseek-v4-pro`) directly."
+            )
+        elif api_mode == "anthropic_messages":
             message += (
                 "\n  Many Anthropic-compatible proxies do not implement the Models API "
                 "(GET /v1/models).  The model name has been accepted without verification."
             )
-        if probe.get("suggested_base_url"):
+        elif probe.get("suggested_base_url"):
             message += f"\n  If this server expects `/v1`, try base URL: `{probe.get('suggested_base_url')}`"
 
         return {

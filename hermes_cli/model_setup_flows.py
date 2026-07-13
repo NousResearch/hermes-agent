@@ -863,10 +863,18 @@ def _model_flow_custom(config):
         )
     else:
         print(
-            f"Warning: could not verify this endpoint via {probe.get('probed_url')}. "
-            f"Hermes will still save it."
+            f"Note: could not reach this endpoint's model listing at {probe.get('probed_url')}. "
+            f"Chat calls may still work — only model-list verification failed. "
+            f"Hermes will still save the endpoint."
         )
-        if probe.get("suggested_base_url"):
+        from hermes_cli.models import _is_volcano_ark_base_url
+
+        if _is_volcano_ark_base_url(effective_url):
+            print(
+                "  This URL looks like a Volcano Ark / Volcengine endpoint. These endpoints "
+                "do not expose a standard `/models` listing, but chat calls work normally."
+            )
+        elif probe.get("suggested_base_url"):
             suggested = probe["suggested_base_url"]
             if suggested.endswith("/v1"):
                 print(

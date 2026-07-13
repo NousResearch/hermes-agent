@@ -43,6 +43,7 @@ def test_description_matches_skill_standard(frontmatter: dict[str, object]) -> N
 def test_required_api_key_setup_metadata_present(skill_text: str) -> None:
     assert "hermes mcp install youdotcom" in skill_text
     assert "YDC_API_KEY" in skill_text
+    assert "YDC_ALLOWED_TOOLS" in skill_text
     assert "free search-only mode" in skill_text
 
 
@@ -71,4 +72,6 @@ def test_mcp_tool_names_documented(skill_text: str) -> None:
     assert "mcp_youdotcom_you_search" in skill_text
     assert "mcp_youdotcom_you_contents" in skill_text
     assert "mcp_youdotcom_you_research" in skill_text
+    assert "mcp_youdotcom_you_finance" in skill_text
     assert "you-search" in skill_text
+    assert "you-finance" in skill_text

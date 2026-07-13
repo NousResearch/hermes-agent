@@ -455,6 +455,12 @@ def _template_is_resolved(value: str) -> bool:
     return all(get_env_value(name) for name in _template_env_names(value))
 
 
+def _env_selector_is_resolved(selector: str) -> bool:
+    """True when every env var in an override selector has a value."""
+    names = [part.strip() for part in selector.split("+") if part.strip()]
+    return bool(names) and all(get_env_value(name) for name in names)
+
+
 def _prompt_env_vars(specs: List[EnvVarSpec]) -> Dict[str, str]:
     """Walk the env spec list, prompting the user for each. Writes secrets and
     non-secrets alike to ~/.hermes/.env via save_env_value()."""
@@ -492,8 +498,13 @@ def _build_server_config(
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
     elif t.type == "http":
         url = t.url
-        for env_name, override_url in t.url_env_overrides.items():
-            if get_env_value(env_name):
+        override_items = sorted(
+            t.url_env_overrides.items(),
+            key=lambda item: len([part for part in item[0].split("+") if part.strip()]),
+            reverse=True,
+        )
+        for env_selector, override_url in override_items:
+            if _env_selector_is_resolved(env_selector):
                 url = override_url
                 break
         cfg["url"] = url

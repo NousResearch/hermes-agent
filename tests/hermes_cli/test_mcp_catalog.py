@@ -384,6 +384,40 @@ class TestInstall:
         assert server["url"] == "https://api.example.com/mcp"
         assert server["headers"] == {"Authorization": "Bearer ${DEMO_KEY}"}
 
+    def test_install_http_optional_tools_uses_composite_env_override(
+        self, catalog_dir
+    ):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://api.example.com/mcp?profile=free",
+                "headers": {"Authorization": "Bearer ${DEMO_KEY}"},
+                "url_env_overrides": {
+                    "DEMO_KEY+DEMO_TOOLS": "https://api.example.com/mcp?tools=${DEMO_TOOLS}",
+                    "DEMO_KEY": "https://api.example.com/mcp",
+                },
+            },
+            auth={
+                "type": "api_key",
+                "env": [
+                    {"name": "DEMO_KEY", "prompt": "key", "required": False},
+                    {"name": "DEMO_TOOLS", "prompt": "tools", "required": False},
+                ],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli.config import read_raw_config, save_env_value
+        from hermes_cli.mcp_catalog import install_entry
+
+        save_env_value("DEMO_KEY", "placeholder-value")
+        save_env_value("DEMO_TOOLS", "you-search,you-finance")
+        install_entry(_entry("demo"), enable=True)
+
+        server = read_raw_config()["mcp_servers"]["demo"]
+        assert server["url"] == "https://api.example.com/mcp?tools=${DEMO_TOOLS}"
+        assert server["headers"] == {"Authorization": "Bearer ${DEMO_KEY}"}
+
     def test_install_required_env_missing_raises(self, catalog_dir, monkeypatch):
         body = _basic_manifest(
             auth={

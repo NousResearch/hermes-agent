@@ -52,6 +52,36 @@ def install_stop_entry(settings_path: Path, runner: Path) -> None:
     if not isinstance(stop, list):
         raise SystemExit(f"ช่อง hooks.Stop ผิดรูปแบบใน {settings_path}")
 
+    existing_commands = [
+        str(hook.get("command", ""))
+        for entry in stop
+        if isinstance(entry, dict)
+        for hook in entry.get("hooks", [])
+        if isinstance(hook, dict)
+    ]
+    has_native_bundle = (
+        any("validate-all-stop.py" in command for command in existing_commands)
+        and any("enforce-codex-review.py" in command for command in existing_commands)
+    )
+
+    if has_native_bundle:
+        cleaned = []
+        for entry in stop:
+            if not isinstance(entry, dict):
+                cleaned.append(entry)
+                continue
+            hooks_in_entry = entry.get("hooks", [])
+            kept = [
+                hook for hook in hooks_in_entry
+                if not (isinstance(hook, dict) and "team-stop-gates.py" in str(hook.get("command", "")))
+            ]
+            if kept:
+                updated = dict(entry)
+                updated["hooks"] = kept
+                cleaned.append(updated)
+        hooks["Stop"] = cleaned
+        stop = cleaned
+
     command = str(runner)
     found = False
     for entry in stop:
@@ -61,7 +91,7 @@ def install_stop_entry(settings_path: Path, runner: Path) -> None:
             if isinstance(hook, dict) and "team-stop-gates.py" in str(hook.get("command", "")):
                 hook.update({"type": "command", "command": command, "timeout": 12})
                 found = True
-    if not found:
+    if not found and not has_native_bundle:
         stop.append({"hooks": [{"type": "command", "command": command, "timeout": 12}]})
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)

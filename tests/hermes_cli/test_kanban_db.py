@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -4357,10 +4358,15 @@ def test_repeated_corrupt_open_reuses_single_backup(tmp_path):
     assert backup.exists()
     assert backup.read_bytes() == original
 
-    # Mutate the corrupt bytes — fingerprint changes, separate backup preserved.
+    # Mutate the corrupt bytes, expire the suppression marker, then a fresh
+    # probe should preserve a distinct backup for the new corrupt fingerprint.
     with db_path.open("r+b") as f:
         f.seek(4096)
         f.write(b"\xAB" * 64)
+    marker_path = kb._corrupt_marker_path(db_path)
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["suppress_until"] = 0
+    marker_path.write_text(json.dumps(marker, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
     with pytest.raises(kb.KanbanDbCorruptError) as excinfo2:
         kb.connect(db_path=db_path)
@@ -4368,6 +4374,118 @@ def test_repeated_corrupt_open_reuses_single_backup(tmp_path):
     assert second_backup is not None
     assert second_backup != backup
     assert second_backup.exists()
+
+
+def test_active_corruption_marker_suppresses_repeat_probe_and_backup(tmp_path, monkeypatch):
+    db_path = tmp_path / "kanban.db"
+    _write_corrupt_db(db_path)
+
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+        kb.connect(db_path=db_path)
+    first_backup = excinfo.value.backup_path
+    marker_path = excinfo.value.marker_path
+    assert first_backup is not None
+    assert marker_path is not None and marker_path.exists()
+
+    # Simulate long-lived writers mutating the already-corrupt bytes between
+    # fresh CLI invocations. The active marker should still suppress a second
+    # probe/quarantine storm during the cooldown window.
+    with db_path.open("r+b") as handle:
+        handle.seek(4096)
+        handle.write(b"\xCD" * 64)
+
+    def _unexpected_sqlite_connect(*args, **kwargs):
+        raise AssertionError("marker should suppress repeat integrity probes")
+
+    def _unexpected_backup(*args, **kwargs):
+        raise AssertionError("marker should suppress repeat backup creation")
+
+    monkeypatch.setattr(kb, "_sqlite_connect", _unexpected_sqlite_connect)
+    monkeypatch.setattr(kb, "_backup_corrupt_db", _unexpected_backup)
+
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo2:
+        kb.connect(db_path=db_path)
+
+    assert excinfo2.value.suppressed is True
+    assert excinfo2.value.backup_path == first_backup
+    assert excinfo2.value.marker_path == marker_path
+    assert len(list(tmp_path.glob("kanban.db.corrupt.*.bak"))) == 1
+
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    assert marker["suppressed_count"] >= 1
+    assert marker["backup_path"] == str(first_backup)
+
+
+def test_expired_corruption_marker_reprobes_and_rotates_backup_on_new_bytes(tmp_path, monkeypatch):
+    db_path = tmp_path / "kanban.db"
+    _write_corrupt_db(db_path)
+
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+        kb.connect(db_path=db_path)
+    first_backup = excinfo.value.backup_path
+    marker_path = excinfo.value.marker_path
+    assert first_backup is not None
+    assert marker_path is not None and marker_path.exists()
+
+    with db_path.open("r+b") as handle:
+        handle.seek(4096)
+        handle.write(b"\xEF" * 64)
+
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    after_cooldown = int(marker["suppress_until"]) + 1
+    monkeypatch.setattr(kb.time, "time", lambda: after_cooldown)
+
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo2:
+        kb.connect(db_path=db_path)
+    second_backup = excinfo2.value.backup_path
+    assert second_backup is not None
+    assert second_backup != first_backup
+    assert len(list(tmp_path.glob("kanban.db.corrupt.*.bak"))) == 2
+
+    refreshed = json.loads(marker_path.read_text(encoding="utf-8"))
+    assert refreshed["backup_path"] == str(second_backup)
+    assert refreshed["first_seen_at"] == marker["first_seen_at"]
+
+
+def test_index_only_corruption_error_includes_guidance_and_marker(tmp_path, monkeypatch, caplog):
+    db_path = tmp_path / "kanban.db"
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    backup_path = tmp_path / "kanban.db.corrupt.test.bak"
+    backup_path.write_bytes(db_path.read_bytes())
+
+    class _Probe:
+        def execute(self, sql):
+            assert sql == "PRAGMA integrity_check"
+            return self
+
+        def fetchone(self):
+            return ["wrong # of entries in index idx_events_task"]
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda path: _Probe())
+    monkeypatch.setattr(kb, "_backup_corrupt_db", lambda path: backup_path)
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+            kb.connect(db_path=db_path)
+
+    msg = str(excinfo.value)
+    assert str(db_path) in msg
+    assert "idx_events_task" in msg
+    assert "REINDEX idx_events_task" in msg
+    assert ".corrupt.marker.json" in msg
+    assert any(
+        "failure_mode=index_inconsistency" in record.message and str(db_path) in record.message
+        for record in caplog.records
+    )
 
 
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):

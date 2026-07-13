@@ -162,3 +162,25 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_active_ws_orphan_is_interrupted_before_reap(monkeypatch):
+    """A disconnected active run must not bypass the orphan reaper forever."""
+    interrupts = []
+
+    class FakeAgent:
+        def interrupt(self, reason):
+            interrupts.append(reason)
+
+    server._sessions.clear()
+    try:
+        server._sessions["active"] = {
+            "transport": server._detached_ws_transport,
+            "running": True,
+            "agent": FakeAgent(),
+        }
+        assert server._reap_ws_orphan("active") is True
+        assert interrupts == ["WebSocket client disconnected; cancelling orphaned run"]
+        assert server._sessions["active"]["_ws_orphan_interrupt_requested"] is True
+    finally:
+        server._sessions.clear()

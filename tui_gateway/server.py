@@ -163,6 +163,15 @@ try:
 except (ValueError, TypeError):
     _ws_orphan_reap_grace = 20.0
 _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
+# A disconnect must stop an actively running orphan too.  This short second
+# grace gives the interruption path time to unwind before final teardown.
+try:
+    _ws_orphan_interrupt_grace = float(
+        os.environ.get("HERMES_TUI_WS_ORPHAN_INTERRUPT_GRACE_S") or "15"
+    )
+except (ValueError, TypeError):
+    _ws_orphan_interrupt_grace = 15.0
+_WS_ORPHAN_INTERRUPT_GRACE_S = max(1.0, _ws_orphan_interrupt_grace)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
@@ -671,32 +680,46 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     return session.get("transport") is _detached_ws_transport
 
 
-def _schedule_ws_orphan_reap(sid: str) -> None:
-    """After a grace window, reap session ``sid`` iff it's still orphaned.
+def _reap_ws_orphan(sid: str) -> bool:
+    """Reap a detached WS session, interrupting an active run first.
 
-    Called from the WS-disconnect path. The grace window lets a transient
-    reconnect (or a ``session.resume`` that reattaches the transport) cancel
-    the reap by re-binding a live transport. Disabled when the grace is 0.
+    Returns True when the caller should schedule one short follow-up reap while
+    the interrupted worker unwinds.  This closes the historical gap where a
+    detached session was considered non-orphaned forever merely because it was
+    still generating tokens.
     """
-    if _WS_ORPHAN_REAP_GRACE_S <= 0:
+    with _session_resume_lock:
+        session = _sessions.get(sid)
+        if not session or session.get("transport") is not _detached_ws_transport:
+            return False
+        if session.get("running"):
+            agent = session.get("agent")
+            if agent is not None and hasattr(agent, "interrupt"):
+                try:
+                    agent.interrupt("WebSocket client disconnected; cancelling orphaned run")
+                except Exception:
+                    logger.debug("Failed to interrupt orphaned WS run", exc_info=True)
+            session["_ws_orphan_interrupt_requested"] = True
+            return True
+        _close_session_by_id(sid, end_reason="ws_orphan_reap")
+        return False
+
+
+def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
+    """After a grace window, reap session ``sid`` iff it is still detached.
+
+    An active orphan is interrupted and checked once more after the shorter
+    interrupt grace, rather than being allowed to run indefinitely.
+    """
+    grace_s = _WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s)
+    if grace_s <= 0:
         return
 
     def _reap() -> None:
-        # Serialize the orphan re-check against session.resume (which re-binds a
-        # live transport under _session_resume_lock and would make this session
-        # non-orphaned). The actual pop + teardown then goes through the shared
-        # _close_session_by_id funnel so the dict mutation happens under
-        # _sessions_lock — consistent with every other _sessions mutator
-        # (#39591: _reap previously popped under _session_resume_lock, giving no
-        # mutual exclusion against _init_session / _close_session_by_id, which
-        # guard with _sessions_lock). _sessions_lock is an RLock and the global
-        # ordering is always resume_lock -> sessions_lock, so nesting is safe.
-        with _session_resume_lock:
-            if not _ws_session_is_orphaned(_sessions.get(sid)):
-                return
-            _close_session_by_id(sid, end_reason="ws_orphan_reap")
+        if _reap_ws_orphan(sid):
+            _schedule_ws_orphan_reap(sid, delay_s=_WS_ORPHAN_INTERRUPT_GRACE_S)
 
-    timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
+    timer = threading.Timer(grace_s, _reap)
     timer.daemon = True
     timer.start()
 

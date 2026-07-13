@@ -17,6 +17,8 @@ def _mock_response(*, usage: dict, content: str = "done"):
 
 
 def _make_agent(session_db, *, platform: str):
+    if session_db is not None:
+        session_db.reserve_session_api_call.return_value = (True, 1, None)
     with (
         patch("run_agent.get_tool_definitions", return_value=[]),
         patch("run_agent.check_toolset_requirements", return_value={}),

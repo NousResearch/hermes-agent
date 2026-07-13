@@ -2129,6 +2129,54 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def reserve_session_api_call(
+        self,
+        session_id: str,
+        *,
+        max_api_calls: int = 0,
+        max_session_duration_seconds: float = 0,
+        max_session_cost_usd: float = 0,
+    ) -> tuple[bool, int, Optional[str]]:
+        """Atomically reserve one provider call against durable session budgets.
+
+        This is deliberately called *before* the provider request.  A process
+        crash, client reconnect, or a new agent instance therefore cannot reset
+        the cumulative ceiling or turn an unrecorded in-flight call into a free
+        retry.  ``0`` disables either limit.  The returned tuple is
+        ``(allowed, durable_count, denial_reason)``.
+        """
+        max_api_calls = max(0, int(max_api_calls or 0))
+        max_session_duration_seconds = max(0.0, float(max_session_duration_seconds or 0))
+        max_session_cost_usd = max(0.0, float(max_session_cost_usd or 0))
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT api_call_count, started_at, estimated_cost_usd, actual_cost_usd "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return False, 0, "session_not_persisted"
+            count = int(row[0] or 0)
+            started_at = float(row[1] or 0)
+            spend = max(float(row[2] or 0), float(row[3] or 0))
+            if max_session_duration_seconds and started_at > 0 and (
+                time.time() - started_at >= max_session_duration_seconds
+            ):
+                return False, count, "session_duration_ceiling"
+            if max_session_cost_usd and spend >= max_session_cost_usd:
+                return False, count, "session_cost_ceiling"
+            if max_api_calls and count >= max_api_calls:
+                return False, count, "api_call_ceiling"
+            count += 1
+            conn.execute(
+                "UPDATE sessions SET api_call_count = ? WHERE id = ?",
+                (count, session_id),
+            )
+            return True, count, None
+
+        return self._execute_write(_do)
+
     def update_token_counts(
         self,
         session_id: str,
@@ -2182,7 +2230,7 @@ class SessionDB:
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
                    model = COALESCE(model, ?),
-                   api_call_count = ?
+                   api_call_count = MAX(COALESCE(api_call_count, 0), ?)
                    WHERE id = ?"""
         else:
             sql = """UPDATE sessions SET

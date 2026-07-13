@@ -45,6 +45,12 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+def _approval_event_choices(*, smart_denied: bool, allow_permanent: bool) -> list[str]:
+    if smart_denied:
+        return ["once", "deny"]
+    return ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
+
+
 try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
@@ -4375,7 +4381,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         "event": "approval.request",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "choices": ["once", "session", "always", "deny"],
+                        "choices": _approval_event_choices(
+                            smart_denied=bool(event.get("smart_denied")),
+                            allow_permanent=event.get("allow_permanent") is not False,
+                        ),
                     })
                     self._set_run_status(
                         run_id,

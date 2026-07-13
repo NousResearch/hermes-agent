@@ -195,7 +195,13 @@ _STATUS_ANCHORS_KO: tuple[str, ...] = (
     "뭐 했어",
     "뭐해",
     "뭐 해",
-    "진행",
+    # Bare "진행" is NOT a status query — "이거 진행해" / "작업을 진행해" mean GO.
+    # Only status-shaped collocations:
+    "진행상황",
+    "진행 상황",
+    "진행 중",
+    "진행중",
+    "어디까지 진행",
     "어떤 lane",
     "어떤 워커",
     "지금 뭐",
@@ -587,8 +593,9 @@ def _has_code_edit_anchor(low_body: str, body: str) -> bool:
 def _is_status_query(body: str, low_body: str) -> bool:
     if _contains_any(low_body, _STATUS_ANCHORS_EN) or _contains_any(body, _STATUS_ANCHORS_KO):
         return True
-    # A naked "?" or trailing-only "?" with very short body counts as status.
-    if len(body) <= 12 and body.endswith("?"):
+    # Only a pure "?" (or whitespace) is treated as a status ping.
+    # Short questions like "블로그 돼?" are normal MAIN traffic, not status.
+    if body.strip() in {"?", "？"}:
         return True
     return False
 

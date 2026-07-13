@@ -249,8 +249,16 @@ def handle_concierge(
 
     from agent.control_plane import Intent, classify
 
+    # Mode-active only when the product flag is on; still use mode=True for
+    # classification of STOP/STATUS so those control intents stay sharp.
     decision = classify(text, concierge_mode_active=True)
     intent = decision.intent
+
+    # Imperative "go do this" must never be swallowed as status.
+    # (Classifier also tightened; this is a second belt for false positives.)
+    _action_imperative = any(
+        x in text for x in ("진행해", "진행 해", "해줘", "해 줘", "해주세요", "진행시켜")
+    )
 
     if intent is Intent.STOP:
         reclaimed = []
@@ -271,6 +279,8 @@ def handle_concierge(
         )
 
     if intent is Intent.STATUS:
+        if _action_imperative:
+            return None  # fall through to main agent
         try:
             msg = _format_kanban_status(board=board)
         except Exception as exc:

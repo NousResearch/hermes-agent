@@ -284,7 +284,14 @@ class CodexEventProjector:
             self._pending_reasoning = []
         content_items = item.get("contentItems") or []
         if isinstance(content_items, list) and content_items:
-            content = json.dumps(content_items, ensure_ascii=False)[:4000]
+            text_items = [
+                entry.get("text")
+                for entry in content_items
+                if isinstance(entry, dict) and isinstance(entry.get("text"), str)
+            ]
+            content = "\n".join(text_items)[:4000] if text_items else json.dumps(
+                content_items, ensure_ascii=False
+            )[:4000]
         else:
             success = item.get("success")
             content = f"success={success}"

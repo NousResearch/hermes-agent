@@ -143,6 +143,205 @@ class TestCodexAppServerModule:
         assert "-32600" in str(err)
 
 
+class TestHermesCodexBridge:
+    def test_active_stateful_tools_are_exposed_in_a_non_colliding_namespace(self):
+        from agent.codex_bridge import build_dynamic_tools
+
+        tool_defs = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "session_search",
+                    "description": "Search past sessions",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Native Codex already owns this",
+                    "parameters": {"type": "object"},
+                },
+            },
+        ]
+
+        specs = build_dynamic_tools(tool_defs, {"session_search", "terminal"})
+
+        assert len(specs) == 1
+        assert specs[0]["type"] == "namespace"
+        assert specs[0]["name"] == "hermes"
+        assert [tool["name"] for tool in specs[0]["tools"]] == ["session_search"]
+        assert specs[0]["tools"][0]["inputSchema"]["type"] == "object"
+
+    def test_dynamic_catalogue_requires_active_tools_and_deduplicates(self):
+        from agent.codex_bridge import build_dynamic_tools
+
+        definitions = [
+            {"type": "function", "function": {"name": "memory"}},
+            {"type": "function", "function": {"name": "session_search"}},
+            {"type": "function", "function": {"name": "session_search"}},
+            {"type": "function", "function": {"name": "write_file"}},
+            {"type": "not-function", "function": {"name": "todo"}},
+        ]
+
+        specs = build_dynamic_tools(
+            definitions,
+            {"session_search", "write_file", "todo"},
+        )
+
+        assert [tool["name"] for tool in specs[0]["tools"]] == ["session_search"]
+        assert specs[0]["tools"][0]["inputSchema"] == {
+            "type": "object",
+            "properties": {},
+        }
+
+    def test_history_conversion_preserves_only_model_visible_text(self):
+        from agent.codex_bridge import build_history_items
+
+        history = build_history_items([
+            {"role": "system", "content": "covered by developerInstructions"},
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "assistant", "content": None, "tool_calls": []},
+            {"role": "tool", "content": "large transient output"},
+        ])
+
+        assert history == [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "old question"}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "old answer"}],
+            },
+        ]
+
+    def test_turn_input_contains_ephemeral_honcho_and_plugin_context(self):
+        from agent.codex_bridge import build_turn_input
+
+        enriched = build_turn_input(
+            "current request",
+            external_memory_context="HONCHO RECALL",
+            plugin_user_context="PLUGIN CONTEXT",
+        )
+
+        assert enriched.startswith("current request")
+        assert "HONCHO RECALL" in enriched
+        assert "PLUGIN CONTEXT" in enriched
+
+    def test_dynamic_handler_uses_live_hermes_dispatch(self):
+        from agent.codex_bridge import make_dynamic_tool_handler
+
+        calls = []
+
+        class Agent:
+            valid_tool_names = {"session_search"}
+            _tool_guardrails = None
+            _current_task_id = "task-1"
+            messages = []
+
+            def _invoke_tool(self, name, args, task_id, **kwargs):
+                calls.append((name, args, task_id, kwargs["tool_call_id"]))
+                return '{"messages": [{"content": "found"}]}'
+
+        agent = Agent()
+        handler = make_dynamic_tool_handler(agent)
+        response = handler({
+            "namespace": "hermes",
+            "tool": "session_search",
+            "callId": "call-1",
+            "arguments": {"query": "decision"},
+        })
+        agent._current_task_id = "task-2"
+        second = handler({
+            "namespace": "hermes",
+            "tool": "session_search",
+            "callId": "call-2",
+            "arguments": {"query": "new decision"},
+        })
+
+        assert calls == [
+            ("session_search", {"query": "decision"}, "task-1", "call-1"),
+            ("session_search", {"query": "new decision"}, "task-2", "call-2"),
+        ]
+        assert response["success"] is True
+        assert second["success"] is True
+        assert "found" in response["contentItems"][0]["text"]
+
+    @pytest.mark.parametrize(
+        "payload, expected",
+        [
+            ({"callId": "call-1", "namespace": "other", "tool": "session_search", "arguments": {}}, "namespace"),
+            ({"callId": "call-1", "namespace": "hermes", "tool": "write_file", "arguments": {}}, "allowlisted"),
+            ({"callId": "call-1", "namespace": "hermes", "tool": "session_search", "arguments": []}, "object"),
+            ({"namespace": "hermes", "tool": "session_search", "arguments": {}}, "callId"),
+            ({"callId": "   ", "namespace": "hermes", "tool": "session_search", "arguments": {}}, "callId"),
+        ],
+    )
+    def test_dynamic_handler_rejects_invalid_calls_without_dispatch(self, payload, expected):
+        from agent.codex_bridge import make_dynamic_tool_handler
+
+        class Agent:
+            valid_tool_names = {"session_search"}
+            _tool_guardrails = None
+
+            def _invoke_tool(self, *args, **kwargs):
+                raise AssertionError("invalid dynamic call reached dispatch")
+
+        response = make_dynamic_tool_handler(Agent())(payload)
+
+        assert response["success"] is False
+        assert expected in response["contentItems"][0]["text"]
+
+    def test_dynamic_handler_translates_dispatch_exception(self):
+        from agent.codex_bridge import make_dynamic_tool_handler
+
+        class Agent:
+            valid_tool_names = {"session_search"}
+            _tool_guardrails = None
+
+            def _invoke_tool(self, *args, **kwargs):
+                raise RuntimeError("dispatch exploded")
+
+        response = make_dynamic_tool_handler(Agent())({
+            "callId": "call-1",
+            "namespace": "hermes",
+            "tool": "session_search",
+            "arguments": {"query": "x"},
+        })
+
+        assert response["success"] is False
+        assert "dispatch exploded" not in response["contentItems"][0]["text"]
+        assert "failed" in response["contentItems"][0]["text"]
+
+    def test_dynamic_handler_translates_hermes_tool_failure(self):
+        from agent.codex_bridge import make_dynamic_tool_handler
+
+        class Agent:
+            valid_tool_names = {"session_search"}
+            _tool_guardrails = None
+
+            def _invoke_tool(self, *args, **kwargs):
+                return '{"success": false, "error": "session db unavailable"}'
+
+        response = make_dynamic_tool_handler(Agent())({
+            "callId": "call-1",
+            "namespace": "hermes",
+            "tool": "session_search",
+            "arguments": {"query": "x"},
+        })
+
+        assert response["success"] is False
+        assert "session db unavailable" in response["contentItems"][0]["text"]
+
+
 class TestSpawnEnvIsolation:
     """The codex spawn must NOT rewrite HOME — codex's shell tool spawns
     subprocesses (gh, git, npm, aws, gcloud, ...) that need to find their

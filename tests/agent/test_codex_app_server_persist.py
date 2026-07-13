@@ -23,11 +23,13 @@ duplicate the user turn (#860 / #42039). This test locks in:
 3. The gateway resolution expression preserves standard-runtime behaviour.
 """
 
+import json
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from agent.codex_bridge import build_dynamic_tools
 from agent.codex_runtime import run_codex_app_server_turn
 from hermes_state import SessionDB
 from run_agent import AIAgent
@@ -46,15 +48,29 @@ def _make_turn():
     )
 
 
-def _make_agent(session_db=None, session_id="sess-codex"):
-    agent = MagicMock()
-    # Pre-seed the session so run_codex_app_server_turn skips the spawn block.
+def _seed_mock_codex_session(agent):
+    # Match the bridge config owned by the pre-seeded session. Otherwise the
+    # runtime correctly retires it as stale before the turn starts.
     agent._codex_session = MagicMock()
     agent._codex_session.run_turn.return_value = _make_turn()
+    dynamic_tools = build_dynamic_tools(
+        getattr(agent, "tools", []) or [],
+        getattr(agent, "valid_tool_names", set()) or set(),
+    )
+    agent._codex_bridge_signature = (
+        "",
+        json.dumps(dynamic_tools, sort_keys=True, separators=(",", ":")),
+    )
+
+
+def _make_agent(session_db=None, session_id="sess-codex"):
+    agent = MagicMock()
+    agent.tools = []
+    agent.valid_tool_names = set()
+    _seed_mock_codex_session(agent)
     agent.tool_progress_callback = None
     agent._iters_since_skill = 0
     agent._skill_nudge_interval = 0
-    agent.valid_tool_names = set()
     agent._session_db = session_db
     agent._session_db_created = True
     agent.session_id = session_id
@@ -98,8 +114,7 @@ def test_codex_turn_persists_each_message_exactly_once():
             session_id=sid,
         )
         agent._session_db_created = True
-        agent._codex_session = MagicMock()
-        agent._codex_session.run_turn.return_value = _make_turn()
+        _seed_mock_codex_session(agent)
         agent.tool_progress_callback = None
 
         # Model the real flow: the inbound user turn is flushed at turn start

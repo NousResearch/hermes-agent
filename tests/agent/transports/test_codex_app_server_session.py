@@ -162,6 +162,249 @@ class TestLifecycle:
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
 
+    def test_thread_start_bridges_developer_context_dynamic_tools_and_history(self):
+        client = FakeClient()
+        dynamic_tools = [{
+            "type": "namespace",
+            "name": "hermes",
+            "description": "Hermes live tools",
+            "tools": [],
+        }]
+        history = [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "earlier answer"}],
+        }]
+        s = make_session(
+            client,
+            developer_instructions="HERMES SOUL AND MEMORY",
+            dynamic_tools=dynamic_tools,
+            initial_history_items=history,
+        )
+
+        s.ensure_started()
+
+        assert client._initialized is True
+        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert method == "thread/start"
+        assert params["developerInstructions"] == "HERMES SOUL AND MEMORY"
+        assert params["dynamicTools"] == dynamic_tools
+        inject = next(r for r in client.requests if r[0] == "thread/inject_items")
+        assert inject[1] == {"threadId": "thread-fake-001", "items": history}
+
+    @pytest.mark.parametrize("invalid_thread_id", ["   ", 123, {}])
+    def test_thread_start_rejects_malformed_thread_identity(self, invalid_thread_id):
+        client = FakeClient()
+
+        def request_handler(method, params):
+            if method == "thread/start":
+                return {"thread": {"id": invalid_thread_id}}
+            return {}
+
+        client._request_handler = request_handler
+        s = make_session(client)
+
+        with pytest.raises(session_mod.CodexAppServerError, match="thread id"):
+            s.ensure_started()
+
+    def test_dynamic_tool_server_request_is_dispatched_to_hermes(self):
+        client = FakeClient()
+        seen = []
+
+        def handler(params):
+            seen.append(params)
+            return {
+                "success": True,
+                "contentItems": [{"type": "inputText", "text": "remembered"}],
+            }
+
+        client.queue_server_request(
+            "item/tool/call",
+            request_id="dyn-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            callId="call-1",
+            namespace="hermes",
+            tool="session_search",
+            arguments={"query": "old decision"},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(client, dynamic_tool_handler=handler)
+        s.run_turn("remember", turn_timeout=1.0)
+
+        assert seen == [{
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "callId": "call-1",
+            "namespace": "hermes",
+            "tool": "session_search",
+            "arguments": {"query": "old decision"},
+        }]
+        assert client.responses == [("dyn-1", {
+            "success": True,
+            "contentItems": [{"type": "inputText", "text": "remembered"}],
+        })]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"callId": ""},
+            {"callId": "   "},
+            {"callId": None},
+            {"threadId": "wrong-thread"},
+            {"threadId": None},
+            {"turnId": "wrong-turn"},
+            {"turnId": None},
+        ],
+    )
+    def test_dynamic_tool_server_request_rejects_unbound_identity(self, overrides):
+        client = FakeClient()
+        seen = []
+        params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "callId": "call-1",
+            "namespace": "hermes",
+            "tool": "todo",
+            "arguments": {},
+        }
+        params.update(overrides)
+        client.queue_server_request("item/tool/call", request_id="dyn-1", **params)
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(client, dynamic_tool_handler=lambda payload: seen.append(payload))
+        s.run_turn("remember", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.responses[0][0] == "dyn-1"
+        assert client.responses[0][1]["success"] is False
+
+    @pytest.mark.parametrize(
+        "notification_thread_id",
+        ["thread-fake-001", "foreign-thread"],
+    )
+    def test_stale_or_foreign_turn_started_cannot_rebind_dynamic_dispatch(
+        self, notification_thread_id
+    ):
+        client = FakeClient()
+        seen = []
+        client.queue_notification(
+            "turn/started",
+            threadId=notification_thread_id,
+            turn={"id": "stale-turn"},
+        )
+        client.queue_server_request(
+            "item/tool/call",
+            request_id="dyn-stale",
+            threadId="thread-fake-001",
+            turnId="stale-turn",
+            callId="call-stale",
+            namespace="hermes",
+            tool="todo",
+            arguments={},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(client, dynamic_tool_handler=lambda payload: seen.append(payload))
+        s.run_turn("remember", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.responses == [("dyn-stale", {
+            "success": False,
+            "contentItems": [{
+                "type": "inputText",
+                "text": "Hermes dynamic tool request was rejected",
+            }],
+        })]
+
+    def test_turn_started_cannot_activate_tools_without_turn_start_response_id(self):
+        client = FakeClient()
+        seen = []
+
+        def request_handler(method, params):
+            if method == "thread/start":
+                return {"thread": {"id": "thread-fake-001"}}
+            if method == "turn/start":
+                return {"turn": {}}
+            return {}
+
+        client._request_handler = request_handler
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "notification-only-turn"},
+        )
+        client.queue_server_request(
+            "item/tool/call",
+            request_id="dyn-unbound",
+            threadId="thread-fake-001",
+            turnId="notification-only-turn",
+            callId="call-unbound",
+            namespace="hermes",
+            tool="todo",
+            arguments={},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "notification-only-turn", "status": "completed", "error": None},
+        )
+
+        s = make_session(client, dynamic_tool_handler=lambda payload: seen.append(payload))
+        s.run_turn("remember", turn_timeout=0.05)
+
+        assert seen == []
+        assert client.responses[0][0] == "dyn-unbound"
+        assert client.responses[0][1]["success"] is False
+
+    def test_duplicate_dynamic_call_id_is_replayed_without_redispatch(self):
+        client = FakeClient()
+        seen = []
+        params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "callId": "call-1",
+            "namespace": "hermes",
+            "tool": "todo",
+            "arguments": {},
+        }
+        client.queue_server_request("item/tool/call", request_id="dyn-1", **params)
+        client.queue_server_request("item/tool/call", request_id="dyn-2", **params)
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        def handler(payload):
+            seen.append(payload)
+            return {
+                "success": True,
+                "contentItems": [{"type": "inputText", "text": "once"}],
+            }
+
+        s = make_session(client, dynamic_tool_handler=handler)
+        s.run_turn("remember", turn_timeout=1.0)
+
+        assert len(seen) == 1
+        assert client.responses == [
+            ("dyn-1", {"success": True, "contentItems": [{"type": "inputText", "text": "once"}]}),
+            ("dyn-2", {"success": True, "contentItems": [{"type": "inputText", "text": "once"}]}),
+        ]
+
     def test_close_idempotent(self):
         client = FakeClient()
         s = make_session(client)
@@ -176,16 +419,20 @@ class TestLifecycle:
 class TestRunTurn:
     def test_simple_text_turn_returns_final_message(self):
         client = FakeClient()
-        client.queue_notification("turn/started", threadId="t", turn={"id": "tu1"})
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001"},
+        )
         client.queue_notification(
             "item/completed",
             item={"type": "agentMessage", "id": "m1", "text": "hello world"},
-            threadId="t", turnId="tu1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
         )
         client.queue_notification(
             "turn/completed",
-            threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         s = make_session(client)
         r = s.run_turn("hi", turn_timeout=2.0)
@@ -194,7 +441,7 @@ class TestRunTurn:
         assert r.error is None
         assert any(m["role"] == "assistant" and m.get("content") == "hello world"
                    for m in r.projected_messages)
-        # turn_id propagated for downstream session-DB linkage
+        # turn_id remains bound to the authoritative turn/start response.
         assert r.turn_id == "turn-fake-001"
 
     def test_extra_skill_roots_are_set_and_force_reloaded_before_turn_start(self):

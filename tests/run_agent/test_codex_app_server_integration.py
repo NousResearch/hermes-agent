@@ -85,6 +85,81 @@ class TestRunConversationCodexPath:
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
 
+    def test_codex_user_projection_is_not_duplicated_or_persisted(self, monkeypatch):
+        def fake_run_turn(self, user_input, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[
+                    {"role": "user", "content": "request\nEPHEMERAL_RECALL"},
+                    {"role": "assistant", "content": "done"},
+                ],
+                turn_id="turn-user-1",
+                thread_id="thread-user-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("request")
+
+        user_messages = [m for m in result["messages"] if m.get("role") == "user"]
+        assert len(user_messages) == 1
+        assert user_messages[0]["content"] == "request"
+        assert all("EPHEMERAL_RECALL" not in str(m) for m in result["messages"])
+
+    def test_context_memory_and_resumed_history_reach_codex(self, monkeypatch):
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured["init"] = kwargs
+
+        def fake_run_turn(self, user_input, **kwargs):
+            captured["turn_input"] = user_input
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-context-1",
+                thread_id="thread-context-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        agent = _make_codex_agent()
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = ""
+        agent._memory_manager.on_turn_start.return_value = None
+        agent._memory_manager.prefetch_all.return_value = "HONCHO RECALL"
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation(
+                "current request",
+                system_message="HERMES SOUL MEMORY PROFILE",
+                conversation_history=[
+                    {"role": "user", "content": "old question"},
+                    {"role": "assistant", "content": "old answer"},
+                ],
+            )
+
+        assert result["final_response"] == "done"
+        assert "HERMES SOUL MEMORY PROFILE" in (
+            captured["init"]["developer_instructions"]
+        )
+        assert captured["init"]["initial_history_items"] == [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "old question"}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "old answer"}],
+            },
+        ]
+        assert "current request" in captured["turn_input"]
+        assert "HONCHO RECALL" in captured["turn_input"]
+
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(
@@ -692,6 +767,26 @@ class TestSessionRetirementOnRunAgent:
             agent.run_conversation("hi")
         # Session was lazily created and still attached.
         assert getattr(agent, "_codex_session", None) is not None
+
+    def test_dynamic_tool_catalog_change_restarts_session(self, fake_session, monkeypatch):
+        closes = {"count": 0}
+        original_close = CodexAppServerSession.close
+
+        def counted_close(self):
+            closes["count"] += 1
+            return original_close(self)
+
+        monkeypatch.setattr(CodexAppServerSession, "close", counted_close)
+        agent = _make_codex_agent()
+        agent.valid_tool_names.discard("todo")
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("first")
+            first_session = agent._codex_session
+            agent.valid_tool_names.add("todo")
+            agent.run_conversation("second")
+
+        assert closes["count"] == 1
+        assert agent._codex_session is not first_session
 
     def test_exception_path_also_drops_session(self, monkeypatch):
         """Even if run_turn raises (not just sets should_retire), we must

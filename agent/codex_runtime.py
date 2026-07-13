@@ -16,6 +16,7 @@ compatibility.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -325,6 +326,9 @@ def run_codex_app_server_turn(
     messages: List[Dict[str, Any]],
     effective_task_id: str,
     should_review_memory: bool = False,
+    active_system_prompt: str = "",
+    plugin_user_context: str = "",
+    ext_prefetch_cache: str = "",
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
     app-server` subprocess and projects its events back into Hermes'
@@ -333,14 +337,36 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
+    from agent.codex_bridge import (
+        build_dynamic_tools,
+        build_history_items,
+        build_turn_input,
+        make_dynamic_tool_handler,
+    )
     from agent.transports.codex_app_server_session import (
         CodexAppServerSession,
         _ServerRequestRouting,
     )
 
-    # Lazy session: one CodexAppServerSession per AIAgent instance.
-    # Spawned on first turn, reused across turns, closed at AIAgent
-    # shutdown (see _cleanup hook).
+    dynamic_tools = build_dynamic_tools(
+        getattr(agent, "tools", []) or [],
+        getattr(agent, "valid_tool_names", set()) or set(),
+    )
+    bridge_signature = (
+        active_system_prompt,
+        json.dumps(dynamic_tools, sort_keys=True, separators=(",", ":")),
+    )
+    existing_session = getattr(agent, "_codex_session", None)
+    if (
+        existing_session is not None
+        and getattr(agent, "_codex_bridge_signature", None) != bridge_signature
+    ):
+        existing_session.close()
+        agent._codex_session = None
+
+    # Lazy session: one CodexAppServerSession per stable Hermes bridge config.
+    # A prompt/tool-catalog change starts a fresh Codex thread so App Server's
+    # thread-scoped developerInstructions and dynamicTools cannot go stale.
     if not hasattr(agent, "_codex_session") or agent._codex_session is None:
         from agent.runtime_cwd import resolve_agent_cwd
 
@@ -391,6 +417,7 @@ def run_codex_app_server_turn(
             except Exception:
                 logger.debug("codex tool-progress callback raised", exc_info=True)
 
+        initial_history_items = build_history_items(messages[:-1])
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             extra_skill_roots=[str(get_hermes_home() / "skills")],
@@ -399,15 +426,25 @@ def run_codex_app_server_turn(
                 auto_approve_exec=auto_approve_requests,
                 auto_approve_apply_patch=auto_approve_requests,
             ),
+            developer_instructions=active_system_prompt,
+            dynamic_tools=dynamic_tools,
+            initial_history_items=initial_history_items,
+            dynamic_tool_handler=make_dynamic_tool_handler(agent),
             on_event=_on_codex_event,
         )
+        agent._codex_bridge_signature = bridge_signature
 
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    codex_turn_input = build_turn_input(
+        user_message,
+        external_memory_context=ext_prefetch_cache,
+        plugin_user_context=plugin_user_context,
+    )
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(user_input=codex_turn_input)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn
@@ -448,8 +485,17 @@ def run_codex_app_server_turn(
     # Splice projected messages into the conversation. The projector emits
     # standard {role, content, tool_calls, tool_call_id} entries, which
     # is exactly what curator.py / sessions DB expect.
-    if turn.projected_messages:
-        messages.extend(turn.projected_messages)
+    # Hermes already owns and persisted the inbound user message before this
+    # early-return path. Codex also emits that input as a completed userMessage;
+    # dropping it here avoids both a duplicate row and persistence of the
+    # ephemeral memory/plugin suffix added only for the model-facing turn.
+    projected_messages = [
+        message
+        for message in (turn.projected_messages or [])
+        if message.get("role") != "user"
+    ]
+    if projected_messages:
+        messages.extend(projected_messages)
 
         # Persist the newly-projected assistant/tool messages ourselves.
         # This path is an early return that bypasses conversation_loop, whose

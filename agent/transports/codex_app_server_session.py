@@ -210,6 +210,12 @@ class CodexAppServerSession:
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
+        developer_instructions: Optional[str] = None,
+        dynamic_tools: Optional[list[dict[str, Any]]] = None,
+        initial_history_items: Optional[list[dict[str, Any]]] = None,
+        dynamic_tool_handler: Optional[
+            Callable[[dict[str, Any]], dict[str, Any]]
+        ] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
@@ -232,9 +238,17 @@ class CodexAppServerSession:
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
+        self._developer_instructions = developer_instructions or ""
+        self._dynamic_tools = list(dynamic_tools or [])
+        self._initial_history_items = list(initial_history_items or [])
+        self._dynamic_tool_handler = dynamic_tool_handler
 
         self._client: Optional[CodexAppServerClient] = None
         self._thread_id: Optional[str] = None
+        self._active_turn_id: Optional[str] = None
+        self._dynamic_tool_responses: dict[
+            tuple[str, str, str], dict[str, Any]
+        ] = {}
         self._interrupt_event = threading.Event()
         # Pending file-change items, keyed by item id. Populated on
         # item/started for fileChange items; consumed by the approval
@@ -278,10 +292,14 @@ class CodexAppServerSession:
             self._client = self._client_factory(
                 codex_bin=self._codex_bin, codex_home=self._codex_home
             )
+        capabilities = {}
+        if self._dynamic_tools or self._initial_history_items:
+            capabilities["experimentalApi"] = True
         self._client.initialize(
             client_name="hermes",
             client_title="Hermes Agent",
             client_version=_get_hermes_version(),
+            capabilities=capabilities,
         )
         # Permission selection is intentionally NOT sent on thread/start.
         # Two reasons (live-tested against codex 0.130.0):
@@ -299,6 +317,10 @@ class CodexAppServerSession:
         # Users who want a write-capable profile configure it in their
         # ~/.codex/config.toml the same way they would for any codex usage.
         params: dict[str, Any] = {"cwd": self._cwd}
+        if self._developer_instructions:
+            params["developerInstructions"] = self._developer_instructions
+        if self._dynamic_tools:
+            params["dynamicTools"] = self._dynamic_tools
         result = self._client.request("thread/start", params, timeout=15)
         # Cross-fill thread.id/sessionId — different codex versions have
         # serialized this under either key. Mirrors openclaw beta.8's
@@ -311,16 +333,25 @@ class CodexAppServerSession:
             or result.get("sessionId")
             or result.get("threadId")
         )
-        if not thread_id:
+        if not isinstance(thread_id, str) or not thread_id.strip():
             raise CodexAppServerError(
                 code=-32603,
                 message=(
-                    "codex thread/start returned no thread id "
+                    "codex thread/start returned no thread id or an invalid thread id "
                     f"(payload keys: {sorted(result.keys())})"
                 ),
             )
         self._thread_id = thread_id
         self._register_extra_skill_roots()
+        if self._initial_history_items:
+            self._client.request(
+                "thread/inject_items",
+                {
+                    "threadId": self._thread_id,
+                    "items": self._initial_history_items,
+                },
+                timeout=15,
+            )
         logger.info(
             "codex app-server thread started: id=%s profile=%s cwd=%s",
             self._thread_id[:8],
@@ -340,6 +371,8 @@ class CodexAppServerSession:
                 pass
             self._client = None
         self._thread_id = None
+        self._active_turn_id = None
+        self._dynamic_tool_responses.clear()
 
     def __enter__(self) -> "CodexAppServerSession":
         return self
@@ -514,6 +547,8 @@ class CodexAppServerSession:
         changed_skills, skill_fingerprints = self._reload_changed_skills()
 
         self._interrupt_event.clear()
+        self._active_turn_id = None
+        self._dynamic_tool_responses.clear()
         projector = CodexEventProjector()
 
         user_input_text = _coerce_turn_input_text(user_input)
@@ -566,7 +601,13 @@ class CodexAppServerSession:
             self._skill_fingerprints = skill_fingerprints
         self._turn_started_once = True
 
-        result.turn_id = (ts.get("turn") or {}).get("id")
+        response_turn_id = (ts.get("turn") or {}).get("id") or ts.get("turnId")
+        result.turn_id = (
+            response_turn_id
+            if isinstance(response_turn_id, str) and response_turn_id.strip()
+            else None
+        )
+        self._active_turn_id = result.turn_id
         deadline = time.monotonic() + turn_timeout
         turn_complete = False
         # Post-tool watchdog state. last_tool_completion_at is set whenever
@@ -630,6 +671,8 @@ class CodexAppServerSession:
                         break
                     _apply_token_usage_notification(result, pending)
                     _apply_compaction_notification(result, pending)
+                    if pending.get("method") == "turn/started":
+                        self._bind_turn_started_notification(result, pending)
                     self._track_pending_file_change(pending)
                     proj = projector.project(pending)
                     if proj.messages:
@@ -667,6 +710,8 @@ class CodexAppServerSession:
 
             _apply_token_usage_notification(result, note)
             _apply_compaction_notification(result, note)
+            if method == "turn/started":
+                self._bind_turn_started_notification(result, note)
 
             # Track in-progress fileChange items so the approval bridge
             # can surface a real change summary when codex requests
@@ -756,6 +801,8 @@ class CodexAppServerSession:
                 )
             result.should_retire = True
 
+        self._active_turn_id = None
+        self._dynamic_tool_responses.clear()
         return result
 
     def compact_thread(
@@ -908,6 +955,43 @@ class CodexAppServerSession:
 
     # ---------- internals ----------
 
+    def _bind_turn_started_notification(
+        self, result: TurnResult, note: dict
+    ) -> None:
+        """Accept turn/started only when it confirms turn/start's identity.
+
+        The turn/start response is the correlation authority. A notification
+        cannot create or replace the active identity because delayed events
+        from an earlier turn share the same thread and may arrive while a new
+        stateful dynamic-tool request is pending.
+        """
+        params = note.get("params")
+        if not isinstance(params, dict):
+            return
+        turn_obj = params.get("turn")
+        notification_turn_id = (
+            turn_obj.get("id") if isinstance(turn_obj, dict) else None
+        )
+        expected_turn_id = result.turn_id
+        if (
+            params.get("threadId") != self._thread_id
+            or not isinstance(expected_turn_id, str)
+            or not expected_turn_id.strip()
+            or not isinstance(notification_turn_id, str)
+            or not notification_turn_id.strip()
+            or notification_turn_id != expected_turn_id
+        ):
+            logger.warning(
+                "Ignoring unbound codex turn/started notification "
+                "(thread=%r turn=%r expected_thread=%r expected_turn=%r)",
+                params.get("threadId"),
+                notification_turn_id,
+                self._thread_id,
+                expected_turn_id,
+            )
+            return
+        self._active_turn_id = expected_turn_id
+
     def _issue_interrupt(self, turn_id: Optional[str]) -> None:
         if self._client is None or self._thread_id is None or turn_id is None:
             return
@@ -941,7 +1025,57 @@ class CodexAppServerSession:
         rid = req.get("id")
         params = req.get("params") or {}
 
-        if method == "item/commandExecution/requestApproval":
+        if method == "item/tool/call":
+            failure = {
+                "success": False,
+                "contentItems": [{
+                    "type": "inputText",
+                    "text": "Hermes dynamic tool request was rejected",
+                }],
+            }
+            if not isinstance(params, dict):
+                self._client.respond(rid, failure)
+                return
+            thread_id = params.get("threadId")
+            turn_id = params.get("turnId")
+            call_id = params.get("callId")
+            if (
+                not isinstance(call_id, str)
+                or not call_id.strip()
+                or thread_id != self._thread_id
+                or turn_id != self._active_turn_id
+                or not self._active_turn_id
+            ):
+                self._client.respond(rid, failure)
+                return
+            call_key = (thread_id, turn_id, call_id)
+            cached = self._dynamic_tool_responses.get(call_key)
+            if cached is not None:
+                self._client.respond(rid, cached)
+                return
+            if self._dynamic_tool_handler is None:
+                response = {
+                    "success": False,
+                    "contentItems": [{
+                        "type": "inputText",
+                        "text": "Hermes dynamic tool bridge is unavailable",
+                    }],
+                }
+            else:
+                try:
+                    response = self._dynamic_tool_handler(params)
+                except Exception:
+                    logger.exception("dynamic_tool_handler raised")
+                    response = {
+                        "success": False,
+                        "contentItems": [{
+                            "type": "inputText",
+                            "text": "Hermes dynamic tool failed",
+                        }],
+                    }
+            self._dynamic_tool_responses[call_key] = response
+            self._client.respond(rid, response)
+        elif method == "item/commandExecution/requestApproval":
             decision = self._decide_exec_approval(params)
             self._client.respond(rid, {"decision": decision})
         elif method == "item/fileChange/requestApproval":

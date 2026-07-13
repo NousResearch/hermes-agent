@@ -272,6 +272,27 @@ class TestHelpers:
         assert a == b
 
 
+class TestDynamicToolProjection:
+    def test_input_text_content_is_projected_without_transport_envelope(self) -> None:
+        item = {
+            "type": "dynamicToolCall",
+            "id": "d-text",
+            "tool": "todo",
+            "arguments": {},
+            "status": "completed",
+            "contentItems": [
+                {"type": "inputText", "text": '{"todos": []}'},
+            ],
+            "success": True,
+        }
+
+        messages = CodexEventProjector().project(
+            {"method": "item/completed", "params": {"item": item}}
+        ).messages
+
+        assert messages[1]["content"] == '{"todos": []}'
+
+
 class TestRoleAlternationInvariant:
     """The project must never emit two assistant messages back-to-back from
     one item — that breaks Hermes' message alternation invariant."""

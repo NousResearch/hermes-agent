@@ -7024,6 +7024,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
+        # Interrupt any running subagents before resetting the session.
+        # /new and /clear without interrupting subagents leaves orphan
+        # subagents running against the old session — their results can
+        # leak back or inject stale context into the new session (#63463).
+        try:
+            from tools.async_delegation import interrupt_all
+            interrupt_all(reason="new_session")
+        except Exception:
+            pass
         old_session_id = self.session_id
         _boundary_snapshot = None
         if self.agent and self.conversation_history:

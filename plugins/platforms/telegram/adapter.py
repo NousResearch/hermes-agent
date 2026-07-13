@@ -4721,8 +4721,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if choices:
                 # Render full option text in the message body so mobile
                 # users can read long choices that would be truncated in
-                # inline button labels.  Buttons keep short numeric labels
-                # (1, 2, …, Other) to avoid Telegram truncation.
+                # inline button labels.  Buttons show a truncated copy of
+                # the same label (see below) so the captions are
+                # meaningful instead of bare numbers.
                 option_lines = "\n".join(
                     f"{i + 1}. {_html.escape(str(c))}"
                     for i, c in enumerate(choices)
@@ -4738,12 +4739,24 @@ class TelegramAdapter(BasePlatformAdapter):
 
             if choices:
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
-                # short.
+                # short.  Button captions use a truncated copy of the
+                # choice label so users see the actual option, not "1/2/3".
                 rows = []
-                for idx in range(len(choices)):
+                for idx, choice in enumerate(choices):
+                    label = str(choice).strip() or str(idx + 1)
+                    # Telegram inline-button text is capped at 64 chars
+                    # (and long labels wrap awkwardly on mobile).  Keep
+                    # ~30 visible chars to stay readable across clients.
+                    # NOTE: slicing is by code point, so a label longer
+                    # than 30 whose 30th boundary falls inside a grapheme
+                    # cluster (ZWJ emoji, skin-tone/VS16 sequences, flags)
+                    # can split mid-cluster.  Acceptable for choice labels,
+                    # which are short and rarely emoji-dense.
+                    if len(label) > 30:
+                        label = label[:29].rstrip() + "…"
                     rows.append([
                         InlineKeyboardButton(
-                            str(idx + 1),
+                            label,
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
                     ])

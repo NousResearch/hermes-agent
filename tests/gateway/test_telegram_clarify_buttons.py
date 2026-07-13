@@ -146,29 +146,74 @@ class TestTelegramSendClarify:
         assert result.success is False
 
     @pytest.mark.asyncio
-    async def test_long_choice_rendered_in_body_not_truncated(self):
+    async def test_long_choice_rendered_in_body_and_truncated_label(self):
         """Long choice text appears in full in the message body;
-        button labels stay short numeric (1, 2, …)."""
+        button labels are truncated copies of the choice text (not bare
+        numeric labels — see fix/telegram-clarify-button-labels)."""
         adapter = _make_adapter()
         mock_msg = MagicMock()
         mock_msg.message_id = 102
         adapter._bot.send_message = AsyncMock(return_value=mock_msg)
 
         long_choice = "x" * 200
-        result = await adapter.send_clarify(
-            chat_id="12345",
-            question="?",
-            choices=[long_choice],
-            clarify_id="cid4",
-            session_key="sk4",
-        )
+        from plugins.platforms.telegram import adapter as tg_mod
+
+        with patch.object(tg_mod, "InlineKeyboardButton") as mock_btn:
+            result = await adapter.send_clarify(
+                chat_id="12345",
+                question="?",
+                choices=[long_choice],
+                clarify_id="cid4",
+                session_key="sk4",
+            )
         assert result.success is True
         kwargs = adapter._bot.send_message.call_args[1]
         # The full long choice text appears in the message body
         assert long_choice in kwargs["text"]
-        # The button label should be short ("1"), not the long choice
-        # (we can't inspect mock button labels directly, but the send
-        # succeeded — old truncation code could raise on edge cases)
+        # First button call: label is a truncated copy of the choice,
+        # NOT a bare numeric label.
+        first_call = mock_btn.call_args_list[0]
+        label = first_call.args[0] if first_call.args else first_call.kwargs.get("text")
+        assert label != "1", "button label should not be bare numeric"
+        assert label.startswith("x")
+        assert len(label) <= 30
+        assert label.endswith("…")
+
+    @pytest.mark.asyncio
+    async def test_button_labels_use_choice_text(self):
+        """Buttons should display the choice text (truncated), not bare 1/2/3."""
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 104
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        choices = ["✅ Update all", "❌ Skip all", "Pick per stack"]
+        from plugins.platforms.telegram import adapter as tg_mod
+
+        with patch.object(tg_mod, "InlineKeyboardButton") as mock_btn:
+            result = await adapter.send_clarify(
+                chat_id="12345",
+                question="What now?",
+                choices=choices,
+                clarify_id="cid_lbl",
+                session_key="sk_lbl",
+            )
+        assert result.success is True
+
+        # Pull the first N button labels (one per choice, in order).
+        labels = []
+        callback_data = []
+        for call in mock_btn.call_args_list[: len(choices)]:
+            labels.append(call.args[0] if call.args else call.kwargs.get("text"))
+            callback_data.append(call.kwargs.get("callback_data"))
+
+        assert labels == choices  # short enough to be untruncated
+        # callback_data still encodes the index so the existing handler works
+        assert callback_data == [
+            "cl:cid_lbl:0",
+            "cl:cid_lbl:1",
+            "cl:cid_lbl:2",
+        ]
 
     @pytest.mark.asyncio
     async def test_html_escapes_question(self):

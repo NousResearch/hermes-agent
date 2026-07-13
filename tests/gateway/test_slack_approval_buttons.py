@@ -503,8 +503,8 @@ class TestSlackThreadContext:
         PagerDuty, Datadog, GitHub bot, etc.) used to be reduced to just the
         ``text`` field — typically only the alert title — which dropped the
         URL/button payload that makes the alert useful to an agent replying
-        in the thread. The fetched context must now include serialized
-        Block Kit content so URLs and section text survive."""
+        in the thread. The fetched context must now include bounded display
+        text and actionable URLs so section text and button URLs survive."""
         adapter = _make_adapter()
         mock_client = adapter._team_clients["T1"]
         mock_client.conversations_replies = AsyncMock(return_value={
@@ -599,7 +599,44 @@ class TestSlackThreadContext:
         assert "https://example.example/build/9" in context
 
     @pytest.mark.asyncio
-    async def test_fetch_thread_context_excludes_self_bot_replies(self):
+    async def test_fetch_thread_parent_text_surfaces_block_urls(self):
+        """Cold-cache _fetch_thread_parent_text must use the same renderer as
+        _fetch_thread_context so a bot-posted parent with a URL only in
+        ``blocks`` surfaces it in reply_to_text, not just in thread context."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1000.0",
+                    "bot_id": "B_ALERT",
+                    "subtype": "bot_message",
+                    "username": "alertbot",
+                    "text": "Incident triggered",
+                    "blocks": [
+                        {
+                            "type": "actions",
+                            "elements": [
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "View incident"},
+                                    "url": "https://example.example/incident/42",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ]
+        })
+
+        text = await adapter._fetch_thread_parent_text(
+            channel_id="C1",
+            thread_ts="1000.0",
+            team_id="T1",
+        )
+
+        assert "Incident triggered" in text
+        assert "https://example.example/incident/42" in text
         """Parent (non-self bot) is kept, self-bot child replies are dropped,
         user replies are kept."""
         adapter = _make_adapter()

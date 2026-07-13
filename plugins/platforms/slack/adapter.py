@@ -3728,6 +3728,48 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Thread context fetching -----
 
+    @staticmethod
+    def _render_message_text(msg: dict, bot_uid: str = "") -> str:
+        """Return bounded display text for a Slack message, surfacing Block Kit content.
+
+        Starts with ``text``, strips bot mentions, then appends rich-text
+        content and actionable URLs from ``blocks`` when present.  Unlike
+        :func:`_serialize_slack_blocks_for_agent` (which can emit up to
+        6 000 chars of JSON per message), this helper produces only the
+        readable text and URL list needed by thread-context and parent-
+        text rendering — bounded by what the blocks actually contain,
+        not a JSON dump.
+        """
+        msg_text = (msg.get("text") or "").strip()
+        if bot_uid:
+            msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+
+        blocks = msg.get("blocks")
+        if not blocks:
+            return msg_text
+
+        extras: list[str] = []
+        rich_text = _extract_text_from_slack_blocks(blocks).strip()
+        if rich_text and rich_text not in msg_text:
+            extras.append(rich_text)
+        for block in blocks:
+            block_type = (block or {}).get("type", "")
+            if block_type in ("section", "header", "context"):
+                text_obj = block.get("text") or {}
+                if isinstance(text_obj, dict):
+                    section_text = (text_obj.get("text") or "").strip()
+                    if section_text and section_text not in msg_text and all(section_text not in e for e in extras):
+                        extras.append(section_text)
+        urls = _extract_urls_from_slack_blocks(blocks)
+        new_urls = [u for u in urls if u not in msg_text and all(u not in e for e in extras)]
+        if new_urls:
+            extras.append("URLs: " + ", ".join(new_urls))
+        if extras:
+            addendum = "\n".join(extras)
+            msg_text = (msg_text + "\n" + addendum).strip() if msg_text else addendum
+
+        return msg_text
+
     async def _fetch_thread_context(
         self,
         channel_id: str,
@@ -3830,38 +3872,10 @@ class SlackAdapter(BasePlatformAdapter):
                 ):
                     continue
 
-                msg_text = msg.get("text", "").strip()
-
-                # Surface Block Kit content (button URLs, section mrkdwn) so
-                # bot-posted alerts (Honeycomb, PagerDuty, Datadog, GitHub
-                # bot, etc.) aren't reduced to just the title in ``text``.
-                # Many such alerts put nothing useful in ``text`` and put
-                # the URL / actionable content in ``blocks``. Without this,
-                # an agent replying in the thread can't see what the alert
-                # is actually about.
-                blocks = msg.get("blocks")
-                if blocks:
-                    extras: list[str] = []
-                    rich_text = _extract_text_from_slack_blocks(blocks).strip()
-                    if rich_text and rich_text not in msg_text:
-                        extras.append(rich_text)
-                    block_payload = _serialize_slack_blocks_for_agent(blocks).strip()
-                    if block_payload and block_payload not in msg_text:
-                        extras.append(block_payload)
-                    urls = _extract_urls_from_slack_blocks(blocks)
-                    new_urls = [u for u in urls if u not in msg_text and all(u not in e for e in extras)]
-                    if new_urls:
-                        extras.append("URLs: " + ", ".join(new_urls))
-                    if extras:
-                        addendum = "\n".join(extras)
-                        msg_text = (msg_text + "\n" + addendum).strip() if msg_text else addendum
+                msg_text = self._render_message_text(msg, bot_uid=bot_uid)
 
                 if not msg_text:
                     continue
-
-                # Strip bot mentions from context messages
-                if bot_uid:
-                    msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
 
                 prefix = "[thread parent] " if is_parent else ""
                 display_user = msg_user or "unknown"
@@ -3958,9 +3972,7 @@ class SlackAdapter(BasePlatformAdapter):
             if parent.get("ts", "") != thread_ts:
                 return ""
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            text = (parent.get("text") or "").strip()
-            if bot_uid:
-                text = text.replace(f"<@{bot_uid}>", "").strip()
+            text = self._render_message_text(parent, bot_uid=bot_uid or "")
             return text
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)

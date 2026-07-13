@@ -343,6 +343,167 @@ REFLECT_SCHEMA = {
 
 
 # ---------------------------------------------------------------------------
+# Mental Model tool schemas
+# ---------------------------------------------------------------------------
+
+LIST_MENTAL_MODELS_SCHEMA = {
+    "name": "hindsight_list_mental_models",
+    "description": (
+        "List all mental models in the memory bank. Mental models are cached "
+        "reflections on queries that are periodically refreshed. This shows their "
+        "names, current content, freshness, and trigger configuration."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of tags to filter mental models by (logical AND).",
+            },
+        },
+        "required": [],
+    },
+}
+
+GET_MENTAL_MODEL_SCHEMA = {
+    "name": "hindsight_get_mental_model",
+    "description": (
+        "Get a specific mental model by its ID. Returns the full mental model "
+        "including its name, source query, current content, tags, trigger settings, "
+        "and freshness status (is_stale). Use the ID from list_mental_models."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "mental_model_id": {
+                "type": "string",
+                "description": "The ID of the mental model to retrieve.",
+            },
+        },
+        "required": ["mental_model_id"],
+    },
+}
+
+CREATE_MENTAL_MODEL_SCHEMA = {
+    "name": "hindsight_create_mental_model",
+    "description": (
+        "Create a new mental model. A mental model is a cached reflection that "
+        "Hindsight periodically refreshes. It takes a source_query (the question to "
+        "reason about), an optional name, tags for scoped visibility, and trigger "
+        "settings to control how often and when it refreshes. This is useful for "
+        "maintaining up-to-date synthesized views of evolving memory content — e.g., "
+        '"What do I know about project X so far?" that refreshes as new facts arrive.'
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Human-readable name for the mental model (e.g., 'Project X status', 'User preferences summary').",
+            },
+            "source_query": {
+                "type": "string",
+                "description": "The query/question to run against memories to generate the mental model content. This is the core reflection prompt — e.g., 'Summarize all known facts about the DICOM project'.",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional tags for scoped visibility. These filter which memories are considered during reflection.",
+            },
+            "max_tokens": {
+                "type": "integer",
+                "description": "Maximum tokens for the generated content. Default 2048, range 256-8192.",
+            },
+            "trigger": {
+                "type": "object",
+                "description": "Optional trigger configuration controlling how the mental model refreshes. Keys: mode (string: 'full' regenerates from scratch, 'delta' does surgical edits), refresh_after_consolidation (boolean: refresh after new observations are consolidated), fact_types (array of strings: 'world', 'experience', 'observation' to limit which fact types to consider), exclude_mental_models (boolean: skip other mental models during reflection), tags_match (string: 'any' or 'all' for tag matching behavior).",
+            },
+        },
+        "required": ["name", "source_query"],
+    },
+}
+
+UPDATE_MENTAL_MODEL_SCHEMA = {
+    "name": "hindsight_update_mental_model",
+    "description": (
+        "Update a mental model's metadata. You can change the name, source query, "
+        "tags, max_tokens, or trigger configuration. Changing source_query or "
+        "trigger will cause the next refresh to use the new settings."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "mental_model_id": {
+                "type": "string",
+                "description": "The ID of the mental model to update.",
+            },
+            "name": {
+                "type": "string",
+                "description": "New name for the mental model.",
+            },
+            "source_query": {
+                "type": "string",
+                "description": "New source query to run for generating content.",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "New list of tags for scoped visibility.",
+            },
+            "max_tokens": {
+                "type": "integer",
+                "description": "New maximum tokens for generated content (256-8192).",
+            },
+            "trigger": {
+                "type": "object",
+                "description": "New trigger configuration. Keys: mode ('full' or 'delta'), refresh_after_consolidation (boolean), fact_types (array of 'world'/'experience'/'observation'), exclude_mental_models (boolean), tags_match ('any' or 'all').",
+            },
+        },
+        "required": ["mental_model_id"],
+    },
+}
+
+REFRESH_MENTAL_MODEL_SCHEMA = {
+    "name": "hindsight_refresh_mental_model",
+    "description": (
+        "Manually trigger a refresh of a mental model. This re-runs the source "
+        "query against current memories and updates the stored content. Use this "
+        "when you know new information has been retained and you want the mental "
+        "model to reflect the latest state."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "mental_model_id": {
+                "type": "string",
+                "description": "The ID of the mental model to refresh.",
+            },
+        },
+        "required": ["mental_model_id"],
+    },
+}
+
+DELETE_MENTAL_MODEL_SCHEMA = {
+    "name": "hindsight_delete_mental_model",
+    "description": (
+        "Delete a mental model by its ID. This permanently removes the cached "
+        "reflection and its refresh schedule. Use the ID from list_mental_models."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "mental_model_id": {
+                "type": "string",
+                "description": "The ID of the mental model to delete.",
+            },
+        },
+        "required": ["mental_model_id"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
@@ -1698,7 +1859,17 @@ class HindsightMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
             return []
-        return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
+        return [
+            RETAIN_SCHEMA,
+            RECALL_SCHEMA,
+            REFLECT_SCHEMA,
+            LIST_MENTAL_MODELS_SCHEMA,
+            GET_MENTAL_MODEL_SCHEMA,
+            CREATE_MENTAL_MODEL_SCHEMA,
+            UPDATE_MENTAL_MODEL_SCHEMA,
+            REFRESH_MENTAL_MODEL_SCHEMA,
+            DELETE_MENTAL_MODEL_SCHEMA,
+        ]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if tool_name == "hindsight_retain":
@@ -1770,6 +1941,162 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.warning("hindsight_reflect failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to reflect: {e}")
+
+        # ---------------------------------------------------------------------------
+        # Mental Model tools
+        # ---------------------------------------------------------------------------
+
+        elif tool_name == "hindsight_list_mental_models":
+            tags = args.get("tags")
+            try:
+                from hindsight_client_api.models import mental_model_trigger_input
+                # Use the low-level async API via client.mental_models
+                resp = self._run_hindsight_operation(
+                    lambda c: c.mental_models.list_mental_models(self._bank_id, tags=tags or None)
+                )
+                num_models = len(resp.items) if resp.items else 0
+                logger.debug("hindsight_list_mental_models: %d results", num_models)
+                if not resp.items:
+                    return json.dumps({"result": "No mental models found."})
+                lines = []
+                for mm in resp.items:
+                    lines.append(
+                        f"- **{mm.name}** (id: {mm.id}, stale: {mm.is_stale}, "
+                        f"last refreshed: {mm.last_refreshed_at or 'never'})"
+                    )
+                    if mm.content:
+                        content_preview = mm.content[:200] + "..." if len(mm.content) > 200 else mm.content
+                        lines.append(f"  Content: {content_preview}")
+                return json.dumps({"result": "\n".join(lines)})
+            except Exception as e:
+                logger.warning("hindsight_list_mental_models failed: %s", e, exc_info=True)
+                return tool_error(f"Failed to list mental models: {e}")
+
+        elif tool_name == "hindsight_get_mental_model":
+            mental_model_id = args.get("mental_model_id", "")
+            if not mental_model_id:
+                return tool_error("Missing required parameter: mental_model_id")
+            try:
+                resp = self._run_hindsight_operation(
+                    lambda c: c.mental_models.get_mental_model(self._bank_id, mental_model_id)
+                )
+                result = {
+                    "id": resp.id,
+                    "name": resp.name,
+                    "source_query": resp.source_query,
+                    "content": resp.content or "No content yet.",
+                    "tags": resp.tags,
+                    "max_tokens": resp.max_tokens,
+                    "is_stale": resp.is_stale,
+                    "last_refreshed_at": resp.last_refreshed_at,
+                    "created_at": resp.created_at,
+                }
+                if resp.trigger:
+                    result["trigger"] = resp.trigger.to_dict() if hasattr(resp.trigger, 'to_dict') else resp.trigger
+                return json.dumps({"result": json.dumps(result, default=str)})
+            except Exception as e:
+                logger.warning("hindsight_get_mental_model failed: %s", e, exc_info=True)
+                return tool_error(f"Failed to get mental model: {e}")
+
+        elif tool_name == "hindsight_create_mental_model":
+            name = args.get("name", "")
+            source_query = args.get("source_query", "")
+            if not name:
+                return tool_error("Missing required parameter: name")
+            if not source_query:
+                return tool_error("Missing required parameter: source_query")
+            tags = args.get("tags")
+            max_tokens = args.get("max_tokens")
+            trigger = args.get("trigger")
+            try:
+                from hindsight_client_api.models import create_mental_model_request, mental_model_trigger_input
+                trigger_obj = None
+                if trigger:
+                    trigger_obj = mental_model_trigger_input.MentalModelTriggerInput(**trigger)
+                request_obj = create_mental_model_request.CreateMentalModelRequest(
+                    name=name,
+                    source_query=source_query,
+                    tags=tags or None,
+                    max_tokens=max_tokens,
+                    trigger=trigger_obj,
+                )
+                resp = self._run_hindsight_operation(
+                    lambda c: c.mental_models.create_mental_model(self._bank_id, request_obj)
+                )
+                return json.dumps({
+                    "result": (
+                        f"Mental model '{name}' created. "
+                        f"ID: {resp.mental_model_id or 'pending'}, "
+                        f"Operation ID: {resp.operation_id}"
+                    )
+                })
+            except Exception as e:
+                logger.warning("hindsight_create_mental_model failed: %s", e, exc_info=True)
+                return tool_error(f"Failed to create mental model: {e}")
+
+        elif tool_name == "hindsight_update_mental_model":
+            mental_model_id = args.get("mental_model_id", "")
+            if not mental_model_id:
+                return tool_error("Missing required parameter: mental_model_id")
+            name = args.get("name")
+            source_query = args.get("source_query")
+            tags = args.get("tags")
+            max_tokens = args.get("max_tokens")
+            trigger = args.get("trigger")
+            try:
+                from hindsight_client_api.models import update_mental_model_request, mental_model_trigger_input
+                trigger_obj = None
+                if trigger:
+                    trigger_obj = mental_model_trigger_input.MentalModelTriggerInput(**trigger)
+                request_obj = update_mental_model_request.UpdateMentalModelRequest(
+                    name=name,
+                    source_query=source_query,
+                    tags=tags,
+                    max_tokens=max_tokens,
+                    trigger=trigger_obj,
+                )
+                resp = self._run_hindsight_operation(
+                    lambda c: c.mental_models.update_mental_model(self._bank_id, mental_model_id, request_obj)
+                )
+                return json.dumps({
+                    "result": f"Mental model '{resp.id}' updated successfully. Name: {resp.name}"
+                })
+            except Exception as e:
+                logger.warning("hindsight_update_mental_model failed: %s", e, exc_info=True)
+                return tool_error(f"Failed to update mental model: {e}")
+
+        elif tool_name == "hindsight_refresh_mental_model":
+            mental_model_id = args.get("mental_model_id", "")
+            if not mental_model_id:
+                return tool_error("Missing required parameter: mental_model_id")
+            try:
+                resp = self._run_hindsight_operation(
+                    lambda c: c.mental_models.refresh_mental_model(self._bank_id, mental_model_id)
+                )
+                return json.dumps({
+                    "result": (
+                        f"Mental model '{mental_model_id}' refresh submitted. "
+                        f"Operation ID: {resp.operation_id}"
+                    )
+                })
+            except Exception as e:
+                logger.warning("hindsight_refresh_mental_model failed: %s", e, exc_info=True)
+                return tool_error(f"Failed to refresh mental model: {e}")
+
+        elif tool_name == "hindsight_delete_mental_model":
+            mental_model_id = args.get("mental_model_id", "")
+            if not mental_model_id:
+                return tool_error("Missing required parameter: mental_model_id")
+            try:
+                self._run_hindsight_operation(
+                    lambda c: c.mental_models.delete_mental_model(self._bank_id, mental_model_id)
+                )
+                return json.dumps({
+                    "result": f"Mental model '{mental_model_id}' deleted successfully."
+                })
+            except Exception as e:
+                logger.warning("hindsight_delete_mental_model failed: %s", e, exc_info=True)
+                return tool_error(f"Failed to delete mental model: {e}")
 
         return tool_error(f"Unknown tool: {tool_name}")
 

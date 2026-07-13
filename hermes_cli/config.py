@@ -5106,7 +5106,8 @@ def get_custom_provider_context_length(
     """Look up a per-model ``context_length`` override from ``custom_providers``.
 
     Matches any entry whose ``base_url`` equals ``base_url`` (trailing-slash
-    insensitive) and returns ``custom_providers[i].models.<model>.context_length``
+    and case insensitive, mirroring :func:`get_custom_provider_tls_settings`)
+    and returns ``custom_providers[i].models.<model>.context_length``
     if present and valid.  Returns ``None`` when no override applies.
 
     This is the single source of truth for custom-provider context overrides,
@@ -5134,14 +5135,14 @@ def get_custom_provider_context_length(
     if not isinstance(custom_providers, list):
         return None
 
-    target_url = (base_url or "").rstrip("/")
+    target_url = (base_url or "").rstrip("/").lower()
     if not target_url:
         return None
 
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
-        entry_url = (entry.get("base_url") or "").rstrip("/")
+        entry_url = (entry.get("base_url") or "").rstrip("/").lower()
         if not entry_url or entry_url != target_url:
             continue
         models = entry.get("models")

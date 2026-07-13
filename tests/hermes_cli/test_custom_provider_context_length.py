@@ -55,6 +55,24 @@ class TestGetCustomProviderContextLength:
             == 500_000
         )
 
+    def test_matches_case_insensitively(self):
+        # A config entry written with a mixed-case host must still match a
+        # lowercased runtime base_url — parity with get_custom_provider_tls_settings
+        # and get_custom_provider_extra_headers, which both lowercase before compare.
+        custom = [
+            {
+                "name": "my-endpoint",
+                "base_url": "https://Ollama.Example.com/v1",
+                "models": {"llama3": {"context_length": 32768}},
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "llama3", "https://ollama.example.com/v1", custom
+            )
+            == 32768
+        )
+
     def test_returns_none_when_url_does_not_match(self):
         custom = [
             {

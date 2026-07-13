@@ -1,10 +1,25 @@
 """
 Finetune adapter-routing plugin.
 
-Registers ``llm_request`` middleware that routes prompts to the best
-fine-tuned LoRA adapter based on cosine similarity with cluster centroids,
-injecting the adapter as a per-request ``extra_body.lora_adapters`` entry
-for local llama.cpp endpoints.
+Registers ``llm_request`` middleware that routes prompts against cluster
+centroids and sets per-request LoRA scales for the adapters the managed
+llama-server has PRELOADED (via ``--lora`` at startup).
+
+llama.cpp cannot load an arbitrary adapter path per request. Its real
+per-request API — a llama.cpp server extension field accepted through the
+OpenAI-compatible endpoint — is ``"lora": [{"id": N, "scale": s}]``, where
+``id`` is the positional index of a ``--lora`` flag in the server command.
+So the middleware only activates when BOTH hold:
+
+  - ``finetune.routing.enabled`` is true in config, AND
+  - ``manage.py redeploy`` has written a serving manifest
+    (``<finetune-dir>/serving.json``) describing the server it launched
+    and the adapters that server preloaded.
+
+If the routed cluster matches a served adapter, that adapter gets scale
+1.0. If the prompt routes to a cluster that is NOT served (or to no
+cluster at all), every served adapter gets scale 0.0 — off-domain prompts
+deliberately fall back to the base model.
 
 The routing decision is carried entirely on the request payload the
 middleware returns — no environment variables or other process-global
@@ -17,10 +32,12 @@ This plugin ships inside the mlops/finetune optional skill
 (hermes_cli/plugins.py) loads it via this ``register(ctx)`` entry point.
 """
 
+import json
 import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger("hermes.finetune.routing")
 
@@ -28,8 +45,15 @@ logger = logging.getLogger("hermes.finetune.routing")
 # re-attempt (and re-log) on every request.
 _router = None
 _router_failed = False
+# The skill's `common` module (paths), captured alongside the router import.
+_common_mod = None
+# Serving manifest cache, invalidated by mtime so promotions/redeploys in
+# other processes are picked up without restarting the session.
+_manifest_cache: Dict[str, Any] = {"mtime_ns": None, "data": None}
 
-_LOCAL_INDICATORS = ("localhost", "127.0.0.1", "0.0.0.0")
+# Hosts that all mean "this machine" — a request to any of them may be
+# served by a llama-server bound to any other.
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 
 
 def _find_scripts_dir() -> Optional[Path]:
@@ -53,7 +77,7 @@ def _find_scripts_dir() -> Optional[Path]:
 
 
 def _get_router():
-    global _router, _router_failed
+    global _router, _router_failed, _common_mod
     if _router is None and not _router_failed:
         try:
             scripts_dir = _find_scripts_dir()
@@ -75,6 +99,7 @@ def _get_router():
             if inserted:
                 sys.path.insert(0, scripts_path)
             try:
+                import common as common_mod
                 from route import AdapterRouter
             finally:
                 if inserted:
@@ -83,10 +108,67 @@ def _get_router():
                     except ValueError:
                         pass
             _router = AdapterRouter()
+            _common_mod = common_mod
         except Exception as e:
             logger.warning("Finetune routing disabled — router init failed: %s", e)
             _router_failed = True
     return _router
+
+
+def _serving_manifest_path() -> Optional[Path]:
+    if _common_mod is None:
+        return None
+    return Path(_common_mod.FINETUNE_DIR) / "serving.json"
+
+
+def _load_serving_manifest() -> Optional[Dict[str, Any]]:
+    """Load the manifest manage.py redeploy writes, cached by mtime.
+
+    Returns None when no manifest exists — i.e. no server we manage is
+    known to be running — which deactivates the middleware entirely.
+    """
+    path = _serving_manifest_path()
+    if path is None:
+        return None
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        _manifest_cache["mtime_ns"] = None
+        _manifest_cache["data"] = None
+        return None
+    if _manifest_cache["mtime_ns"] != mtime_ns:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        _manifest_cache["mtime_ns"] = mtime_ns
+        _manifest_cache["data"] = data if isinstance(data, dict) else None
+    return _manifest_cache["data"]
+
+
+def _url_host(url: str) -> Optional[str]:
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return None
+    return host.lower() if host else None
+
+
+def _host_matches_serving(base_url: str, health_url: str) -> bool:
+    """Route only when the request targets the server the manifest describes.
+
+    Compares parsed URL hosts — a substring test like `"localhost" in url`
+    would match "notlocalhost.example.com" and leak local adapter routing
+    to remote APIs. Loopback aliases (localhost/127.0.0.1/::1/0.0.0.0) are
+    treated as equivalent. Anything unparseable fails closed.
+    """
+    request_host = _url_host(base_url or "")
+    serving_host = _url_host(health_url or "")
+    if not request_host or not serving_host:
+        return False
+    if request_host == serving_host:
+        return True
+    return request_host in _LOOPBACK_HOSTS and serving_host in _LOOPBACK_HOSTS
 
 
 def _last_user_message(messages: List[Any]) -> str:
@@ -107,23 +189,34 @@ def _last_user_message(messages: List[Any]) -> str:
 
 
 def finetune_llm_request_middleware(**kwargs) -> Optional[Dict[str, Any]]:
-    """``llm_request`` middleware: inject the routed LoRA adapter.
+    """``llm_request`` middleware: set per-request LoRA scales.
 
-    Returns ``{"request": <rewritten kwargs>}`` when an adapter matches,
-    or ``None`` to leave the request untouched.
+    Returns ``{"request": <rewritten kwargs>}`` with
+    ``extra_body["lora"] = [{"id": N, "scale": s}]`` (the llama.cpp server
+    extension referencing adapters preloaded via ``--lora``), or ``None``
+    to leave the request untouched.
     """
     request = kwargs.get("request")
     if not isinstance(request, dict):
         return None
 
-    # Only route for local endpoints — remote providers can't load a LoRA
-    # from a local path, and llama.cpp is what honors lora_adapters.
-    base_url = (kwargs.get("base_url") or "").lower()
-    if not any(ind in base_url for ind in _LOCAL_INDICATORS):
-        return None
-
     router = _get_router()
     if router is None or not router.enabled:
+        return None
+
+    # Only act when manage.py has actually deployed a server with adapters.
+    manifest = _load_serving_manifest()
+    if not manifest:
+        return None
+    served = [
+        a for a in (manifest.get("adapters") or [])
+        if isinstance(a, dict) and isinstance(a.get("id"), int)
+    ]
+    if not served:
+        return None  # base-model-only deploy — nothing to scale
+
+    health_url = str((manifest.get("server") or {}).get("health_url") or "")
+    if not _host_matches_serving(kwargs.get("base_url") or "", health_url):
         return None
 
     user_message = _last_user_message(request.get("messages"))
@@ -137,23 +230,30 @@ def finetune_llm_request_middleware(**kwargs) -> Optional[Dict[str, Any]]:
         logger.debug("Routing failed: %s", e)
         return None
 
-    adapter_path = result.get("adapter_path")
-    if not adapter_path:
-        return None
+    routed_cluster = result.get("cluster_id")
+    lora = [
+        {"id": a["id"], "scale": 1.0 if a.get("cluster") == routed_cluster else 0.0}
+        for a in served
+    ]
+    if any(entry["scale"] == 1.0 for entry in lora):
+        reason = f"adapter cluster {routed_cluster}"
+    else:
+        # Off-domain prompt: disable every preloaded adapter so the base
+        # model answers. This is deliberate, not a failure mode.
+        reason = "off-domain prompt — served adapters scaled to 0 (base model)"
 
-    cluster_id = result.get("cluster_id", "unknown")
     logger.info(
-        "Finetune routing: %s (cluster=%s, confidence=%.3f, adapter=%s)",
-        result.get("label", ""), cluster_id,
-        result.get("confidence", 0.0), adapter_path,
+        "Finetune routing: %s (cluster=%s, confidence=%.3f, lora=%s)",
+        result.get("label", ""), routed_cluster,
+        result.get("confidence", 0.0), lora,
     )
 
     extra_body = dict(request.get("extra_body") or {})
-    extra_body["lora_adapters"] = [{"path": adapter_path, "scale": 1.0}]
+    extra_body["lora"] = lora
     return {
         "request": {**request, "extra_body": extra_body},
         "source": "finetune-routing",
-        "reason": f"adapter cluster {cluster_id}",
+        "reason": reason,
     }
 
 

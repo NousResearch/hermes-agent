@@ -56,19 +56,23 @@ class AdapterRouter:
     """Route prompts to the best fine-tuned adapter."""
 
     def __init__(self, config: dict = None):
-        cfg = config or load_config()
+        # `is not None`, not truthiness: an explicitly-empty config means
+        # "all defaults", never "silently read config from disk".
+        cfg = config if config is not None else load_config()
         clustering_cfg = cfg.get("clustering", {})
         routing_cfg = cfg.get("routing", {})
 
         self.embedding_model_name = clustering_cfg.get("embedding_model", "all-MiniLM-L6-v2")
         self.confidence_threshold = clustering_cfg.get("confidence_threshold", 0.6)
-        self.enabled = routing_cfg.get("enabled", True)
-        self.allowed_providers = routing_cfg.get("providers", ["local", "llama-cpp", "custom"])
+        # Mirrors the config default (routing.enabled: false) — routing is
+        # opt-in, and an absent key must never silently activate it.
+        self.enabled = routing_cfg.get("enabled", False)
 
         self._embed_model = None
         self._cluster_state = None
         self._registry = None
         self._centroids = None
+        self._state_mtimes = None
 
     def _get_embed_model(self):
         """Lazy-load the embedding model."""
@@ -81,17 +85,35 @@ class AdapterRouter:
             self._embed_model = SentenceTransformer(self.embedding_model_name)
         return self._embed_model
 
+    @staticmethod
+    def _current_state_mtimes() -> tuple:
+        """mtimes (ns) of the files backing router state; None for missing."""
+        def _mt(path: Path):
+            try:
+                return path.stat().st_mtime_ns
+            except OSError:
+                return None
+        return (_mt(CLUSTER_STATE_PATH), _mt(REGISTRY_PATH))
+
     def _load_state(self):
-        """Load cluster state and registry."""
-        if self._cluster_state is None:
-            self._cluster_state = load_json(CLUSTER_STATE_PATH, {})
-        if self._registry is None:
-            self._registry = load_json(REGISTRY_PATH, {"adapters": []})
-        if self._centroids is None:
-            raw = self._cluster_state.get("centroids", {})
-            self._centroids = {
-                cid: np.array(vec) for cid, vec in raw.items()
-            }
+        """Load cluster state and registry, reloading when the files change.
+
+        The router lives inside a long-running hermes session (the routing
+        plugin), while promotions/rollbacks happen in separate pipeline
+        processes. A load-once cache would keep routing to adapters that
+        were rolled back hours ago, so the cache is invalidated whenever
+        the backing files' mtimes change — one stat() per file per call.
+        """
+        mtimes = self._current_state_mtimes()
+        if self._cluster_state is not None and mtimes == self._state_mtimes:
+            return
+        self._cluster_state = load_json(CLUSTER_STATE_PATH, {})
+        self._registry = load_json(REGISTRY_PATH, {"adapters": []})
+        raw = self._cluster_state.get("centroids", {})
+        self._centroids = {
+            cid: np.array(vec) for cid, vec in raw.items()
+        }
+        self._state_mtimes = mtimes
 
     def _get_active_adapters(self) -> Dict[str, Dict]:
         """Get active adapters by cluster ID."""
@@ -203,13 +225,6 @@ class AdapterRouter:
             "fallback": True,
         }
 
-    def should_route(self, provider: str) -> bool:
-        """Check if routing should activate for this provider."""
-        if not self.enabled:
-            return False
-        return provider.lower() in [p.lower() for p in self.allowed_providers]
-
-
 PLUGIN_NAME = "finetune-routing"
 PLUGIN_SRC = Path(__file__).resolve().parent.parent / "plugin" / PLUGIN_NAME
 
@@ -306,7 +321,6 @@ def main():
         print(f"  Enabled: {router.enabled}")
         print(f"  Embedding model: {router.embedding_model_name}")
         print(f"  Confidence threshold: {router.confidence_threshold}")
-        print(f"  Allowed providers: {router.allowed_providers}")
 
         router._load_state()
         active = router._get_active_adapters()

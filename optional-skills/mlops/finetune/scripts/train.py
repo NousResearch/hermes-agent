@@ -24,10 +24,14 @@ import yaml
 
 from common import (
     ADAPTERS_DIR, CLUSTERS_DIR, CLUSTER_STATE_PATH, LOGS_DIR, MODELS_DIR,
-    ensure_dirs, load_config, load_json, save_json, logger,
+    ensure_dirs, load_config, load_json, pipeline_lock, save_json, logger,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+# How long a standalone `python train.py` waits for the pipeline lock
+# before giving up. See main() — the lock is coarse on purpose.
+LOCK_TIMEOUT = 30.0
 
 # Skill directory (where templates live)
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -396,15 +400,26 @@ def main():
 
     orchestrator = TrainingOrchestrator(config=config)
 
-    if args.cluster:
-        result = orchestrator.train(args.cluster, dry_run=args.dry_run)
-        if result:
-            print(f"Training {'config generated' if args.dry_run else 'complete'}: {result}")
-        else:
-            print(f"Training skipped or failed for {args.cluster}")
-    else:
-        trained = orchestrator.train_eligible(dry_run=args.dry_run)
-        print(f"Trained {len(trained)} clusters: {trained}")
+    # Coarse inter-process lock, taken at the CLI entry point only (never
+    # inside train()) so manage.py run_pipeline — which already holds the
+    # same lock for the whole pipeline — can call the orchestrator
+    # in-process without deadlocking. This serializes version allocation
+    # (_next_version) + adapter-dir writes against concurrent cron/manual
+    # runs; coarse on purpose (see common.pipeline_lock).
+    try:
+        with pipeline_lock(timeout=LOCK_TIMEOUT):
+            if args.cluster:
+                result = orchestrator.train(args.cluster, dry_run=args.dry_run)
+                if result:
+                    print(f"Training {'config generated' if args.dry_run else 'complete'}: {result}")
+                else:
+                    print(f"Training skipped or failed for {args.cluster}")
+            else:
+                trained = orchestrator.train_eligible(dry_run=args.dry_run)
+                print(f"Trained {len(trained)} clusters: {trained}")
+    except TimeoutError as e:
+        print(f"Another finetune operation is running — {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

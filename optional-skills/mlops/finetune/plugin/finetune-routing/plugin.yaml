@@ -1,7 +1,11 @@
 name: finetune-routing
-version: 0.1.0
+version: 0.2.0
 description: >-
-  Routes prompts on local llama.cpp endpoints to the best fine-tuned LoRA
-  adapter (cosine similarity against cluster centroids). Shipped with the
-  mlops/finetune optional skill; enable with `/finetune route enable`.
+  Routes prompts to the fine-tuned LoRA adapters preloaded by the managed
+  llama-server (cosine similarity against cluster centroids), setting
+  per-request adapter scales via llama.cpp's OpenAI-endpoint "lora" field.
+  Off-domain prompts scale every adapter to 0 (base model). Requires the
+  serving manifest written by `/finetune redeploy` and
+  finetune.routing.enabled. Shipped with the mlops/finetune optional
+  skill; enable with `/finetune route enable`.
 author: hermes-finetune skill

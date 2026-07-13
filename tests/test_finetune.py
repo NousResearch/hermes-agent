@@ -492,16 +492,12 @@ class TestRouting:
         assert result["fallback"] is True
         assert result["cluster_id"] is None
 
-    def test_should_route_local(self, tmp_hermes):
+    def test_provider_gating_removed(self, tmp_hermes):
+        # should_route/routing.providers were dead config: the middleware
+        # gates on the serving manifest's host, never a provider name list.
         from route import AdapterRouter
 
-        router = AdapterRouter(config={
-            "clustering": {"embedding_model": "test", "confidence_threshold": 0.6},
-            "routing": {"enabled": True, "providers": ["local", "llama-cpp"]},
-        })
-        assert router.should_route("local") is True
-        assert router.should_route("openrouter") is False
-        assert router.should_route("llama-cpp") is True
+        assert not hasattr(AdapterRouter, "should_route")
 
 
 # ============================================================================
@@ -536,9 +532,14 @@ class TestCommon:
     def test_load_config_defaults(self, tmp_hermes):
         import common
         config = common.load_config()
-        assert config["enabled"] is True
+        # Master gate is opt-in, mirroring DEFAULT_CONFIG["finetune"] in core.
+        assert config["enabled"] is False
         assert config["extract"]["min_turns"] == 2
+        # Legacy and positive_signals weights live in separate dicts so the
+        # legacy defaults can never bleed into the positive-signals math.
         assert config["scoring"]["weights"]["turn_signal"] == 0.4
+        assert config["scoring"]["weights_positive"]["positive_turn_signals"] == 0.35
+        assert config["scoring"]["weights_positive"]["sentiment_modifier"] == 0.05
 
 
 # ============================================================================
@@ -1353,28 +1354,17 @@ class TestRedeploy:
         result = redeploy(adapter_dir=adapter_dir)
         assert result is False  # snapshot detection should fail
 
-    def test_bench_passes_skips_smoke_baseline(self, tmp_hermes):
-        """bench_passes() should not pick a 2-case smoke test as a baseline
-        for a 243-case full bench. The case count must be within 10% of the
-        candidate's case count."""
-        from manage import bench_passes
+    def test_bench_passes_ignores_unaccepted_results(self, tmp_hermes):
+        """bench_passes() compares against the accepted-baseline pointer
+        (bench/baseline.json) only — smoke tests and rolled-back runs
+        sitting in results/ must never become the baseline, no matter how
+        recent their mtime is."""
+        from manage import bench_passes, update_baseline
         import common
         results = common.BENCH_DIR / "results"
         results.mkdir(parents=True, exist_ok=True)
 
-        # Smoke test with 2 cases
-        smoke = results / "bench_20260101_000001.json"
-        common.save_json(smoke, {
-            "metrics": {"total_cases": 2, "tool_selection_accuracy": 1.0,
-                        "tool_execution_success": 0.0, "task_completion_rate": 0.0,
-                        "format_compliance": 1.0, "no_tool_accuracy": 1.0,
-                        "hallucination_rate": 0.0, "canary_pass_rate": 0.0},
-            "cases": [],
-        })
-
-        # Real prior baseline with 243 cases
-        import time
-        time.sleep(0.05)
+        # Real accepted baseline with 243 cases
         real_baseline = results / "bench_20260101_000002.json"
         common.save_json(real_baseline, {
             "metrics": {"total_cases": 243, "tool_selection_accuracy": 0.80,
@@ -1383,8 +1373,10 @@ class TestRedeploy:
                         "hallucination_rate": 0.0, "canary_pass_rate": 0.89},
             "cases": [],
         })
+        update_baseline(real_baseline)
 
-        # Newer smoke test (most recent — would be picked by old logic)
+        # Newer smoke test — never accepted, must be ignored despite mtime
+        import time
         time.sleep(0.05)
         newer_smoke = results / "bench_20260101_000003.json"
         common.save_json(newer_smoke, {
@@ -1407,10 +1399,8 @@ class TestRedeploy:
         })
 
         passed, report = bench_passes(candidate)
-        # The report should reference the real 243-case baseline, not either smoke test
+        # The report references the accepted baseline, not the newer smoke run
         assert "bench_20260101_000002.json" in report
-        # Smoke tests should NOT appear as the baseline filename
-        assert "bench_20260101_000001.json" not in report
         assert "bench_20260101_000003.json" not in report
 
     def test_bench_passes_no_comparable_baseline(self, tmp_hermes):
@@ -1582,12 +1572,29 @@ class TestRoutingPlugin:
         mod._router_failed = False
         return router
 
-    def test_injects_adapter_for_local_endpoint(self):
+    def _install_manifest(self, mod, tmp_path, adapters=None):
+        """Point the plugin at a tmp serving manifest (what redeploy writes)."""
+        from types import SimpleNamespace
+        manifest = {
+            "updated_at": "2026-01-01T00:00:00",
+            "server": {"pid": 4242, "health_url": "http://localhost:8008/v1/models"},
+            "adapters": adapters if adapters is not None else [
+                {"id": 0, "cluster": "c-dev", "version": "v2",
+                 "gguf": "/adapters/c-dev/v2/adapter.gguf"},
+            ],
+        }
+        (tmp_path / "serving.json").write_text(json.dumps(manifest), encoding="utf-8")
+        mod._common_mod = SimpleNamespace(FINETUNE_DIR=tmp_path)
+        mod._manifest_cache = {"mtime_ns": None, "data": None}
+        return manifest
+
+    def test_injects_adapter_for_local_endpoint(self, tmp_path):
         mod = _load_routing_plugin()
         router = self._stub_router(mod, {
             "cluster_id": "c-dev", "adapter_path": "/adapters/c-dev/v2",
             "confidence": 0.91, "label": "coding",
         })
+        self._install_manifest(mod, tmp_path)
         request = {
             "model": "carnice",
             "messages": [{"role": "user", "content": "Refactor the config loader in this repo"}],
@@ -1597,14 +1604,41 @@ class TestRoutingPlugin:
         )
         assert result is not None
         rewritten = result["request"]
-        assert rewritten["extra_body"]["lora_adapters"] == [
-            {"path": "/adapters/c-dev/v2", "scale": 1.0}
-        ]
+        # llama.cpp's real per-request API: scales for PRELOADED adapters by id
+        assert rewritten["extra_body"]["lora"] == [{"id": 0, "scale": 1.0}]
         # The original request dict is not mutated in place
         assert "extra_body" not in request
         # No process-global state left behind
         assert "_HERMES_FINETUNE_ADAPTER" not in os.environ
         assert router.calls, "router.route() should have been consulted"
+
+    def test_off_domain_prompt_scales_adapters_to_zero(self, tmp_path):
+        mod = _load_routing_plugin()
+        self._stub_router(mod, {
+            "cluster_id": "c-other", "adapter_path": None,
+            "confidence": 0.4, "label": "other",
+        })
+        self._install_manifest(mod, tmp_path)
+        result = mod.finetune_llm_request_middleware(
+            request={"messages": [{"role": "user", "content": "long enough prompt here"}]},
+            base_url="http://localhost:8008/v1", model="carnice",
+        )
+        assert result is not None
+        # Off-domain: the served adapter is disabled, base model answers
+        assert result["request"]["extra_body"]["lora"] == [{"id": 0, "scale": 0.0}]
+
+    def test_no_manifest_deactivates_middleware(self, tmp_path):
+        from types import SimpleNamespace
+        mod = _load_routing_plugin()
+        router = self._stub_router(mod, {"cluster_id": "c-dev", "adapter_path": "/x"})
+        mod._common_mod = SimpleNamespace(FINETUNE_DIR=tmp_path)  # no serving.json
+        mod._manifest_cache = {"mtime_ns": None, "data": None}
+        result = mod.finetune_llm_request_middleware(
+            request={"messages": [{"role": "user", "content": "long enough prompt here"}]},
+            base_url="http://localhost:8008/v1", model="carnice",
+        )
+        assert result is None
+        assert not router.calls
 
     def test_skips_remote_endpoints(self):
         mod = _load_routing_plugin()
@@ -1649,12 +1683,13 @@ class TestRoutingPlugin:
         )
         assert result is None
 
-    def test_multipart_user_content(self):
+    def test_multipart_user_content(self, tmp_path):
         mod = _load_routing_plugin()
         router = self._stub_router(mod, {
             "cluster_id": "c-dev", "adapter_path": "/adapters/c-dev/v2",
             "confidence": 0.9, "label": "coding",
         })
+        self._install_manifest(mod, tmp_path)
         messages = [{
             "role": "user",
             "content": [

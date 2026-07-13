@@ -101,6 +101,10 @@ def verdict(comparison: Dict[str, Dict]) -> Dict[str, Any]:
     auto-passes or auto-fails the run. Runs whose metrics come from
     trainer_state.json (eval_loss/perplexity only) are gated on the
     loss/perplexity regression checks alone.
+
+    If NO gate metric is shared at all, the verdict is an explicit FAIL:
+    an empty intersection means nothing was compared, and a gate that
+    passes on zero evidence is no gate.
     """
     checks = {}
 
@@ -136,6 +140,15 @@ def verdict(comparison: Dict[str, Dict]) -> Dict[str, Any]:
                 f"and/or baseline — check '{name}' skipped (not counted as "
                 f"pass or fail)"
             )
+
+    if not checks:
+        # all() over an empty set is vacuously True — never let that pass
+        # a run that shared zero gate metrics with its baseline.
+        print(
+            "FAIL: candidate and baseline share no gate metrics — nothing "
+            "was actually compared, failing closed."
+        )
+        return {"overall": False}
 
     checks["overall"] = all(v for k, v in checks.items() if k != "overall")
     return checks

@@ -29,11 +29,68 @@ from common import (
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+# How long a CLI invocation waits for the coarse pipeline lock (see main())
+# before exiting with "another finetune operation is running".
+LOCK_TIMEOUT = 30.0
+
 
 # ============================================================================
 # Auto-redeploy helpers (HF snapshot detection, GGUF conversion, llama-server
 # lifecycle). Used by the redeploy() orchestrator below.
 # ============================================================================
+
+def serving_manifest_path() -> Path:
+    """Resolve at call time so profile changes (HERMES_HOME) take effect."""
+    return common.FINETUNE_DIR / "serving.json"
+
+
+def write_serving_manifest(pid: int, health_url: str, adapters: List[Dict]) -> None:
+    """Record what the managed llama-server is actually serving.
+
+    The routing plugin only activates on this manifest: llama.cpp can only
+    apply per-request LoRA scales to adapters preloaded via ``--lora`` at
+    startup, so the plugin must know exactly which adapters this server
+    holds and at which positional index. ``adapters`` entries are
+    ``{"id": <--lora index>, "cluster": ..., "version": ..., "gguf": ...}``;
+    the list shape is the extension point for multi-adapter serving.
+    """
+    save_json(serving_manifest_path(), {
+        "updated_at": datetime.now().isoformat(),
+        "server": {"pid": pid, "health_url": health_url},
+        "adapters": adapters,
+    })
+
+
+def clear_serving_manifest() -> None:
+    """Remove the serving manifest — the managed server is (being) stopped
+    or in an unknown state, so nothing must route against it."""
+    try:
+        serving_manifest_path().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning("Could not remove serving manifest: %s", e)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except OSError:
+        return False
+    return True
+
+
+def _log_tail(log_path: Optional[Path], limit: int = 2000) -> str:
+    if not log_path:
+        return ""
+    try:
+        return log_path.read_text(encoding="utf-8", errors="replace")[-limit:]
+    except OSError:
+        return ""
 
 def find_base_snapshot(base_model_id: str) -> Optional[Path]:
     """
@@ -64,6 +121,7 @@ def convert_adapter_to_gguf(
     base_snapshot: Path,
     converter: Path,
     force: bool = False,
+    timeout: int = 600,
 ) -> Path:
     """
     Convert a PEFT safetensors adapter to GGUF LoRA format using
@@ -72,7 +130,12 @@ def convert_adapter_to_gguf(
     Returns the path to the converted GGUF. If the GGUF already exists
     and force=False, returns the existing path without reconversion.
 
-    Raises RuntimeError if the conversion fails.
+    The converter writes to a temp path that is os.replace()d into place
+    only on verified success — adapter.gguf either doesn't exist or is a
+    complete artifact, never a truncated file from a killed/timed-out
+    conversion (the exists() cache check above trusts it blindly).
+
+    Raises RuntimeError if the conversion fails or times out.
     """
     output = adapter_dir / "adapter.gguf"
     if output.exists() and not force:
@@ -89,26 +152,45 @@ def convert_adapter_to_gguf(
     if not adapter_model_dir.exists():
         raise RuntimeError(f"Adapter model dir not found: {adapter_model_dir}")
 
+    tmp_output = adapter_dir / "adapter.gguf.converting"
     cmd = [
         sys.executable, str(converter),
         "--base", str(base_snapshot),
-        "--outfile", str(output),
+        "--outfile", str(tmp_output),
         str(adapter_model_dir),
     ]
     logger.info("Converting adapter to GGUF: %s", " ".join(cmd))
 
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=600,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"GGUF conversion failed (exit {result.returncode}):\n"
-            f"stdout: {result.stdout[-500:]}\n"
-            f"stderr: {result.stderr[-500:]}"
-        )
-    if not output.exists():
-        raise RuntimeError(f"Conversion succeeded but output missing: {output}")
+    try:
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"GGUF conversion timed out after {timeout}s — no partial "
+                f"adapter.gguf was left behind."
+            )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"GGUF conversion failed (exit {result.returncode}):\n"
+                f"stdout: {result.stdout[-500:]}\n"
+                f"stderr: {result.stderr[-500:]}"
+            )
+        if not tmp_output.exists():
+            raise RuntimeError(
+                f"Conversion succeeded but output missing: {tmp_output}"
+            )
+    except Exception:
+        # Any failure path: never leave a partial temp file to confuse a
+        # later run (or a human).
+        try:
+            tmp_output.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
+    os.replace(tmp_output, output)
     logger.info("GGUF written to %s", output)
     return output
 
@@ -125,11 +207,15 @@ def stop_llama_server(
     the user runs for other purposes. If the managed server is not running
     (no PID file, stale PID), that is already the desired end state.
 
-    Before signalling, the PID's /proc cmdline must mention
-    `expected_basename` (the server executable's basename). PIDs get
-    reused; a PID file left over from a dead server must never kill an
-    unrelated process. On mismatch the PID file is treated as stale and
-    just removed.
+    Before signalling, some argv entry of the PID must have
+    `expected_basename` as its EXACT basename (any position, to cover
+    interpreter/env trampolines like ``/usr/bin/env python3
+    .../llama-server``). PIDs get reused; a PID file left over from a
+    dead server must never kill an unrelated process — and a substring
+    test over the whole cmdline would match a recycled PID running e.g.
+    ``tail -f .../llama-server.log`` (whose basename
+    ``llama-server.log`` does NOT match exactly). On mismatch the PID
+    file is treated as stale and just removed.
 
     Returns True if a process was signalled, False otherwise.
     """
@@ -141,17 +227,21 @@ def stop_llama_server(
         pid = int(pid_file.read_text().strip())
 
         # Identity check: does this PID still belong to our server?
-        cmdline = ""
+        argv: List[str] = []
         try:
             raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-            cmdline = raw.replace(b"\0", b" ").decode("utf-8", errors="replace")
+            argv = [
+                a.decode("utf-8", errors="replace")
+                for a in raw.split(b"\0") if a
+            ]
         except OSError:
             pass  # process gone (or no /proc) → treated as stale below
-        if expected_basename not in cmdline:
+        exe_names = {os.path.basename(a) for a in argv}
+        if expected_basename not in exe_names:
             logger.warning(
-                "PID %d cmdline %r does not mention %r — stale PID file, "
-                "not signalling",
-                pid, cmdline.strip(), expected_basename,
+                "PID %d argv %r has no entry with basename %r — stale PID "
+                "file, not signalling",
+                pid, argv, expected_basename,
             )
             raise ProcessLookupError(f"stale pid file for {pid}")
 
@@ -176,34 +266,51 @@ def stop_llama_server(
     return stopped
 
 
-def build_server_cmd(command_template: str, lora_path: Path) -> List[str]:
+def build_server_cmd(command_template: str, lora_path: Optional[Path]) -> List[str]:
     """
     Expand a configured server command template into an argv list.
 
     `command_template` is a multi-line string with `%LORA%` as a placeholder
     for the LoRA path. If the template doesn't contain %LORA%, --lora is
-    appended automatically. Each token is expanduser'd so documented
-    `~/...` paths work (Popen does not expand `~`).
+    appended automatically. The substituted path is shlex-quoted so a path
+    with spaces stays one argv token. Each token is expanduser'd so
+    documented `~/...` paths work (Popen does not expand `~`).
+
+    `lora_path=None` builds the BASE-MODEL command: the `%LORA%` token and
+    an immediately preceding `--lora` flag are stripped (a template without
+    %LORA% is used as-is). Used when the bench gate deactivates a regressed
+    adapter that has nothing to roll back to.
     """
     template = command_template.strip()
+
+    if lora_path is None:
+        tokens = shlex.split(template)
+        cleaned: List[str] = []
+        for tok in tokens:
+            if tok == "%LORA%":
+                if cleaned and cleaned[-1] == "--lora":
+                    cleaned.pop()
+                continue
+            cleaned.append(tok)
+        return [os.path.expanduser(tok) for tok in cleaned]
+
     if "%LORA%" in template:
-        cmd_str = template.replace("%LORA%", str(lora_path))
+        cmd_str = template.replace("%LORA%", shlex.quote(str(lora_path)))
     else:
         cmd_str = f"{template} --lora {shlex.quote(str(lora_path))}"
 
-    # Collapse line continuations and split into argv
-    cmd_str = " ".join(cmd_str.split())
     return [os.path.expanduser(tok) for tok in shlex.split(cmd_str)]
 
 
 def start_llama_server(
     command_template: str,
-    lora_path: Path,
+    lora_path: Optional[Path],
     pid_file: Optional[Path] = None,
     log_path: Optional[Path] = None,
 ) -> int:
     """
-    Start llama-server in the background with the LoRA loaded.
+    Start llama-server in the background with the LoRA loaded
+    (or without any LoRA when lora_path is None).
 
     See build_server_cmd() for template semantics.
 
@@ -239,23 +346,110 @@ def start_llama_server(
     return proc.pid
 
 
-def health_check_llama_server(url: str, timeout: int = 30) -> bool:
+def health_check_llama_server(url: str, timeout: int = 30,
+                              pid: Optional[int] = None) -> bool:
     """
     Poll the llama-server health endpoint until it responds or timeout.
-    Returns True if the server is reachable, False on timeout.
+
+    When `pid` is given, the LAUNCHED process must also still be alive: a
+    pre-existing server on the same port answers the health URL happily
+    while our freshly started process died on "address already in use" —
+    that must be a failure, not a success. Returns True only if the URL
+    responds AND (when given) the pid is alive; False otherwise.
     """
     import urllib.request
     import urllib.error
 
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if pid is not None and not _pid_alive(pid):
+            return False
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if 200 <= resp.status < 300:
-                    return True
+                    return pid is None or _pid_alive(pid)
         except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, OSError):
             pass
         time.sleep(1)
+    return False
+
+
+def _resolve_server_paths(serving_cfg: Dict) -> Tuple[Path, Path]:
+    """PID file and log path for the managed server.
+
+    Predictable, per-user default paths under the finetune dir — world-
+    writable /tmp defaults are a multi-user security issue.
+    """
+    pid_setting = str(serving_cfg.get("server_pid_file", "") or "").strip()
+    pid_file = (Path(pid_setting).expanduser() if pid_setting
+                else common.FINETUNE_DIR / "llama-server.pid")
+    log_setting = str(serving_cfg.get("server_log_path", "") or "").strip()
+    log_path = (Path(log_setting).expanduser() if log_setting
+                else common.FINETUNE_DIR / "llama-server.log")
+    return pid_file, log_path
+
+
+def _stop_start_and_verify(
+    serving_cfg: Dict,
+    server_command: str,
+    lora_path: Optional[Path],
+    adapters: List[Dict],
+) -> bool:
+    """Restart the managed llama-server and verify it actually came up.
+
+    On success the serving manifest records the new server + `adapters`
+    (empty list = base model only). The manifest is cleared the moment the
+    old server is stopped, so a failed restart never leaves a manifest
+    describing a server that isn't running.
+    """
+    pid_file, log_path = _resolve_server_paths(serving_cfg)
+
+    # Validate the server executable BEFORE stopping the old server —
+    # otherwise a bad command (typo, missing binary) leaves the user with
+    # no server at all.
+    server_cmd = build_server_cmd(server_command, lora_path)
+    server_exe = server_cmd[0]
+    if not (Path(server_exe).exists() or shutil.which(server_exe)):
+        print(f"redeploy: server executable not found: {server_exe}")
+        print("          Fix finetune.serving.server_command — the running")
+        print("          server (if any) was left untouched.")
+        return False
+
+    print("redeploy: stopping existing llama-server...")
+    stop_llama_server(pid_file, expected_basename=os.path.basename(server_exe))
+    clear_serving_manifest()
+
+    what = f"LoRA {lora_path}" if lora_path else "base model (no LoRA)"
+    print(f"redeploy: starting llama-server with {what}...")
+    try:
+        pid = start_llama_server(server_command, lora_path, pid_file, log_path)
+    except (FileNotFoundError, OSError) as e:
+        print(f"redeploy: failed to start llama-server: {e}")
+        return False
+    print(f"redeploy: llama-server PID {pid}")
+
+    health_url = serving_cfg.get(
+        "health_check_url", "http://localhost:8008/v1/models"
+    )
+    health_timeout = int(serving_cfg.get("health_check_timeout", 30))
+
+    print(f"redeploy: waiting up to {health_timeout}s for {health_url}...")
+    if health_check_llama_server(health_url, health_timeout, pid=pid):
+        write_serving_manifest(pid, health_url, adapters)
+        print("redeploy: ✓ server is responsive")
+        return True
+
+    if not _pid_alive(pid):
+        print(f"redeploy: ✗ launched server (PID {pid}) exited — likely a "
+              "port conflict with a server we don't manage, or a bad flag.")
+        tail = _log_tail(log_path)
+        if tail:
+            print(f"          log tail ({log_path}):")
+            for line in tail.splitlines()[-15:]:
+                print(f"          | {line}")
+    else:
+        print(f"redeploy: ✗ server did not respond within {health_timeout}s")
+        print(f"          check {log_path} for the failure reason")
     return False
 
 
@@ -283,16 +477,21 @@ def redeploy(adapter_dir: Optional[Path] = None, force_convert: bool = False) ->
     # Resolve the adapter to deploy
     if adapter_dir is None:
         registry = AdapterRegistry()
-        active = None
-        for entry in registry.registry.get("adapters", []):
-            if entry.get("status") == "active":
-                active = entry
-                break
-        if active is None:
+        actives = [
+            e for e in registry.registry.get("adapters", [])
+            if e.get("status") == "active"
+        ]
+        if not actives:
             print("redeploy: no active adapter to deploy")
             return False
+        # Deterministic choice across clusters: the MOST RECENTLY PROMOTED
+        # active adapter is served. Single-adapter serving is the honest
+        # current model — the manifest's adapters list is the extension
+        # point for serving several at once.
+        active = max(actives, key=lambda e: str(e.get("promoted_at") or ""))
         adapter_dir = common.ADAPTERS_DIR / active["cluster_id"] / active["version"]
-        print(f"redeploy: deploying {active['cluster_id']} {active['version']}")
+        print(f"redeploy: deploying {active['cluster_id']} {active['version']} "
+              "(most recently promoted active adapter)")
     else:
         adapter_dir = Path(adapter_dir).expanduser()
 
@@ -331,7 +530,7 @@ def redeploy(adapter_dir: Optional[Path] = None, force_convert: bool = False) ->
         gguf_path = convert_adapter_to_gguf(
             adapter_dir, snapshot, converter, force=force_convert,
         )
-    except RuntimeError as e:
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
         print(f"redeploy: GGUF conversion failed: {e}")
         return False
     print(f"redeploy: GGUF ready at {gguf_path}")
@@ -344,51 +543,34 @@ def redeploy(adapter_dir: Optional[Path] = None, force_convert: bool = False) ->
         print(f"          llama-server -m <base.gguf> --lora {gguf_path} ...")
         return True  # GGUF is ready, server start was opt-out
 
-    # Predictable, per-user default paths under the finetune dir — world-
-    # writable /tmp defaults are a multi-user security issue.
-    pid_setting = str(serving_cfg.get("server_pid_file", "") or "").strip()
-    pid_file = (Path(pid_setting).expanduser() if pid_setting
-                else common.FINETUNE_DIR / "llama-server.pid")
-    log_setting = str(serving_cfg.get("server_log_path", "") or "").strip()
-    log_path = (Path(log_setting).expanduser() if log_setting
-                else common.FINETUNE_DIR / "llama-server.log")
+    # Step 4: stop → start → health check → serving manifest.
+    # id 0 = positional index of the --lora flag in the server command;
+    # single-adapter serving today, the list shape is the multi-adapter
+    # extension point.
+    adapters = [{
+        "id": 0,
+        "cluster": adapter_dir.parent.name,
+        "version": adapter_dir.name,
+        "gguf": str(gguf_path),
+    }]
+    return _stop_start_and_verify(serving_cfg, server_command, gguf_path, adapters)
 
-    # Validate the server executable BEFORE stopping the old server —
-    # otherwise a bad command (typo, missing binary) leaves the user with
-    # no server at all.
-    server_cmd = build_server_cmd(server_command, gguf_path)
-    server_exe = server_cmd[0]
-    if not (Path(server_exe).exists() or shutil.which(server_exe)):
-        print(f"redeploy: server executable not found: {server_exe}")
-        print("          Fix finetune.serving.server_command — the running")
-        print("          server (if any) was left untouched.")
+
+def redeploy_base() -> bool:
+    """Restart the managed llama-server WITHOUT any adapter.
+
+    Used by the bench gate when a regressed adapter has no previous
+    version to roll back to — the regressed adapter must never stay
+    loaded, so the server is restarted on the bare base model (the
+    template's `--lora %LORA%` segment is stripped).
+    """
+    serving_cfg = load_config().get("serving", {})
+    server_command = serving_cfg.get("server_command", "").strip()
+    if not server_command:
+        print("redeploy: no serving.server_command configured — no managed "
+              "server to restart on the base model.")
         return False
-
-    print("redeploy: stopping existing llama-server...")
-    stop_llama_server(pid_file, expected_basename=os.path.basename(server_exe))
-
-    print("redeploy: starting llama-server with new LoRA...")
-    try:
-        pid = start_llama_server(server_command, gguf_path, pid_file, log_path)
-    except (FileNotFoundError, OSError) as e:
-        print(f"redeploy: failed to start llama-server: {e}")
-        return False
-    print(f"redeploy: llama-server PID {pid}")
-
-    # Step 4: Health check
-    health_url = serving_cfg.get(
-        "health_check_url", "http://localhost:8008/v1/models"
-    )
-    health_timeout = int(serving_cfg.get("health_check_timeout", 30))
-
-    print(f"redeploy: waiting up to {health_timeout}s for {health_url}...")
-    if health_check_llama_server(health_url, health_timeout):
-        print(f"redeploy: ✓ server is responsive")
-        return True
-
-    print(f"redeploy: ✗ server did not respond within {health_timeout}s")
-    print(f"          check {log_path} for the failure reason")
-    return False
+    return _stop_start_and_verify(serving_cfg, server_command, None, [])
 
 
 class AdapterRegistry:
@@ -477,6 +659,12 @@ class AdapterRegistry:
             logger.error("Adapter not found: %s %s", cluster_id, version)
             return False
 
+        if entry.get("status") == "active":
+            # Re-promoting the active version would set rollback_target to
+            # itself, making a later rollback a no-op loop.
+            print(f"{cluster_id} {version} is already active — nothing to do.")
+            return True
+
         # Demote current active
         current = self._find_active(cluster_id)
         if current:
@@ -530,6 +718,32 @@ class AdapterRegistry:
         logger.info("Rolled back %s to %s", cluster_id, target_version)
         return True
 
+    def deactivate(self, cluster_id: str) -> bool:
+        """Deactivate the active adapter WITHOUT promoting a replacement.
+
+        The bench gate uses this when a regressing adapter is the
+        cluster's first version — there is no rollback target, but a
+        regressed adapter must never stay active (and keep being served /
+        routed to). The caller is responsible for redeploying the base
+        model afterwards.
+        """
+        current = self._find_active(cluster_id)
+        if not current:
+            logger.error("No active adapter for cluster %s", cluster_id)
+            return False
+
+        current["status"] = "deactivated"
+
+        cluster_dir = common.ADAPTERS_DIR / cluster_id
+        active_link = cluster_dir / "active"
+        if active_link.is_symlink() or active_link.exists():
+            active_link.unlink()
+
+        self._save()
+        logger.info("Deactivated %s %s (no rollback target)",
+                    cluster_id, current["version"])
+        return True
+
     def gc(self, keep_versions: int = 2):
         """
         Garbage collect old adapter versions.
@@ -561,9 +775,14 @@ class AdapterRegistry:
                     if entry.get("rollback_target"):
                         protected.add(entry["rollback_target"])
 
-            # Keep the N most recent non-protected versions.
+            # Keep the N most recent non-protected versions. keep_versions=0
+            # must keep none of them — a bare [-0:] slice is the whole list.
             candidates = [v for v in versions if v.name not in protected]
-            to_keep = protected | {v.name for v in candidates[-keep_versions:]}
+            recent = (
+                {v.name for v in candidates[-keep_versions:]}
+                if keep_versions > 0 else set()
+            )
+            to_keep = protected | recent
 
             for v_dir in versions:
                 if v_dir.name in to_keep:
@@ -634,6 +853,7 @@ class AdapterRegistry:
                     "trained": "[ ]",
                     "previous": "[-]",
                     "rolled_back": "[x]",
+                    "deactivated": "[!]",
                 }.get(a["status"], "[?]")
                 lines.append(
                     f"    {status_icon} {a['cluster_id']} {a['version']} "
@@ -728,15 +948,40 @@ def run_bench(prompt_bank: str = None) -> Optional[Path]:
     return max(new, key=lambda p: p.stat().st_mtime)
 
 
+def accepted_baseline_path() -> Path:
+    """The explicit accepted-baseline pointer for the bench gate.
+
+    Only runs that PASSED the gate (or the first-ever run) are written
+    here — never a run that regressed and was rolled back. Picking "most
+    recent bench_*.json by mtime" would let failures become the next
+    baseline, silently ratcheting quality downward.
+    """
+    return common.BENCH_DIR / "baseline.json"
+
+
+def update_baseline(candidate_path: Path) -> None:
+    """Record a bench result as the accepted baseline.
+
+    Callers must only invoke this after the gate passed (or on the
+    first-ever run). A regressed/rolled-back run must never end up here.
+    """
+    data = load_json(candidate_path)
+    save_json(accepted_baseline_path(), {
+        "accepted_at": datetime.now().isoformat(),
+        "source": candidate_path.name,
+        "metrics": data.get("metrics", {}),
+    })
+    logger.info("Accepted baseline updated from %s", candidate_path.name)
+
+
 def bench_passes(candidate_path: Path, baseline_path: Path = None) -> tuple:
     """
-    Compare a candidate bench result against a baseline.
+    Compare a candidate bench result against the ACCEPTED baseline.
 
-    Returns (passed: bool, summary: str).
-    If baseline_path is None, picks the most recent prior result whose
-    total_cases matches the candidate's. This avoids comparing a 243-case
-    full bench against a 2-case smoke test, which produces nonsense
-    "regressions" on metrics that the smoke test simply didn't measure.
+    Returns (passed: bool, summary: str). The baseline is always
+    bench/baseline.json (see accepted_baseline_path) unless an explicit
+    baseline_path is given; when no accepted baseline exists yet, the run
+    passes by definition and the caller records it as the new baseline.
     """
     from eval import compare_metrics, verdict, format_report
 
@@ -745,45 +990,15 @@ def bench_passes(candidate_path: Path, baseline_path: Path = None) -> tuple:
     candidate_cases = int(candidate_metrics.get("total_cases", 0))
 
     if baseline_path is None:
-        # Find prior result files, sort by mtime newest-first.
-        prior_files = sorted(
-            (p for p in bench_results_dir().glob("bench_*.json") if p != candidate_path),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-
-        # Filter to baselines whose total_cases matches the candidate's
-        # (within a 10% tolerance to allow for prompt-bank growth between
-        # runs). Smoke tests with 2 cases vs a 243-case full bench will
-        # never match — they get skipped.
-        def _comparable(p: Path) -> bool:
-            try:
-                m = load_json(p).get("metrics", {})
-                cases = int(m.get("total_cases", 0))
-            except Exception:
-                return False
-            if cases == 0 or candidate_cases == 0:
-                return False
-            ratio = cases / candidate_cases
-            return 0.9 <= ratio <= 1.1
-
-        comparable = [p for p in prior_files if _comparable(p)]
-        if comparable:
-            baseline_path = comparable[0]
-        elif prior_files:
-            # No comparable baseline exists — record this run as a new
-            # baseline rather than comparing against an incompatible one.
-            baseline_path = None
-
-    if baseline_path is None:
-        return True, (
-            f"No comparable baseline found "
-            f"(need a prior result with ~{candidate_cases} cases). "
-            f"Recording this run as the new baseline."
-        )
-
-    baseline_data = load_json(baseline_path)
+        baseline_path = accepted_baseline_path()
+    baseline_data = load_json(baseline_path, {}) if baseline_path.exists() else {}
     baseline_metrics = baseline_data.get("metrics", {})
+
+    if not baseline_metrics:
+        return True, (
+            "No accepted baseline yet (bench/baseline.json). "
+            "This run passes by definition and is recorded as the new baseline."
+        )
 
     comparison = compare_metrics(candidate_metrics, baseline_metrics)
     checks = verdict(comparison)
@@ -792,23 +1007,107 @@ def bench_passes(candidate_path: Path, baseline_path: Path = None) -> tuple:
         candidate_metrics, baseline_metrics, comparison, checks,
         cluster_id="(pipeline)", version="(latest)",
     )
-    # Annotate which baseline file was used so debugging is easier.
-    report = (
-        f"Baseline file: {baseline_path.name} "
-        f"(case count: {baseline_metrics.get('total_cases', '?')})\n"
-        + report
+    # Annotate which baseline was used so debugging is easier.
+    baseline_cases = int(baseline_metrics.get("total_cases", 0))
+    header = (
+        f"Baseline: {baseline_path.name} "
+        f"(accepted {baseline_data.get('accepted_at', '?')} "
+        f"from {baseline_data.get('source', '?')}, "
+        f"{baseline_cases or '?'} cases)\n"
     )
-    return passed, report
+    if candidate_cases and baseline_cases and not (
+            0.9 <= candidate_cases / baseline_cases <= 1.1):
+        header += (
+            f"WARNING: case counts differ a lot ({candidate_cases} candidate "
+            f"vs {baseline_cases} baseline) — did a smoke-test prompt bank "
+            "sneak into a gated run?\n"
+        )
+    return passed, header + report
+
+
+def apply_bench_gate(registry: "AdapterRegistry",
+                     promoted: List[Tuple[str, str]],
+                     served: Optional[Tuple[str, str]],
+                     candidate_path: Path) -> bool:
+    """Enforce the bench gate on freshly promoted (and served) adapters.
+
+    Pass → the candidate becomes the accepted baseline (bench/baseline.json).
+    Regression → the measured adapter is rolled back — or DEACTIVATED when
+    it is a first version with nothing to roll back to — and the server is
+    redeployed to match the registry (base model if no adapter remains
+    active). A regressed run NEVER updates the accepted baseline, and the
+    gate never leaves a regressed adapter serving.
+
+    Returns True iff the gate passed.
+    """
+    passed, report = bench_passes(candidate_path)
+    print(report)
+
+    if passed:
+        update_baseline(candidate_path)
+        print("\n  → BENCHMARK PASSED. Adapters remain active; this run is "
+              "now the accepted baseline.")
+        return True
+
+    # The bench only measured the served adapter. When we know which
+    # adapter that was (auto-redeploy succeeded) and several clusters
+    # were promoted, roll back ONLY the served one — the regression
+    # says nothing about the adapters that were never served.
+    if served and len(promoted) > 1:
+        to_rollback = [served]
+        print("\n  → BENCHMARK REGRESSED. Rolling back only the served adapter"
+              f" ({served[0]} {served[1]});")
+        print("    the other promoted adapters were not measured and remain"
+              " promoted.")
+    else:
+        to_rollback = promoted
+        print("\n  → BENCHMARK REGRESSED. Rolling back promoted adapters...")
+
+    for cid, version in to_rollback:
+        if registry.rollback(cid):
+            print(f"    Rolled back {cid} (was {version})")
+        elif registry.deactivate(cid):
+            print(f"    No rollback target for {cid} — deactivated {version}; "
+                  "the base model will be served")
+        else:
+            print(f"    Could not roll back or deactivate {cid} — manual "
+                  "intervention required")
+
+    # Re-serve whatever the registry now says — never leave the regressed
+    # adapter loaded.
+    if any(e.get("status") == "active"
+           for e in registry.registry.get("adapters", [])):
+        print("    Redeploying the previous adapter to match the registry...")
+        redeploy()
+    else:
+        print("    No active adapter remains — restarting llama-server on "
+              "the base model...")
+        redeploy_base()
+    return False
 
 
 def run_pipeline(dry_run: bool = False, with_bench: bool = False):
     """
     Run the full pipeline: extract → score → cluster → train → register → promote.
 
-    When with_bench=True, the bench env runs after promotion. If it regresses
-    against the most recent prior bench result, the new adapters are
-    automatically rolled back.
+    When with_bench=True, the bench env runs after promotion and redeploy.
+    If it regresses against the accepted baseline, the served adapter is
+    automatically rolled back (or deactivated, for a first version).
     """
+    if with_bench:
+        # Hard-fail BEFORE any pipeline work: the bench gate is only
+        # meaningful when it measures the newly deployed adapter.
+        gate_cfg = load_config().get("serving", {})
+        if not gate_cfg.get("auto_redeploy") or not str(
+                gate_cfg.get("server_command", "") or "").strip():
+            print("run --with-bench requires finetune.serving.auto_redeploy: true")
+            print("(and a serving.server_command). Without auto-redeploy the bench")
+            print("would measure the PREVIOUSLY served model and then gate the NEW")
+            print("adapters on that result — a meaningless gate.")
+            print("Either enable auto_redeploy in config.yaml, or run without")
+            print("--with-bench (ungated promotion) and bench after redeploying.")
+            raise SystemExit(2)
+
     from extract import SessionExtractor
     from score import QualityScorer
     from cluster import DomainClusterer
@@ -904,10 +1203,19 @@ def run_pipeline(dry_run: bool = False, with_bench: bool = False):
             served = (cid, version)
         else:
             print("  ⚠ Redeploy failed. Adapter is promoted but not yet served.")
-            print("    The bench will measure the previously-served model.")
+            if with_bench:
+                print("    Aborting the bench gate: it would measure the "
+                      "previously-served model,")
+                print("    not the new adapter. Fix serving, then run "
+                      "'/finetune redeploy' and '/finetune bench'.")
+                raise SystemExit(1)
+            print("    The bench would measure the previously-served model.")
 
     if not with_bench:
-        print("\nPipeline complete. Run '/finetune bench' to verify quality.")
+        print("\nPipeline complete. NOTE: promotion was UNGATED — no benchmark "
+              "ran on the new adapters.")
+        print("Run '/finetune bench' to verify quality, or use "
+              "'run --with-bench' for gated promotion.")
         return
 
     print(f"\n[6/{total_steps}] Running benchmark gate...")
@@ -916,36 +1224,9 @@ def run_pipeline(dry_run: bool = False, with_bench: bool = False):
         print("  → Benchmark failed to run. Adapters remain promoted; verify manually.")
         return
 
-    passed, report = bench_passes(candidate_path)
-    print(report)
-
-    if passed:
-        print("\n  → BENCHMARK PASSED. Adapters remain active.")
+    if apply_bench_gate(registry, promoted, served, candidate_path):
         print("\nPipeline complete.")
     else:
-        # The bench only measured the served adapter. When we know which
-        # adapter that was (auto-redeploy succeeded) and several clusters
-        # were promoted, roll back ONLY the served one — the regression
-        # says nothing about the adapters that were never served.
-        if served and len(promoted) > 1:
-            to_rollback = [served]
-            print("\n  → BENCHMARK REGRESSED. Rolling back only the served adapter"
-                  f" ({served[0]} {served[1]});")
-            print("    the other promoted adapters were not measured and remain"
-                  " promoted.")
-        else:
-            to_rollback = promoted
-            print("\n  → BENCHMARK REGRESSED. Rolling back promoted adapters...")
-        for cid, version in to_rollback:
-            if registry.rollback(cid):
-                print(f"    Rolled back {cid} (was {version})")
-            else:
-                print(f"    Could not rollback {cid} — manual intervention required")
-        # If we redeployed and now need to roll back, redeploy the previous
-        # adapter so the served model matches the active registry entry.
-        if serving_cfg.get("auto_redeploy"):
-            print("    Redeploying previous adapter to match registry rollback...")
-            redeploy()  # picks up whatever's now active after rollback
         print("\nPipeline complete with regression. Investigate the bench report above.")
 
 
@@ -957,31 +1238,136 @@ CRON_SCHEDULE_MAP = {
 }
 
 
-def setup_cron(schedule: str = "weekly"):
-    """Set up scheduled retraining via the Hermes cron system."""
-    cron_expr = CRON_SCHEDULE_MAP.get(schedule, schedule)
+CRON_JOB_NAME = "finetune-retrain"
 
-    prompt = (
-        "Run the finetune pipeline: extract new sessions, score quality, "
-        "update clusters, retrain eligible adapters, evaluate, and promote "
-        "if evaluation passes. Report results including adapter versions, "
-        "cluster changes, and any evaluation failures."
+
+def _import_cronjob_tool():
+    """Import the real Hermes cron API (tools.cronjob_tools.cronjob).
+
+    Works when hermes-agent is pip-installed (tools/ and cron/ are
+    installed packages) and from a repo checkout (repo root four levels
+    above scripts/). Returns None when unavailable — callers must then be
+    honest that NO job was scheduled.
+    """
+    try:
+        from tools.cronjob_tools import cronjob
+        return cronjob
+    except ImportError:
+        pass
+    try:
+        repo_root = Path(__file__).resolve().parents[4]
+    except IndexError:
+        return None
+    if (repo_root / "tools" / "cronjob_tools.py").exists():
+        sys.path.insert(0, str(repo_root))
+        try:
+            from tools.cronjob_tools import cronjob
+            return cronjob
+        except ImportError:
+            pass
+    return None
+
+
+def _cron_prompt(gated: bool) -> str:
+    """The self-contained prompt the scheduled agent session will run."""
+    if gated:
+        return (
+            "Run the finetune retraining pipeline with the benchmark gate: "
+            "execute `/finetune run --with-bench`. This extracts new "
+            "sessions, scores quality, updates clusters, retrains eligible "
+            "adapters, promotes and redeploys them, and gates the promotion "
+            "on the benchmark — regressions are rolled back automatically. "
+            "Report adapter versions, cluster changes, the bench verdict, "
+            "and any rollbacks."
+        )
+    return (
+        "Run the finetune retraining pipeline: execute `/finetune run`. "
+        "This extracts new sessions, scores quality, updates clusters, "
+        "retrains eligible adapters, and promotes them WITHOUT a benchmark "
+        "gate (serving.auto_redeploy is off, so the bench cannot measure a "
+        "newly deployed adapter). Report adapter versions and cluster "
+        "changes, and note explicitly that the promotion was ungated — the "
+        "user should run `/finetune bench` after redeploying to verify "
+        "quality."
     )
 
+
+def _print_crontab_fallback(cron_expr: str, run_args: str):
+    scripts_dir = Path(__file__).resolve().parent
+    print("To schedule retraining with plain cron instead, add to your crontab:")
+    print(f"  {cron_expr}  cd {scripts_dir} && python manage.py {run_args}")
+    if run_args == "run":
+        print("  (promotion on this schedule is UNGATED — enable "
+              "finetune.serving.auto_redeploy for a gated 'run --with-bench')")
+
+
+def setup_cron(schedule: str = "weekly") -> bool:
+    """Set up scheduled retraining via the Hermes cron system.
+
+    Creates (or updates, if it already exists) a job named
+    'finetune-retrain' through tools.cronjob_tools.cronjob — the same API
+    the cron tool uses. Never claims success it didn't achieve: when the
+    cron API is unavailable or the call fails, it says so and prints the
+    exact crontab line to add manually.
+    """
+    import json
+
+    cron_expr = CRON_SCHEDULE_MAP.get(schedule, schedule)
+    gated = bool(load_config().get("serving", {}).get("auto_redeploy"))
+    run_args = "run --with-bench" if gated else "run"
+    prompt = _cron_prompt(gated)
+
+    cronjob = _import_cronjob_tool()
+    if cronjob is None:
+        print("Hermes cron tooling is not importable from this environment — "
+              "NO job was created.")
+        _print_crontab_fallback(cron_expr, run_args)
+        return False
+
     try:
-        from tools.cronjob_tools import schedule_cronjob
-        result = schedule_cronjob(
-            prompt=prompt,
-            schedule=cron_expr,
-            name="finetune-retrain",
-        )
-        print(f"Cron job created: {result}")
-        print(f"Schedule: {schedule} ({cron_expr})")
-    except ImportError:
-        # Fall back to shell-level cron
-        print(f"Hermes cron not available. Add this to your crontab:")
-        scripts_dir = Path(__file__).resolve().parent
-        print(f"  {cron_expr}  cd {scripts_dir} && python manage.py run")
+        # Update in place when the job already exists so repeated
+        # `/finetune cron` calls don't stack duplicate jobs.
+        existing_id = None
+        listing = json.loads(cronjob(action="list"))
+        for job in listing.get("jobs", []):
+            if job.get("name") == CRON_JOB_NAME:
+                existing_id = job.get("job_id")
+                break
+
+        if existing_id:
+            result = json.loads(cronjob(
+                action="update", job_id=existing_id,
+                prompt=prompt, schedule=cron_expr,
+            ))
+        else:
+            result = json.loads(cronjob(
+                action="create", prompt=prompt, schedule=cron_expr,
+                name=CRON_JOB_NAME,
+            ))
+    except Exception as e:
+        print(f"Cron job setup failed: {e} — NO job was created.")
+        _print_crontab_fallback(cron_expr, run_args)
+        return False
+
+    if not result.get("success"):
+        print(f"Cron job setup failed: {result.get('error', 'unknown error')} "
+              "— NO job was created.")
+        _print_crontab_fallback(cron_expr, run_args)
+        return False
+
+    verb = "updated" if existing_id else "created"
+    print(f"Cron job '{CRON_JOB_NAME}' {verb}: {schedule} ({cron_expr})")
+    print(f"  Each run executes: /finetune {run_args}")
+    if not gated:
+        print("  NOTE: promotion on this schedule is UNGATED — "
+              "serving.auto_redeploy is off,")
+        print("        so the bench gate cannot measure a newly deployed "
+              "adapter. Enable")
+        print("        finetune.serving.auto_redeploy for gated promotion.")
+    message = result.get("message")
+    if message:
+        print(f"  {message}")
+    return True
 
 
 def main():
@@ -997,12 +1383,16 @@ def main():
     p_rollback = sub.add_parser("rollback", help="Roll back to previous version")
     p_rollback.add_argument("--cluster", required=True)
 
-    p_run = sub.add_parser("run", help="Run full pipeline")
+    p_run = sub.add_parser(
+        "run",
+        help="Run full pipeline (promotion is UNGATED without --with-bench)",
+    )
     p_run.add_argument("--dry-run", action="store_true")
     p_run.add_argument(
         "--with-bench", action="store_true",
-        help="Run the benchmark gate after promotion. "
-             "Auto-rollback adapters that regress vs. the most recent prior result.",
+        help="Run the benchmark gate after promotion+redeploy (requires "
+             "serving.auto_redeploy). Auto-rollback adapters that regress "
+             "vs. the accepted baseline.",
     )
 
     sub.add_parser("bench", help="Run the finetune benchmark against the active model")
@@ -1029,6 +1419,24 @@ def main():
 
     args = parser.parse_args()
 
+    # Serialize every mutating command behind the coarse pipeline lock:
+    # overlapping cron + manual invocations would otherwise race
+    # registry.json (last-writer-wins), version allocation, and the server
+    # PID file. Coarse on purpose (see common.pipeline_lock) — a second
+    # invocation fails fast with a clear message instead of corrupting
+    # state. Standalone `python train.py` takes the same lock.
+    if args.command in ("run", "promote", "rollback", "redeploy", "gc"):
+        try:
+            with common.pipeline_lock(timeout=LOCK_TIMEOUT):
+                _dispatch(args)
+        except TimeoutError as e:
+            print(f"Another finetune operation is running — {e}")
+            sys.exit(1)
+    else:
+        _dispatch(args)
+
+
+def _dispatch(args):
     if args.command == "status":
         registry = AdapterRegistry()
         print(registry.status())
@@ -1057,6 +1465,10 @@ def main():
         if result_path:
             passed, report = bench_passes(result_path)
             print(report)
+            if passed:
+                # An accepted (passing or first-ever) run becomes the new
+                # baseline; failing runs never move the ratchet.
+                update_baseline(result_path)
             print(f"\nResult saved to: {result_path}")
             sys.exit(0 if passed else 1)
         else:
@@ -1094,7 +1506,8 @@ def main():
         print("Garbage collection complete.")
 
     elif args.command == "cron":
-        setup_cron(args.schedule)
+        if not setup_cron(args.schedule):
+            sys.exit(1)
 
 
 if __name__ == "__main__":

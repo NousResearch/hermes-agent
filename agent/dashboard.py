@@ -42,7 +42,7 @@ def _collect_snapshot(session_id: str) -> Dict[str, Any]:
 
         def _scalar(sql, params=()):
             r = _q(sql, params)
-            return int(r[0][0]) if r else 0
+            return int(r[0][0] or 0) if r else 0
 
         # Session row
         sess = _q("SELECT id, source, started_at, model FROM sessions WHERE id = ?", (session_id,))
@@ -108,8 +108,8 @@ def _render_section_session(session_id: str, data: Dict[str, Any]) -> List[str]:
     cp = data.get("checkpoint", {})
     goal = (cp.get("task_goal") or "")[:40]
     phase = cp.get("current_phase") or "—"
-    budget_remaining = int(cp.get("iteration_budget_remaining", 0) or 0)
-    resume_count = int(cp.get("resume_count", 0) or 0)
+    budget_remaining = int(cp.get("iteration_budget_remaining") or 0)
+    resume_count = int(cp.get("resume_count") or 0)
 
     # budget_remaining is what's LEFT; budget_used/max = consumed
     budget_max = budget_remaining + resume_count or 50

@@ -73,6 +73,10 @@ _slash_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     default=None,
 )
 
+# Slack member IDs are stable opaque identifiers. Reject malformed owner-list
+# values so a typo cannot grant cross-channel history to an arbitrary session.
+_SLACK_MEMBER_ID_RE = re.compile(r"^[UW][A-Z0-9]{8,}$")
+
 
 @dataclass
 class _ThreadContextCache:
@@ -1452,11 +1456,40 @@ class SlackAdapter(BasePlatformAdapter):
             return team_id
         return team_id if team_id in self._team_clients else ""
 
+    def _history_cross_channel_user_ids(self) -> set[str]:
+        """Return explicit profile-local owners for cross-channel history.
+
+        This deliberately has no environment fallback. A process-global setting
+        would accidentally grant the same capability to every profile served by
+        a multiplexed gateway.
+        """
+
+        raw = self.config.extra.get("history_cross_channel_user_ids", [])
+        if isinstance(raw, str):
+            candidates = (part.strip() for part in raw.split(","))
+        elif isinstance(raw, (list, tuple, set, frozenset)):
+            candidates = (str(part).strip() for part in raw)
+        else:
+            return set()
+        return {
+            user_id
+            for user_id in candidates
+            if _SLACK_MEMBER_ID_RE.fullmatch(user_id)
+        }
+
+    def allows_agent_cross_channel_history(self, requester_user_id: object) -> bool:
+        """Whether this profile explicitly grants the actor cross-channel reads."""
+
+        user_id = str(requester_user_id or "").strip()
+        return bool(_SLACK_MEMBER_ID_RE.fullmatch(user_id)) and user_id in self._history_cross_channel_user_ids()
+
     async def read_history_for_agent(
         self,
         *,
         channel_id: str,
         expected_team_id: str,
+        active_channel_id: str = "",
+        requester_user_id: str = "",
         thread_ts: str = "",
         limit: int = 20,
         latest: str = "",
@@ -1466,11 +1499,11 @@ class SlackAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """Read bounded history with this adapter's workspace-specific client.
 
-        The model-facing ``slack`` tool is intentionally current-channel only;
-        this adapter seam owns the transport so it reuses Slack SDK proxy,
-        authentication, and proxy configuration instead of constructing a
-        second client from process-global credentials. Profile multiplexing
-        remains supported because each turn resolves its profile's adapter.
+        The model-facing ``slack`` tool is current-channel only by default. A
+        profile may name explicit Slack owners who can read another same-
+        workspace channel, never another DM. This adapter repeats that check
+        immediately before Slack SDK access so a tool-layer regression cannot
+        bypass the transport boundary.
 
         A single adapter may also be configured with several workspace tokens.
         That topology is deliberately unsupported here: without a stable
@@ -1490,6 +1523,12 @@ class SlackAdapter(BasePlatformAdapter):
         if not team_id or team_id != next(iter(self._team_clients)):
             raise SlackHistoryAccessError("workspace_mismatch")
         client = self._team_clients[team_id]
+
+        if active_channel_id and channel_id != active_channel_id and (
+            channel_id.startswith("D")
+            or not self.allows_agent_cross_channel_history(requester_user_id)
+        ):
+            raise SlackHistoryAccessError("cross_channel_not_allowed")
 
         allowed_channels = self._slack_allowed_channels()
         if (
@@ -1520,6 +1559,69 @@ class SlackAdapter(BasePlatformAdapter):
         if not isinstance(data, dict):
             raise RuntimeError("Slack returned a non-object history response")
         return dict(data)
+
+    async def list_history_channels_for_agent(
+        self,
+        *,
+        expected_team_id: str,
+        requester_user_id: str,
+        limit: int = 50,
+        cursor: str = "",
+    ) -> Dict[str, Any]:
+        """List member C/G channels for an explicitly configured history owner."""
+
+        if not self._running or not self._app:
+            raise SlackHistoryAccessError("adapter_unavailable")
+        if (
+            self._configured_workspace_count != 1
+            or len(self._team_clients) != 1
+        ):
+            raise SlackHistoryAccessError("multi_workspace_unsupported")
+        team_id = self._resolve_installation_team_id(expected_team_id)
+        if not team_id or team_id != next(iter(self._team_clients)):
+            raise SlackHistoryAccessError("workspace_mismatch")
+        if not self.allows_agent_cross_channel_history(requester_user_id):
+            raise SlackHistoryAccessError("cross_channel_not_allowed")
+
+        kwargs: Dict[str, Any] = {
+            "types": "public_channel,private_channel",
+            "exclude_archived": True,
+            "limit": max(1, min(int(limit), 50)),
+        }
+        if cursor:
+            kwargs["cursor"] = cursor
+        response = await self._team_clients[team_id].conversations_list(**kwargs)
+        data = getattr(response, "data", response)
+        if not isinstance(data, dict):
+            raise RuntimeError("Slack returned a non-object channel list response")
+        if not data.get("ok", False):
+            return dict(data)
+
+        allowed_channels = self._slack_allowed_channels()
+        channels = []
+        for raw_channel in data.get("channels", []):
+            if not isinstance(raw_channel, dict):
+                continue
+            channel_id = str(raw_channel.get("id") or "")
+            if (
+                not channel_id.startswith(("C", "G"))
+                or not bool(raw_channel.get("is_member"))
+                or (allowed_channels and channel_id not in allowed_channels)
+            ):
+                continue
+            channels.append(
+                {
+                    "id": channel_id,
+                    "name": str(raw_channel.get("name") or ""),
+                    "is_member": True,
+                    "is_private": bool(raw_channel.get("is_private")),
+                }
+            )
+        return {
+            "ok": True,
+            "channels": channels,
+            "response_metadata": dict(data.get("response_metadata") or {}),
+        }
 
     async def send(
         self,

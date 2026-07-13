@@ -93,7 +93,7 @@ These are the most commonly missed scopes.
 
 | Scope | Purpose |
 |-------|---------|
-| `groups:read` | List and get info about private channels |
+| `groups:read` | List and get info about private channels; required only for owner-only private-channel discovery |
 
 ---
 
@@ -375,6 +375,26 @@ authorization. Retrieved message text is also wrapped as untrusted external
 data so instructions inside channel history do not become agent instructions.
 The inbound turn must come directly from the local Slack adapter; Slack turns
 delivered through an upstream relay cannot borrow a local adapter credential.
+
+#### Owner-only cross-channel history
+
+The active-conversation boundary is the default for every Slack user. A profile
+owner can opt in to reading **other same-workspace channels the bot already
+belongs to**, without granting that ability to any other Slack user:
+
+```yaml
+slack:
+  history_cross_channel_user_ids:
+    - "U01ABC2DEF3" # Slack Member ID of the profile owner
+```
+
+This setting is profile-local and has no environment fallback. It permits the
+named owner to use `list_channels` and then read a listed public or private
+channel in that same workspace. It never permits cross-workspace reads,
+other-user DMs, relayed/synthetic/background turns, writes, reactions, or
+deletions. An empty, missing, or malformed list preserves the strict
+active-conversation-only behavior. The bot must be a member of every listed
+channel; private-channel discovery also requires Slack's `groups:read` scope.
 
 Slack permalinks are parsed locally; Hermes never fetches the permalink URL.
 For a reply permalink, the `thread_ts` query value selects the parent thread.

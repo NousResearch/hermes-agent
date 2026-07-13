@@ -1223,6 +1223,17 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["cron_continuable_surface"] = platform_cfg["cron_continuable_surface"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
+                if (
+                    plat == Platform.SLACK
+                    and "history_cross_channel_user_ids" in platform_cfg
+                ):
+                    # This is deliberately configuration-only. Do not add an
+                    # environment bridge: a process-global value could grant a
+                    # cross-channel capability to an unrelated multiplexed
+                    # profile.
+                    bridged["history_cross_channel_user_ids"] = platform_cfg[
+                        "history_cross_channel_user_ids"
+                    ]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
                     bridged["allowed_chats"] = platform_cfg["allowed_chats"]
                 if plat == Platform.TELEGRAM and "group_allowed_chats" in platform_cfg:

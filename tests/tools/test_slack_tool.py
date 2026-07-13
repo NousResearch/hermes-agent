@@ -61,6 +61,7 @@ def _install_live_gateway_runner(monkeypatch):
         adapters={Platform.SLACK: adapter},
         _profile_adapters={},
     )
+    runner._authorization_adapter = lambda _platform, profile="": adapter
     monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
     return runner
 
@@ -134,6 +135,123 @@ def test_other_channel_is_blocked_before_adapter_access(monkeypatch):
         "error": "Slack history reads are restricted to the active conversation.",
         "code": "channel_scope_violation",
     }
+
+
+def test_configured_owner_can_read_another_same_workspace_channel(monkeypatch):
+    mapping = {
+        "HERMES_SESSION_PLATFORM": "slack",
+        "HERMES_SESSION_CHAT_ID": CHANNEL_ID,
+        "HERMES_SESSION_SCOPE_ID": "T1",
+        "HERMES_SESSION_PROFILE": "default",
+        "HERMES_SESSION_USER_ID": "U_OWNER",
+    }
+    monkeypatch.setattr(
+        slack_tool,
+        "get_session_env",
+        lambda name, default="": mapping.get(name, default),
+    )
+    runner = _install_live_gateway_runner(monkeypatch)
+    adapter = next(iter(runner.adapters.values()))
+    adapter.allows_agent_cross_channel_history = lambda user_id: user_id == "U_OWNER"
+    calls = _reader(monkeypatch)
+
+    result = json.loads(
+        slack_tool.slack(action="fetch_history", channel=OTHER_CHANNEL_ID)
+    )
+
+    assert result["ok"] is True
+    assert calls[0]["channel_id"] == OTHER_CHANNEL_ID
+
+
+def test_cross_channel_dm_stays_blocked_for_configured_owner(monkeypatch):
+    mapping = {
+        "HERMES_SESSION_PLATFORM": "slack",
+        "HERMES_SESSION_CHAT_ID": CHANNEL_ID,
+        "HERMES_SESSION_SCOPE_ID": "T1",
+        "HERMES_SESSION_PROFILE": "default",
+        "HERMES_SESSION_USER_ID": "U_OWNER",
+    }
+    monkeypatch.setattr(
+        slack_tool,
+        "get_session_env",
+        lambda name, default="": mapping.get(name, default),
+    )
+    runner = _install_live_gateway_runner(monkeypatch)
+    adapter = next(iter(runner.adapters.values()))
+    adapter.allows_agent_cross_channel_history = lambda _user_id: True
+    monkeypatch.setattr(
+        slack_tool,
+        "_read_from_live_adapter",
+        lambda *_args, **_kwargs: pytest.fail("cross-DM reads must not reach Slack"),
+    )
+
+    result = json.loads(slack_tool.slack(action="fetch_history", channel="D999999999"))
+
+    assert result["code"] == "channel_scope_violation"
+
+
+def test_configured_owner_can_list_same_workspace_channels(monkeypatch):
+    mapping = {
+        "HERMES_SESSION_PLATFORM": "slack",
+        "HERMES_SESSION_CHAT_ID": CHANNEL_ID,
+        "HERMES_SESSION_SCOPE_ID": "T1",
+        "HERMES_SESSION_PROFILE": "default",
+        "HERMES_SESSION_USER_ID": "U_OWNER",
+    }
+    monkeypatch.setattr(
+        slack_tool,
+        "get_session_env",
+        lambda name, default="": mapping.get(name, default),
+    )
+    runner = _install_live_gateway_runner(monkeypatch)
+    adapter = next(iter(runner.adapters.values()))
+    adapter.allows_agent_cross_channel_history = lambda user_id: user_id == "U_OWNER"
+    monkeypatch.setattr(
+        slack_tool,
+        "_list_channels_from_live_adapter",
+        lambda **_kwargs: {
+            "ok": True,
+            "channels": [
+                {
+                    "id": OTHER_CHANNEL_ID,
+                    "name": "daig-todo",
+                    "is_member": True,
+                    "is_private": False,
+                }
+            ],
+            "response_metadata": {"next_cursor": ""},
+        },
+        raising=False,
+    )
+
+    result = json.loads(slack_tool.slack(action="list_channels"))
+
+    assert result["ok"] is True
+    assert result["channels"] == [
+        {"id": OTHER_CHANNEL_ID, "name": "daig-todo", "is_private": False}
+    ]
+
+
+def test_unconfigured_user_cannot_list_channels(monkeypatch):
+    mapping = {
+        "HERMES_SESSION_PLATFORM": "slack",
+        "HERMES_SESSION_CHAT_ID": CHANNEL_ID,
+        "HERMES_SESSION_SCOPE_ID": "T1",
+        "HERMES_SESSION_PROFILE": "default",
+        "HERMES_SESSION_USER_ID": "U_OTHER",
+    }
+    monkeypatch.setattr(
+        slack_tool,
+        "get_session_env",
+        lambda name, default="": mapping.get(name, default),
+    )
+    runner = _install_live_gateway_runner(monkeypatch)
+    adapter = next(iter(runner.adapters.values()))
+    adapter.allows_agent_cross_channel_history = lambda _user_id: False
+
+    result = json.loads(slack_tool.slack(action="list_channels"))
+
+    assert result["code"] == "channel_scope_violation"
 
 
 def test_current_dm_allowed_but_another_users_dm_is_blocked(monkeypatch):
@@ -535,6 +653,7 @@ def test_unknown_action_does_not_expose_write_operations():
     result = json.loads(slack_tool.slack(action="post_message"))
 
     assert result["code"] == "unknown_action"
+    assert "list_channels" in result["error"]
     assert "post" not in result["error"].lower()
 
 
@@ -803,11 +922,13 @@ async def test_adapter_read_service_reuses_single_workspace_client():
     await adapter.read_history_for_agent(
         channel_id=CHANNEL_ID,
         expected_team_id="T1",
+        active_channel_id=CHANNEL_ID,
         limit=20,
     )
     await adapter.read_history_for_agent(
         channel_id=CHANNEL_ID,
         expected_team_id="T1",
+        active_channel_id=CHANNEL_ID,
         thread_ts=THREAD_TS,
         limit=50,
         cursor="next",
@@ -1009,6 +1130,7 @@ def test_schema_is_read_only_and_current_conversation_scoped(monkeypatch):
     properties = schema["function"]["parameters"]["properties"]
 
     assert properties["action"]["enum"] == [
+        "list_channels",
         "fetch_history",
         "fetch_thread",
         "find_messages",

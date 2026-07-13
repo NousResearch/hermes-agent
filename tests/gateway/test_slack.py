@@ -69,7 +69,10 @@ import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import (  # noqa: E402
+    SlackAdapter,
+    SlackHistoryAccessError,
+)
 
 
 async def _pending_for_fake_task():
@@ -114,6 +117,62 @@ def adapter():
     # Capture events instead of processing them
     a.handle_message = AsyncMock()
     return a
+
+
+class TestAgentHistoryCrossChannelAuthorization:
+    @pytest.mark.asyncio
+    async def test_explicit_history_owner_can_read_another_channel(self, adapter):
+        client = AsyncMock()
+        client.conversations_history.return_value = {"ok": True, "messages": []}
+        adapter._team_clients = {"T1": client}
+        adapter._configured_workspace_count = 1
+        adapter.config.extra["history_cross_channel_user_ids"] = ["U12345678"]
+
+        result = await adapter.read_history_for_agent(
+            channel_id="C999999999",
+            expected_team_id="T1",
+            active_channel_id="C123456789",
+            requester_user_id="U12345678",
+        )
+
+        assert result == {"ok": True, "messages": []}
+        client.conversations_history.assert_awaited_once_with(
+            channel="C999999999", limit=20
+        )
+
+    @pytest.mark.asyncio
+    async def test_unlisted_user_is_blocked_before_cross_channel_slack_read(self, adapter):
+        client = AsyncMock()
+        adapter._team_clients = {"T1": client}
+        adapter._configured_workspace_count = 1
+        adapter.config.extra["history_cross_channel_user_ids"] = ["U12345678"]
+
+        with pytest.raises(SlackHistoryAccessError, match="cross_channel_not_allowed"):
+            await adapter.read_history_for_agent(
+                channel_id="C999999999",
+                expected_team_id="T1",
+                active_channel_id="C123456789",
+                requester_user_id="U87654321",
+            )
+
+        client.conversations_history.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_configured_owner_cannot_read_another_dm(self, adapter):
+        client = AsyncMock()
+        adapter._team_clients = {"T1": client}
+        adapter._configured_workspace_count = 1
+        adapter.config.extra["history_cross_channel_user_ids"] = ["U12345678"]
+
+        with pytest.raises(SlackHistoryAccessError, match="cross_channel_not_allowed"):
+            await adapter.read_history_for_agent(
+                channel_id="D999999999",
+                expected_team_id="T1",
+                active_channel_id="C123456789",
+                requester_user_id="U12345678",
+            )
+
+        client.conversations_history.assert_not_awaited()
 
 
 @pytest.fixture(autouse=True)

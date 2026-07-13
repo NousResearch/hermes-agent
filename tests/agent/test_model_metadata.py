@@ -522,8 +522,15 @@ class TestCodexOAuthContextLength:
             "leaked outside openai-codex provider"
         )
 
-    def test_stale_codex_cache_is_bypassed_and_live_probe_wins(self, tmp_path, monkeypatch):
-        """A stale Codex disk entry must not mask the authenticated catalogue."""
+    @pytest.mark.parametrize(
+        "stale_context,live_context",
+        [(272_000, 372_000), (372_000, 272_000)],
+        ids=("expansion", "rollback"),
+    )
+    def test_live_codex_context_replaces_stale_cache_in_both_directions(
+        self, tmp_path, monkeypatch, stale_context, live_context
+    ):
+        """Authenticated metadata must replace stale disk values in either direction."""
         from agent import model_metadata as mm
 
         cache_file = tmp_path / "context_length_cache.yaml"
@@ -534,14 +541,14 @@ class TestCodexOAuthContextLength:
         other_key = "other-model@https://api.openai.com/v1/"
         import yaml as _yaml
         cache_file.write_text(_yaml.dump({"context_lengths": {
-            stale_key: 272_000,
+            stale_key: stale_context,
             other_key: 128_000,
         }}))
 
         fake_response = MagicMock()
         fake_response.status_code = 200
         fake_response.json.return_value = {
-            "models": [{"slug": "gpt-5.6-terra", "context_window": 372_000}]
+            "models": [{"slug": "gpt-5.6-terra", "context_window": live_context}]
         }
         # Exercise real persistence here: this test verifies that a live value
         # replaces the stale on-disk entry. Failure-path tests below mock the
@@ -554,10 +561,10 @@ class TestCodexOAuthContextLength:
                 provider="openai-codex",
             )
 
-        assert ctx == 372_000
+        assert ctx == live_context
         mock_get.assert_called_once()
         remaining = _yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
-        assert remaining.get(stale_key) == 372_000
+        assert remaining.get(stale_key) == live_context
         assert remaining.get(other_key) == 128_000
 
     def test_codex_fallback_is_not_persisted(self, tmp_path, monkeypatch):

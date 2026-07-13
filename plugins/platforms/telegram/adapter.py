@@ -7328,7 +7328,7 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         event.text = self._append_observed_note(event.text, agent_note)
 
-    def _observe_unmentioned_group_message(
+    async def _observe_unmentioned_group_message(
         self,
         message: Message,
         msg_type: MessageType,
@@ -7342,7 +7342,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             event = event or self._build_message_event(message, msg_type, update_id=update_id)
             shared_source = self._telegram_group_observe_shared_source(event.source)
-            session_entry = store.get_or_create_session(shared_source)
+            session_entry = await self.resolve_session_entry(shared_source)
             entry = {
                 "role": "user",
                 "content": self._telegram_group_observe_attributed_text(event),
@@ -7523,7 +7523,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
-                self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
+                await self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
         await self._ensure_forum_commands(update.message)
 
@@ -7569,7 +7569,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
-                self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+                await self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
             return
 
         venue = getattr(msg, "venue", None)
@@ -7778,7 +7778,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if _m.caption:
                     _event.text = self._clean_bot_trigger_text(_m.caption)
                 await self._cache_observed_media(_m, _event)
-                self._observe_unmentioned_group_message(
+                await self._observe_unmentioned_group_message(
                     _m, _event.message_type, update_id=update.update_id, event=_event
                 )
             return

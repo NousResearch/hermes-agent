@@ -761,6 +761,7 @@ def _seed_cron_thread_session(
     thread_id: str,
     mirror_text: str,
     chat_name: Optional[str] = None,
+    loop=None,
 ) -> None:
     """Seed the freshly-opened cron thread's session with the brief.
 
@@ -779,6 +780,8 @@ def _seed_cron_thread_session(
     text = (mirror_text or "").strip()
     if not text:
         return
+    seed_text = f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}"
+    seeded_via_adapter = False
     try:
         from gateway.config import Platform
         from gateway.session import SessionSource
@@ -799,26 +802,49 @@ def _seed_cron_thread_session(
                     user_name="Cron",
                     thread_id=str(thread_id),
                 )
-                # Ensure the thread-keyed session row exists so the mirror has
-                # a target and the user's later reply joins the same session.
-                session_store.get_or_create_session(dest_source)
+                # Ensure the thread-keyed session row exists so the user's later
+                # reply joins the same session. Live delivery has the gateway loop;
+                # standalone callers without one retain the legacy mirror fallback.
+                if loop is not None:
+                    from agent.async_utils import safe_schedule_threadsafe
 
-        from gateway.mirror import mirror_to_session
+                    future = safe_schedule_threadsafe(
+                        adapter.resolve_session_entry(
+                            dest_source,
+                            operation=lambda entry: session_store.append_to_transcript(
+                                entry.session_id,
+                                {
+                                    "role": "user",
+                                    "content": seed_text,
+                                    "mirror": True,
+                                    "mirror_source": "cron",
+                                },
+                            ),
+                        ),
+                        loop,
+                    )
+                    if future is None:
+                        raise RuntimeError("gateway loop unavailable for cron session seed")
+                    future.result(timeout=30)
+                    seeded_via_adapter = True
 
-        # User-role + labelled prefix (see _maybe_mirror_cron_delivery): the
-        # seeded brief must not read as an assistant turn, or the user's first
-        # in-thread reply produces assistant→user→... off a phantom assistant
-        # message. Pass the seed user_id so the mirror resolves the exact
-        # thread-keyed session row we just created.
-        mirror_to_session(
-            platform_name,
-            str(chat_id),
-            f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}",
-            source_label="cron",
-            thread_id=str(thread_id),
-            user_id="system:cron",
-            role="user",
-        )
+        if not seeded_via_adapter:
+            from gateway.mirror import mirror_to_session
+
+            # User-role + labelled prefix (see _maybe_mirror_cron_delivery): the
+            # seeded brief must not read as an assistant turn, or the user's first
+            # in-thread reply produces assistant→user→... off a phantom assistant
+            # message. Pass the seed user_id so the mirror resolves the exact
+            # thread-keyed session row we just created.
+            mirror_to_session(
+                platform_name,
+                str(chat_id),
+                seed_text,
+                source_label="cron",
+                thread_id=str(thread_id),
+                user_id="system:cron",
+                role="user",
+            )
         logger.info(
             "Job '%s': opened continuable thread %s on %s:%s and seeded the brief",
             job.get("id", "?"), thread_id, platform_name, chat_id,
@@ -840,6 +866,7 @@ def _seed_cron_channel_session(
     is_dm: bool,
     user_id: Optional[str],
     chat_name: Optional[str] = None,
+    loop=None,
 ) -> bool:
     """Seed the FLAT (thread_id=None) session for an ``in_channel`` cron delivery.
 
@@ -877,6 +904,8 @@ def _seed_cron_channel_session(
     text = (mirror_text or "").strip()
     if not text:
         return False
+    seed_text = f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}"
+    seeded_via_adapter = False
     try:
         from gateway.config import Platform
         from gateway.session import SessionSource
@@ -897,21 +926,45 @@ def _seed_cron_channel_session(
                     user_id=str(user_id) if user_id else None,
                     thread_id=None,  # flat — the whole-channel/DM session
                 )
-                # Create the flat session row so the mirror has a target and the
-                # user's later plain reply joins the SAME session.
-                session_store.get_or_create_session(dest_source)
+                # Live delivery resolves and appends under one gateway boundary;
+                # standalone callers without a loop retain the mirror fallback.
+                if loop is not None:
+                    from agent.async_utils import safe_schedule_threadsafe
 
-        from gateway.mirror import mirror_to_session
+                    future = safe_schedule_threadsafe(
+                        adapter.resolve_session_entry(
+                            dest_source,
+                            operation=lambda entry: session_store.append_to_transcript(
+                                entry.session_id,
+                                {
+                                    "role": "user",
+                                    "content": seed_text,
+                                    "mirror": True,
+                                    "mirror_source": "cron",
+                                },
+                            ),
+                        ),
+                        loop,
+                    )
+                    if future is None:
+                        raise RuntimeError("gateway loop unavailable for cron session seed")
+                    future.result(timeout=30)
+                    seeded_via_adapter = True
 
-        ok = mirror_to_session(
-            platform_name,
-            str(chat_id),
-            f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}",
-            source_label="cron",
-            thread_id=None,
-            user_id=str(user_id) if user_id else None,
-            role="user",
-        )
+        if seeded_via_adapter:
+            ok = True
+        else:
+            from gateway.mirror import mirror_to_session
+
+            ok = mirror_to_session(
+                platform_name,
+                str(chat_id),
+                seed_text,
+                source_label="cron",
+                thread_id=None,
+                user_id=str(user_id) if user_id else None,
+                role="user",
+            )
         if ok:
             logger.info(
                 "Job '%s': seeded flat in_channel session on %s:%s (chat_type=%s)",
@@ -1859,6 +1912,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             job, runtime_adapter, platform_name, chat_id,
                             opened_thread_id, mirror_text,
                             chat_name=origin.get("chat_name"),
+                            loop=loop,
                         )
                         thread_seeded = True
                     # in_channel surface: CREATE + seed the flat channel/DM
@@ -1871,6 +1925,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             mirror_text, is_dm=is_dm_target,
                             user_id=origin_user_id,
                             chat_name=origin.get("chat_name"),
+                            loop=loop,
                         )
                     _maybe_mirror_cron_delivery(
                         job, platform_name, chat_id, mirror_text,

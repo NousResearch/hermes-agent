@@ -77,6 +77,40 @@ def test_no_restore_for_non_one_shot_turn():
     runner._evict_cached_agent.assert_not_called()
 
 
+def test_stop_invalidated_turn_restores_owned_moa_override():
+    """A /stop must not strand the one-shot MoA override after invalidation."""
+    runner = _make_runner()
+    key = "agent:main:telegram:dm:stop"
+    installed = {"provider": "moa", "model": "default"}
+    runner._session_model_overrides[key] = installed
+    event = _make_event(moa_disable=True, moa_restore=None)
+    event._moa_installed_override = installed
+
+    runner._restore_moa_one_shot(event, key)
+
+    assert key not in runner._session_model_overrides
+    runner._evict_cached_agent.assert_called_once_with(key)
+
+
+def test_new_replacement_override_wins_over_stale_moa_unwind():
+    """A late old finally cannot overwrite or evict replacement-session state."""
+    runner = _make_runner()
+    key = "agent:main:telegram:dm:replacement"
+    installed = {"provider": "moa", "model": "default"}
+    replacement = {"provider": "openrouter", "model": "new-model"}
+    runner._session_model_overrides[key] = replacement
+    event = _make_event(
+        moa_disable=True,
+        moa_restore={"provider": "old-provider", "model": "old-model"},
+    )
+    event._moa_installed_override = installed
+
+    runner._restore_moa_one_shot(event, key)
+
+    assert runner._session_model_overrides[key] is replacement
+    runner._evict_cached_agent.assert_not_called()
+
+
 def test_restore_runs_from_finally_even_when_turn_raises():
     """The whole point of the fix: a raising turn still reverts the override.
 

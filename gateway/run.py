@@ -1832,6 +1832,44 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
 # session from bypassing the "already running" guard during the async gap
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
+_REJECTED_EXECUTION_CLEANUP_ATTR = (
+    "_gateway_execution_rejected_pending_cleanup"
+)
+
+
+class _StampedProcessPendingHandle:
+    """Run-owned, cross-thread cancellable placeholder during construction."""
+
+    def __init__(self) -> None:
+        self._cancelled = threading.Event()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def interrupt(self, _reason: str) -> None:
+        self._cancelled.set()
+
+
+def _is_pre_execution_agent_owner(owner: Any) -> bool:
+    """Return True when no local model or proxy execution has started yet."""
+    return owner is _AGENT_PENDING_SENTINEL or isinstance(
+        owner, _StampedProcessPendingHandle
+    )
+
+
+class _StampedProcessReleaseClaim:
+    """Identity-owned adapter-drain claim bound when the stamped turn starts."""
+
+    def __init__(self) -> None:
+        self.generation: Optional[int] = None
+        self.event = asyncio.Event()
+        self.forced_shutdown_owner: Optional[Any] = None
+
+
+# Internal hand-off from _handle_message to the stamped process runner. Process
+# notifications must wait behind a foreground turn, never steer or interrupt it.
+_STAMPED_PROCESS_EVENT_BUSY = object()
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -2494,7 +2532,7 @@ def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key into its component parts.
 
     Session keys follow the format
-    ``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``.
+    ``agent:{profile}:{platform}:{chat_type}:{chat_id}[:{extra}...]``.
     Returns a dict with ``platform``, ``chat_type``, ``chat_id``, and
     optionally ``thread_id`` keys, or None if the key doesn't match.
 
@@ -2504,12 +2542,14 @@ def _parse_session_key(session_key: str) -> "dict | None":
     thread_id, so we leave ``thread_id`` out to avoid mis-routing.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    if len(parts) >= 5 and parts[0] == "agent" and parts[1]:
         result = {
             "platform": parts[2],
             "chat_type": parts[3],
             "chat_id": parts[4],
         }
+        if parts[1] != "main":
+            result["profile"] = parts[1]
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result
@@ -2914,6 +2954,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
+        self._stamped_process_running_agents: Dict[str, Any] = {}
+        self._stamped_process_release_events: Dict[
+            str, _StampedProcessReleaseClaim
+        ] = {}
+        self._running_agent_state_lock = threading.RLock()
         self._active_session_leases: Dict[str, Any] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Last successfully-resolved (non-empty) model, keyed by session. Used
@@ -2937,6 +2982,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
+        # Linearizes stamped process delivery against physical-session switches.
+        # A boundary mutation that wins this lock makes the later delivery
+        # recheck fail; a delivery that wins completes before the boundary is
+        # committed, eliminating the final check-to-send TOCTOU window.
+        self._process_delivery_boundary_locks: Dict[str, asyncio.Lock] = {}
         # Startup restore gate: while restart-interrupted sessions are being
         # auto-resumed, real inbound messages are queued instead of competing
         # with the synthetic resume turns for the same session.  The queued
@@ -4389,6 +4439,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             pending_slot[session_key] = queued_event
 
+    def _restore_dequeued_event_ahead_of_newer(
+        self,
+        session_key: str,
+        adapter: Any,
+        dequeued_event: "MessageEvent",
+    ) -> bool:
+        """Restore one exact dequeued head without overwriting newer input."""
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if pending_slot is None:
+            return False
+        queued_events = getattr(self, "_queued_events", None)
+        if queued_events is None:
+            queued_events = {}
+            self._queued_events = queued_events
+        overflow = queued_events.setdefault(session_key, [])
+        overflow[:] = [
+            event for event in overflow if event is not dequeued_event
+        ]
+        current = pending_slot.get(session_key)
+        if current is dequeued_event:
+            if not overflow:
+                queued_events.pop(session_key, None)
+            return True
+        if current is not None:
+            overflow[:] = [event for event in overflow if event is not current]
+            overflow.insert(0, current)
+        pending_slot[session_key] = dequeued_event
+        if not overflow:
+            queued_events.pop(session_key, None)
+        return True
+
     def _promote_queued_event(
         self,
         session_key: str,
@@ -5082,11 +5163,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 unavailable.clear()
 
     def _snapshot_running_agents(self) -> Dict[str, Any]:
-        return {
-            session_key: agent
-            for session_key, agent in self._running_agents.items()
-            if agent is not _AGENT_PENDING_SENTINEL
-        }
+        state_lock = getattr(self, "_running_agent_state_lock", None)
+        if state_lock is None:
+            state_lock = threading.RLock()
+            self._running_agent_state_lock = state_lock
+        with state_lock:
+            return {
+                session_key: agent
+                for session_key, agent in self._running_agents.items()
+                if not _is_pre_execution_agent_owner(agent)
+            }
 
     def _get_max_concurrent_sessions(self) -> Optional[int]:
         """Return the configured active chat session cap, if enabled."""
@@ -5231,6 +5317,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # follow-ups is far beyond any realistic conversational backlog while
     # still small enough to never threaten memory.
     _BUSY_QUEUE_MAX_PENDING = 32
+
+    def _running_agent_ownership_snapshot(
+        self, session_key: str
+    ) -> tuple[Any, Any]:
+        """Read the generic owner and stamped marker under their publication lock."""
+        state_lock = getattr(self, "_running_agent_state_lock", None)
+        if state_lock is None:
+            state_lock = threading.RLock()
+            self._running_agent_state_lock = state_lock
+        with state_lock:
+            return (
+                self._running_agents.get(session_key),
+                getattr(self, "_stamped_process_running_agents", {}).get(
+                    session_key
+                ),
+            )
+
+    def _defer_adapter_pending_drain_for_stamped_process(
+        self, session_key: str, event: MessageEvent
+    ) -> None:
+        """Give the stamped turn sole ownership of replaying a queued foreground event."""
+        adapter = self._adapter_for_source(event.source)
+        if adapter is None:
+            return
+        interrupt_event = getattr(adapter, "_active_sessions", {}).get(session_key)
+        if interrupt_event is None:
+            return
+        release_claim = getattr(self, "_stamped_process_release_events", {}).get(
+            session_key
+        )
+        if release_claim is None:
+            return
+        release_generation = release_claim.generation
+        release_event = release_claim.event
+        generations = self.__dict__.get("_session_run_generation") or {}
+        if release_generation is None or int(release_generation) != int(
+            generations.get(session_key, 0)
+        ):
+            return
+        setattr(
+            interrupt_event,
+            "_hermes_stamped_process_release_event",
+            release_event,
+        )
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         adapter = self._adapter_for_source(event.source)
@@ -5410,7 +5540,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if getattr(event, "internal", False):
             return False
 
-        running_agent = self._running_agents.get(session_key)
+        running_agent, stamped_process_agent = (
+            self._running_agent_ownership_snapshot(session_key)
+        )
+        if (
+            running_agent is not None
+            and stamped_process_agent is running_agent
+        ):
+            # Foreground input must not steer or interrupt a synthetic process
+            # notification turn. Preserve it as the next ordinary user turn,
+            # but let the synthetic owner replay it after releasing its slot.
+            self._defer_adapter_pending_drain_for_stamped_process(
+                session_key, event
+            )
+            self._queue_or_replace_pending_event(session_key, event)
+            return True
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
@@ -5701,15 +5845,78 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _maybe_update_status(force=True)
         return snapshot, timed_out
 
-    def _interrupt_running_agents(self, reason: str) -> None:
-        for session_key, agent in list(self._running_agents.items()):
-            if agent is _AGENT_PENDING_SENTINEL:
-                continue
+    def _capture_running_agents_for_forced_shutdown(
+        self, reason: str
+    ) -> list[tuple[str, Any]]:
+        """Invalidate/classify owners at one linearized shutdown boundary."""
+        state_lock = getattr(self, "_running_agent_state_lock", None)
+        if state_lock is None:
+            state_lock = threading.RLock()
+            self._running_agent_state_lock = state_lock
+        concrete_owners = []
+        pre_execution_owners = []
+        with state_lock:
+            for session_key, agent in list(self._running_agents.items()):
+                # Invalidate first while publication CAS uses this same lock.
+                # An early generic sentinel can no longer advance into
+                # _run_agent, and a stamped pending handle can no longer be
+                # replaced by a concrete local/proxy owner after this point.
+                self._invalidate_session_run_generation(
+                    session_key, reason="forced_gateway_shutdown"
+                )
+                if _is_pre_execution_agent_owner(agent):
+                    if isinstance(agent, _StampedProcessPendingHandle):
+                        try:
+                            agent.interrupt(reason)
+                            logger.debug(
+                                "Cancelled pending stamped owner for session %s during shutdown",
+                                session_key,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Failed cancelling pending stamped owner during shutdown: %s",
+                                e,
+                            )
+                    pre_execution_owners.append((session_key, agent))
+                    continue
+
+                process_agents = getattr(
+                    self, "_stamped_process_running_agents", {}
+                )
+                if process_agents.get(session_key) is agent:
+                    claim = getattr(
+                        self, "_stamped_process_release_events", {}
+                    ).get(session_key)
+                    if isinstance(claim, _StampedProcessReleaseClaim):
+                        claim.forced_shutdown_owner = agent
+                concrete_owners.append((session_key, agent))
+
+        # No model/proxy work exists for these identities. Remove them now so
+        # the post-interrupt grace loop does not wait on an owner that can only
+        # reject publication after its generation was invalidated.
+        for session_key, agent in pre_execution_owners:
+            self._release_running_agent_if_identity(session_key, agent)
+        return concrete_owners
+
+    def _interrupt_captured_running_agents(
+        self,
+        concrete_owners: list[tuple[str, Any]],
+        reason: str,
+    ) -> None:
+        """Interrupt owners captured by the forced-shutdown ownership epoch."""
+        for session_key, agent in concrete_owners:
             try:
                 agent.interrupt(reason)
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
+
+    def _interrupt_running_agents(self, reason: str) -> None:
+        """Atomically capture then immediately interrupt active owners."""
+        concrete_owners = self._capture_running_agents_for_forced_shutdown(
+            reason
+        )
+        self._interrupt_captured_running_agents(concrete_owners, reason)
 
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
@@ -6038,6 +6245,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Best-effort cleanup for temporary or cached agent instances."""
         if agent is None:
             return
+        try:
+            setattr(agent, _REJECTED_EXECUTION_CLEANUP_ATTR, False)
+        except Exception:
+            pass
         try:
             if hasattr(agent, "shutdown_memory_provider"):
                 # Pass the agent's own conversation transcript so memory
@@ -7063,6 +7274,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
+            adapter.set_session_resolver(
+                self._get_or_create_session_at_process_delivery_boundary
+            )
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
@@ -7566,13 +7780,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Make sure there's an entry in the session_store for this key. If
         # the home channel has never been used, get_or_create_session
         # creates one; switch_session then re-points it.
-        await self.async_session_store.get_or_create_session(dest_source)
+        await self._get_or_create_session_at_process_delivery_boundary(
+            dest_source, session_key
+        )
 
         # Re-bind the destination key to the CLI session_id. switch_session
         # ends the prior session in SQLite and reopens the CLI session under
         # the new key. The CLI's transcript becomes the active one for the
         # gateway from this moment on.
-        switched = await self.async_session_store.switch_session(session_key, cli_session_id)
+        switched = await self._switch_session_at_process_delivery_boundary(
+            session_key, cli_session_id
+        )
         if switched is None:
             raise RuntimeError(
                 f"could not switch session key {session_key} → {cli_session_id}"
@@ -7899,6 +8117,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_message_handler(self._handle_message)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
+                    adapter.set_session_resolver(
+                        self._get_or_create_session_at_process_delivery_boundary
+                    )
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
@@ -8138,7 +8359,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # gateway boot can recover in-flight sessions (#27856).
             _pre_drain_keys: list[str] = []
             for _sk, _agent in list(self._running_agents.items()):
-                if _agent is _AGENT_PENDING_SENTINEL:
+                if _is_pre_execution_agent_owner(_agent):
                     continue
                 try:
                     await self.async_session_store.mark_resume_pending(
@@ -8164,6 +8385,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _cron_at_start,
                 self._active_cron_job_count(),
             )
+
+            _interrupt_reason = (
+                _INTERRUPT_REASON_GATEWAY_RESTART
+                if self._restart_requested
+                else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+            )
+            _forced_owners: list[tuple[str, Any]] = []
+            if timed_out:
+                # Freeze ownership before deciding whether this was a dirty
+                # execution timeout. Raw pending owners are invalidated and
+                # removed by the same CAS boundary, but do not make an otherwise
+                # clean shutdown resumable or count toward stuck-loop recovery.
+                _forced_owners = (
+                    self._capture_running_agents_for_forced_shutdown(
+                        _interrupt_reason
+                    )
+                )
+                if (
+                    not _forced_owners
+                    and self._active_cron_job_count() == 0
+                ):
+                    timed_out = False
 
             if not timed_out:
                 # Drain completed gracefully — all running sessions finished.
@@ -8211,18 +8454,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _resume_reason = (
                     "restart_timeout" if self._restart_requested else "shutdown_timeout"
                 )
-                for _sk, _agent in list(self._running_agents.items()):
-                    if _agent is _AGENT_PENDING_SENTINEL:
-                        continue
+                # Ownership was frozen immediately after the drain result.
+                # Every owner in this set was concrete at invalidation; raw
+                # placeholders were removed without making the shutdown dirty.
+                for _sk, _agent in _forced_owners:
+                    # This exact concrete owner became part of shutdown after
+                    # the initial drain snapshot (for example by promoting
+                    # from a pending handle). Preserve it for resource
+                    # finalization and stuck-loop accounting as well.
+                    active_agents[_sk] = _agent
                     try:
-                        await self.async_session_store.mark_resume_pending(_sk, _resume_reason)
+                        await self.async_session_store.mark_resume_pending(
+                            _sk, _resume_reason
+                        )
                     except Exception as _e:
                         logger.debug(
                             "mark_resume_pending failed for %s: %s",
                             _sk, _e,
                         )
-                self._interrupt_running_agents(
-                    _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+                self._interrupt_captured_running_agents(
+                    _forced_owners, _interrupt_reason
                 )
                 interrupt_deadline = asyncio.get_running_loop().time() + 5.0
                 while self._running_agents and asyncio.get_running_loop().time() < interrupt_deadline:
@@ -8387,13 +8638,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "active sessions."
                 )
 
-            # Track sessions that were active at shutdown for stuck-loop
-            # detection (#7536).  On each restart, the counter increments
-            # for sessions that were running.  If a session hits the
-            # threshold (3 consecutive restarts while active), the next
-            # startup auto-suspends it — breaking the loop.
-            if active_agents:
-                self._increment_restart_failure_counts(set(active_agents.keys()))
+            # Track only exact concrete owners that required forced shutdown for
+            # stuck-loop detection (#7536). The drain-start snapshot may contain
+            # work that completed or transitioned back to a pre-execution pending
+            # follow-up before capture; counting that clean transition would
+            # eventually suspend a healthy session.
+            _dirty_owner_keys = {
+                session_key for session_key, _agent in _forced_owners
+            }
+            if _dirty_owner_keys:
+                self._increment_restart_failure_counts(_dirty_owner_keys)
 
             if self._restart_requested and self._restart_command_source is None:
                 try:
@@ -8606,6 +8860,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
+            adapter.set_session_resolver(
+                self._make_profile_session_resolver(profile_name)
+            )
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
@@ -8636,6 +8893,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
             return await self._handle_message(event)
         return _handler
+
+    def _make_profile_session_resolver(self, profile_name: str):
+        """Bind adapter-internal lookups to a multiplexed profile namespace."""
+        async def _resolver(source, **kwargs):
+            if not getattr(source, "profile", None):
+                source.profile = profile_name
+            return await self._get_or_create_session_at_process_delivery_boundary(
+                source, **kwargs
+            )
+        return _resolver
 
     @staticmethod
     def _adapter_credential_fingerprint(adapter: Any) -> Optional[str]:
@@ -9007,7 +9274,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
         _update_prompts = getattr(self, "_update_prompt_pending", {})
-        if _update_prompts.get(_quick_key):
+        if _update_prompts.get(_quick_key) and not is_internal:
             raw = (event.text or "").strip()
             # Accept /approve and /deny as shorthand for yes/no
             cmd = event.get_command()
@@ -9179,11 +9446,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # created.  Sentinels have no get_activity_summary(), so the
             # idle check below would always evaluate to inf >= timeout and
             # immediately evict them, racing with the setup path.
-            _stale_idle = float("inf")  # assume idle if we can't check
+            _activity_getter = getattr(
+                _stale_agent, "get_activity_summary", None
+            )
+            _has_activity_tracker = callable(_activity_getter)
+            _stale_idle = float("inf")
             _stale_detail = ""
-            if _stale_agent and hasattr(_stale_agent, "get_activity_summary"):
+            if _has_activity_tracker:
                 try:
-                    _sa = _stale_agent.get_activity_summary()
+                    _sa = _activity_getter()
+                    if not isinstance(_sa, dict):
+                        _sa = {}
                     _stale_idle = _sa.get("seconds_since_activity", float("inf"))
                     _stale_detail = (
                         f" | last_activity={_sa.get('last_activity_desc', 'unknown')} "
@@ -9199,7 +9472,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _should_evict = (
                 _stale_agent is not _AGENT_PENDING_SENTINEL
                 and (
-                    (_raw_stale_timeout > 0 and _stale_idle >= _raw_stale_timeout)
+                    (
+                        _has_activity_tracker
+                        and _raw_stale_timeout > 0
+                        and _stale_idle >= _raw_stale_timeout
+                    )
                     or _stale_age > _wall_ttl
                 )
             )
@@ -9217,6 +9494,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_running_agent_state(_quick_key)
 
         if _quick_key in self._running_agents:
+            if str(
+                (getattr(event, "metadata", None) or {}).get(
+                    "expected_gateway_session_id"
+                )
+                or ""
+            ).strip():
+                return _STAMPED_PROCESS_EVENT_BUSY
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 
@@ -9255,12 +9539,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # _interrupt_requested.  Force-clean _running_agents so the session
             # is unlocked and subsequent messages are processed normally.
             if _cmd_def_inner and _cmd_def_inner.name == "stop":
-                await self._interrupt_and_clear_session(
-                    _quick_key,
-                    source,
-                    interrupt_reason=_INTERRUPT_REASON_STOP,
-                    invalidation_reason="stop_command",
-                )
+                async with self._process_delivery_boundary_lock(_quick_key):
+                    await self._interrupt_and_clear_session(
+                        _quick_key,
+                        source,
+                        interrupt_reason=_INTERRUPT_REASON_STOP,
+                        invalidation_reason="stop_command",
+                    )
                 logger.info("STOP for session %s — agent interrupted, session lock released", _quick_key)
                 return EphemeralReply(t("gateway.stop.stopped"))
 
@@ -9272,13 +9557,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # doesn't get re-processed as a user message after the
             # interrupt completes.
             if _cmd_def_inner and _cmd_def_inner.name == "new":
-                # Clear any pending messages so the old text doesn't replay
-                await self._interrupt_and_clear_session(
-                    _quick_key,
-                    source,
-                    interrupt_reason=_INTERRUPT_REASON_RESET,
-                    invalidation_reason="new_command",
-                )
+                # Clear any pending messages so the old text doesn't replay.
+                # Linearize generation invalidation with stamped delivery: if
+                # the send already owns the boundary it finishes first; if this
+                # command wins, the waiting send observes the invalid generation.
+                async with self._process_delivery_boundary_lock(_quick_key):
+                    await self._interrupt_and_clear_session(
+                        _quick_key,
+                        source,
+                        interrupt_reason=_INTERRUPT_REASON_RESET,
+                        invalidation_reason="new_command",
+                    )
                 # Clean up the running agent entry so the reset handler
                 # doesn't think an agent is still active.
                 return await self._handle_reset_command(event)
@@ -9331,9 +9620,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 steer_text = event.get_command_args().strip()
                 if not steer_text:
                     return "Usage: /steer <prompt>"
-                running_agent = self._running_agents.get(_quick_key)
-                if running_agent is _AGENT_PENDING_SENTINEL:
-                    # Agent hasn't started yet — queue as turn-boundary fallback.
+                running_agent, stamped_process_agent = (
+                    self._running_agent_ownership_snapshot(_quick_key)
+                )
+                is_stamped_process_owner = bool(
+                    running_agent is not None
+                    and stamped_process_agent is running_agent
+                )
+                if (
+                    running_agent is _AGENT_PENDING_SENTINEL
+                    or is_stamped_process_owner
+                ):
+                    # The agent has not started yet, or this is a stamped
+                    # process turn that foreground commands must not steer.
+                    # Queue the payload as a turn-boundary fallback.
                     adapter = self._adapter_for_source(source)
                     if adapter:
                         queued_event = MessageEvent(
@@ -9343,7 +9643,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
                         )
-                        adapter._pending_messages[_quick_key] = queued_event
+                        if is_stamped_process_owner:
+                            self._defer_adapter_pending_drain_for_stamped_process(
+                                _quick_key, event
+                            )
+                            self._queue_or_replace_pending_event(
+                                _quick_key, queued_event
+                            )
+                        else:
+                            adapter._pending_messages[_quick_key] = queued_event
+                    if is_stamped_process_owner:
+                        return "Process notification is finishing — /steer queued for the next turn."
                     return "Agent still starting — /steer queued for the next turn."
                 if running_agent and hasattr(running_agent, "steer"):
                     try:
@@ -9515,7 +9825,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 return None
 
-            running_agent = self._running_agents.get(_quick_key)
+            running_agent, stamped_process_agent = (
+                self._running_agent_ownership_snapshot(_quick_key)
+            )
+            if (
+                running_agent is not None
+                and stamped_process_agent is running_agent
+            ):
+                logger.debug(
+                    "Queueing foreground input behind stamped process turn for %s",
+                    _quick_key,
+                )
+                self._defer_adapter_pending_drain_for_stamped_process(
+                    _quick_key, event
+                )
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return None
             if running_agent is _AGENT_PENDING_SENTINEL:
                 # Agent is being set up but not ready yet.
                 if event.get_command() == "stop":
@@ -9971,13 +10296,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 event.text = moa_payload
                 event._moa_restore_override = self._session_model_overrides.get(_quick_key)
-                self._session_model_overrides[_quick_key] = {
+                _moa_one_shot_override = {
                     "provider": "moa",
                     "model": preset,
                     "base_url": "moa://local",
                     "api_key": "moa-virtual-provider",
                     "api_mode": "chat_completions",
                 }
+                event._moa_installed_override = _moa_one_shot_override
+                self._session_model_overrides[_quick_key] = _moa_one_shot_override
                 self._evict_cached_agent(_quick_key)
                 event._moa_disable_after_turn = True
             except Exception:
@@ -10275,9 +10602,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents_ts[_quick_key] = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        if str(
+            (getattr(event, "metadata", None) or {}).get(
+                "expected_gateway_session_id"
+            )
+            or ""
+        ).strip():
+            if event.metadata is None:
+                event.metadata = {}
+            event.metadata["gateway_run_generation"] = _run_generation
+            release_claim = getattr(
+                event, "_hermes_stamped_process_release_claim", None
+            )
+            if isinstance(release_claim, _StampedProcessReleaseClaim):
+                release_claim.generation = _run_generation
+                self._stamped_process_release_events[_quick_key] = release_claim
+                self._defer_adapter_pending_drain_for_stamped_process(
+                    _quick_key, event
+                )
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            if str(
+                (getattr(event, "metadata", None) or {}).get(
+                    "expected_gateway_session_id"
+                )
+                or ""
+            ).strip():
+                return _agent_result
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -10295,7 +10647,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # on error. Let the user drive the next turn.
                 if _final_text.strip():
                     try:
-                        session_entry = await self.async_session_store.get_or_create_session(source)
+                        session_entry = await self._get_or_create_session_at_process_delivery_boundary(
+                            source, _quick_key
+                        )
                     except Exception:
                         session_entry = None
                     if session_entry is not None:
@@ -10317,14 +10671,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Putting it in finally guarantees the revert on success, exception,
             # and interrupt alike.
             self._restore_moa_one_shot(event, _quick_key)
-            # Unconditional release covers every exit path. _release_running_agent_state
-            # is idempotent (pop-on-absent is harmless) and, called without a
-            # run_generation guard, always clears the slot regardless of which
-            # generation it holds. This evicts the zombie left when session_reset
-            # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
-            # inside _run_agent returns False, and the old sentinel-only check here
-            # missed the leftover real agent — locking the session out forever (#28686).
-            self._release_running_agent_state(_quick_key)
+            _is_process_turn = bool(
+                str(
+                    (getattr(event, "metadata", None) or {}).get(
+                        "expected_gateway_session_id"
+                    )
+                    or ""
+                ).strip()
+            )
+            if _is_process_turn:
+                release_claim = getattr(
+                    event, "_hermes_stamped_process_release_claim", None
+                )
+                if not isinstance(
+                    release_claim, _StampedProcessReleaseClaim
+                ):
+                    # Direct process-handler tests/callers have no outer
+                    # delivery owner, so preserve their historical cleanup.
+                    self._release_running_agent_state(
+                        _quick_key,
+                        run_generation=_run_generation,
+                    )
+            else:
+                # A stale ordinary tail must not clear a replacement owner that
+                # claimed this stable routing key after the inner turn released.
+                # Explicit control-command paths own any unconditional cleanup.
+                self._release_running_agent_state(
+                    _quick_key,
+                    run_generation=_run_generation,
+                )
 
     def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
         """Revert a ``/moa <prompt>`` one-shot model override after its turn.
@@ -10338,11 +10713,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not getattr(event, "_moa_disable_after_turn", False):
             return
         try:
-            _restore = getattr(event, "_moa_restore_override", None)
-            if _restore is None:
+            # Restore only while this turn still owns the exact temporary
+            # override it installed. /stop leaves that object in place, so an
+            # invalidated turn still cleans it up. /new or a replacement turn
+            # clears/replaces it, so late unwind cannot overwrite newer state or
+            # evict the replacement cache entry.
+            _installed_override = getattr(event, "_moa_installed_override", None)
+            if (
+                _installed_override is not None
+                and self._session_model_overrides.get(quick_key)
+                is not _installed_override
+            ):
+                return
+            previous = getattr(event, "_moa_restore_override", None)
+            if previous is None:
                 self._session_model_overrides.pop(quick_key, None)
             else:
-                self._session_model_overrides[quick_key] = _restore
+                self._session_model_overrides[quick_key] = previous
             self._evict_cached_agent(quick_key)
         except Exception:
             pass
@@ -10799,10 +11186,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-        session_entry = await self.async_session_store.get_or_create_session(source)
+        session_entry = await self._get_or_create_session_at_process_delivery_boundary(
+            source, _quick_key
+        )
         session_key = session_entry.session_key
+        event_metadata = getattr(event, "metadata", None) or {}
+        expected_process_session_id = str(
+            event_metadata.get("expected_gateway_session_id") or ""
+        ).strip()
+
+        def _process_turn_is_current() -> bool:
+            return self._process_notification_run_is_current(
+                expected_session_id=expected_process_session_id,
+                session_key=session_key,
+                run_generation=run_generation,
+            )
+
+        if expected_process_session_id and not self._process_session_ids_match(
+            expected_process_session_id, session_entry.session_id
+        ):
+            logger.warning(
+                "Process notification expected session %s but routing key %s now owns %s — dropping at final handoff",
+                expected_process_session_id,
+                session_key,
+                session_entry.session_id,
+            )
+            return
         pinned_session_id = str(
-            (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
+            event_metadata.get("gateway_session_id") or ""
         ).strip()
         if pinned_session_id and pinned_session_id != session_entry.session_id:
             # Fail closed (#55578): the spawning session may have ENDED since
@@ -10831,7 +11242,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return
             prior_session_id = session_entry.session_id
-            switched = await self.async_session_store.switch_session(session_key, pinned_session_id)
+            switched = await self._switch_session_at_process_delivery_boundary(
+                session_key, pinned_session_id
+            )
             if switched is not None:
                 session_entry = switched
                 logger.info(
@@ -10881,7 +11294,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # lane session is ended cleanly. Mutating session_entry in
                     # place here created a split-brain state where the JSON
                     # index pointed at one id but code downstream used another.
-                    switched = await self.async_session_store.switch_session(session_key, bound_session_id)
+                    switched = await self._switch_session_at_process_delivery_boundary(
+                        session_key, bound_session_id
+                    )
                     if switched is not None:
                         session_entry = switched
                 # If the stored binding pointed at a parent, rewrite it to the
@@ -10899,6 +11314,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
+
+        # Topic binding resolution can override the session selected above.
+        # Revalidate stamped process notifications only after every routing
+        # override so a concurrent /new, /resume, or topic rebind cannot move
+        # old process output into the replacement physical session.
+        if expected_process_session_id and not self._process_session_ids_match(
+            expected_process_session_id, session_entry.session_id
+        ):
+            logger.warning(
+                "Process notification expected session %s but final routing for %s resolved to %s — dropping before agent work",
+                expected_process_session_id,
+                session_key,
+                session_entry.session_id,
+            )
+            return
+
         # Capture and immediately consume was_auto_reset so it does not
         # re-fire on subsequent messages — preventing the cleanup from
         # wiping model/reasoning overrides set between turns (Closes #48031).
@@ -10938,7 +11369,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # onto subsequent messages in the same session (issue #6508).
         if getattr(session_entry, "is_fresh_reset", False):
             session_entry.is_fresh_reset = False
-        if _is_new_session:
+        if _is_new_session and not expected_process_session_id:
             await self.hooks.emit("session:start", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
@@ -11070,6 +11501,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Load conversation history from transcript
         history = await self.async_session_store.load_transcript(session_entry.session_id)
+        if not _process_turn_is_current():
+            logger.warning(
+                "Process notification for %s became stale while loading history — dropping",
+                session_key,
+            )
+            return None
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -11189,7 +11626,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-            if _hyg_compression_enabled:
+            # Synthetic background-process turns must not run model-backed
+            # transcript hygiene. A concurrent /new cannot interrupt the hygiene
+            # agent while the gateway still exposes only the pending sentinel;
+            # defer hygiene until the next ordinary user turn instead.
+            if _hyg_compression_enabled and not expected_process_session_id:
                 _hyg_context_length = await get_model_context_length_async(
                     _hyg_model,
                     base_url=_hyg_base_url or "",
@@ -11562,14 +12003,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
-        message_text = await self._prepare_profile_scoped_inbound_message_text(
-            event=event,
-            source=source,
-            history=history,
-            session_key=session_key,
-        )
+        # Synthetic process turns are already normalized text-only internal
+        # events. Do not invoke profile/media enrichment, which can call
+        # externally extensible processors while a concurrent boundary reset
+        # is invalidating this physical session.
+        if expected_process_session_id:
+            message_text = event.text
+        else:
+            message_text = await self._prepare_profile_scoped_inbound_message_text(
+                event=event,
+                source=source,
+                history=history,
+                session_key=session_key,
+            )
         if message_text is None:
-            return
+            return None
 
         # Capture the platform event time as message metadata and keep the
         # persisted transcript clean (strip any leading timestamp prefix).
@@ -11627,7 +12075,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
             }
-            await self.hooks.emit("agent:start", hook_ctx)
+            if not expected_process_session_id:
+                await self.hooks.emit("agent:start", hook_ctx)
+
+            # Every yielding preparation step is now complete. A /new or
+            # /resume may have won while hooks/history/media setup awaited, so
+            # process-triggered turns must prove both routing ownership and run
+            # generation once more before any model or tool work starts.
+            if not self._process_notification_run_is_current(
+                expected_session_id=expected_process_session_id,
+                session_key=session_key,
+                run_generation=run_generation,
+            ):
+                logger.warning(
+                    "Process notification for %s became stale during pre-agent setup — dropping before model/tool execution",
+                    session_key,
+                )
+                return None
 
             # Run the agent. Capture the session id that this run was launched
             # against so post-run compression publication can be identity-guarded
@@ -11647,12 +12111,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                expected_process_session_id=expected_process_session_id,
             )
 
             # Stop persistent typing indicator now that the agent is done
             try:
                 _typing_adapter = self._adapter_for_source(source)
-                if _typing_adapter and hasattr(_typing_adapter, "stop_typing"):
+                if (
+                    not expected_process_session_id
+                    and _typing_adapter
+                    and hasattr(_typing_adapter, "stop_typing")
+                ):
                     await _typing_adapter.stop_typing(source.chat_id)
             except Exception:
                 pass
@@ -11693,6 +12162,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "results. This can happen with some models — try again or "
                     "rephrase your question."
                 )
+
+            # Process notifications use a deliberately narrow post-agent path.
+            # The agent has already persisted its turn to the physical SessionDB;
+            # generic gateway postprocessing is keyed by the stable routing key
+            # and contains many awaited hooks/mutations that a concurrent /new can
+            # retarget onto the replacement session. Internal process turns need
+            # no enrichment, hooks, media/voice delivery, or stable-key metadata
+            # updates, so normalize and return only after one final ownership check.
+            if expected_process_session_id:
+                if not _intentional_silence:
+                    response = _normalize_empty_agent_response(
+                        agent_result,
+                        response,
+                        history_len=len(history),
+                    )
+                    response = _sanitize_gateway_final_response(
+                        source.platform,
+                        response,
+                    )
+                else:
+                    response = ""
+                if not _process_turn_is_current():
+                    logger.info(
+                        "Discarding stale process response for %s before handoff",
+                        session_key,
+                    )
+                    return None
+                if agent_result.get("already_sent") and not agent_result.get("failed"):
+                    return None
+                return response
+
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -11942,7 +12442,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
                 )
-                new_entry = await self.async_session_store.reset_session(session_key)
+                async with self._process_delivery_boundary_lock(session_key):
+                    new_entry = await self.async_session_store.reset_session(
+                        session_key
+                    )
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
@@ -12198,6 +12701,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return response
             
         except Exception as e:
+            if expected_process_session_id:
+                logger.exception(
+                    "Process notification agent error in session %s",
+                    session_key,
+                )
+                if not _process_turn_is_current():
+                    return None
+                return "⚠️ Background process notification could not be processed."
             # Stop typing indicator on error too
             try:
                 _err_adapter = self._adapter_for_source(source)
@@ -12711,7 +13222,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("goal manager unavailable: %s", exc)
             return None, None
         try:
-            session_entry = await self.async_session_store.get_or_create_session(event.source)
+            session_entry = await self._get_or_create_session_at_process_delivery_boundary(
+                event.source
+            )
         except Exception as exc:
             logger.debug("goal manager: session lookup failed: %s", exc)
             return None, None
@@ -14154,7 +14667,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
             }
             try:
-                session_entry = await self.async_session_store.get_or_create_session(event.source)
+                session_entry = await self._get_or_create_session_at_process_delivery_boundary(
+                    event.source
+                )
                 await self.async_session_store.append_to_transcript(
                     session_entry.session_id, reload_msg
                 )
@@ -15005,6 +15520,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            session_id=context.session_id,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
@@ -15361,6 +15877,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         derived_platform = ""
         derived_chat_type = ""
         derived_chat_id = ""
+        derived_profile = ""
 
         if session_key:
             try:
@@ -15384,6 +15901,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 derived_platform = _parsed["platform"]
                 derived_chat_type = _parsed["chat_type"]
                 derived_chat_id = _parsed["chat_id"]
+                derived_profile = _parsed.get("profile", "")
 
         platform_name = str(evt.get("platform") or derived_platform or "").strip().lower()
         chat_type = str(evt.get("chat_type") or derived_chat_type or "").strip().lower()
@@ -15424,6 +15942,254 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_id=str(evt.get("thread_id") or "").strip() or None,
             user_id=str(evt.get("user_id") or "").strip() or None,
             user_name=str(evt.get("user_name") or "").strip() or None,
+            profile=str(evt.get("profile") or derived_profile or "").strip() or None,
+        )
+
+    def _is_stale_process_notification(self, payload: dict) -> bool:
+        """Return True when a background-process event belongs to a superseded session."""
+        session_key = str(payload.get("session_key") or "").strip()
+        event_session_id = str(payload.get("conversation_session_id") or "").strip()
+        if not event_session_id:
+            return False
+        if not session_key:
+            logger.info(
+                "Dropping unverifiable process notification: event session=%s has no session key",
+                event_session_id,
+            )
+            return True
+
+        try:
+            self.session_store._ensure_loaded()
+            entry = self.session_store._entries.get(session_key)
+        except Exception:
+            entry = None
+        current_session_id = str(getattr(entry, "session_id", "") or "").strip()
+        if not current_session_id:
+            logger.info(
+                "Dropping unverifiable process notification for %s: event session=%s has no current owner",
+                session_key[:40],
+                event_session_id,
+            )
+            return True
+        if not self._process_session_ids_match(event_session_id, current_session_id):
+            logger.info(
+                "Dropping stale process notification for %s: event session=%s current session=%s",
+                session_key[:40],
+                event_session_id,
+                current_session_id,
+            )
+            return True
+        return False
+
+    def _process_session_ids_match(self, expected_session_id: str, current_session_id: str) -> bool:
+        """Match exact physical sessions or their live compression continuation."""
+        if not expected_session_id or not current_session_id:
+            return False
+        if expected_session_id == current_session_id:
+            return True
+        # Compression rotates the physical session id while preserving the
+        # same conversation. A process spawned before compression should still
+        # notify the live continuation, but /new and /resume boundaries differ.
+        try:
+            session_db = getattr(self, "_session_db", None)
+            db = getattr(session_db, "_db", session_db)
+            get_tip = getattr(db, "get_compression_tip", None)
+            if callable(get_tip):
+                expected_tip = str(
+                    get_tip(expected_session_id) or expected_session_id
+                ).strip()
+                current_tip = str(get_tip(current_session_id) or current_session_id).strip()
+                return bool(expected_tip and expected_tip == current_tip)
+        except Exception:
+            pass
+        return False
+
+    def _process_notification_run_is_current(
+        self,
+        *,
+        expected_session_id: str,
+        session_key: str,
+        run_generation: Optional[int],
+    ) -> bool:
+        """Fail closed before model/tool work can begin."""
+        generations = self.__dict__.get("_session_run_generation") or {}
+        if (
+            run_generation is not None
+            and (expected_session_id or session_key in generations)
+            and not self._is_session_run_current(session_key, run_generation)
+        ):
+            return False
+        if not expected_session_id:
+            return True
+        if self._is_stale_process_notification(
+            {
+                "session_key": session_key,
+                "conversation_session_id": expected_session_id,
+            }
+        ):
+            return False
+        return True
+
+    def _process_delivery_boundary_lock(self, session_key: str) -> asyncio.Lock:
+        locks = getattr(self, "_process_delivery_boundary_locks", None)
+        if locks is None:
+            locks = {}
+            self._process_delivery_boundary_locks = locks
+        lock = locks.get(session_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[session_key] = lock
+        return lock
+
+    async def _deliver_process_notification_guarded(
+        self,
+        *,
+        expected_session_id: str,
+        session_key: str,
+        run_generation: Optional[int],
+        delivery: Callable[[], Any],
+    ) -> Any:
+        """Linearize a stamped delivery with reset/resume session switching."""
+        async with self._process_delivery_boundary_lock(session_key):
+            if not self._process_notification_run_is_current(
+                expected_session_id=expected_session_id,
+                session_key=session_key,
+                run_generation=run_generation,
+            ):
+                return None
+            return await delivery()
+
+    async def _get_or_create_session_at_process_delivery_boundary(
+        self,
+        source: "SessionSource",
+        session_key: Optional[str] = None,
+        *,
+        force_new: bool = False,
+        operation: Optional[Callable[[Any], Any]] = None,
+    ):
+        """Serialize transition-capable lookup and an optional owned operation."""
+        key = session_key or self._session_key_for_source(source)
+        async with self._process_delivery_boundary_lock(key):
+            if force_new:
+                entry = await self.async_session_store.get_or_create_session(
+                    source, force_new=True
+                )
+            else:
+                entry = await self.async_session_store.get_or_create_session(source)
+            if operation is not None:
+                result = operation(entry)
+                if inspect.isawaitable(result):
+                    await result
+            return entry
+
+    async def _switch_session_at_process_delivery_boundary(
+        self, session_key: str, session_id: str
+    ):
+        async with self._process_delivery_boundary_lock(session_key):
+            return await self.async_session_store.switch_session(session_key, session_id)
+
+    async def _reset_session_at_process_delivery_boundary(self, session_key: str):
+        async with self._process_delivery_boundary_lock(session_key):
+            return await self.async_session_store.reset_session(session_key)
+
+    async def _run_and_deliver_stamped_process_event(
+        self,
+        event: "MessageEvent",
+        *,
+        adapter: Any,
+        session_key: str,
+    ) -> Any:
+        """Run a stamped turn and release any foreground adapter waiter."""
+        release_claim = _StampedProcessReleaseClaim()
+        setattr(event, "_hermes_stamped_process_release_claim", release_claim)
+        release_events = self._stamped_process_release_events
+        try:
+            return await self._run_and_deliver_stamped_process_event_inner(
+                event,
+                adapter=adapter,
+                session_key=session_key,
+            )
+        finally:
+            # The stamped owner covers both inference and guarded delivery.
+            # Release its exact generation before waking any foreground adapter
+            # waiter; a reset/replacement makes this a no-op.
+            if release_claim.generation is not None:
+                released = self._release_running_agent_state(
+                    session_key,
+                    run_generation=release_claim.generation,
+                )
+                if (
+                    not released
+                    and release_claim.forced_shutdown_owner is not None
+                ):
+                    self._release_running_agent_if_identity(
+                        session_key,
+                        release_claim.forced_shutdown_owner,
+                    )
+            release_claim.event.set()
+            if release_events.get(session_key) is release_claim:
+                release_events.pop(session_key, None)
+
+    async def _run_and_deliver_stamped_process_event_inner(
+        self,
+        event: "MessageEvent",
+        *,
+        adapter: Any,
+        session_key: str,
+    ) -> Any:
+        """Run a stamped synthetic turn and deliver its text under one boundary."""
+        while True:
+            response = await self._handle_message(event)
+            if response is not _STAMPED_PROCESS_EVENT_BUSY:
+                break
+            metadata = getattr(event, "metadata", None) or {}
+            expected_session_id = str(
+                metadata.get("expected_gateway_session_id") or ""
+            ).strip()
+            if not self._process_notification_run_is_current(
+                expected_session_id=expected_session_id,
+                session_key=session_key,
+                run_generation=None,
+            ):
+                return None
+            await asyncio.sleep(0.05)
+        if not response:
+            return None
+        metadata = getattr(event, "metadata", None) or {}
+        expected_session_id = str(
+            metadata.get("expected_gateway_session_id") or ""
+        ).strip()
+        run_generation = metadata.get("gateway_run_generation")
+        content = str(response)
+        strip_directives = getattr(adapter, "strip_media_directives_for_display", None)
+        if callable(strip_directives):
+            content = strip_directives(content)
+        # Stamped process notifications are deliberately text-only. Their
+        # narrow path must never turn model-produced MEDIA directives into
+        # local-file, image, voice, video, or document delivery side effects.
+        if not content.strip():
+            return None
+        thread_metadata = self._thread_metadata_for_source(
+            event.source,
+            getattr(event, "message_id", None),
+        )
+
+        async def _send():
+            return await adapter.send(
+                event.source.chat_id,
+                content,
+                reply_to=getattr(event, "message_id", None),
+                metadata=_non_conversational_metadata(
+                    thread_metadata,
+                    platform=event.source.platform,
+                ),
+            )
+
+        return await self._deliver_process_notification_guarded(
+            expected_session_id=expected_session_id,
+            session_key=session_key,
+            run_generation=run_generation,
+            delivery=_send,
         )
 
     async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
@@ -15432,6 +16198,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Routing must come from the queued watch event itself, not from whatever
         foreground message happened to be active when the queue was drained.
         """
+        if self._is_stale_process_notification(evt):
+            return
         source = self._build_process_event_source(evt)
         if not source:
             logger.warning(
@@ -15440,15 +16208,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        adapter = None
-        for p, a in self.adapters.items():
-            if p.value == platform_name:
-                adapter = a
-                break
+        adapter = self._adapter_for_source(source)
         if not adapter:
             return
         try:
             metadata = {}
+            expected_session_id = str(evt.get("conversation_session_id") or "").strip()
+            if expected_session_id:
+                # Revalidate at the final gateway handoff too. A /new or
+                # /resume can race the early queue-drain ownership check.
+                metadata["expected_gateway_session_id"] = expected_session_id
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
@@ -15466,9 +16235,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source.chat_id,
                 source.thread_id,
             )
-            await adapter.handle_message(synth_event)
+            await self._run_and_deliver_stamped_process_event(
+                synth_event,
+                adapter=adapter,
+                session_key=str(evt.get("session_key") or ""),
+            )
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
+
+    def _adapter_for_process_watcher_delivery(
+        self,
+        source: Optional["SessionSource"],
+        platform_name: str,
+        session_key: str,
+    ) -> Any:
+        """Resolve profile-aware process delivery, with legacy unstamped fallback."""
+        if source is not None:
+            return self._adapter_for_source(source)
+        if session_key:
+            return None
+        try:
+            return self.adapters.get(Platform(platform_name))
+        except Exception:
+            return None
 
     def _enrich_async_delegation_routing(self, evt: dict) -> None:
         """Fill platform/chat_id/thread_id/chat_type on an async-delegation event.
@@ -15564,6 +16353,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         message_id = str(watcher.get("message_id") or "").strip() or None
         agent_notify = watcher.get("notify_on_complete", False)
         notify_mode = self._load_background_notifications_mode()
+        delivery_source = (
+            self._build_process_event_source(watcher) if session_key else None
+        )
 
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
@@ -15623,6 +16415,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     })
                     if not synth_text:
                         break
+                    if self._is_stale_process_notification(watcher):
+                        logger.info(
+                            "Process %s finished after session boundary changed for %s — dropping stale agent notification",
+                            session_id,
+                            session_key[:40],
+                        )
+                        break
                     source = self._build_process_event_source({
                         "session_id": session_id,
                         "session_key": session_key,
@@ -15631,6 +16430,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "thread_id": thread_id,
                         "user_id": user_id,
                         "user_name": user_name,
+                        "conversation_session_id": watcher.get("conversation_session_id", ""),
                     })
                     if not source:
                         logger.warning(
@@ -15639,11 +16439,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         break
 
-                    adapter = None
-                    for p, a in self.adapters.items():
-                        if p == source.platform:
-                            adapter = a
-                            break
+                    adapter = self._adapter_for_source(source)
                     if adapter and source.chat_id:
                         try:
                             synth_event = MessageEvent(
@@ -15652,6 +16448,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 source=source,
                                 internal=True,
                                 message_id=message_id,
+                                metadata={
+                                    "expected_gateway_session_id": str(
+                                        watcher.get("conversation_session_id") or ""
+                                    ).strip()
+                                },
                             )
                             logger.info(
                                 "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
@@ -15660,7 +16461,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 source.chat_id,
                                 source.thread_id,
                             )
-                            await adapter.handle_message(synth_event)
+                            await self._run_and_deliver_stamped_process_event(
+                                synth_event,
+                                adapter=adapter,
+                                session_key=session_key,
+                            )
                         except Exception as e:
                             logger.error("Agent notify injection error: %s", e)
                     break
@@ -15672,6 +16477,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     or (notify_mode == "error" and session.exit_code not in {0, None})
                 )
                 if should_notify:
+                    if self._is_stale_process_notification(watcher):
+                        logger.info(
+                            "Process %s finished after session boundary changed for %s — dropping stale text notification",
+                            session_id,
+                            session_key[:40],
+                        )
+                        break
                     new_output = session.output_buffer[-1000:] if session.output_buffer else ""
                     if new_output:
                         from agent.redact import redact_terminal_output
@@ -15682,24 +16494,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         f"[Background process {session_id} finished with exit code {session.exit_code}~ "
                         f"Here's the final output:\n{new_output}]"
                     )
-                    adapter = None
-                    for p, a in self.adapters.items():
-                        if p.value == platform_name:
-                            adapter = a
-                            break
+                    adapter = self._adapter_for_process_watcher_delivery(
+                        delivery_source, platform_name, session_key
+                    )
                     if adapter and chat_id:
                         try:
+                            if self._is_stale_process_notification(watcher):
+                                logger.info(
+                                    "Process %s crossed a session boundary before final text delivery — dropping",
+                                    session_id,
+                                )
+                                break
                             send_meta = {"thread_id": thread_id} if thread_id else None
-                            await adapter.send(
-                                chat_id,
-                                message_text,
-                                metadata=_non_conversational_metadata(send_meta, platform=platform_name),
+
+                            async def _send_final_text():
+                                return await adapter.send(
+                                    chat_id,
+                                    message_text,
+                                    metadata=_non_conversational_metadata(
+                                        send_meta, platform=platform_name
+                                    ),
+                                )
+
+                            await self._deliver_process_notification_guarded(
+                                expected_session_id=str(
+                                    watcher.get("conversation_session_id") or ""
+                                ).strip(),
+                                session_key=session_key,
+                                run_generation=None,
+                                delivery=_send_final_text,
                             )
                         except Exception as e:
                             logger.error("Watcher delivery error: %s", e)
                 break
 
             elif has_new_output and notify_mode == "all" and not agent_notify:
+                if self._is_stale_process_notification(watcher):
+                    logger.info(
+                        "Process %s emitted output after session boundary changed for %s — dropping stale text notification",
+                        session_id,
+                        session_key[:40],
+                    )
+                    break
                 # New output available -- deliver status update (only in "all" mode)
                 # Skip periodic updates for agent_notify watchers (they only care about completion)
                 new_output = session.output_buffer[-500:] if session.output_buffer else ""
@@ -15712,18 +16548,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"[Background process {session_id} is still running~ "
                     f"New output:\n{new_output}]"
                 )
-                adapter = None
-                for p, a in self.adapters.items():
-                    if p.value == platform_name:
-                        adapter = a
-                        break
+                adapter = self._adapter_for_process_watcher_delivery(
+                    delivery_source, platform_name, session_key
+                )
                 if adapter and chat_id:
                     try:
+                        if self._is_stale_process_notification(watcher):
+                            logger.info(
+                                "Process %s crossed a session boundary before running-output delivery — dropping",
+                                session_id,
+                            )
+                            break
                         send_meta = {"thread_id": thread_id} if thread_id else None
-                        await adapter.send(
-                            chat_id,
-                            message_text,
-                            metadata=_non_conversational_metadata(send_meta, platform=platform_name),
+
+                        async def _send_running_text():
+                            return await adapter.send(
+                                chat_id,
+                                message_text,
+                                metadata=_non_conversational_metadata(
+                                    send_meta, platform=platform_name
+                                ),
+                            )
+
+                        await self._deliver_process_notification_guarded(
+                            expected_session_id=str(
+                                watcher.get("conversation_session_id") or ""
+                            ).strip(),
+                            session_key=session_key,
+                            run_generation=None,
+                            delivery=_send_running_text,
                         )
                     except Exception as e:
                         logger.error("Watcher delivery error: %s", e)
@@ -15995,6 +16848,124 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         override = self._session_model_overrides.get(session_key)
         return override is not None and override.get("model") == agent_model
 
+    def _release_running_agent_if_identity(
+        self,
+        session_key: str,
+        expected_owner: Any,
+    ) -> bool:
+        """Drop one exact owner without touching a replacement generation."""
+        state_lock = getattr(self, "_running_agent_state_lock", None)
+        if state_lock is None:
+            state_lock = threading.RLock()
+            self._running_agent_state_lock = state_lock
+        lease = None
+        with state_lock:
+            if self._running_agents.get(session_key) is not expected_owner:
+                return False
+            lease = getattr(self, "_active_session_leases", {}).pop(
+                session_key, None
+            )
+            self._running_agents.pop(session_key, None)
+            process_agents = getattr(
+                self, "_stamped_process_running_agents", {}
+            )
+            if process_agents.get(session_key) is expected_owner:
+                process_agents.pop(session_key, None)
+            self._running_agents_ts.pop(session_key, None)
+            if hasattr(self, "_busy_ack_ts"):
+                self._busy_ack_ts.pop(session_key, None)
+        if lease is not None:
+            try:
+                lease.release()
+            except Exception:
+                logger.debug(
+                    "Failed to release active session slot", exc_info=True
+                )
+        self._persist_active_agents()
+        return True
+
+    def _publish_running_agent_at_execution_boundary(
+        self,
+        session_key: str,
+        *,
+        run_generation: Optional[int],
+        pending_owner: Any,
+        concrete_owner: Any,
+        stamped: bool = False,
+    ) -> bool:
+        """CAS a pending owner to concrete immediately before execution."""
+        if not session_key:
+            return True
+        state_lock = getattr(self, "_running_agent_state_lock", None)
+        if state_lock is None:
+            state_lock = threading.RLock()
+            self._running_agent_state_lock = state_lock
+        with state_lock:
+            generations = self.__dict__.get("_session_run_generation") or {}
+            if (
+                stamped and getattr(pending_owner, "cancelled", False)
+            ) or (
+                run_generation is not None
+                and session_key in generations
+                and not self._is_session_run_current(
+                    session_key, run_generation
+                )
+            ):
+                return False
+            current_owner = self._running_agents.get(session_key)
+            if (
+                current_owner is not pending_owner
+                and not (
+                    current_owner is None and run_generation is None
+                )
+            ):
+                return False
+            self._running_agents[session_key] = concrete_owner
+            if stamped:
+                process_agents = getattr(
+                    self, "_stamped_process_running_agents", None
+                )
+                if process_agents is None:
+                    process_agents = {}
+                    self._stamped_process_running_agents = process_agents
+                process_agents[session_key] = concrete_owner
+            return True
+
+    def _transfer_running_agent_to_pending_rebuild(
+        self,
+        session_key: str,
+        *,
+        run_generation: Optional[int],
+        expected_owner: Any,
+    ) -> bool:
+        """Transfer one exact concrete owner back to the pending sentinel."""
+        if not session_key:
+            return True
+        state_lock = getattr(self, "_running_agent_state_lock", None)
+        if state_lock is None:
+            state_lock = threading.RLock()
+            self._running_agent_state_lock = state_lock
+        with state_lock:
+            generations = self.__dict__.get("_session_run_generation") or {}
+            if (
+                run_generation is not None
+                and session_key in generations
+                and not self._is_session_run_current(
+                    session_key, run_generation
+                )
+            ):
+                return False
+            current_owner = self._running_agents.get(session_key)
+            if current_owner is _AGENT_PENDING_SENTINEL:
+                return True
+            if current_owner is None and run_generation is None:
+                self._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+                return True
+            if current_owner is not expected_owner:
+                return False
+            self._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+            return True
+
     def _release_running_agent_state(
         self,
         session_key: str,
@@ -16026,23 +16997,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key:
             return False
-        if run_generation is not None and not self._is_session_run_current(
-            session_key, run_generation
-        ):
-            return False
-        lease = getattr(self, "_active_session_leases", {}).pop(session_key, None)
+        state_lock = getattr(self, "_running_agent_state_lock", None)
+        if state_lock is None:
+            state_lock = threading.RLock()
+            self._running_agent_state_lock = state_lock
+        with state_lock:
+            if run_generation is not None and not self._is_session_run_current(
+                session_key, run_generation
+            ):
+                return False
+            lease = getattr(self, "_active_session_leases", {}).pop(session_key, None)
+            running_agent = self._running_agents.pop(session_key, None)
+            process_agents = getattr(self, "_stamped_process_running_agents", {})
+            if (
+                running_agent is not None
+                and process_agents.get(session_key) is running_agent
+            ):
+                process_agents.pop(session_key, None)
+            self._running_agents_ts.pop(session_key, None)
+            if hasattr(self, "_busy_ack_ts"):
+                self._busy_ack_ts.pop(session_key, None)
         if lease is not None:
             try:
                 lease.release()
             except Exception:
                 logger.debug("Failed to release active session slot", exc_info=True)
-        self._running_agents.pop(session_key, None)
-        self._running_agents_ts.pop(session_key, None)
-        if hasattr(self, "_busy_ack_ts"):
-            self._busy_ack_ts.pop(session_key, None)
-        # Turn boundary: a running-agent slot was just released.  Persist the
+        # Turn boundary: a running-agent slot was just released. Persist the
         # new (lower) in-flight count so the dashboard readout stays current
-        # between lifecycle transitions.  Preserves gateway_state (see
+        # between lifecycle transitions. Preserves gateway_state (see
         # _persist_active_agents).
         self._persist_active_agents()
         return True
@@ -16104,13 +17086,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key:
             return 0
-        generations = self.__dict__.get("_session_run_generation")
-        if generations is None:
-            generations = {}
-            self._session_run_generation = generations
-        next_generation = int(generations.get(session_key, 0)) + 1
-        generations[session_key] = next_generation
-        return next_generation
+        state_lock = getattr(self, "_running_agent_state_lock", None)
+        if state_lock is None:
+            state_lock = threading.RLock()
+            self._running_agent_state_lock = state_lock
+        with state_lock:
+            generations = self.__dict__.get("_session_run_generation")
+            if generations is None:
+                generations = {}
+                self._session_run_generation = generations
+            next_generation = int(generations.get(session_key, 0)) + 1
+            generations[session_key] = next_generation
+            return next_generation
 
     def _invalidate_session_run_generation(self, session_key: str, *, reason: str = "") -> int:
         """Invalidate any in-flight run token for ``session_key``."""
@@ -16159,16 +17146,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Interrupt the current run and clear queued session state consistently."""
         if not session_key:
             return
+        # Invalidate first so a run still constructing its concrete agent cannot
+        # pass a final execution-boundary generation check after this reset has
+        # already decided to clear the session. Once a concrete agent is visible,
+        # interrupt it as usual.
+        self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
         running_agent = self._running_agents.get(session_key)
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             running_agent.interrupt(interrupt_reason)
-        self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
         adapter = self._adapter_for_source(source)
         if adapter and hasattr(adapter, "interrupt_session_activity"):
             await adapter.interrupt_session_activity(session_key, source.chat_id)
         if adapter and hasattr(adapter, "get_pending_message"):
             adapter.get_pending_message(session_key)  # consume and discard
         self._pending_messages.pop(session_key, None)
+        release_claim = getattr(self, "_stamped_process_release_events", {}).pop(
+            session_key, None
+        )
+        if release_claim is not None:
+            release_claim.event.set()
         if release_running_state:
             self._release_running_agent_state(session_key)
             # Evict the cached agent: ``_interrupt_requested`` is only
@@ -16256,6 +17252,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cache[session_key] = (
                             cached[0], cached[1], _live, _snapshot_sid,
                         )
+
+    def _agent_is_retained_after_execution_rejection(
+        self,
+        session_key: str,
+        agent: Any,
+    ) -> bool:
+        """Return whether an exact rejected agent still has a legitimate owner."""
+        if not session_key or agent is None:
+            return False
+        state_lock = getattr(self, "_running_agent_state_lock", None)
+        if state_lock is None:
+            state_lock = threading.RLock()
+            self._running_agent_state_lock = state_lock
+        with state_lock:
+            running_owner = self._running_agents.get(session_key)
+            if running_owner is agent:
+                return True
+            cache = getattr(self, "_agent_cache", None)
+            if cache is None:
+                return False
+            cache_lock = getattr(self, "_agent_cache_lock", None)
+
+            def _cache_owns_exact_agent() -> bool:
+                cached = cache.get(session_key)
+                cached_agent = (
+                    cached[0] if isinstance(cached, tuple) and cached else None
+                )
+                if cached_agent is not agent:
+                    return False
+                setattr(agent, _REJECTED_EXECUTION_CLEANUP_ATTR, True)
+                return True
+
+            if cache_lock is not None:
+                with cache_lock:
+                    return _cache_owns_exact_agent()
+            return _cache_owns_exact_agent()
+
+    def _evict_cached_agent_if_identity(self, session_key: str, agent: Any) -> bool:
+        """Evict ``session_key`` only when its cache still owns ``agent``.
+
+        Used by stale async turns during unwind: a replacement turn may already
+        have published a newer cache entry under the same stable routing key.
+        """
+        if not session_key or agent is None:
+            return False
+        cache = getattr(self, "_agent_cache", None)
+        if cache is None:
+            return False
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+
+        def _pop_if_same() -> bool:
+            cached = cache.get(session_key)
+            cached_agent = cached[0] if isinstance(cached, tuple) and cached else None
+            if cached_agent is not agent:
+                return False
+            cache.pop(session_key, None)
+            return True
+
+        if cache_lock is not None:
+            with cache_lock:
+                return _pop_if_same()
+        return _pop_if_same()
 
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc).
@@ -16421,6 +17479,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         same task_id inherits them.
         """
         if agent is None:
+            return
+        if getattr(agent, _REJECTED_EXECUTION_CLEANUP_ATTR, False):
+            try:
+                setattr(agent, _REJECTED_EXECUTION_CLEANUP_ATTR, False)
+            except Exception:
+                pass
+            self._cleanup_agent_resources(agent)
             return
         try:
             if hasattr(agent, "release_clients"):
@@ -16639,6 +17704,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
+        expected_process_session_id: Optional[str] = None,
+        process_pending_owner: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -16729,9 +17796,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_config, platform_key, "streaming"
         )
         _streaming_enabled = (
-            _scfg.enabled and _scfg.transport != "off"
-            if _plat_streaming is None
-            else bool(_plat_streaming)
+            (
+                _scfg.enabled and _scfg.transport != "off"
+                if _plat_streaming is None
+                else bool(_plat_streaming)
+            )
+            and not expected_process_session_id
         )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
@@ -16784,18 +17854,83 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _sc_err:
                 logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
 
-        # Run the stream consumer task in the background
+        # The consumer task starts only after execution publication succeeds;
+        # pre-HTTP fail-closed returns must not leave a waiter blocked on _DONE.
         stream_task = None
-        if _stream_consumer:
-            stream_task = asyncio.create_task(_stream_consumer.run())
 
         # Send typing indicator
         _adapter = self._adapter_for_source(source)
-        if _adapter:
+        if _adapter and not expected_process_session_id:
             try:
                 await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
             except Exception:
                 pass
+
+        # Publish an interruptible proxy owner at the final execution boundary.
+        # Ordinary and stamped turns use the same generation/identity CAS, so
+        # forced shutdown either invalidates the pending owner before the HTTP
+        # request starts or captures this concrete handle for interruption.
+        _proxy_interrupt_handle = None
+        if session_key:
+            _proxy_task = asyncio.current_task()
+
+            class _ProxyInterruptHandle:
+                def interrupt(self, _reason: str) -> None:
+                    if _proxy_task is not None and not _proxy_task.done():
+                        _proxy_task.cancel()
+
+            _proxy_interrupt_handle = _ProxyInterruptHandle()
+            expected_owner = (
+                process_pending_owner
+                if expected_process_session_id
+                else _AGENT_PENDING_SENTINEL
+            )
+            if not self._publish_running_agent_at_execution_boundary(
+                session_key,
+                run_generation=run_generation,
+                pending_owner=expected_owner,
+                concrete_owner=_proxy_interrupt_handle,
+                stamped=bool(expected_process_session_id),
+            ):
+                if expected_process_session_id:
+                    self._release_running_agent_if_identity(
+                        session_key, expected_owner
+                    )
+                else:
+                    self._release_running_agent_state(
+                        session_key, run_generation=run_generation
+                    )
+                return {
+                    "final_response": "",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                    "history_offset": len(history),
+                    "session_id": session_id,
+                    "_execution_boundary_dropped": True,
+                }
+
+        if not self._process_notification_run_is_current(
+            expected_session_id=expected_process_session_id or "",
+            session_key=session_key or "",
+            run_generation=run_generation,
+        ):
+            if session_key and _proxy_interrupt_handle is not None:
+                self._release_running_agent_if_identity(
+                    session_key, _proxy_interrupt_handle
+                )
+            return {
+                "final_response": "",
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+                "history_offset": len(history),
+                "session_id": session_id,
+                "_execution_boundary_dropped": True,
+            }
+
+        if _stream_consumer:
+            stream_task = asyncio.create_task(_stream_consumer.run())
 
         # Make the HTTP request with SSE streaming -----------------------
         full_response = ""
@@ -16883,6 +18018,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
             # Partial response — return what we got
         finally:
+            # The outer turn lifecycle owns the running handle and stamped marker;
+            # keep both published through all synthetic-turn postprocessing.
             # Finalize stream consumer
             if _stream_consumer:
                 _stream_consumer.finish()
@@ -16943,6 +18080,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        expected_process_session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -16953,6 +18091,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         multiplexing is off this is a transparent pass-through — zero behavior
         change for single-profile gateways.
         """
+        if not self._process_notification_run_is_current(
+            expected_session_id=expected_process_session_id or "",
+            session_key=session_key or "",
+            run_generation=run_generation,
+        ):
+            return {
+                "final_response": "",
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+                "history_offset": len(history),
+                "session_id": session_id,
+                "_execution_boundary_dropped": True,
+            }
+        process_pending_owner = None
+        if expected_process_session_id and session_key:
+            state_lock = getattr(self, "_running_agent_state_lock", None)
+            if state_lock is None:
+                state_lock = threading.RLock()
+                self._running_agent_state_lock = state_lock
+            with state_lock:
+                current_owner = self._running_agents.get(session_key)
+                if (
+                    not self._is_session_run_current(session_key, run_generation)
+                    or (
+                        current_owner is not None
+                        and current_owner is not _AGENT_PENDING_SENTINEL
+                    )
+                ):
+                    return {
+                        "final_response": "",
+                        "messages": [],
+                        "api_calls": 0,
+                        "tools": [],
+                        "history_offset": len(history),
+                        "session_id": session_id,
+                        "_execution_boundary_dropped": True,
+                    }
+                process_pending_owner = _StampedProcessPendingHandle()
+                self._running_agents[session_key] = process_pending_owner
+                self._stamped_process_running_agents[session_key] = (
+                    process_pending_owner
+                )
+
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
@@ -16961,6 +18143,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                expected_process_session_id=expected_process_session_id,
+                process_pending_owner=process_pending_owner,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -16972,6 +18156,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                expected_process_session_id=expected_process_session_id,
+                process_pending_owner=process_pending_owner,
             )
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
@@ -17004,6 +18190,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        expected_process_session_id: Optional[str] = None,
+        process_pending_owner: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -17017,6 +18205,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        if not self._process_notification_run_is_current(
+            expected_session_id=expected_process_session_id or "",
+            session_key=session_key or "",
+            run_generation=run_generation,
+        ):
+            return {
+                "final_response": "",
+                "messages": [],
+                "api_calls": 0,
+                "tools": [],
+                "history_offset": len(history),
+                "session_id": session_id,
+                "_execution_boundary_dropped": True,
+            }
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
@@ -17028,6 +18230,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
+                expected_process_session_id=expected_process_session_id,
+                process_pending_owner=process_pending_owner,
             )
 
         from run_agent import AIAgent
@@ -17974,6 +19178,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
 
+            if not self._process_notification_run_is_current(
+                expected_session_id=expected_process_session_id or "",
+                session_key=session_key or "",
+                run_generation=run_generation,
+            ):
+                return {
+                    "final_response": "",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                    "history_offset": len(history),
+                    "session_id": session_id,
+                    "_execution_boundary_dropped": True,
+                }
+
             # session_key is propagated via contextvars in _set_session_env()
             # (_SESSION_KEY) and via set_current_session_key() (_approval_session_key)
             # below — both concurrency-safe and inherited by tool worker threads.
@@ -18052,12 +19271,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             # None = no per-platform override → follow global config
             _streaming_enabled = (
-                _scfg.enabled and _scfg.transport != "off"
-                if _plat_streaming is None
-                else bool(_plat_streaming)
+                (
+                    _scfg.enabled and _scfg.transport != "off"
+                    if _plat_streaming is None
+                    else bool(_plat_streaming)
+                )
+                and not expected_process_session_id
             )
             _want_stream_deltas = _streaming_enabled
-            _want_interim_messages = interim_assistant_messages_enabled
+            _want_interim_messages = (
+                interim_assistant_messages_enabled
+                and not expected_process_session_id
+            )
             _want_interim_consumer = _want_interim_messages
             if _want_stream_deltas or _want_interim_consumer:
                 try:
@@ -18186,9 +19411,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
 
             _xproc_evicted_agent = None
+            _cache_entry_observed = None
             if _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached = _cache.get(session_key)
+                    _cache_entry_observed = cached
                     if cached and cached[1] == _sig:
                         # cached[2] is the message_count at cache time;
                         # stale when a second process appended rows.
@@ -18324,15 +19551,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
-                        # Record the session_id the snapshot was taken for
-                        # alongside the message_count, so the cross-process
-                        # guard can skip the (meaningless) count comparison
-                        # when the active session_id later switches under
-                        # the same session_key (#54947).
-                        _cache[session_key] = (
-                            agent, _sig, _current_msg_count, session_id,
+                        # Publish a freshly constructed cache entry only while
+                        # the observed cache identity and this run generation
+                        # are still current. A reset/replacement that wins while
+                        # construction is in flight must not be overwritten by
+                        # the stale worker, for ordinary or stamped turns.
+                        _cache_unchanged = (
+                            _cache.get(session_key) is _cache_entry_observed
                         )
-                        self._enforce_agent_cache_cap()
+                        _publish_agent_cache = (
+                            _cache_unchanged
+                            and (
+                                run_generation is None
+                                or self._is_session_run_current(
+                                    session_key, run_generation
+                                )
+                            )
+                        )
+                        if _publish_agent_cache:
+                            # Record the session_id the snapshot was taken for
+                            # alongside the message_count, so the cross-process
+                            # guard can skip the (meaningless) count comparison
+                            # when the active session_id later switches under
+                            # the same session_key (#54947).
+                            _cache[session_key] = (
+                                agent, _sig, _current_msg_count, session_id,
+                            )
+                            self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 
             # Per-message state — callbacks and reasoning config change every
@@ -18345,18 +19590,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # who set thinking_progress:true but kept tool_progress:off got a
             # None callback — so _thinking scratch bubbles never relayed even
             # though the progress queue was created for them.
+            _allow_process_side_channels = not expected_process_session_id
             agent.tool_progress_callback = (
-                progress_callback if (needs_progress_queue or log_mode_enabled) else None
+                progress_callback
+                if _allow_process_side_channels
+                and (needs_progress_queue or log_mode_enabled)
+                else None
             )
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
             agent.tool_start_callback = (
-                voice_ack_callback if _voice_ack_guild[0] is not None else None
+                voice_ack_callback
+                if _allow_process_side_channels and _voice_ack_guild[0] is not None
+                else None
             )
-            agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
-            agent.stream_delta_callback = _stream_delta_cb
-            agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
-            agent.status_callback = _status_callback_sync
+            agent.step_callback = (
+                _step_callback_sync
+                if _allow_process_side_channels and _hooks_ref.loaded_hooks
+                else None
+            )
+            agent.stream_delta_callback = (
+                _stream_delta_cb if _allow_process_side_channels else None
+            )
+            agent.interim_assistant_callback = (
+                _interim_assistant_cb
+                if _allow_process_side_channels and _want_interim_messages
+                else None
+            )
+            agent.status_callback = (
+                _status_callback_sync if _allow_process_side_channels else None
+            )
             # Credits / out-of-band notices (usage bands, depletion, restored).
             # Messaging has no persistent status bar, so each notice is a
             # standalone push: render to a single plaintext line and deliver via
@@ -18386,9 +19649,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     log_message="notice_callback delivery scheduling error",
                 )
 
-            agent.notice_callback = _notice_callback_sync
+            agent.notice_callback = (
+                _notice_callback_sync if _allow_process_side_channels else None
+            )
             agent.notice_clear_callback = None
-            agent.event_callback = _event_callback_sync
+            agent.event_callback = (
+                _event_callback_sync if _allow_process_side_channels else None
+            )
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
@@ -18430,10 +19697,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return
                 _deliver_bg_review_message(message)
 
-            agent.background_review_callback = _bg_review_send
+            agent.background_review_callback = (
+                _bg_review_send if _allow_process_side_channels else None
+            )
             # Register the release hook on the adapter so base.py's finally
             # block can fire it after delivering the main response.
-            if _status_adapter and session_key:
+            if _allow_process_side_channels and _status_adapter and session_key:
                 if getattr(type(_status_adapter), "register_post_delivery_callback", None) is not None:
                     _status_adapter.register_post_delivery_callback(
                         session_key,
@@ -18526,7 +19795,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return f"[user did not respond within {int(timeout / 60)}m]"
                 return response
 
-            agent.clarify_callback = _clarify_callback_sync
+            agent.clarify_callback = (
+                _clarify_callback_sync if _allow_process_side_channels else None
+            )
 
             # Show assistant thinking between tool calls — independent of
             # tool_progress mode. Mattermost needs an explicit per-platform
@@ -18597,6 +19868,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from tools.approval import (
                 register_gateway_notify,
                 reset_current_session_key,
+                resolve_gateway_approval,
                 set_current_session_key,
                 unregister_gateway_notify,
             )
@@ -18688,6 +19960,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _approval_send_fut.result(timeout=15)
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
+
+            def _deny_process_approval_sync(_approval_data: dict) -> None:
+                """Fail closed without a visible prompt for synthetic process turns."""
+                resolve_gateway_approval(
+                    _approval_session_key,
+                    "deny",
+                    reason="Background process notifications cannot request approval.",
+                )
 
             # Keep real user text separate from API-only recovery guidance.  If
             # an auto-continue note is prepended below, persist the original
@@ -18857,8 +20137,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             _approval_session_key = session_key or ""
+            if expected_process_session_id:
+                # Approval state is globally keyed. Give synthetic process turns
+                # a generation-owned namespace so their callback/queue cleanup
+                # can never overwrite or remove a replacement foreground turn.
+                _approval_session_key = (
+                    f"{_approval_session_key}:process-run:{run_generation}:"
+                    f"{expected_process_session_id}"
+                )
             _approval_session_token = set_current_session_key(_approval_session_key)
-            register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            register_gateway_notify(
+                _approval_session_key,
+                _deny_process_approval_sync
+                if expected_process_session_id
+                else _approval_notify_sync,
+            )
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -18907,7 +20200,74 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-                result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+
+                # Publish the concrete local owner at the final execution
+                # boundary. Ordinary and stamped turns use the same locked
+                # generation/identity CAS, so shutdown either invalidates the
+                # pending owner or captures this agent before model/tool work.
+                expected_owner = (
+                    process_pending_owner
+                    if expected_process_session_id
+                    else _AGENT_PENDING_SENTINEL
+                )
+                _process_handle_published = (
+                    not session_key
+                    or self._publish_running_agent_at_execution_boundary(
+                        session_key,
+                        run_generation=run_generation,
+                        pending_owner=expected_owner,
+                        concrete_owner=agent,
+                        stamped=bool(expected_process_session_id),
+                    )
+                )
+
+                if not _process_handle_published:
+                    if expected_process_session_id:
+                        # Stamped pending handles are run-unique identities.
+                        self._release_running_agent_if_identity(
+                            session_key, expected_owner
+                        )
+                    else:
+                        # The ordinary sentinel is a shared singleton, so an
+                        # identity-only release is ABA-unsafe across generations.
+                        self._release_running_agent_state(
+                            session_key, run_generation=run_generation
+                        )
+                if not _process_handle_published or not self._process_notification_run_is_current(
+                    expected_session_id=expected_process_session_id,
+                    session_key=session_key,
+                    run_generation=run_generation,
+                ):
+                    logger.warning(
+                        "Dropping stale process notification at local model/tool execution boundary for %s",
+                        session_key or "",
+                    )
+                    if not self._agent_is_retained_after_execution_rejection(
+                        session_key, agent
+                    ):
+                        self._evict_cached_agent_if_identity(session_key, agent)
+                        self._cleanup_agent_resources(agent)
+                    result = {
+                        "final_response": "",
+                        "messages": [],
+                        "api_calls": 0,
+                        "tools": [],
+                        "history_offset": len(history),
+                        "session_id": session_id,
+                        "_execution_boundary_dropped": True,
+                    }
+                else:
+                    try:
+                        setattr(
+                            agent,
+                            _REJECTED_EXECUTION_CLEANUP_ATTR,
+                            False,
+                        )
+                    except Exception:
+                        pass
+                    result = agent.run_conversation(
+                        _api_run_message, **_conversation_kwargs
+                    )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
@@ -19213,28 +20573,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         stream_task = asyncio.create_task(_start_stream_consumer())
         
-        # Track this agent as running for this session (for interrupt support)
-        # We do this in a callback after the agent is created
+        # Observe construction only for drain-status refresh. Concrete running
+        # ownership is published exclusively by the worker's final execution
+        # CAS immediately before run_conversation(); publishing here would let
+        # shutdown misclassify a constructed-but-never-executed agent.
         async def track_agent():
-            # Wait for agent to be created
             while agent_holder[0] is None:
                 await asyncio.sleep(0.05)
-            if not session_key:
-                return
-            # Only promote the sentinel to the real agent if this run is still
-            # current.  If /stop or /new bumped the generation while we were
-            # spinning up, leave the newer run's slot alone — we'll be
-            # discarded by the stale-result check in _handle_message_with_agent.
-            if run_generation is not None and not self._is_session_run_current(
-                session_key, run_generation
-            ):
-                logger.info(
-                    "Skipping stale agent promotion for %s — generation %s is no longer current",
-                    session_key or "",
-                    run_generation,
-                )
-                return
-            self._running_agents[session_key] = agent_holder[0]
             if self._draining:
                 self._update_runtime_status("draining")
         
@@ -19439,7 +20784,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
-        _notify_task = asyncio.create_task(_notify_long_running())
+        _notify_task = None
+        if not expected_process_session_id:
+            _notify_task = asyncio.create_task(_notify_long_running())
 
         def _stream_confirmed_final_delivery(
             consumer,
@@ -19534,8 +20881,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception:
                             pass
                     # Staged warning: fire once before escalating to full timeout.
-                    if (not _warning_fired and _agent_warning is not None
-                            and _idle_secs >= _agent_warning):
+                    if (
+                        not expected_process_session_id
+                        and not _warning_fired
+                        and _agent_warning is not None
+                        and _idle_secs >= _agent_warning
+                    ):
                         _warning_fired = True
                         _warn_adapter = self._adapter_for_source(source)
                         if _warn_adapter:
@@ -19572,6 +20923,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             _backup_agent.interrupt(_bp_text)
                             _interrupt_detected.set()
+
+            if not self._process_notification_run_is_current(
+                expected_session_id=expected_process_session_id,
+                session_key=session_key,
+                run_generation=run_generation,
+            ):
+                logger.info(
+                    "Skipping stale process-run postprocessing for %s",
+                    session_key or "",
+                )
+                _worker_drop = (
+                    response
+                    if isinstance(response, dict)
+                    and response.get("_execution_boundary_dropped")
+                    else None
+                )
+                return _worker_drop or result_holder[0] or {
+                    "final_response": "",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                    "history_offset": len(history),
+                    "session_id": session_id,
+                }
+
+            if expected_process_session_id:
+                # Stamped process notifications use a narrow, text-only result
+                # path. Leave queued foreground events in the adapter so its
+                # normal lifecycle can dispatch them after this synthetic run;
+                # do not enter heartbeat/timeout/fallback/pending-drain rails.
+                if _inactivity_timeout:
+                    _timed_out_agent = agent_holder[0]
+                    if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
+                        _timed_out_agent.interrupt(_INTERRUPT_REASON_TIMEOUT)
+                return result_holder[0] or {
+                    "final_response": "",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                    "history_offset": len(history),
+                    "session_id": session_id,
+                }
 
             if _inactivity_timeout:
                 # Build a diagnostic summary from the agent's activity tracker.
@@ -19807,7 +21200,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     adapter = self._adapter_for_source(source)
                     if adapter and pending_event:
-                        merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+                        self._restore_dequeued_event_ahead_of_newer(
+                            session_key, adapter, pending_event
+                        )
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
                     return result_holder[0] or {"final_response": response, "messages": history}
@@ -19950,6 +21345,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # what the follow-up's guard will consult.  Fail-safe in helper.
                 await self._refresh_agent_cache_message_count(session_key, session_id)
 
+                # Recursive queued turns may rebuild the agent after fallback
+                # eviction. Transfer only this exact completed concrete owner
+                # back to the pending sentinel before reconstruction; reset or
+                # shutdown replacement ownership fails closed and the dequeued
+                # event is restored transactionally.
+                if not self._transfer_running_agent_to_pending_rebuild(
+                    next_session_key,
+                    run_generation=run_generation,
+                    expected_owner=agent_holder[0],
+                ):
+                    if adapter and pending_event is not None:
+                        self._restore_dequeued_event_ahead_of_newer(
+                            session_key, adapter, pending_event
+                        )
+                    elif adapter and hasattr(adapter, "queue_message"):
+                        adapter.queue_message(session_key, pending)
+                    return result_holder[0] or {
+                        "final_response": response,
+                        "messages": history,
+                    }
+
                 followup_result = await self._run_agent(
                     message=next_message,
                     context_prompt=context_prompt,
@@ -19962,6 +21378,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                 )
+                if followup_result.get("_execution_boundary_dropped"):
+                    if adapter and pending_event is not None:
+                        self._restore_dequeued_event_ahead_of_newer(
+                            session_key, adapter, pending_event
+                        )
+                    elif adapter and hasattr(adapter, "queue_message"):
+                        adapter.queue_message(session_key, pending)
+                    return result_holder[0] or {
+                        "final_response": response,
+                        "messages": history,
+                    }
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task
@@ -19970,7 +21397,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if log_task:
                 log_task.cancel()
             interrupt_monitor.cancel()
-            _notify_task.cancel()
+            if _notify_task:
+                _notify_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
@@ -20002,12 +21430,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             
             # Clean up tracking
             tracking_task.cancel()
-            if session_key:
-                # Only release the slot if this run's generation still owns
-                # it.  A /stop or /new that bumped the generation while we
-                # were unwinding has already installed its own state; this
-                # guard prevents an old run from clobbering it on the way
-                # out.
+            if session_key and not expected_process_session_id:
+                # Stamped process turns retain their concrete ownership through
+                # surrounding message/transcript postprocessing. The outer
+                # message lifecycle releases both identities at the true turn
+                # boundary.
                 self._release_running_agent_state(
                     session_key, run_generation=run_generation
                 )

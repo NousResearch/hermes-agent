@@ -950,6 +950,7 @@ class TestCheckpoint:
             s.watcher_user_id = "u123"
             s.watcher_user_name = "alice"
             s.watcher_thread_id = "42"
+            s.conversation_session_id = "sess-old"
             s.watcher_interval = 60
             registry._running[s.id] = s
             registry._write_checkpoint()
@@ -961,7 +962,124 @@ class TestCheckpoint:
             assert data[0]["watcher_user_id"] == "u123"
             assert data[0]["watcher_user_name"] == "alice"
             assert data[0]["watcher_thread_id"] == "42"
+            assert data[0]["conversation_session_id"] == "sess-old"
             assert data[0]["watcher_interval"] == 60
+
+    def test_terminal_spawn_flushes_stamped_session_id_before_recovery(
+        self, monkeypatch, tmp_path
+    ):
+        """The post-spawn notification stamp must reach crash recovery storage."""
+        import shlex
+
+        import tools.process_registry as pr_module
+        import tools.terminal_tool as terminal_module
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        checkpoint = tmp_path / "procs.json"
+        live_registry = ProcessRegistry()
+        monkeypatch.setattr(pr_module, "CHECKPOINT_PATH", checkpoint)
+        monkeypatch.setattr(pr_module, "process_registry", live_registry)
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+
+        tokens = set_session_vars(
+            platform="telegram",
+            chat_id="123",
+            session_key="agent:main:telegram:dm:123",
+            session_id="physical-session-old",
+            async_delivery=True,
+        )
+        process_id = ""
+        try:
+            result = json.loads(
+                terminal_module.terminal_tool(
+                    command=(
+                        f"{shlex.quote(sys.executable)} -c "
+                        f"{shlex.quote('import time; time.sleep(30)')}"
+                    ),
+                    background=True,
+                    notify_on_complete=True,
+                    force=True,
+                    workdir=str(tmp_path),
+                )
+            )
+            process_id = result["session_id"]
+
+            saved = json.loads(checkpoint.read_text())
+            assert saved[0]["conversation_session_id"] == "physical-session-old"
+            assert saved[0]["notify_on_complete"] is True
+            assert saved[0]["watcher_interval"] == 5
+
+            recovered_registry = ProcessRegistry()
+            assert recovered_registry.recover_from_checkpoint() == 1
+            recovered = recovered_registry.get(process_id)
+            assert recovered is not None
+            assert recovered.conversation_session_id == "physical-session-old"
+            assert recovered.notify_on_complete is True
+            assert recovered_registry.pending_watchers[0][
+                "conversation_session_id"
+            ] == "physical-session-old"
+        finally:
+            clear_session_vars(tokens)
+            if process_id:
+                live_registry.kill_process(process_id)
+
+    def test_checkpoint_writes_cannot_regress_newer_notification_metadata(
+        self, registry, tmp_path
+    ):
+        checkpoint = tmp_path / "procs.json"
+        session = _make_session()
+        registry._running[session.id] = session
+
+        first_write_ready = threading.Event()
+        second_write_ready = threading.Event()
+        release_first_write = threading.Event()
+        fresh_writer_started = threading.Event()
+        call_lock = threading.Lock()
+        call_count = 0
+
+        def delayed_atomic_write(path, entries):
+            nonlocal call_count
+            with call_lock:
+                call_count += 1
+                this_call = call_count
+            if this_call == 1:
+                first_write_ready.set()
+                assert release_first_write.wait(timeout=2)
+            else:
+                second_write_ready.set()
+            path.write_text(json.dumps(entries))
+
+        def write_fresh_checkpoint():
+            fresh_writer_started.set()
+            registry._write_checkpoint()
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), patch(
+            "utils.atomic_json_write", side_effect=delayed_atomic_write
+        ):
+            stale_writer = threading.Thread(target=registry._write_checkpoint)
+            stale_writer.start()
+            assert first_write_ready.wait(timeout=2)
+
+            session.conversation_session_id = "physical-session-new"
+            session.notify_on_complete = True
+            session.watcher_interval = 5
+
+            fresh_writer = threading.Thread(target=write_fresh_checkpoint)
+            fresh_writer.start()
+            assert fresh_writer_started.wait(timeout=2)
+            assert not second_write_ready.wait(timeout=0.1)
+            release_first_write.set()
+
+            stale_writer.join(timeout=2)
+            fresh_writer.join(timeout=2)
+            assert not stale_writer.is_alive()
+            assert not fresh_writer.is_alive()
+
+        saved = json.loads(checkpoint.read_text())
+        assert saved[0]["conversation_session_id"] == "physical-session-new"
+        assert saved[0]["notify_on_complete"] is True
+        assert saved[0]["watcher_interval"] == 5
 
     def test_recover_enqueues_watchers(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
@@ -976,6 +1094,7 @@ class TestCheckpoint:
             "watcher_user_id": "u123",
             "watcher_user_name": "alice",
             "watcher_thread_id": "42",
+            "conversation_session_id": "sess-old",
             "watcher_interval": 60,
         }]))
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
@@ -989,6 +1108,7 @@ class TestCheckpoint:
             assert w["user_id"] == "u123"
             assert w["user_name"] == "alice"
             assert w["thread_id"] == "42"
+            assert w["conversation_session_id"] == "sess-old"
             assert w["check_interval"] == 60
 
     def test_recover_skips_watcher_when_no_interval(self, registry, tmp_path):

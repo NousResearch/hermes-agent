@@ -191,6 +191,40 @@ def test_unmentioned_group_messages_can_be_observed_without_dispatching():
     asyncio.run(_run())
 
 
+def test_observed_group_message_uses_boundary_resolver():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        store.get_or_create_session = Mock(
+            side_effect=AssertionError(
+                "direct transition-capable lookup bypassed runner resolver"
+            )
+        )
+        adapter._session_store = store
+        adapter._session_resolver = AsyncMock(return_value=_FakeSessionEntry())
+        update = SimpleNamespace(
+            update_id=1001,
+            message=_group_message("side chatter"),
+            effective_message=None,
+        )
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        store.get_or_create_session.assert_not_called()
+        adapter._session_resolver.assert_awaited_once()
+        resolved_source = adapter._session_resolver.await_args.args[0]
+        assert resolved_source.chat_id == "-100"
+        assert resolved_source.user_id is None
+        assert len(store.messages) == 1
+
+    asyncio.run(_run())
+
+
 def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions():
     async def _run():
         adapter = _make_adapter(

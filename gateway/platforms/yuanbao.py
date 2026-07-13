@@ -1311,7 +1311,7 @@ class RecallGuardMiddleware(InboundMiddleware):
         if cmd not in self._RECALL_COMMANDS:
             await next_fn()
             return
-        self._handle_recall(ctx, cmd)
+        await self._handle_recall(ctx, cmd)
 
     @staticmethod
     def _build_source(adapter, group_code: str, from_account: str):
@@ -1322,7 +1322,7 @@ class RecallGuardMiddleware(InboundMiddleware):
             thread_id="main" if group_code else None,
         )
 
-    def _handle_recall(self, ctx: InboundContext, cmd: str) -> None:
+    async def _handle_recall(self, ctx: InboundContext, cmd: str) -> None:
         adapter = ctx.adapter
         push = ctx.push or {}
 
@@ -1350,7 +1350,13 @@ class RecallGuardMiddleware(InboundMiddleware):
                 self._interrupt_for_recall(adapter, matched_sk, recalled_id, group_code, from_account)
             else:
                 recalled_content = adapter._msg_content_cache.get(recalled_id)
-                self._patch_transcript(adapter, recalled_id, group_code, from_account, recalled_content)
+                await self._patch_transcript(
+                    adapter,
+                    recalled_id,
+                    group_code,
+                    from_account,
+                    recalled_content,
+                )
 
     # -- Branch C: interrupt currently-processing message ---------------
 
@@ -1407,8 +1413,10 @@ class RecallGuardMiddleware(InboundMiddleware):
             if not store:
                 return
             try:
-                sid = store.get_or_create_session(
-                    cls._build_source(adapter, group_code, from_account),
+                sid = (
+                    await adapter.resolve_session_entry(
+                        cls._build_source(adapter, group_code, from_account)
+                    )
                 ).session_id
             except Exception:
                 return
@@ -1438,13 +1446,17 @@ class RecallGuardMiddleware(InboundMiddleware):
     # -- Branch A/B: patch transcript (session idle) --------------------
 
     @classmethod
-    def _patch_transcript(cls, adapter, recalled_id: str, group_code: str,
-                          from_account: str, recalled_content: Optional[str] = None) -> None:
+    async def _patch_transcript(cls, adapter, recalled_id: str, group_code: str,
+                                from_account: str, recalled_content: Optional[str] = None) -> None:
         store = getattr(adapter, "_session_store", None)
         if not store:
             return
         try:
-            sid = store.get_or_create_session(cls._build_source(adapter, group_code, from_account)).session_id
+            sid = (
+                await adapter.resolve_session_entry(
+                    cls._build_source(adapter, group_code, from_account)
+                )
+            ).session_id
         except Exception as exc:
             logger.warning("[%s] Recall: failed to resolve session: %s", adapter.name, exc)
             return
@@ -2200,7 +2212,7 @@ class GroupAtGuardMiddleware(InboundMiddleware):
         )
 
     @classmethod
-    def _observe_group_message(
+    async def _observe_group_message(
         cls,
         adapter, source, sender_display: str, text: str,
         *,
@@ -2219,7 +2231,7 @@ class GroupAtGuardMiddleware(InboundMiddleware):
         if not store:
             return
         try:
-            session_entry = store.get_or_create_session(source)
+            session_entry = await adapter.resolve_session_entry(source)
             user_id = source.user_id or "unknown"
             body_text = text
             if forwarded_records:
@@ -2247,7 +2259,7 @@ class GroupAtGuardMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
         if ctx.chat_type == "group" and not ctx.owner_command and not self._is_at_bot(ctx.msg_body, adapter._bot_id):
-            self._observe_group_message(
+            await self._observe_group_message(
                 adapter, ctx.source, ctx.sender_nickname or ctx.from_account, ctx.raw_text,
                 msg_id=ctx.msg_id or None,
                 forwarded_records=ctx.forwarded_records,
@@ -2384,7 +2396,7 @@ class QuoteContextMiddleware(InboundMiddleware):
             store = getattr(adapter, "_session_store", None)
             if not store or ctx.source is None:
                 return []
-            session_entry = store.get_or_create_session(ctx.source)
+            session_entry = await adapter.resolve_session_entry(ctx.source)
             history = store.load_transcript(session_entry.session_id)
             for msg in reversed(history or []):
                 mid = msg.get("message_id", "")
@@ -3000,7 +3012,7 @@ class MediaResolveMiddleware(InboundMiddleware):
         if not store:
             return [], []
         try:
-            session_entry = store.get_or_create_session(source)
+            session_entry = await adapter.resolve_session_entry(source)
             history = store.load_transcript(session_entry.session_id)
         except Exception as exc:
             logger.warning(

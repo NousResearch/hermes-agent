@@ -2943,6 +2943,10 @@ class TestAssistantThreadLifecycle:
     async def test_lifecycle_event_seeds_session_store(
         self, assistant_adapter, mock_session_store
     ):
+        assistant_adapter.set_session_resolver(AsyncMock(return_value=MagicMock()))
+        mock_session_store.get_or_create_session.side_effect = AssertionError(
+            "direct transition-capable lookup bypassed runner resolver"
+        )
         event = {
             "type": "assistant_thread_started",
             "team_id": "T_TEAM",
@@ -2960,8 +2964,10 @@ class TestAssistantThreadLifecycle:
             assistant_adapter._assistant_threads[("D123", "171.000")]["user_id"]
             == "U_USER"
         )
-        mock_session_store.get_or_create_session.assert_called_once()
-        source = mock_session_store.get_or_create_session.call_args[0][0]
+        mock_session_store.get_or_create_session.assert_not_called()
+        resolver = assistant_adapter._session_resolver
+        resolver.assert_awaited_once()
+        source = resolver.await_args.args[0]
         assert source.chat_id == "D123"
         assert source.chat_type == "dm"
         assert source.user_id == "U_USER"

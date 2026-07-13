@@ -2471,7 +2471,7 @@ class SlackAdapter(BasePlatformAdapter):
             return merged
         return metadata
 
-    def _seed_assistant_thread_session(self, metadata: Dict[str, str]) -> None:
+    async def _seed_assistant_thread_session(self, metadata: Dict[str, str]) -> None:
         """Prime the session store so assistant threads get stable user scoping."""
         session_store = getattr(self, "_session_store", None)
         if not session_store:
@@ -2493,7 +2493,7 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         try:
-            session_store.get_or_create_session(source)
+            await self.resolve_session_entry(source)
         except Exception:
             logger.debug(
                 "[Slack] Failed to seed assistant thread session for %s/%s",
@@ -2506,7 +2506,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Handle Slack Assistant lifecycle events that carry user/thread identity."""
         metadata = self._extract_assistant_thread_metadata(event)
         self._cache_assistant_thread_metadata(metadata)
-        self._seed_assistant_thread_session(metadata)
+        await self._seed_assistant_thread_session(metadata)
 
     async def _handle_slack_file_shared(self, event: dict) -> None:
         """Fallback for Slack file shares that do not arrive as message.files.

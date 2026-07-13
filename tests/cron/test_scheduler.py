@@ -1,5 +1,6 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import asyncio
 import contextlib
 import itertools
 import json
@@ -4516,20 +4517,58 @@ class TestCronDeliveryMirror:
         store = MagicMock()
         adapter = MagicMock()
         adapter._session_store = store
+        resolved_sources = []
 
-        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+        async def _resolve(source, *, operation=None):
+            resolved_sources.append(source)
+            entry = MagicMock(session_id="thread-session")
+            if operation is not None:
+                operation(entry)
+            return entry
+
+        adapter.resolve_session_entry = AsyncMock(side_effect=_resolve)
+
+        def _run_now(coro, _loop):
+            from concurrent.futures import Future
+
+            future = Future()
+            future.set_result(asyncio.run(coro))
+            return future
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_run_now), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
             _seed_cron_thread_session(
                 {"id": "j1"}, adapter, "telegram", "123", "9001",
-                "Daily brief Task #2", chat_name="Ops",
+                "Daily brief Task #2", chat_name="Ops", loop=MagicMock(),
             )
 
-        # Session row created for the thread, then brief mirrored into it.
-        store.get_or_create_session.assert_called_once()
-        seeded_source = store.get_or_create_session.call_args[0][0]
+        adapter.resolve_session_entry.assert_awaited_once()
+        seeded_source = resolved_sources[0]
         assert seeded_source.chat_type == "thread"
         assert seeded_source.thread_id == "9001"
+        store.append_to_transcript.assert_called_once()
+        assert store.append_to_transcript.call_args.args[0] == "thread-session"
+        mirror_mock.assert_not_called()
+
+    def test_seed_thread_session_no_loop_uses_legacy_mirror_fallback(self):
+        from cron.scheduler import _seed_cron_thread_session
+
+        adapter = MagicMock()
+        adapter._session_store = MagicMock()
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            _seed_cron_thread_session(
+                {"id": "j1"},
+                adapter,
+                "telegram",
+                "123",
+                "9001",
+                "Daily brief",
+                loop=None,
+            )
+
+        adapter.resolve_session_entry.assert_not_called()
         mirror_mock.assert_called_once()
-        assert mirror_mock.call_args.kwargs.get("thread_id") == "9001"
+        assert mirror_mock.call_args.kwargs["thread_id"] == "9001"
 
     def test_seed_thread_session_noop_on_empty_text(self):
         from cron.scheduler import _seed_cron_thread_session
@@ -4625,6 +4664,16 @@ class TestCronContinuableSurfaceInChannel:
         # session and the brief is lost). Use a plain MagicMock store.
         if with_store:
             adapter._session_store = MagicMock()
+            adapter._resolved_session_sources = []
+
+            async def _resolve(source, *, operation=None):
+                adapter._resolved_session_sources.append(source)
+                entry = MagicMock(session_id="cron-seeded-session")
+                if operation is not None:
+                    operation(entry)
+                return entry
+
+            adapter.resolve_session_entry.side_effect = _resolve
         return adapter
 
     def test_in_channel_skips_thread_open(self):
@@ -4645,9 +4694,9 @@ class TestCronContinuableSurfaceInChannel:
         _, mirror_mock = self._run_inchannel_delivery(
             {"cron_continuable_surface": "in_channel"}, adapter,
         )
-        # The flat session row must be CREATED (this is what was missing).
-        adapter._session_store.get_or_create_session.assert_called_once()
-        seeded = adapter._session_store.get_or_create_session.call_args[0][0]
+        # The flat session row must be resolved through the gateway boundary.
+        adapter.resolve_session_entry.assert_awaited_once()
+        seeded = adapter._resolved_session_sources[0]
         assert seeded.thread_id is None, "seed must be flat (thread_id=None)"
         assert seeded.chat_type == "group", "a channel (non-D) keys as group"
         assert str(seeded.chat_id) == "C123"
@@ -4655,12 +4704,12 @@ class TestCronContinuableSurfaceInChannel:
             "channel session key embeds user_id — the seed MUST use the origin "
             "user's id or the inbound reply keys to a different session"
         )
-        # Brief mirrored flat into that row.
-        mirror_mock.assert_called_once()
-        assert mirror_mock.call_args.kwargs.get("thread_id") is None
-        assert mirror_mock.call_args[0][0] == "slack"
-        assert mirror_mock.call_args[0][1] == "C123"
-        assert "Here is today's brief." in mirror_mock.call_args[0][2]
+        # Brief appended to the exact resolved session under the same boundary.
+        adapter._session_store.append_to_transcript.assert_called_once()
+        appended = adapter._session_store.append_to_transcript.call_args
+        assert appended.args[0] == "cron-seeded-session"
+        assert "Here is today's brief." in appended.args[1]["content"]
+        mirror_mock.assert_not_called()
 
     def test_in_channel_dm_seeds_dm_session(self):
         """1:1 DM (chat_id starts with 'D'): the flat session is created with
@@ -4672,13 +4721,13 @@ class TestCronContinuableSurfaceInChannel:
             {"cron_continuable_surface": "in_channel"}, adapter,
             origin={"platform": "slack", "chat_id": "D999", "user_id": "U_HUMAN"},
         )
-        adapter._session_store.get_or_create_session.assert_called_once()
-        seeded = adapter._session_store.get_or_create_session.call_args[0][0]
+        adapter.resolve_session_entry.assert_awaited_once()
+        seeded = adapter._resolved_session_sources[0]
         assert seeded.chat_type == "dm", "a DM (chat_id starts with 'D') keys as dm"
         assert seeded.thread_id is None
         assert str(seeded.chat_id) == "D999"
-        mirror_mock.assert_called_once()
-        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+        adapter._session_store.append_to_transcript.assert_called_once()
+        mirror_mock.assert_not_called()
 
     def test_thread_mode_default_still_opens_thread(self):
         """G1 regression: the default (thread) mode is byte-identical — the
@@ -4728,14 +4777,33 @@ class TestCronContinuableSurfaceInChannel:
         store = MagicMock()
         adapter = MagicMock()
         adapter._session_store = store
+        resolved_sources = []
 
-        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+        async def _resolve(source, *, operation=None):
+            resolved_sources.append(source)
+            entry = MagicMock(session_id="channel-session")
+            if operation is not None:
+                operation(entry)
+            return entry
+
+        adapter.resolve_session_entry = AsyncMock(side_effect=_resolve)
+
+        def _run_now(coro, _loop):
+            from concurrent.futures import Future
+
+            future = Future()
+            future.set_result(asyncio.run(coro))
+            return future
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_run_now), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
             ok = _seed_cron_channel_session(
                 {"id": "j1", "name": "Brief"}, adapter, "slack", "C123",
                 "Daily brief", is_dm=False, user_id="U_HUMAN", chat_name="ops",
+                loop=MagicMock(),
             )
         assert ok is True
-        seeded_source = store.get_or_create_session.call_args[0][0]
+        seeded_source = resolved_sources[0]
         seed_key = build_session_key(seeded_source)
 
         # What a plain top-level channel reply (reply_in_thread:false → thread
@@ -4748,9 +4816,9 @@ class TestCronContinuableSurfaceInChannel:
             f"seed key {seed_key} != inbound reply key {build_session_key(inbound)} "
             "— the reply would NOT continue the seeded session"
         )
-        mirror_mock.assert_called_once()
-        assert mirror_mock.call_args.kwargs.get("thread_id") is None
-        assert mirror_mock.call_args.kwargs.get("user_id") == "U_HUMAN"
+        store.append_to_transcript.assert_called_once()
+        assert store.append_to_transcript.call_args.args[0] == "channel-session"
+        mirror_mock.assert_not_called()
 
     def test_seed_channel_session_key_matches_inbound_dm_reply(self):
         """DM case: seeded key (chat_type=dm) equals the inbound DM reply key.
@@ -4763,19 +4831,63 @@ class TestCronContinuableSurfaceInChannel:
         store = MagicMock()
         adapter = MagicMock()
         adapter._session_store = store
+        resolved_sources = []
 
-        with patch("gateway.mirror.mirror_to_session", return_value=True):
+        async def _resolve(source, *, operation=None):
+            resolved_sources.append(source)
+            entry = MagicMock(session_id="dm-session")
+            if operation is not None:
+                operation(entry)
+            return entry
+
+        adapter.resolve_session_entry = AsyncMock(side_effect=_resolve)
+
+        def _run_now(coro, _loop):
+            from concurrent.futures import Future
+
+            future = Future()
+            future.set_result(asyncio.run(coro))
+            return future
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_run_now), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
             _seed_cron_channel_session(
                 {"id": "j1"}, adapter, "slack", "D999", "Daily brief",
-                is_dm=True, user_id="U_HUMAN",
+                is_dm=True, user_id="U_HUMAN", loop=MagicMock(),
             )
-        seeded_source = store.get_or_create_session.call_args[0][0]
+        seeded_source = resolved_sources[0]
         inbound = SessionSource(
             platform=Platform.SLACK, chat_id="D999", chat_type="dm",
             user_id="U_HUMAN", thread_id=None,
         )
         assert build_session_key(seeded_source) == build_session_key(inbound)
         assert seeded_source.chat_type == "dm"
+        store.append_to_transcript.assert_called_once()
+        assert store.append_to_transcript.call_args.args[0] == "dm-session"
+        mirror_mock.assert_not_called()
+
+    def test_seed_channel_session_no_loop_uses_legacy_mirror_fallback(self):
+        from cron.scheduler import _seed_cron_channel_session
+
+        adapter = MagicMock()
+        adapter._session_store = MagicMock()
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            ok = _seed_cron_channel_session(
+                {"id": "j1"},
+                adapter,
+                "slack",
+                "C123",
+                "Daily brief",
+                is_dm=False,
+                user_id="U_HUMAN",
+                loop=None,
+            )
+
+        assert ok is True
+        adapter.resolve_session_entry.assert_not_called()
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs["thread_id"] is None
+        assert mirror_mock.call_args.kwargs["user_id"] == "U_HUMAN"
 
     def test_seed_channel_session_noop_on_empty_text(self):
         from cron.scheduler import _seed_cron_channel_session

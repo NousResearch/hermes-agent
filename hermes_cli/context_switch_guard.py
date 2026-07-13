@@ -12,6 +12,7 @@ so Herm TUI, CLI, and gateway surfaces that already show switch warnings pick it
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Callable, List, Optional
 
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
@@ -119,7 +120,7 @@ def merge_preflight_compression_warning(
     _append_warning(result, "".join(parts))
 
 
-def enrich_model_switch_warnings_for_gateway(
+async def enrich_model_switch_warnings_for_gateway(
     result: ModelSwitchResult,
     runner: Any,
     *,
@@ -152,11 +153,24 @@ def enrich_model_switch_warnings_for_gateway(
 
     messages = None
     db = getattr(runner, "_session_db", None)
-    store = getattr(runner, "session_store", None)
-    if db is not None and store is not None:
+    resolve_entry = getattr(
+        runner, "_get_or_create_session_at_process_delivery_boundary", None
+    )
+    if db is not None and resolve_entry is not None:
         try:
-            entry = store.get_or_create_session(source)
-            messages = db.get_messages_as_conversation(entry.session_id)
+            resolved_messages: dict[str, Any] = {}
+
+            async def _read_messages(entry: Any) -> None:
+                resolved_messages["value"] = await asyncio.to_thread(
+                    db.get_messages_as_conversation, entry.session_id
+                )
+
+            await resolve_entry(
+                source,
+                session_key,
+                operation=_read_messages,
+            )
+            messages = resolved_messages.get("value")
         except Exception:
             pass
 

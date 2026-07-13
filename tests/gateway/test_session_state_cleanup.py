@@ -231,51 +231,76 @@ class TestSessionDbCloseOnShutdown:
 
 
 class TestSessionResetZombieRace:
-    """Regression for #28686 — a session_reset racing the in-flight run's
-    guarded release must not leave a dead agent locking the slot forever.
-    """
+    """Reset owns stale-slot cleanup; old turns may only release their generation."""
 
-    def test_generation_guard_blocks_then_unconditional_release_evicts(self):
+    def test_reset_release_then_old_unwind_preserves_newer_generation(self):
         runner = _make_runner()
         runner._session_run_generation = {}
         key = "agent:main:telegram:private:1"
 
-        gen_n = runner._begin_session_run_generation(key)
-        dead_agent = MagicMock()
-        runner._running_agents[key] = dead_agent
+        old_generation = runner._begin_session_run_generation(key)
+        runner._running_agents[key] = MagicMock(name="old-agent")
         runner._running_agents_ts[key] = 1.0
         runner._busy_ack_ts[key] = 1.0
 
-        # session_reset bumps the generation while gen-N is still in flight.
+        # Reset invalidates first and explicitly clears the old slot.
         runner._invalidate_session_run_generation(key, reason="session_reset")
-
-        # gen-N's own guarded release is correctly blocked — slot would be a
-        # zombie if nothing else cleared it (the pre-fix behaviour).
-        assert runner._release_running_agent_state(key, run_generation=gen_n) is False
-        assert runner._running_agents.get(key) is dead_agent
-
-        # The fix: unconditional release (no run_generation) always clears it.
         assert runner._release_running_agent_state(key) is True
-        assert key not in runner._running_agents
-        assert key not in runner._running_agents_ts
-        assert key not in runner._busy_ack_ts
 
-    def test_normal_completion_is_not_evicted_by_outer_release(self):
-        """Guarded release with the current generation succeeds; the outer
-        unconditional release that follows is a harmless no-op.
-        """
+        # A replacement turn claims the same stable routing key.
+        new_generation = runner._begin_session_run_generation(key)
+        new_agent = MagicMock(name="new-agent")
+        runner._running_agents[key] = new_agent
+        runner._running_agents_ts[key] = 2.0
+        runner._busy_ack_ts[key] = 2.0
+
+        # The old handler's finally must not clear the replacement.
+        assert (
+            runner._release_running_agent_state(
+                key, run_generation=old_generation
+            )
+            is False
+        )
+        assert runner._is_session_run_current(key, new_generation)
+        assert runner._running_agents[key] is new_agent
+        assert runner._running_agents_ts[key] == 2.0
+        assert runner._busy_ack_ts[key] == 2.0
+
+    def test_normal_completion_guarded_release_clears_current_turn(self):
         runner = _make_runner()
         runner._session_run_generation = {}
         key = "agent:main:telegram:private:2"
 
-        gen = runner._begin_session_run_generation(key)
+        generation = runner._begin_session_run_generation(key)
         runner._running_agents[key] = MagicMock()
         runner._running_agents_ts[key] = 1.0
         runner._busy_ack_ts[key] = 1.0
 
-        assert runner._release_running_agent_state(key, run_generation=gen) is True
+        assert (
+            runner._release_running_agent_state(
+                key, run_generation=generation
+            )
+            is True
+        )
         assert key not in runner._running_agents
-        # Outer finally runs the unconditional release after — nothing stranded.
-        assert runner._release_running_agent_state(key) is True
         assert key not in runner._running_agents_ts
         assert key not in runner._busy_ack_ts
+
+
+class TestIdentityGuardedAgentCacheEviction:
+    def test_evicts_only_the_stale_agent_instance(self):
+        runner = _make_runner()
+        runner._agent_cache = {}
+        runner._agent_cache_lock = threading.Lock()
+        key = "agent:main:telegram:private:cache"
+        stale_agent = MagicMock(name="stale-agent")
+        newer_agent = MagicMock(name="newer-agent")
+
+        runner._agent_cache[key] = (stale_agent, "sig", 0, "sess-old")
+        assert runner._evict_cached_agent_if_identity(key, stale_agent) is True
+        assert key not in runner._agent_cache
+
+        # A newer turn may publish before the stale worker finishes unwinding.
+        runner._agent_cache[key] = (newer_agent, "sig", 0, "sess-new")
+        assert runner._evict_cached_agent_if_identity(key, stale_agent) is False
+        assert runner._agent_cache[key][0] is newer_agent

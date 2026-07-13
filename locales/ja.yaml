@@ -14,6 +14,17 @@ approval:
   denied:          "      ✗ 拒否しました"
   cancelled:       "      ✗ キャンセルしました"
   blocklist_message: "このコマンドは無条件ブロックリストに含まれており、承認できません。"
+  changes_prompt: "      📝 必要な変更を記述してください（空でキャンセル）: "
+  changes_empty: "      ✗ フィードバックなし - コマンドを拒否します"
+  changes_received: "      ✓ フィードバックを受信 - エージェントがコマンドを修正します"
+  button_once: "✅ 今回のみ許可"
+  button_session: "✅ セッション"
+  button_always: "✅ 常に"
+  button_changes: "📝 変更をリクエスト"
+  button_deny: "❌ 拒否"
+  changes_telegram_prompt: "📝 このメッセージに希望する変更を返信してください（拒否するには \"cancel\"）。"
+  changes_resolved: "📝 {user} から変更がリクエストされました"
+  changes_resolved_short: "📝 変更をリクエスト"
 
 gateway:
   approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"

@@ -14,6 +14,17 @@ approval:
   denied:          "      ✗ 已拒絕"
   cancelled:       "      ✗ 已取消"
   blocklist_message: "此指令位於無條件封鎖清單中，無法被批准。"
+  changes_prompt: "      📝 描述你需要的變更（留空取消）: "
+  changes_empty: "      ✗ 未提供回饋 - 拒絕命令"
+  changes_received: "      ✓ 已接收回饋 - 代理將修改命令"
+  button_once: "✅ 允許一次"
+  button_session: "✅ 本次對話"
+  button_always: "✅ 始終"
+  button_changes: "📝 要求修改"
+  button_deny: "❌ 拒絕"
+  changes_telegram_prompt: "📝 回覆此訊息並說明你想要的變更（或輸入 \"cancel\" 以拒絕）。"
+  changes_resolved: "📝 {user} 要求修改"
+  changes_resolved_short: "📝 要求修改"
 
 gateway:
   approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"

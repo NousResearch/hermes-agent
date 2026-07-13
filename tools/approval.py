@@ -93,6 +93,24 @@ def _is_interactive_cli() -> bool:
     return env_var_enabled("HERMES_INTERACTIVE")
 
 
+def _changes_message(feedback: str) -> str:
+    """Format the BLOCKED-with-feedback message returned to the agent.
+
+    Issue #25693: when the user requests changes, the agent needs a clear
+    signal that (a) the proposed command did NOT run, and (b) here is the
+    specific guidance for revising it. The wording is deliberately
+    actionable -- not just "BLOCKED: try again" -- so the next agent turn
+    has everything it needs to produce a corrected command on the first
+    retry.
+    """
+    return (
+        "BLOCKED: User requested changes to this command. The command did "
+        "NOT run. Revise the command according to the feedback below and "
+        "resubmit for approval.\n\n"
+        f"[Approval feedback]: {feedback}"
+    )
+
+
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     """Invoke a plugin lifecycle hook for the approval system.
 
@@ -1487,7 +1505,8 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
+                             reason: Optional[str] = None,
+                             feedback: str | None = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -1498,6 +1517,11 @@ def resolve_gateway_approval(session_key: str, choice: str,
     *reason* is an optional free-text explanation attached to an explicit
     deny (``/deny <reason>``).  It is relayed back to the agent in the
     BLOCKED message so it can adapt instead of only hearing "denied".
+
+    ``feedback`` carries free-form text when ``choice == "changes"`` (issue
+    #25693). It is ignored for every other choice; this keeps the public
+    signature additive and back-compat-safe with adapters / tests that
+    pre-date the feature.
 
     Returns the number of approvals resolved (0 means nothing was pending).
     """
@@ -1514,7 +1538,18 @@ def resolve_gateway_approval(session_key: str, choice: str,
             _gateway_queues.pop(session_key, None)
 
     for entry in targets:
-        entry.result = choice
+        if choice == "changes":
+            # Carry the feedback inline on the result so the agent thread
+            # can pick it up without a second lookup. An empty/whitespace
+            # feedback degrades to a plain deny -- never want to inject
+            # an empty user-feedback turn into the conversation.
+            text = (feedback or "").strip()
+            if not text:
+                entry.result = "deny"
+            else:
+                entry.result = {"choice": "changes", "feedback": text}
+        else:
+            entry.result = choice
         if reason:
             entry.reason = reason
         entry.event.set()
@@ -1688,7 +1723,7 @@ def save_permanent_allowlist(patterns: set):
 def prompt_dangerous_approval(command: str, description: str,
                               timeout_seconds: int | None = None,
                               allow_permanent: bool = True,
-                              approval_callback=None) -> str:
+                              approval_callback=None):
     """Prompt the user to approve a dangerous command (CLI only).
 
     Args:
@@ -1697,9 +1732,19 @@ def prompt_dangerous_approval(command: str, description: str,
             is inappropriate for content-level security findings).
         approval_callback: Optional callback registered by the CLI for
             prompt_toolkit integration. Signature:
-            (command, description, *, allow_permanent=True) -> str.
+            (command, description, *, allow_permanent=True) -> str | dict.
+            A dict return is treated as a structured response (e.g. for the
+            "request changes" flow); see the ``changes`` choice below.
 
-    Returns: 'once', 'session', 'always', or 'deny'
+    Returns:
+        Either a plain string choice (``"once" | "session" | "always" | "deny"``)
+        **or** a dict with ``{"choice": "changes", "feedback": "<user text>"}``
+        when the user selected "request changes" (issue #25693). The dict form
+        is back-compat-safe: callers that only check for ``== "deny"`` will
+        treat it as non-deny (correct -- the command is not running, but the
+        agent is being asked to revise it). The orchestrator in
+        :func:`check_dangerous_command` unwraps it into the public response
+        contract.
     """
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
@@ -1794,6 +1839,37 @@ def prompt_dangerous_approval(command: str, description: str,
                     return "session"
                 print(t("approval.allowed_always"))
                 return "always"
+            elif choice in {'c', 'changes', 'change', 'request', 'feedback'}:
+                # Capture free-text feedback so the agent can revise the
+                # command instead of just being denied. An empty response
+                # falls through to deny so we never re-prompt the agent
+                # with a useless empty hint.
+                feedback_result = {"text": ""}
+
+                def get_feedback():
+                    try:
+                        feedback_result["text"] = input(
+                            t("approval.changes_prompt")
+                        ).strip()
+                    except (EOFError, OSError):
+                        feedback_result["text"] = ""
+
+                feedback_thread = threading.Thread(
+                    target=get_feedback, daemon=True
+                )
+                feedback_thread.start()
+                # Use the same overall budget for the feedback capture so the
+                # user cannot deadlock the agent thread by walking away mid-flow.
+                feedback_thread.join(timeout=timeout_seconds)
+                if feedback_thread.is_alive():
+                    print("\n" + t("approval.timeout"))
+                    return "deny"
+                feedback = feedback_result["text"]
+                if not feedback:
+                    print(t("approval.changes_empty"))
+                    return "deny"
+                print(t("approval.changes_received"))
+                return {"choice": "changes", "feedback": feedback}
             else:
                 print(t("approval.denied"))
                 return "deny"
@@ -2841,6 +2917,32 @@ def check_all_command_guards(command: str, env_type: str,
             choice = decision["choice"]
             deny_reason = decision.get("reason")
 
+            # Unwrap structured "changes" payload so downstream branches
+            # can keep treating ``choice`` as a string. The gateway adapter
+            # (e.g. Telegram's Request-Changes button handler) resolves the
+            # approval with a dict ``{"choice": "changes", "feedback": ...}``
+            # rather than a bare string when the user requests a revision.
+            # _await_gateway_decision passes ``entry.result`` through
+            # unchanged, so we unwrap here at the consumer.  Issue #25693.
+            feedback_text: Optional[str] = None
+            if isinstance(choice, dict) and choice.get("choice") == "changes":
+                feedback_text = str(choice.get("feedback") or "").strip() or None
+                choice = "changes" if feedback_text else "deny"
+
+            if choice == "changes" and feedback_text:
+                # User wants the agent to revise the command rather than
+                # outright denying it. We return a structured BLOCKED so the
+                # agent gets a clear signal and the feedback text alongside.
+                # Issue #25693.
+                return {
+                    "approved": False,
+                    "changes_requested": True,
+                    "feedback": feedback_text,
+                    "message": _changes_message(feedback_text),
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                }
+
             if not resolved or choice is None or choice == "deny":
                 # Consent contract: silence is NOT consent, and an explicit
                 # deny is also a hard halt — both produce a BLOCKED outcome
@@ -2932,6 +3034,15 @@ def check_all_command_guards(command: str, env_type: str,
     choice = prompt_dangerous_approval(command, combined_desc,
                                        allow_permanent=not has_tirith,
                                        approval_callback=approval_callback)
+
+    # The CLI path may return a structured response for the "request
+    # changes" flow. Unwrap it before the rest of the function sees it,
+    # so existing string-based branches stay untouched. Issue #25693.
+    feedback_text: Optional[str] = None
+    if isinstance(choice, dict) and choice.get("choice") == "changes":
+        feedback_text = str(choice.get("feedback") or "").strip() or None
+        choice = "changes" if feedback_text else "deny"
+
     _fire_approval_hook(
         "post_approval_response",
         command=command,
@@ -2942,6 +3053,16 @@ def check_all_command_guards(command: str, env_type: str,
         surface="cli",
         choice=choice,
     )
+
+    if choice == "changes" and feedback_text:
+        return {
+            "approved": False,
+            "changes_requested": True,
+            "feedback": feedback_text,
+            "message": _changes_message(feedback_text),
+            "pattern_key": primary_key,
+            "description": combined_desc,
+        }
 
     if choice == "deny":
         return {

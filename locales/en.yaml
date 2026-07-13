@@ -13,17 +13,30 @@
 approval:
   # CLI approval prompt -- shown when a dangerous command needs user review.
   dangerous_header: "⚠️  DANGEROUS COMMAND: {description}"
-  choose_long:     "      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny"
-  choose_short:    "      [o]nce  |  [s]ession  |  [d]eny"
-  prompt_long:     "      Choice [o/s/a/D]: "
-  prompt_short:    "      Choice [o/s/D]: "
+  choose_long:     "      [o]nce  |  [s]ession  |  [a]lways  |  [c]hanges  |  [d]eny"
+  choose_short:    "      [o]nce  |  [s]ession  |  [c]hanges  |  [d]eny"
+  prompt_long:     "      Choice [o/s/a/c/D]: "
+  prompt_short:    "      Choice [o/s/c/D]: "
   timeout:         "      ⏱ Timeout - denying command"
   allowed_once:    "      ✓ Allowed once"
   allowed_session: "      ✓ Allowed for this session"
   allowed_always:  "      ✓ Added to permanent allowlist"
   denied:          "      ✗ Denied"
   cancelled:       "      ✗ Cancelled"
+  # "Request changes" path: capture free-text feedback for the agent.
+  changes_prompt:  "      📝 Describe the changes you need (empty cancels): "
+  changes_empty:   "      ✗ No feedback given - denying command"
+  changes_received: "      ✓ Feedback captured - agent will revise the command"
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
+  # Telegram / gateway buttons.
+  button_once:     "✅ Allow Once"
+  button_session:  "✅ Session"
+  button_always:   "✅ Always"
+  button_changes:  "📝 Request Changes"
+  button_deny:     "❌ Deny"
+  changes_telegram_prompt: "📝 Reply to this message with the changes you'd like (or \"cancel\" to deny instead)."
+  changes_resolved: "📝 Changes requested by {user}"
+  changes_resolved_short: "📝 Request changes"
 
 gateway:
   # Messenger replies to slash commands and implicit state changes.

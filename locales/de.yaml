@@ -14,6 +14,17 @@ approval:
   denied:          "      ✗ Abgelehnt"
   cancelled:       "      ✗ Abgebrochen"
   blocklist_message: "Dieser Befehl steht auf der unbedingten Sperrliste und kann nicht genehmigt werden."
+  changes_prompt: "      📝 Beschreibe die benötigten Änderungen (leer bricht ab): "
+  changes_empty: "      ✗ Kein Feedback gegeben – Befehl wird abgelehnt"
+  changes_received: "      ✓ Feedback erfasst – Agent überarbeitet den Befehl"
+  button_once: "✅ Einmal erlauben"
+  button_session: "✅ Sitzung"
+  button_always: "✅ Immer"
+  button_changes: "📝 Änderungen anfordern"
+  button_deny: "❌ Ablehnen"
+  changes_telegram_prompt: "📝 Antworte auf diese Nachricht mit den gewünschten Änderungen (oder \"cancel\" zum Ablehnen)."
+  changes_resolved: "📝 Änderungen angefordert von {user}"
+  changes_resolved_short: "📝 Änderungen anfordern"
 
 gateway:
   approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."

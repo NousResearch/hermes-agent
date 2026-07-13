@@ -14,6 +14,17 @@ approval:
   denied:          "      ✗ Elutasítva"
   cancelled:       "      ✗ Megszakítva"
   blocklist_message: "Ez a parancs a feltétel nélküli tiltólistán van, és nem hagyható jóvá."
+  changes_prompt: "      📝 Írd le a szükséges változtatásokat (üres megszítás): "
+  changes_empty: "      ✗ Nincs visszajelzés - parancs elutasítva"
+  changes_received: "      ✓ Visszajelzés rögzítve - az ügynök átdolgozza a parancsot"
+  button_once: "✅ Egyszer engedélyez"
+  button_session: "✅ Munkamenet"
+  button_always: "✅ Mindig"
+  button_changes: "📝 Változtatások kérése"
+  button_deny: "❌ Elutasít"
+  changes_telegram_prompt: "📝 Válaszolj erre az üzenetre a kívánt változtatásokkal (vagy \"cancel\" az elutasításhoz)."
+  changes_resolved: "📝 Változtatásokat kért: {user}"
+  changes_resolved_short: "📝 Változtatások kérése"
 
 gateway:
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."

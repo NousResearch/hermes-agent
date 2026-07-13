@@ -2514,6 +2514,27 @@ class TestProfileArg:
 
         assert result == "--profile mybot"
 
+    def test_service_default_profile_returns_explicit_flag(self, tmp_path):
+        """Managed services pin the default profile instead of following sticky state."""
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+
+        result = gateway_cli._service_profile_arg(
+            str(default_home), default_root=default_home
+        )
+
+        assert result == "--profile default"
+
+    def test_service_custom_root_pins_default_profile(self, tmp_path, monkeypatch):
+        """A custom Hermes root is that deployment's default profile."""
+        custom_home = tmp_path / "custom-home"
+        custom_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(custom_home))
+
+        result = gateway_cli._service_profile_arg(str(custom_home))
+
+        assert result == "--profile default"
+
     def test_hash_path_returns_empty(self, tmp_path, monkeypatch):
         """Arbitrary non-profile HERMES_HOME should return empty string."""
         custom_home = tmp_path / "custom" / "hermes"
@@ -2557,6 +2578,18 @@ class TestProfileArg:
         # on the manual launchd fallback path — see test_launchd_plist_includes_profile.)
         assert "--replace" not in unit
 
+    def test_systemd_unit_pins_default_profile(self, tmp_path, monkeypatch):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: default_home)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "--profile default gateway run" in unit
+        assert "--replace" not in unit
+
     def test_systemd_unit_for_target_user_includes_named_profile(self, tmp_path, monkeypatch):
         """sudo system install must keep the target user's named profile in ExecStart."""
         root_home = tmp_path / "root"
@@ -2579,6 +2612,27 @@ class TestProfileArg:
         assert "--profile mybot gateway run" in unit
         assert f'HERMES_HOME={target_home / ".hermes" / "profiles" / "mybot"}' in unit
 
+    def test_systemd_unit_for_target_user_pins_default_profile(
+        self, tmp_path, monkeypatch
+    ):
+        root_home = tmp_path / "root"
+        target_home = tmp_path / "home" / "alice"
+        default_home = target_home / ".hermes"
+        default_home.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: root_home)
+        monkeypatch.setenv("HERMES_HOME", str(root_home / ".hermes"))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", str(target_home)),
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert "--profile default gateway run" in unit
+        assert f'HERMES_HOME={default_home}' in unit
+
     def test_launchd_plist_includes_profile(self, tmp_path, monkeypatch):
         """generate_launchd_plist should include --profile in ProgramArguments for named profiles."""
         profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
@@ -2589,6 +2643,18 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
+
+    def test_launchd_plist_pins_default_profile(self, tmp_path, monkeypatch):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: default_home)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<string>--profile</string>" in plist
+        assert "<string>default</string>" in plist
 
     def test_launchd_plist_supports_aqua_and_background_sessions(self):
         # macOS 26+ only loads the agent in non-Aqua sessions when the plist

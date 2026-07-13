@@ -199,9 +199,9 @@ def _is_running_as_admin() -> bool:
 
 def _current_profile_cli_args() -> list[str]:
     """Return CLI args that preserve the current Hermes profile."""
-    from hermes_cli.gateway import _profile_arg
+    from hermes_cli.gateway import _service_profile_arg
 
-    profile_arg = _profile_arg()
+    profile_arg = _service_profile_arg()
     return shlex.split(profile_arg) if profile_arg else []
 
 
@@ -531,14 +531,14 @@ def _write_task_script() -> Path:
     from hermes_cli.config import get_hermes_home
     from hermes_cli.gateway import (
         PROJECT_ROOT,
-        _profile_arg,
+        _service_profile_arg,
         get_python_path,
     )
 
     python_path = _preserve_hermes_home_path(get_python_path())
     working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
     hermes_home = str(Path(get_hermes_home()))
-    profile_arg = _profile_arg(hermes_home)
+    profile_arg = _service_profile_arg(hermes_home)
 
     content = _build_gateway_cmd_script(python_path, working_dir, hermes_home, profile_arg)
     script_path = get_task_script_path()
@@ -777,7 +777,7 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     from hermes_cli.config import get_hermes_home
     from hermes_cli.gateway import (
         PROJECT_ROOT,
-        _profile_arg,
+        _service_profile_arg,
         get_python_path,
     )
 
@@ -787,7 +787,7 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     project_root = _preserve_hermes_home_path(PROJECT_ROOT)
     working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
     hermes_home = str(Path(get_hermes_home()))
-    profile_arg = _profile_arg(hermes_home)
+    profile_arg = _service_profile_arg(hermes_home)
 
     argv = [python_exe, "-m", "hermes_cli.main"]
     if profile_arg:
@@ -1005,7 +1005,7 @@ def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -
     # Startup-folder fallback only installs login persistence. Starting is
     # controlled by the pre-UAC start_now answer so all user decisions happen
     # before any elevation prompt.
-    from hermes_cli.gateway import find_gateway_pids, _profile_arg
+    from hermes_cli.gateway import find_gateway_pids, _service_profile_arg
 
     running_pids = list(find_gateway_pids())
     if running_pids:
@@ -1014,7 +1014,7 @@ def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -
         pid = _spawn_detached()
         _report_gateway_start(f"direct spawn (PID {pid})")
     else:
-        profile_arg = _profile_arg()
+        profile_arg = _service_profile_arg()
         start_cmd = f"hermes {profile_arg} gateway start" if profile_arg else "hermes gateway start"
         print("ℹ Startup fallback installed; gateway not started now.")
         print(f"  Start manually with: {start_cmd}")
@@ -1127,7 +1127,7 @@ def install(
         # Startup-folder fallback only installs login persistence. Starting is
         # controlled by the pre-UAC start_now answer so all user decisions happen
         # before any elevation prompt.
-        from hermes_cli.gateway import find_gateway_pids, _profile_arg
+        from hermes_cli.gateway import find_gateway_pids, _service_profile_arg
 
         running_pids = list(find_gateway_pids())
         if running_pids:
@@ -1136,7 +1136,7 @@ def install(
             pid = _spawn_detached()
             _report_gateway_start(f"direct spawn (PID {pid})")
         else:
-            profile_arg = _profile_arg()
+            profile_arg = _service_profile_arg()
             start_cmd = f"hermes {profile_arg} gateway start" if profile_arg else "hermes gateway start"
             print("ℹ Startup fallback installed; gateway not started now.")
             print(f"  Start manually with: {start_cmd}")

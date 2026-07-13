@@ -373,6 +373,39 @@ def _apply_profile_override() -> None:
             return False
         return True
 
+    def _is_supervised_gateway_runtime() -> bool:
+        """Return whether a service manager owns this gateway runtime.
+
+        Interactive ``hermes gateway run`` intentionally follows the sticky
+        active profile. A supervised gateway has a fixed service identity and
+        must instead keep the HERMES_HOME supplied by its unit/plist. Keep the
+        test narrow so unrelated launch jobs and gateway management commands
+        retain the interactive routing contract from issue #22502.
+        """
+        try:
+            gateway_index = argv.index("gateway")
+        except ValueError:
+            return False
+        if gateway_index + 1 >= len(argv) or argv[gateway_index + 1] != "run":
+            return False
+
+        if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+            return True
+        if os.environ.get("HERMES_GATEWAY_DETACHED", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            return True
+        if os.environ.get("INVOCATION_ID"):
+            return True
+
+        xpc_service = os.environ.get("XPC_SERVICE_NAME", "")
+        return xpc_service == "ai.hermes.gateway" or xpc_service.startswith(
+            "ai.hermes.gateway-"
+        )
+
     def _resolve_sudo_user_profile_env(name: str) -> str | None:
         """Resolve `sudo hermes -p <name>` against the invoking user's home.
 
@@ -474,17 +507,15 @@ def _apply_profile_override() -> None:
 
     # 2. If no flag, check active_profile in the hermes root.
     #
-    # EXCEPTION: a supervised s6 gateway child (exported by the container
-    # run-script as HERMES_S6_SUPERVISED_CHILD=1) must NOT follow the sticky
-    # active_profile. Each supervised slot has a fixed profile identity: named
-    # slots pass ``-p <name>`` explicitly (handled in step 1 above), and the
-    # reserved ``gateway-default`` slot runs bare ``hermes gateway run`` to mean
-    # "the root HERMES_HOME profile". If the reserved default child read
-    # active_profile here, switching the active profile (e.g. via the dashboard)
-    # would silently redirect the default gateway into that profile — yielding a
-    # duplicate gateway for the active profile and no real default gateway. See
-    # the "Docker & Profiles & Dashboard" report.
-    if profile_name is None and not os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+    # EXCEPTION: a supervised gateway runtime must NOT follow the sticky
+    # active_profile. Each service has a fixed profile identity: named services
+    # pass ``-p <name>`` explicitly (handled in step 1), while a legacy default
+    # service may still run bare with its root HERMES_HOME supplied by the
+    # supervisor. Redirecting that process would create a duplicate named
+    # gateway and no real default gateway. Generated service definitions now
+    # pass ``--profile default`` too; this guard keeps already-installed units
+    # safe until they are refreshed.
+    if profile_name is None and not _is_supervised_gateway_runtime():
         try:
             from hermes_constants import get_default_hermes_root
 

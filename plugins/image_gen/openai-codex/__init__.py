@@ -40,6 +40,24 @@ from agent.image_gen_provider import (
 logger = logging.getLogger(__name__)
 
 
+class CodexImageGenerationUnsupportedError(RuntimeError):
+    """The active Codex account cannot use the hosted image tool."""
+
+
+_IMAGE_GENERATION_UNAVAILABLE_MESSAGE = (
+    "Image generation is not enabled for the current Codex account. "
+    "Switch the image provider to OpenAI API key, FAL, or xAI."
+)
+
+
+def _is_image_generation_unsupported_error(status_code: int, body: str) -> bool:
+    """Match only Codex's account-capability rejection for the image tool."""
+    if status_code != 400:
+        return False
+    normalized = " ".join((body or "").lower().split())
+    return "tool choice 'image_generation' not found in 'tools' parameter" in normalized
+
+
 # ---------------------------------------------------------------------------
 # Model catalog — mirrors the ``openai`` plugin so the picker UX is identical.
 # ---------------------------------------------------------------------------
@@ -394,6 +412,11 @@ def _collect_image_b64(
             except httpx.HTTPStatusError as exc:
                 exc.response.read()
                 body = exc.response.text[:500]
+                if _is_image_generation_unsupported_error(
+                    exc.response.status_code,
+                    body,
+                ):
+                    raise CodexImageGenerationUnsupportedError(body) from exc
                 raise RuntimeError(
                     f"Codex Responses API returned HTTP {exc.response.status_code}: {body}"
                 ) from exc
@@ -541,6 +564,19 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 size=size,
                 quality=meta["quality"],
                 input_images=input_images or None,
+            )
+        except CodexImageGenerationUnsupportedError:
+            logger.debug(
+                "Codex account does not expose image generation",
+                exc_info=True,
+            )
+            return error_response(
+                error=_IMAGE_GENERATION_UNAVAILABLE_MESSAGE,
+                error_type="capability_unsupported",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)

@@ -21,7 +21,9 @@ const { join } = path
 function makeFakeNode(filePath, platform) {
   const headers = {
     linux:   Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x00, 0x00, 0x00]), // ELF
-    darwin:  Buffer.from([0xfe, 0xed, 0xfa, 0xcf, 0x00, 0x00, 0x00, 0x00]), // Mach-O 64-bit
+    // On x64/arm64 Darwin, Mach-O binaries are stored little-endian on disk
+    // (MH_CIGAM_64 = cffaedfe). This is the form node-pty's prebuilds ship in.
+    darwin:  Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00, 0x00, 0x00, 0x00]), // Mach-O 64-bit LE (CIGAM_64)
     win32:   Buffer.from([0x4d, 0x5a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),  // MZ (PE)
   }
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -54,7 +56,7 @@ test('classifyNativeBinary detects ELF as linux', () => {
   }
 })
 
-test('classifyNativeBinary detects Mach-O 64-bit as darwin', () => {
+test('classifyNativeBinary detects Mach-O 64-bit BE as darwin', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {
     const f = join(tmp, 'test.node')
@@ -65,11 +67,55 @@ test('classifyNativeBinary detects Mach-O 64-bit as darwin', () => {
   }
 })
 
-test('classifyNativeBinary detects Mach-O 32-bit as darwin', () => {
+test('classifyNativeBinary detects Mach-O 64-bit LE (CIGAM_64) as darwin', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const f = join(tmp, 'test.node')
+    fs.writeFileSync(f, Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00, 0x00]))
+    assert.equal(classifyNativeBinary(f), 'darwin')
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('classifyNativeBinary detects Mach-O 32-bit BE as darwin', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {
     const f = join(tmp, 'test.node')
     fs.writeFileSync(f, Buffer.from([0xfe, 0xed, 0xfa, 0xce, 0x00, 0x00]))
+    assert.equal(classifyNativeBinary(f), 'darwin')
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('classifyNativeBinary detects Mach-O 32-bit LE (CIGAM) as darwin', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const f = join(tmp, 'test.node')
+    fs.writeFileSync(f, Buffer.from([0xce, 0xfa, 0xed, 0xfe, 0x00, 0x00]))
+    assert.equal(classifyNativeBinary(f), 'darwin')
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('classifyNativeBinary detects Fat/Universal BE (cafebabe) as darwin', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const f = join(tmp, 'test.node')
+    fs.writeFileSync(f, Buffer.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00]))
+    assert.equal(classifyNativeBinary(f), 'darwin')
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('classifyNativeBinary detects Fat/Universal LE (bebafeca / FAT_CIGAM) as darwin', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const f = join(tmp, 'test.node')
+    fs.writeFileSync(f, Buffer.from([0xbe, 0xba, 0xfe, 0xca, 0x00, 0x00]))
     assert.equal(classifyNativeBinary(f), 'darwin')
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })

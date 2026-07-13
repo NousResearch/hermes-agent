@@ -494,7 +494,7 @@ export default function App() {
         <PluginSlot name="backdrop" />
       </div>
 
-      <header
+      <div
         className={cn(
           "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
           "flex items-center gap-2 px-4 py-2",
@@ -522,7 +522,7 @@ export default function App() {
         <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
           {t.app.brand}
         </Typography>
-      </header>
+      </div>
 
       {mobileOpen && (
         <Button

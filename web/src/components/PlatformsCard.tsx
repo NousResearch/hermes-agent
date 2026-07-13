@@ -2,7 +2,7 @@ import { AlertTriangle, PowerOff, Radio, Wifi, WifiOff } from "lucide-react";
 import type { PlatformStatus } from "@/lib/api";
 import { isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { Card, CardContent, CardHeader } from "@nous-research/ui/ui/components/card";
 import { useI18n } from "@/i18n";
 
 export function PlatformsCard({ platforms }: PlatformsCardProps) {
@@ -22,9 +22,9 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
       <CardHeader>
         <div className="flex items-center gap-2">
           <Radio className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">
+          <h2 className="font-expanded text-base font-bold tracking-[0.08em] uppercase">
             {t.status.connectedPlatforms}
-          </CardTitle>
+          </h2>
         </div>
       </CardHeader>
 

@@ -15,16 +15,15 @@
  *     /login (the dashboard becomes inaccessible again)
  *
  * Failure modes:
- *   - 401 from /api/auth/me means we're not gated (or the gate is on but
- *     we have no cookie — in that case the gate's middleware would have
- *     redirected us before App.tsx renders, so we won't see this). The
- *     widget renders nothing.
- *   - Network error: shows a minimal "auth status unavailable" message
+ *   - The server-injected auth-required flag is false in loopback mode, so
+ *     the widget renders nothing without issuing an expected-failure probe.
+ *   - Network error in gated mode shows a minimal "auth status unavailable" message
  *     so the user knows the widget tried.
  */
 
 import { useEffect, useState } from "react";
 import { api, type AuthMeResponse } from "@/lib/api";
+import { shouldProbeDashboardAuth } from "@/lib/dashboard-auth";
 import { cn } from "@/lib/utils";
 import { LogOut } from "lucide-react";
 
@@ -41,12 +40,14 @@ function truncateUserId(id: string): string {
 }
 
 export function AuthWidget({ className }: AuthWidgetProps) {
+  const authRequired = shouldProbeDashboardAuth();
   const [me, setMe] = useState<AuthMeResponse | null>(null);
-  const [hidden, setHidden] = useState(false);
+  const [hidden, setHidden] = useState(!authRequired);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    if (!authRequired) return;
     api
       .getAuthMe()
       .then((data) => {
@@ -55,11 +56,9 @@ export function AuthWidget({ className }: AuthWidgetProps) {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        // 401 from /api/auth/me means the gate isn't engaged in this
-        // process (loopback mode) — render nothing. fetchJSON throws an
-        // Error with the status code as a prefix; the global 401
-        // handler only redirects on the structured envelope, so a plain
-        // 401 from /api/auth/me with no envelope bubbles up here.
+        // A 401/403 in gated mode means the session expired between the
+        // document load and this identity request. The middleware normally
+        // redirects first, but keep the widget quiet during that race.
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.startsWith("401:") || msg.startsWith("403:")) {
           setHidden(true);
@@ -70,7 +69,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authRequired]);
 
   if (hidden) return null;
 

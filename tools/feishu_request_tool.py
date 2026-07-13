@@ -71,8 +71,9 @@ _FEISHU_ENDPOINTS = [
     # official docs (GET .../drive/explorer/v2/root_folder/meta).
     ("GET", "/open-apis/drive/explorer/v2/root_folder/meta"),
     ("GET", "/open-apis/drive/v1/files/:file_token/comments"),
-    # new_comments mirrors feishu_drive_tool._ADD_COMMENT_URI (shipping code);
-    # it is the whole-document-comment endpoint, distinct from .../comments.
+    # Official "Add a Global Comment" is POST .../comments (open.feishu.cn).
+    # new_comments is still used by tools/feishu_drive_tool._ADD_COMMENT_URI.
+    ("POST", "/open-apis/drive/v1/files/:file_token/comments"),
     ("POST", "/open-apis/drive/v1/files/:file_token/new_comments"),
     ("GET", "/open-apis/drive/v1/files/:file_token/comments/:comment_id/replies"),
     ("POST", "/open-apis/drive/v1/files/:file_token/comments/:comment_id/replies"),

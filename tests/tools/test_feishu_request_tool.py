@@ -44,6 +44,14 @@ class TestEndpointValidation(unittest.TestCase):
         self.assertEqual(template, "/open-apis/drive/v1/files/:file_token/comments")
         self.assertEqual(paths, {"file_token": "Lv4SdXIhAou70nxGvwLc"})
 
+    def test_add_global_comment_official_path(self):
+        # Official docs: POST /open-apis/drive/v1/files/:file_token/comments
+        template, paths = validate_endpoint(
+            "POST", "/open-apis/drive/v1/files/Lv4SdXIhAou70nxGvwLc/comments"
+        )
+        self.assertEqual(template, "/open-apis/drive/v1/files/:file_token/comments")
+        self.assertEqual(paths, {"file_token": "Lv4SdXIhAou70nxGvwLc"})
+
     def test_two_token_segments_extracted(self):
         template, paths = validate_endpoint(
             "PUT",

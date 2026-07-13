@@ -5580,6 +5580,56 @@ class TestRunConversation:
         assert agent.context_compressor.context_length == 200_000
         mock_compress.assert_not_called()
 
+    def test_output_cap_retry_with_compression_disabled_vllm_format(self, agent):
+        """vLLM/LM Studio error messages contain 'prompt contains ... input
+        tokens' which is_output_cap_error() treats as an input-overflow signal
+        (returns False).  But parse_available_output_tokens_from_error() CAN
+        extract a valid available_tokens from them.  The compression-disabled
+        guard must exempt these too — otherwise users on vLLM/LM Studio with
+        compression off get a terminal failure instead of a max-tokens retry.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = False
+        agent.context_compressor.context_length = 131_072
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        # vLLM-format error (from tests/test_output_cap_parsing.py)
+        error_msg = (
+            "This model's maximum context length is 131072 tokens. "
+            "However, you requested 1024 output tokens and your prompt "
+            "contains at least 65537 input tokens, for a total of at least "
+            "66561 tokens."
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert len(agent.client.chat.completions.create.call_args_list) == 2
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        assert result.get("compaction_disabled") is None
+        # parse_available_output_tokens_from_error returns 65535 for this message
+        assert second_call["max_tokens"] <= 65471  # 65535 - 64
+        assert agent.context_compressor.context_length == 131_072
+        mock_compress.assert_not_called()
+
 
 class TestHookPayloadSanitizesSimpleNamespace:
     """Regression: ``_hook_jsonable`` referenced ``SimpleNamespace`` without

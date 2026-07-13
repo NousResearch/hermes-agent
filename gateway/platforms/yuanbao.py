@@ -1428,10 +1428,15 @@ class RecallGuardMiddleware(InboundMiddleware):
                             # rewrite_transcript() is destructive by default
                             # and would DELETE any soft-archived rows a prior
                             # in-place compaction kept on disk. Preserve them.
+                            # A failed probe means we genuinely don't know
+                            # whether archived rows exist, so fail safe:
+                            # active_only=True is a no-op when nothing is
+                            # archived, and only ever *preserves* data the
+                            # False default would otherwise destroy.
                             try:
                                 has_archived = store.has_archived_messages(sid)
                             except Exception:
-                                has_archived = False
+                                has_archived = True
                             store.rewrite_transcript(sid, transcript, active_only=has_archived)
                             logger.info("[%s] Recall redact: session %s", adapter.name, session_key[:30])
                         except Exception as exc:
@@ -1496,10 +1501,14 @@ class RecallGuardMiddleware(InboundMiddleware):
                 # rewrite_transcript() is destructive by default and would
                 # DELETE any soft-archived rows a prior in-place compaction
                 # kept on disk. Preserve them.
+                # A failed probe means we genuinely don't know whether
+                # archived rows exist, so fail safe: active_only=True is a
+                # no-op when nothing is archived, and only ever *preserves*
+                # data the False default would otherwise destroy.
                 try:
                     has_archived = store.has_archived_messages(sid)
                 except Exception:
-                    has_archived = False
+                    has_archived = True
                 store.rewrite_transcript(sid, transcript, active_only=has_archived)
                 logger.info("[%s] Recall: redacted msg_id=%s (%s)", adapter.name, recalled_id, branch_label)
             except Exception as exc:

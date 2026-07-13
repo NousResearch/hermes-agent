@@ -196,3 +196,55 @@ class TestRecallPreservesArchivedTranscript:
         active_history = store.load_transcript(sid)
         assert len(active_history) == 1
         assert active_history[0]["content"] != "sensitive content"
+
+    def test_patch_transcript_fails_safe_when_archive_probe_raises(self, tmp_path, monkeypatch):
+        """If has_archived_messages() itself raises, the rewrite must not
+        assume "no archived rows" (active_only=False) — that would destroy
+        real archived history whenever the probe merely failed to answer.
+        The safe default is active_only=True: a no-op when nothing is
+        archived, and preserves data whenever something actually is.
+        """
+        _pin_db(monkeypatch, tmp_path)
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+
+        sid = "test-yuanbao-recall-probe-failure"
+        store._db.create_session(session_id=sid, source="yuanbao:direct:acct3")
+        store.append_to_transcript(sid, {"role": "user", "content": "pre-compaction turn"})
+        store.append_to_transcript(sid, {"role": "assistant", "content": "pre-compaction reply"})
+        store._db.archive_and_compact(sid, [
+            {"role": "system", "content": "[compacted summary]"},
+        ])
+        assert store.has_archived_messages(sid) is True
+
+        store.append_to_transcript(sid, {
+            "role": "user",
+            "content": "sensitive content",
+            "message_id": "platform-msg-recall-3",
+        })
+
+        monkeypatch.setattr(store, "get_or_create_session", lambda source: SimpleNamespace(session_id=sid))
+        # Simulate the probe itself failing (e.g. a transient DB error),
+        # rather than genuinely reporting "no archived rows".
+        monkeypatch.setattr(
+            store, "has_archived_messages",
+            lambda session_id: (_ for _ in ()).throw(RuntimeError("db probe failed")),
+        )
+
+        adapter = _make_adapter(store, group_code="", from_account="acct3")
+        RecallGuardMiddleware._patch_transcript(
+            adapter, recalled_id="platform-msg-recall-3",
+            group_code="", from_account="acct3",
+        )
+
+        # The archived pre-compaction turns must survive despite the probe
+        # failure — the rewrite must not have defaulted to destructive mode.
+        full_history = store._db.get_messages_as_conversation(sid, include_inactive=True)
+        contents = [m["content"] for m in full_history]
+        assert "pre-compaction turn" in contents
+        assert "pre-compaction reply" in contents
+
+        # And the redaction itself must still have taken effect.
+        active_history = store.load_transcript(sid)
+        redacted = next(m for m in active_history if m.get("message_id") == "platform-msg-recall-3")
+        assert redacted["content"] != "sensitive content"

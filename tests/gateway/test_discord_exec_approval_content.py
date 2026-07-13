@@ -40,12 +40,18 @@ async def test_exec_approval_prompt_uses_visible_content_with_command_and_reason
     assert sent["embed"] is not None
 
     prompt_text = sent["content"]
-    assert "Command Approval Required" in prompt_text
-    assert "Do you want Hermes to run this command?" in prompt_text
-    assert "Requested command" in prompt_text
+    assert "Approval needed" in prompt_text
+    assert "What Hermes wants to do" in prompt_text
+    assert "deployment" in prompt_text
+    assert "Risk: 🔴 HIGH" in prompt_text
+    assert "Approval scope" in prompt_text
+    assert "Technical details" in prompt_text
     assert command in prompt_text
-    assert "Reason" in prompt_text
+    assert "Why Hermes paused" in prompt_text
     assert "script execution via -c flag" in prompt_text
+
+    assert sent["view"].allow_session_scope is False
+    assert sent["view"].allow_permanent_scope is False
 
 
 @pytest.mark.asyncio
@@ -65,4 +71,4 @@ async def test_exec_approval_prompt_truncates_long_command_in_content():
     assert len(sent["content"]) <= adapter.MAX_MESSAGE_LENGTH
     assert "... [truncated]" in sent["content"]
     assert "long generated shell command" in sent["content"]
-    assert len(sent["embed"].description) > len(sent["content"])
+    assert "What Hermes wants to do" in sent["embed"].description

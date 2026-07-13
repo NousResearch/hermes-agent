@@ -46,11 +46,12 @@ async def test_exec_approval_mentions_allowed_users_when_enabled(monkeypatch):
     )
 
     assert result.success is True
+    assert channel.sent_kwargs is not None
     # Mentions are prepended to the (always present) content mirror.
     assert channel.sent_kwargs["content"].startswith("<@111> <@222>\n")
     assert "make check" in channel.sent_kwargs["content"]
     assert "allowed_mentions" in channel.sent_kwargs
-    assert channel.sent_kwargs["embed"].title.endswith("Command Approval Required")
+    assert "Approval needed" in channel.sent_kwargs["embed"].title
 
 
 @pytest.mark.asyncio

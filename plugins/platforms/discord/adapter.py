@@ -126,6 +126,7 @@ from gateway.platforms.base import (
     validate_inbound_media_size,
 )
 from tools.url_safety import is_safe_url
+from tools.approval_summary import summarize_command_approval
 
 
 def _truncate_discord_component_text(text: str, limit: int) -> str:
@@ -5603,17 +5604,22 @@ class DiscordAdapter(BasePlatformAdapter):
             if len(reason_display) > reason_budget:
                 reason_display = reason_display[: reason_budget - 15] + "... [truncated]"
 
+            summary = summarize_command_approval(command, description)
+            summary_markdown = summary.to_markdown()
             prompt_prefix = (
-                "⚠️ **Command Approval Required**\n\n"
-                "Do you want Hermes to run this command?\n\n"
-                "**Requested command:**\n```bash\n"
+                "⚠️ **Approval needed**\n\n"
+                f"{summary_markdown}\n\n"
+                "**Technical details**\n```bash\n"
             )
             if smart_denied:
-                prompt_prefix += "**Smart DENY:** owner override applies to this one operation only.\n\n"
+                prompt_prefix = (
+                    "**Smart DENY:** an owner may override this one operation only.\n\n"
+                    + prompt_prefix
+                )
             mention_content = self._approval_mention_content()
             if mention_content:
                 prompt_prefix = f"{mention_content}\n{prompt_prefix}"
-            prompt_tail = f"\n```\n**Reason:** {reason_display}"
+            prompt_tail = f"\n```\n**Why Hermes paused:** {reason_display}"
             truncated_suffix = "\n... [truncated]"
             command_budget = max(0, self.MAX_MESSAGE_LENGTH - len(prompt_prefix) - len(prompt_tail))
             content_cmd_display = str(command or "")
@@ -5628,14 +5634,21 @@ class DiscordAdapter(BasePlatformAdapter):
             # for clients where embeds render correctly.
             max_embed_desc = 4088
             embed_cmd_display = str(command or "")
-            if len(embed_cmd_display) > max_embed_desc:
-                embed_cmd_display = embed_cmd_display[: max_embed_desc - 3] + "..."
+            technical_prefix = f"{summary_markdown}\n\n**Technical details**\n```bash\n"
+            technical_tail = "\n```"
+            embed_command_budget = max(
+                0, max_embed_desc - len(technical_prefix) - len(technical_tail)
+            )
+            if len(embed_cmd_display) > embed_command_budget:
+                embed_cmd_display = (
+                    embed_cmd_display[: max(0, embed_command_budget - 3)] + "..."
+                )
             embed = discord.Embed(
-                title="⚠️ Command Approval Required",
-                description=f"```\n{embed_cmd_display}\n```",
+                title=f"⚠️ Approval needed — {summary.risk_level.upper()} risk",
+                description=f"{technical_prefix}{embed_cmd_display}{technical_tail}",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Reason", value=reason_display, inline=False)
+            embed.add_field(name="Why Hermes paused", value=reason_display, inline=False)
 
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(
                 getattr(self.config, "extra", None)
@@ -5646,7 +5659,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
                 require_admin=require_admin,
                 admin_user_ids=admin_user_ids,
-                allow_permanent=allow_permanent,
+                allow_session=not summary.once_only,
+                allow_permanent=allow_permanent and not summary.once_only,
                 smart_denied=smart_denied,
             )
 
@@ -6829,7 +6843,9 @@ def _define_discord_view_classes() -> None:
         """
         Interactive button view for exec approval of dangerous commands.
 
-        Shows four buttons: Allow Once, Allow Session, Always Allow, Deny.
+        Shows Allow Once and Deny for every request. Session/permanent choices
+        are shown only when the approval scope is narrow enough; broad inline,
+        destructive, or unknown operations are intentionally one-time only.
         Clicking a button calls ``resolve_gateway_approval()`` to unblock the
         waiting agent thread — the same mechanism as the text ``/approve`` flow.
         Only users in the allowed list can click.  Times out after 5 minutes.
@@ -6842,6 +6858,7 @@ def _define_discord_view_classes() -> None:
             allowed_role_ids: Optional[set] = None,
             require_admin: bool = False,
             admin_user_ids: Optional[set] = None,
+            allow_session: bool = True,
             allow_permanent: bool = True,
             smart_denied: bool = False,
         ):
@@ -6857,11 +6874,24 @@ def _define_discord_view_classes() -> None:
                 str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()
             }
             self.resolved = False
+            self.allow_session_scope = allow_session
+            self.allow_permanent_scope = allow_permanent
+
+            def _remove_button(item) -> None:
+                remove_item = getattr(self, "remove_item", None)
+                if callable(remove_item):
+                    remove_item(item)
+                elif item in self.children:  # lightweight gateway test double
+                    self.children.remove(item)
+
             if smart_denied:
-                self.remove_item(self.allow_session)
-                self.remove_item(self.allow_always)
-            elif not allow_permanent:
-                self.remove_item(self.allow_always)
+                _remove_button(self.allow_session)
+                _remove_button(self.allow_always)
+            else:
+                if not allow_session:
+                    _remove_button(self.allow_session)
+                if not allow_permanent:
+                    _remove_button(self.allow_always)
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized.

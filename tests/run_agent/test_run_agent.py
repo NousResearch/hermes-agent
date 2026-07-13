@@ -143,6 +143,31 @@ def test_persist_user_message_override_preserves_multimodal_turns(agent):
     assert messages == [{"role": "user", "content": multimodal_content}]
 
 
+def test_flush_persist_override_replaces_api_local_multimodal_note(agent):
+    """A note-added multimodal API payload stores the original clean content."""
+    clean_content = [
+        {"type": "text", "text": "Describe this screenshot"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    api_content = [
+        {"type": "text", "text": "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    agent._session_db = MagicMock()
+    agent._session_db_created = True
+    agent.session_id = "session-123"
+    agent._last_flushed_db_idx = 0
+    agent._persist_user_message_idx = 0
+    agent._persist_user_message_override = clean_content
+    agent._persist_user_message_timestamp = None
+
+    agent._flush_messages_to_session_db([{"role": "user", "content": api_content}], [])
+
+    db_write = agent._session_db.append_message.call_args.kwargs
+    assert db_write["content"] == "Describe this screenshot\n[screenshot]"
+    assert api_content[0]["text"] == "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"
+
+
 @pytest.fixture()
 def agent_with_memory_tool():
     """Agent whose valid_tool_names includes 'memory'."""

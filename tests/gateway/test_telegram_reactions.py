@@ -206,6 +206,18 @@ async def test_on_processing_complete_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_control_center_keeps_single_eyes_reaction_on_success(monkeypatch):
+    """JAIMES Control Center should not add a second completion reaction."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    event = _make_event(chat_id="-1003589561528")
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    adapter._bot.set_message_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_on_processing_complete_skipped_when_disabled(monkeypatch):
     """Processing complete should not react when reactions are disabled."""
     monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)

@@ -9411,6 +9411,11 @@ class TelegramAdapter(BasePlatformAdapter):
         message_id = getattr(event, "message_id", None)
         if not (chat_id and message_id):
             return
+        # JAIMES: Control Center uses one acknowledgement-only reaction. Keep
+        # the initial eyes reaction instead of replacing it with a second
+        # thumbs-up/down reaction when processing completes.
+        if str(chat_id) == "-1003589561528" and outcome != ProcessingOutcome.CANCELLED:
+            return
         if outcome == ProcessingOutcome.CANCELLED:
             await self._clear_reactions(chat_id, message_id)
         else:

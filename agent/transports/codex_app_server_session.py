@@ -1251,6 +1251,7 @@ class CodexAppServerSession:
             options = question_obj.get("options")
             choices: Optional[list[str]] = None
             canonical_choices: dict[str, str] = {}
+            canonical_labels: set[str] = set()
             if options is not None:
                 if not isinstance(options, list) or len(options) > 4:
                     self._client.respond_error(
@@ -1276,8 +1277,17 @@ class CodexAppServerSession:
                             message="Invalid request_user_input option label",
                         )
                         return
+                    canonical_label = label.strip()
+                    if canonical_label in canonical_labels:
+                        self._client.respond_error(
+                            rid,
+                            code=-32602,
+                            message="Duplicate canonical request_user_input option",
+                        )
+                        return
+                    canonical_labels.add(canonical_label)
                     description = option.get("description")
-                    rendered = label.strip()
+                    rendered = canonical_label
                     if isinstance(description, str) and description.strip():
                         rendered = f"{rendered}: {description.strip()}"
                     if rendered in canonical_choices:
@@ -1288,7 +1298,7 @@ class CodexAppServerSession:
                         )
                         return
                     rendered_choices.append(rendered)
-                    canonical_choices[rendered] = label.strip()
+                    canonical_choices[rendered] = canonical_label
                 choices = rendered_choices or None
             prepared.append((question_id, prompt, choices, canonical_choices))
 

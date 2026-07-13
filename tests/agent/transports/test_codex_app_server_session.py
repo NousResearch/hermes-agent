@@ -291,6 +291,42 @@ class TestLifecycle:
             "input-1", -32602, "Duplicate rendered request_user_input option"
         )]
 
+    def test_request_user_input_rejects_duplicate_canonical_option_labels(self):
+        client = FakeClient()
+        seen = []
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "question": "Which target should I use?",
+                "options": [
+                    {"label": "Deploy", "description": "production"},
+                    {"label": "Deploy", "description": "staging"},
+                ],
+                "isSecret": False,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses == [(
+            "input-1", -32602, "Duplicate canonical request_user_input option"
+        )]
+
     @pytest.mark.parametrize("reply_method, callback_raises", [
         ("respond", False),
         ("respond_error", True),
@@ -778,7 +814,8 @@ class TestLifecycle:
             assert result.should_retire is True
             assert "turn timed out after 0.1s" in result.error
 
-    def test_noncooperative_clarify_cancellation_retires_session(self):
+    @pytest.mark.parametrize("cancel_raises", [False, True])
+    def test_noncooperative_clarify_cancellation_retires_session(self, cancel_raises):
         client = FakeClient()
         client.queue_server_request(
             "item/tool/requestUserInput",
@@ -801,10 +838,14 @@ class TestLifecycle:
             release.wait(timeout=1.0)
             return "late answer"
 
+        def clarify_cancel_callback():
+            if cancel_raises:
+                raise RuntimeError("clarify UI failed to cancel")
+
         s = make_session(
             client,
             clarify_callback=clarify_callback,
-            clarify_cancel_callback=lambda: None,
+            clarify_cancel_callback=clarify_cancel_callback,
         )
 
         def interrupt_after_prompt():

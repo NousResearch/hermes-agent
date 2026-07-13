@@ -1360,6 +1360,45 @@ def _normalize_codex_response(
         # so the model keeps its chain-of-thought on the retry.
         final_text = ""
 
+    # ── Reasoning-channel answer salvage (xAI grok) ──────────────
+    # grok-4.x on the xAI /v1/responses surface sometimes emits its final
+    # answer inside the reasoning item instead of as a ``message`` output
+    # item, marking where the answer starts with grok's internal
+    # ``<response>`` delimiter.  Without salvage, the reasoning-only rule
+    # below classifies the turn ``incomplete`` — and because reasoning
+    # items on this surface carry no ``encrypted_content``, the interim
+    # message replays as nothing, so every continuation request is
+    # byte-identical to the one that just failed.  The turn burns its 3
+    # retries and dies with "Codex response remained incomplete after 3
+    # continuation attempts" even though the answer was produced on the
+    # first attempt.  Observed live with grok-4.20 on xai-oauth
+    # (2026-07-13).  Promote the delimited tail to assistant content and
+    # keep the untagged prefix as thinking text.
+    if (
+        issuer_kind == "xai_responses"
+        and not final_text
+        and not tool_calls
+        and reasoning_parts
+    ):
+        joined_reasoning = "\n\n".join(reasoning_parts)
+        marker = joined_reasoning.rfind("<response>")
+        if marker != -1:
+            salvaged = joined_reasoning[marker + len("<response>"):]
+            closing = salvaged.find("</response>")
+            if closing != -1:
+                salvaged = salvaged[:closing]
+            salvaged = salvaged.strip()
+            if salvaged:
+                logger.warning(
+                    "xAI response delivered its final answer inside the "
+                    "reasoning channel (<response> delimiter); promoting "
+                    "%d chars to assistant content.",
+                    len(salvaged),
+                )
+                final_text = salvaged
+                reasoning_prefix = joined_reasoning[:marker].strip()
+                reasoning_parts = [reasoning_prefix] if reasoning_prefix else []
+
     assistant_message = SimpleNamespace(
         content=final_text,
         tool_calls=tool_calls,

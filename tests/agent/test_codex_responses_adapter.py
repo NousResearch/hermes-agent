@@ -429,3 +429,81 @@ def test_normalize_codex_response_failed_with_message_only():
     )
     with pytest.raises(RuntimeError, match=r"^model error$"):
         _normalize_codex_response(response)
+
+
+# ---------------------------------------------------------------------------
+# Reasoning-channel answer salvage (xAI grok) — grok-4.x on the xAI
+# /v1/responses surface sometimes emits its final answer inside the
+# reasoning item, delimited by grok's internal "<response>" tag, with no
+# ``message`` output item at all.  Because those reasoning items carry no
+# encrypted_content, the interim message replays as nothing and every
+# continuation request is byte-identical — the turn burns 3 retries and
+# fails even though the answer was produced.  Observed live with grok-4.20
+# on xai-oauth (2026-07-13).
+# ---------------------------------------------------------------------------
+
+
+def _xai_reasoning_only_response(reasoning_text):
+    return SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_1",
+                encrypted_content=None,
+                summary=[SimpleNamespace(text=reasoning_text)],
+            )
+        ],
+    )
+
+
+def test_normalize_codex_response_salvages_xai_reasoning_channel_answer():
+    response = _xai_reasoning_only_response(
+        "The process is still running.\n<response>\nAll good, process running."
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="xai_responses"
+    )
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "All good, process running."
+    assert assistant_message.reasoning == "The process is still running."
+
+
+def test_normalize_codex_response_salvage_strips_closing_tag():
+    response = _xai_reasoning_only_response(
+        "Thinking.\n<response>The answer.</response>"
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="xai_responses"
+    )
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "The answer."
+
+
+def test_normalize_codex_response_salvage_is_xai_scoped():
+    """Non-xAI issuers keep the reasoning-only → incomplete classification;
+    the Codex backend replays encrypted reasoning, so its continuation
+    genuinely progresses and must not be short-circuited."""
+    response = _xai_reasoning_only_response(
+        "Thinking.\n<response>The answer.</response>"
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
+
+
+def test_normalize_codex_response_xai_reasoning_without_marker_stays_incomplete():
+    response = _xai_reasoning_only_response("Still thinking, no answer yet.")
+
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="xai_responses"
+    )
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""

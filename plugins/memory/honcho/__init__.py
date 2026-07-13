@@ -695,10 +695,14 @@ class HonchoMemoryProvider(MemoryProvider):
             # denied turn-1 context entirely whenever init crossed the ~100ms
             # spawn window — wait a bounded time for it to complete so the
             # peer card can still be injected on the first message.
+            # The wait is strictly turn-1: past that, an unhealthy backend
+            # (init thread hung, or failed init being respawned) must keep
+            # the fail-open contract — every later turn returns immediately.
             self._start_session_init_background()
-            _init_thread = self._init_thread
-            if _init_thread is not None:
-                _init_thread.join(timeout=self._FIRST_TURN_BASE_TIMEOUT)
+            if self._turn_count <= 1:
+                _init_thread = self._init_thread
+                if _init_thread is not None:
+                    _init_thread.join(timeout=self._FIRST_TURN_BASE_TIMEOUT)
             if not self._session_ready():
                 return ""
 

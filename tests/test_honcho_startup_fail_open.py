@@ -76,6 +76,43 @@ def test_honcho_hybrid_initialize_returns_without_waiting_for_session_init(monke
             init_thread.join(timeout=1)
 
 
+def test_stalled_init_only_delays_first_turn_prefetch(monkeypatch):
+    """A stalled session init may bound-wait on turn 1 only; every later
+    prefetch must keep the fail-open contract and return immediately."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+    release = threading.Event()
+
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        lambda: cfg,
+    )
+
+    def stalled_session_init(self, cfg, session_id, **kwargs):
+        release.wait(timeout=10)
+
+    monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", stalled_session_init)
+    provider.initialize("session-1", platform="cli")
+    provider._FIRST_TURN_BASE_TIMEOUT = 1.0
+
+    try:
+        provider._turn_count = 1
+        start = time.perf_counter()
+        assert provider.prefetch("first question") == ""
+        assert time.perf_counter() - start >= 0.5  # turn 1 waited (bounded)
+
+        for turn in (2, 3, 4):
+            provider._turn_count = turn
+            start = time.perf_counter()
+            assert provider.prefetch("follow-up question") == ""
+            assert time.perf_counter() - start < 0.4  # fail-open, no wait
+    finally:
+        release.set()
+        init_thread = getattr(provider, "_init_thread", None)
+        if init_thread:
+            init_thread.join(timeout=1)
+
+
 def test_honcho_background_init_rechecks_state_after_lock_race():
     """Startup should not spawn/crash if init completes while waiting for lock."""
     provider = HonchoMemoryProvider()

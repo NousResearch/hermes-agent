@@ -1,7 +1,16 @@
 """Regression tests for the OAuth User-Agent header in anthropic_adapter.py.
 
-Anthropic now 404s the OAuth token endpoint for any ``claude-cli/`` UA prefix
-(issue #48534). The adapter must use ``claude-code/`` instead.
+Two DIFFERENT Anthropic endpoints impose OPPOSITE User-Agent requirements:
+
+- Inference (``/v1/messages`` via build_anthropic_client): requires the
+  ``claude-code/`` UA + ``x-app: cli`` fingerprint, or requests get
+  intermittent 500s. (issue #48534: ``claude-cli/`` is 404'd here.)
+- OAuth token endpoint (``/v1/oauth/token`` login exchange + refresh):
+  Anthropic now RATE-LIMITS (HTTP 429) any UA whose prefix is ``claude-code/``
+  (or ``Mozilla/``). Verified empirically against platform.claude.com:
+  ``claude-code/2.1.200`` -> 429; ``axios/*`` / ``node`` -> 400 (reached code
+  validation). The token endpoint must therefore use a non-``claude-code/`` UA
+  (we send ``axios/*``, matching the real Claude Code CLI's exchange client).
 """
 
 from __future__ import annotations
@@ -13,10 +22,10 @@ import pytest
 
 
 class TestOAuthUserAgentPrefix:
-    """All OAuth-related HTTP requests must use ``claude-code/`` UA, not ``claude-cli/``."""
+    """Inference uses ``claude-code/``; the OAuth token endpoint must NOT."""
 
     def test_build_anthropic_client_oauth_ua(self):
-        """build_anthropic_client with OAuth token must use claude-code UA."""
+        """build_anthropic_client (INFERENCE) with OAuth token must use claude-code UA."""
         from agent.anthropic_adapter import build_anthropic_client
 
         mock_sdk = MagicMock()
@@ -47,33 +56,40 @@ class TestOAuthUserAgentPrefix:
                     f"Line {i}: claude-cli/ still used in User-Agent header: {stripped}"
                 )
 
-    def test_token_exchange_ua_prefix(self):
-        """run_hermes_oauth_login_pure must not send claude-cli/ UA."""
+    def test_token_exchange_ua_not_throttled(self):
+        """run_hermes_oauth_login_pure must NOT send a throttled token-endpoint UA.
+
+        Anthropic 429s both ``claude-cli/`` and ``claude-code/`` UAs at the
+        token endpoint. The login exchange must use the shared
+        ``_OAUTH_TOKEN_USER_AGENT`` constant (a non-claude-code UA).
+        """
         import inspect
         import agent.anthropic_adapter as mod
 
-        # Get the source of the exchange function
         try:
             source = inspect.getsource(mod.run_hermes_oauth_login_pure)
         except AttributeError:
             pytest.skip("run_hermes_oauth_login_pure not found")
 
-        # Only fail on claude-cli/ in an actual User-Agent header line — a
-        # comment that references the old behavior (e.g. "Anthropic blocks
-        # claude-cli/ on the OAuth endpoint") is allowed. Mirrors the
-        # header-scoped check in test_no_claude_cli_in_source.
         for i, line in enumerate(source.split("\n"), 1):
             stripped = line.strip()
-            if "claude-cli/" in stripped and ("User-Agent" in stripped or "user-agent" in stripped):
+            if ("User-Agent" in stripped or "user-agent" in stripped) and (
+                "claude-cli/" in stripped or "claude-code/" in stripped
+            ):
                 pytest.fail(
-                    f"Line {i}: run_hermes_oauth_login_pure still uses claude-cli/ UA header: {stripped}"
+                    f"Line {i}: throttled UA in token-exchange header: {stripped}"
                 )
-        assert "claude-code/" in source, (
-            "run_hermes_oauth_login_pure should use claude-code/ UA"
+        assert "_OAUTH_TOKEN_USER_AGENT" in source, (
+            "run_hermes_oauth_login_pure should send the shared "
+            "_OAUTH_TOKEN_USER_AGENT (non-claude-code) on the token endpoint"
+        )
+        assert not mod._OAUTH_TOKEN_USER_AGENT.startswith(("claude-code/", "claude-cli/")), (
+            f"_OAUTH_TOKEN_USER_AGENT must not be a throttled prefix: "
+            f"{mod._OAUTH_TOKEN_USER_AGENT!r}"
         )
 
-    def test_token_refresh_ua_prefix(self):
-        """refresh_anthropic_oauth_pure must not send claude-cli/ UA."""
+    def test_token_refresh_ua_not_throttled(self):
+        """refresh_anthropic_oauth_pure must NOT send a throttled token-endpoint UA."""
         import inspect
         import agent.anthropic_adapter as mod
 
@@ -82,13 +98,15 @@ class TestOAuthUserAgentPrefix:
             pytest.skip("refresh_anthropic_oauth_pure not found")
         source = inspect.getsource(func)
 
-        # Header-scoped check (comments referencing claude-cli/ are allowed).
         for i, line in enumerate(source.split("\n"), 1):
             stripped = line.strip()
-            if "claude-cli/" in stripped and ("User-Agent" in stripped or "user-agent" in stripped):
+            if ("User-Agent" in stripped or "user-agent" in stripped) and (
+                "claude-cli/" in stripped or "claude-code/" in stripped
+            ):
                 pytest.fail(
-                    f"Line {i}: refresh_anthropic_oauth_pure still uses claude-cli/ UA header: {stripped}"
+                    f"Line {i}: throttled UA in refresh header: {stripped}"
                 )
-        assert "claude-code/" in source, (
-            "refresh_anthropic_oauth_pure should use claude-code/ UA"
+        assert "_OAUTH_TOKEN_USER_AGENT" in source, (
+            "refresh_anthropic_oauth_pure should send the shared "
+            "_OAUTH_TOKEN_USER_AGENT (non-claude-code) on the token endpoint"
         )

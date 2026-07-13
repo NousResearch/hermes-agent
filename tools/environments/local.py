@@ -25,16 +25,24 @@ def _msys_to_windows_path(cwd: str) -> str:
     native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
     ``subprocess.Popen(..., cwd=...)`` can find it.
 
+    Also accepts the Cygwin (``/cygdrive/c/...``) and WSL-mount
+    (``/mnt/c/...``) spellings of a drive root. Multi-segment POSIX paths
+    like ``/home/x`` or ``/tmp/foo`` are left untouched.
+
     No-ops on non-Windows hosts or for paths that aren't in MSYS form.
     Returns the input unchanged when no translation applies. This is
     idempotent — calling it on an already-Windows path returns it as-is.
     """
     if not _IS_WINDOWS or not cwd:
         return cwd
-    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
-    m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
+    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root),
+    # plus /cygdrive/<letter>/... and /mnt/<letter>/... variants.
+    m = re.match(r'^/(?:(?:cygdrive|mnt)/)?([a-zA-Z])(/.*)?$', cwd)
     if not m:
         return cwd
+    # Reject /cygdrive or /mnt with no drive letter — the optional group above
+    # already requires the letter. Multi-char first segments (/home, /tmp)
+    # fail the single-letter capture and fall through as no-ops.
     drive = m.group(1).upper()
     tail = (m.group(2) or "").replace('/', '\\')
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
@@ -56,6 +64,35 @@ def _windows_to_msys_path(cwd: str) -> str:
     drive = m.group(1).lower()
     tail = (m.group(2) or "").replace('\\', '/').lstrip('/')
     return f"/{drive}/{tail}" if tail else f"/{drive}/"
+
+
+def _bash_safe_path(path: str) -> str:
+    """Return *path* in a form safe to embed in a Git Bash script.
+
+    Native ``C:\\Users\\x`` / ``C:/Users/x`` → ``/c/Users/x`` via
+    :func:`_windows_to_msys_path`. Mixed MSYS leftovers
+    (``/c/Users\\Alexander\\Documents``) get backslashes normalized so
+    bash does not eat ``\\U`` and trip the ``Directory \\drivers\\etc``
+    failure class. No-op off Windows and for empty input.
+
+    ``get_temp_dir`` already emits forward-slash ``C:/...`` forms for
+    Python compatibility; those still need the ``/c/...`` rewrite —
+    MSYS argument conversion treats ``C:/...`` as a Windows path and
+    can corrupt the login-shell ``drivers\\etc`` lookup.
+    """
+    if not _IS_WINDOWS or not path:
+        return path
+    path = _windows_to_msys_path(path)
+    if "\\" in path:
+        path = path.replace("\\", "/")
+    return path
+
+
+def _quote_bash_path(path: str) -> str:
+    """Quote *path* for safe interpolation into a Git Bash script on Windows."""
+    import shlex
+
+    return shlex.quote(_bash_safe_path(path))
 
 
 def _resolve_safe_cwd(cwd: str) -> str:
@@ -985,6 +1022,10 @@ class LocalEnvironment(BaseEnvironment):
     def _quote_cwd_for_cd(cwd: str) -> str:
         """Use native paths for Python, but Git Bash-friendly paths for cd."""
         return BaseEnvironment._quote_cwd_for_cd(_windows_to_msys_path(cwd))
+
+    def _quote_shell_path(self, path: str) -> str:
+        """Rewrite native/mixed Windows paths before quoting for Git Bash."""
+        return _quote_bash_path(path)
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

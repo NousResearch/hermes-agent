@@ -232,6 +232,30 @@ def test_get_env_config_ignores_bad_docker_json_for_ssh_backend(monkeypatch):
     assert config["docker_env"] == {}
 
 
+def test_get_env_config_preserves_ssh_tilde_cwd(monkeypatch):
+    """SSH cwd '~' is expanded by the remote shell, not the Hermes host."""
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_CWD", "~")
+    monkeypatch.setenv("HOME", "/opt/data")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "ssh"
+    assert config["cwd"] == "~"
+
+
+def test_get_env_config_preserves_ssh_tilde_child_cwd(monkeypatch):
+    """SSH cwd '~/x' must not become the local/container HOME path."""
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_CWD", "~/project")
+    monkeypatch.setenv("HOME", "/opt/data")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "ssh"
+    assert config["cwd"] == "~/project"
+
+
 def test_get_env_config_still_rejects_bad_docker_json_for_docker_backend(monkeypatch):
     """Selecting Docker should keep the existing actionable config error."""
     monkeypatch.setenv("TERMINAL_ENV", "docker")

@@ -653,6 +653,10 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
+        blocked = _camofox_private_page_block(session, task_id, "click")
+        if blocked:
+            return blocked
+
         # Strip @ prefix if present (our tool convention)
         clean_ref = ref.lstrip("@")
 
@@ -675,6 +679,10 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         session = _get_session(task_id)
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
+
+        blocked = _camofox_private_page_block(session, task_id, "type")
+        if blocked:
+            return blocked
 
         clean_ref = ref.lstrip("@")
 
@@ -744,6 +752,10 @@ def camofox_press(key: str, task_id: Optional[str] = None) -> str:
         session = _get_session(task_id)
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
+
+        blocked = _camofox_private_page_block(session, task_id, "press")
+        if blocked:
+            return blocked
 
         _post(
             f"/tabs/{session['tab_id']}/press",

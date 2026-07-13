@@ -200,6 +200,7 @@ class _JournaledMemoryWrite:
     important: bool
     pinned: bool
     synced: bool
+    sync_status_known: bool = False
     sync_retry_attempts: int = 0
     next_sync_retry_at: str = ""
     last_sync_error_code: str = ""
@@ -237,7 +238,14 @@ def build_memory_startup_recovery_writes(
         local_index_cache_path
     )
     local_ids.update(local_cache_ids)
-    journal_ids, journal_keys, journal_warnings, journaled_writes = _read_memory_journal(
+    (
+        journal_ids,
+        journal_keys,
+        journal_warnings,
+        journaled_writes,
+        journaled_by_id,
+        journaled_by_key,
+    ) = _read_memory_journal(
         journal_path,
         base,
     )
@@ -250,6 +258,17 @@ def build_memory_startup_recovery_writes(
         for entry in _read_memory_entries(base / filename):
             write_id = _memory_snapshot_id(target, entry)
             normalized = _normalize(entry)
+            journal_match = (
+                journaled_by_id.get(write_id)
+                or journaled_by_key.get((target, normalized))
+                or journaled_by_key.get(("", normalized))
+            )
+            journaled = (
+                journal_match is not None
+                or write_id in journal_ids
+                or (target, normalized) in journal_keys
+                or ("", normalized) in journal_keys
+            )
             seen_ids.add(write_id)
             seen_contents.add(normalized)
             writes.append(
@@ -258,14 +277,21 @@ def build_memory_startup_recovery_writes(
                     content=entry,
                     important=True,
                     pinned=_looks_pinned_memory(entry),
-                    journaled=(
-                        write_id in journal_ids
-                        or (target, normalized) in journal_keys
-                        or ("", normalized) in journal_keys
-                    ),
-                    synced=True,
+                    journaled=journaled,
+                    synced=journal_match.synced
+                    if journal_match and journal_match.sync_status_known
+                    else True,
                     local_indexed=write_id in local_ids,
                     recovery_warnings=recovery_warnings,
+                    sync_retry_attempts=journal_match.sync_retry_attempts
+                    if journal_match
+                    else 0,
+                    next_sync_retry_at=journal_match.next_sync_retry_at
+                    if journal_match
+                    else "",
+                    last_sync_error_code=journal_match.last_sync_error_code
+                    if journal_match
+                    else "",
                 )
             )
     for journaled_write in journaled_writes:
@@ -343,19 +369,28 @@ def _read_memory_entries(path: Path) -> tuple[str, ...]:
 def _read_memory_journal(
     journal_path: Path | str | None,
     memory_dir: Path,
-) -> tuple[set[str], set[tuple[str, str]], tuple[str, ...], tuple[_JournaledMemoryWrite, ...]]:
+) -> tuple[
+    set[str],
+    set[tuple[str, str]],
+    tuple[str, ...],
+    tuple[_JournaledMemoryWrite, ...],
+    dict[str, _JournaledMemoryWrite],
+    dict[tuple[str, str], _JournaledMemoryWrite],
+]:
     path = Path(journal_path) if journal_path is not None else memory_dir / "memory-wal.jsonl"
     if not path.exists():
-        return set(), set(), (), ()
+        return set(), set(), (), (), {}, {}
 
     ids: set[str] = set()
     keys: set[tuple[str, str]] = set()
     warnings: list[str] = []
     journaled_writes: list[_JournaledMemoryWrite] = []
+    journaled_by_id: dict[str, _JournaledMemoryWrite] = {}
+    journaled_by_key: dict[tuple[str, str], _JournaledMemoryWrite] = {}
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
-        return set(), set(), ("memory_journal_unreadable",), ()
+        return set(), set(), ("memory_journal_unreadable",), (), {}, {}
 
     for line in lines:
         stripped = line.strip()
@@ -388,22 +423,41 @@ def _read_memory_journal(
                 if "synced" in record
                 else record.get("provider_synced")
             )
-            journaled_writes.append(
-                _JournaledMemoryWrite(
-                    id=snapshot_id,
-                    target=target,
-                    content=content,
-                    important=important,
-                    pinned=pinned,
-                    synced=_journal_bool(synced_value),
-                    sync_retry_attempts=_journal_int(
-                        record.get("sync_retry_attempts") or record.get("retry_attempts")
-                    ),
-                    next_sync_retry_at=str(record.get("next_sync_retry_at") or "").strip(),
-                    last_sync_error_code=str(record.get("last_sync_error_code") or "").strip(),
-                )
+            sync_retry_attempts = _journal_int(
+                record.get("sync_retry_attempts") or record.get("retry_attempts")
             )
-    return ids, keys, tuple(warnings), tuple(journaled_writes)
+            next_sync_retry_at = str(record.get("next_sync_retry_at") or "").strip()
+            last_sync_error_code = str(record.get("last_sync_error_code") or "").strip()
+            sync_status_known = (
+                "synced" in record
+                or "provider_synced" in record
+                or bool(sync_retry_attempts or next_sync_retry_at or last_sync_error_code)
+            )
+            journaled_write = _JournaledMemoryWrite(
+                id=snapshot_id,
+                target=target,
+                content=content,
+                important=important,
+                pinned=pinned,
+                synced=_journal_bool(synced_value),
+                sync_status_known=sync_status_known,
+                sync_retry_attempts=sync_retry_attempts,
+                next_sync_retry_at=next_sync_retry_at,
+                last_sync_error_code=last_sync_error_code,
+            )
+            journaled_writes.append(journaled_write)
+            journaled_by_id.setdefault(snapshot_id, journaled_write)
+            if record_id:
+                journaled_by_id.setdefault(record_id, journaled_write)
+            journaled_by_key.setdefault((target, normalized_content), journaled_write)
+    return (
+        ids,
+        keys,
+        tuple(warnings),
+        tuple(journaled_writes),
+        journaled_by_id,
+        journaled_by_key,
+    )
 
 
 def _read_memory_local_index_cache(

@@ -905,6 +905,67 @@ def test_memory_startup_snapshot_adapter_propagates_journal_retry_metadata_witho
     assert "jasper" not in rendered
 
 
+def test_memory_startup_snapshot_adapter_uses_journal_retry_metadata_for_durable_entry_without_content(
+    tmp_path,
+):
+    memory_dir = tmp_path / "memories"
+    memory_dir.mkdir()
+    retry_text = (
+        "Pinned memory: Finch private routing token onyx is durable "
+        "but awaiting provider sync."
+    )
+    (memory_dir / "MEMORY.md").write_text(retry_text, encoding="utf-8")
+    journal_path = memory_dir / "memory-wal.jsonl"
+    journal_path.write_text(
+        json.dumps(
+            {
+                "target": "memory",
+                "content": retry_text,
+                "important": True,
+                "pinned": True,
+                "synced": False,
+                "sync_retry_attempts": 4,
+                "next_sync_retry_at": "2026-07-13T00:45:00Z",
+                "last_sync_error_code": "provider_timeout",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    writes = build_memory_startup_recovery_writes(
+        memory_dir,
+        journal_path=journal_path,
+    )
+
+    assert len(writes) == 1
+    write = writes[0]
+    assert write.id.startswith("memory-")
+    assert write.journaled is True
+    assert write.synced is False
+    assert write.sync_retry_attempts == 4
+    assert write.next_sync_retry_at == "2026-07-13T00:45:00Z"
+    assert write.last_sync_error_code == "provider_timeout"
+
+    report = build_memory_backup_recovery_report(
+        writes,
+        note_index=LocalNoteIndex(()),
+    )
+
+    assert report.retryable_write_ids == (write.id,)
+    assert report.sync_retry_plan_by_id == {
+        write.id: {
+            "attempts": 4,
+            "next_retry_at": "2026-07-13T00:45:00Z",
+            "last_error_code": "provider_timeout",
+        }
+    }
+    rendered = report.to_markdown()
+    assert f"{write.id}: attempts=4 next_retry_at=2026-07-13T00:45:00Z last_error_code=provider_timeout" in rendered
+    assert "Finch private" not in rendered
+    assert "onyx" not in rendered
+
+
 def test_memory_startup_snapshot_adapter_recovers_from_corrupted_local_index_cache(tmp_path):
     memory_dir = tmp_path / "memories"
     memory_dir.mkdir()

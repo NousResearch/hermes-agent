@@ -40,6 +40,14 @@ function normalizeEntries(value: unknown): FallbackEntry[] {
   })
 }
 
+function completeEntries(rows: FallbackEntry[]): FallbackEntry[] {
+  return rows.filter(entry => entry.provider && entry.model)
+}
+
+function entriesEqual(a: FallbackEntry[], b: FallbackEntry[]): boolean {
+  return a.length === b.length && a.every((entry, index) => entry.provider === b[index]?.provider && entry.model === b[index]?.model)
+}
+
 /**
  * Structured editor for the top-level `fallback_providers` config list — a
  * chain of `{provider, model}` pairs tried in order when the default model
@@ -72,13 +80,26 @@ export function FallbackModelsField({
 
   // Settings can reload after a profile/config change while this component
   // stays mounted. Avoid displaying or saving the previous profile's chain.
+  // Keep in-progress draft rows (provider/model not both set) unless the
+  // persisted chain actually changed — autosave re-renders with the filtered
+  // value and would otherwise wipe a freshly added blank row.
   useEffect(() => {
-    setRows(normalizeEntries(value))
+    const persisted = normalizeEntries(value)
+
+    setRows(current => {
+      const drafts = current.filter(entry => !entry.provider || !entry.model)
+
+      if (entriesEqual(persisted, completeEntries(current))) {
+        return drafts.length > 0 ? [...persisted, ...drafts] : current
+      }
+
+      return persisted
+    })
   }, [value])
 
   const commit = (next: FallbackEntry[]) => {
     setRows(next)
-    onChange(next.filter(entry => entry.provider && entry.model))
+    onChange(completeEntries(next))
   }
 
   const updateRow = (index: number, patch: Partial<FallbackEntry>) =>

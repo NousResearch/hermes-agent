@@ -4,6 +4,7 @@ import { translateNow } from '@/i18n'
 import type { TodoItem, TodoStatus } from '@/lib/todos'
 
 import { $gateway } from './gateway'
+import { $goalsBySession, type GoalStatus } from './goals'
 import { dispatchNativeNotification } from './native-notifications'
 import { notifyError } from './notifications'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
@@ -11,13 +12,15 @@ import { $todosBySession } from './todos'
 
 /** Composer status stack feed — merged todos, subagents, background per session. */
 export type StatusItemState = 'done' | 'failed' | 'running'
-export type StatusItemType = 'background' | 'subagent' | 'todo'
+export type StatusItemType = 'background' | 'goal' | 'subagent' | 'todo'
 
 export interface ComposerStatusItem {
   /** background: non-zero exit shown inline when failed. */
   exitCode?: number
   /** subagent: active tool label shown on the right. */
   currentTool?: string
+  /** goal: active | paused | waiting | done. */
+  goalStatus?: GoalStatus
   id: string
   /** background process: captured stdout/stderr tail for the inline viewer. */
   output?: string
@@ -113,10 +116,19 @@ const todoToItem = (t: TodoItem): ComposerStatusItem => ({
   type: 'todo'
 })
 
+const goalToItem = (goal: { detail?: string; status: GoalStatus; title: string }): ComposerStatusItem => ({
+  currentTool: goal.detail,
+  goalStatus: goal.status,
+  id: 'goal:standing',
+  state: goal.status === 'active' || goal.status === 'waiting' ? 'running' : 'done',
+  title: goal.title,
+  type: 'goal'
+})
+
 // The single thing the stack reads: a typed, merged item list per session.
 export const $statusItemsBySession = computed(
-  [$subagentsBySession, $backgroundStatusBySession, $todosBySession],
-  (subs, background, todos) => {
+  [$goalsBySession, $subagentsBySession, $backgroundStatusBySession, $todosBySession],
+  (goals, subs, background, todos) => {
     const out: Record<string, ComposerStatusItem[]> = {}
 
     const push = (sid: string, items: ComposerStatusItem[]) => {
@@ -127,6 +139,10 @@ export const $statusItemsBySession = computed(
 
     for (const [sid, list] of Object.entries(todos)) {
       push(sid, list.map(todoToItem))
+    }
+
+    for (const [sid, goal] of Object.entries(goals)) {
+      push(sid, [goalToItem(goal)])
     }
 
     for (const [sid, list] of Object.entries(subs)) {
@@ -142,7 +158,7 @@ export const $statusItemsBySession = computed(
 )
 
 // Fixed render order for the groups in the stack (top → bottom, above queue).
-const TYPE_ORDER: readonly StatusItemType[] = ['todo', 'subagent', 'background']
+const TYPE_ORDER: readonly StatusItemType[] = ['goal', 'todo', 'subagent', 'background']
 
 export interface StatusGroup {
   items: ComposerStatusItem[]

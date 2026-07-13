@@ -1333,6 +1333,64 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     vi.restoreAllMocks()
   })
 
+  it('sends the first prompt after the expected new-session route transition', async () => {
+    // Creating the backend session is part of this submit. It intentionally
+    // changes both refs and navigates / -> /<stored-id>; that transition must
+    // become the pinned context, not be mistaken for a user switching chats.
+    const createdRuntimeId = 'rt-new-session'
+    const createdStoredId = 'stored-new-session'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let sessionCreated = false
+    let routeReadsAfterCreate = 0
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = createdRuntimeId
+      selectedStoredSessionIdRef.current = createdStoredId
+      sessionCreated = true
+
+      return createdRuntimeId
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => {
+          if (!sessionCreated) {
+            return '/::'
+          }
+
+          routeReadsAfterCreate += 1
+
+          // React Router can still expose / to the outer submit continuation,
+          // then commit the created-session route before the next await settles.
+          return routeReadsAfterCreate === 1 ? '/::' : `/${createdStoredId}::`
+        }}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(await handle!.submitText('hello')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: createdRuntimeId,
+        text: 'hello'
+      },
+      1_800_000
+    )
+  })
+
   it('aborts submit when the user switches sessions during session.resume (no misroute)', async () => {
     // Exact #54527 failure: user submits in Session A while its runtime binding
     // is gone; before resume returns they switch to Session B. Without a pinned

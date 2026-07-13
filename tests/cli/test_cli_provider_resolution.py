@@ -8,6 +8,7 @@ import pytest
 
 from hermes_cli.auth import AuthError
 from hermes_cli import main as hermes_main
+from hermes_cli import models as M
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +470,58 @@ def test_model_flow_anthropic_clears_stale_custom_key_and_mode(tmp_path, monkeyp
     assert "api_key" not in model
     assert "api" not in model
     assert "api_mode" not in model
+
+
+def test_model_flow_anthropic_passes_live_discovery_list_to_picker(tmp_path, monkeypatch):
+    """Regression for PR #62986 review: _model_flow_anthropic() must forward
+    provider_model_ids("anthropic")'s result to _prompt_model_selection() rather
+    than reading the static _PROVIDER_MODELS list directly. Patches
+    provider_model_ids() with a live-only sentinel absent from the static
+    catalog and asserts the picker receives exactly that list.
+    """
+    config_path = _seed_stale_custom_model(tmp_path, monkeypatch)
+
+    monkeypatch.setattr("hermes_cli.auth.get_anthropic_key", lambda: "sk-ant-api03-test")
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.is_claude_code_token_valid",
+        lambda creds: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_setup_flows._prompt_auth_credentials_choice",
+        lambda title: "use",
+    )
+
+    live_only_sentinel = "claude-live-only-sentinel-9999"
+    assert live_only_sentinel not in M._PROVIDER_MODELS["anthropic"]
+    monkeypatch.setattr(
+        "hermes_cli.models.provider_model_ids",
+        lambda provider, **kwargs: [live_only_sentinel],
+    )
+
+    received = {}
+
+    def _fake_prompt_model_selection(model_list, **kwargs):
+        received["model_list"] = model_list
+        return live_only_sentinel
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        _fake_prompt_model_selection,
+    )
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+
+    hermes_main._model_flow_anthropic({}, current_model="glm-5.2")
+
+    assert received["model_list"] == [live_only_sentinel]
+
+    import yaml
+
+    config = yaml.safe_load(config_path.read_text()) or {}
+    assert config["model"]["default"] == live_only_sentinel
 
 
 def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatch, capsys):

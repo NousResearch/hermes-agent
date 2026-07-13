@@ -1196,6 +1196,7 @@ class TestSmartDeniedPrompt:
     @pytest.mark.parametrize(
         ("lang", "once_key", "deny_key", "once_label", "deny_label"),
         [
+            ("ar", "o", "d", "[o] مرة واحدة", "[d] رفض"),
             ("tr", "b", "r", "[b]ir kez", "[r]eddet"),
             ("fr", "o", "r", "[o]ne fois", "[r]efuser"),
             ("ja", "o", "d", "[o]今回のみ", "[d]拒否"),

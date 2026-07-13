@@ -13,17 +13,39 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
-  rmSync
+  rmSync,
+  writeFileSync
 } from 'node:fs'
 import { isMain } from './utils.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(here, '..')
 const require = createRequire(import.meta.url)
+
+function ensureExecutable(filePath) {
+  if (process.platform === 'win32') return
+  chmodSync(filePath, 0o755)
+}
+
+function patchUnixTerminalAsarPath(destRoot) {
+  const filePath = join(destRoot, 'lib', 'unixTerminal.js')
+  if (!existsSync(filePath)) return
+
+  const source = readFileSync(filePath, 'utf8')
+  const patched = source.replace(
+    "helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');",
+    "helperPath = helperPath.replace(/app\\.asar(?!\\.unpacked)/, 'app.asar.unpacked');"
+  )
+  if (patched !== source) {
+    writeFileSync(filePath, patched)
+  }
+}
 
 /**
  * Locate node-pty's package root via real module resolution, so this
@@ -72,7 +94,11 @@ function copyBuildRelease(srcDir, destDir) {
       continue
     }
     if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name))
+      const destFile = join(destDir, entry.name)
+      cpSync(join(srcDir, entry.name), destFile)
+      if (entry.name === 'spawn-helper') {
+        ensureExecutable(destFile)
+      }
     }
   }
 }
@@ -90,6 +116,7 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
 
   // lib/**/*.js — the JS surface node-pty's `main` points into.
   copyGlobByExt(join(srcRoot, 'lib'), join(destRoot, 'lib'), ['.js'])
+  patchUnixTerminalAsarPath(destRoot)
 
   // build/Release/* — present when node-pty was compiled locally
   // (e.g. no prebuild available for this Electron ABI/platform combo).
@@ -114,7 +141,9 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
         continue
       }
       if (entry.name === 'spawn-helper') {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        const destFile = join(destPrebuild, entry.name)
+        cpSync(join(prebuildDir, entry.name), destFile)
+        ensureExecutable(destFile)
       }
     }
   } else {

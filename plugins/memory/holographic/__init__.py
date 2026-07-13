@@ -30,6 +30,11 @@ from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
+_UNAVAILABLE_ERROR = (
+    "holographic memory is unavailable — the configured database failed to initialize. "
+    "Check errors.log and the configured db_path before relying on fact_store."
+)
+
 
 # ---------------------------------------------------------------------------
 # Tool schemas (unchanged from original PR)
@@ -182,7 +187,11 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def system_prompt_block(self) -> str:
         if not self._store:
-            return ""
+            return (
+                "# Holographic Memory\n"
+                "Unavailable — fact storage failed to initialize. "
+                "Check errors.log before relying on fact_store."
+            )
         try:
             total = self._store._conn.execute(
                 "SELECT COUNT(*) FROM facts"
@@ -268,6 +277,8 @@ class HolographicMemoryProvider(MemoryProvider):
     # -- Tool handlers -------------------------------------------------------
 
     def _handle_fact_store(self, args: dict) -> str:
+        if self._store is None or self._retriever is None:
+            return tool_error(_UNAVAILABLE_ERROR)
         try:
             action = args["action"]
             store = self._store
@@ -355,6 +366,8 @@ class HolographicMemoryProvider(MemoryProvider):
             return tool_error(str(exc))
 
     def _handle_fact_feedback(self, args: dict) -> str:
+        if self._store is None:
+            return tool_error(_UNAVAILABLE_ERROR)
         try:
             fact_id = int(args["fact_id"])
             helpful = args["action"] == "helpful"

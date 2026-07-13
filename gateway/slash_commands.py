@@ -3860,6 +3860,16 @@ class GatewaySlashCommandsMixin:
                 rotated = new_session_id != session_entry.session_id
                 _old_session_id = session_entry.session_id
                 _in_place = bool(getattr(tmp_agent, "_last_compaction_in_place", False))
+                # Did the compressor produce a compacted list whose DB persist
+                # was rolled back (locked/contended state.db, FK error, ENOSPC)?
+                # This is a TRANSIENT, retryable failure that leaves session_id
+                # unchanged — the same surface signature as a genuine no-op — so
+                # without this flag the reply reports the bland "No changes:
+                # transcript preserved" for a save that actually failed. Read it
+                # to render the honest retry message instead (#44794).
+                _persist_failed = bool(
+                    getattr(tmp_agent, "_last_compaction_persist_failed", False)
+                )
 
                 # Persist the compressed transcript BEFORE repointing the live
                 # session onto the new session_id. Order matters: if we
@@ -4087,6 +4097,31 @@ class GatewaySlashCommandsMixin:
                 # from current files (SOUL.md, memory, etc.).
                 self._evict_cached_agent(session_key)
                 self._cleanup_agent_resources(tmp_agent)
+            # CASE D (persist failure): the compressor produced a compacted
+            # transcript but the DB write to persist it was rolled back (a
+            # locked/contended state.db, an FK error, ENOSPC). session_id is
+            # unchanged, so this looks identical on the surface to a genuine
+            # no-op — but it is a TRANSIENT, retryable FAILURE, not "no changes."
+            # Tell the user plainly, distinctly from both the honest no-op and a
+            # real compaction, and stop here: there is nothing persisted to
+            # report a before/after over, and the next request resends the same
+            # context. Nothing was lost (the original transcript is untouched).
+            # See #44794.
+            if _persist_failed and not _rewritten:
+                _fr_before = (
+                    f"{real_before_tokens:,}"
+                    if real_before_tokens > 0
+                    else f"~{approx_tokens:,}"
+                )
+                _pf_lines = [t("gateway.compress.persist_failed")]
+                if focus_topic:
+                    _pf_lines.append(
+                        t("gateway.compress.focus_line", topic=focus_topic)
+                    )
+                _pf_lines.append(
+                    t("gateway.compress.full_request_unchanged", before=_fr_before)
+                )
+                return "\n".join(_pf_lines)
             # Headline + per-axis lines. When the granular reconciling
             # breakdown built successfully (rewrite happened, stats validated),
             # it REPLACES the headline/chat/dropped lines with the full

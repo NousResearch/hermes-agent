@@ -535,6 +535,9 @@ async def test_compress_command_true_noop_preserves_measured_tokens():
     agent_instance.compression_in_place = False
     agent_instance._last_compaction_in_place = False
     agent_instance.session_id = "sess-1"  # never rotates → no rewrite
+    # No persist failure: MagicMock would otherwise return a truthy Mock for
+    # this attr and spuriously trigger the CASE D retry message (#44794).
+    agent_instance._last_compaction_persist_failed = False
 
     def _compress(messages, *_args, **_kwargs):
         return list(messages), ""
@@ -757,4 +760,131 @@ async def test_compress_command_lcm_engine_wire_first_context_line():
     assert "Full request size: 303,201" not in result
     # LCM recovery pointer.
     assert "lcm.db" in result
+    # LCM compacts in place (_rewritten=True) → CASE D cannot fire; guard against
+    # a future regression where the in-place path falls through to the CASE C
+    # no-op message.
     assert "No changes" not in result
+
+
+# ---------------------------------------------------------------------------
+# Persist-failure honesty (2026-07-12: DB locked -> rotation rolled back ->
+# "No changes: transcript preserved" reported for a TRANSIENT save failure,
+# indistinguishable from a genuine nothing-to-compress no-op). CASE D.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compress_command_persist_failure_surfaces_retry_not_noop():
+    """CASE D regression: the compressor DID compact the transcript in memory
+    (the returned list is shorter than the input), but the DB write that would
+    persist it was rolled back -- a locked state.db / contended write -- so the
+    session was NOT rotated and nothing was written. The reply must say the
+    save FAILED and is retryable, and must NOT print the bland
+    'No changes: transcript preserved' that a genuine no-op prints, nor
+    fabricate a shrink."""
+    history = _make_tool_heavy_history()
+    runner = _make_runner(history)
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.last_prompt_tokens = 453_542
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor._last_compress_aborted = False
+    agent_instance.context_compressor._last_summary_error = None
+    agent_instance.context_compressor._last_aux_model_failure_model = None
+    agent_instance.context_compressor._last_aux_model_failure_error = None
+    agent_instance.compression_in_place = False
+    agent_instance._last_compaction_in_place = False
+    # The persist-failure signal: rotation's child-session create was rolled
+    # back (DB locked), so the compacted result never reached the store.
+    agent_instance._last_compaction_persist_failed = True
+    agent_instance.session_id = "sess-1"  # rolled back to parent -> no rotation
+
+    # Real compression shape: a genuinely SHORTER list (work was done in memory)
+    chat = _tool_heavy_chat(history)
+    compacted = [
+        dict(chat[0]),
+        {"role": "assistant", "content": "[CONTEXT COMPACTION -- REFERENCE ONLY] summary"},
+        dict(chat[-1]),
+    ]
+
+    def _compress(messages, *_args, **_kwargs):
+        # In-memory compaction succeeded (shorter), but session_id is UNCHANGED
+        # because create_session failed and rolled back to the parent.
+        return compacted, ""
+
+    agent_instance._compress_context.side_effect = _compress
+
+    def _est(messages, **_kwargs):
+        return 100
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_est),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_est),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    print("\n----- delivered /compress message (persist-fail) -----\n" + result + "\n------------------------------------------------------")
+
+    # Must NOT masquerade as a benign no-op.
+    assert "No changes: transcript preserved" not in result
+    # Must say the SAVE failed and it is retryable, and that nothing was lost.
+    assert "could not be saved" in result.lower() or "couldn't be saved" in result.lower()
+    assert "retry" in result.lower() or "/compress" in result
+    assert "database" in result.lower() or "locked" in result.lower() or "busy" in result.lower()
+    # Must NOT fabricate a shrink: the store is untouched, next request resends
+    # the same context.
+    assert "unchanged" in result.lower()
+    # Nothing was persisted -> last_prompt_tokens must NOT be zeroed, transcript
+    # must NOT be overwritten.
+    runner.session_store.update_session.assert_not_called()
+    runner.session_store.rewrite_transcript.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_compress_command_true_noop_still_says_preserved_not_failure():
+    """Companion to the persist-failure test: a GENUINE no-op (nothing to
+    compress, persist_failed False) must still print the calm
+    'No changes: transcript preserved' -- the CASE D failure wording must NOT
+    leak onto the honest no-op path."""
+    history = _make_tool_heavy_history()
+    runner = _make_runner(history)
+    session_entry = runner.session_store.get_or_create_session.return_value
+    session_entry.last_prompt_tokens = 453_542
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.compression_in_place = False
+    agent_instance._last_compaction_in_place = False
+    agent_instance._last_compaction_persist_failed = False  # genuine no-op
+    agent_instance.session_id = "sess-1"
+
+    def _compress(messages, *_args, **_kwargs):
+        return list(messages), ""  # unchanged -> true no-op
+
+    agent_instance._compress_context.side_effect = _compress
+
+    def _est(messages, **_kwargs):
+        return 100
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_est),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_est),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "No changes: transcript preserved (7 messages: 4 chat + 3 tool/system)" in result
+    assert "could not be saved" not in result.lower()
+    assert "database" not in result.lower()

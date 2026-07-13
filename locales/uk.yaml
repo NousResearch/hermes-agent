@@ -131,6 +131,7 @@ gateway:
     full_request_est:      "Full request size: ~{before:,} → ~{after:,} tokens (includes chat, system, tools, tool results; estimated — no live request yet)"
     full_request_no_fixed: "after excludes system prompt + tool schemas (no resident agent to measure them); next live turn will show the full size."
     full_request_unchanged: "Full request size: {before} tokens (unchanged — next turn resends the same context)"
+    persist_failed:        "⚠️ Стиснення виконано, але результат не вдалося зберегти — база даних сесії була зайнята (заблокована). Нічого не втрачено; ваша транскрипція без змін. Запустіть /compress ще раз за мить, щоб повторити спробу."
     summary_failed:        "⚠️ Не вдалося згенерувати зведення ({error}). {count} історичних повідомлень було видалено та замінено заповнювачем; попередній контекст більше не можна відновити. Перевірте конфігурацію моделі auxiliary.compression."
     aborted:               "⚠️ Стиснення скасовано ({error}). Жодне повідомлення не було видалено — розмова не змінилася. Виконайте /compress, щоб повторити спробу, /reset для нової сесії, або перевірте конфігурацію моделі auxiliary.compression."
     aux_failed:            "ℹ️ Налаштована модель стиснення `{model}` зазнала збою ({error}). Відновлено за допомогою основної моделі — контекст не пошкоджений — але варто перевірити `auxiliary.compression.model` у config.yaml."

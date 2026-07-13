@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import sys
+import threading
 import time
 import types
 from types import SimpleNamespace
@@ -226,6 +227,347 @@ class ManyProgressLinesAgent:
             "messages": [],
             "api_calls": 1,
         }
+
+
+class SynchronizedProgressAgent:
+    """Emit progress lines after the adapter confirms each prior operation."""
+
+    adapter = None
+    expected_operations: tuple[int | None, ...] = ()
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        assert self.adapter is not None
+        for index, expected_count in enumerate(self.expected_operations):
+            callback("tool.started", "terminal", f"command-{index + 1}", {})
+            if expected_count is not None:
+                self.adapter.wait_for_operation_count(expected_count)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class FourStageProgressAgent(SynchronizedProgressAgent):
+    expected_operations = (1, 3, 5, 6)
+
+
+class ThreeStageSendOnlyProgressAgent(SynchronizedProgressAgent):
+    expected_operations = (1, 3, 4)
+
+
+class ThreeStageReplacementFailureAgent(SynchronizedProgressAgent):
+    expected_operations = (1, 4, 5)
+
+
+class ThreeStageTransientProgressAgent(SynchronizedProgressAgent):
+    expected_operations = (1, 2, 3)
+
+
+class FastCancellationProgressAgent(SynchronizedProgressAgent):
+    expected_operations = (1, None)
+
+
+class OverflowRecoveryProgressAgent(SynchronizedProgressAgent):
+    """Trigger rollover, then wait for a follow-up edit against its new anchor."""
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        assert self.adapter is not None
+        callback("tool.started", "terminal", "first", {})
+        self.adapter.wait_for_operation_count(1)
+        callback("tool.started", "terminal", "x" * 100, {})
+        self.adapter.wait_for_operation_count(4)
+        callback("tool.started", "terminal", "third", {})
+        self.adapter.wait_for_operation_count(5)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class OverflowReplacementFailureProgressAgent(SynchronizedProgressAgent):
+    """Wait until every overflow fallback group is delivered before continuing."""
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        assert self.adapter is not None
+        callback("tool.started", "terminal", "first", {})
+        self.adapter.wait_for_operation_count(1)
+        callback("tool.started", "terminal", "x" * 100, {})
+        self.adapter.wait_for_operation_count(5)
+        callback("tool.started", "terminal", "third", {})
+        self.adapter.wait_for_operation_count(6)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class CancellationOverflowProgressAgent(SynchronizedProgressAgent):
+    """Leave an overflowing second line for the cancellation drain."""
+
+    emit_reset = False
+    emit_dedup = False
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        callback = self.tool_progress_callback
+        assert callback is not None
+        assert self.adapter is not None
+        callback("tool.started", "terminal", "first", {})
+        self.adapter.wait_for_operation_count(1)
+        callback("tool.started", "terminal", "x" * 100, {})
+        if self.emit_dedup:
+            callback("tool.started", "terminal", "x" * 100, {})
+        if self.emit_reset:
+            assert self.interim_assistant_callback is not None
+            self.interim_assistant_callback("stream segment", already_streamed=False)
+            self.adapter.wait_for_sent_content("stream segment")
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ProgressEditFailureAdapter(ProgressCaptureAdapter):
+    """Capture progress-anchor recovery after configured edit failures."""
+
+    edit_errors: tuple[str, ...] = ()
+    edit_retryable: tuple[bool, ...] = ()
+    fail_replacement_send = False
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self._next_message_id = 0
+        self._operation_condition = threading.Condition()
+        self.deleted = []
+        self.delivered = []
+        self.successful_send_attempts = []
+
+    def _record_operation(self) -> None:
+        with self._operation_condition:
+            self._operation_condition.notify_all()
+
+    def wait_for_operation_count(self, expected_count: int) -> None:
+        with self._operation_condition:
+            completed = self._operation_condition.wait_for(
+                lambda: len(self.sent) + len(self.edits) >= expected_count,
+                timeout=3.0,
+            )
+        assert completed, f"timed out waiting for progress operation {expected_count}"
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        self._next_message_id += 1
+        self._record_operation()
+        if self.fail_replacement_send and self._next_message_id == 2:
+            return SendResult(success=False, error="replacement send failed")
+        result = SendResult(success=True, message_id=f"progress-{self._next_message_id}")
+        self.delivered.append(content)
+        self.successful_send_attempts.append(self._next_message_id)
+        return result
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        self._record_operation()
+        edit_index = len(self.edits) - 1
+        if edit_index < len(self.edit_errors):
+            retryable = (
+                self.edit_retryable[edit_index]
+                if edit_index < len(self.edit_retryable)
+                else False
+            )
+            return SendResult(
+                success=False,
+                error=self.edit_errors[edit_index],
+                retryable=retryable,
+            )
+        return SendResult(success=True, message_id=message_id)
+
+    async def delete_message(self, chat_id, message_id) -> SendResult:
+        self.deleted.append({"chat_id": chat_id, "message_id": message_id})
+        return SendResult(success=True, message_id=message_id)
+
+
+class StaleProgressEditAdapter(ProgressEditFailureAdapter):
+    edit_errors = (
+        "Bad Request: message to edit not found",
+        "Bad Request: MESSAGE_ID_INVALID",
+    )
+
+
+class TransientProgressEditAdapter(ProgressEditFailureAdapter):
+    edit_errors = ("httpx.ConnectError: connection reset",)
+    edit_retryable = (True,)
+
+
+class FailedReplacementProgressEditAdapter(ProgressEditFailureAdapter):
+    edit_errors = ("Bad Request: message to edit not found",)
+    fail_replacement_send = True
+
+
+class RaisingReplacementProgressEditAdapter(ProgressEditFailureAdapter):
+    edit_errors = ("Bad Request: message to edit not found",)
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        if self._next_message_id == 1:
+            self.sent.append(
+                {
+                    "chat_id": chat_id,
+                    "content": content,
+                    "reply_to": reply_to,
+                    "metadata": metadata,
+                }
+            )
+            self._next_message_id += 1
+            self._record_operation()
+            raise RuntimeError("replacement send exploded")
+        return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+
+class NoIdReplacementProgressEditAdapter(ProgressEditFailureAdapter):
+    edit_errors = ("Bad Request: message to edit not found",)
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        result = await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+        if self._next_message_id == 2:
+            return SendResult(success=True, message_id=None)
+        return result
+
+
+class StaleSmallLimitProgressAdapter(SmallLimitProgressAdapter):
+    MAX_MESSAGE_LENGTH = 60
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self._operation_condition = threading.Condition()
+        self._failed_first_edit = False
+        self.delivered = []
+
+    def _record_operation(self) -> None:
+        with self._operation_condition:
+            self._operation_condition.notify_all()
+
+    def wait_for_operation_count(self, expected_count: int) -> None:
+        with self._operation_condition:
+            completed = self._operation_condition.wait_for(
+                lambda: len(self.sent) + len(self.edits) >= expected_count,
+                timeout=3.0,
+            )
+        assert completed, f"timed out waiting for progress operation {expected_count}"
+
+    def wait_for_sent_content(self, expected: str) -> None:
+        with self._operation_condition:
+            completed = self._operation_condition.wait_for(
+                lambda: any(expected in call["content"] for call in self.sent),
+                timeout=3.0,
+            )
+        assert completed, f"timed out waiting for sent content {expected!r}"
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        result = await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+        if result.success:
+            self.delivered.append(content)
+        self._record_operation()
+        return result
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        self._record_operation()
+        if not self._failed_first_edit:
+            self._failed_first_edit = True
+            return SendResult(success=False, error="Bad Request: message to edit not found")
+        return SendResult(success=True, message_id=message_id)
+
+
+class FailedReplacementSmallLimitProgressAdapter(StaleSmallLimitProgressAdapter):
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        if len(self.sent) == 1:
+            self.sent.append(
+                {
+                    "chat_id": chat_id,
+                    "content": content,
+                    "reply_to": reply_to,
+                    "metadata": metadata,
+                }
+            )
+            self._next_id += 1
+            self._record_operation()
+            return SendResult(success=False, error="replacement send failed")
+        return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+
+class CancellationOverflowFailureAdapter(StaleSmallLimitProgressAdapter):
+    """Fail only edits of the overflowing tool-progress bubble."""
+
+    MAX_MESSAGE_LENGTH = 60
+    edit_error = "Bad Request: not enough rights to edit the message"
+    edit_retryable = False
+    raise_progress_edit = False
+
+    async def edit_message(
+        self,
+        chat_id,
+        message_id,
+        content,
+        *,
+        finalize: bool = False,
+        metadata=None,
+    ) -> SendResult:
+        if len(content) > self.MAX_MESSAGE_LENGTH:
+            self.oversized_edits.append(content)
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "metadata": metadata,
+            }
+        )
+        self._record_operation()
+        if message_id == "progress-1":
+            if self.raise_progress_edit:
+                raise RuntimeError("progress edit exploded")
+            return SendResult(
+                success=False,
+                error=self.edit_error,
+                retryable=self.edit_retryable,
+            )
+        return SendResult(success=True, message_id=message_id)
 
 
 class DelayedInterimAgent:
@@ -746,6 +1088,8 @@ async def _run_with_agent(
     chat_type="group",
     thread_id="17585",
     adapter_cls=ProgressCaptureAdapter,
+    event_message_id=None,
+    progress_edit_interval=None,
 ):
     if config_data:
         import yaml
@@ -761,8 +1105,17 @@ async def _run_with_agent(
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     adapter = adapter_cls(platform=platform)
+    if issubclass(agent_cls, SynchronizedProgressAgent):
+        agent_cls.adapter = adapter
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
+    if progress_edit_interval is not None:
+        monkeypatch.setattr(
+            gateway_run,
+            "_PROGRESS_EDIT_INTERVAL_SECONDS",
+            progress_edit_interval,
+            raising=False,
+        )
     if config_data and "streaming" in config_data:
         runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -791,8 +1144,362 @@ async def _run_with_agent(
         source=source,
         session_id=session_id,
         session_key=session_key,
+        event_message_id=event_message_id,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_run_agent_replaces_stale_progress_anchor_and_keeps_coalescing(monkeypatch, tmp_path):
+    """Deleted progress messages should be replaced with the full accumulated text."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FourStageProgressAgent,
+        session_id="sess-progress-stale-anchor",
+        config_data={"display": {"tool_progress": "all", "cleanup_progress": True}},
+        platform=Platform.FEISHU,
+        adapter_cls=StaleProgressEditAdapter,
+        event_message_id="trigger-message",
+        progress_edit_interval=0,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["message_id"] for call in adapter.edits[:3]] == [
+        "progress-1",
+        "progress-2",
+        "progress-3",
+    ]
+    assert adapter.sent[1]["content"] == adapter.edits[0]["content"]
+    assert adapter.sent[2]["content"] == adapter.edits[1]["content"]
+    assert adapter.edits[2]["content"].startswith(f'{adapter.sent[2]["content"]}\n')
+    assert all(call["reply_to"] == "trigger-message" for call in adapter.sent[:3])
+    assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.sent[:3])
+    cleanup = adapter.pop_post_delivery_callback("agent:main:feishu:group:-1001:17585")
+    assert callable(cleanup)
+    cleanup_result = cleanup()
+    if asyncio.iscoroutine(cleanup_result):
+        await cleanup_result
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if len(adapter.deleted) >= 3:
+            break
+    assert {call["message_id"] for call in adapter.deleted} >= {
+        "progress-1",
+        "progress-2",
+        "progress-3",
+    }
+
+
+@pytest.mark.parametrize(
+    "edit_error",
+    [
+        "Bad Request: not enough rights to edit the message",
+        "Forbidden: bot was blocked by the user",
+        "unexpected permanent adapter failure",
+    ],
+)
+@pytest.mark.asyncio
+async def test_run_agent_does_not_replace_non_stale_progress_anchor(monkeypatch, tmp_path, edit_error):
+    """Permission, blocked, and unknown edit failures must remain send-only."""
+
+    class PermanentProgressEditAdapter(ProgressEditFailureAdapter):
+        edit_errors = (edit_error,)
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThreeStageSendOnlyProgressAgent,
+        session_id="sess-progress-permanent-edit-error",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=PermanentProgressEditAdapter,
+        progress_edit_interval=0,
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.edits) == 1
+    assert len(adapter.sent) == 3
+    assert adapter.sent[1]["content"] != adapter.edits[0]["content"]
+    assert "\n" not in adapter.sent[2]["content"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_retries_progress_edit_after_transient_failure(monkeypatch, tmp_path):
+    """A retryable edit failure must keep the existing anchor editable."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThreeStageTransientProgressAgent,
+        session_id="sess-progress-transient-edit-error",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=TransientProgressEditAdapter,
+        progress_edit_interval=0,
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) == 1
+    assert [call["message_id"] for call in adapter.edits[:2]] == [
+        "progress-1",
+        "progress-1",
+    ]
+    assert adapter.edits[1]["content"].startswith(f'{adapter.edits[0]["content"]}\n')
+
+
+@pytest.mark.parametrize(
+    "adapter_cls",
+    [FailedReplacementProgressEditAdapter, RaisingReplacementProgressEditAdapter],
+)
+@pytest.mark.asyncio
+async def test_run_agent_stays_send_only_when_replacement_anchor_send_fails(
+    monkeypatch, tmp_path, adapter_cls
+):
+    """A failed replacement send must retry the complete accumulated text."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThreeStageReplacementFailureAgent,
+        session_id="sess-progress-replacement-send-failure",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=adapter_cls,
+        progress_edit_interval=0,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["message_id"] for call in adapter.edits] == ["progress-1"]
+    assert adapter.sent[1]["content"] == adapter.edits[0]["content"]
+    assert len(adapter.sent) == 4
+    assert adapter.sent[2]["content"] == adapter.edits[0]["content"]
+    assert adapter.sent[2]["content"].startswith(f'{adapter.sent[0]["content"]}\n')
+    assert 2 not in adapter.successful_send_attempts
+    assert 3 in adapter.successful_send_attempts
+    assert adapter.delivered[1:] == [adapter.sent[2]["content"], adapter.sent[3]["content"]]
+    assert "\n" in adapter.sent[2]["content"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_does_not_duplicate_successful_replacement_without_message_id(
+    monkeypatch, tmp_path
+):
+    """A delivered replacement without an edit ID should switch to send-only."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThreeStageSendOnlyProgressAgent,
+        session_id="sess-progress-replacement-without-id",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=NoIdReplacementProgressEditAdapter,
+        progress_edit_interval=0,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["message_id"] for call in adapter.edits] == ["progress-1"]
+    assert len(adapter.sent) == 3
+    assert adapter.sent[1]["content"] == adapter.edits[0]["content"]
+    assert adapter.sent[1]["content"] in adapter.delivered
+    assert "\n" not in adapter.sent[2]["content"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_recovers_stale_anchor_during_progress_overflow(monkeypatch, tmp_path):
+    """Rollover edits should replace a deleted anchor before sending later groups."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OverflowRecoveryProgressAgent,
+        session_id="sess-progress-overflow-stale-anchor",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=StaleSmallLimitProgressAdapter,
+        progress_edit_interval=0,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.edits[0]["message_id"] == "progress-1"
+    assert adapter.sent[1]["content"] == adapter.edits[0]["content"]
+    assert adapter.edits[1]["message_id"] == "progress-3"
+    assert adapter.oversized_sends == []
+    assert adapter.oversized_edits == []
+
+
+@pytest.mark.asyncio
+async def test_progress_overflow_stays_send_only_when_replacement_fails(monkeypatch, tmp_path):
+    """A failed rollover replacement must deliver every bounded fallback group."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        OverflowReplacementFailureProgressAgent,
+        session_id="sess-progress-overflow-replacement-failure",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=FailedReplacementSmallLimitProgressAdapter,
+        progress_edit_interval=0,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["message_id"] for call in adapter.edits] == ["progress-1"]
+    assert adapter.sent[1]["content"] == adapter.edits[0]["content"]
+    assert len(adapter.sent) == 5
+    fallback_groups = [call["content"] for call in adapter.sent[2:4]]
+    assert fallback_groups[0] == adapter.edits[0]["content"]
+    assert "\n".join(fallback_groups).startswith(f'{adapter.sent[0]["content"]}\n')
+    assert adapter.sent[3]["content"] != adapter.sent[4]["content"]
+    assert adapter.delivered == [adapter.sent[0]["content"], *fallback_groups, adapter.sent[4]["content"]]
+    assert all(len(text) <= adapter.MAX_MESSAGE_LENGTH for text in fallback_groups)
+    assert adapter.oversized_sends == []
+    assert adapter.oversized_edits == []
+
+
+def _assert_cancellation_overflow_fallback(adapter, *, expect_dedup: bool = False) -> None:
+    progress_edits = [call for call in adapter.edits if call["message_id"] == "progress-1"]
+    assert [call["message_id"] for call in progress_edits] == ["progress-1"]
+
+    first_group = progress_edits[0]["content"]
+    progress_sends = [
+        call["content"]
+        for call in adapter.sent
+        if (call["content"] == first_group or "x" * 20 in call["content"])
+        and " (×" not in call["content"]
+    ]
+    assert len(progress_sends) == 3
+    fallback_groups = progress_sends[1:]
+    assert "\n".join(fallback_groups).startswith(f"{progress_sends[0]}\n")
+    assert all(len(text) <= adapter.MAX_MESSAGE_LENGTH for text in fallback_groups)
+    assert adapter.oversized_sends == []
+    assert adapter.oversized_edits == []
+    dedup_texts = [call["content"] for call in adapter.sent if call["content"].endswith(" (×2)")]
+    assert bool(dedup_texts) is expect_dedup
+
+
+@pytest.mark.parametrize(
+    ("emit_reset", "retryable", "raise_progress_edit", "emit_dedup"),
+    [
+        (False, False, False, False),
+        (False, True, False, False),
+        (False, False, True, False),
+        (True, False, False, False),
+        (True, False, True, False),
+        (False, False, False, True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cancellation_overflow_falls_back_before_exit_or_reset(
+    monkeypatch, tmp_path, emit_reset, retryable, raise_progress_edit, emit_dedup
+):
+    """Every rollover failure must flush bounded progress before exit or reset."""
+
+    class DrainAgent(CancellationOverflowProgressAgent):
+        pass
+
+    class DrainFailureAdapter(CancellationOverflowFailureAdapter):
+        pass
+
+    DrainAgent.emit_reset = emit_reset
+    DrainAgent.emit_dedup = emit_dedup
+    DrainFailureAdapter.edit_retryable = retryable
+    DrainFailureAdapter.raise_progress_edit = raise_progress_edit
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DrainAgent,
+        session_id="sess-progress-cancellation-overflow-edit-failure",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": emit_reset,
+            }
+        },
+        adapter_cls=DrainFailureAdapter,
+        progress_edit_interval=0,
+    )
+
+    assert result["final_response"] == "done"
+    assert any("stream segment" in call["content"] for call in adapter.sent) is emit_reset
+    _assert_cancellation_overflow_fallback(adapter, expect_dedup=emit_dedup)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_recovers_stale_anchor_during_cancellation_drain(monkeypatch, tmp_path):
+    """The final cancellation-drain edit should replace a deleted anchor."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FastCancellationProgressAgent,
+        session_id="sess-progress-cancellation-stale-anchor",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=StaleProgressEditAdapter,
+        progress_edit_interval=0,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["message_id"] for call in adapter.edits] == ["progress-1"]
+    assert adapter.sent[1]["content"] == adapter.edits[0]["content"]
+
+
+@pytest.mark.parametrize(
+    "adapter_cls",
+    [FailedReplacementProgressEditAdapter, RaisingReplacementProgressEditAdapter],
+)
+@pytest.mark.asyncio
+async def test_cancellation_drain_falls_back_when_stale_replacement_fails(
+    monkeypatch, tmp_path, adapter_cls
+):
+    """Final-drain recovery failures should still deliver the accumulated text."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FastCancellationProgressAgent,
+        session_id="sess-progress-cancellation-replacement-failure",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=adapter_cls,
+        progress_edit_interval=0,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["message_id"] for call in adapter.edits] == ["progress-1"]
+    assert len(adapter.sent) == 3
+    assert adapter.sent[1]["content"] == adapter.edits[0]["content"]
+    assert adapter.sent[2]["content"] == adapter.edits[0]["content"]
+    assert adapter.sent[2]["content"].startswith(f'{adapter.sent[0]["content"]}\n')
+    assert "\n" in adapter.sent[2]["content"]
+    assert 2 not in adapter.successful_send_attempts
+    assert 3 in adapter.successful_send_attempts
+    assert adapter.delivered[-1] == adapter.sent[2]["content"]
+
+
+@pytest.mark.parametrize(
+    ("edit_error", "retryable"),
+    [
+        ("httpx.ConnectError: connection reset", True),
+        ("flood_control:30.0", False),
+        ("Bad Request: not enough rights to edit the message", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cancellation_drain_falls_back_after_non_stale_edit_failure(
+    monkeypatch, tmp_path, edit_error, retryable
+):
+    """Every failed final-drain edit must deliver the complete pending text."""
+
+    class FinalDrainEditFailureAdapter(ProgressEditFailureAdapter):
+        edit_errors = (edit_error,)
+        edit_retryable = (retryable,)
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FastCancellationProgressAgent,
+        session_id="sess-progress-cancellation-non-stale-edit-failure",
+        config_data={"display": {"tool_progress": "all"}},
+        adapter_cls=FinalDrainEditFailureAdapter,
+        progress_edit_interval=0,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["message_id"] for call in adapter.edits] == ["progress-1"]
+    assert len(adapter.sent) == 2
+    assert adapter.sent[1]["content"] == adapter.edits[0]["content"]
+    assert adapter.sent[1]["content"].startswith(f'{adapter.sent[0]["content"]}\n')
+    assert "\n" in adapter.sent[1]["content"]
+    assert adapter.delivered[-1] == adapter.sent[1]["content"]
 
 
 @pytest.mark.asyncio

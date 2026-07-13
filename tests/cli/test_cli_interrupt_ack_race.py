@@ -362,3 +362,125 @@ def test_chat_close_does_not_persist_previous_turn_override(tmp_path, monkeypatc
         "old answer",
         "new prompt",
     ]
+
+
+def test_close_waits_for_atomic_cli_staging_before_snapshot(tmp_path, monkeypatch):
+    """Close cannot retain the mutable pre-append history as its DB baseline."""
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    cli = _make_cli()
+    session_id = cli.session_id
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id=session_id, source="cli")
+    prefix = [
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    for message in prefix:
+        db.append_message(
+            session_id=session_id,
+            role=message["role"],
+            content=message["content"],
+        )
+
+    agent = object.__new__(AIAgent)
+    agent._session_db = db
+    agent._session_db_created = True
+    agent.session_id = session_id
+    agent.platform = "cli"
+    agent.model = "test-model"
+    # Deliberately distinct from CLI history: this is the normal pre-worker
+    # state that used to let close retain the wrong mutable baseline.
+    agent._session_messages = list(prefix)
+    agent._last_flushed_db_idx = 0
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
+    agent._persist_disabled = False
+    agent._cached_system_prompt = "test system prompt"
+    agent._session_init_model_config = None
+    agent._parent_session_id = None
+    agent._session_json_enabled = False
+    agent._pending_cli_user_message = None
+    agent._session_persist_lock = threading.RLock()
+    agent._persist_user_message_idx = None
+    agent._persist_user_message_override = None
+    agent._persist_user_message_timestamp = None
+    agent._active_children = []
+    agent._interrupt_requested = False
+
+    staging_entered = threading.Event()
+    release_staging = threading.Event()
+    run_entered = threading.Event()
+    release_run = threading.Event()
+
+    class _BlockingHistory(list):
+        def __init__(self, values):
+            super().__init__(values)
+            self._block_next_append = True
+
+        def append(self, value):
+            if self._block_next_append:
+                self._block_next_append = False
+                staging_entered.set()
+                assert release_staging.wait(timeout=5)
+            return super().append(value)
+
+    def _block_run(**_kwargs):
+        run_entered.set()
+        assert release_run.wait(timeout=5)
+        return {
+            "final_response": "done",
+            "messages": prefix + [{"role": "assistant", "content": "done"}],
+            "api_calls": 1,
+            "completed": True,
+            "partial": True,
+            "response_previewed": True,
+        }
+
+    agent.run_conversation = _block_run
+    cli.agent = agent
+    cli.conversation_history = _BlockingHistory(prefix)
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        chat_thread = threading.Thread(target=lambda: cli.chat("new prompt"))
+        chat_thread.start()
+        assert staging_entered.wait(timeout=5)
+
+        close_started = threading.Event()
+        close_finished = threading.Event()
+
+        def _close():
+            close_started.set()
+            cli._persist_active_session_before_close()
+            close_finished.set()
+
+        close_thread = threading.Thread(target=_close)
+        close_thread.start()
+        assert close_started.wait(timeout=5)
+        # The close snapshot must wait for the locked pending-pointer/history
+        # handoff; otherwise the subsequent append poisons its DB baseline.
+        assert not close_finished.wait(timeout=0.1)
+
+        release_staging.set()
+        assert run_entered.wait(timeout=5)
+        assert close_finished.wait(timeout=5)
+        release_run.set()
+        chat_thread.join(timeout=10)
+        close_thread.join(timeout=10)
+
+    assert not chat_thread.is_alive()
+    assert not close_thread.is_alive()
+    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
+        "old prompt",
+        "old answer",
+        "new prompt",
+    ]

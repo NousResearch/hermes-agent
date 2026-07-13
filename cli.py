@@ -12857,60 +12857,64 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not agent or not hasattr(agent, "_persist_session"):
             return
 
-        messages = getattr(agent, "_session_messages", None)
-        pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
-        if not isinstance(messages, list):
-            messages = getattr(self, "conversation_history", None)
-        if not isinstance(messages, list):
-            return
-        if isinstance(pending_cli_message, dict) and not any(
-            message is pending_cli_message for message in messages
-        ):
-            # The UI has accepted a new input but the worker still exposes its
-            # prior snapshot. Include only that staged dict; the baseline below
-            # keeps any durable resumed prefix from being re-appended.
-            messages = [*messages, pending_cli_message]
-        if not messages:
-            return
-
-        # A normal turn builds a new list that reuses the resumed-history dicts.
-        # Keep that CLI history as the baseline so a signal between assigning
-        # ``_session_messages`` and the turn's DB flush cannot append its durable
-        # prefix a second time. Once the CLI takes the turn result, however, both
-        # names can point at the same live list; passing that alias would mark an
-        # unflushed tail durable without writing it. Marker-only persistence is
-        # correct only in that alias case.
-        conversation_history = getattr(self, "conversation_history", None)
-        pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
-        if (
-            isinstance(conversation_history, list)
-            and conversation_history
-            and conversation_history[-1] is pending_cli_message
-        ):
-            # The UI accepted this user message before the agent finished its
-            # early persistence. Its dict can already be in ``messages`` but is
-            # not durable yet, so exclude it from the resumed-history baseline.
-            conversation_history = conversation_history[:-1]
-        elif not isinstance(conversation_history, list) or conversation_history is messages:
-            conversation_history = None
-
-        # A first-turn close can arrive before the worker builds its cached
-        # prompt. Build or restore it before the DB row is created so the
-        # durable transcript never leaves a NULL system_prompt cache entry.
-        if getattr(agent, "_cached_system_prompt", None) is None:
-            try:
-                from agent.conversation_loop import _restore_or_build_system_prompt
-
-                _restore_or_build_system_prompt(agent, None, conversation_history)
-            except Exception:
-                logger.debug("Could not build system prompt during CLI close", exc_info=True)
-                return
-        if getattr(agent, "_cached_system_prompt", None) is None:
-            return
-
         persist_lock = getattr(agent, "_session_persist_lock", None)
 
-        def _ensure_and_persist() -> None:
+        def _snapshot_and_persist() -> None:
+            # This snapshot must share the staging lock with ``chat()``. Without
+            # it, close can retain a mutable history baseline just before chat
+            # appends its pending dict; the later flush then mistakes that dict
+            # for durable history and stamps it without writing a row (#63766).
+            messages = getattr(agent, "_session_messages", None)
+            pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
+            if not isinstance(messages, list):
+                messages = getattr(self, "conversation_history", None)
+            if not isinstance(messages, list):
+                return
+            if isinstance(pending_cli_message, dict) and not any(
+                message is pending_cli_message for message in messages
+            ):
+                # The UI has accepted a new input but the worker still exposes its
+                # prior snapshot. Include only that staged dict; the baseline below
+                # keeps any durable resumed prefix from being re-appended.
+                messages = [*messages, pending_cli_message]
+            if not messages:
+                return
+
+            # A normal turn builds a new list that reuses the resumed-history dicts.
+            # Keep that CLI history as the baseline so a signal between assigning
+            # ``_session_messages`` and the turn's DB flush cannot append its durable
+            # prefix a second time. Once the CLI takes the turn result, however, both
+            # names can point at the same live list; passing that alias would mark an
+            # unflushed tail durable without writing it. Marker-only persistence is
+            # correct only in that alias case.
+            conversation_history = getattr(self, "conversation_history", None)
+            pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
+            if (
+                isinstance(conversation_history, list)
+                and conversation_history
+                and conversation_history[-1] is pending_cli_message
+            ):
+                # The UI accepted this user message before the agent finished its
+                # early persistence. Its dict can already be in ``messages`` but is
+                # not durable yet, so exclude it from the resumed-history baseline.
+                conversation_history = conversation_history[:-1]
+            elif not isinstance(conversation_history, list) or conversation_history is messages:
+                conversation_history = None
+
+            # A first-turn close can arrive before the worker builds its cached
+            # prompt. Build or restore it before the DB row is created so the
+            # durable transcript never leaves a NULL system_prompt cache entry.
+            if getattr(agent, "_cached_system_prompt", None) is None:
+                try:
+                    from agent.conversation_loop import _restore_or_build_system_prompt
+
+                    _restore_or_build_system_prompt(agent, None, conversation_history)
+                except Exception:
+                    logger.debug("Could not build system prompt during CLI close", exc_info=True)
+                    return
+            if getattr(agent, "_cached_system_prompt", None) is None:
+                return
+
             agent._ensure_db_session()
             agent._persist_session(messages, conversation_history)
             if getattr(agent, "session_id", None):
@@ -12918,10 +12922,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         try:
             if persist_lock is None:
-                _ensure_and_persist()
+                _snapshot_and_persist()
             else:
                 with persist_lock:
-                    _ensure_and_persist()
+                    _snapshot_and_persist()
         except (Exception, KeyboardInterrupt) as e:
             logger.debug("Could not persist active CLI session before close: %s", e)
 

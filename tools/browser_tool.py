@@ -1124,8 +1124,9 @@ def _run_chrome_fallback_command(
             proc.wait()
             return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
         try:
-            with open(stdout_path, "r", encoding="utf-8") as f:
-                stdout = f.read().strip()
+            # Lossy decode: the Chrome fallback subprocess may emit
+            # non-UTF-8 output on Windows (same as agent-browser).
+            stdout = _read_output_file_lossy(stdout_path)
             if stdout:
                 return json.loads(stdout.split("\n")[-1])
         except Exception as exc:

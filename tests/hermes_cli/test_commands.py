@@ -520,9 +520,13 @@ class TestSlashCommandCompleter:
         completions = _completions(SlashCommandCompleter(), "/re")
         texts = {item.text for item in completions}
 
-        assert "reset" in texts
+        # Canonical commands starting with "re" should appear.
         assert "retry" in texts
         assert "reload-mcp" in texts
+        assert "reload-skills" in texts
+        # Semantic aliases like /reset (alias of /new) are filtered from
+        # autocomplete — only canonical names appear in the menu.
+        assert "reset" not in texts
 
     def test_builtin_completion_display_meta_shows_description(self):
         completions = _completions(SlashCommandCompleter(), "/help")
@@ -583,6 +587,62 @@ class TestSlashCommandCompleter:
         completions = _completions(completer, "/gif")
         # /gif doesn't match any builtin command
         assert completions == []
+
+    # -- alias filtering (issue #33211) ---------------------------------
+
+    def test_underscore_alias_duplicates_not_in_autocomplete(self):
+        """Underscore ↔ hyphen duplicate aliases must be filtered from the
+        autocomplete dropdown (issue #33211)."""
+        completer = SlashCommandCompleter()
+        completions = _completions(completer, "/reload")
+        texts = {item.text for item in completions}
+
+        # Canonical commands should appear
+        assert "reload-mcp" in texts
+        assert "reload-skills" in texts
+        # Underscore variants must NOT appear as separate entries
+        assert "reload_mcp" not in texts
+        assert "reload_skills" not in texts
+
+    def test_semantic_aliases_filtered_from_autocomplete(self):
+        """Semantic aliases (bg, reset, q, v, …) must NOT appear in
+        autocomplete — only canonical command names are shown (issue #33211).
+        This is the key difference from the earlier narrow fix that only
+        filtered underscore ↔ hyphen duplicates."""
+        completer = SlashCommandCompleter()
+
+        # /bg (alias of /background) must NOT appear for "/b"
+        completions = _completions(completer, "/b")
+        texts = {item.text for item in completions}
+        assert "background" in texts
+        assert "bg" not in texts
+
+        # /q (alias of /queue) must NOT appear for "/q"
+        completions = _completions(completer, "/q")
+        texts = {item.text for item in completions}
+        assert "queue" in texts
+        assert "q" not in texts
+
+        # /v (alias of /version) must NOT appear for "/v"
+        completions = _completions(completer, "/v")
+        texts = {item.text for item in completions}
+        assert "version" in texts
+        assert "v" not in texts
+
+    def test_alias_commands_still_resolve(self):
+        """Aliases must still resolve to their primary command via
+        resolve_command() even though they don't appear in autocomplete."""
+        cmd = resolve_command("reload_mcp")
+        assert cmd is not None
+        assert cmd.name == "reload-mcp"
+
+        cmd = resolve_command("bg")
+        assert cmd is not None
+        assert cmd.name == "background"
+
+        cmd = resolve_command("reset")
+        assert cmd is not None
+        assert cmd.name == "new"
 
     def test_skill_provider_exception_is_swallowed(self):
         """A broken provider should not crash autocomplete."""

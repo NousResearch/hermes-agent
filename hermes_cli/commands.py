@@ -271,6 +271,21 @@ def _build_command_lookup() -> dict[str, CommandDef]:
 
 _COMMAND_LOOKUP: dict[str, CommandDef] = _build_command_lookup()
 
+# Set of all alias names (without leading slash) that should NOT appear as
+# separate entries in the autocomplete dropdown (issue #33211).
+#
+# Scope decision: we filter ALL non-canonical aliases — both stylistic
+# duplicates (underscore ↔ hyphen variants like ``reload_mcp``) and
+# semantic aliases (like ``bg``, ``reset``, ``q``, ``v``).  The
+# autocomplete menu should surface only canonical command names so users
+# learn the canonical form; aliases still resolve correctly via
+# ``resolve_command()`` and ``/help`` documents them.
+_ALIAS_NAMES: frozenset[str] = frozenset(
+    alias
+    for cmd in COMMAND_REGISTRY
+    for alias in cmd.aliases
+)
+
 
 def resolve_command(name: str) -> CommandDef | None:
     """Resolve a command name or alias to its CommandDef.
@@ -2003,9 +2018,16 @@ class SlashCommandCompleter(Completer):
         word = text[1:]
 
         for cmd, desc in COMMANDS.items():
+            cmd_name = cmd[1:]
+            # Skip alias entries so the autocomplete menu shows only
+            # canonical command names (issue #33211).  All aliases —
+            # both stylistic duplicates (underscore ↔ hyphen) and
+            # semantic aliases (bg, reset, q, v, …) — are filtered.
+            # Aliases still resolve correctly via resolve_command().
+            if cmd_name in _ALIAS_NAMES:
+                continue
             if not self._command_allowed(cmd):
                 continue
-            cmd_name = cmd[1:]
             if cmd_name.startswith(word):
                 yield Completion(
                     self._completion_text(cmd_name, word),

@@ -28,7 +28,7 @@ import logging
 import os
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
@@ -495,111 +495,158 @@ class MemoryStore:
         return self._success_response(target, "Entry removed.")
 
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Apply a sequence of add/replace/remove ops to one target atomically.
+        """Apply a sequence of add/replace/remove ops atomically.
 
-        All operations are validated and applied against the FINAL budget --
-        intermediate overflow is irrelevant. This lets the model free space
-        (remove/replace) and add new entries in a SINGLE tool call instead of
-        the multi-turn consolidate-then-retry dance that re-sends the whole
-        conversation context several times.
+        Operations are validated and applied against the FINAL budget of each
+        target -- intermediate overflow is irrelevant. This lets the model
+        free space (remove/replace) and add new entries in a SINGLE tool call
+        instead of the multi-turn consolidate-then-retry dance.
 
-        Semantics: all-or-nothing. If any op is malformed, doesn't match, or
-        the net result would exceed the char limit, NOTHING is written and an
-        error is returned describing the first failure plus the live state.
+        Each operation may carry its own `target` ("memory" or "user"); if
+        omitted, it inherits the batch-level `target`. A single batch may
+        therefore touch BOTH stores at once (e.g. consolidate memory AND add a
+        user preference).
+
+        Semantics: all-or-nothing ACROSS ALL TARGETS. If any op is malformed,
+        doesn't match, or the net result would exceed a target's char limit,
+        NOTHING is written and an error is returned describing the first
+        failure plus the live state of the affected target.
         """
         if not operations:
             return {"success": False, "error": "operations list is empty."}
 
+        # Resolve each op's target (defaults to the batch-level target) and
+        # reject any op with an invalid target up front.
+        resolved: List[Any] = []
+        distinct_targets: set = set()
+        for i, op in enumerate(operations):
+            op = op or {}
+            op_target = str(op.get("target") or target).strip() or target
+            if op_target not in ("memory", "user"):
+                return {
+                    "success": False,
+                    "error": (
+                        f"Operation {i + 1}: target must be 'memory' or 'user', "
+                        f"got '{op_target}'."
+                    ),
+                }
+            resolved.append((op_target, op))
+            distinct_targets.add(op_target)
+
         # Scan every add/replace content for injection/exfil BEFORE touching
         # disk -- a single poisoned op rejects the whole batch.
-        for i, op in enumerate(operations):
-            act = (op or {}).get("action")
-            new_content = (op or {}).get("content")
+        for i, (op_target, op) in enumerate(resolved):
+            act = op.get("action")
+            new_content = op.get("content")
             if act in {"add", "replace"} and new_content:
                 scan_error = _scan_memory_content(new_content)
                 if scan_error:
                     return {"success": False, "error": f"Operation {i + 1}: {scan_error}"}
 
-        with self._file_lock(self._path_for(target)):
-            bak = self._reload_target(target)
-            if bak:
-                return _drift_error(self._path_for(target), bak)
+        # Lock every distinct target at once (deterministic path order avoids
+        # deadlock), then detect external drift on any target before mutating.
+        paths = sorted(self._path_for(t) for t in distinct_targets)
+        with ExitStack() as stack:
+            for p in paths:
+                stack.enter_context(self._file_lock(p))
 
-            # Work on a copy; only commit if the whole batch validates.
-            working: List[str] = list(self._entries_for(target))
-            limit = self._char_limit(target)
+            for t in distinct_targets:
+                bak = self._reload_target(t)
+                if bak:
+                    return _drift_error(self._path_for(t), bak)
 
-            for i, op in enumerate(operations):
-                op = op or {}
+            # Work on copies per target; only commit if the whole batch validates.
+            working_by_target: Dict[str, List[str]] = {
+                t: list(self._entries_for(t)) for t in distinct_targets
+            }
+            limit_by_target: Dict[str, int] = {
+                t: self._char_limit(t) for t in distinct_targets
+            }
+
+            for i, (op_target, op) in enumerate(resolved):
+                working = working_by_target[op_target]
                 act = op.get("action")
                 content = (op.get("content") or "").strip()
                 old_text = (op.get("old_text") or "").strip()
-                pos = f"Operation {i + 1} ({act or 'unknown'})"
+                pos = f"Operation {i + 1} ({act or 'unknown'}) [target={op_target}]"
 
                 if act == "add":
                     if not content:
-                        return self._batch_error(target, f"{pos}: content is required.")
+                        return self._batch_error(op_target, f"{pos}: content is required.")
                     if content in working:
                         continue  # idempotent -- skip duplicate, don't fail the batch
                     working.append(content)
 
                 elif act == "replace":
                     if not old_text:
-                        return self._batch_error(target, f"{pos}: old_text is required.")
+                        return self._batch_error(op_target, f"{pos}: old_text is required.")
                     if not content:
                         return self._batch_error(
-                            target,
+                            op_target,
                             f"{pos}: content is required (use action='remove' to delete).",
                         )
                     matches = [j for j, e in enumerate(working) if old_text in e]
                     if not matches:
-                        return self._batch_error(target, f"{pos}: no entry matched '{old_text}'.")
+                        return self._batch_error(op_target, f"{pos}: no entry matched '{old_text}'.")
                     if len({working[j] for j in matches}) > 1:
                         return self._batch_error(
-                            target,
+                            op_target,
                             f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.",
                         )
                     working[matches[0]] = content
 
                 elif act == "remove":
                     if not old_text:
-                        return self._batch_error(target, f"{pos}: old_text is required.")
+                        return self._batch_error(op_target, f"{pos}: old_text is required.")
                     matches = [j for j, e in enumerate(working) if old_text in e]
                     if not matches:
-                        return self._batch_error(target, f"{pos}: no entry matched '{old_text}'.")
+                        return self._batch_error(op_target, f"{pos}: no entry matched '{old_text}'.")
                     if len({working[j] for j in matches}) > 1:
                         return self._batch_error(
-                            target,
+                            op_target,
                             f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.",
                         )
                     working.pop(matches[0])
 
                 else:
                     return self._batch_error(
-                        target,
+                        op_target,
                         f"{pos}: unknown action. Use add, replace, or remove.",
                     )
 
-            # Budget check against the FINAL state only.
-            new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
-            if new_total > limit:
-                current = self._char_count(target)
-                return self._consolidation_failure({
-                    "success": False,
-                    "error": (
-                        f"After applying all {len(operations)} operations, memory would be at "
-                        f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
-                        f"entries in the same batch (see current_entries below), then retry."
-                    ),
-                    "current_entries": self._entries_for(target),
-                    "usage": f"{current:,}/{limit:,}",
-                })
+            # Budget check against the FINAL state of each target only.
+            for t in distinct_targets:
+                working = working_by_target[t]
+                new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
+                if new_total > limit_by_target[t]:
+                    current = self._char_count(t)
+                    return self._consolidation_failure({
+                        "success": False,
+                        "error": (
+                            f"After applying all operations, the '{t}' memory would be at "
+                            f"{new_total:,}/{limit_by_target[t]:,} chars -- over the limit. "
+                            f"Remove or shorten more entries for that target in the same batch, then retry."
+                        ),
+                        "current_entries": self._entries_for(t),
+                        "usage": f"{current:,}/{limit_by_target[t]:,}",
+                    })
 
-            # Commit.
-            self._set_entries(target, working)
-            self.save_to_disk(target)
+            # Commit every target.
+            for t in distinct_targets:
+                self._set_entries(t, working_by_target[t])
+                self.save_to_disk(t)
 
-        return self._success_response(target, f"Applied {len(operations)} operation(s).")
+        if len(distinct_targets) == 1:
+            only = next(iter(distinct_targets))
+            return self._success_response(only, f"Applied {len(operations)} operation(s).")
+        return {
+            "success": True,
+            "done": True,
+            "target": "mixed",
+            "targets": sorted(distinct_targets),
+            "applied": len(operations),
+            "note": "Write saved. This update is complete \u2014 do not repeat it.",
+        }
 
     def _batch_error(self, target: str, message: str) -> Dict[str, Any]:
         """Build a batch-abort error that reports live (uncommitted) state."""
@@ -1111,7 +1158,10 @@ MEMORY_SCHEMA = {
                 "description": (
                     "Batch shape: a list of operations applied atomically in one call "
                     "against the final char budget. Preferred when making multiple changes "
-                    "or consolidating to make room. Each item is {action, content?, old_text?}."
+                    "or consolidating to make room. Each item is {action, content?, old_text?, "
+                    "target?}. The top-level 'target' applies to every op that omits its own; "
+                    "an op may set 'target' to reach a different store (e.g. add to 'user' while "
+                    "consolidating 'memory') -- a single batch can touch both stores at once."
                 ),
                 "items": {
                     "type": "object",
@@ -1119,6 +1169,7 @@ MEMORY_SCHEMA = {
                         "action": {"type": "string", "enum": ["add", "replace", "remove"]},
                         "content": {"type": "string", "description": "Entry content for add/replace."},
                         "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
+                        "target": {"type": "string", "enum": ["memory", "user"], "description": "Store for THIS op; defaults to the top-level 'target'."},
                     },
                     "required": ["action"],
                 },

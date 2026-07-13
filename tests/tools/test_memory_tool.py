@@ -685,6 +685,71 @@ class TestMemoryBatch:
         assert result["success"] is False
         assert "legit fact" not in store.memory_entries
 
+    def test_batch_per_op_target_reaches_correct_store(self, store):
+        # Regression: a target nested inside an op must NOT silently fall back
+        # to the batch-level target (the original bug routed everything to
+        # "memory" when the model put target inside each op).
+        store.add("user", "USER keep")
+        store.add("memory", "MEM keep")
+        result = json.loads(memory_tool(
+            target="memory",  # batch default the nested op should override
+            operations=[
+                {"action": "add", "content": "should land in USER", "target": "user"},
+            ],
+            store=store,
+        ))
+        assert result["success"] is True
+        assert "should land in USER" in store.user_entries
+        assert "should land in USER" not in store.memory_entries
+        assert "MEM keep" in store.memory_entries  # untouched
+
+    def test_batch_mixed_targets_one_call(self, store):
+        # A single batch may touch both stores: add to user while consolidating memory.
+        store.add("user", "USER stale")
+        store.add("memory", "MEM stale")
+        result = json.loads(memory_tool(
+            target="user",
+            operations=[
+                {"action": "remove", "old_text": "USER stale"},
+                {"action": "add", "content": "USER fresh"},
+                {"action": "add", "target": "memory", "content": "MEM fresh"},
+            ],
+            store=store,
+        ))
+        assert result["success"] is True
+        assert result.get("target") == "mixed"
+        assert "USER fresh" in store.user_entries
+        assert "MEM fresh" in store.memory_entries
+        assert "USER stale" not in store.user_entries
+        # MEM stale was NOT in this batch's remove list, so it remains alongside the new add.
+        assert "MEM stale" in store.memory_entries
+
+    def test_batch_per_op_target_invalid_rejected(self, store):
+        result = json.loads(memory_tool(
+            operations=[{"action": "add", "content": "x", "target": "bogus"}],
+            store=store,
+        ))
+        assert result["success"] is False
+        assert "bogus" in result["error"]
+
+    def test_batch_all_or_nothing_across_both_stores(self, store):
+        # A bad op on a secondary target must abort writes to ALL targets,
+        # not just the one it touched.
+        store.add("user", "USER keep")
+        store.add("memory", "MEM keep")
+        result = json.loads(memory_tool(
+            target="user",
+            operations=[
+                {"action": "replace", "old_text": "USER keep", "content": "USER edited"},
+                {"action": "remove", "target": "memory", "old_text": "NONEXISTENT"},
+            ],
+            store=store,
+        ))
+        assert result["success"] is False
+        assert "USER edited" not in store.user_entries  # rolled back
+        assert "USER keep" in store.user_entries
+        assert "MEM keep" in store.memory_entries
+
 
 # =========================================================================
 # External drift guard (#26045)

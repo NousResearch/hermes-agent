@@ -5970,6 +5970,27 @@ class DispatchResult:
     actively preventing two dispatchers from racing on ``kanban.db``."""
 
 
+def resolve_dispatch_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
+    """Return the dispatcher-usable default assignee, if one is configured.
+
+    This is the shared resolution rule for ``kanban.default_assignee``. Empty
+    values mean "no fallback"; configured values are honored only when the
+    profile exists. If profile lookup itself is unavailable, keep the existing
+    dispatcher behavior and trust the operator's config so the downstream
+    spawnability check can bucket the row normally.
+    """
+    candidate = (default_assignee or "").strip() or None
+    if not candidate:
+        return None
+    try:
+        from hermes_cli.profiles import profile_exists as _profile_exists
+        if not _profile_exists(candidate):
+            return None
+    except Exception:
+        return candidate
+    return candidate
+
+
 # Bounded registry of recently-reaped worker child exits, populated by the
 # reap loop at the top of ``dispatch_once`` and consulted by
 # ``detect_crashed_workers`` to classify a dead-pid task.
@@ -7363,22 +7384,9 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             _per_profile_running[prow["assignee"]] = int(prow["n"])
-    # Normalize default_assignee once: empty/whitespace string → None so the
-    # rest of the loop can use ``if default_assignee:`` as a single check.
-    # We also resolve profile_exists once here for the same reason.
-    _default_assignee = (default_assignee or "").strip() or None
-    _default_assignee_resolved = False
-    if _default_assignee:
-        try:
-            from hermes_cli.profiles import profile_exists as _pe
-            _default_assignee_resolved = bool(_pe(_default_assignee))
-        except Exception:
-            # Profiles module not importable (test stubs, exotic envs).
-            # Trust the operator's config and try the assignment; the
-            # downstream profile_exists check on the assigned row will
-            # bucket it as nonspawnable if the profile genuinely isn't
-            # there, with the existing diagnostic.
-            _default_assignee_resolved = True
+    # Normalize and resolve default_assignee once so the dashboard warning,
+    # CLI, gateway, and dispatcher all agree on whether the fallback applies.
+    _default_assignee = resolve_dispatch_default_assignee(default_assignee)
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
@@ -7394,7 +7402,7 @@ def _dispatch_once_locked(
             # board state consistent: the task is now legitimately owned
             # by ``kanban.default_assignee``, not "unassigned but secretly
             # routed".
-            if _default_assignee and _default_assignee_resolved:
+            if _default_assignee:
                 # Dry-run: show what WOULD happen (auto-assign + spawn) without
                 # mutating the DB. Real run: mutate the row + emit the
                 # 'assigned' event so the board state matches what just happened.

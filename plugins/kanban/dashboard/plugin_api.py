@@ -623,6 +623,31 @@ def _auto_assign_sole_profile(conn) -> Optional[str]:
     return on_disk[0] if len(on_disk) == 1 else None
 
 
+def _configured_dispatch_default_assignee() -> Optional[str]:
+    """Return the configured default assignee when dispatch would honor it."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        return None
+    kanban_cfg = (cfg.get("kanban") or {}) if isinstance(cfg, dict) else {}
+    return kanban_db.resolve_dispatch_default_assignee(
+        kanban_cfg.get("default_assignee")
+    )
+
+
+def _dispatcher_presence_warning() -> Optional[str]:
+    try:
+        from hermes_cli.kanban import _check_dispatcher_presence
+        running, message = _check_dispatcher_presence()
+        if not running and message:
+            return message
+    except Exception:
+        # Probe failure must never block the create itself.
+        pass
+    return None
+
+
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
@@ -657,23 +682,21 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             body["auto_assigned"] = assignee
         # Surface a dispatcher-presence warning so the UI can show a
         # banner when a `ready` task would otherwise sit idle because no
-        # gateway is running (or dispatch_in_gateway=false). Only emit
-        # for ready+assigned tasks; triage/todo are expected to wait,
-        # and unassigned tasks can't be dispatched regardless.
-        if task and task.status == "ready" and task.assignee:
-            try:
-                from hermes_cli.kanban import _check_dispatcher_presence
-                running, message = _check_dispatcher_presence()
-                if not running and message:
-                    body["warning"] = message
-            except Exception:
-                # Probe failure must never block the create itself.
-                pass
-        elif task and task.status == "ready" and not task.assignee:
-            body["warning"] = (
-                "Task is ready but has no assignee, so the Kanban dispatcher "
-                "will not pick it up until a worker profile is assigned."
-            )
+        # gateway is running (or dispatch_in_gateway=false). Treat an
+        # unassigned task as dispatchable when the dispatcher would apply a
+        # valid kanban.default_assignee; otherwise show the actionable
+        # assignee warning.
+        if task and task.status == "ready":
+            dispatch_assignee = task.assignee or _configured_dispatch_default_assignee()
+            if dispatch_assignee:
+                warning = _dispatcher_presence_warning()
+                if warning:
+                    body["warning"] = warning
+            else:
+                body["warning"] = (
+                    "Task is ready but has no assignee, so the Kanban dispatcher "
+                    "will not pick it up until a worker profile is assigned."
+                )
         return body
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

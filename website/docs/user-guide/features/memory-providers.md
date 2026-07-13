@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Memori, YantrikDB"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 10 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, memori, yantrikdb
 ```
 
 ## How It Works
@@ -611,6 +611,41 @@ hermes config set memory.provider memori
 hermes memory setup
 ```
 
+### YantrikDB
+
+Self-maintaining local memory with contradiction tracking, agent-authored skills, benchmarked self-tuning recall, and explainable ranking (every result carries a `why_retrieved` reason list). Embedded by default — no server, no token, no GPU — with an optional HTTP backend for cluster deployments.
+
+| | |
+|---|---|
+| **Best for** | Long-running agents that need to surface contradictions, ground their own ranking, reuse procedural skills, and see what their memory is missing |
+| **Requires** | `pip install yantrikdb-hermes-plugin` + `yantrikdb-hermes install` |
+| **Data storage** | Local SQLite (embedded mode) or `yantrikdb-server` cluster (HTTP mode) |
+| **Cost** | Free |
+
+**Tools (18 base + 3 optional skills):** `yantrikdb_remember` / `yantrikdb_recall` (explainable `why_retrieved` recall, opt-in self-tuning via `reinforce`) / `yantrikdb_forget`, `yantrikdb_think` (consolidate + conflict scan + pattern mining), `yantrikdb_conflicts` / `yantrikdb_resolve_conflict` (surface and close contradictions), `yantrikdb_relate` (knowledge-graph edges), `yantrikdb_stats` / `yantrikdb_observability`, the trigger consumers `yantrikdb_pending_triggers` / `_acknowledge_trigger` / `_dismiss_trigger` / `_act_on_trigger`, `yantrikdb_extraction_stats`, `yantrikdb_hygiene` (engine-backed stale scan + consolidate/forget), `yantrikdb_knowledge_gaps` (what the memory is missing), `yantrikdb_recent_turns` (verbatim conversation buffer that survives compression), and `yantrikdb_tasks` (durable, namespace-scoped chore store). Opt-in via `YANTRIKDB_SKILLS_ENABLED=true`: `yantrikdb_skill_search` / `_skill_define` / `_skill_outcome` (agent-authored procedural skills with an append-only outcome ledger).
+
+**Architecture:** The engine ships as a Rust crate with Python bindings. The default backend is in-process (~10 MB install, bundled potion-2M embedder, no separate server). HTTP mode points at `yantrikdb-server` for cluster deployments and shares the same tool surface. Every recall returns ranking-reason lists inline — no separate "explain" call, no second LLM round-trip. `think()` runs canonicalization, conflict detection, and pattern mining as a single maintenance pass, auto-called on session end. Recall quality is tracked by a reproducible in-repo benchmark.
+
+**Setup:**
+```bash
+pip install yantrikdb-hermes-plugin
+yantrikdb-hermes install
+hermes memory setup    # select "yantrikdb"
+# Or manually:
+hermes config set memory.provider yantrikdb
+```
+
+**Config:** `~/.hermes/.env` env vars (no separate config file required for embedded mode).
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `YANTRIKDB_MODE` | `embedded` | `embedded` (in-process SQLite) or `http` (yantrikdb-server cluster) |
+| `YANTRIKDB_NAMESPACE` | `hermes` | Namespace/shard for this agent's memories |
+| `YANTRIKDB_SKILLS_ENABLED` | `false` | Enable the agent-authored skills tools |
+| `YANTRIKDB_SELF_TUNING_RECALL` | `false` | Rank reinforced memories higher over time |
+
+Requires `yantrikdb>=0.9.0`.
+
 ---
 
 ## Provider Comparison
@@ -626,12 +661,13 @@ hermes memory setup
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **YantrikDB** | Local/Cloud | Free | 18 | `yantrikdb-hermes-plugin` | Contradiction tracking + explainable recall + benchmarked self-tuning |
 
 ## Profile Isolation
 
 Each provider's data is isolated per [profile](/user-guide/profiles):
 
-- **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
+- **Local storage providers** (Holographic, ByteRover, YantrikDB) use `$HERMES_HOME/` paths which differ per profile
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file

@@ -81,6 +81,23 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "one window or display at a time."
                 ),
             },
+            "window_title": {
+                "type": "string",
+                "description": (
+                    "For action='type' or action='key': exact window_title "
+                    "returned by the prior capture of `app`. Hermes performs "
+                    "a fresh capture and refuses input if the title changed."
+                ),
+            },
+            "window_id": {
+                "type": "integer",
+                "description": (
+                    "For action='type', action='key', or action='set_value': "
+                    "exact window_id returned by the prior capture. Hermes "
+                    "performs a fresh capture and refuses input if the window "
+                    "identity changed, even when another window has the same title."
+                ),
+            },
             "max_elements": {
                 "type": "integer",
                 "description": (
@@ -179,13 +196,18 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             # ── type / key / wait ──────────────────────────────────
             "text": {
                 "type": "string",
-                "description": "Text to type (respects the current layout).",
+                "description": (
+                    "Text to type. Requires exact `app`, `window_title`, and "
+                    "`element` or `coordinate`. Secrets, key material, and "
+                    "encoded credential blobs are blocked."
+                ),
             },
             "keys": {
                 "type": "string",
                 "description": (
                     "Key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return', "
-                    "'escape', 'tab'. Use '+' to combine."
+                    "'escape', 'tab'. Use '+' to combine. Requires exact "
+                    "`app` and `window_title`; clipboard paste is blocked."
                 ),
             },
             "seconds": {

@@ -57,6 +57,8 @@ class CaptureResult:
     # Optional: the target app/window the elements were captured for.
     app: str = ""
     window_title: str = ""
+    pid: int = 0
+    window_id: int = 0
     # Raw bytes we sent to Anthropic, for token estimation.
     png_bytes_len: int = 0
     # Explicit MIME type for `png_b64` when the backend supplied it
@@ -99,7 +101,12 @@ class ComputerUseBackend(ABC):
 
     # ── Capture ─────────────────────────────────────────────────────
     @abstractmethod
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult: ...
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult: ...
 
     # ── Pointer actions ─────────────────────────────────────────────
     @abstractmethod
@@ -140,7 +147,14 @@ class ComputerUseBackend(ABC):
 
     # ── Keyboard ────────────────────────────────────────────────────
     @abstractmethod
-    def type_text(self, text: str) -> ActionResult: ...
+    def type_text(
+        self,
+        text: str,
+        *,
+        element: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+    ) -> ActionResult: ...
 
     @abstractmethod
     def key(self, keys: str) -> ActionResult:

@@ -204,7 +204,10 @@ class TestDispatch:
     def test_type_action_routes_to_type_text_backend(self, noop_backend):
         """type action must call backend.type_text, not type_text_chars (issue #24170, bug 3)."""
         from tools.computer_use.tool import handle_computer_use
-        out = handle_computer_use({"action": "type", "text": "hello"})
+        out = handle_computer_use({
+            "action": "type", "text": "hello", "app": "TestApp",
+            "window_title": "Test Window", "window_id": 202, "element": 1,
+        })
         parsed = json.loads(out)
         assert "error" not in parsed
         call_names = [c[0] for c in noop_backend.calls]
@@ -254,7 +257,10 @@ class TestDispatch:
     def test_set_value_routes_to_backend(self, noop_backend):
         """set_value must reach the backend — regression for missing _NoopBackend stub."""
         from tools.computer_use.tool import handle_computer_use
-        out = handle_computer_use({"action": "set_value", "value": "Option A", "element": 5})
+        out = handle_computer_use({
+            "action": "set_value", "value": "Option A", "element": 1,
+            "app": "TestApp", "window_title": "Test Window", "window_id": 202,
+        })
         parsed = json.loads(out)
         assert parsed.get("ok") is True
         assert parsed.get("action") == "set_value"
@@ -334,15 +340,81 @@ class TestSafetyGuards:
 
     def test_safe_key_combos_pass(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use
-        out = handle_computer_use({"action": "key", "keys": "cmd+s"})
+        out = handle_computer_use({
+            "action": "key", "keys": "cmd+s", "app": "TestApp",
+            "window_title": "Test Window", "window_id": 202,
+        })
         parsed = json.loads(out)
         assert "error" not in parsed
 
     def test_type_with_empty_string_is_allowed(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use
-        out = handle_computer_use({"action": "type", "text": ""})
+        out = handle_computer_use({
+            "action": "type", "text": "", "app": "TestApp",
+            "window_title": "Test Window", "window_id": 202, "element": 1,
+        })
         parsed = json.loads(out)
         assert "error" not in parsed
+
+    @pytest.mark.parametrize("text", [
+        "-----BEGIN PRIVATE KEY-----",
+        "<tls-auth>",
+        "api_key=abcdefghijklmnopqrstuvwxyz0123456789",
+        "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0123456789abcd",
+    ])
+    def test_sensitive_gui_text_is_blocked(self, text, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "type", "text": text})
+        assert "sensitive GUI input blocked" in json.loads(out)["error"]
+
+    @pytest.mark.parametrize("keys", ["ctrl+v", "cmd+v", "shift+insert"])
+    def test_clipboard_paste_is_blocked(self, keys, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "key", "keys": keys})
+        assert "blocked key combo" in json.loads(out)["error"]
+
+    def test_type_requires_exact_target(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "type", "text": "safe"})
+        assert "requires explicit `app` and `window_title`" in json.loads(out)["error"]
+
+    def test_type_refuses_other_window_of_same_app(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({
+            "action": "type", "text": "safe", "app": "TestApp",
+            "window_title": "Different Chat", "window_id": 202, "element": 1,
+        })
+        assert "target window changed" in json.loads(out)["error"]
+        assert not any(name == "type" for name, _args in noop_backend.calls)
+
+    def test_keyboard_audit_does_not_log_text_or_raw_window_title(
+        self, noop_backend, caplog, tmp_path, monkeypatch,
+    ):
+        from tools.computer_use.tool import handle_computer_use
+
+        home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        secret_marker = "api_key=abcdefghijklmnopqrstuvwxyz0123456789"
+        raw_title = "Private customer conversation"
+        with caplog.at_level("INFO", logger="tools.computer_use.tool"):
+            out = handle_computer_use({
+                "action": "type",
+                "text": secret_marker,
+                "app": "TestApp",
+                "window_title": raw_title,
+                "window_id": 202,
+                "element": 1,
+            })
+
+        assert "sensitive GUI input blocked" in json.loads(out)["error"]
+        assert "computer_use audit" in caplog.text
+        assert secret_marker not in caplog.text
+        assert raw_title not in caplog.text
+        assert "title_hash=" in caplog.text
+        audit_text = (home / "logs" / "computer_use_audit.log").read_text(encoding="utf-8")
+        assert "target_id=" in audit_text
+        assert secret_marker not in audit_text
+        assert raw_title not in audit_text
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +422,34 @@ class TestSafetyGuards:
 # ---------------------------------------------------------------------------
 
 class TestCaptureResponse:
+    def test_capture_exposes_stable_window_identity(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        payload = json.loads(handle_computer_use({
+            "action": "capture",
+            "mode": "ax",
+            "app": "TestApp",
+        }))
+
+        assert payload["pid"] == 101
+        assert payload["window_id"] == 202
+        assert len(payload["target_id"]) == 16
+
+    def test_keyboard_refuses_reused_window_id(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        payload = json.loads(handle_computer_use({
+            "action": "type",
+            "text": "safe",
+            "app": "TestApp",
+            "window_title": "Test Window",
+            "window_id": 999,
+            "element": 1,
+        }))
+
+        assert "window_id changed" in payload["error"]
+        assert not any(name == "type" for name, _args in noop_backend.calls)
+
     def test_capture_ax_mode_returns_text_json(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use
         out = handle_computer_use({"action": "capture", "mode": "ax"})
@@ -1421,6 +1521,52 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
     return backend
 
 
+class TestKeyboardTargetBinding:
+    def _armed_backend(self):
+        from tools.computer_use.backend import ActionResult
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._active_pid = 101
+        backend._active_window_id = 202
+        backend._keyboard_target_armed = True
+        backend._action = MagicMock(
+            side_effect=lambda name, args: ActionResult(ok=True, action=name, meta=args),
+        )
+        return backend
+
+    def test_type_text_passes_window_and_element(self):
+        backend = self._armed_backend()
+        result = backend.type_text("safe", element=7)
+        assert result.ok
+        backend._action.assert_called_once_with("type_text", {
+            "pid": 101, "window_id": 202, "text": "safe", "element_index": 7,
+        })
+        assert backend._keyboard_target_armed is False
+
+    def test_type_text_refuses_unaddressed_input(self):
+        backend = self._armed_backend()
+        result = backend.type_text("safe")
+        assert result.ok is False
+        backend._action.assert_not_called()
+
+    def test_key_passes_exact_window(self):
+        backend = self._armed_backend()
+        result = backend.key("ctrl+s")
+        assert result.ok
+        backend._action.assert_called_once_with("hotkey", {
+            "pid": 101, "window_id": 202, "keys": ["ctrl", "s"],
+        })
+        assert backend._keyboard_target_armed is False
+
+    def test_keyboard_input_requires_fresh_explicit_capture(self):
+        backend = self._armed_backend()
+        backend._keyboard_target_armed = False
+        assert backend.type_text("safe", element=7).ok is False
+        assert backend.key("return").ok is False
+        backend._action.assert_not_called()
+
+
 class TestCuaDriverSessionReconnect:
     """Verify reconnect-once on a closed-resource error. After the
     lifecycle-owner refactor (Sun Jun 21 2026) the session no longer goes
@@ -1572,8 +1718,11 @@ class TestCuaDriverSessionReconnect:
             returncode = 0
             stderr = ""
             # Daemon returns a path, not inline base64.
-            stdout = ('{"element_count": 7, "tree_markdown": "- [0] AXButton",'
-                      ' "screenshot_file_path": "%s"}' % str(shot))
+            stdout = json.dumps({
+                "element_count": 7,
+                "tree_markdown": "- [0] AXButton",
+                "screenshot_file_path": str(shot),
+            })
 
         import subprocess as _sp
         orig_run = _sp.run
@@ -2621,6 +2770,35 @@ class TestElementTokenAttachment:
         name, args = backend._session.call_tool.call_args.args
         assert name == "set_value"
         assert args["element_token"] == "sff00:3"
+
+    def test_token_attached_to_type_text(self):
+        backend = self._backend_with_session({
+            "type_text": {"accessibility.element_tokens", "input.keyboard.type"},
+        })
+        backend._keyboard_target_armed = True
+        backend._snapshot_tokens = {7: "sff00:7"}
+
+        result = backend.type_text("safe", element=7)
+
+        assert result.ok
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "type_text"
+        assert args["pid"] == 111
+        assert args["window_id"] == 222
+        assert args["element_index"] == 7
+        assert args["element_token"] == "sff00:7"
+
+    def test_public_capture_payload_exposes_element_token(self):
+        from tools.computer_use.backend import UIElement
+        from tools.computer_use.tool import _element_to_dict
+
+        payload = _element_to_dict(UIElement(
+            index=4,
+            role="AXTextField",
+            element_token="snapshot:4",
+        ))
+
+        assert payload["element_token"] == "snapshot:4"
 
     def test_token_attached_to_scroll(self):
         backend = self._backend_with_session({

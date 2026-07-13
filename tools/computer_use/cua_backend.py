@@ -1158,6 +1158,7 @@ class CuaDriverBackend(ComputerUseBackend):
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
         self._last_app: Optional[str] = None  # last app name targeted via capture/focus_app
+        self._keyboard_target_armed = False
         # Surface 6 of NousResearch/hermes-agent#47072: per-snapshot
         # `element_index -> element_token` map populated on capture().
         # Action tools (click/scroll/set_value/...) attach the matching
@@ -1244,12 +1245,20 @@ class CuaDriverBackend(ComputerUseBackend):
         return cua_driver_binary_available()
 
     # ── Capture ────────────────────────────────────────────────────
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult:
         """Capture the frontmost on-screen window (optionally filtered by app name).
 
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision).
         """
+        # Every capture invalidates the previous keyboard destination first.
+        # It is re-armed only after an explicit app window resolves completely.
+        self._keyboard_target_armed = False
         # Step 1: enumerate on-screen windows to find target pid/window_id.
         # Surface 3 of NousResearch/hermes-agent#47072: read the canonical
         # `structuredContent.windows` array directly. Pre-fix the wrapper
@@ -1353,10 +1362,27 @@ class CuaDriverBackend(ComputerUseBackend):
                 )
             windows = filtered
 
+        if window_id is not None:
+            exact = [window for window in windows if window["window_id"] == int(window_id)]
+            if not exact:
+                return CaptureResult(
+                    mode=mode,
+                    width=0,
+                    height=0,
+                    png_b64=None,
+                    elements=[],
+                    app=app or "",
+                    window_title=f"<no on-screen window matched window_id={window_id}>",
+                    window_id=0,
+                    png_bytes_len=0,
+                )
+            windows = exact
+
         # Pick first on-screen window (sorted by z_index / z-order above).
         target = next((w for w in windows if not w["off_screen"]), windows[0])
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
+        self._keyboard_target_armed = False
         app_name = target["app_name"]
         # Record the resolved app name so capture_after= follow-ups can re-target
         # the same app rather than falling back to the frontmost window.
@@ -1368,7 +1394,7 @@ class CuaDriverBackend(ComputerUseBackend):
         image_mime_type: Optional[str] = None
         elements: List[UIElement] = []
         width = height = 0
-        window_title = ""
+        window_title = target.get("title", "")
 
         if mode == "vision":
             # Plain screenshot, no AX walk. cua-driver dropped the standalone
@@ -1556,6 +1582,7 @@ class CuaDriverBackend(ComputerUseBackend):
             except Exception:
                 png_bytes_len = len(png_b64) * 3 // 4
 
+        self._keyboard_target_armed = bool(app and app_name and window_title)
         return CaptureResult(
             mode=mode,
             width=width,
@@ -1564,6 +1591,8 @@ class CuaDriverBackend(ComputerUseBackend):
             elements=elements,
             app=app_name,
             window_title=window_title,
+            pid=int(self._active_pid or 0),
+            window_id=int(self._active_window_id or 0),
             png_bytes_len=png_bytes_len,
             image_mime_type=image_mime_type,
         )
@@ -1674,16 +1703,35 @@ class CuaDriverBackend(ComputerUseBackend):
         return self._action("scroll", args)
 
     # ── Keyboard ───────────────────────────────────────────────────
-    def type_text(self, text: str) -> ActionResult:
+    def type_text(
+        self,
+        text: str,
+        *,
+        element: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+    ) -> ActionResult:
         pid = self._active_pid
-        if pid is None:
+        window_id = self._active_window_id
+        if pid is None or window_id is None or not self._keyboard_target_armed:
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
-        return self._action("type_text", {"pid": pid, "text": text})
+        if element is None and (x is None or y is None):
+            return ActionResult(ok=False, action="type_text",
+                                message="type_text requires element= or x=/y=.")
+        self._keyboard_target_armed = False
+        args: Dict[str, Any] = {"pid": pid, "window_id": window_id, "text": text}
+        if element is not None:
+            args["element_index"] = element
+        else:
+            args["x"] = x
+            args["y"] = y
+        return self._action("type_text", args)
 
     def key(self, keys: str) -> ActionResult:
         pid = self._active_pid
-        if pid is None:
+        window_id = self._active_window_id
+        if pid is None or window_id is None or not self._keyboard_target_armed:
             return ActionResult(ok=False, action="key",
                                 message="No active window — call capture() first.")
 
@@ -1692,11 +1740,16 @@ class CuaDriverBackend(ComputerUseBackend):
             return ActionResult(ok=False, action="key",
                                 message=f"Could not parse key from '{keys}'.")
 
+        self._keyboard_target_armed = False
         if modifiers:
             # hotkey requires at least one modifier + one key.
-            return self._action("hotkey", {"pid": pid, "keys": modifiers + [key_name]})
+            return self._action("hotkey", {
+                "pid": pid, "window_id": window_id, "keys": modifiers + [key_name],
+            })
         else:
-            return self._action("press_key", {"pid": pid, "key": key_name})
+            return self._action("press_key", {
+                "pid": pid, "window_id": window_id, "key": key_name,
+            })
 
     # ── Value setter ────────────────────────────────────────────────
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
@@ -1766,6 +1819,7 @@ class CuaDriverBackend(ComputerUseBackend):
         if target:
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]
+            self._keyboard_target_armed = False
             self._last_app = target["app_name"]  # preserve for capture_after= follow-ups
             return ActionResult(
                 ok=True, action="focus_app",

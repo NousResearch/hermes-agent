@@ -39,6 +39,7 @@ For captures / actions with `capture_after=True`:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -46,6 +47,7 @@ import re
 import struct
 import sys
 import threading
+from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import (
@@ -56,6 +58,11 @@ from tools.computer_use.backend import (
 )
 
 logger = logging.getLogger(__name__)
+_audit_handler_lock = threading.Lock()
+_audit_handler_path = ""
+_audit_file_logger = logging.getLogger("hermes.computer_use.audit")
+_audit_file_logger.setLevel(logging.INFO)
+_audit_file_logger.propagate = False
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +107,11 @@ _BLOCKED_KEY_COMBOS = {
     frozenset({"ctrl", "option", "delete"}),
     frozenset({"ctrl", "option", "del"}),
     frozenset({"option", "f4"}),
+    # Содержимое clipboard непрозрачно для guard. Текст должен проходить через
+    # `type`, где проверяются содержимое и точное место назначения.
+    frozenset({"ctrl", "v"}),
+    frozenset({"cmd", "v"}),
+    frozenset({"shift", "insert"}),
 }
 
 _KEY_ALIASES = {
@@ -124,12 +136,101 @@ _BLOCKED_TYPE_PATTERNS = [
     re.compile(r":\s*\(\)\s*\{\s*:\|:\s*&\s*\}", re.IGNORECASE),  # fork bomb
 ]
 
+_SENSITIVE_TYPE_PATTERNS = [
+    ("PEM material", re.compile(
+        r"-{2,}(?:BEGIN|END)\s+(?:CERTIFICATE|PRIVATE KEY|PUBLIC KEY|OPENVPN STATIC KEY)",
+        re.IGNORECASE,
+    )),
+    ("VPN key block", re.compile(
+        r"<?/?(?:tls-auth|tls-crypt(?:-v2)?|pkcs12|key)>?",
+        re.IGNORECASE,
+    )),
+    ("credential-like value", re.compile(
+        r"\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*\S{12,}",
+        re.IGNORECASE,
+    )),
+    ("encoded key material", re.compile(
+        r"(?m)^[A-Za-z0-9+/]{40,}={0,2}$",
+    )),
+]
+
 
 def _is_blocked_type(text: str) -> Optional[str]:
     for pat in _BLOCKED_TYPE_PATTERNS:
         if pat.search(text):
             return pat.pattern
     return None
+
+
+def _sensitive_type_category(text: str) -> Optional[str]:
+    for category, pattern in _SENSITIVE_TYPE_PATTERNS:
+        if pattern.search(text):
+            return category
+    return None
+
+
+def _target_id(app: str, title: str, window_id: Any) -> str:
+    material = f"{app.casefold()}|{window_id}|{title}"
+    return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _ensure_audit_file_handler() -> None:
+    """Подключить ограниченный локальный audit без записи содержимого действий."""
+    global _audit_handler_path
+    try:
+        from hermes_constants import get_hermes_home
+
+        path = get_hermes_home() / "logs" / "computer_use_audit.log"
+        desired = str(path)
+        with _audit_handler_lock:
+            if _audit_handler_path == desired and _audit_file_logger.handlers:
+                return
+            for handler in list(_audit_file_logger.handlers):
+                _audit_file_logger.removeHandler(handler)
+                handler.close()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handler = RotatingFileHandler(
+                path,
+                maxBytes=1024 * 1024,
+                backupCount=5,
+                encoding="utf-8",
+            )
+            handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+            _audit_file_logger.addHandler(handler)
+            _audit_handler_path = desired
+    except Exception as exc:  # pragma: no cover - audit file must not break CUA
+        logger.debug("computer_use audit file unavailable: %s", type(exc).__name__)
+
+
+def _audit_keyboard_event(
+    action: str, args: Dict[str, Any], outcome: str, reason: str = "",
+    backend: Optional[ComputerUseBackend] = None,
+) -> None:
+    """Записать локальное audit-событие CUA без содержимого ввода."""
+    title = str(args.get("window_title") or "")
+    title_hash = hashlib.sha256(title.encode("utf-8", "replace")).hexdigest()[:12] if title else ""
+    app = str(args.get("app") or "")
+    window_id = args.get("window_id")
+    if window_id is None and backend is not None:
+        window_id = getattr(backend, "_active_window_id", None)
+    target_id = _target_id(app, title, window_id)
+    audit_message = (
+        "computer_use audit action=%s outcome=%s app=%s title_hash=%s "
+        "target_id=%s pid=%s window_id=%s reason=%s"
+    )
+    audit_args = (
+        action,
+        outcome,
+        app,
+        title_hash,
+        target_id,
+        getattr(backend, "_active_pid", None) if backend is not None else None,
+        window_id,
+        reason,
+    )
+    logger.info(audit_message, *audit_args)
+    _ensure_audit_file_handler()
+    _audit_file_logger.info(audit_message, *audit_args)
 
 
 # ---------------------------------------------------------------------------
@@ -193,10 +294,17 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def stop(self) -> None: self._started = False
     def is_available(self) -> bool: return True
 
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        self.calls.append(("capture", {"mode": mode, "app": app}))
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult:
+        self.calls.append(("capture", {"mode": mode, "app": app, "window_id": window_id}))
         return CaptureResult(mode=mode, width=1024, height=768, png_b64=None,
-                             elements=[], app=app or "", window_title="")
+                             elements=[UIElement(index=1, role="AXTextField")],
+                             app=app or "", window_title="Test Window",
+                             pid=101, window_id=202)
 
     def click(self, **kw) -> ActionResult:
         self.calls.append(("click", kw))
@@ -210,8 +318,17 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("scroll", kw))
         return ActionResult(ok=True, action="scroll")
 
-    def type_text(self, text: str) -> ActionResult:
-        self.calls.append(("type", {"text": text}))
+    def type_text(
+        self,
+        text: str,
+        *,
+        element: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+    ) -> ActionResult:
+        self.calls.append(("type", {
+            "text": text, "element": element, "x": x, "y": y,
+        }))
         return ActionResult(ok=True, action="type")
 
     def key(self, keys: str) -> ActionResult:
@@ -254,16 +371,76 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                 "error": f"blocked pattern in type text: {pat!r}",
                 "hint": "Dangerous shell patterns cannot be typed via computer_use.",
             })
+        category = _sensitive_type_category(text)
+        if category:
+            _audit_keyboard_event(action, args, "blocked", category)
+            return json.dumps({
+                "error": f"sensitive GUI input blocked: {category}",
+                "hint": "Write secrets through a protected file or secret manager, never through CUA.",
+            })
+        if not args.get("app") or not args.get("window_title"):
+            _audit_keyboard_event(action, args, "blocked", "missing_target")
+            return json.dumps({
+                "error": "type requires explicit `app` and `window_title` from a prior capture",
+                "hint": "Capture the exact app window, then retry with its returned app and window_title.",
+            })
+        if args.get("window_id") is None:
+            _audit_keyboard_event(action, args, "blocked", "missing_window_id")
+            return json.dumps({
+                "error": "type requires exact `window_id` from a prior capture",
+                "hint": "Capture the intended window again and pass its returned window_id.",
+            })
+        if args.get("element") is None and not args.get("coordinate"):
+            _audit_keyboard_event(action, args, "blocked", "missing_element")
+            return json.dumps({
+                "error": "type requires exact `element` or `coordinate`",
+                "hint": "Use a target returned by a prior capture of the same app window.",
+            })
 
     if action == "key":
         keys = args.get("keys", "")
         combo = _canon_key_combo(keys)
         for blocked in _BLOCKED_KEY_COMBOS:
             if blocked.issubset(combo) and len(blocked) <= len(combo):
+                _audit_keyboard_event(action, args, "blocked", "blocked_key_combo")
                 return json.dumps({
                     "error": f"blocked key combo: {sorted(blocked)}",
-                    "hint": "Destructive system shortcuts are hard-blocked.",
+                    "hint": "Destructive shortcuts and opaque clipboard paste are hard-blocked.",
                 })
+        if not args.get("app") or not args.get("window_title"):
+            _audit_keyboard_event(action, args, "blocked", "missing_target")
+            return json.dumps({
+                "error": "key requires explicit `app` and `window_title` from a prior capture",
+                "hint": "Capture the exact app window before sending keys.",
+            })
+        if args.get("window_id") is None:
+            _audit_keyboard_event(action, args, "blocked", "missing_window_id")
+            return json.dumps({
+                "error": "key requires exact `window_id` from a prior capture",
+                "hint": "Capture the intended window again and pass its returned window_id.",
+            })
+
+    if action == "set_value":
+        value = str(args.get("value", ""))
+        category = _sensitive_type_category(value)
+        if category:
+            _audit_keyboard_event(action, args, "blocked", category)
+            return json.dumps({
+                "error": f"sensitive GUI input blocked: {category}",
+                "hint": "Write secrets through a protected file or secret manager, never through CUA.",
+            })
+        if not args.get("app") or not args.get("window_title"):
+            _audit_keyboard_event(action, args, "blocked", "missing_target")
+            return json.dumps({
+                "error": "set_value requires explicit `app` and `window_title` from a prior capture",
+                "hint": "Capture the exact app window before changing a value.",
+            })
+        if args.get("window_id") is None:
+            _audit_keyboard_event(action, args, "blocked", "missing_window_id")
+            return json.dumps({
+                "error": "set_value requires exact `window_id` from a prior capture",
+                "hint": "Capture the intended window again and pass its returned window_id.",
+            })
 
     # Approval gate (destructive actions only).
     if action in _DESTRUCTIVE_ACTIONS:
@@ -332,12 +509,69 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         return f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}"
     if action == "type":
         text = args.get("text", "")
-        return f"type {text[:60]!r}" + ("..." if len(text) > 60 else "")
+        title_hash = hashlib.sha256(
+            str(args.get("window_title") or "").encode("utf-8", "replace")
+        ).hexdigest()[:12]
+        return (
+            f"type {len(text)} character(s) into verified target "
+            f"{args.get('app', '')!r} / title_hash={title_hash}"
+        )
     if action == "key":
         return f"key {args.get('keys', '')!r}"
     if action == "focus_app":
         return f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")
     return action
+
+
+def _verify_keyboard_target(
+    backend: ComputerUseBackend, args: Dict[str, Any],
+) -> Optional[str]:
+    """Повторно снять состояние и привязать ввод к точному окну."""
+    expected_app = str(args.get("app", "")).strip()
+    expected_title = str(args.get("window_title", "")).strip()
+    try:
+        expected_window_id = int(args.get("window_id"))
+    except (TypeError, ValueError):
+        _audit_keyboard_event(str(args.get("action") or "keyboard"), args, "blocked", "invalid_window_id", backend)
+        return json.dumps({"error": "keyboard target window_id is invalid"})
+    cap = backend.capture(mode="ax", app=expected_app, window_id=expected_window_id)
+
+    actual_app = (cap.app or "").strip()
+    actual_title = (cap.window_title or "").strip()
+    actual_window_id = int(cap.window_id or 0)
+    if not actual_app or actual_app.casefold() != expected_app.casefold():
+        _audit_keyboard_event(str(args.get("action") or "keyboard"), args, "blocked", "app_mismatch", backend)
+        return json.dumps({
+            "error": "keyboard target app changed or could not be verified",
+            "expected_app": expected_app,
+            "actual_app": actual_app,
+        })
+    if not actual_title or actual_title != expected_title:
+        _audit_keyboard_event(str(args.get("action") or "keyboard"), args, "blocked", "window_mismatch", backend)
+        return json.dumps({
+            "error": "keyboard target window changed or could not be verified",
+            "expected_window_title": expected_title,
+            "actual_window_title": actual_title,
+            "hint": "Capture the intended window again; do not retry against the new title automatically.",
+        })
+    if not actual_window_id or actual_window_id != expected_window_id:
+        _audit_keyboard_event(str(args.get("action") or "keyboard"), args, "blocked", "window_id_mismatch", backend)
+        return json.dumps({
+            "error": "keyboard target window_id changed or could not be verified",
+            "expected_window_id": expected_window_id,
+            "actual_window_id": actual_window_id,
+            "hint": "Capture the intended window again; never reuse a window_id across captures.",
+        })
+
+    element = args.get("element")
+    if element is not None and not any(item.index == element for item in cap.elements):
+        _audit_keyboard_event(str(args.get("action") or "keyboard"), args, "blocked", "element_missing", backend)
+        return json.dumps({
+            "error": f"keyboard target element #{element} is absent from the fresh capture",
+            "hint": "Capture the intended window again and select a fresh element index.",
+        })
+    _audit_keyboard_event(str(args.get("action") or "keyboard"), args, "verified", backend=backend)
+    return None
 
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
@@ -347,7 +581,10 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-        cap = backend.capture(mode=mode, app=args.get("app"))
+        capture_kwargs: Dict[str, Any] = {"mode": mode, "app": args.get("app")}
+        if args.get("window_id") is not None:
+            capture_kwargs["window_id"] = args.get("window_id")
+        cap = backend.capture(**capture_kwargs)
         return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
 
     if action == "wait":
@@ -417,19 +654,36 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "type":
-        res = backend.type_text(args.get("text", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        guard_error = _verify_keyboard_target(backend, args)
+        if guard_error:
+            return guard_error
+        coord = args.get("coordinate") or (None, None)
+        res = backend.type_text(
+            args.get("text", ""),
+            element=args.get("element"),
+            x=coord[0] if coord and coord[0] is not None else None,
+            y=coord[1] if coord and coord[1] is not None else None,
+        )
+        return _maybe_follow_capture(backend, res, True)
 
     if action == "key":
+        guard_error = _verify_keyboard_target(backend, args)
+        if guard_error:
+            return guard_error
         res = backend.key(args.get("keys", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, True)
 
     if action == "set_value":
         value = args.get("value")
         if value is None:
             return json.dumps({"error": "set_value requires `value`"})
+        if args.get("element") is None:
+            return json.dumps({"error": "set_value requires exact `element`"})
+        guard_error = _verify_keyboard_target(backend, args)
+        if guard_error:
+            return guard_error
         res = backend.set_value(value=str(value), element=args.get("element"))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, True)
 
     return json.dumps({"error": f"unknown action {action!r}"})
 
@@ -558,7 +812,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     summary_lines = [
         f"capture mode={cap.mode} {response_width}x{response_height}"
         + (f" app={cap.app}" if cap.app else "")
-        + (f" window={cap.window_title!r}" if cap.window_title else ""),
+        + (f" window={cap.window_title!r}" if cap.window_title else "")
+        + (f" window_id={cap.window_id}" if cap.window_id else ""),
         f"{total_elements} interactable element(s):",
     ]
     if element_index:
@@ -610,6 +865,9 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                 "height": response_height,
                 "app": cap.app,
                 "window_title": cap.window_title,
+                "pid": cap.pid,
+                "window_id": cap.window_id,
+                "target_id": _target_id(cap.app, cap.window_title, cap.window_id),
                 "elements": [_element_to_dict(e) for e in visible_elements],
                 "total_elements": total_elements,
                 "summary": "\n".join(summary_lines),
@@ -640,7 +898,9 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             ],
             "text_summary": summary,
             "meta": {"mode": cap.mode, "width": response_width, "height": response_height,
-                     "elements": total_elements, "png_bytes": cap.png_bytes_len},
+                     "elements": total_elements, "png_bytes": cap.png_bytes_len,
+                     "pid": cap.pid, "window_id": cap.window_id,
+                     "target_id": _target_id(cap.app, cap.window_title, cap.window_id)},
         }
     # AX-only (or image-missing fallback): text path actually carries the
     # `elements` array, so the truncation note applies here.
@@ -656,6 +916,9 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         "height": response_height,
         "app": cap.app,
         "window_title": cap.window_title,
+        "pid": cap.pid,
+        "window_id": cap.window_id,
+        "target_id": _target_id(cap.app, cap.window_title, cap.window_id),
         "elements": [_element_to_dict(e) for e in visible_elements],
         "total_elements": total_elements,
         "summary": summary,
@@ -883,13 +1146,20 @@ def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str
 
 
 def _element_to_dict(e: UIElement) -> Dict[str, Any]:
-    return {
+    payload = {
         "index": e.index,
         "role": e.role,
         "label": e.label,
         "bounds": list(e.bounds),
         "app": e.app,
     }
+    if e.pid:
+        payload["pid"] = e.pid
+    if e.window_id:
+        payload["window_id"] = e.window_id
+    if e.element_token:
+        payload["element_token"] = e.element_token
+    return payload
 
 
 # ---------------------------------------------------------------------------

@@ -103,6 +103,10 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   한국어: "ko",
   "zh-cn": "zh",
   "zh-hans": "zh",
+  "zh-hk": "zh-hant",
+  "zh-mo": "zh-hant",
+  "zh-sg": "zh",
+  "zh-tw": "zh-hant",
 };
 
 function isLocale(value: string): value is Locale {

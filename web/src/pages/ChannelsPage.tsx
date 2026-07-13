@@ -413,7 +413,11 @@ export default function ChannelsPage() {
       {editing && (
         <div
           ref={editModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
+          className={cn(
+            "fixed inset-0 z-[100] flex min-h-dvh items-start justify-center overflow-y-auto bg-background/85 px-4",
+            "pb-[calc(1rem+env(safe-area-inset-bottom))] pt-[calc(1rem+env(safe-area-inset-top))]",
+            "sm:items-center sm:p-4",
+          )}
           onClick={(e) => e.target === e.currentTarget && setEditing(null)}
           role="dialog"
           aria-modal="true"
@@ -422,7 +426,7 @@ export default function ChannelsPage() {
           <div
             className={cn(
               themedBody,
-              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
+              "relative flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col border border-border bg-card shadow-2xl sm:max-h-[90dvh]",
             )}
           >
             <Button
@@ -456,7 +460,7 @@ export default function ChannelsPage() {
               )}
             </header>
 
-            <div className="p-5 grid gap-4 overflow-y-auto">
+            <div className="grid gap-4 overflow-y-auto overscroll-contain p-4 sm:p-5">
               <p className="text-xs text-muted-foreground">
                 {editing.description}
               </p>
@@ -486,6 +490,7 @@ export default function ChannelsPage() {
                   <Input
                     id={`field-${field.key}`}
                     type={field.is_password ? "password" : "text"}
+                    className="text-base leading-6 sm:text-xs sm:leading-4"
                     placeholder={
                       field.is_set
                         ? field.redacted_value ||
@@ -516,12 +521,17 @@ export default function ChannelsPage() {
                 </div>
               ))}
 
-              <div className="flex justify-end gap-2 pt-1">
-                <Button ghost size="sm" onClick={() => setEditing(null)}>
+              <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
+                <Button
+                  ghost
+                  size="sm"
+                  className="w-full sm:w-auto"
+                  onClick={() => setEditing(null)}
+                >
                   {t.common.cancel}
                 </Button>
                 <Button
-                  className="uppercase"
+                  className="w-full uppercase sm:w-auto"
                   size="sm"
                   onClick={handleSave}
                   disabled={saving}

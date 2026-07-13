@@ -161,6 +161,12 @@ def build_top_level_parser():
         help="Resume a previous session by ID or title",
     )
     parser.add_argument(
+        "--no-restore-cwd",
+        action="store_true",
+        default=False,
+        help="Don't cd into a resumed session's recorded working directory.",
+    )
+    parser.add_argument(
         "--continue",
         "-c",
         dest="continue_last",
@@ -330,6 +336,12 @@ def build_top_level_parser():
         metavar="SESSION_ID",
         default=argparse.SUPPRESS,
         help="Resume a previous session by ID (shown on exit)",
+    )
+    chat_parser.add_argument(
+        "--no-restore-cwd",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Don't cd into a resumed session's recorded working directory.",
     )
     chat_parser.add_argument(
         "--continue",

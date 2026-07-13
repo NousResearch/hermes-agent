@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import {
   applyVoiceRecordResponse,
+  dismissSensitivePrompt,
   handleIdleHotkeyExit,
   shouldAllowIdleHotkeyExit,
   shouldFallThroughForScroll
@@ -110,5 +112,41 @@ describe('applyVoiceRecordResponse', () => {
 
     expect(setRecording).toHaveBeenCalledWith(false)
     expect(setProcessing).toHaveBeenCalledWith(false)
+  })
+})
+
+describe('dismissSensitivePrompt', () => {
+  it('clears a sudo overlay before a stale cancel RPC resolves', async () => {
+    resetOverlayState()
+    patchOverlayState({ sudo: { requestId: 'sudo-1' } })
+    const rpc = vi.fn().mockResolvedValue(null)
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, {
+      secret: 'localized secret cancellation',
+      sudo: 'localized sudo cancellation'
+    })
+
+    expect(getOverlayState().sudo).toBeNull()
+    expect(sys).toHaveBeenCalledWith('localized sudo cancellation')
+    expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
+    await pending
+  })
+
+  it('clears a secret overlay before a stale cancel RPC resolves', async () => {
+    resetOverlayState()
+    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'secret-1' } })
+    const rpc = vi.fn().mockResolvedValue(null)
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys, {
+      secret: 'localized secret cancellation',
+      sudo: 'localized sudo cancellation'
+    })
+
+    expect(getOverlayState().secret).toBeNull()
+    expect(sys).toHaveBeenCalledWith('localized secret cancellation')
+    expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
+    await pending
   })
 })

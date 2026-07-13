@@ -126,7 +126,11 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   українська: 'uk',
   'zh-cn': 'zh',
   'zh-hans': 'zh',
-  'zh-hant': 'zh-hant'
+  'zh-hant': 'zh-hant',
+  'zh-hk': 'zh-hant',
+  'zh-mo': 'zh-hant',
+  'zh-sg': 'zh',
+  'zh-tw': 'zh-hant'
 }
 
 // ── Locale-specific transient trail patterns ───────────────────

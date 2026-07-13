@@ -56,8 +56,9 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "chinese": "zh", "mandarin": "zh", "simplified-chinese": "zh",
     # BCP-47 compatibility stays internal; user-facing choices remain
     # "Simplified Chinese" and "Traditional Chinese".
-    "zh-cn": "zh", "zh-hans": "zh",
+    "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",
     "traditional-chinese": "zh-hant",
+    "zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-mo": "zh-hant",
     "japanese": "ja", "日本語": "ja", "jp": "ja", "ja-jp": "ja",
     "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
     "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",

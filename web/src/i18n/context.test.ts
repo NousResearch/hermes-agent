@@ -76,7 +76,11 @@ describe("Dashboard i18n framework", () => {
     expect(normalizeLocale("Simplified Chinese")).toBe("zh");
     expect(normalizeLocale("zh-CN")).toBe("zh");
     expect(normalizeLocale("zh_Hans")).toBe("zh");
+    expect(normalizeLocale("zh-SG")).toBe("zh");
     expect(normalizeLocale("traditional-chinese")).toBe("zh-hant");
+    expect(normalizeLocale("zh-TW")).toBe("zh-hant");
+    expect(normalizeLocale("zh_HK")).toBe("zh-hant");
+    expect(normalizeLocale("zh-MO")).toBe("zh-hant");
     expect(normalizeLocale("zh-extra")).toBeNull();
     expect(normalizeLocale("pt_BR")).toBe("pt");
     expect(normalizeLocale("jp")).toBe("ja");

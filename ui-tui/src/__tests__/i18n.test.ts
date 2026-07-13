@@ -214,12 +214,16 @@ describe('normalizeLocale', () => {
     expect(normalizeLocale('mandarin')).toBe('zh')
     expect(normalizeLocale('zh-CN')).toBe('zh')
     expect(normalizeLocale('zh_Hans')).toBe('zh')
+    expect(normalizeLocale('zh-SG')).toBe('zh')
   })
 
-  it('aliases: zh-hant / traditional-chinese → zh-hant', () => {
+  it('aliases: explicit Traditional Chinese choices and compatible BCP-47 tags → zh-hant', () => {
     expect(normalizeLocale('zh-hant')).toBe('zh-hant')
     expect(normalizeLocale('traditional-chinese')).toBe('zh-hant')
     expect(normalizeLocale('traditional chinese')).toBe('zh-hant')
+    expect(normalizeLocale('zh-TW')).toBe('zh-hant')
+    expect(normalizeLocale('zh_HK')).toBe('zh-hant')
+    expect(normalizeLocale('zh-MO')).toBe('zh-hant')
   })
 
   it('does not infer Chinese language from extra zh values', () => {

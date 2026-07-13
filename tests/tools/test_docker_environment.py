@@ -1910,6 +1910,7 @@ def test_real_docker_override_is_scoped_for_foreground_and_background():
     registry = ProcessRegistry()
     command = "python -c 'import os; print(os.getenv(\"BROKER_TEST\", \"missing\"))'"
     try:
+        baseline = env.execute("export BROKER_TEST=old-value")
         foreground = env.execute(
             command,
             env_overrides={"BROKER_TEST": "foreground-value"},
@@ -1926,9 +1927,10 @@ def test_real_docker_override_is_scoped_for_foreground_and_background():
     finally:
         env.cleanup()
 
+    assert baseline["returncode"] == 0
     assert foreground["returncode"] == 0
     assert foreground["output"].strip() == "foreground-value"
-    assert foreground_after["output"].strip() == "missing"
+    assert foreground_after["output"].strip() == "old-value"
     assert background["exit_code"] == 0
     assert background["output"].strip() == "background-value"
-    assert background_after["output"].strip() == "missing"
+    assert background_after["output"].strip() == "old-value"

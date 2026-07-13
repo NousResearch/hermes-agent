@@ -2145,6 +2145,7 @@ def terminal_tool(
         _start_cleanup_thread()
 
         # Get or create environment.
+        env = None
         # Use a per-task creation lock so concurrent tool calls for the same
         # task_id wait for the first one to finish creating the sandbox,
         # instead of each creating their own (wasting Modal resources).
@@ -2248,6 +2249,8 @@ def terminal_tool(
                         _last_activity[effective_task_id] = time.time()
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
+
+        assert env is not None, "terminal environment was not initialized"
 
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
         # restart|stop targeting hermes-gateway) must never run inside the
@@ -2366,14 +2369,25 @@ def terminal_tool(
             try:
                 from agent.credential_broker import (
                     canonicalize_command,
+                    requested_executable,
                     resolve_env_overrides,
                 )
 
+                executable = requested_executable(command)
                 command = canonicalize_command(command)
                 brokered_env_overrides = resolve_env_overrides(
                     credentials,
                     requester="terminal",
                     command=command,
+                )
+                resolver = getattr(env, "resolve_executable", None)
+                if not callable(resolver):
+                    raise RuntimeError(
+                        "terminal backend does not support trusted executable resolution"
+                    )
+                command = canonicalize_command(
+                    command,
+                    executable_path=resolver(executable),
                 )
             except Exception as e:
                 return json.dumps({
@@ -2397,14 +2411,33 @@ def terminal_tool(
             try:
                 if env_type == "local":
                     local_env_vars = dict(env.env) if hasattr(env, "env") else {}
-                    proc_session = process_registry.spawn_local(
+                    if brokered_env_overrides:
+                        proc_session = process_registry.spawn_local(
+                            command=command,
+                            cwd=effective_cwd,
+                            task_id=effective_task_id,
+                            session_key=session_key,
+                            env_vars=local_env_vars,
+                            env_overrides=brokered_env_overrides,
+                            use_pty=effective_pty,
+                        )
+                    else:
+                        proc_session = process_registry.spawn_local(
+                            command=command,
+                            cwd=effective_cwd,
+                            task_id=effective_task_id,
+                            session_key=session_key,
+                            env_vars=local_env_vars,
+                            use_pty=effective_pty,
+                        )
+                elif brokered_env_overrides:
+                    proc_session = process_registry.spawn_via_env(
+                        env=env,
                         command=command,
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
-                        env_vars=local_env_vars,
                         env_overrides=brokered_env_overrides,
-                        use_pty=effective_pty,
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(
@@ -2413,7 +2446,6 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
-                        env_overrides=brokered_env_overrides,
                     )
 
                 result_data = {
@@ -2657,12 +2689,19 @@ def terminal_tool(
                         env=env,
                         default_cwd=cwd,
                     )
-                    execute_kwargs = {
-                        "timeout": effective_timeout,
-                        "cwd": command_cwd,
-                        "env_overrides": brokered_env_overrides,
-                    }
-                    result = env.execute(command, **execute_kwargs)
+                    if brokered_env_overrides:
+                        result = env.execute(
+                            command,
+                            timeout=effective_timeout,
+                            cwd=command_cwd,
+                            env_overrides=brokered_env_overrides,
+                        )
+                    else:
+                        result = env.execute(
+                            command,
+                            timeout=effective_timeout,
+                            cwd=command_cwd,
+                        )
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:

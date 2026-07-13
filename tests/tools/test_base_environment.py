@@ -52,7 +52,7 @@ class TestWrapCommand:
 
         assert "source" not in wrapped
 
-    def test_invocation_env_is_unset_before_snapshot_refresh(self):
+    def test_invocation_env_is_applied_after_source_and_restored_before_snapshot(self):
         env = _TestableEnv()
         env._snapshot_ready = True
 
@@ -62,8 +62,19 @@ class TestWrapCommand:
             ("GITHUB_TOKEN",),
         )
 
-        assert wrapped.index("eval ") < wrapped.index("unset GITHUB_TOKEN")
-        assert wrapped.index("unset GITHUB_TOKEN") < wrapped.index("export -p >")
+        assert wrapped.index("__hermes_override_value_0=") < wrapped.index("source ")
+        assert wrapped.index("source ") < wrapped.index(
+            'export GITHUB_TOKEN="$__hermes_override_value_0"'
+        )
+        assert wrapped.index(
+            'export GITHUB_TOKEN="$__hermes_override_value_0"'
+        ) < wrapped.index("eval ")
+        assert wrapped.index("eval ") < wrapped.index(
+            'export GITHUB_TOKEN="$__hermes_override_previous_0"'
+        )
+        assert wrapped.index(
+            'export GITHUB_TOKEN="$__hermes_override_previous_0"'
+        ) < wrapped.index("export -p >")
 
     def test_single_quote_escaping(self):
         env = _TestableEnv()
@@ -470,3 +481,52 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+def test_execute_without_overrides_supports_legacy_run_bash_signature():
+    env = _TestableEnv()
+    env._snapshot_ready = False
+    calls = []
+
+    def legacy_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+        calls.append(cmd)
+        proc = MagicMock()
+        proc.poll.return_value = 0
+        proc.returncode = 0
+        proc.stdout = iter([])
+        return proc
+
+    setattr(env, "_run_bash", legacy_run_bash)
+    result = env.execute("echo compatible")
+
+    assert result["returncode"] == 0
+    assert len(calls) == 1
+
+
+def test_local_override_wins_then_restores_and_path_resolution_ignores_snapshot(tmp_path):
+    import shlex
+
+    from tools.environments.local import LocalEnvironment
+
+    fake_bash = tmp_path / "bash"
+    fake_bash.write_text("#!/bin/sh\nexit 99\n")
+    fake_bash.chmod(0o755)
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+    try:
+        env.execute(f"export PATH={shlex.quote(str(tmp_path))}:$PATH")
+        snapshot_resolution = env.execute("command -v bash")
+        trusted_resolution = env.resolve_executable("bash")
+
+        env.execute("export BROKER_COLLIDE=old")
+        overridden = env.execute(
+            "printf '%s' \"$BROKER_COLLIDE\"",
+            env_overrides={"BROKER_COLLIDE": "new"},
+        )
+        restored = env.execute("printf '%s' \"$BROKER_COLLIDE\"")
+    finally:
+        env.cleanup()
+
+    assert snapshot_resolution["output"].strip() == str(fake_bash)
+    assert trusted_resolution != str(fake_bash)
+    assert overridden["output"] == "new"
+    assert restored["output"] == "old"

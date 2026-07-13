@@ -100,7 +100,7 @@ credentials:
           commands: [gh]
 ```
 
-Then a terminal tool call can request `credentials: ["github_token"]`; Hermes injects the secret only for that invocation. Credentialed terminal calls must be one simple command. Hermes rejects shell chaining, pipelines, command/process substitution, grouping, background operators, and redirections so an allow rule for `gh` cannot authorize a second process. Allowlisted executables are matched exactly, so an entry for `gh` does not authorize `/tmp/gh`.
+Then a terminal tool call can request `credentials: ["github_token"]`; Hermes injects the secret only for that invocation. Credentialed terminal calls must be one simple command. Hermes rejects shell chaining, pipelines, command/process substitution, grouping, background operators, and redirections so an allow rule for `gh` cannot authorize a second process. Allowlisted executables are matched exactly, so an entry for `gh` does not authorize `/tmp/gh`. Before injecting credentials, Hermes resolves that executable against the backend's baseline process `PATH` and executes the resulting absolute path, preventing a prior terminal command from shadowing an allowlisted name through the persistent shell snapshot.
 
 Invocation-scoped credentials are supported by the local, Docker, SSH, direct Modal, Daytona, and Singularity backends, including their background launch paths. Managed Modal fails closed because its gateway does not currently expose a per-execution environment channel. This is intentionally a lightweight local broker, not a Vault/KMS replacement.
 

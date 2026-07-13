@@ -881,12 +881,19 @@ class ProcessRegistry:
         )
 
         try:
-            result = env.execute(
-                bg_command,
-                timeout=timeout,
-                rewrite_compound_background=False,
-                env_overrides=invocation_env,
-            )
+            if invocation_env:
+                result = env.execute(
+                    bg_command,
+                    timeout=timeout,
+                    rewrite_compound_background=False,
+                    env_overrides=invocation_env,
+                )
+            else:
+                result = env.execute(
+                    bg_command,
+                    timeout=timeout,
+                    rewrite_compound_background=False,
+                )
             output = result.get("output", "").strip()
             # Try to extract the PID from the output
             for line in output.splitlines():

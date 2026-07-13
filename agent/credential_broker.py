@@ -108,12 +108,29 @@ def _parse_simple_command(command: str | None) -> list[str]:
     return parts
 
 
-def canonicalize_command(command: str | None) -> str:
+def requested_executable(command: str | None) -> str:
+    """Return argv[0] for an accepted simple command."""
+
+    parts = _parse_simple_command(command)
+    if not parts:
+        raise CredentialBrokerError("brokered credentials require one simple command")
+    return parts[0]
+
+
+def canonicalize_command(
+    command: str | None,
+    *,
+    executable_path: str | None = None,
+) -> str:
     """Return a shell-safe canonical form of an accepted simple command."""
 
     parts = _parse_simple_command(command)
     if not parts:
         raise CredentialBrokerError("brokered credentials require one simple command")
+    if executable_path is not None:
+        if not executable_path.startswith("/"):
+            raise CredentialBrokerError("resolved executable path is not absolute")
+        parts[0] = executable_path
     return shlex.join(parts)
 
 

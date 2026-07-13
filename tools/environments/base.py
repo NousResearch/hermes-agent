@@ -342,6 +342,28 @@ class BaseEnvironment(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} must implement _run_bash()")
 
+    def resolve_executable(self, executable: str) -> str:
+        """Resolve via the backend's baseline PATH, bypassing its shell snapshot."""
+
+        timeout = min(self.timeout, 30)
+        proc = self._run_bash(
+            f"command -v -- {shlex.quote(executable)}",
+            login=False,
+            timeout=timeout,
+            stdin_data=None,
+        )
+        result = self._wait_for_process(proc, timeout=timeout)
+        resolved = str(result.get("output", "")).strip()
+        if result.get("returncode") != 0 or not resolved.startswith("/"):
+            raise RuntimeError(
+                f"credential broker could not resolve trusted executable {executable!r}"
+            )
+        if "\n" in resolved or "\r" in resolved:
+            raise RuntimeError(
+                f"credential broker received ambiguous executable path for {executable!r}"
+            )
+        return resolved
+
     @abstractmethod
     def cleanup(self):
         """Release backend resources (container, instance, connection)."""
@@ -495,6 +517,13 @@ class BaseEnvironment(ABC):
 
         parts = []
 
+        # Backends provide override values through the process environment. Save
+        # them before sourcing the persistent snapshot, which may contain older
+        # values for the same names.
+        for index, name in enumerate(env_override_names):
+            parts.append(f"__hermes_override_value_{index}=\"${{{name}-}}\"")
+            parts.append(f"unset {name}")
+
         # Source snapshot (env vars from previous commands).
         # Redirect stdout to /dev/null: on macOS (bash 3.2 and certain
         # Homebrew bash builds) sourcing a file containing ``declare -x``
@@ -504,6 +533,20 @@ class BaseEnvironment(ABC):
         if self._snapshot_ready:
             parts.append(
                 f"source {_quoted_snap} >/dev/null 2>&1 || true"
+            )
+
+        # Save snapshot state, then apply the invocation value after sourcing.
+        for index, name in enumerate(env_override_names):
+            parts.extend(
+                [
+                    f"if [[ ${{{name}+x}} ]]; then",
+                    f"  __hermes_override_was_set_{index}=1",
+                    f"  __hermes_override_previous_{index}=\"${{{name}}}\"",
+                    "else",
+                    f"  __hermes_override_was_set_{index}=0",
+                    "fi",
+                    f"export {name}=\"$__hermes_override_value_{index}\"",
+                ]
             )
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
@@ -519,10 +562,21 @@ class BaseEnvironment(ABC):
         # umask. Snapshot files may contain env-carried secrets.
         parts.append("umask 077")
 
-        # Per-invocation values arrive through the backend's process environment.
-        # Remove them before refreshing the persistent shell snapshot.
-        if env_override_names:
-            parts.append("unset " + " ".join(env_override_names))
+        # Restore snapshot state before refreshing it, so an override neither
+        # persists nor deletes a pre-existing value with the same name.
+        for index, name in enumerate(env_override_names):
+            parts.extend(
+                [
+                    f"if [[ $__hermes_override_was_set_{index} == 1 ]]; then",
+                    f"  export {name}=\"$__hermes_override_previous_{index}\"",
+                    "else",
+                    f"  unset {name}",
+                    "fi",
+                    f"unset __hermes_override_value_{index}",
+                    f"unset __hermes_override_was_set_{index}",
+                    f"unset __hermes_override_previous_{index}",
+                ]
+            )
 
         # Re-dump env vars to snapshot (atomic replacement to avoid races).
         # Chain mv on the export succeeding so a failed/partial dump never
@@ -959,13 +1013,21 @@ class BaseEnvironment(ABC):
         # Use login shell if snapshot failed (so user's profile still loads)
         login = not self._snapshot_ready
 
-        proc = self._run_bash(
-            wrapped,
-            login=login,
-            timeout=effective_timeout,
-            stdin_data=effective_stdin,
-            env_overrides=invocation_env,
-        )
+        if invocation_env:
+            proc = self._run_bash(
+                wrapped,
+                login=login,
+                timeout=effective_timeout,
+                stdin_data=effective_stdin,
+                env_overrides=invocation_env,
+            )
+        else:
+            proc = self._run_bash(
+                wrapped,
+                login=login,
+                timeout=effective_timeout,
+                stdin_data=effective_stdin,
+            )
         result = self._wait_for_process(proc, timeout=effective_timeout)
         self._update_cwd(result)
 

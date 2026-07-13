@@ -195,6 +195,10 @@ def test_terminal_tool_injects_brokered_credential_for_one_command(
         def __init__(self):
             self.env = {}
 
+        def resolve_executable(self, executable):
+            assert executable == "gh"
+            return "/usr/bin/gh"
+
         def execute(self, command, **kwargs):
             captured.setdefault("calls", []).append((command, kwargs))
             captured["command"] = command
@@ -239,7 +243,7 @@ def test_terminal_tool_injects_brokered_credential_for_one_command(
     )
 
     assert result["exit_code"] == 0
-    assert captured["command"] == "gh pr list"
+    assert captured["command"] == "/usr/bin/gh pr list"
     assert captured["kwargs"]["env_overrides"] == {"GITHUB_TOKEN": "ghp_test"}
     assert fake_env.env == {}
 

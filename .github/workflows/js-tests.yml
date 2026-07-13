@@ -21,7 +21,12 @@ jobs:
           command: npm ci --ignore-scripts
       - id: set-matrix
         run: |
-          echo "packages=$(npm query .workspace | jq -c '[.[].location]')" >> "$GITHUB_OUTPUT"
+          PACKAGES=$(npm query .workspace | jq -c '[.[].location]')
+          if [ "$PACKAGES" = "[]" ] || [ -z "$PACKAGES" ]; then
+            echo "::error::Workspace discovery produced an empty package list — refusing to emit a zero-length matrix (would skip all JS/TS checks silently)."
+            exit 1
+          fi
+          echo "packages=$PACKAGES" >> "$GITHUB_OUTPUT"
 
   check:
     name: Typecheck & Test

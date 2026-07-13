@@ -360,6 +360,7 @@ def _get_max_concurrent_children() -> int:
     Uses the same ``_load_config()`` path that the rest of ``delegate_task``
     uses, keeping config priority consistent (config.yaml > env > default).
     """
+    route_limits = _get_active_cron_route_limits()
     cfg = _load_config()
     val = cfg.get("max_concurrent_children")
     if val is not None:
@@ -374,6 +375,8 @@ def _get_max_concurrent_children() -> int:
                         "independently. High values multiply cost linearly.",
                         result,
                     )
+            if route_limits is not None:
+                return min(result, int(route_limits.get("max_child_tasks", result)))
             return result
         except (TypeError, ValueError):
             logger.warning(
@@ -386,9 +389,17 @@ def _get_max_concurrent_children() -> int:
     env_val = os.getenv("DELEGATION_MAX_CONCURRENT_CHILDREN")
     if env_val:
         try:
-            return max(1, int(env_val))
+            result = max(1, int(env_val))
+            if route_limits is not None:
+                return min(result, int(route_limits.get("max_child_tasks", result)))
+            return result
         except (TypeError, ValueError):
             return _DEFAULT_MAX_CONCURRENT_CHILDREN
+    if route_limits is not None:
+        return min(
+            _DEFAULT_MAX_CONCURRENT_CHILDREN,
+            int(route_limits.get("max_child_tasks", _DEFAULT_MAX_CONCURRENT_CHILDREN)),
+        )
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 
 
@@ -440,6 +451,7 @@ def _get_child_timeout() -> Optional[float]:
     Set ``delegation.child_timeout_seconds`` to a positive number to opt back
     in to a hard cap (floor 30 s); ``0`` or a negative value means disabled.
     """
+    route_limits = _get_active_cron_route_limits()
     cfg = _load_config()
     val = cfg.get("child_timeout_seconds")
     if val is not None:
@@ -452,6 +464,8 @@ def _get_child_timeout() -> Optional[float]:
                 val,
             )
         else:
+            if route_limits is not None:
+                return float(route_limits.get("timeout_seconds", max(30.0, parsed)))
             return None if parsed <= 0 else max(30.0, parsed)
     env_val = os.getenv("DELEGATION_CHILD_TIMEOUT_SECONDS")
     if env_val:
@@ -460,7 +474,11 @@ def _get_child_timeout() -> Optional[float]:
         except (TypeError, ValueError):
             pass
         else:
+            if route_limits is not None:
+                return float(route_limits.get("timeout_seconds", max(30.0, parsed)))
             return None if parsed <= 0 else max(30.0, parsed)
+    if route_limits is not None:
+        return float(route_limits.get("timeout_seconds", 600))
     return DEFAULT_CHILD_TIMEOUT
 
 
@@ -479,6 +497,9 @@ def _get_max_spawn_depth() -> int:
     Like max_concurrent_children, there is no upper ceiling — but each
     extra level multiplies API cost, so raise it deliberately.
     """
+    route_limits = _get_active_cron_route_limits()
+    if route_limits is not None:
+        return int(route_limits.get("max_delegation_depth", 0))
     cfg = _load_config()
     val = cfg.get("max_spawn_depth")
     if val is None:
@@ -614,6 +635,16 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+
+def _get_active_cron_route_limits() -> Optional[Dict[str, Any]]:
+    """Return scheduler route limits without coupling normal agent calls."""
+    try:
+        from cron.route_aliases import get_active_route_limits
+        limits = get_active_route_limits()
+        return dict(limits) if limits is not None else None
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -2456,6 +2487,12 @@ def delegate_task(
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
+    route_limits = _get_active_cron_route_limits()
+    if route_limits is not None and max_children < 1:
+        return tool_error(
+            "The active cron route forbids child-task delegation "
+            "(max_child_tasks=0)."
+        )
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
     if tasks_error:
         return tool_error(tasks_error)

@@ -2504,6 +2504,75 @@ def run_job(
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
+    # Explicit logical aliases are resolved before any dotenv, credential,
+    # provider, or agent machinery.  This is especially important for the
+    # deterministic route: registry loading must remain provider-free.
+    _route_alias = str(job.get("route_alias") or "").strip() or None
+    _cron_route = None
+    if _route_alias:
+        try:
+            from cron.route_aliases import resolve_route_alias
+            _cron_route = resolve_route_alias(
+                _route_alias, hermes_home=_get_hermes_home()
+            )
+        except Exception as _route_exc:
+            _route_error = f"Cron route alias {_route_alias!r} rejected: {_route_exc}"
+            logger.error("Job '%s': %s", job_id, _route_error)
+            return False, "", "", _route_error
+
+        if job.get("provider") or job.get("model") or job.get("base_url"):
+            _route_error = (
+                f"Cron route alias {_route_alias!r} conflicts with legacy "
+                "provider/model/base_url fields"
+            )
+            logger.error("Job '%s': %s", job_id, _route_error)
+            return False, "", "", _route_error
+
+        if _cron_route.alias == "deterministic.none" and (
+            not job.get("no_agent") or not job.get("script")
+        ):
+            _route_error = (
+                "deterministic.none requires no_agent=True and a script; "
+                "the prompt-only job was not run"
+            )
+            logger.error("Job '%s': %s", job_id, _route_error)
+            return False, "", "", _route_error
+
+        if _cron_route.alias != "deterministic.none" and job.get("no_agent"):
+            _route_error = f"Agent route {_route_alias!r} cannot run a no_agent job"
+            logger.error("Job '%s': %s", job_id, _route_error)
+            return False, "", "", _route_error
+
+        if _cron_route.alias == "reasoning.premium" and not job.get(
+            "premium_reasoning_approved", False
+        ):
+            _route_error = (
+                "reasoning.premium requires explicit premium_reasoning_approved=true"
+            )
+            logger.error("Job '%s': %s", job_id, _route_error)
+            return False, "", "", _route_error
+
+        _task_role = str(job.get("task_role") or "").strip().lower()
+        _route_role = str(_cron_route.role or "").strip().lower()
+        if ("coordinator" in _route_role or _route_alias == "coordinator.default") and _task_role in {
+            "implementation", "executor", "filesystem", "repair"
+        }:
+            _route_error = (
+                f"Coordinator route {_route_alias!r} cannot perform task_role="
+                f"{_task_role!r}"
+            )
+            logger.error("Job '%s': %s", job_id, _route_error)
+            return False, "", "", _route_error
+        if ("planner" in _route_role or _route_alias == "planner.standard") and _task_role in {
+            "implementation", "executor", "filesystem", "repair"
+        }:
+            _route_error = (
+                f"Planner route {_route_alias!r} cannot perform task_role="
+                f"{_task_role!r}"
+            )
+            logger.error("Job '%s': %s", job_id, _route_error)
+            return False, "", "", _route_error
+
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
     # ---------------------------------------------------------------
@@ -2681,6 +2750,7 @@ def run_job(
     logger.info("Prompt: %s", prompt[:100])
 
     agent = None
+    _route_limits_token = None
 
     # Mark this as a cron session so the approval system can apply cron_mode.
     # This env var is process-wide and persists for the lifetime of the
@@ -2807,7 +2877,12 @@ def run_job(
         # value is intentionally re-read from storage every tick so a
         # ``cronjob action=update model=...`` after a failed run takes effect
         # on the next tick — there is no in-memory cache.
-        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        model = (
+            (_cron_route.model if _cron_route is not None else None)
+            or job.get("model")
+            or os.getenv("HERMES_MODEL")
+            or ""
+        )
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -2830,7 +2905,7 @@ def run_job(
                 # Coerce null/missing to {} so a falsy default never
                 # clobbers an already-resolved env value with ``None``.
                 _model_cfg = _cfg.get("model") or {}
-                if not job.get("model"):
+                if not job.get("model") and _cron_route is None:
                     if isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
@@ -2868,7 +2943,8 @@ def run_job(
         # means thinking disabled, see parse_reasoning_effort)
         from hermes_constants import parse_reasoning_effort
         reasoning_config = parse_reasoning_effort(
-            _cfg.get("agent", {}).get("reasoning_effort", "")
+            (_cron_route.effort if _cron_route is not None and _cron_route.effort else None)
+            or _cfg.get("agent", {}).get("reasoning_effort", "")
         )
 
         # Prefill messages from env or config.yaml. The top-level
@@ -2915,6 +2991,11 @@ def run_job(
         # off-host call is ever made with a stored key.
         _guard_job_credential_exfil(job)
 
+        if _cron_route is not None and not _cron_route.allow_provider_call:
+            raise RuntimeError(
+                f"Cron route alias {_cron_route.alias!r} does not allow provider calls"
+            )
+
         try:
             # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
             # already prefers persisted config over stale shell/env overrides when
@@ -2922,15 +3003,25 @@ def run_job(
             # circuits that precedence and can resurrect old providers (for
             # example DeepSeek) for cron jobs that do not pin provider/model.
             runtime_kwargs = {
-                "requested": job.get("provider"),
+                "requested": (
+                    _cron_route.provider if _cron_route is not None
+                    else job.get("provider")
+                ),
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
-            # Primary provider auth failed — try fallback chain before giving up.
+            # Explicit aliases never inherit the global fallback chain.  They
+            # may only use fallback entries declared by that alias itself.
+            if _cron_route is not None and not _cron_route.fallback:
+                raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
             logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
-            fb_list = get_fallback_chain(_cfg)
+            fb_list = (
+                list(_cron_route.fallback)
+                if _cron_route is not None
+                else get_fallback_chain(_cfg)
+            )
             runtime = None
             for entry in fb_list:
                 try:
@@ -3004,7 +3095,10 @@ def run_job(
                 f"(or pin the original values to keep them). See #44585."
             )
 
-        fallback_model = get_fallback_chain(_cfg) or None
+        fallback_model = (
+            list(_cron_route.fallback) if _cron_route is not None
+            else get_fallback_chain(_cfg) or None
+        )
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:
@@ -3043,6 +3137,10 @@ def run_job(
                 job_id, _mcp_exc,
             )
 
+        if _cron_route is not None:
+            from cron.route_aliases import set_active_route_limits
+            _route_limits_token = set_active_route_limits(_cron_route.limits)
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -3075,6 +3173,10 @@ def run_job(
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+        if _cron_route is not None:
+            # The conversation loop uses this per-agent ceiling for transient
+            # API recovery.  Alias fallback remains separately controlled above.
+            agent._api_max_retries = _cron_route.max_retries
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
@@ -3315,6 +3417,12 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
+        if _route_limits_token is not None:
+            try:
+                from cron.route_aliases import reset_active_route_limits
+                reset_active_route_limits(_route_limits_token)
+            except Exception:
+                logger.debug("Job '%s': failed to reset route limits", job_id, exc_info=True)
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
         # only ever mutate it when the job has a workdir; see the setup block
         # at the top of run_job for the serialization guarantee.

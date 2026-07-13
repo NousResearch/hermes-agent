@@ -577,6 +577,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
         "model": job.get("model"),
         "provider": job.get("provider"),
+        "route_alias": job.get("route_alias"),
         "base_url": job.get("base_url"),
         "schedule": job.get("schedule_display") or "?",
         "repeat": _repeat_display(job),
@@ -676,6 +677,8 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    route_alias: Optional[str] = None,
+    premium_reasoning_approved: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
@@ -749,6 +752,8 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                route_alias=_normalize_optional_job_value(route_alias),
+                premium_reasoning_approved=bool(premium_reasoning_approved),
                 attach_to_session=attach_to_session,
             )
             _notify_provider_jobs_changed_safe()
@@ -873,6 +878,10 @@ def cronjob(
                 updates["model"] = _normalize_optional_job_value(model)
             if provider is not None:
                 updates["provider"] = _normalize_optional_job_value(provider)
+            if route_alias is not None:
+                updates["route_alias"] = _normalize_optional_job_value(route_alias)
+            if premium_reasoning_approved is not None:
+                updates["premium_reasoning_approved"] = bool(premium_reasoning_approved)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
             # Re-validate the EFFECTIVE provider/base_url on EVERY update, not
@@ -1037,6 +1046,14 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 },
                 "required": ["model"]
             },
+            "route_alias": {
+                "type": "string",
+                "description": "Preferred logical routing alias. Must resolve through model-routing.json; legacy provider/model fields cannot be combined with it.",
+            },
+            "premium_reasoning_approved": {
+                "type": "boolean",
+                "description": "Explicit per-job approval required before the reasoning.premium route may run.",
+            },
             "script": {
                 "type": "string",
                 "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
@@ -1140,6 +1157,8 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        route_alias=args.get("route_alias"),
+        premium_reasoning_approved=args.get("premium_reasoning_approved"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

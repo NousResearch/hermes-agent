@@ -981,6 +981,7 @@ def _compute_provider_model_snapshots(
     model: Any,
     base_url: Any,
     no_agent: Any,
+    route_alias: Any = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Snapshot unpinned inference axes for the provider/model drift guard.
 
@@ -995,7 +996,7 @@ def _compute_provider_model_snapshots(
         base_url,
         strip_trailing_slash=True,
     )
-    if bool(no_agent):
+    if bool(no_agent) or _normalize_job_optional_text(route_alias):
         return None, None
 
     provider_snapshot: Optional[str] = None
@@ -1020,14 +1021,42 @@ def _compute_provider_model_snapshots(
     return provider_snapshot, model_snapshot
 
 
-def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str], bool]:
+def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], bool]:
     """Return the stored inference-routing fields in their semantic form."""
     return (
         _normalize_job_optional_text(job.get("provider")),
         _normalize_job_optional_text(job.get("model")),
         _normalize_job_optional_text(job.get("base_url"), strip_trailing_slash=True),
+        _normalize_job_optional_text(job.get("route_alias")),
         bool(job.get("no_agent")),
     )
+
+
+def _validate_route_alias_job(
+    *, route_alias: Any, provider: Any, model: Any, base_url: Any,
+    no_agent: Any, script: Any,
+) -> Optional[str]:
+    """Validate the job-level route contract without loading credentials."""
+    alias = _normalize_job_optional_text(route_alias)
+    if not alias:
+        return None
+    if provider or model or base_url:
+        raise ValueError(
+            "route_alias conflicts with legacy provider/model/base_url fields; "
+            "clear the legacy fields before using a route alias"
+        )
+    from cron.route_aliases import validate_route_alias_definition
+    validate_route_alias_definition(alias)
+    if alias == "deterministic.none" and (not bool(no_agent) or not script):
+        raise ValueError(
+            "deterministic.none requires no_agent=True and a script; "
+            "prompt-only jobs cannot use the deterministic route"
+        )
+    if alias != "deterministic.none" and bool(no_agent):
+        raise ValueError(
+            f"{alias} is an agent route and cannot be used with no_agent=True"
+        )
+    return alias
 
 
 def create_job(
@@ -1047,6 +1076,8 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    route_alias: Optional[str] = None,
+    premium_reasoning_approved: bool = False,
     attach_to_session: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
@@ -1123,6 +1154,7 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_route_alias = _normalize_job_optional_text(route_alias)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
@@ -1133,6 +1165,15 @@ def create_job(
             "no_agent=True requires a script — with no agent and no script "
             "there is nothing for the job to run."
         )
+
+    _validate_route_alias_job(
+        route_alias=normalized_route_alias,
+        provider=normalized_provider,
+        model=normalized_model,
+        base_url=normalized_base_url,
+        no_agent=normalized_no_agent,
+        script=normalized_script,
+    )
 
     # Normalize context_from: accept str or list of str, store as list or None
     if isinstance(context_from, str):
@@ -1159,6 +1200,7 @@ def create_job(
         model=normalized_model,
         base_url=normalized_base_url,
         no_agent=normalized_no_agent,
+        route_alias=normalized_route_alias,
     )
 
     next_run_at = compute_next_run(parsed_schedule)
@@ -1183,6 +1225,8 @@ def create_job(
         "skill": normalized_skills[0] if normalized_skills else None,
         "model": normalized_model,
         "provider": normalized_provider,
+        "route_alias": normalized_route_alias,
+        "premium_reasoning_approved": bool(premium_reasoning_approved),
         # Provider/model resolution captured at creation for unpinned jobs
         # (#44585). None for pinned axes, no_agent jobs, resolution failures, and
         # any pre-existing job written before these fields existed (back-compat).
@@ -1313,8 +1357,17 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
-                {"provider", "model", "base_url", "no_agent"}.intersection(updates)
+                {"provider", "model", "base_url", "route_alias", "no_agent", "premium_reasoning_approved"}.intersection(updates)
             ) and _normalized_inference_axes(updated) != previous_inference_axes
+
+            _validate_route_alias_job(
+                route_alias=updated.get("route_alias"),
+                provider=updated.get("provider"),
+                model=updated.get("model"),
+                base_url=updated.get("base_url"),
+                no_agent=updated.get("no_agent"),
+                script=updated.get("script"),
+            )
 
             if "skills" in updates or "skill" in updates:
                 normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
@@ -1364,6 +1417,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     model=updated.get("model"),
                     base_url=updated.get("base_url"),
                     no_agent=updated.get("no_agent"),
+                    route_alias=updated.get("route_alias"),
                 )
                 updated["provider_snapshot"] = provider_snapshot
                 updated["model_snapshot"] = model_snapshot

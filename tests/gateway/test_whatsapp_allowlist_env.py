@@ -60,3 +60,23 @@ def test_no_env_var_and_no_config_gives_empty_allowlist(monkeypatch, tmp_path):
     adapter = _build_adapter(monkeypatch, tmp_path, extra={"dm_policy": "allowlist"})
 
     assert adapter._allow_from == set()
+
+def test_explicit_empty_allow_from_does_not_fallback_to_env(monkeypatch, tmp_path):
+    adapter = _build_adapter(
+        monkeypatch, tmp_path,
+        extra={"dm_policy": "allowlist", "allow_from": []},
+        env={"WHATSAPP_ALLOWED_USERS": "6289999999999"},
+    )
+
+    assert adapter._allow_from == set()
+
+
+def test_explicit_empty_group_allow_from_does_not_fallback_to_env(monkeypatch, tmp_path):
+    adapter = _build_adapter(
+        monkeypatch, tmp_path,
+        extra={"group_policy": "allowlist", "group_allow_from": []},
+        env={"WHATSAPP_GROUP_ALLOWED_USERS": "120363009999999999@g.us"},
+    )
+
+    assert adapter._group_allow_from == set()
+

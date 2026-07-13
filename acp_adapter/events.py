@@ -144,11 +144,6 @@ def make_tool_gen_cb(
             queue = deque([queue])
             tool_call_ids[name] = queue
 
-        for existing_id in queue:
-            meta = tool_call_meta.get(existing_id, {})
-            if meta.get("generated"):
-                return
-
         tc_id = make_tool_call_id()
         queue.append(tc_id)
         tool_call_meta[tc_id] = {"args": {}, "snapshot": None, "generated": True}
@@ -205,10 +200,11 @@ def make_tool_progress_cb(
 
         tc_id = None
         if queue:
-            candidate = queue[0]
-            meta = tool_call_meta.get(candidate, {})
-            if meta.get("generated"):
-                tc_id = candidate
+            for candidate in queue:
+                meta = tool_call_meta.get(candidate, {})
+                if meta.get("generated"):
+                    tc_id = candidate
+                    break
 
         already_started = tc_id is not None
         if tc_id is None:

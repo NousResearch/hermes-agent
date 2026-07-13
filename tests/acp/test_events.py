@@ -87,21 +87,38 @@ class TestToolGenerationCallback:
             "tool_call_update",
         ]
 
-    def test_ignores_duplicate_generation_for_same_tool(self, mock_conn, event_loop_fixture):
-        """Repeated generation callbacks for the same tool should be idempotent."""
+    def test_same_name_generation_callbacks_reserve_fifo_tool_calls(self, mock_conn, event_loop_fixture):
+        """Same-name streamed tool calls should each get an early FIFO placeholder."""
         tool_call_ids = {}
         tool_call_meta = {}
         loop = event_loop_fixture
 
-        cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+        gen_cb = make_tool_gen_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+        progress_cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
 
-        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-gen"), \
+        with patch("acp_adapter.events.make_tool_call_id", side_effect=["tc-gen-1", "tc-gen-2"]), \
              patch("acp_adapter.events._send_update") as mock_send:
-            cb("read_file")
-            cb("read_file")
+            gen_cb("read_file")
+            gen_cb("read_file")
+            progress_cb("tool.started", "read_file", "reading a.py", {"path": "a.py"})
+            progress_cb("tool.started", "read_file", "reading b.py", {"path": "b.py"})
 
-        assert list(tool_call_ids["read_file"]) == ["tc-gen"]
-        assert mock_send.call_count == 1
+        assert list(tool_call_ids["read_file"]) == ["tc-gen-1", "tc-gen-2"]
+        assert tool_call_meta["tc-gen-1"] == {
+            "args": {"path": "a.py"},
+            "snapshot": None,
+        }
+        assert tool_call_meta["tc-gen-2"] == {
+            "args": {"path": "b.py"},
+            "snapshot": None,
+        }
+        updates = [call.args[3] for call in mock_send.call_args_list]
+        assert [getattr(update, "session_update", None) for update in updates] == [
+            "tool_call",
+            "tool_call",
+            "tool_call_update",
+            "tool_call_update",
+        ]
 
 
 # ---------------------------------------------------------------------------

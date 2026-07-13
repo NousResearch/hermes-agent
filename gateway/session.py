@@ -1664,8 +1664,8 @@ class SessionStore:
         """
         Check if a session should be reset based on policy.
         
-        Returns the reset reason ("idle" or "daily") if a reset is needed,
-        or None if the session is still valid.
+        Returns the reset reason ("idle", "daily", or "expiry_finalized") if a
+        reset is needed, or None if the session is still valid.
         
         Sessions with active background processes are never reset.
         """
@@ -1685,6 +1685,13 @@ class SessionStore:
         
         if policy.mode == "none":
             return None
+
+        # The background expiry watcher sets expiry_finalized=True when a
+        # session crosses its idle/daily boundary.  Honor that flag so the
+        # next inbound message triggers a reset even when updated_at has
+        # been bumped past today's reset hour (#63539).
+        if entry.expiry_finalized:
+            return "expiry_finalized"
         
         now = _now()
         

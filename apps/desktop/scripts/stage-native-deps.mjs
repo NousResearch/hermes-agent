@@ -85,11 +85,20 @@ function copyBuildRelease(srcDir, destDir) {
 // format. By reading the first few bytes (magic) we can determine which
 // platform a given .node was compiled for, without shelling out to `file`.
 //
-//   ELF  (\x7fELF)              → linux
-//   Mach-O 32-bit (feedface)    → darwin
-//   Mach-O 64-bit (feedfacf)    → darwin
-//   Fat/Universal (cafebabe)     → darwin
-//   PE (MZ DOS header)           → win32
+//   ELF  (\x7fELF)                         → linux
+//   Mach-O 32-bit BE  (feedface)            → darwin
+//   Mach-O 64-bit BE  (feedfacf)            → darwin
+//   Mach-O 32-bit LE  (cefaedfe — CIGAM)    → darwin
+//   Mach-O 64-bit LE  (cffaedfe — CIGAM_64) → darwin
+//   Fat/Universal BE (cafebabe)             → darwin
+//   Fat/Universal LE (bebafeca — FAT_CIGAM) → darwin
+//   PE (MZ DOS header)                      → win32
+//
+// Mach-O and Fat binaries are stored on disk in the host's native byte
+// order. On x64/arm64 Darwin (every Apple Silicon + every Intel Mac that
+// ships node-pty prebuilds) that is little-endian, so the on-disk magic is
+// the CIGAM byte-swapped form, NOT the big-endian MH_MAGIC form. Checking
+// only the BE constants misclassifies every real Darwin prebuild as unknown.
 //
 // Exported for unit testing.
 
@@ -111,16 +120,28 @@ export function classifyNativeBinary(filePath) {
   if (buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46) {
     return 'linux'
   }
-  // Mach-O 32-bit: feedface
+  // Mach-O 32-bit (big-endian / MH_MAGIC): feedface
   if (buf[0] === 0xfe && buf[1] === 0xed && buf[2] === 0xfa && buf[3] === 0xce) {
     return 'darwin'
   }
-  // Mach-O 64-bit: feedfacf
+  // Mach-O 64-bit (big-endian / MH_MAGIC_64): feedfacf
   if (buf[0] === 0xfe && buf[1] === 0xed && buf[2] === 0xfa && buf[3] === 0xcf) {
     return 'darwin'
   }
-  // Fat/Universal binary: cafebabe
+  // Mach-O 32-bit (little-endian / MH_CIGAM): cefaedfe
+  if (buf[0] === 0xce && buf[1] === 0xfa && buf[2] === 0xed && buf[3] === 0xfe) {
+    return 'darwin'
+  }
+  // Mach-O 64-bit (little-endian / MH_CIGAM_64): cffaedfe
+  if (buf[0] === 0xcf && buf[1] === 0xfa && buf[2] === 0xed && buf[3] === 0xfe) {
+    return 'darwin'
+  }
+  // Fat/Universal binary (big-endian / FAT_MAGIC): cafebabe
   if (buf[0] === 0xca && buf[1] === 0xfe && buf[2] === 0xba && buf[3] === 0xbe) {
+    return 'darwin'
+  }
+  // Fat/Universal binary (little-endian / FAT_CIGAM): bebafeca
+  if (buf[0] === 0xbe && buf[1] === 0xba && buf[2] === 0xfe && buf[3] === 0xca) {
     return 'darwin'
   }
   // PE: MZ DOS header

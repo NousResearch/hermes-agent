@@ -278,12 +278,12 @@ def get_profile_command(profile_name: Optional[str] = None) -> str:
     if not _PROFILE_ID_RE.match(profile_name):
         return "hermes"
 
-    wrapper_path = _get_wrapper_dir() / profile_name
     try:
-        if wrapper_path.is_file() and f"hermes -p {profile_name}" in wrapper_path.read_text():
-            return profile_name
+        alias = find_alias_for_profile(profile_name)
+        if alias:
+            return alias
     except Exception:
-        return "hermes -p " + profile_name
+        pass
 
     return "hermes -p " + profile_name
 

@@ -551,15 +551,80 @@ def test_print_setup_summary_uses_profile_command_for_profile_with_alias(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(profile_dir))
 
-    wrapper_dir = tmp_path / ".local" / "bin"
-    wrapper_dir.mkdir(parents=True, exist_ok=True)
-    (wrapper_dir / "johndoe").write_text("#!/bin/sh\nexec hermes -p johndoe \"$@\"\n")
+    from hermes_cli.profiles import create_wrapper_script
+
+    create_wrapper_script("janes-agent", target="johndoe")
 
     from hermes_cli.setup import _print_setup_summary
 
     _print_setup_summary(load_config(), profile_dir)
 
     out = capsys.readouterr().out
-    assert "johndoe setup gateway" in out
-    assert "johndoe gateway" in out
-    assert "johndoe doctor" in out
+    assert "janes-agent setup gateway" in out
+    assert "janes-agent setup tools" in out
+    assert "janes-agent config edit" in out
+    assert "janes-agent gateway" in out
+    assert "janes-agent doctor" in out
+
+
+def test_quick_setup_reconfigure_guidance_uses_custom_profile_alias(
+    tmp_path, monkeypatch, capsys
+):
+    profile_dir = tmp_path / ".hermes" / "profiles" / "johndoe"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+
+    from hermes_cli.profiles import create_wrapper_script
+
+    create_wrapper_script("janes-agent", target="johndoe")
+    monkeypatch.setattr("hermes_cli.config.get_missing_env_vars", lambda **_kwargs: [])
+    monkeypatch.setattr("hermes_cli.config.get_missing_config_fields", lambda: [])
+    monkeypatch.setattr("hermes_cli.config.check_config_version", lambda: (1, 1))
+
+    setup_mod._run_quick_setup({}, profile_dir)
+
+    assert "Run 'janes-agent setup' and choose 'Full Setup'" in capsys.readouterr().out
+
+
+def test_full_setup_section_guidance_uses_custom_profile_alias(
+    tmp_path, monkeypatch, capsys
+):
+    import pytest
+
+    profile_dir = tmp_path / ".hermes" / "profiles" / "johndoe"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+
+    from hermes_cli.profiles import create_wrapper_script
+
+    create_wrapper_script("janes-agent", target="johndoe")
+    monkeypatch.setattr(setup_mod, "ensure_hermes_home", lambda: None)
+    monkeypatch.setattr(setup_mod, "load_config", lambda: {})
+    monkeypatch.setattr(setup_mod, "get_hermes_home", lambda: profile_dir)
+    monkeypatch.setattr(setup_mod, "get_config_path", lambda: tmp_path / "missing.yaml")
+    monkeypatch.setattr(setup_mod, "get_env_path", lambda: tmp_path / ".env")
+    monkeypatch.setattr(setup_mod, "is_interactive_stdin", lambda: True)
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: "openrouter")
+    monkeypatch.setattr(
+        setup_mod,
+        "setup_model_provider",
+        lambda _config: (_ for _ in ()).throw(RuntimeError("stop after guidance")),
+    )
+
+    args = types.SimpleNamespace(
+        reset=False,
+        reconfigure=False,
+        quick=False,
+        non_interactive=False,
+        portal=False,
+        section=None,
+    )
+    with pytest.raises(RuntimeError, match="stop after guidance"):
+        setup_mod.run_setup_wizard(args)
+
+    out = capsys.readouterr().out
+    assert "'janes-agent setup model|terminal|" in out
+    assert "use 'janes-agent config edit'" in out

@@ -202,9 +202,9 @@ def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
     print_info("The interactive wizard cannot be used here.")
     print()
     print_info("Configure Hermes using environment variables or config commands:")
-    print_info("  hermes config set model.provider custom")
-    print_info("  hermes config set model.base_url http://localhost:8080/v1")
-    print_info("  hermes config set model.default your-model-name")
+    print_info(f"  {_profile_command('config set model.provider custom')}")
+    print_info(f"  {_profile_command('config set model.base_url http://localhost:8080/v1')}")
+    print_info(f"  {_profile_command('config set model.default your-model-name')}")
     print()
     print_info("Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.")
     print_info(f"Run '{_profile_command('setup')}' in an interactive terminal to use the full wizard.")
@@ -425,7 +425,9 @@ def _print_setup_summary(config: dict, hermes_home):
     if _vision_backends:
         tool_status.append(("Vision (image analysis)", True, None))
     else:
-        tool_status.append(("Vision (image analysis)", False, "run 'hermes setup' to configure"))
+        tool_status.append(
+            ("Vision (image analysis)", False, f"run '{_profile_command('setup')}' to configure")
+        )
 
 
     # Web tools (Exa, Parallel, Firecrawl, or Tavily)
@@ -547,7 +549,13 @@ def _print_setup_summary(config: dict, hermes_home):
         if neutts_ok:
             tool_status.append(("Text-to-Speech (NeuTTS local)", True, None))
         else:
-            tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'hermes setup tts'"))
+            tool_status.append(
+                (
+                    "Text-to-Speech (NeuTTS — not installed)",
+                    False,
+                    f"run '{_profile_command('setup tts')}'",
+                )
+            )
     elif tts_provider == "kittentts":
         try:
             kittentts_ok = importlib.util.find_spec("kittentts") is not None
@@ -556,7 +564,13 @@ def _print_setup_summary(config: dict, hermes_home):
         if kittentts_ok:
             tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
         else:
-            tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
+            tool_status.append(
+                (
+                    "Text-to-Speech (KittenTTS — not installed)",
+                    False,
+                    f"run '{_profile_command('setup tts')}'",
+                )
+            )
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
@@ -566,7 +580,9 @@ def _print_setup_summary(config: dict, hermes_home):
         if subscription_features.modal.direct_override:
             tool_status.append(("Modal Execution (direct Modal)", True, None))
         else:
-            tool_status.append(("Modal Execution", False, "run 'hermes setup terminal'"))
+            tool_status.append(
+                ("Modal Execution", False, f"run '{_profile_command('setup terminal')}'")
+            )
     elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
         tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
 
@@ -618,7 +634,7 @@ def _print_setup_summary(config: dict, hermes_home):
     disabled_tools = [(name, var) for name, avail, var in tool_status if not avail]
     if disabled_tools:
         print_warning(
-            "Some tools are disabled. Run 'hermes setup tools' to configure them,"
+            f"Some tools are disabled. Run '{_profile_command('setup tools')}' to configure them,"
         )
         from hermes_constants import display_hermes_home as _dhh
         print_warning(f"or edit {_dhh()}/.env directly to add the missing API keys.")
@@ -1098,7 +1114,7 @@ def _setup_tts_provider(config: dict):
                     from hermes_constants import display_hermes_home as _dhh
                     print_warning(
                         "No xAI API key provided for TTS. Configure XAI_API_KEY "
-                        f"via hermes setup model or {_dhh()}/.env to use xAI TTS. "
+                        f"via {_profile_command('setup model')} or {_dhh()}/.env to use xAI TTS. "
                         "Falling back to Edge TTS."
                     )
                     selected = "edge"
@@ -1488,7 +1504,7 @@ def _apply_default_agent_settings(config: dict):
     print_info("  Tool progress: all")
     print_info("  Compression threshold: 0.50")
     print_info("  Session reset: never (use /reset or compression)")
-    print_info("  Run `hermes setup agent` later to customize.")
+    print_info(f"  Run `{_profile_command('setup agent')}` later to customize.")
 
 
 def setup_agent_settings(config: dict):
@@ -1953,8 +1969,8 @@ def _setup_webhooks():
     print_info("   Route configuration guide:")
     print_info("   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes")
     print()
-    print_info("   Open config in your editor:  hermes config edit")
-    print_info("   Open config in your editor:  hermes config edit")
+    print_info(f"   Open config in your editor:  {_profile_command('config edit')}")
+    print_info(f"   Open config in your editor:  {_profile_command('config edit')}")
 
 
 def setup_gateway(config: dict):
@@ -2035,7 +2051,7 @@ def setup_gateway(config: dict):
             print_info("   Set one later with /set-home in your chat, or:")
             for plat in missing_home:
                 print_info(
-                    f"     hermes config set {plat.upper()}_HOME_CHANNEL <channel_id>"
+                    f"     {_profile_command(f'config set {plat.upper()}_HOME_CHANNEL <channel_id>')}"
                 )
 
         # Offer to install the gateway as a system service
@@ -2176,7 +2192,9 @@ def setup_gateway(config: dict):
             else:
                 print_info(f"  You can install later: {_profile_command('gateway install')}")
                 if supports_systemd and os.geteuid() == 0:  # windows-footgun: ok — guarded by supports_systemd (Linux only)
-                    print_info("  Or as a boot-time service: hermes gateway install --system")
+                    print_info(
+                        "  Or as a boot-time service: sudo hermes gateway install --system"
+                    )
                 print_info(f"  Or run in foreground:  {_profile_command('gateway')}")
         else:
             from hermes_constants import is_container
@@ -2862,7 +2880,9 @@ def run_setup_wizard(args):
         print_info("Running the full wizard — each prompt shows your current value.")
         print_info("Press Enter to keep it, or type a new value to change it.")
         print_info("")
-        print_info("Tip: jump straight to a section with 'hermes setup model|terminal|")
+        print_info(
+            f"Tip: jump straight to a section with '{_profile_command('setup')} model|terminal|"
+        )
         print_info("     gateway|tools|agent', or fill only missing items with --quick.")
         # Fall through to the "Full Setup — run all sections" block below.
         # --reconfigure is now the default on existing installs; the flag
@@ -2906,7 +2926,9 @@ def run_setup_wizard(args):
     print_info(f"Data folder:  {hermes_home}")
     print_info(f"Install dir:  {PROJECT_ROOT}")
     print()
-    print_info("You can edit these files directly or use 'hermes config edit'")
+    print_info(
+        f"You can edit these files directly or use '{_profile_command('config edit')}'"
+    )
 
     if migration_ran:
         print()
@@ -3163,7 +3185,7 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
         print_info("  Seed skills:         hermes skills opt-in --sync")
         print_info("  Add MCP servers:     hermes mcp add")
         print_info("  Enable plugins:      hermes plugins")
-        print_info("  Tune agent settings: hermes setup agent")
+        print_info(f"  Tune agent settings: {_profile_command('setup agent')}")
         print()
         _print_setup_summary(config, hermes_home)
         return
@@ -3249,7 +3271,7 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
     print_info("  Enable more tools:   hermes tools")
     print_info("  Seed skills:         hermes skills opt-in --sync")
     print_info("  Add MCP servers:     hermes mcp add")
-    print_info("  Tune agent settings: hermes setup agent")
+    print_info(f"  Tune agent settings: {_profile_command('setup agent')}")
     print()
 
     _print_setup_summary(config, hermes_home)
@@ -3286,7 +3308,9 @@ def _run_quick_setup(config: dict, hermes_home):
     if not has_anything_missing:
         print_success("Everything is configured! Nothing to do.")
         print()
-        print_info("Run 'hermes setup' and choose 'Full Setup' to reconfigure,")
+        print_info(
+            f"Run '{_profile_command('setup')}' and choose 'Full Setup' to reconfigure,"
+        )
         print_info("or pick a specific section from the menu.")
         return
 

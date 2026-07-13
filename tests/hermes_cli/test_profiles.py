@@ -566,8 +566,9 @@ class TestDeleteProfile:
     def test_removes_directory(self, profile_env):
         profile_dir = create_profile("coder", no_alias=True)
         assert profile_dir.is_dir()
-        # Mock gateway import to avoid real systemd/launchd interaction
-        with patch("hermes_cli.profiles._cleanup_gateway_service"):
+        # Keep deletion isolated from any live profile-bound backend.
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._profile_bound_backend_pids", return_value=[]):
             delete_profile("coder", yes=True)
         assert not profile_dir.is_dir()
 
@@ -584,6 +585,7 @@ class TestDeleteProfile:
         set_active_profile("coder")
 
         with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._profile_bound_backend_pids", return_value=[]), \
              patch("hermes_cli.profiles.time.sleep"), \
              patch("hermes_cli.profiles.shutil.rmtree", side_effect=PermissionError("locked")):
             with pytest.raises(RuntimeError, match="Could not remove profile directory"):
@@ -778,23 +780,39 @@ class TestProfileCommandFormatter:
     def test_default_profile_command_is_hermes(self, profile_env):
         assert get_profile_command() == "hermes"
 
-    def test_named_profile_with_alias_uses_wrapper_name(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        profile_dir = tmp_path / ".hermes" / "profiles" / "johndoe"
+    @staticmethod
+    def _activate_profile(profile_env, monkeypatch, name="johndoe"):
+        profile_dir = profile_env / ".hermes" / "profiles" / name
         profile_dir.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        return profile_dir
 
-        wrapper_dir = tmp_path / ".local" / "bin"
-        wrapper_dir.mkdir(parents=True, exist_ok=True)
-        (wrapper_dir / "johndoe").write_text("#!/bin/sh\nexec hermes -p johndoe \"$@\"\n")
+    def test_profile_named_alias_uses_wrapper_name(self, profile_env, monkeypatch):
+        self._activate_profile(profile_env, monkeypatch)
+        monkeypatch.setattr("sys.platform", "darwin")
+        create_wrapper_script("johndoe")
 
         assert get_profile_command() == "johndoe"
 
-    def test_named_profile_without_alias_uses_flag_command(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        profile_dir = tmp_path / ".hermes" / "profiles" / "johndoe"
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+    def test_custom_unix_alias_uses_custom_wrapper_name(self, profile_env, monkeypatch):
+        self._activate_profile(profile_env, monkeypatch)
+        monkeypatch.setattr("sys.platform", "darwin")
+        create_wrapper_script("janes-agent", target="johndoe")
+
+        assert get_profile_command() == "janes-agent"
+
+    def test_custom_windows_alias_uses_bat_wrapper_name(self, profile_env, monkeypatch):
+        self._activate_profile(profile_env, monkeypatch)
+        monkeypatch.setattr("sys.platform", "win32")
+        wrapper = create_wrapper_script("janes-agent", target="johndoe")
+
+        assert wrapper is not None
+        assert wrapper.suffix == ".bat"
+        assert get_profile_command() == "janes-agent"
+
+    def test_named_profile_without_alias_uses_flag_command(self, profile_env, monkeypatch):
+        self._activate_profile(profile_env, monkeypatch)
+        monkeypatch.setattr("sys.platform", "darwin")
 
         assert get_profile_command() == "hermes -p johndoe"
 
@@ -1875,7 +1893,8 @@ class TestEdgeCases:
         set_active_profile("coder")
         assert get_active_profile() == "coder"
 
-        with patch("hermes_cli.profiles._cleanup_gateway_service"):
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._profile_bound_backend_pids", return_value=[]):
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"

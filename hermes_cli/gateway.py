@@ -1176,13 +1176,13 @@ def _systemd_service_is_start_limited(system: bool = False) -> bool:
 def _print_systemd_start_limit_wait(system: bool = False) -> None:
     svc = get_service_name()
     scope_label = _service_scope_label(system).capitalize()
-    scope_flag = " --system" if system else ""
     systemctl_prefix = "systemctl " if system else "systemctl --user "
     journal_prefix = "journalctl " if system else "journalctl --user "
     print(f"⏳ {scope_label} service is temporarily rate-limited by systemd.")
     print("  systemd is refusing another immediate start after repeated exits.")
     print(
-        f"  Wait for the start-limit window to expire, then run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}"
+        "  Wait for the start-limit window to expire, then run: "
+        f"{_gateway_service_command('restart', system=system)}"
     )
     print(f"  Or clear the failed state manually: {systemctl_prefix}reset-failed {svc}")
     print(f"  Check logs: {journal_prefix}-u {svc} -l --since '5 min ago'")
@@ -1393,13 +1393,16 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
         )
         print(f"  PID(s): {_format_gateway_pids(snapshot.gateway_pids, limit=None)}")
         print("  Auto-start at login and auto-restart on crash are NOT available.")
-        print("  Stop it with: hermes gateway stop")
+        print(f"  Stop it with: {_gateway_cli_command('stop')}")
     else:
         print(
             "⚠ Gateway process is running for this profile, but the service is not active"
         )
         print(f"  PID(s): {_format_gateway_pids(snapshot.gateway_pids, limit=None)}")
-        print("  This is usually a manual foreground/tmux/nohup run, so `hermes gateway`")
+        print(
+            "  This is usually a manual foreground/tmux/nohup run, so "
+            f"`{_gateway_cli_command()}`"
+        )
         print("  can refuse to start another copy until this process stops.")
 
 
@@ -2377,7 +2380,8 @@ def install_linux_gateway_from_setup(force: bool = False, enable_on_startup: boo
             # direct caller — we do NOT print a self-elevation recipe.
             print_warning(
                 "  System service install requires root. Re-run setup from a "
-                "root shell, or install a user service instead: hermes gateway install"
+                "root shell, or install a user service instead: "
+                f"{_gateway_cli_command('install')}"
             )
             return scope, False
 
@@ -3119,8 +3123,8 @@ def _print_system_scope_remediation(action: str) -> None:
         print_info(f"         sudo systemctl {action} {svc}")
     print_info("    2. Switch to a per-user service (recommended for personal use):")
     print_info("         sudo hermes gateway uninstall --system")
-    print_info("         hermes gateway install")
-    print_info("         hermes gateway start")
+    print_info(f"         {_gateway_cli_command('install')}")
+    print_info(f"         {_gateway_cli_command('start')}")
 
 
 def _get_restart_drain_timeout() -> float:
@@ -3239,9 +3243,8 @@ def systemd_uninstall(system: bool = False):
 def _require_service_installed(action: str, system: bool = False) -> None:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
-        scope_flag = " --system" if system else ""
         print("✗ Gateway service is not installed")
-        print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
+        print(f"  Run: {_gateway_service_command('install', system=system)}")
         sys.exit(1)
 
 
@@ -3285,7 +3288,8 @@ def systemd_stop(system: bool = False):
         label = _service_scope_label(system)
         print(
             f"Gateway {label} service is still stopping after 90s; "
-            "check `hermes gateway status` or logs for final shutdown state."
+            f"check `{_gateway_service_command('status', system=system)}` or logs "
+            "for final shutdown state."
         )
         return
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
@@ -3358,7 +3362,8 @@ def systemd_restart(system: bool = False):
             label = _service_scope_label(system)
             print(
                 f"Gateway {label} service is still restarting after 90s; "
-                "check `hermes gateway status` or logs for final state."
+                f"check `{_gateway_service_command('status', system=system)}` or logs "
+                "for final state."
             )
             return
         _wait_for_systemd_service_restart(system=system, previous_pid=pid)
@@ -3388,7 +3393,8 @@ def systemd_restart(system: bool = False):
         label = _service_scope_label(system)
         print(
             f"Gateway {label} service is still restarting after 90s; "
-            "check `hermes gateway status` or logs for final state."
+            f"check `{_gateway_service_command('status', system=system)}` or logs "
+            "for final state."
         )
         return
     _wait_for_systemd_service_restart(system=system, previous_pid=pid)
@@ -3864,11 +3870,11 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
         print("✓ Started gateway as a background process instead")
         print("  It will NOT auto-start at login or auto-restart on crash.")
         print(f"  Logs: {_dhh()}/logs/gateway.log")
-        print("  Stop it with: hermes gateway stop")
+        print(f"  Stop it with: {_gateway_cli_command('stop')}")
         return True
     print_error("Failed to start the gateway as a background process.")
     print(
-        f"  Try manually: nohup hermes gateway run --replace "
+        f"  Try manually: nohup {_gateway_cli_command('run --replace')} "
         f"> {_dhh()}/logs/gateway.log 2>&1 &"
     )
     if exit_on_failure:
@@ -4454,10 +4460,12 @@ def launchd_status(deep: bool = False):
             print("  launchd cannot manage the gateway on this macOS version.")
             if fallback_pid:
                 print(f"✓ Detached fallback process is running (PID {fallback_pid})")
-                print("  Cron jobs will fire. Stop with: hermes gateway stop")
+                print(
+                    f"  Cron jobs will fire. Stop with: {_gateway_cli_command('stop')}"
+                )
             else:
                 print("✗ No fallback process is running")
-                print("  Run: hermes gateway start")
+                print(f"  Run: {_gateway_cli_command('start')}")
             print("  ⚠ Auto-start at login and auto-restart on crash are NOT available.")
         else:
             print("✓ Gateway service is registered with launchd")
@@ -4641,7 +4649,7 @@ def _guard_supervised_gateway_conflict(force: bool = False) -> None:
         "  instead:"
     )
     print()
-    print("    hermes gateway restart")
+    print(f"    {_gateway_cli_command('restart')}")
     print()
     print(
         "  Pass --force to start a foreground gateway anyway (not recommended\n"
@@ -4676,9 +4684,9 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
     print_error(
         f"Another gateway instance is already running (PID {pid})."
     )
-    print("  Use 'hermes gateway restart' to replace it,")
-    print("  or 'hermes gateway stop' first.")
-    print("  Or use 'hermes gateway run --replace' to auto-replace.")
+    print(f"  Use '{_gateway_cli_command('restart')}' to replace it,")
+    print(f"  or '{_gateway_cli_command('stop')}' first.")
+    print(f"  Or use '{_gateway_cli_command('run --replace')}' to auto-replace.")
     sys.exit(1)
 
 
@@ -6783,7 +6791,7 @@ def _gateway_command_inner(args):
             print_error(
                 "Refusing to stop the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway stop` from a shell outside the running gateway."
+                f"Use `{_gateway_cli_command('stop')}` from a shell outside the running gateway."
             )
             sys.exit(1)
 
@@ -6876,7 +6884,7 @@ def _gateway_command_inner(args):
             print_error(
                 "Refusing to restart the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway restart` from a shell outside the running gateway."
+                f"Use `{_gateway_cli_command('restart')}` from a shell outside the running gateway."
             )
             sys.exit(1)
 
@@ -7081,7 +7089,7 @@ def _gateway_command_inner(args):
                     print(
                         "To install as a Windows Scheduled Task (auto-start on login):"
                     )
-                    print("  hermes gateway install")
+                    print(f"  {_gateway_cli_command('install')}")
                 else:
                     print("To install as a service:")
                     print(f"  {_gateway_cli_command('install')}")

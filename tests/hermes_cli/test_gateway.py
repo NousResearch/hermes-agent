@@ -672,7 +672,9 @@ def test_systemd_install_user_scope_uses_profile_alias_in_next_steps(monkeypatch
 
     wrapper_dir = tmp_path / ".local" / "bin"
     wrapper_dir.mkdir(parents=True, exist_ok=True)
-    (wrapper_dir / "johndoe").write_text("#!/bin/sh\nexec hermes -p johndoe \"$@\"\n")
+    (wrapper_dir / "janes-agent").write_text(
+        "#!/bin/sh\nexec hermes -p johndoe \"$@\"\n"
+    )
 
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway-johndoe.service"
 
@@ -696,13 +698,22 @@ def test_systemd_install_user_scope_uses_profile_alias_in_next_steps(monkeypatch
     gateway.systemd_install(force=False)
 
     out = capsys.readouterr().out
-    assert "johndoe gateway start" in out
-    assert "johndoe gateway status" in out
+    assert "janes-agent gateway start" in out
+    assert "janes-agent gateway status" in out
 
 
 def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatch, tmp_path, capsys):
+    profile_dir = tmp_path / ".hermes" / "profiles" / "johndoe"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    wrapper_dir = tmp_path / ".local" / "bin"
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    (wrapper_dir / "janes-agent").write_text(
+        "#!/bin/sh\nexec hermes -p johndoe \"$@\"\n"
+    )
     unit_path = tmp_path / "etc" / "systemd" / "system" / "hermes-gateway.service"
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_dir))
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
     monkeypatch.setattr(
         gateway,
@@ -733,6 +744,9 @@ def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatc
     assert helper_calls == []
     assert "Configured to run as: alice" not in out  # generated test unit has no User= line
     assert "System service installed and enabled" in out
+    assert "sudo hermes gateway start --system" in out
+    assert "sudo hermes gateway status --system" in out
+    assert "janes-agent gateway" not in out
 
 
 def test_conflicting_systemd_units_warning(monkeypatch, tmp_path, capsys):

@@ -1312,6 +1312,9 @@ export interface Translations {
       newWorktreeTitle: string
       newWorktreeDesc: string
       branchPlaceholder: string
+      branchOff: () => { after: string; before: string }
+      baseBranchPlaceholder: string
+      baseBranchNone: string
       startWorkFailed: string
       convertBranch: string
       convertBranchTitle: string

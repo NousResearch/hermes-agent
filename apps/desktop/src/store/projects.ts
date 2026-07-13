@@ -710,6 +710,19 @@ export async function listRepoBranches(repoPath: string): Promise<HermesGitBranc
   return git.branchList(repoPath)
 }
 
+// Local + remote-tracking branches for the base-branch picker in the
+// new-worktree dialog. The remote default (origin/HEAD) is flagged so the
+// UI can preselect it. Empty on a remote backend / non-repo.
+export async function listBaseBranches(repoPath: string): Promise<HermesGitBaseBranch[]> {
+  const git = desktopGit()
+
+  if (!git?.baseBranchList || !repoPath) {
+    return []
+  }
+
+  return git.baseBranchList(repoPath)
+}
+
 export async function switchBranchInRepo(repoPath: string, branch: string): Promise<void> {
   const git = desktopGit()
 

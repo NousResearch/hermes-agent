@@ -28,6 +28,7 @@ these paths see no behavioural change.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import tempfile
@@ -50,6 +51,29 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+
+
+def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
+    """Whether the live in-memory SessionDB class structurally predates locks.
+
+    In the supported hot-reload skew, this module is new while the already
+    imported ``hermes_state.SessionDB`` class (and its live instances) is old.
+    Only that exact class identity may fail open. Proxies, nominal lookalikes,
+    non-callables, and descriptor failures must fail closed. Static lookup
+    avoids invoking a present-but-broken descriptor.
+    """
+    try:
+        from hermes_state import SessionDB
+
+        missing = object()
+        return (
+            type(lock_db) is SessionDB
+            and inspect.getattr_static(
+                SessionDB, "try_acquire_compression_lock", missing
+            ) is missing
+        )
+    except Exception:
+        return False
 
 
 def _compression_lock_holder(agent: Any) -> str:
@@ -500,21 +524,31 @@ def compress_context(
     _lock_sid = agent.session_id or ""
     _lock_holder: Optional[str] = None
     # Probe whether the lock subsystem is actually available on this
-    # SessionDB instance.  A process running mismatched module versions
-    # (e.g. ``conversation_compression.py`` reloaded after a pull but the
-    # long-lived ``hermes_state.SessionDB`` class still bound to the
-    # pre-#34351 version in memory) has the call site but not the method.
-    # In that case ``try_acquire_compression_lock`` raises AttributeError —
-    # NOT a ``sqlite3.Error`` — so the method's own fail-open guard never
-    # runs and the exception propagates to the outer agent loop, which
-    # prints the error and retries.  Because compression never succeeds,
-    # the token count never drops and the loop re-triggers compaction
-    # forever (the "API call #47/#48/#49 ... has no attribute
-    # try_acquire_compression_lock" spin).  Fail OPEN here: if the lock
-    # subsystem is missing or broken in any unexpected way, skip locking
-    # and proceed with compression.  Skipping the lock risks a rare
-    # concurrent-compression session fork; an infinite no-progress loop
-    # that never compresses at all is strictly worse.
+    # SessionDB instance. A process running mismatched module versions can have
+    # this call site while its long-lived SessionDB instance predates the lock
+    # API. Only that structural absence is safe to fail open for: compression
+    # must make progress rather than spin forever after an update. Once the
+    # method has been resolved, every exception from its implementation fails
+    # closed because proceeding without a lock can fork the session lineage.
+    _try_acquire_lock = None
+    _lock_lookup_error: Optional[Exception] = None
+    _legacy_session_db_without_lock_api = False
+    if _lock_db is not None:
+        try:
+            _legacy_session_db_without_lock_api = _lock_api_is_absent_on_session_db(
+                _lock_db
+            )
+        except Exception as exc:
+            _lock_lookup_error = exc
+        if _lock_lookup_error is None and not _legacy_session_db_without_lock_api:
+            try:
+                _try_acquire_lock = _lock_db.try_acquire_compression_lock
+                if not callable(_try_acquire_lock):
+                    _lock_lookup_error = TypeError(
+                        "compression lock API is present but not callable"
+                    )
+            except Exception as exc:
+                _lock_lookup_error = exc
     try:
         _lock_ttl = float(getattr(agent, "_compression_lock_ttl_seconds", 300.0) or 300.0)
     except (TypeError, ValueError):
@@ -523,25 +557,58 @@ def compress_context(
     _lock_refresher: Optional[_CompressionLockLeaseRefresher] = None
     if _lock_db is not None and _lock_sid:
         _lock_holder = _compression_lock_holder(agent)
-        try:
-            _lock_acquired = _lock_db.try_acquire_compression_lock(
-                _lock_sid, _lock_holder, ttl_seconds=_lock_ttl
+        if _lock_lookup_error is not None:
+            # Attribute lookup itself failed for a reason other than a missing
+            # lock API. It is unsafe to proceed without a lock in that case.
+            _lock_holder = None
+            logger.warning(
+                "compression lock lookup raised unexpectedly for session=%s "
+                "(%s: %s) — skipping compression this cycle",
+                _lock_sid, type(_lock_lookup_error).__name__, _lock_lookup_error,
             )
-        except Exception as _lock_err:
-            # Broken/absent lock subsystem (version skew, etc.).  Log once
-            # per session and proceed WITHOUT the lock rather than letting
-            # the exception spin the outer loop.
-            _lock_holder = None  # we don't own anything to release
+            _lock_acquired = False
+        elif _try_acquire_lock is None:
+            # The lock API itself is absent on this in-memory instance. Log once
+            # and proceed unlocked so an update-version skew cannot leave the
+            # outer auto-compression loop making no progress forever.
+            _lock_holder = None
             if getattr(agent, "_last_compression_lock_error_sid", None) != _lock_sid:
                 agent._last_compression_lock_error_sid = _lock_sid
                 logger.warning(
                     "compression lock subsystem unavailable for session=%s "
-                    "(%s: %s) — proceeding without lock. This usually means a "
-                    "stale in-memory module after an update; restart the "
-                    "process (or `hermes update`) to resync.",
+                    "— proceeding without lock. This usually means a stale "
+                    "in-memory module after an update; restart the process "
+                    "(or `hermes update`) to resync.",
+                    _lock_sid,
+                )
+            _lock_acquired = True  # acquired-but-unlocked compatibility path
+        else:
+            try:
+                _lock_acquired = _try_acquire_lock(
+                    _lock_sid, _lock_holder, ttl_seconds=_lock_ttl
+                )
+            except Exception as _lock_err:
+                # The method exists and entered its implementation but failed.
+                # Do not mistake an internal AttributeError or TypeError for
+                # version skew: fail closed and preserve session lineage. A
+                # failure after SQLite committed the acquire can leave our
+                # holder row behind, so release it best-effort before returning
+                # unchanged messages; release is holder-qualified and safe when
+                # acquisition never succeeded.
+                try:
+                    _lock_db.release_compression_lock(_lock_sid, _lock_holder)
+                except Exception as _release_err:
+                    logger.debug(
+                        "compression lock cleanup after failed acquire failed: %s",
+                        _release_err,
+                    )
+                _lock_holder = None
+                logger.warning(
+                    "compression lock acquisition raised unexpectedly for "
+                    "session=%s (%s: %s) — skipping compression this cycle",
                     _lock_sid, type(_lock_err).__name__, _lock_err,
                 )
-            _lock_acquired = True  # treat as acquired-but-unlocked; proceed
+                _lock_acquired = False
         if not _lock_acquired:
             try:
                 existing = _lock_db.get_compression_lock_holder(_lock_sid)

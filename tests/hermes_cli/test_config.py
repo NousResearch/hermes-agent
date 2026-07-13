@@ -127,6 +127,59 @@ class TestLoadConfigDefaults:
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
 
+    def test_legacy_answer_body_streaming_live_maps_to_assistant_body_streaming(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("display:\n  answer_body_streaming: live\n")
+
+            config = load_config()
+
+            assert config["display"]["assistant_body_streaming"] is True
+
+    def test_legacy_answer_body_streaming_final_only_maps_to_false(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("display:\n  answer_body_streaming: final_only\n")
+
+            config = load_config()
+
+            assert config["display"]["assistant_body_streaming"] is False
+
+    def test_invalid_legacy_answer_body_streaming_keeps_default_false(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("display:\n  answer_body_streaming: sometimes\n")
+
+            config = load_config()
+
+            assert config["display"]["assistant_body_streaming"] is False
+
+    def test_new_false_wins_over_legacy_live_answer_body_streaming(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text(
+                "display:\n"
+                "  answer_body_streaming: live\n"
+                "  assistant_body_streaming: false\n"
+            )
+
+            config = load_config()
+
+            assert config["display"]["assistant_body_streaming"] is False
+
+    def test_new_assistant_body_streaming_key_wins_over_legacy_answer_key(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text(
+                "display:\n"
+                "  answer_body_streaming: final_only\n"
+                "  assistant_body_streaming: true\n"
+            )
+
+            config = load_config()
+
+            assert config["display"]["assistant_body_streaming"] is True
+
 
 class TestLoadConfigParseFailure:
     """A YAML parse failure must NOT silently fall back to defaults.

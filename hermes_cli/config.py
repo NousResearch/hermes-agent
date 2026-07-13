@@ -1801,6 +1801,11 @@ DEFAULT_CONFIG = {
         # Per-platform overrides via display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
         "streaming": False,
+        # Classic CLI receives assistant answer-body stream deltas for recovery
+        # accounting, but renders the official answer from canonical
+        # final_response by default. Reasoning/tool/status progress streams are
+        # unaffected. Set true to opt back into legacy live answer-body output.
+        "assistant_body_streaming": False,
         "timestamps": False,      # Show timestamp on user and assistant labels
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
         "final_response_markdown": "strip",  # render | strip | raw
@@ -6608,6 +6613,26 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _apply_legacy_display_streaming_compat(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Map legacy display.answer_body_streaming when the new key is absent."""
+
+    display = config.get("display")
+    if not isinstance(display, dict):
+        return config
+    if "assistant_body_streaming" in display:
+        return config
+
+    legacy = str(display.get("answer_body_streaming") or "").strip().lower()
+    if legacy not in {"live", "final_only"}:
+        return config
+
+    normalized = dict(config)
+    normalized_display = dict(display)
+    normalized_display["assistant_body_streaming"] = legacy == "live"
+    normalized["display"] = normalized_display
+    return normalized
+
+
 def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> Any:
     """Traverse nested dict keys safely, returning ``default`` on any miss.
 
@@ -6964,6 +6989,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config["agent"] = agent_user_config
                     user_config.pop("max_turns", None)
 
+                user_config = _apply_legacy_display_streaming_compat(user_config)
                 config = _deep_merge(config, user_config)
             except Exception as e:
                 # Last-known-good fallback (port of openai/codex#31188's

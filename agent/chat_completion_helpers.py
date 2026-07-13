@@ -2282,9 +2282,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     _fire_first_delta()
                     agent._fire_reasoning_delta(reasoning_text)
                 content = getattr(message, "content", None)
-                if isinstance(content, str) and content:
+                aux_stream_cb = getattr(agent, "_stream_callback", None)
+                if isinstance(content, str) and content and aux_stream_cb is not None:
                     _fire_first_delta()
-                    agent._fire_stream_delta(content)
+                    try:
+                        aux_stream_cb(content)
+                    except Exception:
+                        pass
             return stream
 
         # Capture rate limit headers from the initial HTTP response.

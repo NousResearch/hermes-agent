@@ -732,11 +732,14 @@ def init_agent(
     # erased delta1, so downstream state machines never learned a
     # block was open and leaked delta2 as content).
     agent._stream_think_scrubber = StreamingThinkScrubber()
-    # Visible assistant text already delivered through live token callbacks
-    # during the current model response. Used to avoid re-sending the same
-    # commentary when the provider later returns it as a completed interim
-    # assistant message.
+    # Assistant text received through live token callbacks during the current
+    # model response. This remains available for partial-stream recovery even
+    # when a UI chooses not to render draft answer-body tokens.
     agent._current_streamed_assistant_text = ""
+    # Assistant text actually rendered to the user. Used to avoid re-sending
+    # the same commentary when the provider later returns it as a completed
+    # interim assistant message.
+    agent._current_visible_streamed_assistant_text = ""
 
     # Optional current-turn user-message override used when the API-facing
     # user message intentionally differs from the persisted transcript

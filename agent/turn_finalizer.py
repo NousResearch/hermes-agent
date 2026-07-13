@@ -23,8 +23,132 @@ keep the exact logger name (``"agent.conversation_loop"``).
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.route_depth_bar import apply_route_depth_bar
+from agent.turn_receipt import TurnReceipt, apply_turn_facts, update_turn_receipt_from_result
+
+
+def _ensure_canonical_final_message(messages, final_response: str) -> None:
+    """Persist ``final_response`` as the durable final assistant message."""
+
+    if not final_response:
+        return
+    try:
+        tail = messages[-1] if messages else None
+        tail_role = tail.get("role") if isinstance(tail, dict) else None
+        tail_tool_calls = tail.get("tool_calls") if isinstance(tail, dict) else None
+    except Exception:
+        tail = None
+        tail_role = None
+        tail_tool_calls = None
+
+    if tail_role == "assistant" and not tail_tool_calls and isinstance(tail, dict):
+        tail["content"] = final_response
+    else:
+        messages.append({"role": "assistant", "content": final_response})
+
+
+def _runtime_turn_fact_dicts(agent):
+    """Yield optional generic runtime fact dicts without importing WIP systems."""
+
+    for attr in (
+        "_turn_facts",
+        "turn_facts",
+        "_coordination_turn_facts",
+        "coordination_turn_facts",
+        "_moa_turn_facts",
+        "moa_turn_facts",
+    ):
+        value = getattr(agent, attr, None)
+        if isinstance(value, dict):
+            yield value
+
+
+def _client_coordination_turn_fact_dicts(agent):
+    client = getattr(agent, "client", None)
+    method = getattr(client, "coordination_turn_facts", None)
+    if not callable(method):
+        return
+    try:
+        facts = method()
+    except Exception:
+        return
+    if isinstance(facts, Mapping):
+        yield facts
+
+
+def _apply_turn_fact_dicts(receipt: TurnReceipt, fact_dicts) -> None:
+    for facts in fact_dicts or []:
+        try:
+            apply_turn_facts(receipt, facts)
+        except Exception:
+            continue
+
+
+def _apply_runtime_route_depth_bar(
+    agent,
+    *,
+    final_response: str,
+    completed: bool,
+    failed: bool,
+    interrupted: bool,
+    api_call_count: int,
+    _turn_exit_reason: str,
+    messages,
+    turn_id: str,
+    user_message: str,
+) -> tuple[str, bool]:
+    """Apply the runtime-owned route/depth bar to ``final_response``."""
+
+    receipt = getattr(agent, "_current_turn_receipt", None)
+    if not isinstance(receipt, TurnReceipt):
+        receipt = TurnReceipt.start(
+            session_id=getattr(agent, "session_id", "") or "",
+            turn_id=turn_id or getattr(agent, "_current_turn_id", "") or "",
+            provider=getattr(agent, "provider", "") or "",
+            model=getattr(agent, "model", "") or "",
+            platform=getattr(agent, "platform", "") or "",
+        )
+    current_turn_messages = messages
+    current_turn_idx = getattr(agent, "_persist_user_message_idx", None)
+    if isinstance(current_turn_idx, int) and 0 <= current_turn_idx < len(messages):
+        current_turn_messages = messages[current_turn_idx:]
+    update_turn_receipt_from_result(
+        receipt,
+        completed=completed,
+        failed=failed,
+        interrupted=interrupted,
+        api_calls=api_call_count,
+        exit_reason=_turn_exit_reason,
+        messages=current_turn_messages,
+        agent=agent,
+    )
+    _apply_turn_fact_dicts(receipt, _runtime_turn_fact_dicts(agent))
+    _apply_turn_fact_dicts(receipt, _client_coordination_turn_fact_dicts(agent))
+    if isinstance(user_message, str) and user_message.startswith(("说人话", "用人话")):
+        receipt.human_language_state = "seen"
+    agent._current_turn_receipt = receipt
+    return apply_route_depth_bar(final_response, receipt)
+
+
+def _route_depth_bar_enabled(agent, _final_response: str) -> bool:
+    """Return whether this runtime owns an assistant-body route bar.
+
+    The bar is a classic CLI contract. Core ``run_conversation`` is also used
+    by gateways, tests, API servers, and workers whose payloads must not be
+    silently prefixed. An explicit runtime opt-in is supported for sibling
+    surfaces. Model-authored leading bars are replaced only on opted-in
+    surfaces; ordinary non-CLI text beginning with ``路径：`` is preserved.
+    """
+
+    explicit = getattr(agent, "_route_depth_bar_enabled", None)
+    if explicit is not None:
+        return bool(explicit)
+    if bool(getattr(agent, "_roadmap_mode", False)):
+        return False
+    return str(getattr(agent, "platform", "") or "").strip().lower() == "cli"
 
 
 def finalize_turn(
@@ -184,10 +308,10 @@ def finalize_turn(
         _cleanup_errors.append(f"cleanup_task_resources: {_cleanup_err}")
         logger.error("finalize_turn: _cleanup_task_resources failed: %s", _cleanup_err, exc_info=True)
 
-    # Persist session to both JSON log and SQLite only after private retry
-    # scaffolding has been removed. Otherwise a later user "continue" turn
-    # can replay assistant("(empty)") / recovery nudges and fall into the
-    # same empty-response loop again.
+    # Remove private retry scaffolding before the final canonical assistant
+    # message is written back and persisted below. Otherwise a later user
+    # "continue" turn can replay assistant("(empty)") / recovery nudges and
+    # fall into the same empty-response loop again.
     try:
         agent._drop_trailing_empty_response_scaffolding(messages)
 
@@ -208,30 +332,9 @@ def finalize_turn(
         if interrupted:
             from agent.message_sanitization import close_interrupted_tool_sequence
             close_interrupted_tool_sequence(messages, final_response)
-
-        # Some recovery/fallback paths return a real final_response without
-        # adding a closing assistant message to the transcript (e.g. the
-        # partial-stream and prior-turn-content recovery ``break`` sites in
-        # ``conversation_loop``). If persisted as-is, the durable session can
-        # end at a tool/user message even though the caller — and the gateway
-        # platform — already saw a completed assistant response. The next turn
-        # then replays a user-only backlog and the model re-answers every
-        # "unanswered" message. Close the durable turn at the source, at the
-        # single chokepoint every recovery ``break`` flows through, so the
-        # invariant "delivered final_response ⇒ assistant row in transcript"
-        # holds regardless of which path produced it. (#43849 / #44100)
-        if final_response and not interrupted:
-            try:
-                _tail_role = messages[-1].get("role") if messages else None
-            except Exception:
-                _tail_role = None
-            if _tail_role != "assistant":
-                messages.append({"role": "assistant", "content": final_response})
-
-        agent._persist_session(messages, conversation_history)
-    except Exception as _persist_err:
-        _cleanup_errors.append(f"persist_session: {_persist_err}")
-        logger.error("finalize_turn: _persist_session failed: %s", _persist_err, exc_info=True)
+    except Exception as _sanitize_err:
+        _cleanup_errors.append(f"sanitize_transcript: {_sanitize_err}")
+        logger.error("finalize_turn: transcript sanitization failed: %s", _sanitize_err, exc_info=True)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.
@@ -383,6 +486,43 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
+    # Runtime-owned route/depth status bar.  This deliberately happens after
+    # model/plugin/finalizer text transforms and before post_llm_call,
+    # persistence, memory sync, and visible delivery so every downstream surface
+    # agrees on the same canonical final_response.  A model-authored leading
+    # ``路径：`` line is stripped/replaced inside apply_route_depth_bar().
+    if (
+        final_response
+        and not interrupted
+        and _route_depth_bar_enabled(agent, final_response)
+    ):
+        try:
+            final_response, _route_bar_changed = _apply_runtime_route_depth_bar(
+                agent,
+                final_response=final_response,
+                completed=completed,
+                failed=failed,
+                interrupted=interrupted,
+                api_call_count=api_call_count,
+                _turn_exit_reason=_turn_exit_reason,
+                messages=messages,
+                turn_id=turn_id,
+                user_message=user_message,
+            )
+            if _route_bar_changed:
+                _response_transformed = True
+        except Exception as exc:
+            logger.warning("route/depth status bar finalization failed: %s", exc)
+
+    # Some recovery/fallback paths return a real final_response without adding
+    # a closing assistant message to the transcript (e.g. partial-stream and
+    # prior-turn-content recovery break sites in conversation_loop). Write the
+    # final transformed body back to the last assistant message (or append one)
+    # before post hooks and persistence so visible final, DB/history, and hooks
+    # all share the same canonical content. (#43849 / #44100 + route-bar fix)
+    if final_response and not interrupted:
+        _ensure_canonical_final_message(messages, final_response)
+
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync
@@ -403,6 +543,16 @@ def finalize_turn(
             )
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
+
+    # Persist session to both JSON log and SQLite after every final-response
+    # transform has run and the canonical assistant message has been written
+    # back into ``messages``. This is the upgrade-regression seam for keeping
+    # DB/history and visible final output byte-aligned.
+    try:
+        agent._persist_session(messages, conversation_history)
+    except Exception as _persist_err:
+        _cleanup_errors.append(f"persist_session: {_persist_err}")
+        logger.error("finalize_turn: _persist_session failed: %s", _persist_err, exc_info=True)
 
     # Extract reasoning from the CURRENT turn only.  Walk backwards
     # but stop at the user message that started this turn — anything
@@ -434,6 +584,8 @@ def finalize_turn(
         "interrupted": interrupted,
         "response_transformed": _response_transformed,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
+        "stream_text_received": bool(getattr(agent, "_current_streamed_assistant_text", "") or ""),
+        "stream_text_visible": bool(getattr(agent, "_current_visible_streamed_assistant_text", "") or ""),
         "model": agent.model,
         "provider": agent.provider,
         "base_url": agent.base_url,

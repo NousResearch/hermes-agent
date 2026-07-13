@@ -28,6 +28,7 @@ def cli_stub(monkeypatch):
     cli.show_reasoning = False
     cli.final_response_markdown = "raw"
     cli.show_timestamps = False
+    cli.assistant_body_streaming = True
     cli._reset_stream_state()
 
     emitted = []

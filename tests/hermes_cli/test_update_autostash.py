@@ -524,16 +524,154 @@ def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch,
 
 
 # ---------------------------------------------------------------------------
-# ff-only fallback to reset --hard on diverged history
+# Diverged history: preserve committed local patches across updates
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_update_rebases_local_commits_instead_of_reset(
+    monkeypatch, tmp_path, capsys
+):
+    """A diverged checkout with local-only commits must replay them, never drop them."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    recorded = []
+
+    def fake_run(cmd, **kwargs):
+        recorded.append(cmd)
+        joined = " ".join(str(c) for c in cmd)
+        if "fetch origin main" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if "rev-list HEAD..origin/main --count" in joined:
+            return SimpleNamespace(stdout="3\n", stderr="", returncode=0)
+        if "pull --ff-only origin main" in joined:
+            return SimpleNamespace(
+                stdout="",
+                stderr="fatal: Not possible to fast-forward, aborting.\n",
+                returncode=128,
+            )
+        if "rev-list --count origin/main..HEAD" in joined:
+            return SimpleNamespace(stdout="2\n", stderr="", returncode=0)
+        if "branch hermes-local-commits-" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rebase origin/main" in joined:
+            return SimpleNamespace(stdout="Successfully rebased\n", stderr="", returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert any(
+        c[:2] == ["git", "branch"] and "hermes-local-commits-" in c[2]
+        for c in recorded
+    )
+    assert ["git", "rebase", "origin/main"] in recorded
+    assert ["git", "reset", "--hard", "origin/main"] not in recorded
+    out = capsys.readouterr().out
+    assert "2 local commit(s)" in out
+    assert "rebased" in out.lower()
+
+
+def test_cmd_update_aborts_conflicted_rebase_without_hard_reset(
+    monkeypatch, tmp_path, capsys
+):
+    """A rebase conflict must fail loud and restore the pre-update branch state."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    recorded = []
+
+    def fake_run(cmd, **kwargs):
+        recorded.append(cmd)
+        joined = " ".join(str(c) for c in cmd)
+        if "fetch origin main" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if "rev-list HEAD..origin/main --count" in joined:
+            return SimpleNamespace(stdout="3\n", stderr="", returncode=0)
+        if "pull --ff-only origin main" in joined:
+            return SimpleNamespace(stdout="", stderr="diverged\n", returncode=128)
+        if "rev-list --count origin/main..HEAD" in joined:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if "branch hermes-local-commits-" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rebase origin/main" in joined:
+            return SimpleNamespace(stdout="", stderr="CONFLICT\n", returncode=1)
+        if "rebase --abort" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    assert ["git", "rebase", "--abort"] in recorded
+    assert ["git", "reset", "--hard", "origin/main"] not in recorded
+    out = capsys.readouterr().out
+    assert "kept on backup branch" in out
+    assert "not discarded" in out
+
+
+def test_cmd_update_surfaces_rebase_abort_failure(monkeypatch, tmp_path, capsys):
+    """A failed abort must report that the checkout may still be mid-rebase."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    recorded = []
+
+    def fake_run(cmd, **kwargs):
+        recorded.append(cmd)
+        joined = " ".join(str(c) for c in cmd)
+        if "fetch origin main" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if "rev-list HEAD..origin/main --count" in joined:
+            return SimpleNamespace(stdout="3\n", stderr="", returncode=0)
+        if "pull --ff-only origin main" in joined:
+            return SimpleNamespace(stdout="", stderr="diverged\n", returncode=128)
+        if "rev-list --count origin/main..HEAD" in joined:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if "branch hermes-local-commits-" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rebase origin/main" in joined:
+            return SimpleNamespace(stdout="", stderr="CONFLICT\n", returncode=1)
+        if "rebase --abort" in joined:
+            return SimpleNamespace(
+                stdout="",
+                stderr="abort failed: permission denied\n",
+                returncode=1,
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    assert ["git", "rebase", "--abort"] in recorded
+    assert ["git", "reset", "--hard", "origin/main"] not in recorded
+    out = capsys.readouterr().out
+    assert "abort failed: permission denied" in out
+    assert "may still be in progress" in out
+    assert "kept on backup branch" in out
+
+
+# ---------------------------------------------------------------------------
+# ff-only fallback to reset --hard on diverged history without local commits
 # ---------------------------------------------------------------------------
 
 def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
+    ahead_count="0",
     ff_only_fails=False,
     reset_fails=False,
     fetch_fails=False,
     fetch_stderr="",
+    backup_fails=False,
 ):
     """Build a subprocess.run side_effect for cmd_update tests."""
     recorded = []
@@ -548,6 +686,16 @@ def _make_update_side_effect(
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rev-list --count origin/" in joined and "..HEAD" in joined:
+            return SimpleNamespace(stdout=f"{ahead_count}\n", stderr="", returncode=0)
+        if "branch hermes-local-commits-" in joined:
+            if backup_fails:
+                return SimpleNamespace(
+                    stdout="",
+                    stderr="fatal: cannot lock ref\n",
+                    returncode=1,
+                )
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
@@ -584,6 +732,45 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     out = capsys.readouterr().out
     assert "Fast-forward not possible" in out
+
+
+def test_cmd_update_fails_closed_when_local_commit_count_is_unknown(
+    monkeypatch, tmp_path, capsys
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True,
+        ahead_count="not-a-number",
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    assert ["git", "reset", "--hard", "origin/main"] not in recorded
+    assert "could not be verified" in capsys.readouterr().out
+
+
+def test_cmd_update_fails_closed_when_backup_branch_cannot_be_created(
+    monkeypatch, tmp_path, capsys
+):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True,
+        ahead_count="1",
+        backup_fails=True,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    assert ["git", "reset", "--hard", "origin/main"] not in recorded
+    out = capsys.readouterr().out
+    assert "Could not preserve 1 local commit" in out
+    assert "fatal: cannot lock ref" in out
 
 
 def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):

@@ -55,6 +55,7 @@ class _RefAccounting:
         "model",
         "provider",
         "temperature",
+        "succeeded",
     )
 
     def __init__(
@@ -69,6 +70,7 @@ class _RefAccounting:
         model: str | None = None,
         provider: str | None = None,
         temperature: Any = None,
+        succeeded: bool = False,
     ):
         self.usage = usage
         self.cost_usd = cost_usd
@@ -79,6 +81,7 @@ class _RefAccounting:
         self.model = model
         self.provider = provider
         self.temperature = temperature
+        self.succeeded = bool(succeeded)
 
 # Per-tool-result character budget for the advisory reference view. Tool
 # results can be huge (a full diff, a 5000-line file dump); replaying them
@@ -319,6 +322,7 @@ def _run_reference(
             model=slot.get("model"),
             provider=runtime.get("provider") or slot.get("provider"),
             temperature=temperature,
+            succeeded=True,
         )
         return label, _output_text, acct
     except Exception as exc:
@@ -330,6 +334,7 @@ def _run_reference(
             model=slot.get("model"),
             provider=runtime.get("provider") or slot.get("provider"),
             temperature=temperature,
+            succeeded=False,
         )
 
 
@@ -365,7 +370,7 @@ def _run_references_parallel(
                 results[idx] = (
                     _slot_label(slot),
                     "[skipped: MoA presets cannot recursively reference MoA]",
-                    _RefAccounting(CanonicalUsage()),
+                    _RefAccounting(CanonicalUsage(), succeeded=False),
                 )
                 continue
             futures[
@@ -723,6 +728,100 @@ class MoAChatCompletions:
         # caller to stitch in the live session_id + resolved aggregator output
         # and flush to the trace file (only when moa.save_traces is on).
         self._pending_trace: Any = None
+        self._last_coordination_turn_facts: dict[str, Any] | None = None
+        self._pending_coordination_turn_facts: dict[str, Any] | None = None
+
+    def _coordination_facts_from_outputs(
+        self,
+        reference_outputs: list[tuple[str, str, Any]],
+        aggregator: dict[str, str],
+    ) -> dict[str, Any]:
+        """Build private MoA completion facts from actual reference outcomes."""
+
+        reference_labels: list[str] = []
+        failed_count = 0
+        for label, _text, accounting in reference_outputs:
+            if isinstance(accounting, _RefAccounting) and accounting.succeeded is True:
+                if isinstance(label, str):
+                    reference_labels.append(label)
+            else:
+                failed_count += 1
+        reference_total = len(reference_outputs)
+        aggregator_model = str((aggregator or {}).get("model") or "").strip()
+        aggregator_count = 1 if aggregator_model else 0
+        return {
+            "moa": {
+                "observed": bool(reference_labels or failed_count or aggregator_count),
+                "reference_models": reference_labels,
+                "reference_count": len(reference_labels),
+                "reference_total": reference_total,
+                "failed_count": failed_count,
+                "aggregator_model": aggregator_model,
+                "aggregator_count": aggregator_count,
+            }
+        }
+
+    def _publish_pending_coordination_turn_facts(self) -> None:
+        pending = getattr(self, "_pending_coordination_turn_facts", None)
+        self._pending_coordination_turn_facts = None
+        if isinstance(pending, dict):
+            self._last_coordination_turn_facts = pending
+
+    def coordination_turn_facts(self) -> dict[str, Any]:
+        """Return runtime facts for the most recently completed MoA create()."""
+
+        facts = getattr(self, "_last_coordination_turn_facts", None)
+        if not isinstance(facts, dict):
+            return {}
+        moa = facts.get("moa")
+        if not isinstance(moa, dict):
+            return {}
+        reference_models = [str(label) for label in moa.get("reference_models") or [] if str(label)]
+        aggregator_model = str(moa.get("aggregator_model") or "")
+        if "reference_count" in moa:
+            try:
+                reference_count = int(moa.get("reference_count") or 0)
+            except Exception:
+                reference_count = len(reference_models)
+        else:
+            reference_count = len(reference_models)
+        if "aggregator_count" in moa:
+            try:
+                aggregator_count = int(moa.get("aggregator_count") or 0)
+            except Exception:
+                aggregator_count = 1 if aggregator_model.strip() else 0
+        else:
+            aggregator_count = 1 if aggregator_model.strip() else 0
+        if "failed_count" in moa:
+            try:
+                failed_count = int(moa.get("failed_count") or 0)
+            except Exception:
+                failed_count = 0
+        else:
+            failed_count = 0
+        if "reference_total" in moa:
+            try:
+                reference_total = int(moa.get("reference_total") or 0)
+            except Exception:
+                reference_total = reference_count + failed_count
+        else:
+            reference_total = reference_count + failed_count
+        return {
+            "moa": {
+                "observed": (
+                    bool(moa.get("observed"))
+                    or reference_count > 0
+                    or failed_count > 0
+                    or aggregator_count > 0
+                ),
+                "reference_models": reference_models,
+                "reference_count": reference_count,
+                "reference_total": reference_total,
+                "failed_count": failed_count,
+                "aggregator_model": aggregator_model,
+                "aggregator_count": aggregator_count,
+            }
+        }
 
     def consume_reference_usage(self) -> tuple[Any, Any]:
         """Pop pending reference-fan-out usage + cost, resetting both to empty.
@@ -760,6 +859,7 @@ class MoAChatCompletions:
         streaming and non-streaming modes. Non-streaming already has the inline
         output and ignores the fallback.
         """
+        self._publish_pending_coordination_turn_facts()
         pending = self._pending_trace
         self._pending_trace = None
         if not pending or "aggregator_input_messages" not in pending:
@@ -798,6 +898,9 @@ class MoAChatCompletions:
             logger.debug("MoA reference_callback failed for %s: %s", event, exc)
 
     def create(self, **api_kwargs: Any) -> Any:
+        self._last_coordination_turn_facts = None
+        self._pending_coordination_turn_facts = None
+
         from hermes_cli.config import load_config
         from hermes_cli.moa_config import resolve_moa_preset
 
@@ -957,6 +1060,11 @@ class MoAChatCompletions:
                     ref_count=_ref_count,
                 )
 
+        self._pending_coordination_turn_facts = self._coordination_facts_from_outputs(
+            reference_outputs,
+            aggregator,
+        )
+
         agg_messages = [dict(m) for m in messages]
         if reference_outputs:
             joined = "\n\n".join(
@@ -1010,16 +1118,20 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
-        _agg_response = call_llm(
-            task="moa_aggregator",
-            messages=agg_messages,
-            temperature=aggregator_temperature,
-            max_tokens=agg_kwargs.get("max_tokens"),
-            tools=agg_kwargs.get("tools"),
-            extra_body=agg_kwargs.get("extra_body"),
-            **stream_kwargs,
-            **_slot_runtime(aggregator),
-        )
+        try:
+            _agg_response = call_llm(
+                task="moa_aggregator",
+                messages=agg_messages,
+                temperature=aggregator_temperature,
+                max_tokens=agg_kwargs.get("max_tokens"),
+                tools=agg_kwargs.get("tools"),
+                extra_body=agg_kwargs.get("extra_body"),
+                **stream_kwargs,
+                **_slot_runtime(aggregator),
+            )
+        except Exception:
+            self._pending_coordination_turn_facts = None
+            raise
         # Non-streaming path (quiet mode / eval / subagents): the aggregator
         # output is available inline, so capture it into the pending trace now.
         # Streaming path: the aggregator's raw token stream is returned to the
@@ -1035,6 +1147,8 @@ class MoAChatCompletions:
                     self._pending_trace["aggregator_output"] = _extract_text(_agg_response)
                 except Exception:  # pragma: no cover - defensive
                     self._pending_trace["aggregator_output"] = None
+        if not stream:
+            self._publish_pending_coordination_turn_facts()
         return _agg_response
 
 
@@ -1050,6 +1164,11 @@ class MoAClient:
         usage without reaching into ``.chat.completions`` internals.
         """
         return self.chat.completions.consume_reference_usage()
+
+    def coordination_turn_facts(self) -> dict[str, Any]:
+        """Return runtime facts for the most recently completed MoA create()."""
+
+        return self.chat.completions.coordination_turn_facts()
 
     @property
     def last_aggregator_slot(self) -> Any:

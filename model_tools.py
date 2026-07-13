@@ -40,6 +40,27 @@ _WARNED_DISABLED_BUNDLES: set = set()
 
 
 # =============================================================================
+# Pre-dispatch hooks — Jarvis behavior boundary engine
+# =============================================================================
+
+_TOOL_PRE_DISPATCH_HOOKS: list = []
+
+
+def register_pre_dispatch_hook(hook: callable) -> None:
+    """注册工具调用前置钩子。hook(tool_name, args) -> None 或抛出 ToolBlocked"""
+    _TOOL_PRE_DISPATCH_HOOKS.append(hook)
+
+
+class ToolBlocked(Exception):
+    """工具被前置钩子阻止"""
+
+    def __init__(self, reason: str, level: str = 'forbidden'):
+        self.reason = reason
+        self.level = level  # forbidden | admin_required
+        super().__init__(reason)
+
+
+# =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
 
@@ -1066,6 +1087,14 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+
+    # ── Pre-dispatch hooks (Jarvis behavior boundary engine) ───────
+    for hook in _TOOL_PRE_DISPATCH_HOOKS:
+        try:
+            hook(function_name, function_args)
+        except ToolBlocked as e:
+            return json.dumps({'blocked': True, 'level': e.level, 'reason': e.reason})
+
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
     # ── Tool Search bridge dispatch ──────────────────────────────────

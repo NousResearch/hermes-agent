@@ -6665,6 +6665,17 @@ def _gateway_command_inner(args):
             sys.exit(1)
 
     elif subcmd == "uninstall":
+        # Uninstall stops the managed service before removing it. A terminal
+        # tool spawned by the gateway inherits this marker, so refuse before
+        # the service manager can terminate the parent gateway process.
+        if os.getenv("_HERMES_GATEWAY") == "1":
+            print_error(
+                "Refusing to uninstall the gateway from inside the gateway process.\n"
+                "This command was blocked to prevent the gateway from terminating itself.\n"
+                "Use `hermes gateway uninstall` from a shell outside the running gateway."
+            )
+            sys.exit(1)
+
         if is_managed():
             managed_error("uninstall gateway service (managed by NixOS)")
             return

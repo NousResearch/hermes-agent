@@ -1,7 +1,7 @@
 """Tests for gateway restart-loop defenses (#30719).
 
 Covers:
-- Defense 1: gateway stop/restart refuse when _HERMES_GATEWAY=1
+- Defense 1: destructive gateway commands refuse when _HERMES_GATEWAY=1
 - Defense 2: cron create rejects prompts containing gateway lifecycle commands
 - _contains_gateway_lifecycle_command pattern matching
 """
@@ -28,6 +28,7 @@ class TestGatewayLifecyclePattern:
     @pytest.mark.parametrize("text", [
         "hermes gateway restart",
         "hermes gateway stop",
+        "hermes gateway uninstall",
         "hermes  gateway  restart",         # double spaces
         "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
         "HERMES GATEWAY RESTART",           # uppercase
@@ -37,6 +38,7 @@ class TestGatewayLifecyclePattern:
 
     @pytest.mark.parametrize("text", [
         "launchctl kickstart gui/501/ai.hermes.gateway",
+        "launchctl bootout gui/501/ai.hermes.gateway",
         "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist",
         "launchctl stop ai.hermes.gateway",
         "systemctl restart hermes-gateway",
@@ -64,7 +66,7 @@ class TestGatewayLifecyclePattern:
         "gateway is running fine",
         # `hermes gateway start` is benign — starting a gateway from inside a
         # gateway is a no-op / "already running", and a legit cron job may
-        # start a sibling profile's gateway. Only restart/stop/kill are the
+        # start a sibling profile's gateway. Only restart/stop/uninstall/kill are the
         # foot-gun (#30719 lists only those).
         "hermes gateway start",
         "hermes gateway start --all",
@@ -217,7 +219,7 @@ class TestCronCreateLifecycleBlock:
 # ---------------------------------------------------------------------------
 
 class TestGatewaySelfTargetingGuard:
-    """Verify hermes gateway stop/restart refuse when _HERMES_GATEWAY=1."""
+    """Verify destructive gateway commands refuse when _HERMES_GATEWAY=1."""
 
     def test_stop_refuses_inside_gateway(self, monkeypatch):
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
@@ -231,6 +233,15 @@ class TestGatewaySelfTargetingGuard:
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
         from hermes_cli.gateway import gateway_command
         args = Namespace(gateway_command="restart", all=False, system=False)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_command(args)
+        assert exc_info.value.code == 1
+
+    def test_uninstall_refuses_inside_gateway(self, monkeypatch):
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        from hermes_cli.gateway import gateway_command
+
+        args = Namespace(gateway_command="uninstall", system=False)
         with pytest.raises(SystemExit) as exc_info:
             gateway_command(args)
         assert exc_info.value.code == 1
@@ -315,6 +326,8 @@ class TestTerminalToolGatewayLifecycleGuard:
         "systemctl --user restart hermes-gateway",
         "systemctl stop hermes-gateway.service",
         "hermes gateway restart",
+        "hermes gateway uninstall",
+        "launchctl bootout gui/501/ai.hermes.gateway",
         "launchctl kickstart gui/501/ai.hermes.gateway",
         "pkill -f hermes.*gateway",
     ])

@@ -259,7 +259,7 @@ def _handle_send(args):
     force_document_attachments = "[[as_document]]" in message
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_files, dropped_media = BasePlatformAdapter.partition_media_delivery_paths(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -324,6 +324,22 @@ def _handle_send(args):
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+
+        # Surface MEDIA paths that the delivery allowlist dropped so CLI/MCP
+        # callers can react instead of treating a text-only send as a fully
+        # successful attachment send (issue #32644).
+        if dropped_media and isinstance(result, dict) and result.get("success"):
+            warnings = list(result.get("warnings", []))
+            dropped_paths = [path for path, _is_voice in dropped_media]
+            warnings.append(
+                f"{len(dropped_paths)} MEDIA attachment(s) were dropped because the path is outside "
+                "the gateway's allowed delivery roots; only text was delivered. Move the file under a "
+                "Hermes-managed cache or add its directory to gateway.media_delivery_allow_dirs. "
+                "Alternatively, when gateway.strict is enabled, set gateway.trust_recent_files to true "
+                "to allow recently produced files."
+            )
+            result["warnings"] = warnings
+            result["media_dropped"] = dropped_paths
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:

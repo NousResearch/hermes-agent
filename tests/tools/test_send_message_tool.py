@@ -402,7 +402,18 @@ class TestSendMessageTool:
                 )
             )
 
+        # Text sent, but the result must flag that the MEDIA attachment was
+        # dropped so CLI/MCP callers do not read "success" as "media
+        # delivered" (issue #32644).
         assert result["success"] is True
+        assert result["media_dropped"] == [str(secret)]
+        assert result["warnings"] == [
+            "1 MEDIA attachment(s) were dropped because the path is outside the gateway's "
+            "allowed delivery roots; only text was delivered. Move the file under a "
+            "Hermes-managed cache or add its directory to gateway.media_delivery_allow_dirs. "
+            "Alternatively, when gateway.strict is enabled, set gateway.trust_recent_files to true "
+            "to allow recently produced files."
+        ]
         send_mock.assert_awaited_once_with(
             Platform.TELEGRAM,
             telegram_cfg,
@@ -412,6 +423,34 @@ class TestSendMessageTool:
             media_files=[],
             force_document=False,
         )
+
+    def test_media_dropped_warning_not_added_when_send_errors(self, tmp_path, monkeypatch):
+        """An upstream send failure must not be masked by the media-dropped
+        warning; ``media_dropped`` is only attached to a successful result.
+        """
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+        config, _telegram_cfg = _make_config()
+        secret = tmp_path / "secret.pdf"
+        secret.write_bytes(b"%PDF secret")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"error": "boom"})):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": f"hello\nMEDIA:{secret}",
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "media_dropped" not in result
+        assert "warnings" not in result
 
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()

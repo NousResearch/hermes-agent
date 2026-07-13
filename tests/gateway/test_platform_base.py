@@ -658,6 +658,28 @@ class TestMediaDeliveryPathValidation:
 
         assert filtered == [(str(safe.resolve()), True)]
 
+    def test_partition_returns_dropped_paths_so_caller_can_warn(self, tmp_path, monkeypatch):
+        """``partition_media_delivery_paths`` is the silent-drop fix: the
+        caller needs both the safe and the dropped list so a text-only send
+        does not silently report success on a stripped attachment
+        (issue #32644).
+        """
+        root = tmp_path / "media-cache"
+        safe = root / "speech.ogg"
+        unsafe = tmp_path / "outside.ogg"
+        safe.parent.mkdir(parents=True)
+        safe.write_bytes(b"OggS")
+        unsafe.write_bytes(b"OggS")
+        self._patch_roots(monkeypatch, root)
+
+        safe_list, dropped_list = BasePlatformAdapter.partition_media_delivery_paths([
+            (str(unsafe), False),
+            (str(safe), True),
+        ])
+
+        assert safe_list == [(str(safe.resolve()), True)]
+        assert dropped_list == [(str(unsafe), False)]
+
     def test_allows_operator_configured_extra_root(self, tmp_path, monkeypatch):
         extra_root = tmp_path / "operator-media"
         media_file = extra_root / "report.pdf"

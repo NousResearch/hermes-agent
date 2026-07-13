@@ -184,6 +184,34 @@ async def test_root_telegram_dm_prompt_is_system_lobby_when_topic_mode_enabled(m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("thread_id", [None, "1"])
+async def test_internal_root_telegram_dm_event_bypasses_topic_lobby(
+    monkeypatch, thread_id
+):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner._handle_message_with_agent = AsyncMock(return_value="agent response")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    event = MessageEvent(
+        text="[SYSTEM: kanban task completed]",
+        source=_make_source(thread_id=thread_id),
+        message_id="wake-1",
+        internal=True,
+    )
+    result = await runner._handle_message(event)
+
+    assert result == "agent response"
+    assert runner._handle_message_with_agent.await_count == 1
+    assert runner._handle_message_with_agent.await_args.args[0] is event
+
+
+@pytest.mark.asyncio
 async def test_root_telegram_dm_new_shows_create_topic_instruction(monkeypatch):
     import gateway.run as gateway_run
 

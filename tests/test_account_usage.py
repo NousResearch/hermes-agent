@@ -254,3 +254,53 @@ def test_fetch_account_usage_deepseek_uses_runtime_credentials_without_env_key(m
     assert snapshot is not None
     assert snapshot.provider == "deepseek"
     assert snapshot.details == ("Balance (USD): $12.34",)
+
+
+def test_fetch_account_usage_deepseek_derives_balance_endpoint_from_runtime_base_url(monkeypatch):
+    """A configured DeepSeek-compatible endpoint is used instead of the default host."""
+    requested_urls = []
+
+    class CapturingClient(_Client):
+        def get(self, url, headers=None):
+            requested_urls.append(url)
+            return super().get(url, headers=headers)
+
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "runtime-token",
+            "base_url": "https://deepseek-proxy.example/v1",
+        },
+    )
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout=10.0: CapturingClient(
+            {"is_available": True, "balance_infos": [{"currency": "USD", "total_balance": "12.34"}]}
+        ),
+    )
+
+    snapshot = fetch_account_usage("deepseek")
+
+    assert snapshot is not None
+    assert requested_urls == ["https://deepseek-proxy.example/user/balance"]
+
+
+def test_fetch_all_providers_quota_continues_after_a_provider_failure(monkeypatch):
+    """One failed lookup must not hide quota data returned by later providers."""
+    openrouter_snapshot = AccountUsageSnapshot(
+        provider="openrouter",
+        source="credits_api",
+        fetched_at=datetime.now(timezone.utc),
+        details=("Credits balance: $12.00",),
+    )
+
+    def fake_fetch(provider):
+        if provider == "openai-codex":
+            raise RuntimeError("transient resolver failure")
+        return openrouter_snapshot if provider == "openrouter" else None
+
+    monkeypatch.setattr(account_usage, "fetch_account_usage", fake_fetch)
+
+    assert account_usage.fetch_all_providers_quota() == [openrouter_snapshot]

@@ -687,9 +687,13 @@ def _fetch_deepseek_account_usage(
     token = str(runtime.get("api_key", "") or "").strip()
     if not token:
         return None
+    runtime_base_url = str(runtime.get("base_url", "") or "").strip().rstrip("/")
+    if runtime_base_url.lower().endswith("/v1"):
+        runtime_base_url = runtime_base_url[:-3]
+    balance_url = f"{runtime_base_url}/user/balance" if runtime_base_url else "https://api.deepseek.com/user/balance"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     with httpx.Client(timeout=10.0) as client:
-        response = client.get("https://api.deepseek.com/user/balance", headers=headers)
+        response = client.get(balance_url, headers=headers)
         response.raise_for_status()
     payload = response.json() or {}
     details: list[str] = []

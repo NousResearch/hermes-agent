@@ -82,6 +82,7 @@ class ResponsesApiTransport(ProviderTransport):
             messages,
             is_xai_responses=kwargs.get("is_xai_responses") is True,
             is_github_responses=kwargs.get("is_github_responses") is True,
+            is_azure_foundry_responses=kwargs.get("is_azure_foundry_responses") is True,
             replay_encrypted_reasoning=bool(
                 kwargs.get("replay_encrypted_reasoning", True)
             ),
@@ -141,6 +142,7 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
+        is_azure_foundry_responses = params.get("is_azure_foundry_responses") is True
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
@@ -247,6 +249,7 @@ class ResponsesApiTransport(ProviderTransport):
                 payload_messages,
                 is_xai_responses=is_xai_responses,
                 is_github_responses=is_github_responses,
+                is_azure_foundry_responses=is_azure_foundry_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning,
                 current_issuer_kind=issuer_kind,
             ),

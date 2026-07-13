@@ -315,6 +315,7 @@ def _chat_messages_to_responses_input(
     *,
     is_xai_responses: bool = False,
     is_github_responses: bool = False,
+    is_azure_foundry_responses: bool = False,
     replay_encrypted_reasoning: bool = True,
     current_issuer_kind: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
@@ -425,16 +426,19 @@ def _chat_messages_to_responses_input(
                                     )
                                     _CROSS_ISSUER_WARN_EMITTED = True
                                 continue
-                            # Strip the "id" field — with store=False the
-                            # Responses API cannot look up items by ID and
-                            # returns 404.  The encrypted_content blob is
-                            # self-contained for reasoning chain continuity.
+                            # Strip the "id" field for OpenAI-style Responses API — with
+                            # store=False the OpenAI Responses API cannot look up items
+                            # by ID and returns 404. Azure AI Foundry Responses API
+                            # requires the id to be retained even with store=False.
                             # Also strip the internal "_issuer_kind" stamp;
                             # it is a Hermes-side metadata key and not part
                             # of the Responses API schema.
+                            keys_to_strip: set = {"_issuer_kind"}
+                            if not is_azure_foundry_responses:
+                                keys_to_strip.add("id")
                             replay_item = {
                                 k: v for k, v in ri.items()
-                                if k not in ("id", "_issuer_kind")
+                                if k not in keys_to_strip
                             }
                             items.append(replay_item)
                             if item_id:
@@ -604,6 +608,7 @@ def _preflight_codex_input_items(
     raw_items: Any,
     *,
     is_github_responses: bool = False,
+    is_azure_foundry_responses: bool = False,
 ) -> List[Dict[str, Any]]:
     if not isinstance(raw_items, list):
         raise ValueError("Codex Responses input must be a list of input items.")
@@ -699,11 +704,18 @@ def _preflight_codex_input_items(
                     if item_id in seen_ids:
                         continue
                     seen_ids.add(item_id)
-                reasoning_item = {"type": "reasoning", "encrypted_content": encrypted}
-                # Do NOT include the "id" in the outgoing item — with
-                # store=False (our default) the API tries to resolve the
-                # id server-side and returns 404.  The id is still used
-                # above for local deduplication via seen_ids.
+                reasoning_item: Dict[str, Any] = {
+                    "type": "reasoning", "encrypted_content": encrypted,
+                }
+                # Do NOT include the "id" in the outgoing item for OpenAI-style
+                # Responses API — with store=False (our default) the API tries
+                # to resolve the id server-side and returns 404.  Azure AI
+                # Foundry requires the id even with store=False.
+                # The id is still used above for local deduplication via
+                # seen_ids regardless of this flag.
+                if is_azure_foundry_responses:
+                    if isinstance(item_id, str) and item_id:
+                        reasoning_item["id"] = item_id
                 summary = item.get("summary")
                 if isinstance(summary, list):
                     reasoning_item["summary"] = summary

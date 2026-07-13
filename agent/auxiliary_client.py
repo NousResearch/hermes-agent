@@ -893,8 +893,14 @@ class _CodexCompletionsAdapter:
         # build_kwargs, so they need the same guard applied independently.
         _host_for_input = str(getattr(self._client, "base_url", "") or "")
         _is_github_for_input = base_url_host_matches(_host_for_input, "githubcopilot.com")
+        _is_azure_for_input = (
+            base_url_host_matches(_host_for_input, "openai.azure.com")
+            or base_url_host_matches(_host_for_input, "azure-api.net")
+        )
         input_items = _chat_messages_to_responses_input(
-            replay_messages, is_github_responses=_is_github_for_input,
+            replay_messages,
+            is_github_responses=_is_github_for_input,
+            is_azure_foundry_responses=_is_azure_for_input,
         )
 
         resp_kwargs: Dict[str, Any] = {

@@ -2508,6 +2508,16 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # active_pr respawn guard: when a recent task comment holds a GitHub
+        # PR URL, the dispatcher defers re-spawning to avoid opening a
+        # DUPLICATE PR. A deliberate follow-up / unblock / reopen / `hermes
+        # kanban unguard` always overrides that (it's a fresher signal). This
+        # flag additionally lets the guard consult LIVE PR state via the `gh`
+        # CLI so a closed/merged PR stops blocking automatically. Off by
+        # default: it shells out to `gh` (needs network + auth) and isn't
+        # present in every deployment; unknown state safely keeps the guard.
+        # Enable it in kanban→GitHub PR workflows where `gh` is authenticated.
+        "respawn_guard_check_pr_state": False,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.

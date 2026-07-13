@@ -2075,6 +2075,381 @@ def test_dispatch_respawn_guard_emits_event_for_skipped_task(
 
 
 # ---------------------------------------------------------------------------
+# active_pr respawn guard — deliberate-intent overrides + live PR state
+# (check_respawn_guard block "4.", clear_respawn_guard, _resolve_github_pr_state)
+# ---------------------------------------------------------------------------
+
+_PR_URL = "https://github.com/totemx-AI/subsidysmart/pull/42"
+
+
+def _add_pr_comment_at(conn, task_id, created_at, url=_PR_URL):
+    """Insert a PR-URL comment with an explicit created_at.
+
+    Bypasses ``add_comment`` (which stamps ``now``) so a test can make the PR
+    link deterministically OLDER than a continuation signal recorded ~now.
+    """
+    conn.execute(
+        "INSERT INTO task_comments (task_id, author, body, created_at) "
+        "VALUES (?, 'worker', ?, ?)",
+        (task_id, f"PR opened: {url}", created_at),
+    )
+
+
+def test_respawn_guard_active_pr_blocks_live_pr_without_signal(kanban_home):
+    """(a) The guard still blocks the unintended auto-respawn duplicate while a
+    PR is live and no deliberate continuation signal is newer than it — the
+    protection the guard exists for. An injected resolver reporting ``open``
+    keeps it firing, and is consulted with the newest PR URL.
+    """
+    calls = []
+
+    def resolver(url):
+        calls.append(url)
+        return "open"
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="live-pr", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"PR opened: {_PR_URL}")
+        reason = kb.check_respawn_guard(conn, t, pr_state_resolver=resolver)
+
+    assert reason == "active_pr"
+    assert calls == [_PR_URL]
+
+
+def test_respawn_guard_active_pr_default_no_resolver_still_blocks(kanban_home):
+    """Back-compat: the bare 2-arg call with a live PR and no signal still
+    blocks. The config flag is off by default, so the built-in gh resolver is
+    never consulted and an unknown state safely keeps the guard."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="live-pr", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"PR opened: {_PR_URL}")
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "active_pr"
+
+
+def test_respawn_guard_active_pr_cleared_by_unblock(kanban_home):
+    """(b) A deliberate unblock AFTER the PR comment lets the task re-spawn.
+
+    Intentional rework/unblock is a fresher signal than the PR link, so the
+    guard steps aside — even if the PR is still open (the operator's unblock
+    is explicit intent, checked before the resolver).
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="rework", assignee="alice")
+        now = int(time.time())
+        _add_pr_comment_at(conn, t, now - 100)
+        conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (t,))
+        assert kb.unblock_task(conn, t) is True
+        reason = kb.check_respawn_guard(
+            conn, t, pr_state_resolver=lambda url: "open"
+        )
+    assert reason is None
+
+
+def test_respawn_guard_active_pr_cleared_by_reopen_review(kanban_home):
+    """(b) A deliberate reopen-review after the PR comment clears the guard."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reopen", assignee="alice")
+        now = int(time.time())
+        _add_pr_comment_at(conn, t, now - 100)
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (t,))
+        assert kb.reopen_review_task(conn, t) is True
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_active_pr_cleared_by_unguard(kanban_home):
+    """(b) The explicit operator override (clear_respawn_guard) clears it."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="unguard", assignee="alice")
+        now = int(time.time())
+        _add_pr_comment_at(conn, t, now - 100)
+        assert (
+            kb.clear_respawn_guard(conn, t, actor="ops", reason="follow-up")
+            is True
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_active_pr_stale_signal_before_pr_still_blocks(kanban_home):
+    """An unblock OLDER than the newest PR does NOT clear the guard.
+
+    Guards the dedup contract: if a worker was unblocked and THEN opened a
+    PR, a subsequent auto-respawn must still be blocked — the PR is the newer
+    signal, so the earlier unblock is irrelevant.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stale-unblock", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'unblocked', ?)",
+            (t, now - 200),
+        )
+        _add_pr_comment_at(conn, t, now - 100)
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "active_pr"
+
+
+def test_respawn_guard_active_pr_closed_pr_not_guarded(kanban_home):
+    """(c) A closed PR has nothing live to duplicate — guard steps aside."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="closed-pr", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"PR opened: {_PR_URL}")
+        reason = kb.check_respawn_guard(
+            conn, t, pr_state_resolver=lambda url: "closed"
+        )
+    assert reason is None
+
+
+def test_respawn_guard_active_pr_merged_pr_not_guarded(kanban_home):
+    """(c) A merged PR likewise no longer blocks re-spawn."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="merged-pr", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"PR opened: {_PR_URL}")
+        reason = kb.check_respawn_guard(
+            conn, t, pr_state_resolver=lambda url: "merged"
+        )
+    assert reason is None
+
+
+def test_respawn_guard_active_pr_unknown_state_keeps_guard(kanban_home):
+    """A resolver that can't determine state (None) must KEEP the guard so the
+    duplicate-PR protection never silently drops on a transient gh failure."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="unknown-pr", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"PR opened: {_PR_URL}")
+        reason = kb.check_respawn_guard(
+            conn, t, pr_state_resolver=lambda url: None
+        )
+    assert reason == "active_pr"
+
+
+def test_respawn_guard_active_pr_matches_newest_pr_url(kanban_home):
+    """When several PR links exist, live-state is checked for the NEWEST one."""
+    seen = []
+
+    def resolver(url):
+        seen.append(url)
+        return "open"
+
+    old_url = "https://github.com/totemx-AI/subsidysmart/pull/10"
+    new_url = "https://github.com/totemx-AI/subsidysmart/pull/20"
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="multi-pr", assignee="alice")
+        now = int(time.time())
+        _add_pr_comment_at(conn, t, now - 100, url=old_url)
+        _add_pr_comment_at(conn, t, now - 50, url=new_url)
+        kb.check_respawn_guard(conn, t, pr_state_resolver=resolver)
+    assert seen == [new_url]
+
+
+def test_respawn_guard_active_pr_uses_builtin_resolver_when_enabled(
+    kanban_home, monkeypatch
+):
+    """When kanban.respawn_guard_check_pr_state is on, the built-in gh resolver
+    is consulted automatically (no explicit resolver needed)."""
+    monkeypatch.setattr(kb, "_resolve_pr_state_check_enabled", lambda: True)
+    called = []
+    monkeypatch.setattr(
+        kb, "_resolve_github_pr_state",
+        lambda url: (called.append(url), "closed")[1],
+    )
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="builtin-on", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"PR opened: {_PR_URL}")
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+    assert called == [_PR_URL]
+
+
+def test_respawn_guard_active_pr_ignores_builtin_resolver_when_disabled(
+    kanban_home, monkeypatch
+):
+    """Opt-in: with the flag off the gh resolver is never shelled out to, and
+    the guard blocks on the mere presence of a live/unknown PR."""
+    monkeypatch.setattr(kb, "_resolve_pr_state_check_enabled", lambda: False)
+    called = []
+    monkeypatch.setattr(
+        kb, "_resolve_github_pr_state",
+        lambda url: (called.append(url), "closed")[1],
+    )
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="builtin-off", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"PR opened: {_PR_URL}")
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "active_pr"
+    assert called == []
+
+
+def test_respawn_guard_pr_state_flag_defaults_false(kanban_home):
+    """Opt-in: with no config written, the live-PR-state check is off."""
+    assert kb._resolve_pr_state_check_enabled() is False
+
+
+def test_respawn_guard_pr_state_flag_reads_from_config(kanban_home):
+    """E2E: the flag is read from the real config.yaml (not a mock)."""
+    import yaml
+    (kanban_home / "config.yaml").write_text(
+        yaml.safe_dump({"kanban": {"respawn_guard_check_pr_state": True}}),
+        encoding="utf-8",
+    )
+    assert kb._resolve_pr_state_check_enabled() is True
+
+
+def test_respawn_guard_active_pr_config_enabled_closed_pr_clears(
+    kanban_home, monkeypatch
+):
+    """E2E: config flag on + real check_respawn_guard (NO injected resolver) +
+    a faked gh reporting the PR closed → the guard steps aside.
+
+    Exercises the real config → enabled-flag → built-in resolver wiring; only
+    the external ``gh`` process is faked.
+    """
+    import yaml
+    (kanban_home / "config.yaml").write_text(
+        yaml.safe_dump({"kanban": {"respawn_guard_check_pr_state": True}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(kb.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(
+        kb.subprocess, "run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode=0, stdout='{"state": "CLOSED", "merged": false}', stderr=""
+        ),
+    )
+    kb._PR_STATE_CACHE.clear()
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="cfg-closed", assignee="alice")
+        kb.add_comment(conn, t, "worker", f"PR opened: {_PR_URL}")
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_clear_respawn_guard_records_event(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="clear-me", assignee="alice")
+        assert (
+            kb.clear_respawn_guard(conn, t, actor="ops", reason="need rework")
+            is True
+        )
+        events = kb.list_events(conn, t)
+    evt = next(e for e in events if e.kind == "respawn_guard_cleared")
+    assert evt.payload.get("actor") == "ops"
+    assert evt.payload.get("reason") == "need rework"
+
+
+def test_clear_respawn_guard_unknown_task_returns_false(kanban_home):
+    with kb.connect() as conn:
+        assert kb.clear_respawn_guard(conn, "does-not-exist") is False
+
+
+def test_resolve_github_pr_state_merged(kanban_home, monkeypatch):
+    kb._PR_STATE_CACHE.clear()
+    monkeypatch.setattr(kb.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(
+        kb.subprocess, "run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode=0, stdout='{"state": "MERGED", "merged": true}', stderr=""
+        ),
+    )
+    assert kb._resolve_github_pr_state(_PR_URL) == "merged"
+
+
+def test_resolve_github_pr_state_closed(kanban_home, monkeypatch):
+    kb._PR_STATE_CACHE.clear()
+    monkeypatch.setattr(kb.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(
+        kb.subprocess, "run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode=0, stdout='{"state": "CLOSED", "merged": false}', stderr=""
+        ),
+    )
+    assert kb._resolve_github_pr_state(_PR_URL) == "closed"
+
+
+def test_resolve_github_pr_state_open(kanban_home, monkeypatch):
+    kb._PR_STATE_CACHE.clear()
+    monkeypatch.setattr(kb.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(
+        kb.subprocess, "run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode=0, stdout='{"state": "OPEN", "merged": false}', stderr=""
+        ),
+    )
+    assert kb._resolve_github_pr_state(_PR_URL) == "open"
+
+
+def test_resolve_github_pr_state_no_gh_is_none(kanban_home, monkeypatch):
+    kb._PR_STATE_CACHE.clear()
+    monkeypatch.setattr(kb.shutil, "which", lambda name: None)
+    assert kb._resolve_github_pr_state(_PR_URL) is None
+
+
+def test_resolve_github_pr_state_error_is_none(kanban_home, monkeypatch):
+    kb._PR_STATE_CACHE.clear()
+    monkeypatch.setattr(kb.shutil, "which", lambda name: "/usr/bin/gh")
+
+    def boom(*a, **k):
+        raise OSError("gh exploded")
+
+    monkeypatch.setattr(kb.subprocess, "run", boom)
+    assert kb._resolve_github_pr_state(_PR_URL) is None
+
+
+def test_resolve_github_pr_state_nonzero_exit_is_none(kanban_home, monkeypatch):
+    kb._PR_STATE_CACHE.clear()
+    monkeypatch.setattr(kb.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(
+        kb.subprocess, "run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode=1, stdout="", stderr="not found"
+        ),
+    )
+    assert kb._resolve_github_pr_state(_PR_URL) is None
+
+
+def test_resolve_github_pr_state_caches(kanban_home, monkeypatch):
+    kb._PR_STATE_CACHE.clear()
+    monkeypatch.setattr(kb.shutil, "which", lambda name: "/usr/bin/gh")
+    calls = []
+
+    def fake_run(*a, **k):
+        calls.append(1)
+        return types.SimpleNamespace(
+            returncode=0, stdout='{"state": "CLOSED", "merged": false}', stderr=""
+        )
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+    assert kb._resolve_github_pr_state(_PR_URL) == "closed"
+    assert kb._resolve_github_pr_state(_PR_URL) == "closed"
+    assert len(calls) == 1  # second call served from cache
+
+
+def test_dispatch_respawn_guard_active_pr_spawns_after_unguard(
+    kanban_home, all_assignees_spawnable
+):
+    """After an explicit unguard, dispatch_once spawns the task despite the
+    lingering PR link in its recent comments."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="pr-then-unguard", assignee="alice")
+        now = int(time.time())
+        _add_pr_comment_at(conn, t, now - 100)
+        assert kb.check_respawn_guard(conn, t) == "active_pr"  # guarded before
+        assert kb.clear_respawn_guard(conn, t, actor="ops") is True
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert t in spawned_ids
+    assert (t, "active_pr") not in res.respawn_guarded
+
+
+# ---------------------------------------------------------------------------
 # Workspace resolution
 # ---------------------------------------------------------------------------
 

@@ -711,7 +711,20 @@ hermes kanban create "nightly backup audit" \
 
 ### Respawn guard
 
-The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 error on the previous run (`blocker_auth`), or completed a run successfully within the guard window (`recent_success`), or a recent task comment links to a GitHub PR (`active_pr`). This prevents repeat worker storms on the same bug or task while a human catches up. See the `respawn_guarded` row in the [event reference](#event-reference).
+The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 error on the previous run (`blocker_auth`), or completed a run successfully within the guard window (`recent_success`), or a recent task comment links to a still-open GitHub PR (`active_pr`). This prevents repeat worker storms on the same bug or task while a human catches up. See the `respawn_guarded` row in the [event reference](#event-reference).
+
+The `active_pr` guard only stops an **unintended** duplicate — it never blocks work you asked for on purpose. It steps aside automatically when:
+
+- a **deliberate continuation** is newer than the PR link — an `unblock`, a `reopen-review`, or an explicit `hermes kanban unguard` (below). Intentional follow-up / rework is exactly what the guard should allow; and
+- the PR is **no longer open** — a closed or merged PR has nothing left to duplicate. Live PR state is checked via the `gh` CLI when you enable `kanban.respawn_guard_check_pr_state: true` in `config.yaml` (off by default, since it needs an authenticated `gh`; an undeterminable state safely keeps the guard).
+
+To clear the guard by hand for a deliberate follow-up — without editing the database or deleting comments — use:
+
+```bash
+hermes kanban unguard t_abcd --reason "intentional rework after review"
+```
+
+`unguard` records a `respawn_guard_cleared` event that the next dispatcher tick treats as a fresh "continue this task" signal, so the worker re-spawns on the next tick. It doesn't change the task's status; if the task is `blocked` or in `review`, use `unblock` / `reopen-review` instead (those already clear the guard as part of the transition). `/kanban unguard t_abcd` works from the gateway too.
 
 ### Drag-to-delete and bulk delete (dashboard)
 
@@ -938,6 +951,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `edited` | `{fields}` | Title or body updated. |
 | `reprioritized` | `{priority}` | Priority changed. |
 | `status` | `{status}` | Dashboard drag-drop wrote a status directly (e.g. `todo → ready`). Carries the `run_id` of the run that was reclaimed when dragging off `running`; otherwise `run_id` is NULL. |
+| `respawn_guard_cleared` | `{actor?, reason?}` | An operator ran `hermes kanban unguard` to clear the `active_pr` respawn guard for a deliberate follow-up. Treated as a fresh continuation signal on the next tick; does not change status. |
 
 **Worker telemetry** (about the execution process, not the logical task):
 
@@ -949,7 +963,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `crashed` | `{pid, claimer}` | Worker PID no longer alive but TTL hadn't expired yet. |
 | `timed_out` | `{pid, elapsed_seconds, limit_seconds, sigkill}` | `max_runtime_seconds` exceeded; dispatcher SIGTERM'd (then SIGKILL'd after 5 s grace) and re-queued. |
 | `stale` | `{elapsed_seconds, last_heartbeat_at, heartbeat_age_seconds, timeout_seconds, pid, terminated}` | Task ran longer than `kanban.dispatch_stale_timeout_seconds` (default 4 h) AND no `kanban_heartbeat` arrived in the last hour. Dispatcher SIGTERM'd the host-local worker (if any), reset the task to `ready` for re-dispatch. Does NOT tick the failure counter (stale is dispatcher-side absence detection, not a worker fault). Workers running long operations should call `kanban_heartbeat` at least once an hour to avoid this. |
-| `respawn_guarded` | `{reason}` | Dispatcher refused to re-spawn this ready task this tick. Reasons: `blocker_auth` (last failure was a quota/auth/429 error — wait for the rate window to reset), `recent_success` (a completed run happened in the last hour — wait for review before re-running), `active_pr` (a GitHub PR URL appears in a recent comment — a prior worker already opened a PR). The task stays in `ready`; the next tick gets another chance to spawn. If the underlying condition persists, the normal `consecutive_failures` circuit breaker will auto-block via `gave_up` after `failure_limit` failures. |
+| `respawn_guarded` | `{reason}` | Dispatcher refused to re-spawn this ready task this tick. Reasons: `blocker_auth` (last failure was a quota/auth/429 error — wait for the rate window to reset), `recent_success` (a completed run happened in the last hour — wait for review before re-running), `active_pr` (a prior worker's still-open GitHub PR is referenced in a recent comment, with no newer deliberate follow-up / `unblock` / `reopen-review` / `unguard` signal — see [Respawn guard](#respawn-guard) for how it yields to intentional rework and closed/merged PRs). The task stays in `ready`; the next tick gets another chance to spawn. If the underlying condition persists, the normal `consecutive_failures` circuit breaker will auto-block via `gave_up` after `failure_limit` failures. |
 | `spawn_failed` | `{error, failures}` | One spawn attempt failed (missing PATH, workspace unmountable, …). Counter increments; task returns to `ready` for retry. |
 | `protocol_violation` | `{pid, claimer, exit_code}` | Worker exited successfully while the task was still `running`, usually because it answered without calling `kanban_complete` or `kanban_block`. The dispatcher also emits `gave_up` and auto-blocks immediately instead of retrying. |
 | `gave_up` | `{failures, effective_limit, limit_source, error}` | Circuit breaker fired after N consecutive non-successful attempts. Task auto-blocks with the last error. The effective limit resolves as task `max_retries`, then dispatcher `failure_limit` / `kanban.failure_limit`, then the built-in default. |

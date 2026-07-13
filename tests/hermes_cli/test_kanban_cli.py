@@ -176,6 +176,30 @@ def test_run_slash_request_review_reopen_cycle(kanban_home):
     assert re.search(r"status:\s+ready", show), show
 
 
+def test_run_slash_unguard_clears_active_pr_guard(kanban_home):
+    """`hermes kanban unguard` is the supported operator path to clear the
+    active_pr respawn guard for a deliberate follow-up — no SQLite surgery."""
+    import re
+    out = kc.run_slash("create 'x' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    # A worker left a PR link in a recent comment → active_pr guard trips.
+    kc.run_slash(f"comment {tid} 'PR opened: https://github.com/o/r/pull/7'")
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+    # Operator clears it via the CLI.
+    out = kc.run_slash(f"unguard {tid} --reason 'intentional follow-up'")
+    assert "Cleared active_pr respawn guard" in out
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, tid) is None
+        events = kb.list_events(conn, tid)
+    assert any(e.kind == "respawn_guard_cleared" for e in events)
+
+
+def test_run_slash_unguard_unknown_task_reports_error(kanban_home):
+    out = kc.run_slash("unguard t_deadbeef")
+    assert "cannot unguard" in out
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

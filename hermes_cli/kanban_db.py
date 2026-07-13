@@ -86,7 +86,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -5033,6 +5033,48 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
+def clear_respawn_guard(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> bool:
+    """Explicitly clear the ``active_pr`` respawn guard for ``task_id``.
+
+    Records a ``respawn_guard_cleared`` event (newer than any existing PR-URL
+    comment) so the next dispatcher tick treats a re-spawn as deliberate,
+    operator-requested follow-up / rework rather than the unintended
+    duplicate-PR auto-respawn the guard defends against. This is the
+    supported operator override — no manual SQLite edits or comment surgery.
+
+    Deliberately does NOT change status, counters, or claims: it only
+    annotates intent. Pair it with a status transition
+    (``unblock`` / ``reopen-review`` / ``promote``) when the task is not
+    already ``ready``. (``unblock`` and ``reopen-review`` already emit their
+    own fresh continuation signal, so this is mainly for a task that is
+    *already* ``ready`` — e.g. reclaimed after a crash — yet still parked by
+    the PR guard.)
+
+    Returns True when the task exists (an event was appended), False when the
+    task id is unknown.
+    """
+    with write_txn(conn):
+        if not conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone():
+            return False
+        payload: dict = {}
+        if actor and actor.strip():
+            payload["actor"] = actor.strip()
+        if reason and reason.strip():
+            payload["reason"] = reason.strip()
+        _append_event(
+            conn, task_id, "respawn_guard_cleared", payload or None,
+        )
+    return True
+
+
 def specify_triage_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5828,6 +5870,32 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Deliberate "continue working on this task" signals. When any of these
+# events is recorded at or after the newest GitHub PR-URL comment, the
+# active_pr guard steps aside: an operator (or a review/unblock state
+# transition) has *knowingly* asked for more work, so the re-spawn is
+# intentional follow-up / rework — not the unintended auto-respawn duplicate
+# the guard defends against. ``unblocked`` / ``review_reopened`` are emitted
+# by :func:`unblock_task` / :func:`reopen_review_task`; ``respawn_guard_cleared``
+# is the explicit operator override (:func:`clear_respawn_guard`, wired to
+# ``hermes kanban unguard``).
+_RESPAWN_GUARD_CLEAR_EVENT_KINDS = (
+    "unblocked",
+    "review_reopened",
+    "respawn_guard_cleared",
+)
+
+# PR states in which a re-spawn can no longer collide with a live PR: a
+# closed or merged PR is already resolved, so a follow-up / rework run has
+# nothing to duplicate. ``open`` (and the unknown ``None``) keep the guard.
+_PR_INACTIVE_STATES = frozenset({"closed", "merged"})
+
+# Best-effort, process-local cache of resolved PR states so the dispatcher
+# does not shell out to ``gh`` for the same URL on every tick. Maps
+# ``url -> (state, fetched_at)``; bounded by natural PR-URL cardinality.
+_PR_STATE_CACHE: "dict[str, tuple[Optional[str], float]]" = {}
+_PR_STATE_CACHE_TTL = 300  # 5 minutes
+
 
 @dataclass
 class DispatchResult:
@@ -5875,7 +5943,8 @@ class DispatchResult:
 
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
-    ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    ``"active_pr"`` (a live GitHub PR from a recent comment, with no newer
+    deliberate follow-up / unblock / reopen / unguard signal)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
@@ -6898,7 +6967,98 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
-def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+def _resolve_pr_state_check_enabled() -> bool:
+    """Return True when the active_pr guard may consult *live* GitHub PR state.
+
+    Reads ``kanban.respawn_guard_check_pr_state`` from config.yaml. Defaults
+    to False: resolving state shells out to the ``gh`` CLI (network + auth),
+    which is not present in every deployment, so it stays opt-in and the
+    dispatcher's hot path pays nothing unless an operator turns it on.
+
+    This flag gates only the *built-in* ``gh``-backed resolver. An explicit
+    resolver injected via ``check_respawn_guard(..., pr_state_resolver=...)``
+    is always honored (tests and plugins depend on that), so wiring is
+    testable without touching config or the network.
+    """
+    try:
+        # Read-only fast path: this runs in the dispatcher hot loop (once per
+        # PR-guarded task per tick), so skip load_config()'s defensive
+        # deepcopy. We only .get() the flag — never mutate the result.
+        from hermes_cli.config import load_config_readonly
+        return bool(
+            (load_config_readonly() or {}).get("kanban", {}).get(
+                "respawn_guard_check_pr_state", False
+            )
+        )
+    except Exception:
+        return False
+
+
+def _resolve_github_pr_state(url: str) -> Optional[str]:
+    """Best-effort resolve a GitHub PR URL to ``open`` / ``closed`` / ``merged``.
+
+    Returns ``None`` when the state can't be determined — no ``gh`` CLI on
+    PATH, no auth/network, a non-zero exit, or an unparseable response.
+    ``None`` is the deliberately *safe* answer: the caller keeps guarding on
+    unknown, so a transient failure never silently drops the duplicate-PR
+    protection. Results are cached per-URL for ``_PR_STATE_CACHE_TTL`` seconds
+    so a stuck task doesn't re-shell every dispatcher tick.
+    """
+    now = time.time()
+    cached = _PR_STATE_CACHE.get(url)
+    if cached is not None and (now - cached[1]) < _PR_STATE_CACHE_TTL:
+        return cached[0]
+    state: Optional[str] = None
+    if shutil.which("gh"):
+        try:
+            proc = subprocess.run(
+                ["gh", "pr", "view", url, "--json", "state,merged"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                data = json.loads(proc.stdout)
+                if data.get("merged") is True:
+                    state = "merged"
+                else:
+                    raw = str(data.get("state") or "").strip().lower()
+                    if raw in ("open", "closed", "merged"):
+                        state = raw
+        except (OSError, ValueError, subprocess.SubprocessError):
+            state = None
+    _PR_STATE_CACHE[url] = (state, now)
+    return state
+
+
+def _has_fresh_continuation_signal(
+    conn: sqlite3.Connection, task_id: str, since_ts: int
+) -> bool:
+    """True when a deliberate "continue this task" event exists at/after ``since_ts``.
+
+    ``since_ts`` is the newest PR-URL comment's timestamp. See
+    ``_RESPAWN_GUARD_CLEAR_EVENT_KINDS``. Uses ``>=`` so a same-second
+    operator action (common in fast CLI flows and tests) counts as fresher:
+    a genuine *earlier* unblock/reopen cannot share a wall-clock second with a
+    PR that a subsequently-spawned worker then opened, so ``>=`` never masks a
+    still-live-PR duplicate in practice.
+    """
+    placeholders = ",".join("?" for _ in _RESPAWN_GUARD_CLEAR_EVENT_KINDS)
+    row = conn.execute(
+        f"SELECT 1 FROM task_events "
+        f"WHERE task_id = ? AND created_at >= ? AND kind IN ({placeholders}) "
+        f"LIMIT 1",
+        (task_id, since_ts, *_RESPAWN_GUARD_CLEAR_EVENT_KINDS),
+    ).fetchone()
+    return row is not None
+
+
+def check_respawn_guard(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    pr_state_resolver: "Optional[Callable[[str], Optional[str]]]" = None,
+) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready task in ``dispatch_once`` before any claim attempt.
@@ -6936,8 +7096,31 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) and a prior worker already
+        opened a PR, so an *unintended* auto-respawn risks a duplicate PR.
+        This is the one guard reason that yields to deliberate intent — it
+        does NOT fire when:
+
+          * a fresh continuation signal (``unblock`` / ``reopen-review`` /
+            an explicit ``hermes kanban unguard``) was recorded at or after
+            the newest PR-URL comment — the operator knowingly asked for
+            more work (follow-up / rework); or
+          * the newest PR is actually ``closed`` / ``merged`` — there is no
+            live PR left to duplicate. Live PR-state is consulted only when
+            ``pr_state_resolver`` is supplied, or the built-in ``gh``-backed
+            resolver is enabled via ``kanban.respawn_guard_check_pr_state``.
+            An unknown state (``None``) keeps the guard, so the duplicate-PR
+            protection never silently drops.
+
+        With none of those, a live/unknown PR and no newer deliberate signal
+        is exactly the auto-respawn duplicate this guard exists to stop.
+
+    ``pr_state_resolver`` (keyword-only, optional): a callable mapping a PR
+    URL to ``"open"`` / ``"closed"`` / ``"merged"`` / ``None``. When omitted,
+    the built-in resolver is used iff the config flag above is on. Injected
+    directly by tests and plugins so live PR-state wiring is exercisable
+    without network access. Back-compat: existing ``(conn, task_id)`` callers
+    are unaffected.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -7003,14 +7186,50 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     ).fetchone():
         return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. GitHub PR URL in a recent comment — a prior worker already opened a
+    #    PR, and an *unintended* auto-respawn would risk a duplicate PR. This
+    #    is the one guard reason that must yield to deliberate operator/human
+    #    intent (follow-up / rework / unblock), so we don't block on the mere
+    #    presence of a PR link:
+    #      a) find the NEWEST PR-URL comment in the window (older links are
+    #         irrelevant — only the most recent PR could be duplicated);
+    #      b) if a deliberate continuation signal landed at/after it, the
+    #         re-spawn is intentional rework — allow it;
+    #      c) if that PR is actually closed/merged, there is nothing live to
+    #         duplicate — allow it (only checked when a resolver is available;
+    #         unknown state keeps the guard).
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    newest_pr_ts: Optional[int] = None
+    newest_pr_url: Optional[str] = None
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at ASC, id ASC",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        body = c["body"]
+        if not body:
+            continue
+        m = _RESPAWN_GUARD_PR_URL_RE.search(body)
+        if m:
+            newest_pr_ts = c["created_at"]
+            newest_pr_url = m.group(0)
+    if newest_pr_ts is not None:
+        # (b) deliberate continuation after the newest PR → intentional rework.
+        if _has_fresh_continuation_signal(conn, task_id, newest_pr_ts):
+            return None
+        # (c) PR actually resolved (closed/merged) → nothing live to duplicate.
+        resolver = pr_state_resolver
+        if resolver is None and _resolve_pr_state_check_enabled():
+            resolver = _resolve_github_pr_state
+        if resolver is not None and newest_pr_url:
+            try:
+                pr_state = resolver(newest_pr_url)
+            except Exception:
+                pr_state = None
+            if pr_state in _PR_INACTIVE_STATES:
+                return None
+        return "active_pr"
 
     return None
 

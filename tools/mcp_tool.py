@@ -92,6 +92,7 @@ Thread safety:
 import asyncio
 import contextvars
 import concurrent.futures
+import hashlib
 import inspect
 import json
 import logging
@@ -3856,6 +3857,81 @@ def _mark_server_call_started(server: Any) -> None:
         mark_tool_call()
 
 
+def _decode_mcp_json_result(result: Any) -> Optional[dict]:
+    """Decode a JSON object from a structured result or one text block."""
+    structured = getattr(result, "structuredContent", None)
+    if isinstance(structured, dict):
+        return structured
+    texts = [block.text for block in (getattr(result, "content", None) or [])
+             if isinstance(getattr(block, "text", None), str)]
+    if len(texts) != 1:
+        return None
+    try:
+        decoded = json.loads(texts[0])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _approval_result_is_pending(result: Any) -> bool:
+    """Return whether an approval await result is the server's poll timeout."""
+    if not getattr(result, "isError", False):
+        return False
+    text = "\n".join(
+        block.text for block in (getattr(result, "content", None) or [])
+        if isinstance(getattr(block, "text", None), str)
+    )
+    return "Approval request is still pending:" in text
+
+
+def _approval_resume_path() -> Any:
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "state" / "mcp-approval-resume.json"
+
+
+def _approval_call_key(server_name: str, tool_name: str, args: dict) -> str:
+    canonical = json.dumps(args, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(f"{server_name}\0{tool_name}\0{canonical}".encode()).hexdigest()
+
+
+def _load_approval_resumes() -> dict:
+    try:
+        data = json.loads(_approval_resume_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_approval_resumes(data: dict) -> None:
+    path = _approval_resume_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def _remember_approval_resume(key: str, await_tool: dict, expires_at: Any) -> None:
+    with _lock:
+        data = _load_approval_resumes()
+        data[key] = {"await_tool": await_tool, "expires_at": expires_at}
+        _write_approval_resumes(data)
+
+
+def _forget_approval_resume(key: str) -> None:
+    with _lock:
+        data = _load_approval_resumes()
+        if data.pop(key, None) is not None:
+            _write_approval_resumes(data)
+
+
+def _saved_approval_resume(key: str) -> Optional[dict]:
+    with _lock:
+        item = _load_approval_resumes().get(key)
+    return item if isinstance(item, dict) else None
+
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -3939,8 +4015,40 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # task, which doesn't inherit our contextvars) can replay
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
+                call_key = _approval_call_key(server_name, tool_name, args)
+                saved = _saved_approval_resume(call_key)
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    if saved:
+                        await_spec = saved.get("await_tool") or {}
+                        result = await server.session.call_tool(
+                            await_spec.get("name", "approval_await"),
+                            arguments=await_spec.get("arguments") or {},
+                        )
+                    else:
+                        result = await server.session.call_tool(tool_name, arguments=args)
+
+                    envelope = _decode_mcp_json_result(result)
+                    if envelope and envelope.get("status") == "approval_required":
+                        await_spec = envelope.get("await_tool")
+                        if not isinstance(await_spec, dict) or not isinstance(await_spec.get("arguments"), dict):
+                            return result
+                        await_name = await_spec.get("name")
+                        if not isinstance(await_name, str) or not await_name:
+                            return result
+                        _remember_approval_resume(
+                            call_key, await_spec, envelope.get("expires_at")
+                        )
+                        result = await server.session.call_tool(
+                            await_name, arguments=await_spec["arguments"]
+                        )
+
+                    if saved or (envelope and envelope.get("status") == "approval_required"):
+                        # approval_await is a bounded poll. OneMCP reports an
+                        # undecided approval as an MCP error after that poll;
+                        # keep the opaque handle so an identical retry resumes
+                        # instead of creating a duplicate gated operation.
+                        if not _approval_result_is_pending(result):
+                            _forget_approval_resume(call_key)
                 finally:
                     server._pending_call_context = None
             # MCP CallToolResult has .content (list of content blocks) and .isError

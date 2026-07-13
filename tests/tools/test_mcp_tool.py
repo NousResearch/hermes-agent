@@ -738,6 +738,103 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_approval_required_is_awaited_inside_original_call(self, tmp_path, monkeypatch):
+        from tools.mcp_tool import _make_tool_handler, _servers
+        import tools.mcp_tool as mcp_tool
+
+        pending = _make_call_result(json.dumps({
+            "status": "approval_required",
+            "await_tool": {"name": "approval_await", "arguments": {
+                "approval_id": "a1", "resume_token": "secret", "args_hash": "h"
+            }},
+        }))
+        approved = _make_call_result(json.dumps({
+            "status": "approved", "provider_result": {"id": "sent-1"}
+        }))
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(side_effect=[pending, approved])
+        server = _make_mock_server("approval_srv", session=mock_session)
+        _servers["approval_srv"] = server
+        monkeypatch.setattr(mcp_tool, "_approval_resume_path", lambda: tmp_path / "resume.json")
+        try:
+            handler = _make_tool_handler("approval_srv", "send", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"body": "hello"}))
+            assert json.loads(result["result"])["provider_result"]["id"] == "sent-1"
+            assert [call.args[0] for call in mock_session.call_tool.await_args_list] == [
+                "send", "approval_await"
+            ]
+            assert json.loads((tmp_path / "resume.json").read_text()) == {}
+        finally:
+            _servers.pop("approval_srv", None)
+
+    def test_saved_approval_resumes_without_reissuing_original(self, tmp_path, monkeypatch):
+        from tools.mcp_tool import _approval_call_key, _make_tool_handler, _servers
+        import tools.mcp_tool as mcp_tool
+
+        args = {"body": "hello"}
+        key = _approval_call_key("resume_srv", "send", args)
+        resume_path = tmp_path / "resume.json"
+        resume_path.write_text(json.dumps({key: {"await_tool": {
+            "name": "approval_await", "arguments": {"approval_id": "a1", "args_hash": "h"}
+        }}}))
+        monkeypatch.setattr(mcp_tool, "_approval_resume_path", lambda: resume_path)
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(return_value=_make_call_result(json.dumps({"status": "denied"})))
+        server = _make_mock_server("resume_srv", session=mock_session)
+        _servers["resume_srv"] = server
+        try:
+            handler = _make_tool_handler("resume_srv", "send", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler(args))
+            assert json.loads(result["result"])["status"] == "denied"
+            mock_session.call_tool.assert_awaited_once_with(
+                "approval_await", arguments={"approval_id": "a1", "args_hash": "h"}
+            )
+            assert json.loads(resume_path.read_text()) == {}
+        finally:
+            _servers.pop("resume_srv", None)
+
+    def test_pending_approval_keeps_resume_handle_for_identical_retry(self, tmp_path, monkeypatch):
+        from tools.mcp_tool import _approval_call_key, _make_tool_handler, _servers
+        import tools.mcp_tool as mcp_tool
+
+        args = {"body": "hello"}
+        pending = _make_call_result(json.dumps({
+            "status": "approval_required",
+            "await_tool": {"name": "approval_await", "arguments": {
+                "approval_id": "a1", "resume_token": "secret", "args_hash": "h"
+            }},
+        }))
+        poll_timeout = _make_call_result(
+            "Approval request is still pending: a1", is_error=True
+        )
+        approved = _make_call_result(json.dumps({
+            "status": "approved", "provider_result": {"id": "sent-1"}
+        }))
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(side_effect=[pending, poll_timeout, approved])
+        server = _make_mock_server("pending_srv", session=mock_session)
+        _servers["pending_srv"] = server
+        resume_path = tmp_path / "resume.json"
+        monkeypatch.setattr(mcp_tool, "_approval_resume_path", lambda: resume_path)
+        try:
+            handler = _make_tool_handler("pending_srv", "send", 120)
+            with self._patch_mcp_loop():
+                first = json.loads(handler(args))
+                stored = json.loads(resume_path.read_text())
+                second = json.loads(handler(args))
+
+            assert first["error"] == "Approval request is still pending: a1"
+            assert _approval_call_key("pending_srv", "send", args) in stored
+            assert json.loads(second["result"])["provider_result"]["id"] == "sent-1"
+            assert [call.args[0] for call in mock_session.call_tool.await_args_list] == [
+                "send", "approval_await", "approval_await"
+            ]
+            assert json.loads(resume_path.read_text()) == {}
+        finally:
+            _servers.pop("pending_srv", None)
+
     def test_mcp_error_result(self):
         from tools.mcp_tool import _make_tool_handler, _servers
 

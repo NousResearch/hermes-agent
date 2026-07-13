@@ -3941,6 +3941,41 @@ class TestRunConversation:
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
 
+    def test_truncated_tool_call_exhaustion_returns_mid_turn_steer(self, agent):
+        """A steer received while truncated tool calls retry must survive the
+        terminal return, just like a text-only output truncation."""
+        self._setup_agent(agent)
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        calls = 0
+
+        def _always_truncated(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                agent.steer("use the small report template")
+            return _mock_response(
+                content="", finish_reason="length", tool_calls=[bad_tc],
+            )
+
+        agent.client.chat.completions.create.side_effect = _always_truncated
+
+        with (
+            patch("run_agent.handle_function_call") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        assert agent.client.chat.completions.create.call_count == 5
+        assert result["completed"] is False
+        assert result["pending_steer"] == "use the small report template"
+        mock_handle_function_call.assert_not_called()
+
     def test_truncated_tool_call_retries_once_before_refusing(self, agent):
         """When tool call args are truncated, the agent retries the API call
         (up to 3 times). If a retry succeeds (valid JSON args), tool execution
@@ -4481,6 +4516,36 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "Invalid API response" in result["error"]
         assert result.get("final_response") == result["error"]
+
+    def test_invalid_response_retry_exhaustion_returns_mid_turn_steer(self, agent):
+        """Generic provider retry exhaustion has the same leftover-steer contract."""
+        self._setup_agent(agent)
+        bad_resp = SimpleNamespace(choices=[], model="test/model", usage=None)
+        calls = 0
+
+        def _always_invalid(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                agent.steer("switch to the concise fallback plan")
+            return bad_resp
+
+        agent.client.chat.completions.create.side_effect = _always_invalid
+        from agent import conversation_loop as _conv_loop
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert calls == agent._api_max_retries
+        assert result["completed"] is False
+        assert result["pending_steer"] == "switch to the concise fallback plan"
 
     def test_invalid_response_retry_completes_one_logical_call(self, agent):
         self._setup_agent(agent)

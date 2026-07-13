@@ -205,7 +205,7 @@ $GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
 $GAPI calendar list
 $GAPI calendar list --start 2026-03-01T00:00:00Z --end 2026-03-07T23:59:59Z
 
-# Create event (naive ISO 8601 datetimes use HERMES_GOOGLE_TIMEZONE, or UTC by default)
+# Create event (naive ISO 8601 datetimes use Hermes' configured timezone)
 $GAPI calendar create --summary "Team Standup" --start 2026-03-01T10:00:00-06:00 --end 2026-03-01T10:30:00-06:00
 $GAPI calendar create --summary "Lunch" --start 2026-03-01T12:00:00Z --end 2026-03-01T13:00:00Z --location "Cafe"
 $GAPI calendar create --summary "Review" --start 2026-03-01T14:00:00Z --end 2026-03-01T15:00:00Z --attendees "alice@co.com,bob@co.com"
@@ -323,10 +323,10 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 
 ## Rules
 
-1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
+1. **Never send email, create/delete calendar events, create tasks, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, task title/due date, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
 2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
 3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
-4. **Calendar times should include timezone when possible** — use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`). Naive ISO datetimes are interpreted with `HERMES_GOOGLE_TIMEZONE`, falling back to `UTC`.
+4. **Calendar times should include timezone when possible** — use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`). Naive ISO datetimes are interpreted with Hermes' configured timezone, falling back to the server-local timezone.
 5. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
 
 ## Troubleshooting

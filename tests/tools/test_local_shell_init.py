@@ -1,4 +1,4 @@
-"""Tests for terminal.shell_init_files / terminal.auto_source_bashrc.
+"""Tests for configurable local shells and shell init snapshots.
 
 A bash ``-l -c`` invocation does NOT source ``~/.bashrc``, so tools that
 register themselves there (nvm, asdf, pyenv) stay invisible to the
@@ -7,6 +7,8 @@ tests verify the config-driven prelude that fixes that.
 """
 
 import os
+import shutil
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
@@ -14,8 +16,60 @@ import pytest
 from tools.environments.local import (
     LocalEnvironment,
     _prepend_shell_init,
+    _read_terminal_shell_config,
     _resolve_shell_init_files,
+    _resolve_terminal_shell,
 )
+
+
+class TestTerminalShellConfig:
+    def test_reads_configured_shell(self):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"terminal": {"shell": " zsh "}},
+        ):
+            assert _read_terminal_shell_config() == "zsh"
+
+    def test_resolves_named_zsh(self):
+        with patch(
+            "tools.environments.local._read_terminal_shell_config",
+            return_value="zsh",
+        ), patch(
+            "tools.environments.local.shutil.which",
+            side_effect=lambda name: "/usr/bin/zsh" if name == "zsh" else None,
+        ):
+            assert _resolve_terminal_shell() == ("/usr/bin/zsh", "zsh")
+
+    def test_resolves_absolute_zsh_path(self, tmp_path):
+        zsh = tmp_path / "zsh"
+        zsh.write_text("#!/bin/sh\n")
+        zsh.chmod(0o755)
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_config",
+            return_value=str(zsh),
+        ):
+            assert _resolve_terminal_shell() == (str(zsh), "zsh")
+
+    def test_resolves_zsh_symlink_to_versioned_binary(self, tmp_path):
+        target = tmp_path / "zsh-5.9"
+        target.write_text("#!/bin/sh\n")
+        target.chmod(0o755)
+        zsh = tmp_path / "zsh"
+        zsh.symlink_to(target)
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_config",
+            return_value=str(zsh),
+        ):
+            assert _resolve_terminal_shell() == (str(zsh), "zsh")
+
+    def test_rejects_unsupported_shell(self):
+        with patch(
+            "tools.environments.local._read_terminal_shell_config",
+            return_value="fish",
+        ):
+            assert _resolve_terminal_shell() is None
 
 
 class TestResolveShellInitFiles:
@@ -95,6 +149,27 @@ class TestResolveShellInitFiles:
             resolved = _resolve_shell_init_files()
 
         assert resolved == []
+
+    def test_auto_bashrc_does_not_apply_to_zsh(self, tmp_path, monkeypatch):
+        bashrc = tmp_path / ".bashrc"
+        bashrc.write_text('export MARKER=seen\n')
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ):
+            assert _resolve_shell_init_files("zsh") == []
+
+    def test_explicit_init_files_apply_to_zsh(self, tmp_path):
+        custom = tmp_path / "custom.zsh"
+        custom.write_text('export MARKER=seen\n')
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([str(custom)], True),
+        ):
+            assert _resolve_shell_init_files("zsh") == [str(custom)]
 
     def test_auto_source_bashrc_off_suppresses_default(self, tmp_path, monkeypatch):
         bashrc = tmp_path / ".bashrc"
@@ -310,3 +385,77 @@ class TestSnapshotEndToEnd:
         assert str(fake_n_bin) in output
         # bashrc short-circuited on the interactive guard — its export never ran
         assert "FROM_BASHRC=bashrc-should-not-appear" not in output
+
+    @pytest.mark.skipif(shutil.which("zsh") is None, reason="Requires zsh")
+    def test_configured_zsh_snapshot_preserves_state_across_commands(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        init_file = tmp_path / "custom-init.zsh"
+        init_file.write_text(
+            'export HERMES_ZSH_ENV="env-ok"\n'
+            'hermes_zsh_fn() { echo "function-ok"; }\n'
+            "alias hermes_zsh_alias='echo alias-ok'\n"
+            "setopt rcquotes\n"
+        )
+
+        command = (
+            'echo "shell=${ZSH_VERSION:+zsh}"; '
+            'echo "env=$HERMES_ZSH_ENV"; '
+            "hermes_zsh_fn; "
+            "eval hermes_zsh_alias; "
+            '[[ -o rcquotes ]] && echo "option-ok"'
+        )
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_config",
+            return_value="zsh",
+        ), patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([str(init_file)], False),
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+            try:
+                first = env.execute(command)
+                second = env.execute(command)
+            finally:
+                env.cleanup()
+
+        for result in (first, second):
+            assert result["returncode"] == 0, result.get("output", "")
+            output = result.get("output", "")
+            assert "shell=zsh" in output
+            assert "env=env-ok" in output
+            assert "function-ok" in output
+            assert "alias-ok" in output
+            assert "option-ok" in output
+
+    @pytest.mark.skipif(shutil.which("zsh") is None, reason="Requires zsh")
+    def test_concurrent_zsh_snapshot_writers_leave_sourceable_snapshot(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_config",
+            return_value="zsh",
+        ), patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], False),
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+            try:
+                def write_snapshot(index):
+                    return env.execute(
+                        f'export HERMES_ZSH_RACE_{index}={index}; echo "writer={index}"'
+                    )
+
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    results = list(pool.map(write_snapshot, range(8)))
+                probe = env.execute('echo "snapshot-parse-ok"')
+            finally:
+                env.cleanup()
+
+        assert all(result["returncode"] == 0 for result in results), results
+        assert probe["returncode"] == 0, probe.get("output", "")
+        assert "snapshot-parse-ok" in probe.get("output", "")

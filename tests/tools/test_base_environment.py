@@ -128,6 +128,21 @@ class TestAtomicSnapshotWrite:
         # The bare $$ temp form must be gone.
         assert ".tmp.$$" not in wrapped
 
+    def test_zsh_temp_path_uses_real_subshell_pid(self):
+        """zsh's ``$$`` is inherited by ``&`` subshells just like bash, while
+        ``$BASHPID`` is unavailable. ``zsh/system`` exposes the real process PID
+        through ``$sysparams[pid]`` and keeps concurrent snapshot writers unique.
+        """
+        env = _TestableEnv()
+        env._shell_kind = "zsh"
+        env._snapshot_ready = True
+
+        wrapped = env._wrap_command("echo hi", "/tmp")
+
+        assert "zmodload zsh/system" in wrapped
+        assert "${sysparams[pid]}" in wrapped
+        assert "$BASHPID" not in wrapped
+
     def test_temp_path_static_part_is_quoted_bashpid_outside(self):
         """The static path portion must be shlex-quoted (Windows/Git-Bash
         ``C:/Users/...`` or spaces) while ``$BASHPID`` stays OUTSIDE the quotes

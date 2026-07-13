@@ -1182,12 +1182,18 @@ DEFAULT_CONFIG = {
         #   profile — force HERMES_HOME/home when it exists (old strict
         #             per-profile CLI config isolation)
         "home_mode": "auto",
+        # Optional local shell override for foreground terminal commands,
+        # background processes, and PTY sessions. Supported values are ``bash``,
+        # ``zsh``, or an absolute path to one of those executables. Empty keeps
+        # the historical behavior (bash foreground; compatible $SHELL for
+        # background/PTY). Unsupported or unavailable values fall back safely.
+        "shell": "",
         # Extra files to source in the login shell when building the
         # per-session environment snapshot.  Use this when tools like nvm,
         # pyenv, asdf, or custom PATH entries are registered by files that
         # a bash login shell would skip — most commonly ``~/.bashrc``
         # (bash doesn't source bashrc in non-interactive login mode) or
-        # zsh-specific files like ``~/.zshrc`` / ``~/.zprofile``.
+        # zsh-specific files such as ``~/.zshrc``.
         # Paths support ``~`` / ``${VAR}``. Missing files are silently
         # skipped. When empty, Hermes auto-sources ``~/.profile``,
         # ``~/.bash_profile``, and ``~/.bashrc`` (in that order) if the

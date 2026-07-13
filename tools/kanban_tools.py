@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -392,11 +393,16 @@ def _handle_show(args: dict, **kw) -> str:
                     "tenant": t.tenant, "priority": t.priority,
                     "workspace_kind": t.workspace_kind,
                     "workspace_path": t.workspace_path,
+                    "branch_name": t.branch_name,
                     "created_by": t.created_by, "created_at": t.created_at,
                     "started_at": t.started_at,
                     "completed_at": t.completed_at,
                     "result": t.result,
+                    "max_runtime_seconds": t.max_runtime_seconds,
+                    "last_heartbeat_at": t.last_heartbeat_at,
                     "current_run_id": t.current_run_id,
+                    "goal_mode": t.goal_mode,
+                    "goal_max_turns": t.goal_max_turns,
                     "model_override": t.model_override,
                 }
 
@@ -406,10 +412,19 @@ def _handle_show(args: dict, **kw) -> str:
                     "status": r.status, "outcome": r.outcome,
                     "summary": r.summary, "error": r.error,
                     "metadata": r.metadata,
+                    "max_runtime_seconds": r.max_runtime_seconds,
+                    "last_heartbeat_at": r.last_heartbeat_at,
                     "started_at": r.started_at, "ended_at": r.ended_at,
                 }
 
+            resolved_board = (
+                os.environ.get("HERMES_KANBAN_BOARD")
+                if os.environ.get("HERMES_KANBAN_DB")
+                else board or kb.get_current_board()
+            )
             return json.dumps({
+                "observed_at": int(time.time()),
+                "board": resolved_board,
                 "task": _task_dict(task),
                 "parents": parents,
                 "children": children,

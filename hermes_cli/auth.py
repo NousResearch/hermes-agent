@@ -1524,6 +1524,12 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     # not by the user explicitly configuring anthropic in Hermes.
     _IMPLICIT_ENV_VARS = {"CLAUDE_CODE_OAUTH_TOKEN"}
     pconfig = PROVIDER_REGISTRY.get(normalized)
+    # Fallback to ProviderDef from models.dev catalog when the provider
+    # isn't in the manually-maintained PROVIDER_REGISTRY (e.g. openrouter).
+    # Both expose .auth_type and .api_key_env_vars with the same shape.
+    if pconfig is None:
+        from hermes_cli.providers import get_provider
+        pconfig = get_provider(normalized)
     if pconfig and pconfig.auth_type == "api_key":
         for env_var in pconfig.api_key_env_vars:
             if env_var in _IMPLICIT_ENV_VARS:

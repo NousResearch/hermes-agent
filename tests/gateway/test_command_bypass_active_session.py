@@ -13,7 +13,6 @@ the safety net in _run_agent discards leaked command text.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -30,7 +29,7 @@ from gateway.session import SessionSource, build_session_key
 class _StubAdapter(BasePlatformAdapter):
     """Concrete adapter with abstract methods stubbed out."""
 
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):
         pass
 
     async def disconnect(self):

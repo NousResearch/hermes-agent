@@ -21,7 +21,6 @@ from tools.file_tools import (
     _is_blocked_device,
     _invalidate_dedup_for_path,
     _READ_DEDUP_STATUS_MESSAGE,
-    _get_max_read_chars,
     _DEFAULT_MAX_READ_CHARS,
     _read_tracker,
     notify_other_tool_call,
@@ -94,7 +93,7 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertFalse(_is_blocked_device_path("/proc/self/fd/3"))
 
     def test_proc_sensitive_pseudo_files_blocked(self):
-        """environ/cmdline/maps under /proc/<pid> must be blocked (issue #4427)."""
+        """environ/cmdline/maps (and maps variants) under /proc/<pid> must be blocked (issue #4427)."""
         for path in (
             "/proc/self/environ",
             "/proc/12345/environ",
@@ -102,6 +101,29 @@ class TestDevicePathBlocking(unittest.TestCase):
             "/proc/99/cmdline",
             "/proc/self/maps",
             "/proc/1/maps",
+            "/proc/self/smaps",
+            "/proc/12345/smaps",
+            "/proc/self/smaps_rollup",
+            "/proc/99/smaps_rollup",
+            "/proc/self/numa_maps",
+            "/proc/1/numa_maps",
+            "/proc/self/mem",
+            "/proc/12345/mem",
+            "/proc/self/auxv",
+            "/proc/1/auxv",
+            "/proc/self/pagemap",
+            "/proc/99/pagemap",
+        ):
+            self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
+
+    def test_proc_task_thread_sensitive_files_blocked(self):
+        """Per-thread /proc/<pid>/task/<tid>/<file> aliases leak the same data."""
+        for path in (
+            "/proc/self/task/1234/maps",
+            "/proc/self/task/1234/smaps",
+            "/proc/self/task/1234/auxv",
+            "/proc/self/task/1234/pagemap",
+            "/proc/self/task/1234/environ",
         ):
             self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
 
@@ -109,6 +131,10 @@ class TestDevicePathBlocking(unittest.TestCase):
         """Top-level /proc files like cpuinfo and meminfo must remain accessible."""
         for path in ("/proc/cpuinfo", "/proc/meminfo", "/proc/uptime", "/proc/version"):
             self.assertFalse(_is_blocked_device(path), f"{path} should not be blocked")
+
+    def test_normpath_alias_to_blocked_device_is_blocked(self):
+        self.assertTrue(_is_blocked_device("/dev/../dev/zero"))
+        self.assertTrue(_is_blocked_device("/dev/./urandom"))
 
     def test_normal_files_not_blocked(self):
         self.assertFalse(_is_blocked_device("/tmp/test.py"))
@@ -135,6 +161,17 @@ class TestDevicePathBlocking(unittest.TestCase):
                 self.skipTest(f"symlink unavailable: {exc}")
             self.assertFalse(_is_blocked_device(link_path))
 
+    def test_symlink_to_blocked_alias_is_blocked_before_realpath(self):
+        if not os.path.exists("/dev/stdin"):
+            self.skipTest("/dev/stdin is not available on this platform")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = os.path.join(tmpdir, "stdin-link")
+            try:
+                os.symlink("/dev/../dev/stdin", link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            self.assertTrue(_is_blocked_device(link_path))
+
     def test_read_file_tool_rejects_device(self):
         """read_file_tool returns an error without any file I/O."""
         result = json.loads(read_file_tool("/dev/zero", task_id="dev_test"))
@@ -156,13 +193,41 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertIn("device file", result["error"])
         mock_ops.assert_not_called()
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_file_tool_rejects_task_cwd_relative_device_alias_symlink(self, mock_ops):
+        if not os.path.exists("/dev/stdin"):
+            self.skipTest("/dev/stdin is not available on this platform")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = os.path.join(tmpdir, "workspace")
+            process_cwd = os.path.join(tmpdir, "process")
+            os.mkdir(workspace)
+            os.mkdir(process_cwd)
+            link_path = os.path.join(workspace, "stdin-link")
+            try:
+                os.symlink("/dev/../dev/stdin", link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(process_cwd)
+                with patch.dict(os.environ, {"TERMINAL_CWD": workspace}, clear=False):
+                    result = json.loads(read_file_tool("stdin-link", task_id="dev_rel_link_test"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertIn("error", result)
+        self.assertIn("device file", result["error"])
+        mock_ops.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Character-count limits
 # ---------------------------------------------------------------------------
 
 class TestCharacterCountGuard(unittest.TestCase):
-    """Large reads should be rejected with guidance to use offset/limit."""
+    """Oversized reads are truncated on a line boundary (nearai/ironclaw#5029),
+    not rejected — the model gets the head of the file plus a next_offset."""
 
     def setUp(self):
         _read_tracker.clear()
@@ -171,28 +236,69 @@ class TestCharacterCountGuard(unittest.TestCase):
         _read_tracker.clear()
 
     @patch("tools.file_tools._get_file_ops")
-    @patch("tools.file_tools._get_max_read_chars", return_value=_DEFAULT_MAX_READ_CHARS)
-    def test_oversized_read_rejected(self, _mock_limit, mock_ops):
-        """A read that returns >max chars is rejected."""
-        big_content = "x" * (_DEFAULT_MAX_READ_CHARS + 1)
+    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
+    def test_oversized_multiline_read_truncated_with_continuation(self, _mock_limit, mock_ops):
+        """A read whose many lines exceed the char budget is trimmed to the
+        last complete line and offers a next_offset, instead of returning an
+        error with no content."""
+        # 50 lines of 100 chars each = ~5050 chars, well over the 1000 budget.
+        big_content = "\n".join(f"{i}|" + "z" * 98 for i in range(1, 51))
         mock_ops.return_value = _make_fake_ops(
             content=big_content,
-            total_lines=5000,
-            file_size=len(big_content) + 100,  # bigger than content
+            total_lines=50,
+            file_size=len(big_content),
         )
         result = json.loads(read_file_tool("/tmp/huge.txt", task_id="big"))
-        self.assertIn("error", result)
-        self.assertIn("safety limit", result["error"])
-        self.assertIn("offset and limit", result["error"])
-        self.assertIn("total_lines", result)
+        # No hard rejection — content is present.
+        self.assertNotIn("error", result)
+        self.assertIn("content", result)
+        self.assertTrue(result["content"])
+        # Truncation metadata for the model to paginate.
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["truncated_by"], "bytes")
+        self.assertIn("next_offset", result)
+        self.assertGreater(result["next_offset"], 1)
+        # Body fits the budget (allowing for redaction not growing it).
+        self.assertLessEqual(len(result["content"]), 1000)
+        self.assertIn("offset", result["hint"])
 
     @patch("tools.file_tools._get_file_ops")
-    def test_small_read_not_rejected(self, mock_ops):
-        """Normal-sized reads pass through fine."""
+    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
+    def test_single_oversized_line_clamped_not_empty(self, _mock_limit, mock_ops):
+        """A single line larger than the whole budget is clamped (never empty)
+        and the cursor still advances by one line."""
+        big_content = "1|" + "q" * 5000  # one line, no newline, > budget
+        mock_ops.return_value = _make_fake_ops(
+            content=big_content, total_lines=1, file_size=len(big_content),
+        )
+        result = json.loads(read_file_tool("/tmp/oneline.txt", task_id="oneline"))
+        self.assertNotIn("error", result)
+        self.assertTrue(result["content"])  # not empty
+        self.assertEqual(result["next_offset"], 2)  # advanced past line 1
+        # The hint must disclose that the line was clamped mid-line and its
+        # remainder is unreachable via offset pagination.
+        self.assertIn("clamped mid-line", result["hint"])
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
+    def test_multiline_truncation_hint_has_no_clamp_note(self, _mock_limit, mock_ops):
+        """Ordinary multi-line truncation must NOT carry the clamp note."""
+        big_content = "\n".join(f"{i}|" + "z" * 98 for i in range(1, 51))
+        mock_ops.return_value = _make_fake_ops(
+            content=big_content, total_lines=50, file_size=len(big_content),
+        )
+        result = json.loads(read_file_tool("/tmp/manylines.txt", task_id="manylines"))
+        self.assertTrue(result["truncated"])
+        self.assertNotIn("clamped mid-line", result["hint"])
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_small_read_not_truncated(self, mock_ops):
+        """Normal-sized reads pass through fine with no truncation flag."""
         mock_ops.return_value = _make_fake_ops(content="short\n", file_size=6)
         result = json.loads(read_file_tool("/tmp/small.txt", task_id="small"))
         self.assertNotIn("error", result)
         self.assertIn("content", result)
+        self.assertNotEqual(result.get("truncated_by"), "bytes")
 
     @patch("tools.file_tools._get_file_ops")
     @patch("tools.file_tools._get_max_read_chars", return_value=_DEFAULT_MAX_READ_CHARS)
@@ -205,6 +311,49 @@ class TestCharacterCountGuard(unittest.TestCase):
         result = json.loads(read_file_tool("/tmp/justunder.txt", task_id="under"))
         self.assertNotIn("error", result)
         self.assertIn("content", result)
+
+
+class TestTruncateToCharBudget(unittest.TestCase):
+    """Unit tests for the line-boundary char-budget trimmer."""
+
+    def _fn(self):
+        from tools.file_tools import _truncate_to_char_budget
+        return _truncate_to_char_budget
+
+    def test_fits_unchanged(self):
+        fn = self._fn()
+        text = "1|a\n2|b\n3|c"
+        out, lines, trunc = fn(text, 1000)
+        self.assertEqual(out, text)
+        self.assertEqual(lines, 3)
+        self.assertFalse(trunc)
+
+    def test_trims_on_line_boundary(self):
+        fn = self._fn()
+        # 3 lines of 10 chars; budget fits ~2 lines.
+        text = "\n".join("x" * 10 for _ in range(5))  # 5 lines, 54 chars
+        out, lines, trunc = fn(text, 25)
+        self.assertTrue(trunc)
+        # Output ends on a complete line (no partial line at the tail).
+        self.assertFalse(out.endswith("x" * 3) and len(out.split("\n")[-1]) != 10)
+        self.assertEqual(lines, out.count("\n") + 1)
+        self.assertLessEqual(len(out), 25)
+
+    def test_single_line_over_budget_clamped(self):
+        fn = self._fn()
+        text = "y" * 500  # single line, no newline
+        out, lines, trunc = fn(text, 100)
+        self.assertTrue(trunc)
+        self.assertEqual(lines, 1)
+        self.assertEqual(len(out), 100)  # clamped to budget
+        self.assertNotEqual(out, "")  # never empty
+
+    def test_empty_content(self):
+        fn = self._fn()
+        out, lines, trunc = fn("", 100)
+        self.assertEqual(out, "")
+        self.assertEqual(lines, 0)
+        self.assertFalse(trunc)
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +410,7 @@ class TestFileDedup(unittest.TestCase):
         ))
 
         self.assertIn("error", result)
-        self.assertIn("internal read_file status text", result["error"])
+        self.assertIn("internal read_file display text", result["error"])
         fake.write_file.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
@@ -285,7 +434,7 @@ class TestFileDedup(unittest.TestCase):
         ))
 
         self.assertIn("error", result)
-        self.assertIn("internal read_file status text", result["error"])
+        self.assertIn("internal read_file display text", result["error"])
         fake.write_file.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
@@ -647,12 +796,15 @@ class TestConfigOverride(unittest.TestCase):
     @patch("tools.file_tools._get_file_ops")
     @patch("hermes_cli.config.load_config", return_value={"file_read_max_chars": 50})
     def test_custom_config_lowers_limit(self, _mock_cfg, mock_ops):
-        """A config value of 50 should reject reads over 50 chars."""
+        """A config value of 50 should trigger truncation for reads over 50 chars,
+        with the configured limit reflected in the continuation hint."""
         mock_ops.return_value = _make_fake_ops(content="x" * 60, file_size=60)
         result = json.loads(read_file_tool("/tmp/cfgtest.txt", task_id="cfg1"))
-        self.assertIn("error", result)
-        self.assertIn("safety limit", result["error"])
-        self.assertIn("50", result["error"])  # should show the configured limit
+        self.assertNotIn("error", result)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["truncated_by"], "bytes")
+        self.assertIn("50", result["hint"])  # should show the configured limit
+        self.assertLessEqual(len(result["content"]), 50)
 
     @patch("tools.file_tools._get_file_ops")
     @patch("hermes_cli.config.load_config", return_value={"file_read_max_chars": 500_000})

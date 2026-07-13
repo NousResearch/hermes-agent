@@ -6,12 +6,15 @@ import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
+import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
+import { BillingOverlay } from './billingOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
+import { PetPicker } from './petPicker.js'
+import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
-import { SessionPicker } from './sessionPicker.js'
 import { SkillsHub } from './skillsHub.js'
 
 const COMPLETION_WINDOW = 16
@@ -29,7 +32,22 @@ export function PromptZone({
   if (overlay.approval) {
     return (
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
-        <ApprovalPrompt onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+        <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+      </Box>
+    )
+  }
+
+  if (overlay.billing) {
+    const current = overlay.billing
+
+    const onPatch = (next: Partial<typeof current>) =>
+      patchOverlayState(prev => (prev.billing ? { ...prev, billing: { ...prev.billing, ...next } } : prev))
+
+    const onClose = () => patchOverlayState({ billing: null })
+
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <BillingOverlay onClose={onClose} onPatch={onPatch} overlay={current} t={theme} />
       </Box>
     )
   }
@@ -95,16 +113,39 @@ export function FloatingOverlays({
   cols,
   compIdx,
   completions,
+  onActiveSessionSelect,
+  onActiveSessionClose,
   onModelSelect,
-  onPickerSelect,
+  onNewLiveSession,
+  onNewPromptSession,
+  onResumeSelect,
   pagerPageSize
-}: Pick<AppOverlaysProps, 'cols' | 'compIdx' | 'completions' | 'onModelSelect' | 'onPickerSelect' | 'pagerPageSize'>) {
+}: Pick<
+  AppOverlaysProps,
+  | 'cols'
+  | 'compIdx'
+  | 'completions'
+  | 'onActiveSessionSelect'
+  | 'onActiveSessionClose'
+  | 'onModelSelect'
+  | 'onNewLiveSession'
+  | 'onNewPromptSession'
+  | 'onResumeSelect'
+  | 'pagerPageSize'
+>) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
   const sid = useStore($uiSessionId)
   const theme = useStore($uiTheme)
 
-  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || overlay.skillsHub || completions.length
+  const hasAny =
+    overlay.modelPicker ||
+    overlay.pager ||
+    overlay.petPicker ||
+    overlay.sessions ||
+    overlay.skillsHub ||
+    overlay.pluginsHub ||
+    completions.length
 
   if (!hasAny) {
     return null
@@ -119,12 +160,17 @@ export function FloatingOverlays({
 
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
-      {overlay.picker && (
+      {overlay.sessions && (
         <FloatBox color={theme.color.border}>
-          <SessionPicker
+          <ActiveSessionSwitcher
+            currentSessionId={sid}
             gw={gw}
-            onCancel={() => patchOverlayState({ picker: false })}
-            onSelect={onPickerSelect}
+            onCancel={() => patchOverlayState({ sessions: false })}
+            onClose={onActiveSessionClose}
+            onNew={onNewLiveSession}
+            onNewPrompt={onNewPromptSession}
+            onResume={onResumeSelect}
+            onSelect={onActiveSessionSelect}
             t={theme}
           />
         </FloatBox>
@@ -134,6 +180,7 @@ export function FloatingOverlays({
         <FloatBox color={theme.color.border}>
           <ModelPicker
             gw={gw}
+            initialRefresh={typeof overlay.modelPicker === 'object' && overlay.modelPicker.refresh === true}
             onCancel={() => patchOverlayState({ modelPicker: false })}
             onSelect={onModelSelect}
             sessionId={sid}
@@ -142,9 +189,21 @@ export function FloatingOverlays({
         </FloatBox>
       )}
 
+      {overlay.petPicker && (
+        <FloatBox color={theme.color.border}>
+          <PetPicker gw={gw} onClose={() => patchOverlayState({ petPicker: false })} t={theme} />
+        </FloatBox>
+      )}
+
       {overlay.skillsHub && (
         <FloatBox color={theme.color.border}>
           <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={theme} />
+        </FloatBox>
+      )}
+
+      {overlay.pluginsHub && (
+        <FloatBox color={theme.color.border}>
+          <PluginsHub gw={gw} onClose={() => patchOverlayState({ pluginsHub: false })} t={theme} />
         </FloatBox>
       )}
 

@@ -77,6 +77,7 @@ class ServiceManager(Protocol):
         profile: str,
         *,
         extra_env: dict[str, str] | None = None,
+        start_now: bool = True,
     ) -> None: ...
     def unregister_profile_gateway(self, profile: str) -> None: ...
     def list_profile_gateways(self) -> list[str]: ...
@@ -86,7 +87,8 @@ def detect_service_manager() -> ServiceManagerKind:
     """Detect which service manager is available in this environment.
 
     Returns:
-        "s6" — inside a container when /init is s6-svscan (Phase 2+)
+        "s6" — s6-svscan is PID 1 (s6-overlay image; Docker, Podman, or a
+               Fly Firecracker microVM)
         "windows" — native Windows host
         "launchd" — macOS host
         "systemd" — Linux host with a working user/system bus
@@ -100,14 +102,20 @@ def detect_service_manager() -> ServiceManagerKind:
     # Imports deferred so importing this module doesn't drag in the
     # whole gateway dependency graph for callers that only need the
     # Protocol type or validate_profile_name().
-    from hermes_constants import is_container
     from hermes_cli.gateway import (
         is_macos,
         is_windows,
         supports_systemd_services,
     )
 
-    if is_container() and _s6_running():
+    # Gate on _s6_running() alone (PID 1 comm == s6-svscan AND /run/s6/basedir),
+    # NOT is_container(): the latter only detects Docker/Podman/lxc, so it is
+    # False on Fly's Firecracker microVMs even though s6-overlay is PID 1 there.
+    # That false negative made the whole s6 dispatch path inert on Fly, so
+    # `hermes gateway start/stop/restart` fell through to host code that spawns
+    # a foreground gateway competing with the supervised one. _s6_running() is
+    # already an s6-overlay-specific signal, so the container gate was redundant.
+    if _s6_running():
         return "s6"
     if is_windows():
         return "windows"
@@ -175,6 +183,7 @@ class _RegistrationUnsupportedMixin:
         profile: str,
         *,
         extra_env: dict[str, str] | None = None,
+        start_now: bool = True,
     ) -> None:
         raise NotImplementedError(
             f"{type(self).__name__} does not support runtime profile "
@@ -324,6 +333,62 @@ def get_service_manager() -> ServiceManager:
 # automatic supervision on the next rescan.
 S6_DYNAMIC_SCANDIR = Path("/run/service")
 S6_SERVICE_PREFIX = "gateway-"
+
+
+def _profile_dir_for_gateway_service(name: str) -> Path:
+    """Resolve ``gateway-<profile>`` to its persistent profile directory.
+
+    s6 lifecycle commands may be invoked from any active profile, including
+    ``gateway stop --all``. Do not write the caller's HERMES_HOME blindly;
+    derive the shared profile root from the current HERMES_HOME and map the
+    service suffix to either the root default profile or
+    ``<root>/profiles/<profile>``.
+    """
+    import os
+
+    profile = name[len(S6_SERVICE_PREFIX):] if name.startswith(S6_SERVICE_PREFIX) else name
+    validate_profile_name(profile)
+    hermes_home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
+    if hermes_home.parent.name == "profiles":
+        root = hermes_home.parent.parent
+    else:
+        root = hermes_home
+    return root if profile == "default" else root / "profiles" / profile
+
+
+def _write_gateway_desired_state(name: str, desired_state: str) -> None:
+    """Persist durable s6 gateway intent next to runtime status.
+
+    ``gateway_state`` remains the volatile runtime field written by the
+    gateway process. ``desired_state`` records the operator's start/stop
+    intent so container-boot reconciliation can restore the correct s6
+    want-up/want-down state after pod recreation even if the previous runtime
+    state was transient (draining, startup_failed, etc.). The write is
+    best-effort: a failed persistence attempt must not prevent immediate s6
+    lifecycle control.
+    """
+    import json
+    import time
+
+    profile_dir = _profile_dir_for_gateway_service(name)
+    state_file = profile_dir / "gateway_state.json"
+    try:
+        if not profile_dir.exists():
+            return
+        try:
+            data = json.loads(state_file.read_text()) if state_file.exists() else {}
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        data["desired_state"] = desired_state
+        data["updated_at"] = int(time.time())
+        tmp = state_file.with_suffix(state_file.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, separators=(",", ":")) + "\n")
+        tmp.replace(state_file)
+    except OSError:
+        return
+
 
 # s6-overlay installs its binaries under /command/ and only adds that
 # directory to PATH for processes started under the supervision tree
@@ -566,8 +631,11 @@ class S6ServiceManager:
           1. Sources HERMES_HOME (and any extra env) via with-contenv —
              so e.g. ``-e HERMES_HOME=/data/hermes`` is honored at run
              time, not Python-substituted at registration time (OQ8-C).
-          2. Activates the bundled venv.
-          3. Drops to the hermes user and exec's
+          2. Resets ``HOME`` to ``/opt/data`` before the privilege drop
+             so with-contenv's root HOME does not leak into the
+             unprivileged gateway process.
+          3. Activates the bundled venv.
+          4. Drops to the hermes user and exec's
              ``hermes -p <profile> gateway run`` (or just ``hermes
              gateway run`` for the default profile — see below).
 
@@ -582,33 +650,88 @@ class S6ServiceManager:
         would instead look up ``$HERMES_HOME/profiles/default/`` — a
         completely different (and almost always nonexistent) profile.
 
-        Port selection: the gateway picks its bind port from the
-        profile's ``config.yaml`` (``[gateway] port = ...``) — that
-        is the single source of truth. Previously this method took a
-        ``port`` parameter that was passed in but never substituted
-        into the rendered script (it was carried in for "API parity"
-        with a deterministic SHA-256 allocator in
-        ``hermes_cli.profiles._allocate_gateway_port``). PR #30136
-        review item I5 retired both the allocator and the parameter
-        because they were dead code through the entire stack.
+        Port selection: the gateway binds the port resolved by
+        ``gateway/config.py`` from the profile's own environment —
+        ``API_SERVER_PORT`` (or ``platforms.api_server.extra.port`` in
+        that profile's ``config.yaml``), defaulting to 8642. There is
+        no ``[gateway] port`` key and no Python-side allocator: because
+        each supervised profile gateway loads its own ``HERMES_HOME``,
+        two profiles that both leave the port unset will both try to
+        bind 8642 — give each profile a distinct ``API_SERVER_PORT`` in
+        its ``.env``. Previously this method took a ``port`` parameter
+        that was passed in but never substituted into the rendered
+        script (carried for "API parity" with a deterministic SHA-256
+        allocator in ``hermes_cli.profiles._allocate_gateway_port``).
+        PR #30136 review item I5 retired both the allocator and the
+        parameter because they were dead code through the entire stack.
         """
         import shlex
         lines = [
             "#!/command/with-contenv sh",
             "# shellcheck shell=sh",
             "set -e",
+            "export HOME=/opt/data",
             "cd /opt/data",
             ". /opt/hermes/.venv/bin/activate",
         ]
         for k, v in sorted(extra_env.items()):
             lines.append(f"export {k}={shlex.quote(v)}")
+        # Sentinel for the supervised-child path. Prevents recursive
+        # redirect when the supervised gateway re-enters
+        # `_gateway_command_inner` with subcmd == "run" — without it the
+        # supervisor would dispatch `gateway start` which would re-exec
+        # `gateway run --replace` which would re-dispatch `gateway
+        # start`, etc. See `_gateway_command_inner` for the matching
+        # guard.
+        lines.append("export HERMES_S6_SUPERVISED_CHILD=1")
+        # ``--replace`` makes the supervised gateway authoritative for its
+        # profile's HERMES_HOME. Without it, a gateway started OUTSIDE s6
+        # (a stray ``hermes gateway run`` from a shell, an agent action, or
+        # the Open WebUI helper) grabs the per-HERMES_HOME PID lock first;
+        # the supervised slot then execs a bare ``gateway run``, hits the
+        # "Another gateway instance is already running" guard, exits
+        # non-zero, and s6 restarts it — a restart loop that floods the
+        # log and never binds (NS-505). ``--replace``
+        # instead reaps the stale holder (hardened takeover path: marker +
+        # SIGTERM→SIGKILL-with-confirmation + scoped-lock cleanup, see
+        # gateway/run.py) so s6 always wins. The HERMES_S6_SUPERVISED_CHILD
+        # sentinel above prevents the run→start→run redirect recursion.
+        # Each profile is scoped to its own HERMES_HOME and s6 guarantees a
+        # single supervised instance per slot, so there is no legitimate
+        # supervised sibling for ``--replace`` to clobber.
         if profile == "default":
-            lines.append("exec s6-setuidgid hermes hermes gateway run")
+            gateway_cmd = "hermes gateway run --replace"
         else:
-            lines.append(
-                f"exec s6-setuidgid hermes hermes -p {shlex.quote(profile)} gateway run"
-            )
+            gateway_cmd = f"hermes -p {shlex.quote(profile)} gateway run --replace"
+        # Skip the drop when already non-root (setgroups() lacks CAP_SETGID →
+        # s6 boot-loop).
+        lines.append(f'[ "$(id -u)" = 0 ] || exec {gateway_cmd}')
+        lines.append(f"exec s6-setuidgid hermes {gateway_cmd}")
         return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _render_finish_script() -> str:
+        """Generate the finish script for a profile-gateway s6 service.
+
+        When the gateway exits with EX_CONFIG (78) — a fatal
+        configuration error such as a token collision or no messaging
+        platforms — we tell s6-supervise to stop restarting by exiting
+        125 (permanent failure).  Any other exit code lets s6 restart
+        normally.  See #51228.
+        """
+        from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+        code = GATEWAY_FATAL_CONFIG_EXIT_CODE
+        return (
+            "#!/command/with-contenv sh\n"
+            "# shellcheck shell=sh\n"
+            "# $1 = exit code from the run script.\n"
+            f"# Exit {code} (EX_CONFIG) = fatal config error — don't restart.\n"
+            f'if [ "$1" = "{code}" ]; then\n'
+            "  exit 125\n"
+            "fi\n"
+            "exit 0\n"
+        )
 
     @staticmethod
     def _render_log_run(profile: str) -> str:
@@ -620,6 +743,38 @@ class S6ServiceManager:
         — so a container started with ``-e HERMES_HOME=/data/hermes``
         gets its logs under /data/hermes/logs/..., not the build-time
         default.
+
+        Output routing — the script is two action directives, applied
+        per line, in order:
+
+          1. ``1`` (forward to stdout) — propagates the line up the
+             s6-supervise pipeline to /init's stdout, which is the
+             container's stdout, which is ``docker logs``. Without
+             this, supervised stdout would be terminated inside
+             s6-log and never reach the container's log stream;
+             users would have to ``docker exec`` and ``tail`` the
+             file just to see startup banners. (Python's ``logging``
+             module defaults to stderr, which s6-supervise leaves
+             unfiltered — so warnings/errors already reach docker
+             logs. This change is specifically about the rich-console
+             banner output and other plain stdout writes.)
+          2. ``T <log_dir>`` — also write a timestamped copy to the
+             rotated log directory (``current`` + archived ``@*.s``
+             files). This is what ``hermes logs`` reads and what
+             persists across container restarts via the volume mount.
+
+        ``T`` is non-sticky: it only prefixes lines for the next
+        action directive. We deliberately put ``T`` between ``1``
+        and the log dir (not before ``1``) so:
+
+          * ``docker logs`` shows raw lines — Python's logging
+            formatter has its own timestamps, and ``docker logs
+            --timestamps`` adds a third layer when desired. No
+            double-stamping in the most common reading path.
+          * The persisted file gets s6-log's own ISO 8601 timestamp
+            so even output that lacked a Python-logger timestamp
+            (rich banners, third-party libs' raw prints) is
+            correlatable in ``current``.
         """
         import shlex
         prof = shlex.quote(profile)
@@ -629,8 +784,20 @@ class S6ServiceManager:
             f': "${{HERMES_HOME:=/opt/data}}"\n'
             f'log_dir="$HERMES_HOME/logs/gateways/{prof}"\n'
             f'mkdir -p "$log_dir"\n'
+            # The gateways/ parent must be chowned too (non-recursively):
+            # `mkdir -p` creates it root-owned on a root-context boot, and a
+            # leaf-only chown leaves it that way — every profile registered
+            # later then runs its log service as hermes and crash-loops on
+            # `mkdir: Permission denied`. The parent chown runs on every
+            # root-context boot, so it also heals volumes already poisoned
+            # by older images. Non-recursive on purpose: sibling profile
+            # dirs are each managed by their own log/run. See #45258.
+            f'chown hermes:hermes "$HERMES_HOME/logs/gateways" 2>/dev/null || true\n'
             f'chown -R hermes:hermes "$log_dir" 2>/dev/null || true\n'
-            f'exec s6-setuidgid hermes s6-log n10 s1000000 T "$log_dir"\n'
+            f'rm -f "$log_dir/lock"\n'
+            # Skip the drop when already non-root (CAP_SETGID).
+            f'[ "$(id -u)" = 0 ] || exec s6-log 1 n10 s1000000 T "$log_dir"\n'
+            f'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T "$log_dir"\n'
         )
 
     # -- lifecycle ---------------------------------------------------------
@@ -690,15 +857,59 @@ class S6ServiceManager:
                 (permission denied on the supervise FIFO, timeout, etc.).
         """
         self._run_svc("-u", "start", name)
+        _write_gateway_desired_state(name, "running")
+
+    def _supervised_pid(self, name: str) -> int | None:
+        """Return the PID of the supervised gateway process, or None.
+
+        Parses ``s6-svstat`` output (``up (pid NNNN) ...``). Used to
+        mark an operator-initiated stop with the planned-stop marker so
+        the gateway's shutdown handler classifies the incoming SIGTERM
+        as intentional rather than an unexpected kill (issue #42675).
+        Best-effort: any parse/exec failure returns None.
+        """
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                [f"{_S6_BIN_DIR}/s6-svstat", str(self.scandir / name)],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        m = re.search(r"\(pid (\d+)\)", result.stdout)
+        return int(m.group(1)) if m else None
 
     def stop(self, name: str) -> None:
         """Bring down a registered service (``s6-svc -d``).
+
+        Writes a planned-stop marker naming the supervised gateway PID
+        BEFORE sending the down command, so the gateway's shutdown
+        handler recognises this SIGTERM as an operator-initiated stop
+        and persists ``gateway_state=stopped`` (respecting the explicit
+        intent). Without the marker, an intentional ``hermes gateway
+        stop`` is indistinguishable from the container/s6 SIGTERM sent on
+        ``docker restart``; the latter must NOT persist ``stopped`` or
+        container_boot refuses to auto-start on the next boot (#42675).
+        The marker write is best-effort — a failure only means the stop
+        is treated as signal-initiated, which is the safe fallback.
 
         Raises:
             GatewayNotRegisteredError: no service directory for ``name``.
             S6CommandError: s6-svc exited non-zero for any other reason.
         """
+        pid = self._supervised_pid(name)
+        if pid is not None:
+            try:
+                from gateway.status import write_planned_stop_marker
+
+                write_planned_stop_marker(pid)
+            except Exception:
+                pass
         self._run_svc("-d", "stop", name)
+        _write_gateway_desired_state(name, "stopped")
 
     def restart(self, name: str) -> None:
         """Restart a registered service (``s6-svc -t`` = SIGTERM).
@@ -708,6 +919,7 @@ class S6ServiceManager:
             S6CommandError: s6-svc exited non-zero for any other reason.
         """
         self._run_svc("-t", "restart", name)
+        _write_gateway_desired_state(name, "running")
 
     def is_running(self, name: str) -> bool:
         """True iff ``s6-svstat`` reports the service as up."""
@@ -728,15 +940,15 @@ class S6ServiceManager:
         profile: str,
         *,
         extra_env: dict[str, str] | None = None,
+        start_now: bool = True,
     ) -> None:
         """Create the s6 service directory for a profile gateway.
 
         Triggers ``s6-svscanctl -a`` so s6-svscan picks the new directory
-        up immediately. The service is created in the *up* state — to
-        register without auto-starting, follow up with ``stop(profile)``
-        (or pass the start flag via the future ``start_now=False`` arg,
-        which the Phase 4 reconciliation path uses via a ``down``
-        marker file written directly).
+        up immediately.  When *start_now* is ``True`` (the default) the
+        service starts immediately; when ``False`` a ``down`` marker file
+        is written so s6-supervise leaves the service stopped until the
+        user explicitly runs ``hermes -p <profile> gateway start``.
 
         Raises:
             ValueError: if the profile name is invalid or the service
@@ -753,9 +965,23 @@ class S6ServiceManager:
             )
 
         # Build the service directory atomically: write to a sibling
-        # temp dir, then rename. Avoids s6-svscan observing a half-
-        # populated directory on a fast rescan.
-        tmp_dir = svc_dir.with_name(svc_dir.name + ".tmp")
+        # temp dir, then rename. The staging name is DOT-PREFIXED
+        # (``.gateway-<profile>.tmp``) so s6-svscan ignores it while it
+        # is half-built: s6-svscan skips any scandir entry whose name
+        # begins with ``.``. Without the dot prefix, a concurrent
+        # ``s6-svscanctl -a`` rescan (fired by the cont-init reconciler
+        # registering ``gateway-default``, or by a sibling register)
+        # would supervise the still-being-seeded ``.tmp`` slot: it has a
+        # valid ``type``/``run`` by that point, so s6-supervise spawns
+        # AS ROOT and mkdir's ``supervise/`` root-owned 0700 — then this
+        # process's ``_seed_supervise_skeleton`` early-returns on the now-
+        # existing ``supervise/`` and the next ``mkdir supervise/event``
+        # hits EACCES. That is the arm64-only CI flake on
+        # test_s6_unregister_removes_service_dir_in_live_container
+        # (the wider scheduling jitter on the native arm64 runner lets the
+        # rescan land inside the ~ms seed window). The atomic rename to
+        # the dotless live name below is unaffected.
+        tmp_dir = svc_dir.with_name("." + svc_dir.name + ".tmp")
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
         tmp_dir.mkdir(parents=True)
@@ -767,6 +993,10 @@ class S6ServiceManager:
             run_path = tmp_dir / "run"
             run_path.write_text(run_script)
             run_path.chmod(0o755)
+
+            finish_path = tmp_dir / "finish"
+            finish_path.write_text(self._render_finish_script())
+            finish_path.chmod(0o755)
 
             # Persistent log rotation (OQ8-C).
             log_subdir = tmp_dir / "log"
@@ -783,6 +1013,13 @@ class S6ServiceManager:
             # dirs. See ``_seed_supervise_skeleton`` for the full
             # rationale.
             _seed_supervise_skeleton(tmp_dir)
+
+            # When start_now is False, write a `down` marker so
+            # s6-supervise does not auto-start the service on rescan.
+            # Mirrors the same pattern in container_boot.py
+            # _register_gateway_slot when start=False.
+            if not start_now:
+                (tmp_dir / "down").touch()
 
             tmp_dir.rename(svc_dir)
         except Exception:

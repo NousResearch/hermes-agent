@@ -82,7 +82,6 @@ class TestLintWorkflow:
         # Look for the blocking step's named line + its command.  We want
         # at least one ``ruff check .`` that does NOT have ``--exit-zero``
         # nearby.
-        import re
         # Split into lines and find ruff check invocations
         lines = content.splitlines()
         found_blocking = False

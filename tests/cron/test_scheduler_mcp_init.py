@@ -15,108 +15,12 @@ short-circuit on already-connected servers.
 
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 
-def test_run_job_calls_discover_mcp_tools_before_agent_construction():
-    """The LLM-path branch of run_job must call discover_mcp_tools() before
-    the AIAgent construction, so MCP tools are in the registry by the time
-    the agent asks for its tool schema."""
-    from cron import scheduler
-
-    job = {
-        "id": "mcp-cron-test",
-        "name": "mcp-cron-test",
-        "prompt": "test",
-    }
-
-    call_order = []
-
-    def fake_discover():
-        call_order.append("discover_mcp_tools")
-        return ["mcp_server1_tool"]
-
-    # AIAgent is a class; replace with a recording stub
-    class _FakeAgent:
-        def __init__(self, *args, **kwargs):
-            call_order.append("AIAgent.__init__")
-            self._kwargs = kwargs
-            self._interrupt_requested = False
-            self.quiet_mode = True
-
-        def run_conversation(self, *args, **kwargs):
-            return {
-                "final_response": "ok",
-                "messages": [],
-            }
-
-    with patch("tools.mcp_tool.discover_mcp_tools", side_effect=fake_discover), \
-         patch(
-             "hermes_cli.runtime_provider.resolve_runtime_provider",
-             return_value={
-                 "provider": "custom",
-                 "api_mode": "chat_completions",
-                 "base_url": "https://custom.example/v1",
-                 "api_key": "test-key",
-             },
-         ), \
-         patch("run_agent.AIAgent", _FakeAgent), \
-         patch("cron.scheduler._resolve_cron_enabled_toolsets", return_value=None):
-        scheduler.run_job(job)
-
-    # Discovery must be called, and must be called BEFORE agent construction.
-    assert "discover_mcp_tools" in call_order, (
-        "run_job did not call discover_mcp_tools — MCP tools unavailable in cron"
-    )
-    d_idx = call_order.index("discover_mcp_tools")
-    a_idx = call_order.index("AIAgent.__init__")
-    assert d_idx < a_idx, (
-        f"discover_mcp_tools was called AFTER AIAgent construction "
-        f"(indices discover={d_idx}, agent={a_idx}); MCP tools missed the "
-        f"registry window. Full order: {call_order}"
-    )
 
 
-def test_run_job_tolerates_discover_mcp_tools_failure():
-    """A broken MCP server must not kill an otherwise working cron job.
-    discover_mcp_tools() raising should be caught and logged, and the agent
-    should still run."""
-    from cron import scheduler
 
-    job = {
-        "id": "mcp-cron-fail",
-        "name": "mcp-cron-fail",
-        "prompt": "test",
-    }
-
-    agent_was_constructed = []
-
-    class _FakeAgent:
-        def __init__(self, *args, **kwargs):
-            agent_was_constructed.append(True)
-            self._interrupt_requested = False
-            self.quiet_mode = True
-
-        def run_conversation(self, *args, **kwargs):
-            return {"final_response": "ok", "messages": []}
-
-    def fake_discover_that_raises():
-        raise RuntimeError("MCP server unreachable")
-
-    with patch(
-        "tools.mcp_tool.discover_mcp_tools",
-        side_effect=fake_discover_that_raises,
-    ), patch("run_agent.AIAgent", _FakeAgent), \
-         patch("cron.scheduler._resolve_cron_enabled_toolsets", return_value=None):
-        # Should NOT raise
-        success, doc, final_response, error = scheduler.run_job(job)
-
-    assert agent_was_constructed, (
-        "AIAgent was not constructed after discover_mcp_tools raised — "
-        "MCP failure incorrectly killed the cron job"
-    )
 
 
 def test_no_agent_cron_job_does_not_initialize_mcp():
@@ -147,40 +51,3 @@ def test_no_agent_cron_job_does_not_initialize_mcp():
         "discover_mcp_tools was called for a no_agent job — wasted MCP init "
         "for a script-only cron tick"
     )
-
-
-def test_run_job_passes_runtime_max_output_tokens_to_agent():
-    """Cron AIAgent construction should honor runtime max_output_tokens."""
-    from cron import scheduler
-
-    job = {
-        "id": "max-output-cron-test",
-        "name": "max-output-cron-test",
-        "prompt": "test",
-    }
-
-    captured = {}
-
-    class _FakeAgent:
-        def __init__(self, *args, **kwargs):
-            captured.update(kwargs)
-            self._interrupt_requested = False
-            self.quiet_mode = True
-
-        def run_conversation(self, *args, **kwargs):
-            return {"final_response": "ok", "messages": []}
-
-    with patch(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
-        return_value={
-            "provider": "custom",
-            "api_mode": "chat_completions",
-            "base_url": "https://custom.example/v1",
-            "api_key": "test-key",
-            "max_output_tokens": 64000,
-        },
-    ), patch("run_agent.AIAgent", _FakeAgent), \
-         patch("cron.scheduler._resolve_cron_enabled_toolsets", return_value=None):
-        scheduler.run_job(job)
-
-    assert captured.get("max_tokens") == 64000

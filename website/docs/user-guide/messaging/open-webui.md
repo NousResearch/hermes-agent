@@ -30,44 +30,6 @@ Open WebUI talks to Hermes server-to-server, so you do not need `API_SERVER_CORS
 
 ## Quick Setup
 
-### One-command local bootstrap (macOS/Linux, no Docker)
-
-If you want Hermes + Open WebUI wired together locally with a reusable launcher, run:
-
-```bash
-cd ~/.hermes/hermes-agent
-bash scripts/setup_open_webui.sh
-```
-
-What the script does:
-
-- ensures `~/.hermes/.env` contains `API_SERVER_ENABLED`, `API_SERVER_HOST`, `API_SERVER_KEY`, `API_SERVER_PORT`, and `API_SERVER_MODEL_NAME`
-- restarts the Hermes gateway so the API server comes up
-- installs Open WebUI into `~/.local/open-webui-venv`
-- writes a launcher at `~/.local/bin/start-open-webui-hermes.sh`
-- on macOS, installs a `launchd` user service; on Linux with `systemd --user`, installs a user service there
-
-Defaults:
-
-- Hermes API: `http://127.0.0.1:8642/v1`
-- Open WebUI: `http://127.0.0.1:8080`
-- model name advertised to Open WebUI: `Hermes Agent`
-
-Useful overrides:
-
-```bash
-OPEN_WEBUI_NAME='My Hermes UI' \
-OPEN_WEBUI_ENABLE_SIGNUP=true \
-HERMES_API_MODEL_NAME='My Hermes Agent' \
-bash scripts/setup_open_webui.sh
-```
-
-On Linux, automatic background service setup requires a working `systemd --user` session. If you are on a headless SSH box and want to skip service installation, run:
-
-```bash
-OPEN_WEBUI_ENABLE_SERVICE=false bash scripts/setup_open_webui.sh
-```
-
 ### 1. Enable the API server
 
 ```bash
@@ -271,20 +233,26 @@ Open WebUI persists OpenAI-compatible connection settings in its own database af
 
 ## Multi-User Setup with Profiles
 
-To run separate Hermes instances per user — each with their own config, memory, and skills — use [profiles](/docs/user-guide/profiles). Each profile runs its own API server on a different port and automatically advertises the profile name as the model in Open WebUI.
+To run separate Hermes instances per user — each with their own config, memory, and skills — use [profiles](/user-guide/profiles). Each profile runs its own API server on a different port and automatically advertises the profile name as the model in Open WebUI.
 
 ### 1. Create profiles and configure API servers
 
+`API_SERVER_*` are env vars, not YAML config keys, so write them to each profile's `.env`. Pick ports outside the default-platform range (`8644` is the webhook adapter, `8645` is wecom-callback, `8646` is msgraph-webhook), e.g. `8650+`:
+
 ```bash
 hermes profile create alice
-hermes -p alice config set API_SERVER_ENABLED true
-hermes -p alice config set API_SERVER_PORT 8643
-hermes -p alice config set API_SERVER_KEY alice-secret
+cat >> ~/.hermes/profiles/alice/.env <<EOF
+API_SERVER_ENABLED=true
+API_SERVER_PORT=8650
+API_SERVER_KEY=alice-secret
+EOF
 
 hermes profile create bob
-hermes -p bob config set API_SERVER_ENABLED true
-hermes -p bob config set API_SERVER_PORT 8644
-hermes -p bob config set API_SERVER_KEY bob-secret
+cat >> ~/.hermes/profiles/bob/.env <<EOF
+API_SERVER_ENABLED=true
+API_SERVER_PORT=8651
+API_SERVER_KEY=bob-secret
+EOF
 ```
 
 ### 2. Start each gateway
@@ -300,8 +268,8 @@ In **Admin Settings** → **Connections** → **OpenAI API** → **Manage**, add
 
 | Connection | URL | API Key |
 |-----------|-----|---------|
-| Alice | `http://host.docker.internal:8643/v1` | `alice-secret` |
-| Bob | `http://host.docker.internal:8644/v1` | `bob-secret` |
+| Alice | `http://host.docker.internal:8650/v1` | `alice-secret` |
+| Bob | `http://host.docker.internal:8651/v1` | `bob-secret` |
 
 The model dropdown will show `alice` and `bob` as distinct models. You can assign models to Open WebUI users via the admin panel, giving each user their own isolated Hermes agent.
 

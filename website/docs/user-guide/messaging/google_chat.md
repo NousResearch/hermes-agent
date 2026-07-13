@@ -13,6 +13,8 @@ process does not need a public URL, a tunnel, or a TLS certificate. It connects,
 authenticates, and listens on a subscription — the same way a Telegram bot listens
 on a token.
 
+> Run `hermes gateway setup` and pick **Google Chat** for a guided walk-through.
+
 :::note Workspace edition
 Google Chat is part of Google Workspace. You can use this integration with a
 personal Workspace (`@yourdomain.com` registered through Google) or a work
@@ -164,10 +166,10 @@ GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — cap on in-flight me
 The project ID also falls back to `GOOGLE_CLOUD_PROJECT`, and the SA path falls
 back to `GOOGLE_APPLICATION_CREDENTIALS` — use whichever convention you prefer.
 
-Install Hermes with the optional dependencies:
+Install the dependencies the Google Chat adapter needs (no Hermes extra is currently published — install them directly):
 
 ```bash
-pip install 'hermes-agent[google_chat]'
+pip install google-cloud-pubsub google-api-python-client google-auth google-auth-oauthlib
 ```
 
 Start the gateway:
@@ -229,21 +231,29 @@ There's no IAM role or scope that fixes this. The endpoint only accepts user
 credentials. So the bot has to act *as a user* whenever it uploads a file —
 specifically, as the user who asked for the file.
 
-### One-time host setup
+### One-time setup (per profile)
 
 1. Go to **APIs & Services → Credentials** in the same GCP project.
 2. **Create credentials → OAuth client ID → Desktop app**.
 3. Download the JSON. Move it onto the host that runs Hermes.
-4. On the host, register the client with Hermes:
+4. Register the client with Hermes (run under the profile you want it scoped to):
 
 ```bash
-python -m gateway.platforms.google_chat_user_oauth \
+# Default profile:
+python -m plugins.platforms.google_chat.oauth \
+    --client-secret /path/to/client_secret.json
+
+# A named profile gets its own separate registration:
+hermes -p <profile> python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 
-That writes `~/.hermes/google_chat_user_client_secret.json`. This is shared
-infrastructure — it identifies the OAuth *app*, not any individual user. One
-file per host is enough no matter how many users authorize later.
+That writes the client secret into the active profile's Hermes home (e.g.
+`~/.hermes/google_chat_user_client_secret.json` for the default profile). The
+client secret is **profile-scoped, not shared across profiles** — each profile
+registers its own. This is deliberate: profiles are isolated auth boundaries, so
+two profiles can point at different Google OAuth apps / accounts. Register it
+once per profile that needs Google Chat attachment delivery.
 
 ### Per-user authorization (in chat)
 
@@ -324,13 +334,19 @@ The asker has no per-user OAuth token and there's no legacy fallback. Run
 `/setup-files` in their DM and follow Step 10. After the exchange completes
 the next file request uploads natively without a gateway restart.
 
-**`/setup-files start` says "No client credentials stored on the host."**
+**`/setup-files start` says "No client credentials stored."**
 
-The one-time host setup wasn't done. From a terminal on the host that runs
-Hermes:
+The one-time setup wasn't done *for this profile* (the client secret is
+profile-scoped, so a registration under one profile won't be seen by another).
+From a terminal, run it under the profile the gateway uses:
 
 ```bash
-python -m gateway.platforms.google_chat_user_oauth \
+# Default profile:
+python -m plugins.platforms.google_chat.oauth \
+    --client-secret /path/to/client_secret.json
+
+# Named profile:
+hermes -p <profile> python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 

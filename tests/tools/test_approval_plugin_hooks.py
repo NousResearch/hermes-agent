@@ -13,27 +13,35 @@ import pytest
 import tools.approval as approval_module
 from tools.approval import (
     check_all_command_guards,
-    register_gateway_notify,
-    unregister_gateway_notify,
-    resolve_gateway_approval,
+    check_execute_code_guard,
     set_current_session_key,
     clear_session,
 )
 
 
 @pytest.fixture
-def isolated_session(monkeypatch):
-    """Give each test a fresh session_key and clean approval-state."""
+def isolated_session(monkeypatch, tmp_path):
+    """Give each test a fresh session_key, clean approval-state, and isolated
+    HERMES_HOME so the real user's command_allowlist doesn't leak in."""
+    import tools.approval as _am
+
     session_key = "test:session:approval_hooks"
     token = set_current_session_key(session_key)
     monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
     # Make sure we don't skip guards via yolo / approvals.mode=off
     monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    # Isolate from the real user's permanent allowlist + session state
+    _saved_permanent = _am._permanent_approved.copy()
+    _saved_session = {k: v.copy() for k, v in _am._session_approved.items()}
+    _am._permanent_approved.clear()
+    _am._session_approved.clear()
     try:
         yield session_key
     finally:
+        _am._permanent_approved.update(_saved_permanent)
+        _am._session_approved.update(_saved_session)
         try:
-            approval_module._approval_session_key.reset(token)
+            _am._approval_session_key.reset(token)
         except Exception:
             pass
         clear_session(session_key)
@@ -142,107 +150,190 @@ class TestGatewayPathFiresHooks:
     approval event until resolve_gateway_approval() is called from another
     thread."""
 
-    def test_pre_and_post_fire_on_gateway_surface(
-        self, isolated_session, monkeypatch
+
+class TestSmartModeFiresHooks:
+    def _configure(self, monkeypatch, verdict):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
+        monkeypatch.setattr(approval_module, "_smart_approve", lambda *_: verdict)
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _: {"action": "allow", "findings": [], "summary": ""},
+        )
+
+    @pytest.mark.parametrize(
+        ("guard", "value", "verdict", "approved", "choice", "pattern_key"),
+        [
+            (check_all_command_guards, "rm -rf /tmp/smart-hook", "approve", True, "smart_approve", None),
+            (check_all_command_guards, "rm -rf /tmp/smart-hook", "deny", False, "smart_deny", None),
+            (check_execute_code_guard, "print('smart hook')", "approve", True, "smart_approve", "execute_code"),
+            (check_execute_code_guard, "print('smart hook')", "deny", False, "smart_deny", "execute_code"),
+        ],
+    )
+    def test_smart_verdict_fires_redacted_pre_and_post_hooks(
+        self, isolated_session, monkeypatch, guard, value, verdict, approved, choice, pattern_key
     ):
-        import threading
-
-        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
-        # Short gateway_timeout so a buggy test fails fast instead of hanging
-        monkeypatch.setattr(
-            approval_module, "_get_approval_config", lambda: {"gateway_timeout": 10}
-        )
-
+        self._configure(monkeypatch, verdict)
+        secret = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+        value = f'{value} # Authorization: Bearer {secret}'
         captured = []
 
-        def fake_invoke_hook(hook_name, **kwargs):
-            captured.append((hook_name, kwargs))
-            return []
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            side_effect=lambda name, **kwargs: captured.append((name, kwargs)),
+        ):
+            result = guard(value, "local")
 
-        notify_seen = threading.Event()
+        assert result["approved"] is approved
+        assert result[f"smart_{'approved' if approved else 'denied'}"] is True
+        assert [name for name, _ in captured] == [
+            "pre_approval_request",
+            "post_approval_response",
+        ]
+        pre, post = (kwargs for _, kwargs in captured)
+        assert pre["surface"] == post["surface"] == "smart"
+        assert post["choice"] == choice
+        assert post["decided_by"] == "aux_llm"
+        assert pre["session_key"] == post["session_key"] == isolated_session
+        assert secret not in pre["command"]
+        assert secret not in post["command"]
+        assert pre["pattern_keys"]
+        assert pre["pattern_key"] == post["pattern_key"]
+        if pattern_key is not None:
+            assert pre["pattern_key"] == pattern_key
+            assert pre["pattern_keys"] == [pattern_key]
 
-        def notify_cb(approval_data):
-            notify_seen.set()
+    @pytest.mark.parametrize("guard,value", [
+        (check_all_command_guards, "rm -rf /tmp/smart-order"),
+        (check_execute_code_guard, "print('smart order')"),
+    ])
+    def test_pre_hook_fires_before_aux_llm_decision(
+        self, isolated_session, monkeypatch, guard, value
+    ):
+        self._configure(monkeypatch, "approve")
+        events = []
 
-        register_gateway_notify(isolated_session, notify_cb)
-        result_holder = {}
+        def decide(*_):
+            events.append("smart_approve")
+            return "approve"
 
-        def run_guard():
-            with patch("hermes_cli.plugins.invoke_hook", side_effect=fake_invoke_hook):
-                result_holder["result"] = check_all_command_guards(
-                    "rm -rf /tmp/test-gateway-hook", "local",
-                )
+        monkeypatch.setattr(approval_module, "_smart_approve", decide)
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            side_effect=lambda name, **kwargs: events.append(name),
+        ):
+            result = guard(value, "local")
 
-        t = threading.Thread(target=run_guard, daemon=True)
-        t.start()
+        assert result["approved"] is True
+        assert events == [
+            "pre_approval_request",
+            "smart_approve",
+            "post_approval_response",
+        ]
 
-        # Wait for the gateway callback to see the approval request
-        assert notify_seen.wait(timeout=5), "Gateway notify never fired"
+    @pytest.mark.parametrize("guard,value", [
+        (check_all_command_guards, "rm -rf /tmp/smart-force-redaction"),
+        (check_execute_code_guard, "print('smart force redaction')"),
+    ])
+    def test_smart_observer_redaction_is_forced_when_config_disables_redaction(
+        self, isolated_session, monkeypatch, guard, value
+    ):
+        self._configure(monkeypatch, "approve")
+        force_values = []
 
-        # User approves from the "other thread" (simulating /approve command)
-        resolve_gateway_approval(isolated_session, "once")
+        def redact(text, *, force=False):
+            force_values.append(force)
+            return f"redacted:{text}"
 
-        t.join(timeout=5)
-        assert not t.is_alive(), "Agent thread never unblocked"
-        unregister_gateway_notify(isolated_session)
+        with (
+            patch("agent.redact.redact_sensitive_text", side_effect=redact),
+            patch("hermes_cli.plugins.invoke_hook"),
+        ):
+            result = guard(value, "local")
 
-        assert result_holder["result"]["approved"] is True
+        assert result["approved"] is True
+        assert force_values == [True, True]
 
-        hook_names = [c[0] for c in captured]
-        assert "pre_approval_request" in hook_names
-        assert "post_approval_response" in hook_names
+    @pytest.mark.parametrize("guard,value", [
+        (check_all_command_guards, "rm -rf /tmp/smart-hook-crash"),
+        (check_execute_code_guard, "print('smart hook crash')"),
+    ])
+    @pytest.mark.parametrize("verdict,approved", [("approve", True), ("deny", False)])
+    def test_observer_exception_never_changes_smart_verdict(
+        self, isolated_session, monkeypatch, guard, value, verdict, approved
+    ):
+        self._configure(monkeypatch, verdict)
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            side_effect=RuntimeError("observer failed"),
+        ):
+            result = guard(value, "local")
+        assert result["approved"] is approved
 
-        pre_kwargs = next(kw for name, kw in captured if name == "pre_approval_request")
-        assert pre_kwargs["surface"] == "gateway"
-        assert pre_kwargs["command"] == "rm -rf /tmp/test-gateway-hook"
-
-        post_kwargs = next(kw for name, kw in captured if name == "post_approval_response")
-        assert post_kwargs["surface"] == "gateway"
-        assert post_kwargs["choice"] == "once"
-
-    def test_timeout_reports_timeout_choice(self, isolated_session, monkeypatch):
-        import threading
-
-        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
-        monkeypatch.setattr(
-            approval_module, "_get_approval_config", lambda: {"gateway_timeout": 1}
-        )
-
+    @pytest.mark.parametrize("guard,value", [
+        (check_all_command_guards, "rm -rf /tmp/smart-redactor-crash"),
+        (check_execute_code_guard, "print('smart redactor crash')"),
+    ])
+    @pytest.mark.parametrize("verdict,approved", [("approve", True), ("deny", False)])
+    def test_redactor_exception_never_changes_smart_verdict_or_leaks_payload(
+        self, isolated_session, monkeypatch, guard, value, verdict, approved
+    ):
+        self._configure(monkeypatch, verdict)
         captured = []
+        with (
+            patch("agent.redact.redact_sensitive_text", side_effect=RuntimeError("redactor failed")),
+            patch(
+                "hermes_cli.plugins.invoke_hook",
+                side_effect=lambda name, **kwargs: captured.append((name, kwargs)),
+            ),
+        ):
+            result = guard(value, "local")
+        assert result["approved"] is approved
+        assert captured == []
 
-        def fake_invoke_hook(hook_name, **kwargs):
-            captured.append((hook_name, kwargs))
-            return []
+    @pytest.mark.parametrize("guard,first_value,second_value", [
+        (
+            check_all_command_guards,
+            "rm -rf /tmp/first-smart-command",
+            "rm -rf /tmp/second-smart-command",
+        ),
+        (
+            check_execute_code_guard,
+            "print('first smart script')",
+            "print('second smart script')",
+        ),
+    ])
+    def test_smart_approval_is_per_command(
+        self, isolated_session, monkeypatch, guard, first_value, second_value
+    ):
+        verdicts = iter(("approve", "deny"))
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
+        monkeypatch.setattr(approval_module, "_smart_approve", lambda *_: next(verdicts))
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _: {"action": "allow", "findings": [], "summary": ""},
+        )
+        captured = []
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            side_effect=lambda name, **kwargs: captured.append((name, kwargs)),
+        ):
+            first = guard(first_value, "local")
+            second = guard(second_value, "local")
 
-        notify_seen = threading.Event()
+        assert first["approved"] is True
+        assert second["approved"] is False
+        assert [kwargs["choice"] for name, kwargs in captured if name == "post_approval_response"] == [
+            "smart_approve",
+            "smart_deny",
+        ]
 
-        def notify_cb(approval_data):
-            notify_seen.set()
 
-        register_gateway_notify(isolated_session, notify_cb)
-        result_holder = {}
-
-        def run_guard():
-            with patch("hermes_cli.plugins.invoke_hook", side_effect=fake_invoke_hook):
-                result_holder["result"] = check_all_command_guards(
-                    "rm -rf /tmp/test-gateway-timeout", "local",
-                )
-
-        t = threading.Thread(target=run_guard, daemon=True)
-        t.start()
-        assert notify_seen.wait(timeout=5)
-        # Deliberately do NOT resolve -- let it time out
-        t.join(timeout=5)
-        assert not t.is_alive()
-        unregister_gateway_notify(isolated_session)
-
-        assert result_holder["result"]["approved"] is False
-
-        post_kwargs = next(kw for name, kw in captured if name == "post_approval_response")
-        assert post_kwargs["choice"] == "timeout"

@@ -46,6 +46,7 @@ from plugins.platforms.telegram.adapter import (  # noqa: E402
     _coerce_duration_seconds,
     _probe_voice_duration_seconds,
 )
+from tools.send_message_tool import _send_telegram  # noqa: E402
 
 
 def _write_wav(path, *, rate, frames):
@@ -186,3 +187,37 @@ async def test_voice_send_omits_unknown_duration(monkeypatch, tmp_path):
     await adapter.send_voice("123", str(audio))
 
     assert adapter._bot.send_voice.await_args.kwargs["duration"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "is_voice", "sender_name"),
+    [("reply.ogg", True, "send_voice"), ("song.mp3", False, "send_audio")],
+)
+async def test_standalone_send_includes_duration_on_thread_retry(
+    monkeypatch, tmp_path, filename, is_voice, sender_name
+):
+    audio = tmp_path / filename
+    audio.write_bytes(b"audio")
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    bot.send_photo = AsyncMock()
+    bot.send_video = AsyncMock()
+    bot.send_voice = AsyncMock()
+    bot.send_audio = AsyncMock()
+    bot.send_document = AsyncMock()
+    sender = getattr(bot, sender_name)
+    sender.side_effect = [
+        Exception("Bad Request: message thread not found"),
+        MagicMock(message_id=3),
+    ]
+    monkeypatch.setattr(sys.modules["telegram"], "Bot", lambda **_kwargs: bot)
+    monkeypatch.setattr(telegram_mod, "_probe_voice_duration_seconds", lambda _path: 314)
+
+    result = await _send_telegram(
+        "token", "-1001234567890", "", media_files=[(str(audio), is_voice)], thread_id="17585"
+    )
+
+    assert result.get("success") is True, result
+    assert sender.await_count == 2
+    assert all(call.kwargs["duration"] == 314 for call in sender.await_args_list)

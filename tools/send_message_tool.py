@@ -1314,6 +1314,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     if _tg_caption is not None and not (ext in _VOICE_EXTS and is_voice):
                         media_kwargs["caption"] = _tg_caption
                         media_kwargs["parse_mode"] = send_parse_mode
+                    if (ext in _VOICE_EXTS and is_voice) or ext in _TELEGRAM_SEND_AUDIO_EXTS:
+                        try:
+                            from plugins.platforms.telegram.adapter import _probe_voice_duration_seconds
+                            duration = await asyncio.to_thread(_probe_voice_duration_seconds, media_path)
+                            if duration is not None:
+                                media_kwargs["duration"] = duration
+                        except Exception:
+                            pass
                     try:
                         if ext in _IMAGE_EXTS and not force_document:
                             last_msg = await bot.send_photo(

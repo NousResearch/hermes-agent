@@ -250,6 +250,20 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     return app
 
 
+def _create_app_for_module(api_server_mod, adapter) -> web.Application:
+    """Like ``_create_app``, but wires middlewares from a reloaded module
+    instance (needed by tests that reload ``api_server`` under an isolated
+    ``HERMES_HOME`` to exercise real cache I/O).
+    """
+    mws = [mw for mw in (api_server_mod.cors_middleware, api_server_mod.security_headers_middleware) if mw is not None]
+    app = web.Application(middlewares=mws)
+    app["api_server_adapter"] = adapter
+    app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    app.router.add_post("/v1/responses", adapter._handle_responses)
+    app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
+    return app
+
+
 @pytest.fixture
 def adapter():
     return _make_adapter()
@@ -316,6 +330,61 @@ class TestChatCompletionsMultimodalHTTP:
 
             assert resp.status == 200, await resp.text()
             assert mock_run.captured["user_message"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_data_url_image_persisted_and_forwarded_to_run_agent(self, tmp_path, monkeypatch):
+        """A data: URL image posted to /v1/chat/completions must reach _run_agent
+        with the original image_url part preserved AND the injected local-path
+        note, proving the HTTP ingress path (not just the normalizer in
+        isolation) drives the gateway-layer persistence.
+        """
+        api_server_mod = _reload_api_server(monkeypatch, tmp_path / "hermes")
+        adapter = api_server_mod.APIServerAdapter(PlatformConfig(enabled=True))
+        app = _create_app_for_module(api_server_mod, adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new=MagicMock()) as mock_run:
+                async def _stub(**kwargs):
+                    mock_run.captured = kwargs
+                    return (
+                        {"final_response": "A cat.", "messages": [], "api_calls": 1},
+                        {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    )
+                mock_run.side_effect = _stub
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "What's in this image?"},
+                                    {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+                                ],
+                            }
+                        ],
+                    },
+                )
+
+            assert resp.status == 200, await resp.text()
+            captured = mock_run.captured["user_message"]
+            assert isinstance(captured, list)
+
+            image_parts = [p for p in captured if p.get("type") == "image_url"]
+            assert image_parts == [{"type": "image_url", "image_url": {"url": _PNG_DATA_URL}}]
+
+            text_parts = [p for p in captured if p.get("type") == "text"]
+            assert len(text_parts) == 2
+            note = text_parts[-1]["text"]
+            assert "saved at:" in note
+            cache_dir = tmp_path / "hermes" / "cache" / "images"
+            assert str(cache_dir) in note
+
+            cached_files = list(cache_dir.glob("*"))
+            assert len(cached_files) == 1
+            assert cached_files[0].read_bytes() == _PNG_BYTES
 
     @pytest.mark.asyncio
     async def test_file_part_returns_400(self, adapter):
@@ -400,6 +469,59 @@ class TestResponsesMultimodalHTTP:
                 {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
             ]
             assert mock_run.captured["user_message"] == expected
+
+    @pytest.mark.asyncio
+    async def test_data_url_image_persisted_and_forwarded_to_run_agent(self, tmp_path, monkeypatch):
+        """Same HTTP-ingress-path guarantee as the chat/completions test above,
+        but for /v1/responses' input_image shape.
+        """
+        api_server_mod = _reload_api_server(monkeypatch, tmp_path / "hermes")
+        adapter = api_server_mod.APIServerAdapter(PlatformConfig(enabled=True))
+        app = _create_app_for_module(api_server_mod, adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new=MagicMock()) as mock_run:
+                async def _stub(**kwargs):
+                    mock_run.captured = kwargs
+                    return (
+                        {"final_response": "ok", "messages": [], "api_calls": 1},
+                        {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    )
+                mock_run.side_effect = _stub
+
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": "Describe."},
+                                    {"type": "input_image", "image_url": _PNG_DATA_URL},
+                                ],
+                            }
+                        ],
+                    },
+                )
+
+            assert resp.status == 200, await resp.text()
+            captured = mock_run.captured["user_message"]
+            assert isinstance(captured, list)
+
+            image_parts = [p for p in captured if p.get("type") == "image_url"]
+            assert image_parts == [{"type": "image_url", "image_url": {"url": _PNG_DATA_URL}}]
+
+            text_parts = [p for p in captured if p.get("type") == "text"]
+            assert len(text_parts) == 2
+            note = text_parts[-1]["text"]
+            assert "saved at:" in note
+            cache_dir = tmp_path / "hermes" / "cache" / "images"
+            assert str(cache_dir) in note
+
+            cached_files = list(cache_dir.glob("*"))
+            assert len(cached_files) == 1
+            assert cached_files[0].read_bytes() == _PNG_BYTES
 
     @pytest.mark.asyncio
     async def test_input_file_returns_400(self, adapter):

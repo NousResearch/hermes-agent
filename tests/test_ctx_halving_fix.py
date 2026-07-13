@@ -360,4 +360,3 @@ class TestContextNotHalvedOnOutputCapError:
         available_out = parse_available_output_tokens_from_error(error_msg)
         safe_out = max(1, available_out - 64)
         assert safe_out == 1
-

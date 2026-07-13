@@ -24,6 +24,7 @@ except ModuleNotFoundError:
     pass
 
 import logging
+import math
 import os
 import shutil
 import sys
@@ -4130,6 +4131,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._account_limits_lock = threading.Lock()
         self._account_limits_label: str | None = None
         self._account_limits_style = "class:status-bar-good"
+        self._account_limits_used_percent: float | None = None
         self._account_limits_provider: str | None = None
         self._account_limits_checked_at = 0.0
         self._account_limits_refreshing = False
@@ -4500,32 +4502,68 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return "class:status-bar-dim"
 
     @staticmethod
-    def _format_account_limits_badge(snapshot: Any) -> str:
-        """Format Codex session and weekly quota remaining for the status bar."""
-        parts: list[str] = []
+    def _weekly_account_usage_percent(snapshot: Any) -> float | None:
+        """Return the finite raw usage for a duration-verified weekly window."""
         for window in getattr(snapshot, "windows", ()) or ():
-            used = getattr(window, "used_percent", None)
-            if used is None:
-                continue
-            label = str(getattr(window, "label", "") or "").strip().lower()
-            if "week" in label:
-                prefix = "W"
-            elif "session" in label or "current" in label:
-                prefix = "S"
-            else:
-                continue
             try:
-                remaining = max(0, min(100, round(100 - float(used))))
+                raw_duration: Any = getattr(window, "limit_window_seconds", None)
+                raw_used: Any = getattr(window, "used_percent", None)
+                duration = float(raw_duration)
+                used = float(raw_used)
             except (TypeError, ValueError):
                 continue
-            parts.append(f"{prefix}{remaining}%")
-        return f"Acct {' '.join(parts[:2])}" if parts else ""
+            if math.isfinite(duration) and math.isfinite(used) and 6 * 86_400 <= duration <= 8 * 86_400:
+                return used
+        return None
+
+    @classmethod
+    def _format_account_limits_badge(
+        cls, snapshot: Any, *, available_width: int | None = None, ascii_fallback: bool = False
+    ) -> str:
+        """Format only the duration-detected Codex weekly quota for the status bar.
+
+        The API's primary/secondary names are positions, not period types. The
+        formatter therefore uses the retained duration and never a label to find
+        the weekly window. ``available_width`` gives deterministic full, compact
+        (no-space), and percent-only forms; the default remains full.
+        """
+        used = cls._weekly_account_usage_percent(snapshot)
+        if used is None:
+            return ""
+        displayed_used = max(0, min(100, round(used)))
+        percent = f"W{displayed_used}%{'+' if used > 100 else ''}"
+        filled = round(displayed_used / 10)
+        on, off = ("#", "-") if ascii_fallback else ("█", "░")
+        gauge = f"[{on * filled}{off * (10 - filled)}]"
+        full = f"{percent} {gauge}"
+        compact = f"{percent}{gauge}"
+        if available_width is None or available_width >= len(full):
+            return full
+        if available_width >= len(compact):
+            return compact
+        if available_width >= len(percent):
+            return percent
+        return ""
 
     @staticmethod
-    def _account_limits_badge_style(label: str) -> str:
-        """Mark an exhausted Codex session or weekly quota as critical."""
-        if re.search(r"(?<!\w)[SW]0%(?!\d)", label or ""):
+    def _account_limits_badge_style(label: str, used_percent: float | None = None) -> str:
+        """Return weekly pressure style, using raw usage when it is available."""
+        if used_percent is None:
+            match = re.search(r"(?<!\w)W(\d+)%([+])?(?!\w)", label or "")
+            if not match:
+                return "class:status-bar-good"
+            used_percent = float(match.group(1))
+            overflow = bool(match.group(2))
+        else:
+            overflow = used_percent > 100
+        if not math.isfinite(used_percent):
+            return "class:status-bar-good"
+        if overflow or used_percent >= 95:
             return "class:status-bar-critical"
+        if used_percent >= 90:
+            return "class:status-bar-bad"
+        if used_percent >= 80:
+            return "class:status-bar-warn"
         return "class:status-bar-good"
 
     def _maybe_refresh_account_limits_badge(self, agent: Any) -> str:
@@ -4544,6 +4582,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             with self._account_limits_lock:
                 self._account_limits_label = None
                 self._account_limits_style = "class:status-bar-good"
+                self._account_limits_used_percent = None
                 self._account_limits_provider = None
                 self._account_limits_checked_at = 0.0
             return ""
@@ -4561,10 +4600,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         def _worker() -> None:
             label = ""
+            weekly_used_percent: float | None = None
             try:
                 from agent.account_usage import fetch_account_usage
 
                 snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+                weekly_used_percent = self._weekly_account_usage_percent(snapshot) if snapshot else None
                 label = self._format_account_limits_badge(snapshot) if snapshot else ""
             except Exception:
                 pass
@@ -4572,7 +4613,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 with self._account_limits_lock:
                     if label:
                         self._account_limits_label = label
-                        self._account_limits_style = self._account_limits_badge_style(label)
+                        self._account_limits_used_percent = weekly_used_percent
+                        self._account_limits_style = self._account_limits_badge_style(label, weekly_used_percent)
                         self._account_limits_provider = provider
                         self._account_limits_checked_at = time.monotonic()
                     elif self._account_limits_provider != provider:
@@ -4737,9 +4779,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         account_limits = self._maybe_refresh_account_limits_badge(agent)
         snapshot["account_limits"] = account_limits
         if account_limits:
-            # Derive the style from this render's label so a freshly depleted
-            # cache entry cannot inherit the preceding green style for one tick.
-            snapshot["account_limits_style"] = self._account_limits_badge_style(account_limits)
+            # Use the current cached raw value when present so fractional usage
+            # crosses thresholds at 80/90/95 before display rounding occurs.
+            snapshot["account_limits_style"] = self._account_limits_badge_style(
+                account_limits, getattr(self, "_account_limits_used_percent", None)
+            )
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:

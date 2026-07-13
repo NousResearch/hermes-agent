@@ -92,6 +92,9 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].label == "Session"
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
+    assert snapshot.windows[0].limit_window_seconds == 18_000.0
+    assert snapshot.windows[1].label == "Weekly"
+    assert snapshot.windows[1].limit_window_seconds == 604_800.0
     assert "Credits balance: $12.50" in snapshot.details
 
 
@@ -201,3 +204,48 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+def test_codex_windows_are_classified_by_duration_not_position(monkeypatch):
+    payload = {
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 31,
+                "reset_at": 1_900_000_000,
+                "limit_window_seconds": 604_800,
+            },
+        }
+    }
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {"api_key": "token", "base_url": "https://example.test"},
+    )
+    monkeypatch.setattr("agent.account_usage._read_codex_tokens", lambda: {"tokens": {}})
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=15.0: _Client(payload))
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert [window.label for window in snapshot.windows] == ["Weekly"]
+    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
+
+
+def test_codex_missing_or_unfamiliar_window_duration_is_generic(monkeypatch):
+    payload = {
+        "rate_limit": {
+            "primary_window": {"used_percent": 10, "reset_at": 1_900_000_000, "limit_window_seconds": 43_200},
+            "secondary_window": {"used_percent": 20, "reset_at": 1_900_500_000},
+        }
+    }
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {"api_key": "token", "base_url": "https://example.test"},
+    )
+    monkeypatch.setattr("agent.account_usage._read_codex_tokens", lambda: {"tokens": {}})
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=15.0: _Client(payload))
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert [window.label for window in snapshot.windows] == ["Session", "Usage window"]
+    assert snapshot.windows[1].reset_at == datetime.fromtimestamp(1_900_500_000, tz=timezone.utc)

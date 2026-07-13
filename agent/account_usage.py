@@ -28,6 +28,10 @@ class AccountUsageWindow:
     used_percent: Optional[float] = None
     reset_at: Optional[datetime] = None
     detail: Optional[str] = None
+    # The Codex API does not guarantee that primary/secondary positions retain
+    # their historical meanings. Keep the reported duration so consumers can
+    # identify a period without inferring it from its position or display label.
+    limit_window_seconds: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -512,16 +516,40 @@ def _fetch_codex_account_usage(
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+    for key in ("primary_window", "secondary_window"):
         window = rate_limit.get(key) or {}
         used = window.get("used_percent")
         if used is None:
             continue
+        raw_duration: Any = window.get("limit_window_seconds")
+        raw_used: Any = window.get("used_percent")
+        try:
+            duration = float(raw_duration)
+        except (TypeError, ValueError):
+            duration = None
+        if duration is not None and not math.isfinite(duration):
+            duration = None
+        try:
+            used_percent = float(raw_used)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(used_percent):
+            continue
+        # Codex may reorder its rate-limit windows. A weekly period is six to
+        # eight days; other known short windows are session-like, while an
+        # absent or unfamiliar duration stays deliberately generic.
+        if duration is not None and 6 * 86_400 <= duration <= 8 * 86_400:
+            label = "Weekly"
+        elif duration is not None and 0 < duration < 6 * 86_400:
+            label = "Session"
+        else:
+            label = "Usage window"
         windows.append(
             AccountUsageWindow(
                 label=label,
-                used_percent=float(used),
+                used_percent=used_percent,
                 reset_at=_parse_dt(window.get("reset_at")),
+                limit_window_seconds=duration,
             )
         )
     details: list[str] = []

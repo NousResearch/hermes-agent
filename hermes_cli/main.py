@@ -353,26 +353,22 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Falls back to ~/.hermes/active_profile for sticky default.
 # ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
-    """Pre-parse --profile/-p and set HERMES_HOME before imports."""
+    """Pre-parse the UAC handoff home and profile flags before imports."""
     explicit_hermes_home = None
     home_consume = 0
-    home_index = None
-    for index, arg in enumerate(sys.argv[1:]):
-        if arg == "--hermes-home" and index + 2 <= len(sys.argv) - 1:
-            explicit_hermes_home = sys.argv[index + 2]
-            home_consume = 2
-            home_index = index
-            break
-        if arg.startswith("--hermes-home="):
-            explicit_hermes_home = arg.split("=", 1)[1]
-            home_consume = 1
-            home_index = index
-            break
+    # The elevated Windows launcher emits this private flag first. Scanning
+    # later arguments would consume flags owned by subcommands or child argv.
+    handoff_arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    if handoff_arg == "--hermes-home" and len(sys.argv) > 2:
+        explicit_hermes_home = sys.argv[2]
+        home_consume = 2
+    elif handoff_arg.startswith("--hermes-home="):
+        explicit_hermes_home = handoff_arg.split("=", 1)[1]
+        home_consume = 1
 
     if explicit_hermes_home:
         os.environ["HERMES_HOME"] = explicit_hermes_home
-        start = home_index + 1
-        sys.argv = sys.argv[:start] + sys.argv[start + home_consume :]
+        sys.argv = [sys.argv[0], *sys.argv[1 + home_consume :]]
 
     argv = sys.argv[1:]
     profile_name = None

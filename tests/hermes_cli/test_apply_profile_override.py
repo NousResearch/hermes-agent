@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 
 
 def _run_apply_profile_override(
@@ -73,6 +74,71 @@ def test_explicit_hermes_home_equals_form_is_applied_and_removed(tmp_path, monke
     _apply_profile_override()
 
     assert os.environ["HERMES_HOME"] == str(target)
+    assert sys.argv == ["hermes", "gateway", "status"]
+
+
+@pytest.mark.parametrize(
+    "argv_template",
+    [
+        ["hermes", "gateway", "status", "--hermes-home", "{target}"],
+        ["hermes", "gateway", "status", "--", "--hermes-home={target}"],
+        [
+            "hermes",
+            "mcp",
+            "add",
+            "child",
+            "--command",
+            "child-command",
+            "--args",
+            "run",
+            "--hermes-home",
+            "{target}",
+        ],
+    ],
+    ids=["normal-command", "double-dash", "mcp-add-args"],
+)
+def test_nonleading_hermes_home_argument_is_preserved(
+    tmp_path, monkeypatch, argv_template
+):
+    target = tmp_path / "child-home"
+    argv = [arg.format(target=target) for arg in argv_template]
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(sys, "argv", list(argv))
+
+    from hermes_cli.main import _apply_profile_override
+
+    _apply_profile_override()
+
+    assert os.environ.get("HERMES_HOME") is None
+    assert sys.argv == argv
+
+
+def test_explicit_profile_overrides_handoff_hermes_home(tmp_path, monkeypatch):
+    handoff_home = tmp_path / ".hermes" / "profiles" / "alice"
+    profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+    handoff_home.mkdir(parents=True)
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes",
+            "--hermes-home",
+            str(handoff_home),
+            "--profile",
+            "coder",
+            "gateway",
+            "status",
+        ],
+    )
+
+    from hermes_cli.main import _apply_profile_override
+
+    _apply_profile_override()
+
+    assert os.environ["HERMES_HOME"] == str(profile_home)
     assert sys.argv == ["hermes", "gateway", "status"]
 
 

@@ -1,0 +1,5 @@
+name: agnes-provider
+kind: model-provider
+version: 1.0.0
+description: Agnes AI (Free / Default tier) — OpenAI-compatible omni-modal API
+author: wangzengzhi

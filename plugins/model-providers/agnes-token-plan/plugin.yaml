@@ -1,0 +1,5 @@
+name: agnes-token-plan-provider
+kind: model-provider
+version: 1.0.0
+description: Agnes AI Token Plan — subscription tier with higher RPM limits
+author: wangzengzhi

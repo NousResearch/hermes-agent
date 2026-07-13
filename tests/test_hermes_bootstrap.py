@@ -246,6 +246,8 @@ class TestEntryPointsImportBootstrap:
         "gateway/run.py",        # gateway
         "batch_runner.py",       # batch mode
         "cli.py",                # legacy direct-launch CLI
+        "tui_gateway/entry.py",       # Ink TUI backend (spawned by ui-tui gatewayClient)
+        "tui_gateway/slash_worker.py",  # per-session slash-command worker (-m tui_gateway.slash_worker)
     ]
 
     @pytest.mark.parametrize("path", ENTRY_POINTS)
@@ -311,6 +313,92 @@ class TestEntryPointsImportBootstrap:
             f"configured before anything else initializes.  Move the "
             f"'import hermes_bootstrap' line to be the first import."
         )
+
+
+class TestBootstrapGuardSurvivesCorruption:
+    """A *present but corrupted* hermes_bootstrap must not brick an entry
+    point.  When a source file is mangled mid-``hermes update`` (observed on
+    Windows NTFS — pip's py-modules scan racing antivirus), importing it
+    raises ``SyntaxError`` rather than ``ModuleNotFoundError``.  The guarded
+    import in each entry point must swallow that too, otherwise the CLI
+    crash-loops and the user can't run ``hermes update`` to repair the file
+    (issue #60384).
+
+    We extract each entry point's *real* guarded-import block from source and
+    execute it in a subprocess against a bootstrap module that raises
+    SyntaxError on import.  This fails against a ``except ModuleNotFoundError``
+    guard and passes once the guard also covers corruption.
+    """
+
+    ENTRY_POINTS = TestEntryPointsImportBootstrap.ENTRY_POINTS
+
+    @staticmethod
+    def _extract_guard(source: str):
+        """Return the source text of the ``try: import hermes_bootstrap``
+        guard block, or None if the entry point imports it unguarded."""
+        import ast
+
+        tree = ast.parse(source)
+        for node in ast.iter_child_nodes(tree):
+            if (
+                isinstance(node, ast.Try)
+                and len(node.body) == 1
+                and isinstance(node.body[0], ast.Import)
+                and node.body[0].names[0].name == "hermes_bootstrap"
+            ):
+                return ast.get_source_segment(source, node)
+        return None
+
+    @pytest.mark.parametrize("path", ENTRY_POINTS)
+    def test_corrupted_bootstrap_does_not_propagate(self, path, tmp_path):
+        import pathlib
+
+        repo_root = pathlib.Path(__file__).resolve().parent.parent
+        source = (repo_root / path).read_text(encoding="utf-8")
+
+        guard = self._extract_guard(source)
+        assert guard is not None, (
+            f"{path}: expected a guarded ``try: import hermes_bootstrap`` "
+            f"block so a corrupted bootstrap can't brick recovery"
+        )
+
+        # A bootstrap that is present but unimportable — exactly the shape the
+        # issue reports: ``SyntaxError: expected 'except' or 'finally' block``.
+        broken = tmp_path / "hermes_bootstrap.py"
+        broken.write_text(
+            "# simulated corruption mid-`hermes update` (issue #60384)\n"
+            "import asyncio.coroutines\n"
+            "try:\n"
+            "    x = 1\n",
+            encoding="utf-8",
+        )
+
+        # Put the broken module first on sys.path so it shadows the real one,
+        # then run the entry point's actual guard verbatim.  If the guard only
+        # caught ModuleNotFoundError the SyntaxError would propagate and the
+        # child would exit non-zero.
+        script = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(tmp_path)!r})\n"
+            f"{guard}\n"
+            "print('SURVIVED')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"{path}: guard let a corrupted bootstrap crash the entry point:\n"
+            f"  stdout: {result.stdout!r}\n"
+            f"  stderr: {result.stderr!r}"
+        )
+        assert b"SURVIVED" in result.stdout
+        # The import error must be swallowed, not re-raised: no traceback should
+        # reach stderr. (The guard is allowed to print its own one-line warning,
+        # which names the exception type — so we look for an actual traceback,
+        # not the substring "SyntaxError".)
+        assert b"Traceback (most recent call last)" not in result.stderr
 
 
 class TestHardenImportPath:

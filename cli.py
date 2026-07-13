@@ -17,11 +17,26 @@ Usage:
 try:
     import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError:
-    # Graceful fallback when hermes_bootstrap isn't registered in the venv
-    # yet — happens during partial ``hermes update`` where git-reset landed
-    # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
-    # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
+    # Expected/benign: the module isn't registered in the venv yet — a partial
+    # ``hermes update`` where git-reset landed new code but ``uv pip install
+    # -e .`` hasn't finished.  Self-heals on the next update, so stay silent.
     pass
+except Exception as _bootstrap_err:  # noqa: BLE001 — recovery must never be blocked
+    # Abnormal: the file is present but unimportable — e.g. corrupted mid-update
+    # on Windows NTFS, raising SyntaxError on import (issue #60384).  Bootstrap
+    # only sets up UTF-8 stdio (no-op on POSIX); crashing here would block the
+    # ``hermes update`` needed to repair it.  Warn so the corruption is visible,
+    # but keep starting.
+    try:
+        import sys as _sys
+        print(
+            "hermes: warning: could not import hermes_bootstrap "
+            f"({type(_bootstrap_err).__name__}); UTF-8 stdio setup skipped. "
+            "Run 'hermes update' to repair.",
+            file=_sys.stderr,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 import logging
 import os

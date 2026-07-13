@@ -12,9 +12,31 @@ Protocol: reads JSON lines from stdin {id, command}, writes {id, ok, output|erro
 # name won't collide with a user package), and it owns the canonical
 # path-hardening logic shared with the other entry points — #51693 added the
 # guard to ``entry.py``/``acp_adapter/entry.py`` but missed this child.
-import hermes_bootstrap
-
-hermes_bootstrap.harden_import_path()
+#
+# Guarded like the other entry points so a missing or corrupted bootstrap
+# (issue #60384) can't brick this child; ``harden_import_path()`` runs only on
+# a successful import.
+try:
+    import hermes_bootstrap
+except ModuleNotFoundError:
+    # Expected/benign: not registered in the venv yet during a partial update;
+    # self-heals on the next update.  Hardening/UTF-8 setup skipped this run.
+    pass
+except Exception as _bootstrap_err:  # noqa: BLE001 — recovery must never be blocked
+    # Abnormal: present but unimportable (e.g. corrupted mid-update).  Warn but
+    # keep starting; hardening is skipped this run.
+    try:
+        import sys as _sys
+        print(
+            "hermes: warning: could not import hermes_bootstrap "
+            f"({type(_bootstrap_err).__name__}); import-path hardening and UTF-8 "
+            "stdio setup skipped. Run 'hermes update' to repair.",
+            file=_sys.stderr,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+else:
+    hermes_bootstrap.harden_import_path()
 
 import argparse
 import contextlib

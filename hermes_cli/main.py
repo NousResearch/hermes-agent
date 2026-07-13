@@ -47,19 +47,37 @@ Usage:
 # UTF-8 stdio on Windows so print()/subprocess children don't hit
 # UnicodeEncodeError with non-ASCII characters.  No-op on POSIX.
 #
-# Guarded against ModuleNotFoundError because ``hermes_bootstrap`` is a
-# top-level module registered via pyproject.toml's ``py-modules`` list.
-# When the user upgrades code via ``git pull`` (or ``hermes update``
-# crashes between ``git reset --hard`` and ``uv pip install -e .``), the
-# new code references ``hermes_bootstrap`` but the editable install's
-# ``.pth`` file still points at the old set of top-level modules.  Without
-# this guard, hermes crashes on import and the user can't run
-# ``hermes update`` to recover.  Missing the bootstrap means UTF-8 stdio
-# setup is skipped on Windows — degraded, not broken.  POSIX is unaffected.
+# Guarded broadly because ``hermes_bootstrap`` is a top-level module
+# registered via pyproject.toml's ``py-modules`` list, and importing it must
+# never brick the CLI.  Two failure modes are covered:
+#   (1) the module isn't registered in the venv yet — a partial ``hermes
+#       update`` where ``git reset --hard`` landed new code but ``uv pip
+#       install -e .`` didn't finish, so the ``.pth`` still points at the old
+#       set of top-level modules (ModuleNotFoundError); and
+#   (2) the file is present but broken — e.g. a source file corrupted
+#       mid-update on Windows NTFS, which raises SyntaxError on import
+#       (issue #60384).
+# In both cases hermes must still start: crashing here would block the very
+# ``hermes update`` needed to recover.  Missing the bootstrap only skips
+# UTF-8 stdio setup on Windows — degraded, not broken.  POSIX is unaffected.
 try:
     import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError:
+    # Case (1) above: expected during a partial update, self-heals — stay silent.
     pass
+except Exception as _bootstrap_err:  # noqa: BLE001 — recovery must never be blocked
+    # Case (2) above: present but unimportable (corruption).  Warn so it's
+    # visible, but keep starting — crashing would block the recovering update.
+    try:
+        import sys as _sys
+        print(
+            "hermes: warning: could not import hermes_bootstrap "
+            f"({type(_bootstrap_err).__name__}); UTF-8 stdio setup skipped. "
+            "Run 'hermes update' to repair.",
+            file=_sys.stderr,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 import os
 import sys

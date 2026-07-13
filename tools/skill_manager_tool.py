@@ -93,7 +93,12 @@ def _reset_background_review_read_marks() -> None:
 # Import security scanner — external hub installs always get scanned;
 # agent-created skills only get scanned when skills.guard_agent_created is on.
 try:
-    from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+    from tools.skills_guard import (
+        content_hash,
+        format_scan_report,
+        scan_skill,
+        should_allow_install,
+    )
     _GUARD_AVAILABLE = True
 except ImportError:
     _GUARD_AVAILABLE = False
@@ -134,15 +139,34 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
             report = format_scan_report(result)
             return f"Security scan blocked this skill ({reason}):\n{report}"
         if allowed is None:
-            # "ask" verdict — for agent-created skills this means dangerous
-            # findings were detected.  Surface as an error so the agent can
-            # retry with the flagged content removed.
-            report = format_scan_report(result)
-            logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
-            return f"Security scan blocked this skill ({reason}):\n{report}"
+            return _request_dangerous_skill_approval(skill_dir, result, reason)
     except Exception as e:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
+
+
+def _request_dangerous_skill_approval(skill_dir: Path, result, reason: str) -> Optional[str]:
+    """Ask the operator to approve dangerous agent-created skill content."""
+    report = format_scan_report(result)
+    try:
+        from tools.approval import request_tool_approval
+
+        decision = request_tool_approval(
+            "skill_manage",
+            f"Dangerous findings in agent-created skill '{result.skill_name}':\n{report}",
+            rule_key=f"skills_guard:agent-created:{content_hash(skill_dir)}",
+        )
+    except Exception as e:
+        logger.warning("Skill approval failed for %s: %s", skill_dir, e, exc_info=True)
+        return f"Security scan blocked this skill (approval failed):\n{report}"
+
+    if decision.get("approved"):
+        logger.warning("Operator approved dangerous agent-created skill: %s", reason)
+        return None
+
+    message = decision.get("message") or reason
+    logger.warning("Agent-created skill denied (dangerous findings): %s", message)
+    return f"Security scan blocked this skill ({message}):\n{report}"
 
 import yaml
 

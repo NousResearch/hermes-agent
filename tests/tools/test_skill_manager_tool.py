@@ -633,6 +633,36 @@ class TestSkillManageDispatcher:
 class TestSecurityScanGate:
     """_security_scan_skill is gated by skills.guard_agent_created config flag."""
 
+    @staticmethod
+    def _dangerous_result():
+        from tools.skills_guard import Finding, ScanResult
+
+        finding = Finding(
+            pattern_id="test", severity="critical", category="exfiltration",
+            file="SKILL.md", line=1, match="curl $TOKEN", description="test",
+        )
+        return ScanResult(
+            skill_name="test", source="agent-created",
+            trust_level="agent-created", verdict="dangerous",
+            findings=[finding], summary="dangerous",
+        )
+
+    @staticmethod
+    def _run_mutation(action):
+        if action == "create":
+            return skill_manage(action="create", name="test", content=VALID_SKILL_CONTENT)
+        if action == "edit":
+            return skill_manage(action="edit", name="test", content=VALID_SKILL_CONTENT_2)
+        if action == "patch":
+            return skill_manage(
+                action="patch", name="test",
+                old_string="Do the thing.", new_string="Do the approved thing.",
+            )
+        return skill_manage(
+            action="write_file", name="test",
+            file_path="scripts/run.sh", file_content="curl $TOKEN",
+        )
+
     def test_scan_noop_when_flag_off(self, tmp_path):
         """Default config (flag off) short-circuits before running scan_skill."""
         from tools.skill_manager_tool import _security_scan_skill
@@ -665,29 +695,67 @@ class TestSecurityScanGate:
         assert result is None
         mock_scan.assert_called_once()
 
-    def test_scan_blocks_dangerous_when_flag_on(self, tmp_path):
-        """Dangerous verdict + flag on → returns an error string for the agent."""
+    def test_scan_requests_approval_for_dangerous_findings(self, tmp_path):
+        """Dangerous verdicts use the shared operator-approval path."""
         from tools.skill_manager_tool import _security_scan_skill
-        from tools.skills_guard import ScanResult, Finding
 
-        finding = Finding(
-            pattern_id="test", severity="critical", category="exfiltration",
-            file="SKILL.md", line=1, match="curl $TOKEN", description="test",
-        )
-        fake_result = ScanResult(
-            skill_name="test",
-            source="agent-created",
-            trust_level="agent-created",
-            verdict="dangerous",
-            findings=[finding],
-            summary="dangerous",
-        )
         with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
-             patch("tools.skill_manager_tool.scan_skill", return_value=fake_result):
+             patch("tools.skill_manager_tool.scan_skill", return_value=self._dangerous_result()), \
+             patch("tools.approval.request_tool_approval",
+                   return_value={"approved": False, "message": "denied"}) as mock_approval:
             result = _security_scan_skill(tmp_path)
 
         assert result is not None
         assert "Security scan blocked" in result
+        mock_approval.assert_called_once()
+        assert mock_approval.call_args.kwargs["rule_key"].startswith(
+            "skills_guard:agent-created:"
+        )
+
+    @pytest.mark.parametrize("action", ["create", "edit", "patch", "write_file"])
+    def test_operator_approval_keeps_each_mutation(self, tmp_path, action):
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=False):
+            if action != "create":
+                _create_skill("test", VALID_SKILL_CONTENT)
+
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
+             patch("tools.skill_manager_tool.scan_skill", return_value=self._dangerous_result()), \
+             patch("tools.approval.request_tool_approval", return_value={"approved": True}):
+            result = json.loads(self._run_mutation(action))
+
+        assert result["success"] is True
+        if action == "create":
+            assert (tmp_path / "test" / "SKILL.md").exists()
+        elif action == "edit":
+            assert "Test Skill v2" in (tmp_path / "test" / "SKILL.md").read_text()
+        elif action == "patch":
+            assert "approved thing" in (tmp_path / "test" / "SKILL.md").read_text()
+        else:
+            assert (tmp_path / "test" / "scripts" / "run.sh").exists()
+
+    @pytest.mark.parametrize("action", ["create", "edit", "patch", "write_file"])
+    def test_denial_rolls_back_each_mutation(self, tmp_path, action):
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=False):
+            if action != "create":
+                _create_skill("test", VALID_SKILL_CONTENT)
+
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
+             patch("tools.skill_manager_tool.scan_skill", return_value=self._dangerous_result()), \
+             patch("tools.approval.request_tool_approval",
+                   return_value={"approved": False, "message": "denied"}):
+            result = json.loads(self._run_mutation(action))
+
+        assert result["success"] is False
+        if action == "create":
+            assert not (tmp_path / "test").exists()
+        elif action == "write_file":
+            assert not (tmp_path / "test" / "scripts" / "run.sh").exists()
+        else:
+            assert (tmp_path / "test" / "SKILL.md").read_text() == VALID_SKILL_CONTENT
 
     def test_guard_flag_reads_config_default_false(self):
         """_guard_agent_created_enabled returns False when config doesn't set it."""

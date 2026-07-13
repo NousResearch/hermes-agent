@@ -1,14 +1,12 @@
 """Tests for gateway/mirror.py — session mirroring."""
 
 import json
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import gateway.mirror as mirror_mod
 from gateway.mirror import (
     mirror_to_session,
     _find_session_id,
-    _append_to_jsonl,
 )
 
 
@@ -77,6 +75,46 @@ class TestFindSessionId:
 
         assert result == "sess_topic_a"
 
+    def test_user_id_disambiguates_same_group_chat(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "alice": {
+                "session_id": "sess_alice",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id": "alice"},
+                "updated_at": "2026-01-01T00:00:00",
+            },
+            "bob": {
+                "session_id": "sess_bob",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id": "bob"},
+                "updated_at": "2026-02-01T00:00:00",
+            },
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+            result = _find_session_id("telegram", "-1001", user_id="alice")
+
+        assert result == "sess_alice"
+
+    def test_ambiguous_same_group_chat_without_user_id_returns_none(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "alice": {
+                "session_id": "sess_alice",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id": "alice"},
+                "updated_at": "2026-01-01T00:00:00",
+            },
+            "bob": {
+                "session_id": "sess_bob",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id": "bob"},
+                "updated_at": "2026-02-01T00:00:00",
+            },
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+            result = _find_session_id("telegram", "-1001")
+
+        assert result is None
+
     def test_no_match_returns_none(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {
             "sess": {
@@ -112,33 +150,6 @@ class TestFindSessionId:
         assert result == "sess_1"
 
 
-class TestAppendToJsonl:
-    def test_appends_message(self, tmp_path):
-        sessions_dir = tmp_path / "sessions"
-        sessions_dir.mkdir()
-
-        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir):
-            _append_to_jsonl("sess_1", {"role": "assistant", "content": "Hello"})
-
-        transcript = sessions_dir / "sess_1.jsonl"
-        lines = transcript.read_text().strip().splitlines()
-        assert len(lines) == 1
-        msg = json.loads(lines[0])
-        assert msg["role"] == "assistant"
-        assert msg["content"] == "Hello"
-
-    def test_appends_multiple_messages(self, tmp_path):
-        sessions_dir = tmp_path / "sessions"
-        sessions_dir.mkdir()
-
-        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir):
-            _append_to_jsonl("sess_1", {"role": "assistant", "content": "msg1"})
-            _append_to_jsonl("sess_1", {"role": "assistant", "content": "msg2"})
-
-        transcript = sessions_dir / "sess_1.jsonl"
-        lines = transcript.read_text().strip().splitlines()
-        assert len(lines) == 2
-
 
 class TestMirrorToSession:
     def test_successful_mirror(self, tmp_path):
@@ -152,15 +163,16 @@ class TestMirrorToSession:
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
-             patch("gateway.mirror._append_to_sqlite"):
+             patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
             result = mirror_to_session("telegram", "12345", "Hello!", source_label="cli")
 
         assert result is True
 
-        # Check JSONL was written
-        transcript = sessions_dir / "sess_abc.jsonl"
-        assert transcript.exists()
-        msg = json.loads(transcript.read_text().strip())
+        # Check SQLite writer was called with the mirror message
+        mock_sqlite.assert_called_once()
+        call_args = mock_sqlite.call_args
+        assert call_args[0][0] == "sess_abc"
+        msg = call_args[0][1]
         assert msg["content"] == "Hello!"
         assert msg["role"] == "assistant"
         assert msg["mirror"] is True
@@ -182,12 +194,41 @@ class TestMirrorToSession:
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
-             patch("gateway.mirror._append_to_sqlite"):
+             patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
             result = mirror_to_session("telegram", "-1001", "Hello topic!", source_label="cron", thread_id="10")
 
         assert result is True
-        assert (sessions_dir / "sess_topic_a.jsonl").exists()
-        assert not (sessions_dir / "sess_topic_b.jsonl").exists()
+        mock_sqlite.assert_called_once()
+        assert mock_sqlite.call_args[0][0] == "sess_topic_a"
+
+    def test_successful_mirror_uses_user_id_for_group_session(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "alice": {
+                "session_id": "sess_alice",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id": "alice"},
+                "updated_at": "2026-01-01T00:00:00",
+            },
+            "bob": {
+                "session_id": "sess_bob",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id": "bob"},
+                "updated_at": "2026-02-01T00:00:00",
+            },
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
+            result = mirror_to_session(
+                "telegram",
+                "-1001",
+                "Hello group!",
+                source_label="cli",
+                user_id="alice",
+            )
+
+        assert result is True
+        mock_sqlite.assert_called_once()
+        assert mock_sqlite.call_args[0][0] == "sess_alice"
 
     def test_no_matching_session(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {})

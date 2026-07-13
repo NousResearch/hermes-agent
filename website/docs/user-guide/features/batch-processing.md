@@ -20,7 +20,7 @@ python batch_runner.py \
     --dataset_file=data/prompts.jsonl \
     --batch_size=10 \
     --run_name=my_first_run \
-    --model=anthropic/claude-sonnet-4-20250514 \
+    --model=anthropic/claude-sonnet-4.6 \
     --num_workers=4
 
 # Resume an interrupted run
@@ -33,6 +33,10 @@ python batch_runner.py \
 # List available toolset distributions
 python batch_runner.py --list_distributions
 ```
+
+:::tip Predictable cost at scale
+Batch runs spin up many concurrent agent sessions, each making model calls and tool calls. A [Nous Portal](/user-guide/features/tool-gateway) subscription bundles model access plus web search, image gen, TTS, and cloud browsers under one bill — useful when you want stable cost-per-trajectory without juggling rate limits across five vendor accounts. Set up with `hermes setup --portal`, then point `--model` at a Nous model.
+:::
 
 ## Dataset Format
 
@@ -56,7 +60,7 @@ Entries can optionally include:
 | `--batch_size` | (required) | Prompts per batch |
 | `--run_name` | (required) | Name for this run (used for output dir and checkpointing) |
 | `--distribution` | `"default"` | Toolset distribution to sample from |
-| `--model` | `claude-sonnet-4-20250514` | Model to use |
+| `--model` | `claude-sonnet-4.6` | Model to use |
 | `--base_url` | `https://openrouter.ai/api/v1` | API base URL |
 | `--api_key` | (env var) | API key for model |
 | `--max_turns` | `10` | Maximum tool-calling iterations per prompt |
@@ -79,7 +83,7 @@ Entries can optionally include:
 
 | Parameter | Description |
 |-----------|-------------|
-| `--reasoning_effort` | Effort level: `xhigh`, `high`, `medium`, `low`, `minimal`, `none` |
+| `--reasoning_effort` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
 | `--reasoning_disabled` | Completely disable reasoning/thinking tokens |
 
 ### Advanced Options
@@ -127,7 +131,7 @@ Each line in `trajectories.jsonl` is a JSON object:
   "metadata": {
     "batch_num": 2,
     "timestamp": "2026-01-15T10:30:00",
-    "model": "anthropic/claude-sonnet-4-20250514"
+    "model": "anthropic/claude-sonnet-4.6"
   },
   "completed": true,
   "partial": false,
@@ -193,7 +197,7 @@ python batch_runner.py \
     --dataset_file=data/coding_prompts.jsonl \
     --batch_size=20 \
     --run_name=coding_v1 \
-    --model=anthropic/claude-sonnet-4-20250514 \
+    --model=anthropic/claude-sonnet-4.6 \
     --num_workers=8 \
     --distribution=default \
     --max_turns=15

@@ -17,35 +17,20 @@ Usage:
 """
 
 import json
+import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.usage_pricing import (
     CanonicalUsage,
-    DEFAULT_PRICING,
     estimate_usage_cost,
     format_duration_compact,
-    get_pricing,
     has_known_pricing,
 )
 
-_DEFAULT_PRICING = DEFAULT_PRICING
 
-
-def _has_known_pricing(model_name: str, provider: str = None, base_url: str = None) -> bool:
-    """Check if a model has known pricing (vs unknown/custom endpoint)."""
-    return has_known_pricing(model_name, provider=provider, base_url=base_url)
-
-
-def _get_pricing(model_name: str) -> Dict[str, float]:
-    """Look up pricing for a model. Uses fuzzy matching on model name.
-
-    Returns _DEFAULT_PRICING (zero cost) for unknown/custom models —
-    we can't assume costs for self-hosted endpoints, local inference, etc.
-    """
-    return get_pricing(model_name)
 
 
 def _estimate_cost(
@@ -55,8 +40,8 @@ def _estimate_cost(
     *,
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
-    provider: str = None,
-    base_url: str = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> tuple[float, str]:
     """Estimate the USD cost for a session row or a model/token tuple."""
     if isinstance(session_or_model, dict):
@@ -87,9 +72,6 @@ def _estimate_cost(
     return float(result.amount_usd or 0.0), result.status
 
 
-def _format_duration(seconds: float) -> str:
-    """Format seconds into a human-readable duration string."""
-    return format_duration_compact(seconds)
 
 
 def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
@@ -134,6 +116,7 @@ class InsightsEngine:
         # Gather raw data
         sessions = self._get_sessions(cutoff, source)
         tool_usage = self._get_tool_usage(cutoff, source)
+        skill_usage = self._get_skill_usage(cutoff, source)
         message_stats = self._get_message_stats(cutoff, source)
 
         if not sessions:
@@ -145,15 +128,25 @@ class InsightsEngine:
                 "models": [],
                 "platforms": [],
                 "tools": [],
+                "skills": {
+                    "summary": {
+                        "total_skill_loads": 0,
+                        "total_skill_edits": 0,
+                        "total_skill_actions": 0,
+                        "distinct_skills_used": 0,
+                    },
+                    "top_skills": [],
+                },
                 "activity": {},
                 "top_sessions": [],
             }
 
         # Compute insights
-        overview = self._compute_overview(sessions, message_stats)
-        models = self._compute_model_breakdown(sessions)
+        models = self._compute_model_breakdown(sessions, cutoff, source)
+        overview = self._compute_overview(sessions, message_stats, models)
         platforms = self._compute_platform_breakdown(sessions)
         tools = self._compute_tool_breakdown(tool_usage)
+        skills = self._compute_skill_breakdown(skill_usage)
         activity = self._compute_activity_patterns(sessions)
         top_sessions = self._compute_top_sessions(sessions)
 
@@ -166,6 +159,7 @@ class InsightsEngine:
             "models": models,
             "platforms": platforms,
             "tools": tools,
+            "skills": skills,
             "activity": activity,
             "top_sessions": top_sessions,
         }
@@ -179,7 +173,7 @@ class InsightsEngine:
                      "message_count, tool_call_count, input_tokens, output_tokens, "
                      "cache_read_tokens, cache_write_tokens, billing_provider, "
                      "billing_base_url, billing_mode, estimated_cost_usd, "
-                     "actual_cost_usd, cost_status, cost_source")
+                     "actual_cost_usd, cost_status, cost_source, api_call_count")
 
     # Pre-computed query strings — f-string evaluated once at class definition,
     # not at runtime, so no user-controlled value can alter the query structure.
@@ -294,6 +288,82 @@ class InsightsEngine:
             for name, count in tool_counts.most_common()
         ]
 
+    def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+        """Extract per-skill usage from assistant tool calls."""
+        skill_counts: Dict[str, Dict[str, Any]] = {}
+
+        if source:
+            cursor = self._conn.execute(
+                """SELECT m.tool_calls, m.timestamp
+                   FROM messages m
+                   JOIN sessions s ON s.id = m.session_id
+                   WHERE s.started_at >= ? AND s.source = ?
+                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
+                (cutoff, source),
+            )
+        else:
+            cursor = self._conn.execute(
+                """SELECT m.tool_calls, m.timestamp
+                   FROM messages m
+                   JOIN sessions s ON s.id = m.session_id
+                   WHERE s.started_at >= ?
+                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
+                (cutoff,),
+            )
+
+        for row in cursor.fetchall():
+            try:
+                calls = row["tool_calls"]
+                if isinstance(calls, str):
+                    calls = json.loads(calls)
+                if not isinstance(calls, list):
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            timestamp = row["timestamp"]
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                func = call.get("function", {})
+                tool_name = func.get("name")
+                if tool_name not in {"skill_view", "skill_manage"}:
+                    continue
+
+                args = func.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                if not isinstance(args, dict):
+                    continue
+
+                skill_name = args.get("name")
+                if not isinstance(skill_name, str) or not skill_name.strip():
+                    continue
+
+                entry = skill_counts.setdefault(
+                    skill_name,
+                    {
+                        "skill": skill_name,
+                        "view_count": 0,
+                        "manage_count": 0,
+                        "last_used_at": None,
+                    },
+                )
+                if tool_name == "skill_view":
+                    entry["view_count"] += 1
+                else:
+                    entry["manage_count"] += 1
+
+                if timestamp is not None and (
+                    entry["last_used_at"] is None or timestamp > entry["last_used_at"]
+                ):
+                    entry["last_used_at"] = timestamp
+
+        return list(skill_counts.values())
+
     def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:
         """Get aggregate message statistics."""
         if source:
@@ -330,7 +400,12 @@ class InsightsEngine:
     # Computation
     # =========================================================================
 
-    def _compute_overview(self, sessions: List[Dict], message_stats: Dict) -> Dict:
+    def _compute_overview(
+        self,
+        sessions: List[Dict],
+        message_stats: Dict,
+        models: Optional[List[Dict]] = None,
+    ) -> Dict:
         """Compute high-level overview statistics."""
         total_input = sum(s.get("input_tokens") or 0 for s in sessions)
         total_output = sum(s.get("output_tokens") or 0 for s in sessions)
@@ -357,10 +432,13 @@ class InsightsEngine:
                 included_cost_sessions += 1
             elif status == "unknown":
                 unknown_cost_sessions += 1
-            if _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url")):
+            if has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url")):
                 models_with_pricing.add(display)
             else:
                 models_without_pricing.add(display)
+
+        if models:
+            total_cost = sum(float(m.get("cost") or 0.0) for m in models)
 
         # Session duration stats (guard against negative durations from clock drift)
         durations = []
@@ -404,39 +482,189 @@ class InsightsEngine:
             "included_cost_sessions": included_cost_sessions,
         }
 
-    def _compute_model_breakdown(self, sessions: List[Dict]) -> List[Dict]:
-        """Break down usage by model."""
+    _GET_MODEL_USAGE_WITH_SOURCE = (
+        "SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url,"
+        " u.api_call_count, u.input_tokens, u.output_tokens,"
+        " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
+        " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
+        " u.cost_source, u.billing_mode"
+        " FROM session_model_usage u"
+        " JOIN sessions s ON s.id = u.session_id"
+        " WHERE s.started_at >= ? AND s.source = ?"
+    )
+    _GET_MODEL_USAGE_ALL = (
+        "SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url,"
+        " u.api_call_count, u.input_tokens, u.output_tokens,"
+        " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
+        " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
+        " u.cost_source, u.billing_mode"
+        " FROM session_model_usage u"
+        " JOIN sessions s ON s.id = u.session_id"
+        " WHERE s.started_at >= ?"
+    )
+
+    def _get_model_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+        """Fetch per-model usage rows within the window (issue #51607).
+
+        Returns an empty list when the table is missing (e.g. a DB opened by
+        older code that never created it) so the caller can fall back to the
+        per-session aggregate.
+        """
+        try:
+            if source:
+                cursor = self._conn.execute(
+                    self._GET_MODEL_USAGE_WITH_SOURCE, (cutoff, source)
+                )
+            else:
+                cursor = self._conn.execute(self._GET_MODEL_USAGE_ALL, (cutoff,))
+            return [dict(row) for row in cursor.fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+    def _compute_model_breakdown(
+        self, sessions: List[Dict], cutoff: float, source: str = None
+    ) -> List[Dict]:
+        """Break down token usage and cost by model.
+
+        Tokens and cost are attributed per model from session_model_usage, so a
+        session that switched models mid-flight (via ``/model``) splits across
+        every model it used instead of dumping everything on the initial model
+        (issue #51607). Sessions without per-model rows — e.g. data written
+        before this table existed and not yet backfilled — fall back to their
+        single recorded (model, billing_provider) aggregate so nothing is lost.
+
+        Tool calls aren't tied to a specific API invocation, so they stay
+        attributed to the session's recorded model.
+        """
         model_data = defaultdict(lambda: {
-            "sessions": 0, "input_tokens": 0, "output_tokens": 0,
+            "sessions": set(), "input_tokens": 0, "output_tokens": 0,
             "cache_read_tokens": 0, "cache_write_tokens": 0,
-            "total_tokens": 0, "tool_calls": 0, "cost": 0.0,
+            "reasoning_tokens": 0, "total_tokens": 0, "api_calls": 0,
+            "tool_calls": 0, "cost": 0.0, "actual_cost": 0.0,
         })
 
-        for s in sessions:
-            model = s.get("model") or "unknown"
+        def _accumulate(model, provider, base_url, session_id, inp, out,
+                        cache_read, cache_write, reasoning, *,
+                        stored_cost=None, actual_cost=None, cost_status=None):
+            model = model or "unknown"
             # Normalize: strip provider prefix for display
             display_model = model.split("/")[-1] if "/" in model else model
-            d = model_data[display_model]
-            d["sessions"] += 1
-            inp = s.get("input_tokens") or 0
-            out = s.get("output_tokens") or 0
-            cache_read = s.get("cache_read_tokens") or 0
-            cache_write = s.get("cache_write_tokens") or 0
+            d: Dict[str, Any] = model_data[display_model]
+            d["sessions"].add(session_id)
             d["input_tokens"] += inp
             d["output_tokens"] += out
             d["cache_read_tokens"] += cache_read
             d["cache_write_tokens"] += cache_write
+            d["reasoning_tokens"] += reasoning
             d["total_tokens"] += inp + out + cache_read + cache_write
-            d["tool_calls"] += s.get("tool_call_count") or 0
-            estimate, status = _estimate_cost(s)
+            if stored_cost is None:
+                estimate, status = _estimate_cost(
+                    model, inp, out,
+                    cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+                    provider=provider or None, base_url=base_url,
+                )
+            else:
+                estimate = float(stored_cost or 0.0)
+                status = cost_status or "unknown"
             d["cost"] += estimate
-            d["has_pricing"] = _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
+            d["actual_cost"] += float(actual_cost or 0.0)
             d["cost_status"] = status
+            if has_known_pricing(model, provider or None, base_url):
+                d["has_pricing"] = True
+            else:
+                d.setdefault("has_pricing", False)
+            return display_model
 
-        result = [
-            {"model": model, **data}
-            for model, data in model_data.items()
-        ]
+        usage_rows = self._get_model_usage(cutoff, source)
+        usage_totals = defaultdict(lambda: {
+            "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
+            "cache_write_tokens": 0, "reasoning_tokens": 0,
+            "api_call_count": 0, "estimated_cost_usd": 0.0,
+            "actual_cost_usd": 0.0,
+        })
+        for r in usage_rows:
+            totals: Dict[str, Any] = usage_totals[r["session_id"]]
+            for key in (
+                "input_tokens", "output_tokens", "cache_read_tokens",
+                "cache_write_tokens", "reasoning_tokens", "api_call_count",
+            ):
+                totals[key] += r[key] or 0
+            totals["estimated_cost_usd"] += r["estimated_cost_usd"] or 0.0
+            totals["actual_cost_usd"] += r["actual_cost_usd"] or 0.0
+            d = _accumulate(
+                r["model"], r["billing_provider"], r.get("billing_base_url"),
+                r["session_id"], r["input_tokens"] or 0, r["output_tokens"] or 0,
+                r["cache_read_tokens"] or 0, r["cache_write_tokens"] or 0,
+                r["reasoning_tokens"] or 0,
+                stored_cost=(
+                    r["estimated_cost_usd"]
+                    if r.get("cost_status") or r.get("cost_source")
+                    else None
+                ),
+                actual_cost=r["actual_cost_usd"],
+                cost_status=r.get("cost_status"),
+            )
+            model_data[d]["api_calls"] += r["api_call_count"] or 0
+
+        # Reconcile against the aggregate row. This covers legacy sessions,
+        # interrupted migrations, and absolute cumulative updates without
+        # double-counting already-attributed route deltas.
+        for s in sessions:
+            totals = usage_totals[s["id"]]
+            inp = max(0, (s.get("input_tokens") or 0) - totals["input_tokens"])
+            out = max(0, (s.get("output_tokens") or 0) - totals["output_tokens"])
+            cache_read = max(
+                0, (s.get("cache_read_tokens") or 0) - totals["cache_read_tokens"]
+            )
+            cache_write = max(
+                0, (s.get("cache_write_tokens") or 0) - totals["cache_write_tokens"]
+            )
+            residual_cost = max(
+                0.0, float(s.get("estimated_cost_usd") or 0.0)
+                - totals["estimated_cost_usd"],
+            )
+            residual_actual = max(
+                0.0, float(s.get("actual_cost_usd") or 0.0)
+                - totals["actual_cost_usd"],
+            )
+            residual_calls = max(
+                0, (s.get("api_call_count") or 0) - totals["api_call_count"]
+            )
+            if not (
+                inp or out or cache_read or cache_write or residual_cost
+                or residual_actual or residual_calls
+            ):
+                continue
+            d = _accumulate(
+                s.get("model"), s.get("billing_provider"),
+                s.get("billing_base_url"), s["id"],
+                inp, out, cache_read, cache_write, 0,
+                stored_cost=residual_cost,
+                actual_cost=residual_actual,
+                cost_status=s.get("cost_status"),
+            )
+            residual_bucket: Dict[str, Any] = model_data[d]
+            residual_bucket["api_calls"] += residual_calls
+
+        # Tool calls are attributed by the session's recorded model.
+        for s in sessions:
+            tool_calls = s.get("tool_call_count") or 0
+            if not tool_calls:
+                continue
+            model = s.get("model") or "unknown"
+            display_model = model.split("/")[-1] if "/" in model else model
+            model_data[display_model]["tool_calls"] += tool_calls
+
+        result = []
+        for model, data in model_data.items():
+            entry = {"model": model, **data}
+            entry["sessions"] = len(data["sessions"])
+            # Models that surfaced only via tool-call attribution (no token
+            # rows) won't have these set by _accumulate — default them so the
+            # output shape is uniform for downstream/JSON consumers.
+            entry.setdefault("has_pricing", False)
+            entry.setdefault("cost_status", "unknown")
+            result.append(entry)
         # Sort by tokens first, fall back to session count when tokens are 0
         result.sort(key=lambda x: (x["total_tokens"], x["sessions"]), reverse=True)
         return result
@@ -484,6 +712,46 @@ class InsightsEngine:
                 "percentage": pct,
             })
         return result
+
+    def _compute_skill_breakdown(self, skill_usage: List[Dict]) -> Dict[str, Any]:
+        """Process per-skill usage into summary + ranked list."""
+        total_skill_loads = sum(s["view_count"] for s in skill_usage) if skill_usage else 0
+        total_skill_edits = sum(s["manage_count"] for s in skill_usage) if skill_usage else 0
+        total_skill_actions = total_skill_loads + total_skill_edits
+
+        top_skills = []
+        for skill in skill_usage:
+            total_count = skill["view_count"] + skill["manage_count"]
+            percentage = (total_count / total_skill_actions * 100) if total_skill_actions else 0
+            top_skills.append({
+                "skill": skill["skill"],
+                "view_count": skill["view_count"],
+                "manage_count": skill["manage_count"],
+                "total_count": total_count,
+                "percentage": percentage,
+                "last_used_at": skill.get("last_used_at"),
+            })
+
+        top_skills.sort(
+            key=lambda s: (
+                s["total_count"],
+                s["view_count"],
+                s["manage_count"],
+                s["last_used_at"] or 0,
+                s["skill"],
+            ),
+            reverse=True,
+        )
+
+        return {
+            "summary": {
+                "total_skill_loads": total_skill_loads,
+                "total_skill_edits": total_skill_edits,
+                "total_skill_actions": total_skill_actions,
+                "distinct_skills_used": len(skill_usage),
+            },
+            "top_skills": top_skills,
+        }
 
     def _compute_activity_patterns(self, sessions: List[Dict]) -> Dict:
         """Analyze activity patterns by day of week and hour."""
@@ -561,7 +829,7 @@ class InsightsEngine:
             top.append({
                 "label": "Longest session",
                 "session_id": longest["id"][:16],
-                "value": _format_duration(dur),
+                "value": format_duration_compact(dur),
                 "date": datetime.fromtimestamp(longest["started_at"]).strftime("%b %d"),
             })
 
@@ -644,12 +912,9 @@ class InsightsEngine:
         lines.append(f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}")
         lines.append(f"  Tool calls:        {o['total_tool_calls']:<12,}  User messages:   {o['user_messages']:,}")
         lines.append(f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}")
-        cost_str = f"${o['estimated_cost']:.2f}"
-        if o.get("models_without_pricing"):
-            cost_str += " *"
-        lines.append(f"  Total tokens:      {o['total_tokens']:<12,}  Est. cost:       {cost_str}")
+        lines.append(f"  Total tokens:      {o['total_tokens']:,}")
         if o["total_hours"] > 0:
-            lines.append(f"  Active time:       ~{_format_duration(o['total_hours'] * 3600):<11}  Avg session:     ~{_format_duration(o['avg_session_duration'])}")
+            lines.append(f"  Active time:       ~{format_duration_compact(o['total_hours'] * 3600):<11}  Avg session:     ~{format_duration_compact(o['avg_session_duration'])}")
         lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
         lines.append("")
 
@@ -657,16 +922,10 @@ class InsightsEngine:
         if report["models"]:
             lines.append("  🤖 Models Used")
             lines.append("  " + "─" * 56)
-            lines.append(f"  {'Model':<30} {'Sessions':>8} {'Tokens':>12} {'Cost':>8}")
+            lines.append(f"  {'Model':<30} {'Sessions':>8} {'Tokens':>12}")
             for m in report["models"]:
                 model_name = m["model"][:28]
-                if m.get("has_pricing"):
-                    cost_cell = f"${m['cost']:>6.2f}"
-                else:
-                    cost_cell = "     N/A"
-                lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,} {cost_cell}")
-            if o.get("models_without_pricing"):
-                lines.append("  * Cost N/A for custom/self-hosted models")
+                lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,}")
             lines.append("")
 
         # Platform breakdown
@@ -687,6 +946,28 @@ class InsightsEngine:
                 lines.append(f"  {t['tool']:<28} {t['count']:>8,} {t['percentage']:>7.1f}%")
             if len(report["tools"]) > 15:
                 lines.append(f"  ... and {len(report['tools']) - 15} more tools")
+            lines.append("")
+
+        # Skill usage
+        skills = report.get("skills", {})
+        top_skills = skills.get("top_skills", [])
+        if top_skills:
+            lines.append("  🧠 Top Skills")
+            lines.append("  " + "─" * 56)
+            lines.append(f"  {'Skill':<28} {'Loads':>7} {'Edits':>7} {'Last used':>11}")
+            for skill in top_skills[:10]:
+                last_used = "—"
+                if skill.get("last_used_at"):
+                    last_used = datetime.fromtimestamp(skill["last_used_at"]).strftime("%b %d")
+                lines.append(
+                    f"  {skill['skill'][:28]:<28} {skill['view_count']:>7,} {skill['manage_count']:>7,} {last_used:>11}"
+                )
+            summary = skills.get("summary", {})
+            lines.append(
+                f"  Distinct skills: {summary.get('distinct_skills_used', 0)}  "
+                f"Loads: {summary.get('total_skill_loads', 0):,}  "
+                f"Edits: {summary.get('total_skill_edits', 0):,}"
+            )
             lines.append("")
 
         # Activity patterns
@@ -747,20 +1028,15 @@ class InsightsEngine:
         # Overview
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
         lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
-        cost_note = ""
-        if o.get("models_without_pricing"):
-            cost_note = " _(excludes custom/self-hosted models)_"
-        lines.append(f"**Est. cost:** ${o['estimated_cost']:.2f}{cost_note}")
         if o["total_hours"] > 0:
-            lines.append(f"**Active time:** ~{_format_duration(o['total_hours'] * 3600)} | **Avg session:** ~{_format_duration(o['avg_session_duration'])}")
+            lines.append(f"**Active time:** ~{format_duration_compact(o['total_hours'] * 3600)} | **Avg session:** ~{format_duration_compact(o['avg_session_duration'])}")
         lines.append("")
 
         # Models (top 5)
         if report["models"]:
             lines.append("**🤖 Models:**")
             for m in report["models"][:5]:
-                cost_str = f"${m['cost']:.2f}" if m.get("has_pricing") else "N/A"
-                lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens, {cost_str}")
+                lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens")
             lines.append("")
 
         # Platforms (if multi-platform)
@@ -775,6 +1051,18 @@ class InsightsEngine:
             lines.append("**🔧 Top Tools:**")
             for t in report["tools"][:8]:
                 lines.append(f"  {t['tool']} — {t['count']:,} calls ({t['percentage']:.1f}%)")
+            lines.append("")
+
+        skills = report.get("skills", {})
+        if skills.get("top_skills"):
+            lines.append("**🧠 Top Skills:**")
+            for skill in skills["top_skills"][:5]:
+                suffix = ""
+                if skill.get("last_used_at"):
+                    suffix = f", last used {datetime.fromtimestamp(skill['last_used_at']).strftime('%b %d')}"
+                lines.append(
+                    f"  {skill['skill']} — {skill['view_count']:,} loads, {skill['manage_count']:,} edits{suffix}"
+                )
             lines.append("")
 
         # Activity summary

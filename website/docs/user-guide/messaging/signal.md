@@ -25,16 +25,20 @@ The Signal adapter uses `httpx` (already a core Hermes dependency) for all commu
 ### Installing signal-cli
 
 ```bash
-# Linux (Debian/Ubuntu)
-sudo apt install signal-cli
-
 # macOS
 brew install signal-cli
 
-# Manual install (any platform)
-# Download from https://github.com/AsamK/signal-cli/releases
-# Extract and add to PATH
+# Linux (download latest release)
+VERSION=$(curl -Ls -o /dev/null -w %{url_effective} \
+  https://github.com/AsamK/signal-cli/releases/latest | sed 's/^.*\/v//')
+curl -L -O "https://github.com/AsamK/signal-cli/releases/download/v${VERSION}/signal-cli-${VERSION}.tar.gz"
+sudo tar xf "signal-cli-${VERSION}.tar.gz" -C /opt
+sudo ln -sf "/opt/signal-cli-${VERSION}/bin/signal-cli" /usr/local/bin/
 ```
+
+:::caution
+signal-cli is **not** in apt or snap repositories. The Linux install above downloads directly from [GitHub releases](https://github.com/AsamK/signal-cli/releases).
+:::
 
 ---
 
@@ -143,17 +147,49 @@ Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
 
 ### Attachments
 
-The adapter supports sending and receiving:
+The adapter supports sending and receiving media in both directions.
+
+**Incoming** (user → agent):
 
 - **Images** — PNG, JPEG, GIF, WebP (auto-detected via magic bytes)
 - **Audio** — MP3, OGG, WAV, M4A (voice messages transcribed if Whisper is configured)
 - **Documents** — PDF, ZIP, and other file types
 
-Attachment size limit: **100 MB**.
+**Outgoing** (agent → user):
+
+The agent can send media files via `MEDIA:` tags in responses. The following delivery methods are supported:
+
+- **Images** — `send_multiple_images` and `send_image_file` send PNG, JPEG, GIF, WebP as native Signal attachments
+- **Voice** — `send_voice` sends audio files (OGG, MP3, WAV, M4A, AAC) as attachments
+- **Video** — `send_video` sends MP4 video files
+- **Documents** — `send_document` sends any file type (PDF, ZIP, etc.)
+
+All outgoing media goes through Signal's standard attachment API. Unlike some platforms, Signal does not distinguish between voice messages and file attachments at the protocol level.
+
+Attachment size limit: **100 MB** (both directions).
+:::warning
+**Signal servers will rate-limit attachment uploads**, the adapter uses a scheduler for multiple image sending that batches images in groups of 32 and throttles uploads to match the Signal server policy.
+:::
+
+### Native Formatting, Reply Quotes, and Reactions
+
+Signal messages render with **native formatting** instead of literal markdown characters. The adapter converts markdown (`**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, `||spoiler||`, headings) into Signal `bodyRanges` so the text shows up with real styling on the recipient's client rather than as visible `**` / `` ` `` characters.
+
+**Reply quotes.** When Hermes replies to a specific message, it now posts a native reply that quotes the original — same UI affordance Signal users see when they use "Reply" themselves. This is automatic for replies generated in response to an inbound message.
+
+**Reactions.** The agent can react to messages via the standard reaction API; reactions surface in Signal as emoji reactions on the referenced message rather than as extra text.
+
+None of this requires additional config — it ships on by default in recent signal-cli builds. If your `signal-cli` version is too old, Hermes falls back to plaintext delivery and logs a one-time warning.
 
 ### Typing Indicators
 
 The bot sends typing indicators while processing messages, refreshing every 8 seconds.
+
+### Tool Progress Display
+
+Signal does not support editing already-sent messages. Hermes therefore suppresses gateway tool-progress bubbles on Signal, even when `/verbose` is enabled and saves a non-`off` mode for the platform.
+
+You can still see tool activity in the CLI, and final Signal replies can include normal assistant output. If you need live per-tool progress in chat, use a messaging platform with message editing support.
 
 ### Phone Number Redaction
 

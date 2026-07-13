@@ -61,14 +61,16 @@ class TestProbeMcpServerTools:
         async def fake_connect(name, cfg):
             return mock_server
 
-        with patch("tools.mcp_tool._load_mcp_config", return_value=config), \
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
              patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
              patch("tools.mcp_tool._stop_mcp_loop"):
 
             # Simulate running the async probe
-            def run_coro(coro, timeout=120):
+            def run_coro(coro_or_factory, timeout=120):
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
                 loop = asyncio.new_event_loop()
                 try:
                     return loop.run_until_complete(coro)
@@ -102,13 +104,15 @@ class TestProbeMcpServerTools:
                 raise ConnectionError("Server not found")
             return mock_server
 
-        with patch("tools.mcp_tool._load_mcp_config", return_value=config), \
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
              patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
              patch("tools.mcp_tool._stop_mcp_loop"):
 
-            def run_coro(coro, timeout=120):
+            def run_coro(coro_or_factory, timeout=120):
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
                 loop = asyncio.new_event_loop()
                 try:
                     return loop.run_until_complete(coro)
@@ -135,13 +139,15 @@ class TestProbeMcpServerTools:
         async def fake_connect(name, cfg):
             return mock_server
 
-        with patch("tools.mcp_tool._load_mcp_config", return_value=config), \
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
              patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
              patch("tools.mcp_tool._stop_mcp_loop"):
 
-            def run_coro(coro, timeout=120):
+            def run_coro(coro_or_factory, timeout=120):
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
                 loop = asyncio.new_event_loop()
                 try:
                     return loop.run_until_complete(coro)
@@ -156,13 +162,14 @@ class TestProbeMcpServerTools:
         assert result["github"][0] == ("my_tool", "")
 
     def test_cleanup_called_even_on_failure(self):
-        """_stop_mcp_loop is called even when probe fails."""
+        """Probe cleanup is attempted even when probe fails."""
         config = {"github": {"command": "npx", "connect_timeout": 5}}
 
-        with patch("tools.mcp_tool._load_mcp_config", return_value=config), \
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
              patch("tools.mcp_tool._run_on_mcp_loop", side_effect=RuntimeError("boom")), \
-             patch("tools.mcp_tool._stop_mcp_loop") as mock_stop:
+             patch("tools.mcp_tool._stop_mcp_loop_if_idle") as mock_stop:
 
             from tools.mcp_tool import probe_mcp_server_tools
             result = probe_mcp_server_tools()
@@ -187,13 +194,15 @@ class TestProbeMcpServerTools:
             connect_calls.append(name)
             return mock_server
 
-        with patch("tools.mcp_tool._load_mcp_config", return_value=config), \
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
              patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
              patch("tools.mcp_tool._stop_mcp_loop"):
 
-            def run_coro(coro, timeout=120):
+            def run_coro(coro_or_factory, timeout=120):
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
                 loop = asyncio.new_event_loop()
                 try:
                     return loop.run_until_complete(coro)

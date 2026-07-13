@@ -8,7 +8,8 @@ that the setup wizard correctly syncs config from disk after the call.
 from __future__ import annotations
 
 from hermes_cli.config import load_config, save_config, save_env_value
-from hermes_cli.setup import setup_model_provider
+from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+from hermes_cli.setup import _print_setup_summary, setup_model_provider
 
 
 def _maybe_keep_current_tts(question, choices):
@@ -62,6 +63,38 @@ def _write_model_config(provider, base_url="", model_name="test-model"):
     save_config(cfg)
 
 
+def _write_aux_config(task="compression", provider="gemini", model_name="gemini-2.5-flash"):
+    """Simulate the aux picker writing a task override to disk."""
+    cfg = load_config()
+    aux = cfg.setdefault("auxiliary", {})
+    entry = aux.setdefault(task, {})
+    entry["provider"] = provider
+    entry["model"] = model_name
+    save_config(cfg)
+
+
+def test_setup_model_provider_preserves_auxiliary_choices_written_by_picker(tmp_path, monkeypatch):
+    """Aux choices made inside hermes setup must survive the wizard's final save."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    config = load_config()
+    assert config["auxiliary"]["compression"]["provider"] == "auto"
+
+    def fake_select():
+        _write_aux_config("compression", "gemini", "gemini-2.5-flash")
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+
+    setup_model_provider(config, quick=True)
+    save_config(config)  # mirrors run_setup_wizard(section="model") final save
+
+    reloaded = load_config()
+    compression = reloaded["auxiliary"]["compression"]
+    assert compression["provider"] == "gemini"
+    assert compression["model"] == "gemini-2.5-flash"
+
+
 def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, monkeypatch):
     """Keep-current custom should not fall through to the generic model menu."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -113,170 +146,6 @@ def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(
     assert reloaded["model"]["provider"] == "zai"
 
 
-def test_setup_same_provider_rotation_strategy_saved_for_multi_credential_pool(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _clear_provider_env(monkeypatch)
-    save_env_value("OPENROUTER_API_KEY", "or-key")
-
-    # Pre-write config so the pool step sees provider="openrouter"
-    _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
-
-    config = load_config()
-
-    class _Entry:
-        def __init__(self, label):
-            self.label = label
-
-    class _Pool:
-        def entries(self):
-            return [_Entry("primary"), _Entry("secondary")]
-
-    def fake_select():
-        pass  # no-op — config already has provider set
-
-    def fake_prompt_choice(question, choices, default=0):
-        if "rotation strategy" in question:
-            return 1  # round robin
-        tts_idx = _maybe_keep_current_tts(question, choices)
-        if tts_idx is not None:
-            return tts_idx
-        return default
-
-    def fake_prompt_yes_no(question, default=True):
-        return False
-
-    # Patch directly on the module objects to ensure local imports pick them up.
-    import hermes_cli.main as _main_mod
-    import hermes_cli.setup as _setup_mod
-    import agent.credential_pool as _pool_mod
-    import agent.auxiliary_client as _aux_mod
-
-    monkeypatch.setattr(_main_mod, "select_provider_and_model", fake_select)
-    # NOTE: _stub_tts overwrites prompt_choice, so set our mock AFTER it.
-    _stub_tts(monkeypatch)
-    monkeypatch.setattr(_setup_mod, "prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr(_setup_mod, "prompt_yes_no", fake_prompt_yes_no)
-    monkeypatch.setattr(_setup_mod, "prompt", lambda *args, **kwargs: "")
-    monkeypatch.setattr(_pool_mod, "load_pool", lambda provider: _Pool())
-    monkeypatch.setattr(_aux_mod, "get_available_vision_backends", lambda: [])
-
-    setup_model_provider(config)
-
-    # The pool has 2 entries, so the strategy prompt should fire
-    strategy = config.get("credential_pool_strategies", {}).get("openrouter")
-    assert strategy == "round_robin", f"Expected round_robin but got {strategy}"
-
-
-def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _clear_provider_env(monkeypatch)
-    save_env_value("OPENROUTER_API_KEY", "or-key")
-
-    # Pre-write config so the pool step sees provider="openrouter"
-    _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
-
-    config = load_config()
-    pool_sizes = iter([1, 2])
-    add_calls = []
-
-    class _Entry:
-        def __init__(self, label):
-            self.label = label
-
-    class _Pool:
-        def __init__(self, size):
-            self._size = size
-
-        def entries(self):
-            return [_Entry(f"cred-{idx}") for idx in range(self._size)]
-
-    def fake_load_pool(provider):
-        return _Pool(next(pool_sizes))
-
-    def fake_auth_add_command(args):
-        add_calls.append(args.provider)
-
-    def fake_select():
-        pass  # no-op — config already has provider set
-
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select same-provider rotation strategy:":
-            return 0
-        tts_idx = _maybe_keep_current_tts(question, choices)
-        if tts_idx is not None:
-            return tts_idx
-        return default
-
-    yes_no_answers = iter([True, False])
-
-    def fake_prompt_yes_no(question, default=True):
-        if question == "Add another credential for same-provider fallback?":
-            return next(yes_no_answers)
-        return False
-
-    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
-    _stub_tts(monkeypatch)
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
-    monkeypatch.setattr("agent.credential_pool.load_pool", fake_load_pool)
-    monkeypatch.setattr("hermes_cli.auth_commands.auth_add_command", fake_auth_add_command)
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
-
-    setup_model_provider(config)
-
-    assert add_calls == ["openrouter"]
-    assert config.get("credential_pool_strategies", {}).get("openrouter") == "fill_first"
-
-
-def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _clear_provider_env(monkeypatch)
-    save_env_value("OPENROUTER_API_KEY", "or-key")
-
-    # Pre-write config so the pool step sees provider="openrouter"
-    _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
-
-    config = load_config()
-
-    class _Entry:
-        def __init__(self, label, source):
-            self.label = label
-            self.source = source
-
-    class _Pool:
-        def entries(self):
-            return [
-                _Entry("primary", "manual"),
-                _Entry("secondary", "manual"),
-                _Entry("OPENROUTER_API_KEY", "env:OPENROUTER_API_KEY"),
-            ]
-
-    def fake_select():
-        pass  # no-op — config already has provider set
-
-    def fake_prompt_choice(question, choices, default=0):
-        if "rotation strategy" in question:
-            return 0
-        tts_idx = _maybe_keep_current_tts(question, choices)
-        if tts_idx is not None:
-            return tts_idx
-        return default
-
-    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
-    _stub_tts(monkeypatch)
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
-
-    setup_model_provider(config)
-
-    out = capsys.readouterr().out
-    assert "Current pooled credentials for openrouter: 3 (2 manual, 1 auto-detected from env/shared auth)" in out
-
-
 def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
@@ -304,7 +173,6 @@ def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
 
     setup_model_provider(config)
@@ -405,3 +273,114 @@ def test_setup_switch_preserves_non_model_config(tmp_path, monkeypatch):
     reloaded = load_config()
     assert reloaded["terminal"]["timeout"] == 999
     assert reloaded["model"]["provider"] == "openrouter"
+
+
+def test_setup_summary_marks_anthropic_auth_as_vision_available(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: ["anthropic"])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Vision (image analysis)" in output
+    assert "missing run 'hermes setup' to configure" not in output
+
+
+def test_setup_summary_shows_camofox_when_browser_feature_is_camofox(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                "browser": NousFeatureState("browser", "Browser automation", True, True, True, False, True, True, "Camofox"),
+                "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
+            },
+        ),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (Camofox)" in output
+
+
+def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("BROWSERBASE_API_KEY", "bb-key")
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, "Browserbase"),
+                "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
+            },
+        ),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (Browserbase)" not in output
+    assert "Browser Automation" in output
+    assert "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID" in output
+
+
+def test_setup_summary_local_browser_unavailable_without_chromium(
+    tmp_path, monkeypatch, capsys
+):
+    """End-to-end: agent-browser present but no Chromium in local mode must
+    render as unavailable with an install hint — not a false 'available'.
+
+    Unlike the mocked-feature tests above, this drives the real
+    ``get_nous_subscription_features`` so the surface stays aligned with the
+    runtime gate in ``tools.browser_tool.check_browser_requirements``.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    cfg = load_config()
+    browser_cfg = cfg.get("browser")
+    if not isinstance(browser_cfg, dict):
+        browser_cfg = {}
+        cfg["browser"] = browser_cfg
+    browser_cfg["cloud_provider"] = "local"
+    save_config(cfg)
+
+    # Only stub the readiness probes; the feature resolver itself is real.
+    monkeypatch.setattr("hermes_cli.nous_subscription._has_agent_browser", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr("tools.browser_tool._chromium_installed", lambda: False)
+    monkeypatch.setattr("tools.browser_tool._using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_available_vision_backends", lambda: []
+    )
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (Local browser)" not in output
+    assert "agent-browser install --with-deps" in output

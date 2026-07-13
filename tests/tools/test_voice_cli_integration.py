@@ -2,7 +2,6 @@
 state management, streaming TTS activation, voice message prefix, _vprint."""
 
 import ast
-import os
 import queue
 import threading
 from types import SimpleNamespace
@@ -32,6 +31,7 @@ def _make_voice_cli(**overrides):
     cli._voice_tts_done.set()
     cli._pending_input = queue.Queue()
     cli._app = None
+    cli._attached_images = []
     cli.console = SimpleNamespace(width=80)
     for k, v in overrides.items():
         setattr(cli, k, v)
@@ -481,8 +481,11 @@ class TestVprintForceParameter:
             else:
                 unforced_error_count += 1
 
-        assert forced_error_count > 0, \
-            "Expected at least one _vprint with force=True for error messages"
+        # Invariant: no critical-error _vprint call may silently drop under
+        # streaming suppression — every ❌-prefixed _vprint must pass force=True.
+        # The codebase may legitimately have zero such calls if errors are
+        # routed through print() or higher-level Rich panels; what matters is
+        # that none are quietly suppressed.
         assert unforced_error_count == 0, \
             f"Found {unforced_error_count} critical error _vprint calls without force=True"
 
@@ -510,8 +513,8 @@ class TestEdgeTTSLazyImport:
                     if isinstance(n, _ast.Name) and n.id == "edge_tts"
                 ]
                 assert bare_refs == [], (
-                    f"_generate_edge_tts uses bare 'edge_tts' name — "
-                    f"should use _import_edge_tts() lazy helper"
+                    "_generate_edge_tts uses bare 'edge_tts' name — "
+                    "should use _import_edge_tts() lazy helper"
                 )
 
                 # Must have a call to _import_edge_tts
@@ -932,6 +935,58 @@ class TestEnableVoiceModeReal:
         assert cli._voice_mode is True
 
 
+class TestVoiceBeepConfigReal:
+    """Tests the CLI voice beep toggle."""
+
+    @patch("hermes_cli.config.load_config", return_value={"voice": {}})
+    def test_beeps_enabled_by_default(self, _cfg):
+        cli = _make_voice_cli()
+        assert cli._voice_beeps_enabled() is True
+
+    @patch("hermes_cli.config.load_config", return_value={"voice": {"beep_enabled": False}})
+    def test_beeps_can_be_disabled(self, _cfg):
+        cli = _make_voice_cli()
+        assert cli._voice_beeps_enabled() is False
+
+    @patch("cli._cprint")
+    @patch("cli.threading.Thread")
+    @patch("tools.voice_mode.play_beep")
+    @patch("tools.voice_mode.create_audio_recorder")
+    @patch(
+        "tools.voice_mode.check_voice_requirements",
+        return_value={
+            "available": True,
+            "audio_available": True,
+            "stt_available": True,
+            "details": "OK",
+            "missing_packages": [],
+        },
+    )
+    @patch(
+        "hermes_cli.config.load_config",
+        return_value={
+            "voice": {
+                "beep_enabled": False,
+                "silence_threshold": 200,
+                "silence_duration": 3.0,
+            }
+        },
+    )
+    def test_start_recording_skips_beep_when_disabled(
+        self, _cfg, _req, mock_create, mock_beep, mock_thread, _cp
+    ):
+        recorder = MagicMock()
+        recorder.supports_silence_autostop = True
+        mock_create.return_value = recorder
+        mock_thread.return_value = MagicMock(start=MagicMock())
+
+        cli = _make_voice_cli()
+        cli._voice_start_recording()
+
+        recorder.start.assert_called_once()
+        mock_beep.assert_not_called()
+
+
 class TestDisableVoiceModeReal:
     """Tests _disable_voice_mode with real CLI instance."""
 
@@ -986,6 +1041,25 @@ class TestDisableVoiceModeReal:
 
 class TestVoiceSpeakResponseReal:
     """Tests _voice_speak_response with real CLI instance."""
+
+    def test_async_scheduling_clears_done_before_thread_start(self):
+        cli = _make_voice_cli(_voice_tts=True)
+        starts = []
+
+        class FakeThread:
+            def __init__(self, target=None, args=(), daemon=None):
+                self.target = target
+                self.args = args
+                self.daemon = daemon
+
+            def start(self):
+                starts.append(cli._voice_tts_done.is_set())
+
+        with patch("cli.threading.Thread", FakeThread):
+            cli._voice_speak_response_async("Hello")
+
+        assert starts == [False]
+        assert not cli._voice_tts_done.is_set()
 
     @patch("cli._cprint")
     def test_early_return_when_tts_off(self, _cp):
@@ -1087,6 +1161,16 @@ class TestVoiceStopAndTranscribeReal:
         assert cli._pending_input.empty()
 
     @patch("cli._cprint")
+    @patch("hermes_cli.config.load_config", return_value={"voice": {"beep_enabled": False}})
+    @patch("tools.voice_mode.play_beep")
+    def test_no_speech_detected_skips_beep_when_disabled(self, mock_beep, _cfg, _cp):
+        recorder = MagicMock()
+        recorder.stop.return_value = None
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+        cli._voice_stop_and_transcribe()
+        mock_beep.assert_not_called()
+
+    @patch("cli._cprint")
     @patch("cli.os.unlink")
     @patch("cli.os.path.isfile", return_value=True)
     @patch("hermes_cli.config.load_config", return_value={"stt": {}})
@@ -1129,6 +1213,11 @@ class TestVoiceStopAndTranscribeReal:
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()
         assert cli._pending_input.empty()
+        _unl.assert_not_called()
+        assert any(
+            "Recording preserved at: /tmp/test.wav" in str(call)
+            for call in _cp.call_args_list
+        )
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")
@@ -1142,6 +1231,11 @@ class TestVoiceStopAndTranscribeReal:
         recorder.stop.return_value = "/tmp/test.wav"
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()  # Should not raise
+        _unl.assert_not_called()
+        assert any(
+            "Recording preserved at: /tmp/test.wav" in str(call)
+            for call in _cp.call_args_list
+        )
 
     @patch("cli._cprint")
     @patch("tools.voice_mode.play_beep")

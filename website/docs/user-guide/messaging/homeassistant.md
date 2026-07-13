@@ -130,22 +130,25 @@ The Home Assistant gateway adapter connects via WebSocket and subscribes to `sta
 By default, **no events are forwarded**. You must configure at least one of `watch_domains`, `watch_entities`, or `watch_all` to receive events. Without filters, a warning is logged at startup and all state changes are silently dropped.
 :::
 
-Configure which events the agent sees in `~/.hermes/gateway.json` under the Home Assistant platform's `extra` section:
+Configure which events the agent sees in `~/.hermes/config.yaml` under the Home Assistant platform's `extra` section:
 
-```json
-{
-  "platforms": {
-    "homeassistant": {
-      "enabled": true,
-      "extra": {
-        "watch_domains": ["climate", "binary_sensor", "alarm_control_panel", "light"],
-        "watch_entities": ["sensor.front_door_battery"],
-        "ignore_entities": ["sensor.uptime", "sensor.cpu_usage", "sensor.memory_usage"],
-        "cooldown_seconds": 30
-      }
-    }
-  }
-}
+```yaml
+platforms:
+  homeassistant:
+    enabled: true
+    extra:
+      watch_domains:
+        - climate
+        - binary_sensor
+        - alarm_control_panel
+        - light
+      watch_entities:
+        - sensor.front_door_battery
+      ignore_entities:
+        - sensor.uptime
+        - sensor.cpu_usage
+        - sensor.memory_usage
+      cooldown_seconds: 30
 ```
 
 | Setting | Default | Description |
@@ -247,3 +250,20 @@ Agent automatically:
      entity_id="light.hallway")
 3. Sends notification: "Front door opened. Hallway lights turned on."
 ```
+
+## Troubleshooting
+
+**Environment variables not picked up.**
+The adapter reads credentials from `~/.hermes/.env` (auto-merged at startup) or
+from `config.yaml`. Double-check the file lives under the active Hermes profile
+home and that there's no stray quoting around the URL/token. Restart the gateway
+after editing — env changes are only applied on process start.
+
+
+**REST auth failing (`401 Unauthorized`).**
+The token must be a *Long-Lived Access Token* created from your HA user profile
+page (**Profile → Security → Long-lived access tokens**). Short-lived UI
+session tokens won't work. Also verify the base URL includes the scheme and
+port (e.g. `http://homeassistant.local:8123`) and is reachable from the host
+running Hermes — `curl -H "Authorization: Bearer <token>" <url>/api/` should
+return `{"message": "API running."}`.

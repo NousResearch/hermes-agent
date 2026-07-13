@@ -5,6 +5,7 @@ version: 1.0.0
 author: Orchestra Research
 license: MIT
 dependencies: [lambda-cloud-client>=1.0.0]
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Infrastructure, GPU Cloud, Training, Inference, Lambda Labs]

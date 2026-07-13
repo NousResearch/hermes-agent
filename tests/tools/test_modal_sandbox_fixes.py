@@ -12,8 +12,6 @@ Covers the bugs discovered while setting up TBLite evaluation:
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-
 import pytest
 
 # Ensure repo root is importable
@@ -64,89 +62,72 @@ class TestToolResolution:
 class TestCwdHandling:
     """Verify host paths are sanitized for container backends."""
 
-    def test_home_path_replaced_for_modal(self):
+    def test_home_path_replaced_for_modal(self, monkeypatch):
         """TERMINAL_CWD=/home/user/... should be replaced with /root for modal."""
-        with patch.dict(os.environ, {
-            "TERMINAL_ENV": "modal",
-            "TERMINAL_CWD": "/home/dakota/github/hermes-agent",
-        }):
-            config = _tt_mod._get_env_config()
-            assert config["cwd"] == "/root", (
-                f"Expected /root, got {config['cwd']}. "
-                "/home/ paths should be replaced for modal backend."
-            )
+        monkeypatch.setenv("TERMINAL_ENV", "modal")
+        monkeypatch.setenv("TERMINAL_CWD", "/home/dakota/github/hermes-agent")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/root", (
+            f"Expected /root, got {config['cwd']}. "
+            "/home/ paths should be replaced for modal backend."
+        )
 
-    def test_users_path_replaced_for_docker_by_default(self):
+    def test_users_path_replaced_for_docker_by_default(self, monkeypatch):
         """Docker should keep host paths out of the sandbox unless explicitly enabled."""
-        with patch.dict(os.environ, {
-            "TERMINAL_ENV": "docker",
-            "TERMINAL_CWD": "/Users/someone/projects",
-        }):
-            config = _tt_mod._get_env_config()
-            assert config["cwd"] == "/root", (
-                f"Expected /root, got {config['cwd']}. "
-                "Host paths should be discarded for docker backend by default."
-            )
-            assert config["host_cwd"] is None
-            assert config["docker_mount_cwd_to_workspace"] is False
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/projects")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/root", (
+            f"Expected /root, got {config['cwd']}. "
+            "Host paths should be discarded for docker backend by default."
+        )
+        assert config["host_cwd"] is None
+        assert config["docker_mount_cwd_to_workspace"] is False
 
-    def test_users_path_maps_to_workspace_for_docker_when_enabled(self):
+    def test_users_path_maps_to_workspace_for_docker_when_enabled(self, monkeypatch):
         """Docker should map the host cwd into /workspace only when explicitly enabled."""
-        with patch.dict(os.environ, {
-            "TERMINAL_ENV": "docker",
-            "TERMINAL_CWD": "/Users/someone/projects",
-            "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "true",
-        }):
-            config = _tt_mod._get_env_config()
-            assert config["cwd"] == "/workspace"
-            assert config["host_cwd"] == "/Users/someone/projects"
-            assert config["docker_mount_cwd_to_workspace"] is True
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/projects")
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/workspace"
+        assert config["host_cwd"] == "/Users/someone/projects"
+        assert config["docker_mount_cwd_to_workspace"] is True
 
-    def test_windows_path_replaced_for_modal(self):
+    def test_windows_path_replaced_for_modal(self, monkeypatch):
         """TERMINAL_CWD=C:\\Users\\... should be replaced for modal."""
-        with patch.dict(os.environ, {
-            "TERMINAL_ENV": "modal",
-            "TERMINAL_CWD": "C:\\Users\\someone\\projects",
-        }):
-            config = _tt_mod._get_env_config()
-            assert config["cwd"] == "/root"
+        monkeypatch.setenv("TERMINAL_ENV", "modal")
+        monkeypatch.setenv("TERMINAL_CWD", "C:\\Users\\someone\\projects")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/root"
 
-    def test_default_cwd_is_root_for_container_backends(self):
+    @pytest.mark.parametrize("backend", ["modal", "docker", "singularity", "daytona"])
+    def test_default_cwd_is_root_for_container_backends(self, backend, monkeypatch):
         """Container backends should default to /root, not ~."""
-        for backend in ("modal", "docker", "singularity", "daytona"):
-            with patch.dict(os.environ, {"TERMINAL_ENV": backend}, clear=False):
-                # Remove TERMINAL_CWD so it uses default
-                env = os.environ.copy()
-                env.pop("TERMINAL_CWD", None)
-                env.pop("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", None)
-                with patch.dict(os.environ, env, clear=True):
-                    config = _tt_mod._get_env_config()
-                    assert config["cwd"] == "/root", (
-                        f"Backend {backend}: expected /root default, got {config['cwd']}"
-                    )
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/root", (
+            f"Backend {backend}: expected /root default, got {config['cwd']}"
+        )
 
-    def test_docker_default_cwd_maps_current_directory_when_enabled(self):
+    def test_docker_default_cwd_maps_current_directory_when_enabled(self, monkeypatch):
         """Docker should use /workspace when cwd mounting is explicitly enabled."""
-        with patch("tools.terminal_tool.os.getcwd", return_value="/home/user/project"):
-            with patch.dict(os.environ, {
-                "TERMINAL_ENV": "docker",
-                "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "true",
-            }, clear=False):
-                env = os.environ.copy()
-                env.pop("TERMINAL_CWD", None)
-                with patch.dict(os.environ, env, clear=True):
-                    config = _tt_mod._get_env_config()
-                    assert config["cwd"] == "/workspace"
-                    assert config["host_cwd"] == "/home/user/project"
+        monkeypatch.setattr("tools.terminal_tool.os.getcwd", lambda: "/home/user/project")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/workspace"
+        assert config["host_cwd"] == "/home/user/project"
 
-    def test_local_backend_uses_getcwd(self):
+    def test_local_backend_uses_getcwd(self, monkeypatch):
         """Local backend should use os.getcwd(), not /root."""
-        with patch.dict(os.environ, {"TERMINAL_ENV": "local"}, clear=False):
-            env = os.environ.copy()
-            env.pop("TERMINAL_CWD", None)
-            with patch.dict(os.environ, env, clear=True):
-                config = _tt_mod._get_env_config()
-                assert config["cwd"] == os.getcwd()
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == os.getcwd()
 
     def test_create_environment_passes_docker_host_cwd_and_flag(self, monkeypatch):
         """Docker host cwd and mount flag should reach DockerEnvironment."""
@@ -173,18 +154,16 @@ class TestCwdHandling:
         assert captured["host_cwd"] == "/home/user/project"
         assert captured["auto_mount_cwd"] is True
 
-    def test_ssh_preserves_home_paths(self):
+    def test_ssh_preserves_home_paths(self, monkeypatch):
         """SSH backend should NOT replace /home/ paths (they're valid remotely)."""
-        with patch.dict(os.environ, {
-            "TERMINAL_ENV": "ssh",
-            "TERMINAL_CWD": "/home/remote-user/work",
-            "TERMINAL_SSH_HOST": "example.com",
-            "TERMINAL_SSH_USER": "user",
-        }):
-            config = _tt_mod._get_env_config()
-            assert config["cwd"] == "/home/remote-user/work", (
-                "SSH backend should preserve /home/ paths"
-            )
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setenv("TERMINAL_CWD", "/home/remote-user/work")
+        monkeypatch.setenv("TERMINAL_SSH_HOST", "example.com")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "user")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/home/remote-user/work", (
+            "SSH backend should preserve /home/ paths"
+        )
 
 
 # =========================================================================
@@ -194,12 +173,8 @@ class TestCwdHandling:
 class TestEphemeralDiskCheck:
     """Verify ephemeral_disk is only passed when modal supports it."""
 
-    def test_ephemeral_disk_skipped_when_unsupported(self):
+    def test_ephemeral_disk_skipped_when_unsupported(self, monkeypatch):
         """If modal.Sandbox.create doesn't have ephemeral_disk param, skip it."""
-        # Mock the modal import and Sandbox.create signature
-        mock_modal = MagicMock()
-        mock_sandbox_create = MagicMock()
-        # Simulate a signature WITHOUT ephemeral_disk
         import inspect
         mock_params = {
             "args": inspect.Parameter("args", inspect.Parameter.VAR_POSITIONAL),
@@ -208,26 +183,25 @@ class TestEphemeralDiskCheck:
             "cpu": inspect.Parameter("cpu", inspect.Parameter.KEYWORD_ONLY),
             "memory": inspect.Parameter("memory", inspect.Parameter.KEYWORD_ONLY),
         }
-        mock_sig = inspect.Signature(parameters=list(mock_params.values()))
 
-        with patch.dict(os.environ, {"TERMINAL_ENV": "modal"}):
-            config = _tt_mod._get_env_config()
-            # The config has container_disk default of 51200
-            disk = config.get("container_disk", 51200)
-            assert disk > 0, "disk should default to > 0"
+        monkeypatch.setenv("TERMINAL_ENV", "modal")
+        config = _tt_mod._get_env_config()
+        # The config has container_disk default of 51200
+        disk = config.get("container_disk", 51200)
+        assert disk > 0, "disk should default to > 0"
 
-            # Simulate the version check logic from terminal_tool.py
-            sandbox_kwargs = {}
-            if disk > 0:
-                try:
-                    if "ephemeral_disk" in mock_params:
-                        sandbox_kwargs["ephemeral_disk"] = disk
-                except Exception:
-                    pass
+        # Simulate the version check logic from terminal_tool.py
+        sandbox_kwargs = {}
+        if disk > 0:
+            try:
+                if "ephemeral_disk" in mock_params:
+                    sandbox_kwargs["ephemeral_disk"] = disk
+            except Exception:
+                pass
 
-            assert "ephemeral_disk" not in sandbox_kwargs, (
-                "ephemeral_disk should not be set when Sandbox.create doesn't support it"
-            )
+        assert "ephemeral_disk" not in sandbox_kwargs, (
+            "ephemeral_disk should not be set when Sandbox.create doesn't support it"
+        )
 
 
 # =========================================================================
@@ -257,20 +231,20 @@ class TestEnsurepipFix:
     """Verify the pip fix is applied in the ModalEnvironment init."""
 
     def test_modal_environment_creates_image_with_setup_commands(self):
-        """ModalEnvironment.__init__ should create a modal.Image with pip fix."""
+        """_resolve_modal_image should create a modal.Image with pip fix."""
         try:
-            from tools.environments.modal import ModalEnvironment
+            from tools.environments.modal import _resolve_modal_image
         except ImportError:
             pytest.skip("tools.environments.modal not importable")
 
         import inspect
-        source = inspect.getsource(ModalEnvironment.__init__)
+        source = inspect.getsource(_resolve_modal_image)
         assert "ensurepip" in source, (
-            "ModalEnvironment should include ensurepip fix "
+            "_resolve_modal_image should include ensurepip fix "
             "for Modal's legacy image builder"
         )
         assert "setup_dockerfile_commands" in source, (
-            "ModalEnvironment should use setup_dockerfile_commands "
+            "_resolve_modal_image should use setup_dockerfile_commands "
             "to fix pip before Modal's bootstrap"
         )
 
@@ -300,17 +274,145 @@ class TestEnsurepipFix:
 # =========================================================================
 
 class TestHostPrefixList:
-    """Verify the host prefix list catches common host-only paths."""
+    """Verify the host prefix list catches common host-only paths.
 
-    def test_all_common_host_prefixes_caught(self):
-        """The host prefix check should catch /Users/, /home/, C:\\, C:/."""
-        # Read the actual source to verify the prefixes
-        import inspect
-        source = inspect.getsource(_tt_mod._get_env_config)
-        for prefix in ["/Users/", "/home/", 'C:\\\\"', "C:/"]:
-            # Normalize for source comparison
-            check = prefix.rstrip('"')
-            assert check in source or prefix in source, (
-                f"Host prefix {prefix!r} not found in _get_env_config. "
+    The prefixes used to live as an inline literal inside ``_get_env_config``;
+    they now live in the module-level ``_HOST_CWD_PREFIXES`` constant shared by
+    both the ``_get_env_config`` sanitizer and the override-resolution guard
+    (``_is_unusable_container_cwd``). Assert the *behavior* (each common host
+    prefix is flagged as unusable inside a container) rather than grepping a
+    function's source — the latter is a change-detector that breaks on any
+    refactor that moves the constant.
+    """
+
+    def test_all_common_host_prefixes_present_in_constant(self):
+        """The shared prefix constant must list the common host-only roots."""
+        for prefix in ("/Users/", "/home/", "C:\\", "C:/"):
+            assert prefix in _tt_mod._HOST_CWD_PREFIXES, (
+                f"Host prefix {prefix!r} missing from _HOST_CWD_PREFIXES. "
                 "Container backends need this to avoid using host paths."
             )
+
+    def test_all_common_host_paths_flagged_unusable(self):
+        """A host path under each prefix must be rejected as a container cwd."""
+        for host_path in ("/Users/me/proj", "/home/me/proj",
+                           "C:\\Users\\me", "C:/Users/me"):
+            assert _tt_mod._is_unusable_container_cwd(host_path) is True, (
+                f"Host path {host_path!r} should be rejected as a container "
+                "cwd but was accepted."
+            )
+
+
+# =========================================================================
+# Test 7: Host-bound Docker sandboxes must not bypass dangerous-command
+# approval. Isolated Docker keeps the container fast-path; once a host path
+# is bind-mounted into the container, a command like `rm -rf /workspace` can
+# reach real host files, so it goes through the normal approval flow.
+# (PR #6436, @Kolektori)
+# =========================================================================
+
+class TestDockerHostBindApproval:
+    """Docker host bind mounts disable the container approval fast-path."""
+
+    def test_docker_host_access_detection(self):
+        """_docker_has_host_access flags bind-mounted host paths only."""
+        # Isolated docker (no host binds) -> not host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": [],
+             "host_cwd": None, "docker_mount_cwd_to_workspace": False}) is False
+        # Host-path bind mount -> host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": ["/tmp:/hosttmp"]}) is True
+        # Named volume (not a host path) -> not host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": ["myvol:/data"]}) is False
+        # cwd auto-mount flag -> host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "host_cwd": "/home/u/p",
+             "docker_mount_cwd_to_workspace": True}) is True
+        # Windows host path -> host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "docker_volumes": ["C:\\Users:/data"]}) is True
+        # Other container backends never report host access.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "modal", "docker_volumes": ["/tmp:/x"]}) is False
+
+    def test_should_skip_container_guards(self):
+        """Docker skips only when isolated; other sandboxes always skip."""
+        import tools.approval as A
+        assert A._should_skip_container_guards("docker", has_host_access=False) is True
+        assert A._should_skip_container_guards("docker", has_host_access=True) is False
+        assert A._should_skip_container_guards("modal", has_host_access=True) is True
+        assert A._should_skip_container_guards("singularity") is True
+        assert A._should_skip_container_guards("daytona") is True
+        assert A._should_skip_container_guards("local") is False
+
+    def test_isolated_docker_keeps_fast_path(self, monkeypatch):
+        """Isolated Docker still bypasses dangerous-command approval."""
+        import tools.approval as A
+        self._isolate_approval_state(monkeypatch)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _c: {"action": "allow", "findings": [], "summary": ""})
+        res = A.check_all_command_guards("rm -rf /workspace", "docker",
+                                         has_host_access=False)
+        assert res["approved"] is True
+
+    @staticmethod
+    def _isolate_approval_state(monkeypatch):
+        """Clear approval state that leaks in from the real user config.
+
+        ``tools.approval`` loads ``command_allowlist`` into module-level
+        ``_permanent_approved`` at import time. This file imports
+        ``tools.terminal_tool`` at module level (collection time — BEFORE the
+        hermetic HERMES_HOME fixture runs), so on a dev machine whose real
+        config permanently allowlists e.g. "delete in root path" the guard
+        under test silently approves and the assertions flip. CI never has
+        such an allowlist, making this a local-only flake.
+        """
+        import tools.approval as A
+        monkeypatch.setattr(A, "_permanent_approved", set())
+        monkeypatch.setattr(A, "_session_approved", {})
+
+    def test_host_bound_docker_requires_approval(self, monkeypatch):
+        """Host-bound Docker dangerous command escalates instead of bypassing."""
+        import tools.approval as A
+        self._isolate_approval_state(monkeypatch)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _c: {"action": "allow", "findings": [], "summary": ""})
+        res = A.check_all_command_guards("rm -rf /workspace", "docker",
+                                         has_host_access=True)
+        # Must NOT take the silent container fast-path.
+        assert res.get("approved") is not True
+        assert res.get("status") == "pending_approval"
+
+    def test_execute_code_isolated_docker_keeps_fast_path(self, monkeypatch):
+        """Isolated Docker execute_code still bypasses the guard."""
+        import tools.approval as A
+        self._isolate_approval_state(monkeypatch)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        res = A.check_execute_code_guard("import os", "docker",
+                                         has_host_access=False)
+        assert res["approved"] is True
+
+    def test_execute_code_host_bound_docker_requires_approval(self, monkeypatch):
+        """Host-bound Docker execute_code does not get the container fast-path."""
+        import tools.approval as A
+        self._isolate_approval_state(monkeypatch)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        res = A.check_execute_code_guard(
+            "import os; os.system('rm -rf /workspace')", "docker",
+            has_host_access=True)
+        assert res.get("approved") is not True
+        assert res.get("status") == "pending_approval"
+
+    def test_execute_code_vercel_sandbox_always_skips(self, monkeypatch):
+        """vercel_sandbox has no host-bind concept and stays always-skipped."""
+        import tools.approval as A
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        res = A.check_execute_code_guard("import os", "vercel_sandbox",
+                                         has_host_access=True)
+        assert res["approved"] is True

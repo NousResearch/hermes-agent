@@ -1,0 +1,5 @@
+name: deepseek-provider
+kind: model-provider
+version: 1.0.0
+description: DeepSeek
+author: Nous Research

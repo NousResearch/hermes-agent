@@ -19,11 +19,10 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import (
     GatewayConfig,
-    HomeChannel,
     Platform,
     PlatformConfig,
 )
-from gateway.platforms.base import MessageEvent, MessageType, SendResult
+from gateway.platforms.base import MessageEvent, SendResult
 from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 
 
@@ -257,10 +256,11 @@ class TestCrossPlatformDelivery:
 
         assert result.success is True
         mock_tg_adapter.send.assert_awaited_once_with(
-            "12345", "I've acknowledged the alert."
+            "12345", "I've acknowledged the alert.", metadata=None
         )
-        # Delivery info should be cleaned up
-        assert chat_id not in adapter._delivery_info
+        # Delivery info is retained after send() so interim status messages
+        # don't strand the final response (TTL-based cleanup happens on POST).
+        assert chat_id in adapter._delivery_info
 
 
 # ===================================================================
@@ -333,5 +333,6 @@ class TestGitHubCommentDelivery:
             text=True,
             timeout=30,
         )
-        # Delivery info cleaned up
-        assert chat_id not in adapter._delivery_info
+        # Delivery info is retained after send() so interim status messages
+        # don't strand the final response (TTL-based cleanup happens on POST).
+        assert chat_id in adapter._delivery_info

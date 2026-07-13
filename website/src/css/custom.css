@@ -8,20 +8,24 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
-  /* Gold/Amber palette from landing page */
-  --ifm-color-primary: #FFD700;
-  --ifm-color-primary-dark: #E6C200;
-  --ifm-color-primary-darker: #D9B700;
-  --ifm-color-primary-darkest: #B39600;
-  --ifm-color-primary-light: #FFDD33;
-  --ifm-color-primary-lighter: #FFE14D;
-  --ifm-color-primary-lightest: #FFEB80;
+  /* Dark amber palette for light mode — readable on white (WCAG AA compliant)
+     Current gold #FFD700 has only 1.4:1 contrast on white; these tones pass 4.5:1+ */
+  --ifm-color-primary: #8B6508;
+  --ifm-color-primary-dark: #7A5800;
+  --ifm-color-primary-darker: #6E4F00;
+  --ifm-color-primary-darkest: #5A4100;
+  --ifm-color-primary-light: #9E7410;
+  --ifm-color-primary-lighter: #B38319;
+  --ifm-color-primary-lightest: #C89222;
 
   --ifm-font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --ifm-font-family-monospace: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
 
   --ifm-code-font-size: 90%;
   --ifm-heading-font-weight: 600;
+
+  --ifm-link-color: #7A5800;
+  --ifm-link-hover-color: #5A4100;
 }
 
 /* Dark mode — the PRIMARY mode, matches landing page */
@@ -67,6 +71,14 @@
   border-bottom: 1px solid rgba(255, 215, 0, 0.08);
 }
 
+/* backdrop-filter creates a stacking context that hides
+   .navbar-sidebar menu content (Docusaurus #6996). Remove it
+   while the mobile sidebar is open — both classes live on the
+   same <nav> element. */
+.navbar.navbar-sidebar--show {
+  backdrop-filter: none;
+}
+
 .navbar__title {
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -80,6 +92,13 @@
 [data-theme='dark'] .menu__link--active:not(.menu__link--sublist) {
   background-color: rgba(255, 215, 0, 0.08);
   border-left: 3px solid #FFD700;
+  padding-left: calc(var(--ifm-menu-link-padding-horizontal) - 3px);
+}
+
+/* Light mode sidebar active */
+[data-theme='light'] .menu__link--active:not(.menu__link--sublist) {
+  background-color: rgba(139, 101, 8, 0.08);
+  border-left: 3px solid #8B6508;
   padding-left: calc(var(--ifm-menu-link-padding-horizontal) - 3px);
 }
 
@@ -159,6 +178,16 @@ pre.prism-code.language-ascii code {
   border-color: rgba(255, 215, 0, 0.06);
 }
 
+/* Light mode table styling */
+[data-theme='light'] table th {
+  background-color: rgba(139, 101, 8, 0.06);
+  border-color: rgba(139, 101, 8, 0.15);
+}
+
+[data-theme='light'] table td {
+  border-color: rgba(139, 101, 8, 0.10);
+}
+
 /* Footer */
 .footer {
   border-top: 1px solid rgba(255, 215, 0, 0.08);
@@ -169,8 +198,13 @@ pre.prism-code.language-ascii code {
   transition: color 0.2s;
 }
 
-.footer a:hover {
+[data-theme='dark'] .footer a:hover {
   color: #FFD700;
+  text-decoration: none;
+}
+
+[data-theme='light'] .footer a:hover {
+  color: #7A5800;
   text-decoration: none;
 }
 

@@ -150,8 +150,12 @@ def _is_ssh_remote(url: str | None) -> bool:
     return value.startswith("git@") or value.startswith("ssh://")
 
 
+def _is_official_remote(url: str | None) -> bool:
+    return _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
+
+
 def _is_official_ssh_remote(url: str | None) -> bool:
-    return _is_ssh_remote(url) and _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
+    return _is_ssh_remote(url) and _is_official_remote(url)
 
 
 def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
@@ -192,7 +196,14 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+    """Count commits behind the canonical update branch in a local checkout.
+
+    Official installs compare against ``origin/main``. Fork installs prefer an
+    official ``upstream/main`` remote when present, matching ``hermes update
+    --check`` and the apply path. Without this, a user's fork can be current
+    with its own stale ``origin/main`` while still missing upstream releases;
+    the passive banner then incorrectly prints "Up to date".
+    """
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
@@ -212,27 +223,49 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
     is_shallow = shallow == "true"
 
-    try:
-        fetch_args = ["git", "fetch", "origin"]
+    compare_remote = "origin"
+    compare_ref = "origin/main"
+    # Fork installs should check the official upstream remote when available;
+    # a stale fork origin is exactly the false "Up to date" failure mode.
+    if origin_url and not _is_official_remote(origin_url):
+        upstream_url = _git_stdout(["remote", "get-url", "upstream"], cwd=repo_dir)
+        if _is_official_remote(upstream_url):
+            compare_remote = "upstream"
+            compare_ref = "upstream/main"
+
+    def _fetch(remote: str) -> bool:
+        fetch_args = ["git", "fetch", remote]
+        if remote == "upstream":
+            fetch_args.append("main")
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
-        subprocess.run(
-            fetch_args,
-            capture_output=True, timeout=10,
-            cwd=str(repo_dir),
-        )
-    except Exception:
-        pass  # Offline or timeout — use stale refs, that's fine
+        try:
+            result = subprocess.run(
+                fetch_args,
+                capture_output=True, timeout=10,
+                cwd=str(repo_dir),
+            )
+        except Exception:
+            return False
+        return result.returncode == 0
+
+    fetched = _fetch(compare_remote)
+    if not fetched and compare_remote != "origin":
+        # Offline/missing upstream fallback: preserve the older origin-based
+        # behavior instead of suppressing the update check entirely.
+        compare_remote = "origin"
+        compare_ref = "origin/main"
+        _fetch(compare_remote)
 
     if is_shallow:
         # No history to count across the shallow boundary. `origin/main` may not
         # be a tracking ref in a `clone --depth 1`, so prefer FETCH_HEAD (just
-        # updated by the fetch above) and fall back to origin/main.
+        # updated by the fetch above) and fall back to the compare ref.
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         target_rev = (
             _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
-            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
+            or _git_stdout(["rev-parse", compare_ref], cwd=repo_dir)
         )
         if not head_rev or not target_rev:
             return None
@@ -240,7 +273,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
 
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "rev-list", "--count", f"HEAD..{compare_ref}"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
@@ -293,7 +326,7 @@ def check_via_pypi() -> Optional[int]:
         return 1 if latest != VERSION else 0
 
 
-def check_for_updates() -> Optional[int]:
+def check_for_updates(*, force: bool = False) -> Optional[int]:
     """Check whether a Hermes update is available.
 
     Two paths: if ``HERMES_REVISION`` is set (nix builds embed it), compare
@@ -303,6 +336,10 @@ def check_for_updates() -> Optional[int]:
     Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
     the check failed or doesn't apply. Cached for 6 hours.
+
+    Pass ``force=True`` for explicit user-initiated checks (``hermes
+    --version`` / UI "check now") so a stale successful cache cannot hide a
+    newly-advanced upstream branch.
     """
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
@@ -332,16 +369,34 @@ def check_for_updates() -> Optional[int]:
     # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
     # changes VERSION but leaves rev unchanged (both None), and without this
     # the stale "behind" count would survive the upgrade for up to 6h. See #34491.
+    #
+    # Do not trust a cached "up to date" result for local git installs. A fork
+    # origin can remain unchanged while official upstream/main advances, and a
+    # 6h-old {"behind": 0} cache is exactly the false "Up to date" failure mode
+    # reported on Windows Desktop/source installs. Positive cached results are
+    # safe to keep for the TTL because they cannot hide an available update.
     now = time.time()
+    repo_dir_for_cache: Optional[Path] = None
+    if not embedded_rev:
+        repo_dir_for_cache = Path(__file__).parent.parent.resolve()
+        if not (repo_dir_for_cache / ".git").exists():
+            repo_dir_for_cache = hermes_home / "hermes-agent"
+        if not (repo_dir_for_cache / ".git").exists():
+            repo_dir_for_cache = None
     try:
-        if cache_file.exists():
+        if not force and cache_file.exists():
             cached = json.loads(cache_file.read_text())
-            if (
-                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
+            cache_fresh = now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
+            cache_matches_runtime = (
+                cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
-            ):
-                return cached.get("behind")
+            )
+            cached_behind = cached.get("behind")
+            if cache_fresh and cache_matches_runtime:
+                if embedded_rev or repo_dir_for_cache is None:
+                    return cached_behind
+                if cached_behind not in (0, None):
+                    return cached_behind
     except Exception:
         pass
 
@@ -351,7 +406,7 @@ def check_for_updates() -> Optional[int]:
         # Prefer the running code's location over the profile-scoped path.
         # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
         # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
+        repo_dir = repo_dir_for_cache or Path(__file__).parent.parent.resolve()
         if not (repo_dir / ".git").exists():
             repo_dir = hermes_home / "hermes-agent"
         if not (repo_dir / ".git").exists():
@@ -426,7 +481,14 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
             pass
         return None
 
-    upstream = _git_short_hash(repo_dir, "origin/main")
+    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+    compare_ref = "origin/main"
+    if origin_url and not _is_official_remote(origin_url):
+        upstream_url = _git_stdout(["remote", "get-url", "upstream"], cwd=repo_dir)
+        if _is_official_remote(upstream_url):
+            compare_ref = "upstream/main"
+
+    upstream = _git_short_hash(repo_dir, compare_ref)
     local = _git_short_hash(repo_dir, "HEAD")
     if not upstream or not local:
         # Live-git lookup failed (e.g. shallow clone without origin/main).
@@ -443,7 +505,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     ahead = 0
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            ["git", "rev-list", "--count", f"{compare_ref}..HEAD"],
             capture_output=True,
             text=True,
             timeout=5,

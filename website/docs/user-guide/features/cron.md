@@ -388,6 +388,43 @@ So for a continuable cron job delivered to a 1:1 DM, set
 not required (and is ignored) for DMs.
 :::
 
+### Running jobs under the creator's identity
+
+By default a cron job runs the agent with **no sender identity**
+(`HERMES_SESSION_USER_ID` is empty during the run). Tools that scope behaviour
+by the sender — per-user credentials, per-user access control, rate limits,
+personalization — therefore fall back to their service/anonymous path when a job
+fires. For an access-scoping tool that fallback can let a scheduled job reach
+data the creator could not reach interactively.
+
+Opt-in, **default off**. Enable globally in config, or per-job via the `cronjob`
+tool's `run_as_creator` (which overrides the global setting for that one job):
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  run_as_creator: false   # set true to run jobs as the user who scheduled them
+```
+
+When enabled, `run_job` seeds **only** `HERMES_SESSION_USER_ID` from the job's
+stored `origin.user_id` (captured at create time), so sender-scoped tools run as
+the person who scheduled the job. `platform` / `chat_id` stay empty by design —
+they drive delivery, prompt-cache and skill scoping that must remain
+cron-neutral, and no consumer keys on `user_id` there, so this does not
+reintroduce origin-chat leakage.
+
+Notes:
+
+- **No creator, no change.** Jobs created via the API or a script have no
+  `origin`, so they keep the default anonymous cron identity regardless of this
+  flag.
+- **Stale identity is the tool's call.** A job outlives sessions; the creator
+  may later leave the allowlist or have their credential rotated. A sender-scoped
+  tool should fail closed when the creator no longer resolves — which is safer
+  than the default silent fallback to a shared service credential.
+- **Delivery identity is separate.** The `system:cron` identity used to seed
+  delivery threads is unaffected; this flag only sets the *execution* identity.
+
 ### Silent suppression
 
 If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.

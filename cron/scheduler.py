@@ -613,6 +613,57 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
         return False
 
 
+def _cron_run_as_creator_enabled(job: dict, cfg: Optional[dict] = None) -> bool:
+    """Whether a cron job should execute the agent under its creator's identity
+    (``HERMES_SESSION_USER_ID`` = the scheduling user) instead of the default
+    empty/anonymous cron identity.
+
+    Default OFF — preserves today's behaviour byte-for-byte: cron runs with no
+    sender identity, so sender-scoped tools fall back to their service/anon
+    path. When ON, ``run_job`` seeds ``user_id`` (only) from the job's stored
+    ``origin.user_id`` so per-sender tools (per-user credentials, access
+    control, rate limits, personalization) run as the person who scheduled the
+    job. ``platform``/``chat_id`` stay empty by design — they drive the
+    delivery / prompt-cache / skill scoping that must remain cron-neutral (see
+    the consumer list in ``run_job``); ``user_id`` is not among them.
+
+    Precedence (first decisive value wins):
+      1. Per-job ``run_as_creator`` (bool) — set via the ``cronjob`` tool, lets
+         one job opt in without flipping global behaviour.
+      2. Global ``cron.run_as_creator`` (bool) in config.yaml.
+      3. False.
+    """
+    per_job = job.get("run_as_creator")
+    if isinstance(per_job, bool):
+        return per_job
+    try:
+        if cfg is None:
+            cfg = load_config() or {}
+        return bool((cfg.get("cron", {}) or {}).get("run_as_creator", False))
+    except Exception:
+        return False
+
+
+def _cron_creator_user_id(
+    job: dict, origin: Optional[dict], cfg: Optional[dict] = None
+) -> str:
+    """Sender identity to seed for this cron agent run, or ``""`` for the
+    default anonymous cron context.
+
+    Non-empty only when ``run_as_creator`` is enabled AND the job captured its
+    creator's ``user_id`` in ``origin`` (``_origin_from_env`` records it at
+    create time; API/script-created jobs have no origin -> ``""`` -> unchanged
+    behaviour). The returned id is the raw platform user id (same space as the
+    allowlist); any channel-prefixing is the consuming tool's concern, exactly
+    as for live messages.
+    """
+    if not _cron_run_as_creator_enabled(job, cfg):
+        return ""
+    if not isinstance(origin, dict):
+        return ""
+    return str(origin.get("user_id") or "")
+
+
 def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
                            thread_id: Optional[str]) -> bool:
     """True when a delivery target is the job's own origin conversation.
@@ -2712,10 +2763,20 @@ def run_job(
     # Cron output delivery itself reads job["origin"] directly via
     # _resolve_origin(job) and the HERMES_CRON_AUTO_DELIVER_* vars set
     # below, so clearing HERMES_SESSION_* here does not affect delivery.
+    #
+    # Opt-in (cron.run_as_creator, default off): seed ONLY the sender identity
+    # from the job's stored origin.user_id, so sender-scoped tools (per-user
+    # credentials / access control / rate limits / personalization) run as the
+    # user who scheduled the job instead of falling back to a service/anon
+    # path. platform/chat_id deliberately stay empty — none of the consumers
+    # listed above key on user_id, so this does not reintroduce the origin-chat
+    # leakage they were cleared to prevent. Default off => "" => unchanged.
+    _creator_user_id = _cron_creator_user_id(job, origin)
     _ctx_tokens = set_session_vars(
         platform="",
         chat_id="",
         chat_name="",
+        user_id=_creator_user_id,
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",

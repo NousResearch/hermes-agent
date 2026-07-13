@@ -683,6 +683,385 @@ class TestCuaCaptureImageDimensions:
 
 
 # ---------------------------------------------------------------------------
+# cua-driver window targeting regressions
+# ---------------------------------------------------------------------------
+
+class TestCuaWindowTargeting:
+    class FakeCuaSession:
+        def __init__(self, on_screen_windows, all_windows=None, apps=None, structured_apps=None):
+            self.on_screen_windows = on_screen_windows
+            self.all_windows = all_windows if all_windows is not None else on_screen_windows
+            self.apps = apps or []
+            self.structured_apps = structured_apps
+
+        def call_tool(self, name, args, timeout=30.0):
+            if name == "list_windows":
+                windows = self.on_screen_windows if args.get("on_screen_only") else self.all_windows
+                return {
+                    "data": None,
+                    "images": [],
+                    "structuredContent": {"windows": windows},
+                    "isError": False,
+                }
+            if name == "list_apps":
+                structured = {"apps": self.structured_apps} if self.structured_apps is not None else None
+                return {"data": self.apps, "images": [], "structuredContent": structured, "isError": False}
+            if name == "get_window_state":
+                return {
+                    "data": '✅ FakeApp — 0 elements\n- [1] AXWindow "Fake Window"',
+                    "images": [],
+                    "structuredContent": None,
+                    "isError": False,
+                }
+            raise AssertionError(f"unexpected tool call: {name}")
+
+    def _backend(self, *, on_screen_windows, all_windows=None, apps=None, structured_apps=None):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = self.FakeCuaSession(on_screen_windows, all_windows, apps, structured_apps)
+        return backend
+
+    def test_explicit_app_target_does_not_fall_back_to_unrelated_window(self):
+        backend = self._backend(on_screen_windows=[
+            {"app_name": "Notes", "pid": 1, "window_id": 10, "is_on_screen": True, "z_index": 0},
+            {"app_name": "Mail", "pid": 2, "window_id": 20, "is_on_screen": True, "z_index": 1},
+        ])
+
+        assert backend._select_window("Browser") is None
+        cap = backend.capture(mode="ax", app="Browser")
+        assert cap.app == ""
+        assert cap.window_title == "No window found for app 'Browser'."
+
+    def test_focus_app_target_does_not_fall_back_to_unrelated_window(self):
+        backend = self._backend(on_screen_windows=[
+            {"app_name": "Notes", "pid": 1, "window_id": 10, "is_on_screen": True, "z_index": 0},
+        ])
+
+        result = backend.focus_app("Browser")
+        assert not result.ok
+        assert backend._active_pid is None
+        assert "No window found" in result.message
+
+    def test_app_query_matches_list_apps_name_by_pid_for_decorated_app_name(self):
+        backend = self._backend(
+            on_screen_windows=[
+                {"app_name": "Unknown", "pid": 37031, "window_id": 7, "is_on_screen": True, "z_index": 0},
+            ],
+            apps=[{"name": "- Browser", "pid": 37031, "bundle_id": "com.example.browser"}],
+        )
+
+        target = backend._select_window("Browser")
+        assert target is not None
+        assert target["pid"] == 37031
+
+    def test_metadata_exact_match_beats_weak_raw_prefix_match(self):
+        backend = self._backend(
+            on_screen_windows=[
+                {
+                    "app_name": "Browser Helper",
+                    "pid": 100,
+                    "window_id": 1,
+                    "is_on_screen": True,
+                    "z_index": 0,
+                },
+                {
+                    "app_name": "Unknown",
+                    "pid": 200,
+                    "window_id": 2,
+                    "is_on_screen": True,
+                    "z_index": 1,
+                },
+            ],
+            apps=[{"name": "Browser", "pid": 200}],
+        )
+
+        target = backend._select_window("Browser")
+
+        assert target is not None
+        assert target["pid"] == 200
+        assert target["window_id"] == 2
+
+    def test_bundle_id_query_matches_window_via_list_apps_metadata(self):
+        backend = self._backend(
+            on_screen_windows=[
+                {"app_name": "Unknown", "pid": 37031, "window_id": 7, "is_on_screen": True, "z_index": 0},
+            ],
+            apps=[{"name": "- Browser", "pid": 37031, "bundle_id": "com.example.browser"}],
+        )
+
+        target = backend._select_window("com.example.browser")
+        assert target is not None
+        assert target["window_id"] == 7
+
+    def test_bundle_id_prefix_does_not_select_arbitrary_sibling(self, monkeypatch):
+        backend = self._backend(on_screen_windows=[
+            {
+                "app_name": "Safari",
+                "bundle_id": "com.apple.Safari",
+                "pid": 100,
+                "window_id": 1,
+                "is_on_screen": True,
+                "z_index": 0,
+            },
+            {
+                "app_name": "Notes",
+                "bundle_id": "com.apple.Notes",
+                "pid": 200,
+                "window_id": 2,
+                "is_on_screen": True,
+                "z_index": 1,
+            },
+        ])
+        monkeypatch.setattr(backend, "_system_pids_for_bundle_id", lambda _bundle_id: [])
+
+        assert backend._select_window("com.apple") is None
+
+    def test_exact_bundle_id_outranks_app_name_collision(self):
+        backend = self._backend(on_screen_windows=[
+            {
+                "app_name": "com.apple.Safari",
+                "bundle_id": "com.example.impostor",
+                "pid": 100,
+                "window_id": 1,
+                "is_on_screen": True,
+                "z_index": 0,
+            },
+            {
+                "app_name": "Unknown",
+                "bundle_id": "com.apple.Safari",
+                "pid": 200,
+                "window_id": 2,
+                "is_on_screen": True,
+                "z_index": 1,
+            },
+        ])
+
+        target = backend._select_window("com.apple.Safari")
+
+        assert target is not None
+        assert target["pid"] == 200
+        assert target["window_id"] == 2
+
+    def test_bundle_id_query_uses_system_fallback_when_cua_metadata_omits_bundle_id(self, monkeypatch):
+        backend = self._backend(
+            on_screen_windows=[
+                {"app_name": "Notes", "pid": 1, "window_id": 10, "is_on_screen": True, "z_index": 0},
+            ],
+            all_windows=[
+                {"app_name": "Notes", "pid": 1, "window_id": 10, "is_on_screen": True, "z_index": 0},
+                {"app_name": "Antigravity", "pid": 37031, "window_id": 7, "is_on_screen": False, "z_index": 9},
+            ],
+            apps=[{"name": "- Antigravity", "pid": 37031}],
+        )
+        calls = []
+
+        def fake_pids_for_bundle_id(bundle_id):
+            calls.append(bundle_id)
+            return [37031] if bundle_id == "com.google.antigravity" else []
+
+        monkeypatch.setattr(backend, "_system_pids_for_bundle_id", fake_pids_for_bundle_id)
+
+        target = backend._select_window("com.google.antigravity")
+        assert target is not None
+        assert target["pid"] == 37031
+        assert target["window_id"] == 7
+        assert calls == ["com.google.antigravity"]
+
+    def test_structured_list_apps_metadata_is_used_for_bundle_id_matching(self):
+        backend = self._backend(
+            on_screen_windows=[
+                {"app_name": "Unknown", "pid": 37031, "window_id": 7, "is_on_screen": True, "z_index": 0},
+            ],
+            structured_apps=[{"name": "- Browser", "pid": 37031, "bundle_id": "com.example.browser"}],
+        )
+
+        target = backend._select_window("com.example.browser")
+        assert target is not None
+        assert target["window_id"] == 7
+
+    def test_missing_capture_target_clears_previous_active_window(self):
+        backend = self._backend(on_screen_windows=[
+            {"app_name": "Browser", "pid": 37031, "window_id": 7, "is_on_screen": True, "z_index": 0},
+        ])
+        assert backend.capture(mode="ax", app="Browser").app == "Browser"
+        assert backend._active_pid == 37031
+
+        cap = backend.capture(mode="ax", app="Missing")
+
+        assert cap.app == ""
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+
+    def test_missing_focus_target_clears_previous_active_window(self):
+        backend = self._backend(on_screen_windows=[
+            {"app_name": "Browser", "pid": 37031, "window_id": 7, "is_on_screen": True, "z_index": 0},
+        ])
+        assert backend.focus_app("Browser").ok
+        assert backend._active_pid == 37031
+
+        result = backend.focus_app("Missing")
+
+        assert not result.ok
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+
+    @pytest.mark.parametrize("operation", ["capture", "focus_app"])
+    def test_explicit_selection_error_clears_all_previous_target_state(
+        self, monkeypatch, operation,
+    ):
+        backend = self._backend(on_screen_windows=[])
+        backend._active_pid = 111
+        backend._active_window_id = 222
+        backend._last_app = "StaleApp"
+        backend._snapshot_tokens = {1: "stale-token"}
+
+        def fail_enumeration(*_args, **_kwargs):
+            raise RuntimeError("list_windows transport failed")
+
+        monkeypatch.setattr(backend, "_list_windows", fail_enumeration)
+
+        with pytest.raises(RuntimeError, match="list_windows transport failed"):
+            if operation == "capture":
+                backend.capture(mode="ax", app="Browser")
+            else:
+                backend.focus_app("Browser")
+
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+        assert backend._last_app is None
+        assert backend._snapshot_tokens == {}
+
+    def test_identity_substring_match_requires_word_boundaries(self):
+        backend = self._backend(on_screen_windows=[
+            {"app_name": "Codex", "pid": 1, "window_id": 10, "title": "", "is_on_screen": True, "z_index": 0},
+            {"app_name": "Xcode", "pid": 2, "window_id": 20, "title": "", "is_on_screen": True, "z_index": 1},
+            {"app_name": "Gmail", "pid": 3, "window_id": 30, "title": "", "is_on_screen": True, "z_index": 2},
+        ])
+
+        assert backend._select_window("Code") is None
+        assert backend._select_window("Mail") is None
+
+    def test_same_app_prefers_onscreen_window_over_offscreen_titled_window(self):
+        backend = self._backend(
+            on_screen_windows=[
+                {"app_name": "Browser", "pid": 37031, "window_id": 1, "title": "", "is_on_screen": True, "z_index": 0},
+            ],
+            all_windows=[
+                {"app_name": "Browser", "pid": 37031, "window_id": 1, "title": "", "is_on_screen": True, "z_index": 0},
+                {"app_name": "Browser", "pid": 37031, "window_id": 2, "title": "Documentation", "is_on_screen": False, "z_index": 1},
+            ],
+        )
+
+        target = backend._select_window("Browser")
+        assert target is not None
+        assert target["window_id"] == 1
+
+    def test_explicit_app_target_can_fall_back_to_offscreen_window(self):
+        backend = self._backend(
+            on_screen_windows=[
+                {"app_name": "Notes", "pid": 1, "window_id": 10, "is_on_screen": True, "z_index": 0},
+            ],
+            all_windows=[
+                {"app_name": "Notes", "pid": 1, "window_id": 10, "is_on_screen": True, "z_index": 0},
+                {"app_name": "- Browser", "pid": 37031, "window_id": 7, "is_on_screen": False, "z_index": 9},
+            ],
+        )
+
+        target = backend._select_window("Browser")
+        assert target is not None
+        assert target["pid"] == 37031
+
+    def test_app_query_prefers_titled_content_window_over_titleless_utility_window(self):
+        backend = self._backend(on_screen_windows=[
+            {"app_name": "Browser", "pid": 37031, "window_id": 1, "title": "", "is_on_screen": True, "z_index": 0},
+            {"app_name": "Browser", "pid": 37031, "window_id": 2, "title": "Documentation", "is_on_screen": True, "z_index": 1},
+        ])
+
+        target = backend._select_window("Browser")
+        assert target is not None
+        assert target["window_id"] == 2
+
+    def test_equal_app_matches_use_stable_frontmost_order(self):
+        backend = self._backend(on_screen_windows=[
+            {"app_name": "Browser", "pid": 37031, "window_id": 2, "title": "Docs", "is_on_screen": True, "z_index": 3},
+            {"app_name": "Browser", "pid": 37031, "window_id": 1, "title": "Home", "is_on_screen": True, "z_index": 0},
+        ])
+
+        first = backend._select_window("Browser")
+        second = backend._select_window("Browser")
+
+        assert first is not None and second is not None
+        assert first["window_id"] == second["window_id"] == 1
+
+    def test_focus_app_and_capture_active_keep_exact_window_identity(self):
+        backend = self._backend(on_screen_windows=[
+            {"app_name": "Browser", "pid": 37031, "window_id": 1, "title": "", "is_on_screen": True, "z_index": 0},
+            {"app_name": "Browser", "pid": 37031, "window_id": 2, "title": "Documentation", "is_on_screen": True, "z_index": 1},
+        ])
+
+        assert backend.focus_app("Browser").ok
+        assert backend._active_window_id == 2
+        assert backend._last_app == "Browser"
+
+        setattr(backend._session, "all_windows", [
+            {"app_name": "Mail", "pid": 99, "window_id": 9, "title": "Inbox", "is_on_screen": True, "z_index": 0},
+            {"app_name": "Browser", "pid": 37031, "window_id": 1, "title": "Home", "is_on_screen": True, "z_index": 1},
+            {"app_name": "Browser", "pid": 37031, "window_id": 2, "title": "Documentation", "is_on_screen": False, "z_index": 9},
+        ])
+
+        cap = backend.capture_active(mode="ax")
+
+        assert cap.app == "Browser"
+        assert backend._active_pid == 37031
+        assert backend._active_window_id == 2
+
+    def test_app_identity_match_beats_unrelated_matching_window_title(self):
+        backend = self._backend(on_screen_windows=[
+            {"app_name": "Notes", "pid": 1, "window_id": 10, "title": "Browser", "is_on_screen": True, "z_index": 0},
+            {"app_name": "Browser", "pid": 2, "window_id": 20, "title": "", "is_on_screen": True, "z_index": 1},
+        ])
+
+        target = backend._select_window("Browser")
+        assert target is not None
+        assert target["pid"] == 2
+
+    def test_offscreen_app_identity_match_beats_onscreen_title_match(self):
+        backend = self._backend(
+            on_screen_windows=[
+                {"app_name": "Notes", "pid": 1, "window_id": 10, "title": "Browser", "is_on_screen": True, "z_index": 0},
+            ],
+            all_windows=[
+                {"app_name": "Notes", "pid": 1, "window_id": 10, "title": "Browser", "is_on_screen": True, "z_index": 0},
+                {"app_name": "Browser", "pid": 2, "window_id": 20, "title": "", "is_on_screen": False, "z_index": 99},
+            ],
+        )
+
+        target = backend._select_window("Browser")
+        assert target is not None
+        assert target["pid"] == 2
+
+    def test_capture_after_prefers_backend_capture_active(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult, CaptureResult
+
+        class FakeBackend:
+            def key(self, keys):
+                return ActionResult(ok=True, action="key", message=f"pressed {keys}")
+
+            def capture(self, mode="som", app=None):
+                return CaptureResult(mode=mode, width=1, height=1, app="WrongApp")
+
+            def capture_active(self, mode="som"):
+                return CaptureResult(mode=mode, width=1, height=1, app="Ghostty")
+
+        out = cu_tool._dispatch(FakeBackend(), "key", {"keys": "escape", "capture_after": True})
+        parsed = json.loads(out)
+        assert parsed["app"] == "Ghostty"
+        assert parsed["action"] == "key"
+
+
+# ---------------------------------------------------------------------------
 # Anthropic adapter: multimodal tool-result conversion
 # ---------------------------------------------------------------------------
 

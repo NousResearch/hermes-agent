@@ -338,6 +338,44 @@ def cua_driver_install_hint() -> str:
     )
 
 
+def _normalize_match_text(value: Any) -> str:
+    """Normalize app/window identifiers for conservative matching."""
+    text = str(value or "").strip().lower()
+    # Some apps surface names with leading UI decoration, e.g. "- Browser".
+    text = re.sub(r"^[\s\-–—_:•]+", "", text).strip()
+    return re.sub(r"\s+", " ", text)
+
+
+def _prefix_word_match(query: str, candidate: str) -> bool:
+    """Return True for prefix matches that stop on a word boundary."""
+    if not candidate.startswith(query):
+        return False
+    if len(candidate) == len(query):
+        return True
+    return not candidate[len(query)].isalnum()
+
+
+def _contains_word_match(query: str, candidate: str) -> bool:
+    """Return True when query appears inside candidate on word boundaries."""
+    start = candidate.find(query)
+    while start != -1:
+        end = start + len(query)
+        before_ok = start == 0 or not candidate[start - 1].isalnum()
+        after_ok = end == len(candidate) or not candidate[end].isalnum()
+        if before_ok and after_ok:
+            return True
+        start = candidate.find(query, start + 1)
+    return False
+
+
+def _looks_like_bundle_id(query: str) -> bool:
+    """Return True for plausible macOS bundle identifiers."""
+    return bool(re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9][A-Za-z0-9_-]*)+",
+        query.strip(),
+    ))
+
+
 def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
     """Parse UIElement list from get_window_state AX tree markdown.
 
@@ -1139,6 +1177,12 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "window_id": window_id_int,
             "off_screen": not w.get("is_on_screen", True),
             "title": w.get("title", ""),
+            "bundle_id": (
+                w.get("bundle_id")
+                or w.get("bundle_identifier")
+                or w.get("bundleIdentifier")
+                or ""
+            ),
             "z_index": w.get("z_index", 0),
         })
     return windows
@@ -1243,38 +1287,26 @@ class CuaDriverBackend(ComputerUseBackend):
             return False
         return cua_driver_binary_available()
 
-    # ── Capture ────────────────────────────────────────────────────
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        """Capture the frontmost on-screen window (optionally filtered by app name).
+    def _list_windows(self, on_screen_only: bool) -> List[Dict[str, Any]]:
+        """Return normalized cua-driver windows, frontmost first.
 
-        Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
-        `get_window_state` (ax/som) or `screenshot` (vision).
+        Keep current-main's structured transport, session identity, and CLI
+        recovery behavior while allowing explicit targets to request off-screen
+        and minimized windows.
         """
-        # Step 1: enumerate on-screen windows to find target pid/window_id.
-        # Surface 3 of NousResearch/hermes-agent#47072: read the canonical
-        # `structuredContent.windows` array directly. Pre-fix the wrapper
-        # also kept a text-line regex (`_WINDOW_LINE_RE`) as a fallback for
-        # cua-driver builds that predated structuredContent; the supersede
-        # PR's effective minimum (trycua/cua#1961 + #1908) is well past
-        # that, so the fallback is gone — the wrapper now treats the
-        # structured shape as the only contract.
-        lw_out = self._session.call_tool(
-            "list_windows",
-            {"on_screen_only": True, "session": self._session_id},
-        )
+        args = {
+            "on_screen_only": on_screen_only,
+            "session": self._session_id,
+        }
+        lw_out = self._session.call_tool("list_windows", args)
 
         def _windows_from(out: Dict[str, Any]) -> List[Dict[str, Any]]:
-            raw_ = (out.get("structuredContent") or {}).get("windows") or []
-            wins_ = _ingest_windows(raw_)
-            # Sort by z_index descending (lowest z_index = frontmost on macOS).
-            wins_.sort(key=lambda w: w["z_index"])
-            return wins_
+            raw = (out.get("structuredContent") or {}).get("windows") or []
+            windows = _ingest_windows(raw)
+            windows.sort(key=lambda window: window.get("z_index", 0))
+            return windows
 
         windows = _windows_from(lw_out)
-
-        # If the MCP bridge returned an empty/degenerate window list (flaky
-        # session), re-fetch over the CLI transport before giving up — otherwise
-        # the caller sees a silent 0x0 capture even though windows exist.
         if not windows:
             logger.warning(
                 "cua-driver list_windows returned no windows over MCP; "
@@ -1282,93 +1314,331 @@ class CuaDriverBackend(ComputerUseBackend):
             )
             try:
                 cli_lw = self._session._call_tool_via_cli(
-                    "list_windows",
-                    {"on_screen_only": True, "session": self._session_id},
-                    20.0,
+                    "list_windows", args, 20.0,
                 )
                 windows = _windows_from(cli_lw)
             except Exception as cli_exc:
                 logger.error("cua-driver CLI re-fetch for list_windows failed: %s", cli_exc)
+        return windows
 
-        if not windows:
-            return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
-                                 elements=[], app="", window_title="", png_bytes_len=0)
+    def _augment_windows_from_apps(self, windows: List[Dict[str, Any]]) -> None:
+        """Merge canonical app names and bundle IDs into windows by PID."""
+        try:
+            apps = self.list_apps()
+        except Exception:
+            return
+        by_pid: Dict[int, Dict[str, Any]] = {}
+        for app in apps:
+            raw_pid = app.get("pid")
+            if raw_pid is None:
+                continue
+            try:
+                pid = int(raw_pid)
+            except (TypeError, ValueError):
+                continue
+            by_pid[pid] = app
 
-        # Filter by app name (case-insensitive substring) if requested.
-        # When the filter matches nothing, surface that explicitly instead of
-        # silently capturing the frontmost window — on macOS the `app_name`
-        # returned by list_windows is the localized name (e.g. "計算機"), so
-        # `app="Calculator"` legitimately matches no windows on a non-English
-        # system and the caller needs to retry with the localized name.
-        if app and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS:
-            # Whole-screen / desktop request. cua-driver has no virtual-desktop
-            # capture tool, so resolve to the OS shell/desktop window (the
-            # desktop backdrop or the taskbar/menu-bar), which list_windows
-            # does surface. This makes "show me my screen" and "click the
-            # taskbar" work; a single image still can't span multiple monitors
-            # — that's a driver limitation, not a wrapper one.
-            def _is_desktop_window(w: Dict[str, Any]) -> bool:
-                haystack = f"{w.get('app_name', '')} {w.get('title', '')}".lower()
-                return any(name in haystack for name in _DESKTOP_WINDOW_NAMES)
-
-            desktop = [w for w in windows if _is_desktop_window(w)]
-            if not desktop:
-                return CaptureResult(
-                    mode=mode, width=0, height=0, png_b64=None,
-                    elements=[], app="",
-                    window_title=(
-                        f"<no desktop/shell window found for app={app!r}; "
-                        f"cua-driver captures one window at a time and exposes "
-                        f"no whole-virtual-desktop or per-monitor capture. "
-                        f"Call list_apps / capture(app='<AppName>') to target a "
-                        f"specific window instead. On Windows the taskbar is "
-                        f"'Shell_TrayWnd' and the desktop is 'Progman'.>"
-                    ),
-                    png_bytes_len=0,
-                )
-            # Prefer the desktop backdrop (Progman/WorkerW/Finder) over the
-            # taskbar when both are present, so a bare "screen" capture shows
-            # the full desktop rather than just the task strip.
-            windows = sorted(
-                desktop,
-                key=lambda w: 0 if any(
-                    n in f"{w.get('app_name', '')} {w.get('title', '')}".lower()
-                    for n in ("progman", "workerw", "program manager", "finder", "desktop")
-                ) else 1,
+        for window in windows:
+            raw_pid = window.get("pid")
+            if not isinstance(raw_pid, int):
+                continue
+            app = by_pid.get(raw_pid)
+            if not app:
+                continue
+            window["bundle_id"] = (
+                window.get("bundle_id")
+                or app.get("bundle_id")
+                or app.get("bundle_identifier")
+                or app.get("bundleIdentifier")
+                or ""
             )
-        elif app:
-            app_lower = app.lower()
-            filtered = [w for w in windows if app_lower in w["app_name"].lower()]
-            if not filtered:
-                return CaptureResult(
-                    mode=mode, width=0, height=0, png_b64=None,
-                    elements=[], app="",
-                    window_title=(
-                        f"<no on-screen window matched app={app!r}; "
-                        f"call list_apps to see available app names "
-                        f"(macOS reports localized names, e.g. '計算機' "
-                        f"instead of 'Calculator')>"
-                    ),
-                    png_bytes_len=0,
-                )
-            windows = filtered
+            window["list_app_name"] = app.get("name", "")
 
-        # Pick first on-screen window (sorted by z_index / z-order above).
-        target = next((w for w in windows if not w["off_screen"]), windows[0])
-        self._active_pid = target["pid"]
-        self._active_window_id = target["window_id"]
-        app_name = target["app_name"]
-        # Record the resolved app name so capture_after= follow-ups can re-target
-        # the same app rather than falling back to the frontmost window.
-        if app or not self._last_app:
+    def _system_pids_for_bundle_id(self, bundle_id: str) -> List[int]:
+        """Return macOS PIDs for a bundle ID when cua metadata omits it."""
+        if not _is_macos() or not shutil.which("osascript") or not _looks_like_bundle_id(bundle_id):
+            return []
+        script = (
+            'tell application "System Events" to get unix id of every process '
+            f'whose bundle identifier is "{bundle_id}"'
+        )
+        try:
+            out = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+        except Exception as exc:
+            logger.debug("bundle id lookup failed for %s: %s", bundle_id, exc)
+            return []
+        if out.returncode != 0:
+            return []
+        return [int(match.group(0)) for match in re.finditer(r"\d+", out.stdout)]
+
+    def _augment_windows_for_bundle_id(
+        self, windows: List[Dict[str, Any]], bundle_id: str,
+    ) -> None:
+        pids = set(self._system_pids_for_bundle_id(bundle_id))
+        for window in windows:
+            if window.get("pid") in pids and not window.get("bundle_id"):
+                window["bundle_id"] = bundle_id
+
+    def _window_match_score(self, query: str, window: Dict[str, Any]) -> int:
+        raw_query = str(query or "").strip().lower()
+        normalized_query = _normalize_match_text(query)
+        if not normalized_query:
+            return 0
+        if raw_query == str(window.get("pid", "")):
+            return 400
+
+        bundle_id = _normalize_match_text(window.get("bundle_id", ""))
+        if bundle_id and normalized_query == bundle_id:
+            return 320
+        # Bundle IDs are opaque application identities, not display names.
+        # A bundle-looking query must match the complete ID; accepting prefixes
+        # such as ``com.apple`` can select an arbitrary sibling application.
+        if _looks_like_bundle_id(raw_query):
+            return 0
+
+        identity = [
+            _normalize_match_text(value)
+            for value in (
+                window.get("app_name", ""),
+                window.get("list_app_name", ""),
+            )
+            if value
+        ]
+        if normalized_query in identity:
+            return 320
+        if any(_prefix_word_match(normalized_query, candidate) for candidate in identity):
+            return 300
+        if len(normalized_query) >= 4 and any(
+            _contains_word_match(normalized_query, candidate) for candidate in identity
+        ):
+            return 240
+        return 0
+
+    @staticmethod
+    def _window_preference_score(window: Dict[str, Any]) -> int:
+        """Prefer on-screen, titled content windows for equal app matches."""
+        score = 0
+        if not window.get("off_screen"):
+            score += 40
+        if str(window.get("title") or "").strip():
+            score += 20
+        return score
+
+    def _score_matching_windows(
+        self,
+        app: str,
+        windows_by_key: Dict[Tuple[int, int], Dict[str, Any]],
+        order_by_key: Dict[Tuple[int, int], int],
+    ) -> List[Tuple[int, int, int, Dict[str, Any]]]:
+        scored = []
+        for key, window in windows_by_key.items():
+            match = self._window_match_score(app, window)
+            if match:
+                scored.append((
+                    match,
+                    self._window_preference_score(window),
+                    order_by_key[key],
+                    window,
+                ))
+        return scored
+
+    def _select_window(self, app: str) -> Optional[Dict[str, Any]]:
+        """Select a deterministic app-identity match, never a title-only match."""
+        windows_by_key: Dict[Tuple[int, int], Dict[str, Any]] = {}
+        order_by_key: Dict[Tuple[int, int], int] = {}
+        order = 0
+
+        def add_windows(windows: List[Dict[str, Any]]) -> None:
+            nonlocal order
+            for window in windows:
+                key = (int(window["pid"]), int(window["window_id"]))
+                if key not in windows_by_key:
+                    windows_by_key[key] = window
+                    order_by_key[key] = order
+                    order += 1
+                    continue
+                existing = windows_by_key[key]
+                for field, value in window.items():
+                    if field != "off_screen" and value not in (None, ""):
+                        existing[field] = value
+                if not window.get("off_screen"):
+                    existing["off_screen"] = False
+
+        add_windows(self._list_windows(on_screen_only=True))
+        needs_app_metadata = _looks_like_bundle_id(app)
+        scored = self._score_matching_windows(app, windows_by_key, order_by_key)
+        best_score = max((item[0] for item in scored), default=0)
+        if (best_score < 320 or needs_app_metadata) and windows_by_key:
+            self._augment_windows_from_apps(list(windows_by_key.values()))
+            scored = self._score_matching_windows(app, windows_by_key, order_by_key)
+
+        # A strong on-screen identity match is sufficient. Otherwise include
+        # off-screen/minimized candidates and rank the complete set.
+        best_score = max((item[0] for item in scored), default=0)
+        if best_score < 320:
+            add_windows(self._list_windows(on_screen_only=False))
+            scored = self._score_matching_windows(app, windows_by_key, order_by_key)
+            best_score = max((item[0] for item in scored), default=0)
+            if (best_score < 320 or needs_app_metadata) and windows_by_key:
+                self._augment_windows_from_apps(list(windows_by_key.values()))
+                scored = self._score_matching_windows(app, windows_by_key, order_by_key)
+
+        if not scored and needs_app_metadata:
+            self._augment_windows_for_bundle_id(
+                list(windows_by_key.values()), app.strip(),
+            )
+            scored = self._score_matching_windows(app, windows_by_key, order_by_key)
+        if not scored:
+            return None
+        scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        return scored[0][3]
+
+    def _default_window(self) -> Optional[Dict[str, Any]]:
+        """Return the frontmost available window for an untargeted capture."""
+        for on_screen_only in (True, False):
+            windows = self._list_windows(on_screen_only=on_screen_only)
+            if windows:
+                return next(
+                    (window for window in windows if not window.get("off_screen")),
+                    windows[0],
+                )
+        return None
+
+    @staticmethod
+    def _empty_capture(mode: str, message: str = "") -> CaptureResult:
+        return CaptureResult(
+            mode=mode,
+            width=0,
+            height=0,
+            png_b64=None,
+            elements=[],
+            app="",
+            window_title=message,
+            png_bytes_len=0,
+        )
+
+    def _clear_active_target(self) -> None:
+        """Clear every sticky identity derived from a previous selection."""
+        self._active_pid = None
+        self._active_window_id = None
+        self._last_app = None
+        self._snapshot_tokens.clear()
+
+    def _no_window_message(self, app: str) -> str:
+        base = f"No window found for app '{app}'."
+        query = _normalize_match_text(app)
+        try:
+            windows = self._list_windows(on_screen_only=True)
+        except Exception:
+            return base
+        for window in windows:
+            title = _normalize_match_text(window.get("title", ""))
+            if title and (
+                query == title
+                or _prefix_word_match(query, title)
+                or _contains_word_match(query, title)
+            ):
+                return (
+                    f"{base} A window title matched, but explicit app targeting "
+                    "only matches app names, bundle IDs, or PIDs; call list_apps "
+                    "to see available app names (macOS may report localized names, "
+                    "e.g. '計算機' instead of 'Calculator')."
+                )
+        return base
+
+    def _select_desktop_window(self) -> Optional[Dict[str, Any]]:
+        windows = self._list_windows(on_screen_only=True)
+
+        def is_desktop_window(window: Dict[str, Any]) -> bool:
+            haystack = f"{window.get('app_name', '')} {window.get('title', '')}".lower()
+            return any(name in haystack for name in _DESKTOP_WINDOW_NAMES)
+
+        desktop = [window for window in windows if is_desktop_window(window)]
+        if not desktop:
+            return None
+        return min(
+            desktop,
+            key=lambda window: 0 if any(
+                name in f"{window.get('app_name', '')} {window.get('title', '')}".lower()
+                for name in ("progman", "workerw", "program manager", "finder", "desktop")
+            ) else 1,
+        )
+
+    # ── Capture ────────────────────────────────────────────────────
+    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
+        """Capture the frontmost window, or an explicitly targeted app window."""
+        if app:
+            # Clear before any selector call so enumeration/transport errors
+            # cannot leave later actions pointed at a stale application.
+            self._clear_active_target()
+        if app and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS:
+            target = self._select_desktop_window()
+            if target is None:
+                return self._empty_capture(
+                    mode,
+                    f"<no desktop/shell window found for app={app!r}; "
+                    "cua-driver captures one window at a time and exposes no "
+                    "whole-virtual-desktop or per-monitor capture. Call list_apps / "
+                    "capture(app='<AppName>') to target a specific window instead. "
+                    "On Windows the taskbar is 'Shell_TrayWnd' and the desktop is "
+                    "'Progman'.>",
+                )
+        elif app:
+            target = self._select_window(app)
+            if target is None:
+                return self._empty_capture(mode, self._no_window_message(app))
+        else:
+            target = self._default_window()
+            if target is None:
+                return self._empty_capture(mode)
+
+        capture = self._capture_window(mode, target)
+        if app:
+            self._last_app = capture.app or app
+        return capture
+
+    def capture_active(self, mode: str = "som") -> CaptureResult:
+        """Capture the exact sticky PID/window identity after an action."""
+        if self._active_pid is None or self._active_window_id is None:
+            return self.capture(mode=mode)
+        target = None
+        try:
+            for window in self._list_windows(on_screen_only=False):
+                if (
+                    window.get("pid") == self._active_pid
+                    and window.get("window_id") == self._active_window_id
+                ):
+                    target = window
+                    break
+        except Exception:
+            target = None
+        if target is None:
+            target = {
+                "pid": self._active_pid,
+                "window_id": self._active_window_id,
+                "app_name": "",
+                "title": "",
+            }
+        return self._capture_window(mode, target)
+
+    def _capture_window(self, mode: str, target: Dict[str, Any]) -> CaptureResult:
+        self._active_pid = int(target["pid"])
+        self._active_window_id = int(target["window_id"])
+        app_name = target.get("app_name") or target.get("list_app_name", "")
+        if app_name and not self._last_app:
             self._last_app = app_name
 
-        # Step 2: capture.
         png_b64: Optional[str] = None
         image_mime_type: Optional[str] = None
         elements: List[UIElement] = []
         width = height = 0
-        window_title = ""
+        window_title = str(target.get("title", "") or "")
 
         if mode == "vision":
             # Plain screenshot, no AX walk. cua-driver dropped the standalone
@@ -1720,6 +1990,9 @@ class CuaDriverBackend(ComputerUseBackend):
     # ── Introspection ──────────────────────────────────────────────
     def list_apps(self) -> List[Dict[str, Any]]:
         out = self._session.call_tool("list_apps", {"session": self._session_id})
+        structured = out.get("structuredContent") or {}
+        if isinstance(structured, dict) and isinstance(structured.get("apps"), list):
+            return structured["apps"]
         data = out["data"]
         if isinstance(data, list):
             return data
@@ -1748,32 +2021,29 @@ class CuaDriverBackend(ComputerUseBackend):
         raise_window=True is intentionally ignored: stealing the user's focus
         is exactly what this backend is designed to avoid.
         """
-        lw_out = self._session.call_tool(
-            "list_windows",
-            {"on_screen_only": True, "session": self._session_id},
-        )
-        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = _ingest_windows(raw_windows)
-        windows.sort(key=lambda w: w["z_index"])
-
-        app_lower = app.lower()
-        matched = [w for w in windows if app_lower in w["app_name"].lower()]
-        # Don't silently fall back to the frontmost window when the filter
-        # matches nothing — that hides the real failure (often a localized
-        # macOS app name mismatch, e.g. caller passed "Calculator" but
-        # list_windows returns "計算機").
-        target = matched[0] if matched else None
-        if target:
-            self._active_pid = target["pid"]
-            self._active_window_id = target["window_id"]
-            self._last_app = target["app_name"]  # preserve for capture_after= follow-ups
+        # Selection may raise if cua-driver enumeration fails. Clear first so
+        # a subsequent action cannot mutate the previously targeted window.
+        self._clear_active_target()
+        target = self._select_window(app)
+        if target is None:
             return ActionResult(
-                ok=True, action="focus_app",
-                message=f"Targeted {target['app_name']} (pid {self._active_pid}, "
-                        f"window {self._active_window_id}) without raising window.",
+                ok=False,
+                action="focus_app",
+                message=self._no_window_message(app),
             )
-        return ActionResult(ok=False, action="focus_app",
-                            message=f"No on-screen window found for app '{app}'.")
+
+        self._active_pid = int(target["pid"])
+        self._active_window_id = int(target["window_id"])
+        app_name = target.get("app_name") or target.get("list_app_name", "")
+        self._last_app = app_name or app
+        return ActionResult(
+            ok=True,
+            action="focus_app",
+            message=(
+                f"Targeted {app_name} (pid {self._active_pid}, "
+                f"window {self._active_window_id}) without raising window."
+            ),
+        )
 
     # ── App lifecycle ────────────────────────────────────────────────
     #

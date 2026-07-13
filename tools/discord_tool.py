@@ -28,16 +28,22 @@ actionable guidance the model can relay to the user.
 import json
 import logging
 import os
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from tools.registry import registry
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
+_DISCORD_RESPONSE_BODY_MAX_BYTES = 4 * 1024 * 1024
+_DISCORD_ERROR_BODY_MAX_BYTES = 64 * 1024
 
 # Application flag bits (from GET /applications/@me → "flags").
 # Source: https://discord.com/developers/docs/resources/application#application-object-application-flags
@@ -49,6 +55,21 @@ _FLAG_GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+class DiscordAPIError(Exception):
+    """Raised when a Discord API call fails."""
+    def __init__(self, status: int, body: str):
+        self.status = status
+        self.body = body
+        super().__init__(f"Discord API error {status}: {body}")
+
+
+def _read_limited_response_body(source: Any, limit: int, *, label: str) -> bytes:
+    body = source.read(limit + 1)
+    if len(body) > limit:
+        raise DiscordAPIError(502, f"Discord API {label} exceeded {limit} bytes.")
+    return body
+
 
 def _get_bot_token() -> Optional[str]:
     """Resolve the Discord bot token from environment."""
@@ -87,22 +108,26 @@ def _discord_request(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status == 204:
                 return None
-            return json.loads(resp.read().decode("utf-8"))
+            response_body = _read_limited_response_body(
+                resp,
+                _DISCORD_RESPONSE_BODY_MAX_BYTES,
+                label="response body",
+            )
+            return json.loads(response_body.decode("utf-8"))
     except urllib.error.HTTPError as e:
         error_body = ""
         try:
-            error_body = e.read().decode("utf-8", errors="replace")
+            raw_error_body = _read_limited_response_body(
+                e,
+                _DISCORD_ERROR_BODY_MAX_BYTES,
+                label="error body",
+            )
+            error_body = raw_error_body.decode("utf-8", errors="replace")
+        except DiscordAPIError as too_large:
+            error_body = too_large.body
         except Exception:
             pass
         raise DiscordAPIError(e.code, error_body) from e
-
-
-class DiscordAPIError(Exception):
-    """Raised when a Discord API call fails."""
-    def __init__(self, status: int, body: str):
-        self.status = status
-        self.body = body
-        super().__init__(f"Discord API error {status}: {body}")
 
 
 # ---------------------------------------------------------------------------
@@ -134,23 +159,136 @@ def _channel_type_name(type_id: int) -> str:
 # Module-level cache so the app/me endpoint is hit at most once per process.
 _capability_cache: Dict[str, Dict[str, Any]] = {}
 
+# Disk-cache TTL for detected capabilities.  Privileged intents change only
+# when the user flips them in the Discord Developer Portal, so 24h staleness
+# is harmless — and a stale value only affects which actions appear in the
+# schema (a hidden action re-appears on the next refresh; an exposed action
+# the bot lost fails at call time with an enriched 403).
+_CAPABILITY_DISK_TTL_SECONDS = 24 * 3600
 
-def _detect_capabilities(token: str, *, force: bool = False) -> Dict[str, Any]:
-    """Detect the bot's app-wide capabilities via GET /applications/@me.
+# One background detection per process at most.
+_capability_bg_started: set = set()
+_capability_bg_lock = threading.Lock()
 
-    Returns a dict with keys:
 
-    - ``has_members_intent``: GUILD_MEMBERS intent is enabled
-    - ``has_message_content``: MESSAGE_CONTENT intent is enabled
-    - ``detected``: detection succeeded (False means exposing everything
-      and letting runtime errors handle it)
+def _capability_disk_cache_path() -> "Path":
+    from pathlib import Path
 
-    Cached in a module-global. Pass ``force=True`` to re-fetch.
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "discord_capabilities.json"
+
+
+def _token_cache_key(token: str) -> str:
+    """Stable non-reversible cache key for a bot token."""
+    import hashlib
+
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def _load_caps_from_disk(token: str) -> Optional[Dict[str, Any]]:
+    """Return fresh disk-cached capabilities for *token*, or None."""
+    import time
+
+    try:
+        path = _capability_disk_cache_path()
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        entry = data.get(_token_cache_key(token))
+        if not isinstance(entry, dict):
+            return None
+        if time.time() - float(entry.get("ts", 0)) > _CAPABILITY_DISK_TTL_SECONDS:
+            return None
+        caps = entry.get("caps")
+        if isinstance(caps, dict) and "has_members_intent" in caps:
+            return caps
+    except Exception:
+        pass
+    return None
+
+
+def _save_caps_to_disk(token: str, caps: Dict[str, Any]) -> None:
+    import time
+
+    try:
+        path = _capability_disk_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                data = {}
+        except Exception:
+            data = {}
+        data[_token_cache_key(token)] = {"caps": caps, "ts": time.time()}
+        tmp = path.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(data, f)
+        tmp.replace(path)
+    except Exception:
+        logger.debug("discord capability disk-cache write failed", exc_info=True)
+
+
+def _detect_capabilities_nonblocking(token: str) -> Dict[str, Any]:
+    """Non-blocking capability lookup for schema builds.
+
+    Resolution order:
+      1. In-process memory cache (populated by a previous sync/bg detection).
+      2. Fresh disk cache (populated by a previous process).
+      3. Permissive default + fire-and-forget background detection that
+         populates both caches for the next schema build / process.
+
+    Rationale: ``_detect_capabilities`` makes a blocking HTTPS call to
+    discord.com (measured ~2s, up to 5s on the timeout) and used to run
+    inside ``get_tool_definitions`` → ``AIAgent.__init__`` — i.e. on the
+    critical path of the FIRST TOKEN of every cold process for any user
+    with DISCORD_BOT_TOKEN set, on every platform.  The permissive default
+    mirrors the existing detection-failure fallback: all actions exposed,
+    call-time 403s mapped to guidance by ``_enrich_403``.
     """
-    global _capability_cache
-    if token in _capability_cache and not force:
-        return _capability_cache[token]
+    cached = _capability_cache.get(token)
+    if cached is not None:
+        return cached
 
+    disk = _load_caps_from_disk(token)
+    if disk is not None:
+        _capability_cache[token] = disk
+        return disk
+
+    # Cold start — pin the permissive default for THIS process (schema
+    # stability: tool schemas must not change between agent inits within a
+    # live process, or the per-conversation prompt cache breaks) and detect
+    # in the background for the NEXT process via the disk cache.
+    caps_default = {
+        "has_members_intent": True,
+        "has_message_content": True,
+        "detected": False,
+    }
+    _capability_cache[token] = caps_default
+
+    with _capability_bg_lock:
+        if token not in _capability_bg_started:
+            _capability_bg_started.add(token)
+
+            def _bg_detect() -> None:
+                try:
+                    caps = _fetch_capabilities(token)
+                    if caps.get("detected"):
+                        _save_caps_to_disk(token, caps)
+                except Exception:
+                    logger.debug("background discord capability detection failed", exc_info=True)
+
+            threading.Thread(
+                target=_bg_detect, name="discord-caps-detect", daemon=True
+            ).start()
+
+    return caps_default
+
+
+def _fetch_capabilities(token: str) -> Dict[str, Any]:
+    """Fetch capabilities from GET /applications/@me. Pure network fetch —
+    does NOT read or write the in-process cache (background detection must
+    not mutate schemas mid-process)."""
     caps: Dict[str, Any] = {
         "has_members_intent": True,
         "has_message_content": True,
@@ -172,14 +310,36 @@ def _detect_capabilities(token: str, *, force: bool = False) -> Dict[str, Any]:
             "Discord capability detection failed (%s); exposing all actions.", exc,
         )
 
+    return caps
+
+
+def _detect_capabilities(token: str, *, force: bool = False) -> Dict[str, Any]:
+    """Detect the bot's app-wide capabilities via GET /applications/@me.
+
+    Returns a dict with keys:
+
+    - ``has_members_intent``: GUILD_MEMBERS intent is enabled
+    - ``has_message_content``: MESSAGE_CONTENT intent is enabled
+    - ``detected``: detection succeeded (False means exposing everything
+      and letting runtime errors handle it)
+
+    Cached in a module-global. Pass ``force=True`` to re-fetch.
+    """
+    global _capability_cache
+    if token in _capability_cache and not force:
+        return _capability_cache[token]
+
+    caps = _fetch_capabilities(token)
     _capability_cache[token] = caps
     return caps
 
 
 def _reset_capability_cache() -> None:
     """Test hook: clear the detection cache."""
-    global _capability_cache
+    global _capability_cache, _capability_bg_started
     _capability_cache = {}
+    with _capability_bg_lock:
+        _capability_bg_started = set()
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +893,7 @@ def _get_dynamic_schema(
     token = _get_bot_token()
     if not token:
         return None
-    caps = _detect_capabilities(token)
+    caps = _detect_capabilities_nonblocking(token)
     allowlist = _load_allowed_actions_config()
     actions = [a for a in _available_actions(caps, allowlist) if a in action_subset]
     if not actions:

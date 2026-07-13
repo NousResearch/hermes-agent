@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,7 @@ def kanban_home(tmp_path, monkeypatch):
     [
         ("scratch",              ("scratch", None)),
         ("worktree",              ("worktree", None)),
+        ("worktree:/tmp/wt",       ("worktree", "/tmp/wt")),
         ("dir:/tmp/work",         ("dir", "/tmp/work")),
     ],
 )
@@ -45,8 +47,12 @@ def test_parse_workspace_flag_expands_user():
     assert path.endswith("/vault")
     assert not path.startswith("~")
 
+    kind, path = kc._parse_workspace_flag("worktree:~/trees/t6-wire")
+    assert kind == "worktree"
+    assert path.endswith("/trees/t6-wire")
+    assert not path.startswith("~")
 
-@pytest.mark.parametrize("bad", ["cloud", "dir:", "", "worktree:/x"])
+@pytest.mark.parametrize("bad", ["cloud", "dir:", "worktree:", ""])
 def test_parse_workspace_flag_rejects(bad):
     if not bad:
         # Empty -> defaults; not an error.
@@ -54,6 +60,17 @@ def test_parse_workspace_flag_rejects(bad):
         return
     with pytest.raises(argparse.ArgumentTypeError):
         kc._parse_workspace_flag(bad)
+
+
+def test_parse_branch_flag_rejects_empty_and_option_like():
+    assert kc._parse_branch_flag(None) is None
+    assert kc._parse_branch_flag(" wt/t6-wire ") == "wt/t6-wire"
+    with pytest.raises(argparse.ArgumentTypeError):
+        kc._parse_branch_flag("   ")
+    with pytest.raises(argparse.ArgumentTypeError):
+        kc._parse_branch_flag("-bad")
+    with pytest.raises(argparse.ArgumentTypeError):
+        kc._parse_branch_flag("bad branch")
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +89,27 @@ def test_run_slash_create_and_list(kanban_home):
     out = kc.run_slash("list")
     assert "ship feature" in out
     assert "alice" in out
+
+
+def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):
+    target = tmp_path / ".worktrees" / "t6-wire"
+    target_arg = target.as_posix()
+    out = kc.run_slash(
+        f"create 'ship worktree' --workspace worktree:{target_arg} --branch wt/t6-wire"
+    )
+    assert "Created" in out
+
+    with kb.connect() as conn:
+        tasks = kb.list_tasks(conn)
+    task = tasks[0]
+    assert task.workspace_kind == "worktree"
+    assert task.workspace_path == target_arg
+    assert task.branch_name == "wt/t6-wire"
+
+
+def test_run_slash_rejects_branch_without_worktree(kanban_home):
+    out = kc.run_slash("create 'bad branch' --workspace scratch --branch wt/bad")
+    assert "--branch is only valid with --workspace worktree" in out
 
 
 def test_run_slash_create_with_parent_and_cascade(kanban_home):
@@ -96,9 +134,19 @@ def test_run_slash_show_includes_comments(kanban_home):
     out = kc.run_slash("create 'x'")
     import re
     tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
-    kc.run_slash(f"comment {tid} 'source is paywalled'")
+    kc.run_slash(f"comment {tid} 'remember to include performance section'")
     show = kc.run_slash(f"show {tid}")
-    assert "source is paywalled" in show
+    assert "performance section" in show
+
+
+def test_run_slash_comment_max_len_trims_long_body(kanban_home):
+    out = kc.run_slash("create 'x'")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"comment {tid} '{'x' * 30}' --max-len 20")
+    show = kc.run_slash(f"show {tid}")
+    assert "trimmed to 20 chars by --max-len" in show
+    assert "x" * 30 not in show
 
 
 def test_run_slash_block_unblock_cycle(kanban_home):
@@ -146,6 +194,48 @@ def test_run_slash_tenant_filter(kanban_home):
     assert "biz-b task" in b and "biz-a task" not in b
 
 
+def test_run_slash_session_filter(kanban_home):
+    """`hermes kanban list --session <id>` filters by the originating
+    chat session id stamped on tasks created from inside an ACP loop."""
+    from hermes_cli import kanban_db as kb
+    with kb.connect() as conn:
+        kb.create_task(
+            conn, title="from sess-1 a", assignee="alice", session_id="sess-1"
+        )
+        kb.create_task(
+            conn, title="from sess-1 b", assignee="alice", session_id="sess-1"
+        )
+        kb.create_task(
+            conn, title="from sess-2", assignee="alice", session_id="sess-2"
+        )
+        kb.create_task(conn, title="cli only", assignee="alice")
+    out_1 = kc.run_slash("list --session sess-1")
+    out_2 = kc.run_slash("list --session sess-2")
+    assert "from sess-1 a" in out_1
+    assert "from sess-1 b" in out_1
+    assert "from sess-2" not in out_1
+    assert "cli only" not in out_1
+    assert "from sess-2" in out_2
+    assert "from sess-1 a" not in out_2
+
+
+def test_kanban_list_json_includes_session_id(kanban_home):
+    """JSON output exposes `session_id` so external clients (Scarf, web
+    dashboards) don't need a side query to filter by chat session."""
+    from hermes_cli import kanban_db as kb
+    with kb.connect() as conn:
+        kb.create_task(
+            conn, title="acp task", assignee="alice", session_id="acp-x"
+        )
+    raw = kc.run_slash("list --json")
+    payload = json.loads(raw)
+    assert any(
+        row.get("title") == "acp task"
+        and row.get("session_id") == "acp-x"
+        for row in payload
+    )
+
+
 def test_run_slash_usage_error_returns_message(kanban_home):
     # Missing required argument for create
     out = kc.run_slash("create")
@@ -174,6 +264,52 @@ def test_run_slash_link_unlink(kanban_home):
     assert "Unlinked" in kc.run_slash(f"unlink {ta} {tb}")
 
 
+def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
+    kb.create_board("alpha")
+    kb.create_board("beta")
+
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+
+    barrier = threading.Barrier(2)
+    original_init_db = kb.init_db
+
+    def slow_init_db(*args, **kwargs):
+        try:
+            barrier.wait(timeout=5)
+        except threading.BrokenBarrierError:
+            pass
+        return original_init_db(*args, **kwargs)
+
+    monkeypatch.setattr(kb, "init_db", slow_init_db)
+
+    failures: list[str] = []
+
+    def worker(board: str, title: str) -> None:
+        args = parser.parse_args(["kanban", "--board", board, "create", title])
+        rc = kc.kanban_command(args)
+        if rc != 0:
+            failures.append(f"{board}:{rc}")
+
+    t1 = threading.Thread(target=worker, args=("alpha", "alpha-task"))
+    t2 = threading.Thread(target=worker, args=("beta", "beta-task"))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert failures == []
+
+    with kb.connect_closing(board="alpha") as conn:
+        alpha_titles = [row.title for row in kb.list_tasks(conn, limit=100)]
+    with kb.connect_closing(board="beta") as conn:
+        beta_titles = [row.title for row in kb.list_tasks(conn, limit=100)]
+
+    assert alpha_titles == ["alpha-task"]
+    assert beta_titles == ["beta-task"]
+
+
 # ---------------------------------------------------------------------------
 # Integration with the COMMAND_REGISTRY
 # ---------------------------------------------------------------------------
@@ -199,6 +335,24 @@ def test_kanban_in_autocomplete_table():
     subs = SUBCOMMANDS.get("/kanban") or []
     assert "create" in subs
     assert "dispatch" in subs
+
+
+def test_kanban_autocomplete_includes_live_subcommands():
+    from prompt_toolkit.document import Document
+
+    from hermes_cli.commands import SlashCommandCompleter
+
+    completer = SlashCommandCompleter()
+    doc = Document("/kanban sp", cursor_position=len("/kanban sp"))
+    texts = {c.text for c in completer.get_completions(doc, None)}
+
+    assert "specify" in texts
+
+    doc = Document("/kanban re", cursor_position=len("/kanban re"))
+    texts = {c.text for c in completer.get_completions(doc, None)}
+
+    assert "reclaim" in texts
+    assert "reassign" in texts
 
 
 def test_kanban_not_gateway_only():
@@ -392,3 +546,23 @@ def test_run_slash_missing_required_arg_friendly_error(kanban_home):
     out = kc.run_slash("show")
     assert "/kanban show" in out
     assert "task_id" in out
+
+
+def test_run_slash_board_override_restores_prior_env(kanban_home, monkeypatch):
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
+
+    kc.run_slash("--board alpha list")
+
+    assert os.environ.get("HERMES_KANBAN_BOARD") == "beta"
+
+
+def test_run_slash_board_override_does_not_change_boards_show_current(kanban_home):
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    kb.set_current_board("alpha")
+
+    out = kc.run_slash("--board beta boards show")
+
+    assert "Current board: alpha" in out

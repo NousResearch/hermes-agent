@@ -60,16 +60,19 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
 def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.codex_models._fetch_models_from_api",
-        lambda access_token: ["gpt-5.2-codex"],
+        lambda access_token: ["gpt-5.3-codex"],
     )
 
     models = get_codex_model_ids(access_token="codex-access-token")
 
+    # When live discovery only returns gpt-5.3-codex, forward-compat synthesis
+    # should surface gpt-5.5, gpt-5.4, gpt-5.4-mini, and gpt-5.3-codex-spark
+    # (each is templated off gpt-5.3-codex).
     assert models == [
-        "gpt-5.2-codex",
+        "gpt-5.3-codex",
+        "gpt-5.5",
         "gpt-5.4-mini",
         "gpt-5.4",
-        "gpt-5.3-codex",
         "gpt-5.3-codex-spark",
     ]
 
@@ -130,7 +133,7 @@ def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
         captured["access_token"] = access_token
         return ["gpt-5.2-codex", "gpt-5.2"]
 
-    def _fake_prompt_model_selection(model_ids, current_model=""):
+    def _fake_prompt_model_selection(model_ids, current_model="", **_kwargs):
         captured["model_ids"] = list(model_ids)
         captured["current_model"] = current_model
         return None
@@ -178,7 +181,7 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
     )
     monkeypatch.setattr(
         "hermes_cli.auth._prompt_model_selection",
-        lambda model_ids, current_model="": None,
+        lambda model_ids, current_model="", **_kwargs: None,
     )
 
     _model_flow_openai_codex({}, current_model="gpt-5.4")
@@ -216,7 +219,7 @@ def test_model_command_uses_existing_codex_session_without_relogin(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.auth._prompt_model_selection",
-        lambda model_ids, current_model="": None,
+        lambda model_ids, current_model="", **_kwargs: None,
     )
     monkeypatch.setattr(
         "hermes_cli.auth._login_openai_codex",

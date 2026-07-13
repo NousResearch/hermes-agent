@@ -35,7 +35,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import (  # noqa: E402
+from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
     _strip_mdv2,
@@ -178,6 +178,74 @@ class TestFormatMessageCodeBlocks:
         assert r"`\\\\server\\share`" in result
 
 
+@pytest.mark.asyncio
+async def test_legacy_send_keeps_chunk_indicators_outside_fenced_code_lines(adapter):
+    """Chunk markers must not corrupt Telegram MarkdownV2 code fences.
+
+    Telegram treats a closing fenced-code line with trailing text, e.g.
+    ````` (1/2)``, as malformed MarkdownV2. The bot then falls back to plain
+    text, which is the user-visible duplicate/malformed preview symptom.
+    """
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(
+        side_effect=[SimpleNamespace(message_id=i) for i in range(1, 20)]
+    )
+    adapter._bot.send_chat_action = AsyncMock()
+    object.__setattr__(adapter, "MAX_MESSAGE_LENGTH", 120)
+    adapter._rich_messages_enabled = False
+
+    content = (
+        "Intro before code block\n"
+        "```text\n"
+        + ("~/.hermes/skills/github/hermes-contribution-workflow/SKILL.md\n" * 8)
+        + "```\n"
+        "After."
+    )
+
+    result = await adapter.send("12345", content, metadata={"expect_edits": True})
+
+    assert result.success is True
+    sent_texts = [call.kwargs["text"] for call in adapter._bot.send_message.await_args_list]
+    assert len(sent_texts) > 1
+    for text in sent_texts:
+        for line in text.splitlines():
+            assert not re.match(r"^```\s+\\?\(\d+/\d+\\?\)$", line), text
+            assert not re.match(r"^```\s+\(\d+/\d+\)$", line), text
+
+
+@pytest.mark.asyncio
+async def test_final_send_does_not_retrigger_typing(adapter):
+    """The final reply (metadata['notify']) must NOT re-arm Telegram's typing
+    timer. The gateway has already torn down the refresh loop by then, so a
+    re-trigger here would leave the '...typing' bubble lingering after the
+    answer (Telegram has no stop-typing API). See #48678."""
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_messages_enabled = False
+
+    result = await adapter.send("12345", "All done.", metadata={"notify": True})
+
+    assert result.success is True
+    adapter._bot.send_chat_action.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_intermediate_send_still_retriggers_typing(adapter):
+    """Intermediate/progress sends (no notify marker) keep re-triggering typing
+    so the '...typing' bubble survives across progress messages while the agent
+    is still working."""
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_messages_enabled = False
+
+    result = await adapter.send("12345", "Checking:", metadata={"expect_edits": True})
+
+    assert result.success is True
+    adapter._bot.send_chat_action.assert_awaited()
+
+
 # =========================================================================
 # format_message - bold and italic
 # =========================================================================
@@ -209,6 +277,19 @@ class TestFormatMessageBoldItalic:
         result = adapter.format_message("**bold** and *italic*")
         assert "*bold*" in result
         assert "_italic_" in result
+
+    def test_reload_mcp_summary_escapes_dynamic_server_names(self, adapter):
+        content = (
+            "🔄 **MCP Servers Reloaded**\n"
+            "♻️ Reconnected: agent_one, tool[beta]\n"
+            "➕ Added: alpha*prod\n"
+            "🔧 3 tool(s) available from 2 server(s)"
+        )
+        result = adapter.format_message(content)
+        assert "*MCP Servers Reloaded*" in result
+        assert "agent\\_one" in result
+        assert "tool\\[beta\\]" in result
+        assert "alpha\\*prod" in result
 
 
 # =========================================================================
@@ -561,10 +642,15 @@ class TestWrapMarkdownTables:
         )
         out = _wrap_markdown_tables(text)
         assert "**Alice**" in out
-        assert "• Player: Alice" in out
+        # The heading IS the Player cell — don't repeat it as a bullet.
+        assert "• Player: Alice" not in out
         assert "• Score: 150" in out
         assert "**Bob**" in out
         assert "• Score: 120" in out
+        # Heading and its bullet sit on consecutive lines (no blank between).
+        assert "**Alice**\n• Score: 150" in out
+        # Separate row groups ARE separated by a blank line.
+        assert "• Score: 150\n\n**Bob**" in out
         # Surrounding prose is preserved
         assert out.startswith("Scores:")
         assert out.endswith("End.")
@@ -574,7 +660,8 @@ class TestWrapMarkdownTables:
         text = "head1 | head2\n--- | ---\na | b\nc | d"
         out = _wrap_markdown_tables(text)
         assert out.startswith("**a**")
-        assert "• head1: a" in out
+        # No duplicate first bullet — heading 'a' already shows the head1 value.
+        assert "• head1: a" not in out
         assert "• head2: b" in out
         assert "**c**" in out
 
@@ -587,8 +674,12 @@ class TestWrapMarkdownTables:
         )
         out = _wrap_markdown_tables(text)
         assert "**Ada**" in out
+        # 'Ada' is the heading (first cell); skip the redundant Name bullet.
+        assert "• Name: Ada" not in out
         assert "• Age: 30" in out
         assert "• City: NYC" in out
+        # All three lines pack tightly with single newlines.
+        assert "**Ada**\n• Age: 30\n• City: NYC" in out
 
     def test_two_consecutive_tables_rewritten_separately(self):
         text = (
@@ -603,8 +694,11 @@ class TestWrapMarkdownTables:
         out = _wrap_markdown_tables(text)
         assert out.count("**1**") == 1
         assert out.count("**9**") == 1
-        assert "• A: 1" in out
-        assert "• X: 9" in out
+        # Headings duplicate first cells (no row-label col) — skip those bullets.
+        assert "• A: 1" not in out
+        assert "• X: 9" not in out
+        assert "• B: 2" in out
+        assert "• Y: 8" in out
 
     def test_plain_text_with_pipes_not_wrapped(self):
         """A bare pipe in prose must NOT trigger wrapping."""
@@ -642,6 +736,56 @@ class TestWrapMarkdownTables:
         text = "| a |\n| - |\n| b |"
         assert _wrap_markdown_tables(text) == text
 
+    def test_row_group_uses_single_newlines_within_group(self):
+        """Regression: each bullet within a row-group must be separated by
+        a single newline, not a blank line.  Telegram renders blank lines
+        as paragraph breaks, which previously left every bullet floating in
+        its own paragraph and made multi-column tables unreadable.
+
+        Mirrors the exact pattern that produced the screenshot bug report:
+        a five-column comparison table with no row-label column.
+        """
+        text = (
+            "| Play | Capital | Build | $/day | Risk |\n"
+            "|---|---|---|---|---|\n"
+            "| A. Copy Hands (HK/SZ) | $5-10k | 2 wk | $30-70 | Low |\n"
+            "| B. NO-sweeper        | $50-100k | 3 wk | $300-1000 | Med |"
+        )
+        out = _wrap_markdown_tables(text)
+
+        # No bullet sits inside its own paragraph: the substring "\n\n• "
+        # would mean a blank line precedes a bullet, which is the bug.
+        assert "\n\n• " not in out
+
+        # The two row-groups DO have a paragraph break between them.
+        groups = [g for g in out.split("\n\n") if g.strip()]
+        assert len(groups) == 2
+        # Heading + 4 bullets per group means each group is exactly 5 lines.
+        for group in groups:
+            line_count = group.count("\n") + 1
+            assert line_count == 5, (
+                "Each row-group should be 5 lines (heading + 4 bullets), "
+                f"got {line_count}:\n{group}"
+            )
+
+    def test_row_label_column_preserves_first_bullet(self):
+        """When the table has a row-label column (data rows have one more
+        cell than the header row), the heading comes from the label cell
+        and is distinct from any header — so every header→value bullet is
+        kept, including the first one."""
+        text = (
+            "|        | Score | Rank |\n"
+            "|--------|-------|------|\n"
+            "| Alice  | 150   | 1    |\n"
+            "| Bob    | 120   | 2    |\n"
+        )
+        out = _wrap_markdown_tables(text)
+        assert "**Alice**" in out
+        # No header to duplicate against — both bullets stay.
+        assert "• Score: 150" in out
+        assert "• Rank: 1" in out
+        assert "**Alice**\n• Score: 150\n• Rank: 1" in out
+
 
 class TestFormatMessageTables:
     """End-to-end: pipe tables become readable Telegram-native text instead
@@ -656,7 +800,8 @@ class TestFormatMessageTables:
         )
         out = adapter.format_message(text)
         assert "*A*" in out
-        assert "• Col1: A" in out
+        # Heading 'A' duplicates the Col1 value — skip that bullet.
+        assert "• Col1: A" not in out
         assert "• Col2: B" in out
         assert "```" not in out
         assert "\\|" not in out
@@ -675,7 +820,9 @@ class TestFormatMessageTables:
         # Exclamation outside fence is escaped
         assert "\\!" in out
         assert "*1*" in out
-        assert "• A: 1" in out
+        # Heading '1' is also the A-column value — skip the redundant bullet.
+        assert "• A: 1" not in out
+        assert "• B: 2" in out
 
     def test_multiple_tables_in_single_message(self, adapter):
         text = (
@@ -692,7 +839,7 @@ class TestFormatMessageTables:
         out = adapter.format_message(text)
         assert out.count("*1*") == 1
         assert out.count("*9*") == 1
-        assert "• X: 9" in out
+        assert "• Y: 8" in out
 
 
 @pytest.mark.asyncio
@@ -756,8 +903,209 @@ class TestEditMessageStreamingSafety:
         assert second_call == {
             "chat_id": 123,
             "message_id": 456,
-            "text": "final **bold**",
+            "text": "final bold",
         }
+
+    @pytest.mark.asyncio
+    async def test_message_too_long_splits_into_continuations_not_silent_truncation(self):
+        """When edit_message_text exceeds Telegram's 4096 UTF-16 limit on
+        finalize, the adapter must split the content across the existing
+        message + new continuation messages so the user gets the full reply.
+        Previously the adapter best-effort truncated the content with '…' and
+        returned success=True, dropping everything past the truncation
+        boundary (#19537)."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        # Continuation sends return monotonically increasing message ids.
+        _next_id = [1000]
+        async def _fake_send(**kwargs):
+            _next_id[0] += 1
+            return SimpleNamespace(message_id=_next_id[0])
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        # 6000-char content well over the 4096 UTF-16 limit.
+        oversized = "x" * 6000
+        result = await adapter.edit_message("123", "456", oversized, finalize=True)
+
+        # Adapter reports success with continuations populated.
+        assert result.success is True
+        assert result.error is None
+        assert len(result.continuation_message_ids) >= 1, (
+            "expected at least one continuation message"
+        )
+        # The reported message_id is the LAST visible message (the final
+        # continuation), so subsequent edits target the most recent.
+        assert result.message_id == result.continuation_message_ids[-1]
+        # Original message_id (456) was edited with chunk 1.
+        first_edit = adapter._bot.edit_message_text.call_args
+        assert first_edit.kwargs["message_id"] == 456
+        # Continuations were sent threaded as replies for visual grouping.
+        assert adapter._bot.send_message.await_count == len(result.continuation_message_ids)
+
+    @pytest.mark.asyncio
+    async def test_message_too_long_continuations_preserve_topic_metadata(self):
+        """Overflow continuations should stay in the originating Telegram topic."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        sent_kwargs = []
+
+        async def _fake_send(**kwargs):
+            sent_kwargs.append(kwargs)
+            return SimpleNamespace(message_id=1000 + len(sent_kwargs))
+
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        result = await adapter.edit_message(
+            "-100123",
+            "456",
+            "x" * 6000,
+            finalize=True,
+            metadata={"thread_id": "17585"},
+        )
+
+        assert result.success is True
+        assert sent_kwargs, "expected at least one overflow continuation"
+        assert all(kwargs.get("message_thread_id") == 17585 for kwargs in sent_kwargs)
+        assert sent_kwargs[0]["reply_to_message_id"] == 456
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_overflow_truncates_instead_of_splitting(self):
+        """During streaming (finalize=False), oversized content must be
+        truncated to fit one message rather than split into continuations.
+        Splitting mid-stream creates new message IDs that the stream consumer
+        then edits with the full accumulated text, causing an infinite
+        duplication loop (#48648)."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        _next_id = [1000]
+
+        async def _fake_send(**kwargs):
+            _next_id[0] += 1
+            return SimpleNamespace(message_id=_next_id[0])
+
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        oversized = "x" * 6000
+        result = await adapter.edit_message("123", "456", oversized, finalize=False)
+
+        # Must NOT create continuation messages during streaming.
+        assert result.success is True
+        assert adapter._bot.send_message.await_count == 0, (
+            "mid-stream overflow must not send continuation messages"
+        )
+        # message_id stays the original — no shift to a new ID.
+        assert result.message_id == "456"
+        # The edit must contain truncated content (≤ MAX_MESSAGE_LENGTH).
+        edited_text = adapter._bot.edit_message_text.call_args.kwargs["text"]
+        assert len(edited_text) <= adapter.MAX_MESSAGE_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_saturated_preview_dedups_repeat_oversized_edits(self):
+        """Once a mid-stream preview saturates at the truncation cap, further
+        oversized edits truncate to the SAME text — re-sending them is a
+        visual no-op that burns Telegram's flood budget (~1 edit/0.8s for the
+        rest of a long stream ⇒ flood control with 200s+ penalties, hanging
+        final delivery). The adapter must skip identical saturated previews
+        without an API call."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        adapter._bot.send_message = AsyncMock()
+
+        # First oversized edit: delivers the truncated preview (1 API call).
+        r1 = await adapter.edit_message("123", "456", "x" * 6000, finalize=False)
+        assert r1.success is True
+        assert adapter._bot.edit_message_text.await_count == 1
+
+        # Stream keeps growing within the same chunk count: previews truncate
+        # identically — no API calls. (7000 and 8000 chars both truncate to
+        # the same "…(1/2)" preview; 9000 crosses into "(1/3)" — a real change
+        # that SHOULD be delivered, at most one edit per ~4096 chars of growth
+        # instead of one per 0.8s tick.)
+        for grow in (7000, 8000):
+            r = await adapter.edit_message("123", "456", "x" * grow, finalize=False)
+            assert r.success is True
+            assert r.message_id == "456"
+        assert adapter._bot.edit_message_text.await_count == 1, (
+            "identical saturated previews must not be re-sent"
+        )
+        # Chunk-count boundary: marker changes (1/2 → 1/3) — one real edit.
+        await adapter.edit_message("123", "456", "x" * 9000, finalize=False)
+        assert adapter._bot.edit_message_text.await_count == 2
+        # ...and saturates again at the new marker.
+        await adapter.edit_message("123", "456", "x" * 9100, finalize=False)
+        assert adapter._bot.edit_message_text.await_count == 2
+
+        # A DIFFERENT oversized prefix (content changed within the first 4096)
+        # must still go through.
+        await adapter.edit_message("123", "456", "y" * 9100, finalize=False)
+        assert adapter._bot.edit_message_text.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_saturated_preview_state_cleared_on_finalize(self):
+        """finalize=True delivers full content (split) and clears saturation
+        state, so a reused message id can't be masked by stale dedup."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        _next_id = [1000]
+
+        async def _fake_send(**kwargs):
+            _next_id[0] += 1
+            return SimpleNamespace(message_id=_next_id[0])
+
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        await adapter.edit_message("123", "456", "x" * 6000, finalize=False)
+        assert ("123", "456") in adapter._last_overflow_preview
+
+        result = await adapter.edit_message("123", "456", "x" * 6000, finalize=True)
+        assert result.success is True
+        # Finalize split-delivered (edit + continuation) and cleared the state.
+        assert adapter._bot.send_message.await_count >= 1
+        assert ("123", "456") not in adapter._last_overflow_preview
+
+    @pytest.mark.asyncio
+    async def test_saturation_state_cleared_when_content_shrinks(self):
+        """A same-id edit back under the cap (segment reset) clears saturation
+        state so later oversized edits aren't wrongly deduped."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        adapter._bot.send_message = AsyncMock()
+
+        await adapter.edit_message("123", "456", "x" * 6000, finalize=False)
+        assert ("123", "456") in adapter._last_overflow_preview
+        await adapter.edit_message("123", "456", "short", finalize=False)
+        assert ("123", "456") not in adapter._last_overflow_preview
+        # Oversized again → must be delivered, not deduped.
+        await adapter.edit_message("123", "456", "x" * 6000, finalize=False)
+        assert adapter._bot.edit_message_text.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_reactive_overflow_retries_truncated_edit(self):
+        """If Telegram rejects a streaming edit as too long, retry with a
+        one-message preview instead of splitting into continuations."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock(
+            side_effect=[Exception("Bad Request: message is too long"), None]
+        )
+        adapter._bot.send_message = AsyncMock()
+
+        content = "x" * adapter.MAX_MESSAGE_LENGTH
+        result = await adapter.edit_message("123", "456", content, finalize=False)
+
+        assert result.success is True
+        assert result.message_id == "456"
+        adapter._bot.send_message.assert_not_called()
+        assert adapter._bot.edit_message_text.await_count == 2
+        retry_text = adapter._bot.edit_message_text.await_args_list[1].kwargs["text"]
+        assert len(retry_text) <= adapter.MAX_MESSAGE_LENGTH
+
 
 # =========================================================================
 # Telegram guest mention gating
@@ -778,6 +1126,11 @@ def _guest_test_adapter(*, guest_mode=True, require_mention=True, allowed_chats=
     adapter.config = config
     adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
     adapter._mention_patterns = adapter._compile_mention_patterns()
+    # PR db50af910 added a TELEGRAM_ALLOWED_USERS allowlist gate to
+    # _should_process_message. These tests aren't exercising the auth
+    # gate — they're exercising the guest-mode mention/allowed_chats
+    # logic that runs after — so stub the user authz to always allow.
+    adapter._is_callback_user_authorized = lambda *_a, **_kw: True
     return adapter
 
 

@@ -397,6 +397,50 @@ async def test_manual_reset_surfaces_invalid_persisted_model_preference(
 
 
 @pytest.mark.asyncio
+async def test_manual_reset_invalid_persisted_identity_has_safe_boundary_notice(
+    store, monkeypatch
+):
+    old = store.get_or_create_session(_source())
+    with store._lock:
+        old.model_override_identity = None
+        old._model_override_identity_invalid = True
+        store._save()
+    runner = _runner_for_manual_reset(store)
+    del runner._reset_notice_session_info
+    home = store.sessions_dir.parent
+    _write_reset_policy(home, True)
+    monkeypatch.setattr(gateway_run, "_gateway_config_home", lambda: home)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "global-secret-model",
+                "provider": "global-secret-provider",
+                "base_url": "http://localhost:9999/path-secret",
+            }
+        },
+    )
+
+    reply = str(
+        await runner._handle_reset_command(
+            MessageEvent(text="/reset", source=_source(), message_id="m-invalid-boundary")
+        )
+    )
+
+    assert store.entry_for(old.session_key).session_id != old.session_id
+    assert "model preference" in reply
+    assert "currently unavailable" in reply
+    assert "◆ Model:" not in reply
+    for secret in (
+        "global-secret-model",
+        "global-secret-provider",
+        "path-secret",
+    ):
+        assert secret not in reply
+
+
+@pytest.mark.asyncio
 async def test_runtime_kill_switch_false_restores_legacy_clear(store, monkeypatch):
     old = _seed_preferences(store)
     runner = _runner_for_manual_reset(store)

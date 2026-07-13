@@ -367,7 +367,10 @@ class GatewaySlashCommandsMixin:
         # reports the profile's model, not the base config's (#59003).
         try:
             session_info = await asyncio.to_thread(
-                self._reset_notice_session_info, source
+                self._reset_notice_session_info,
+                source,
+                session_key=session_key,
+                session_entry=new_entry,
             )
         except Exception:
             session_info = ""

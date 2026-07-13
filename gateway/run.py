@@ -25,6 +25,7 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+import ipaddress
 import concurrent.futures
 import dataclasses
 import inspect
@@ -45,6 +46,7 @@ from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Union
+from urllib.parse import urlsplit, urlunsplit
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -84,6 +86,33 @@ _EXECUTOR_DRAIN_TIMEOUT_SECS_DEFAULT = 8.0
 
 class SessionRouteUnavailableError(RuntimeError):
     """A persisted explicit route cannot currently resolve credentials."""
+
+
+def _endpoint_url_for_display(value: object) -> str:
+    """Return a safe origin for an exact local, loopback, or unspecified host."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+        hostname = parsed.hostname
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if not parsed.scheme or not hostname:
+        return ""
+    is_local_host = hostname == "localhost"
+    try:
+        address = ipaddress.ip_address(hostname)
+        is_local_host = address.is_loopback or address.is_unspecified
+    except ValueError:
+        pass
+    if not is_local_host:
+        return ""
+    display_host = f"[{hostname}]" if ":" in hostname else hostname
+    if port is not None:
+        display_host = f"{display_host}:{port}"
+    return urlunsplit((parsed.scheme, display_host, "", "", ""))
 
 
 def _executor_drain_timeout() -> float:
@@ -15371,7 +15400,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-    def _reset_notice_session_info(self, source: SessionSource) -> str:
+    def _reset_notice_session_info(
+        self,
+        source: SessionSource,
+        *,
+        session_key: Optional[str] = None,
+        session_entry: Optional[Any] = None,
+    ) -> str:
         """Session-info block for the auto-reset notice, profile-scoped.
 
         When multiplexing, resolve model/provider/context inside the profile
@@ -15388,10 +15423,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
+                return self._format_session_info(
+                    source=source,
+                    session_key=session_key,
+                    session_entry=session_entry,
+                )
+        return self._format_session_info(
+            source=source,
+            session_key=session_key,
+            session_entry=session_entry,
+        )
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        session_entry: Optional[Any] = None,
+    ) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
@@ -15400,7 +15449,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
-        model = _resolve_gateway_model()
+        model = ""
         config_context_length = None
         provider = None
         base_url = None
@@ -15428,6 +15477,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     custom_provs = data.get("custom_providers")
         except Exception:
             pass
+
+        if session_key:
+            persisted_route_lookup = None
+            if session_entry is not None:
+                if getattr(session_entry, "_model_override_identity_invalid", False):
+                    persisted_route_lookup = PersistedSessionRouteLookup("unavailable")
+                else:
+                    identity = getattr(session_entry, "model_override_identity", None)
+                    persisted_route_lookup = PersistedSessionRouteLookup(
+                        "valid" if identity else "absent",
+                        identity if identity else None,
+                    )
+            model, runtime = self._resolve_session_agent_runtime(
+                source=source,
+                session_key=session_key,
+                user_config=data,
+                persisted_route_lookup=persisted_route_lookup,
+            )
+            provider = runtime.get("provider")
+            base_url = runtime.get("base_url")
+            api_key = runtime.get("api_key")
+
+            configured_model, configured_provider, _ = self._configured_route_identity(data)
+            if model != configured_model or (
+                configured_provider and provider != configured_provider
+            ):
+                config_context_length = None
+        else:
+            model = _resolve_gateway_model()
 
         # Also check custom_providers for context_length when top-level model.context_length is not set
         if config_context_length is None and data:
@@ -15465,13 +15543,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
         # Resolve runtime credentials for probing
-        try:
-            runtime = _resolve_runtime_agent_kwargs()
-            provider = provider or runtime.get("provider")
-            base_url = base_url or runtime.get("base_url")
-            api_key = runtime.get("api_key")
-        except Exception:
-            pass
+        if not session_key:
+            try:
+                runtime = _resolve_runtime_agent_kwargs()
+                provider = provider or runtime.get("provider")
+                base_url = base_url or runtime.get("base_url")
+                api_key = runtime.get("api_key")
+            except Exception:
+                pass
 
         context_length = get_model_context_length(
             model,
@@ -15498,13 +15577,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             ctx_display = str(context_length)
 
-        # Resolve the effective reasoning effort for the fresh session.
-        # Uses the global config (not a per-session override): this banner
-        # renders on /reset and /new, which clear any /reasoning session
-        # override, so config.yaml is the effective level at reset time.
+        # Resolve the effective reasoning effort for this fresh session.
+        # Manual resets may preserve a deliberate per-session override.
         reasoning_label = None
         try:
-            reasoning_label = self._reasoning_effort_label(self._load_reasoning_config())
+            reasoning_label = self._reasoning_effort_label(
+                self._resolve_session_reasoning_config(
+                    source=source,
+                    session_key=session_key,
+                )
+                if session_key
+                else self._load_reasoning_config()
+            )
         except Exception:
             reasoning_label = None
 
@@ -15517,8 +15601,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         lines.append(f"◆ Context: {ctx_display} tokens ({ctx_source})")
 
         # Show endpoint for local/custom setups
-        if base_url and ("localhost" in base_url or "127.0.0.1" in base_url or "0.0.0.0" in base_url):
-            lines.append(f"◆ Endpoint: {base_url}")
+        if base_url:
+            display_endpoint = _endpoint_url_for_display(base_url)
+            if display_endpoint:
+                lines.append(f"◆ Endpoint: {display_endpoint}")
 
         return "\n".join(lines)
 

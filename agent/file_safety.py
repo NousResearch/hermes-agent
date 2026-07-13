@@ -370,7 +370,13 @@ def _resolve_active_profile_name() -> str:
         root_real = _hermes_root_path().resolve()
     except (OSError, RuntimeError):
         return "default"
-    profiles_dir = root_real / "profiles"
+    # Resolve the profiles dir too: when <root>/profiles is a symlink,
+    # home_real (fully resolved) would never be relative_to() the
+    # unresolved symlink path, misreporting a named profile as "default".
+    try:
+        profiles_dir = (root_real / "profiles").resolve()
+    except (OSError, RuntimeError):
+        profiles_dir = root_real / "profiles"
     try:
         rel = home_real.relative_to(profiles_dir)
         parts = rel.parts
@@ -407,12 +413,19 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
     target_profile: Optional[str] = None
     area: Optional[str] = None
 
+    parts: Optional[tuple] = None
     try:
-        rel = target.relative_to(root_real)
+        parts = target.relative_to(root_real).parts
     except ValueError:
-        return None
+        # <root>/profiles may be a symlink (e.g. ~/.hermes/profiles ->
+        # /repo/.hermes/profiles). target is fully resolved, so match it
+        # against the RESOLVED profiles dir and rebuild canonical parts.
+        try:
+            profiles_real = (root_real / "profiles").resolve()
+            parts = ("profiles",) + target.relative_to(profiles_real).parts
+        except (ValueError, OSError, RuntimeError):
+            return None
 
-    parts = rel.parts
     if not parts:
         return None
 

@@ -256,3 +256,66 @@ class TestSystemPromptActiveProfile:
         # Both branches present (default and named profile).
         assert "Active Hermes profile: default" in src
         assert "Active Hermes profile: {active_profile}" in src
+
+
+# ---------------------------------------------------------------------------
+# Symlinked profiles dir (2026-07-13 incident: ~/.hermes/profiles ->
+# /repo/.hermes/profiles made a claudio-lab session identify as "default")
+# ---------------------------------------------------------------------------
+
+
+class TestSymlinkedProfilesDir:
+    @pytest.fixture
+    def symlinked_hermes(self, tmp_path, monkeypatch):
+        """Root whose profiles/ is a symlink to an external directory."""
+        root = tmp_path / "dot-hermes"
+        root.mkdir()
+        real_profiles = tmp_path / "repo" / "profiles"
+        lab_home = real_profiles / "claudio-lab"
+        (lab_home / "skills").mkdir(parents=True)
+        (real_profiles / "other" / "skills").mkdir(parents=True)
+        (root / "profiles").symlink_to(real_profiles)
+
+        # HERMES_HOME via the symlinked path, as `hermes -p <name>` sets it.
+        sym_home = root / "profiles" / "claudio-lab"
+        monkeypatch.setenv("HERMES_HOME", str(sym_home))
+
+        import hermes_constants
+        monkeypatch.setattr(
+            hermes_constants, "get_default_hermes_root", lambda: root
+        )
+        import agent.file_safety as fs
+        monkeypatch.setattr(fs, "_hermes_home_path", lambda: sym_home)
+        monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+        return {"root": root, "lab_home": lab_home, "sym_home": sym_home}
+
+    def test_active_profile_resolves_through_symlink(self, symlinked_hermes):
+        from agent.file_safety import _resolve_active_profile_name
+
+        assert _resolve_active_profile_name() == "claudio-lab"
+
+    def test_own_profile_write_not_flagged(self, symlinked_hermes):
+        from agent.file_safety import classify_cross_profile_target
+
+        target = symlinked_hermes["sym_home"] / "skills" / "x" / "SKILL.md"
+        assert classify_cross_profile_target(str(target)) is None
+
+    def test_other_profile_write_flagged_through_symlink(self, symlinked_hermes):
+        from agent.file_safety import classify_cross_profile_target
+
+        target = (
+            symlinked_hermes["root"] / "profiles" / "other" / "skills" / "y.md"
+        )
+        info = classify_cross_profile_target(str(target))
+        assert info is not None
+        assert info["active_profile"] == "claudio-lab"
+        assert info["target_profile"] == "other"
+        assert info["area"] == "skills"
+
+    def test_default_area_write_flagged(self, symlinked_hermes):
+        from agent.file_safety import classify_cross_profile_target
+
+        target = symlinked_hermes["root"] / "skills" / "z" / "SKILL.md"
+        info = classify_cross_profile_target(str(target))
+        assert info is not None
+        assert info["target_profile"] == "default"

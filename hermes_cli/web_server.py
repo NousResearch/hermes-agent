@@ -14831,11 +14831,14 @@ def _read_active_session_file(path: Path) -> Optional[str]:
     return session_id or None
 
 
-def _forget_active_session_file(path: Path) -> None:
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass
+def _forget_active_session_file(app: "FastAPI", channel: str) -> None:
+    files = _get_pty_active_session_files(app)
+    path = files.pop(channel, None)
+    if path is not None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _ws_close_reason(text: str) -> str:
@@ -15496,7 +15499,7 @@ async def pty_ws(ws: WebSocket) -> None:
         active_session_file = _active_session_file_for_channel(ws.app, channel)
         if force_fresh:
             resume = None
-            _forget_active_session_file(active_session_file)
+            _forget_active_session_file(ws.app, channel)
         elif not resume:
             resume = _read_active_session_file(active_session_file)
 

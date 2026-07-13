@@ -358,6 +358,88 @@ class TestProviderModelNormalization:
         assert agent.model == "anthropic/claude-sonnet-4.6"
 
 
+class TestRunConversationTimingInjection:
+    """The run_conversation forwarder must inject api_time and tool_time onto
+    the result dict regardless of which return path the conversation loop
+    took. Several early-exit dicts in agent/conversation_loop.py (max-iter,
+    guardrail-halt, invalid-tool recovery, codex incomplete) skip
+    finalize_turn and would otherwise return a dict missing the new keys.
+    """
+
+    @staticmethod
+    def _make_agent():
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            return AIAgent(
+                model="zai/glm-5.1",
+                provider="zai",
+                base_url="https://api.z.ai/api/paas/v4",
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+    def test_injects_timing_into_early_exit_result(self):
+        agent = self._make_agent()
+        # Simulate accumulated timing on the agent (set by the conversation
+        # loop body), then call run_conversation with a stubbed inner
+        # function that returns a dict WITHOUT api_time/tool_time — the
+        # typical shape from a max-iter or guardrail-halt early-exit.
+        agent._turn_api_time = 12.5
+        agent._turn_tool_time = 3.25
+
+        def _stub_run_conversation(*_args, **_kwargs):
+            return {"final_response": "hi", "api_calls": 2, "completed": True}
+
+        with patch("agent.conversation_loop.run_conversation", _stub_run_conversation):
+            result = agent.run_conversation("test message")
+
+        assert result["api_time"] == 12.5
+        assert result["tool_time"] == 3.25
+
+    def test_does_not_overwrite_existing_timing(self):
+        """If the result dict already carries api_time/tool_time (the
+        happy-path through finalize_turn), the forwarder should leave them
+        alone rather than clobbering with stale agent attrs."""
+        agent = self._make_agent()
+        agent._turn_api_time = 99.0  # stale
+        agent._turn_tool_time = 99.0  # stale
+
+        def _stub_run_conversation(*_args, **_kwargs):
+            return {
+                "final_response": "ok",
+                "api_calls": 1,
+                "completed": True,
+                "api_time": 5.0,
+                "tool_time": 2.0,
+            }
+
+        with patch("agent.conversation_loop.run_conversation", _stub_run_conversation):
+            result = agent.run_conversation("test")
+
+        assert result["api_time"] == 5.0
+        assert result["tool_time"] == 2.0
+
+    def test_handles_non_dict_result(self):
+        """If the inner call returns a non-dict (shouldn't happen, but be
+        safe), the forwarder should pass it through unchanged."""
+        agent = self._make_agent()
+        agent._turn_api_time = 1.0
+        agent._turn_tool_time = 1.0
+
+        with patch("agent.conversation_loop.run_conversation", return_value="oops"):
+            result = agent.run_conversation("test")
+
+        assert result == "oops"
+
+
 # ---------------------------------------------------------------------------
 # Helper to build mock assistant messages (API response objects)
 # ---------------------------------------------------------------------------
@@ -6001,6 +6083,7 @@ class TestRetryExhaustion:
             return _t[0]
 
         mock_time.time.side_effect = _advancing_time
+        mock_time.perf_counter.side_effect = _advancing_time
         mock_time.sleep = MagicMock()  # no-op
         mock_time.monotonic.return_value = 12345.0
         return mock_time
@@ -6095,6 +6178,50 @@ class TestRetryExhaustion:
         assert result.get("failed") is True
         assert "error" in result
         assert "rate limited" in result["error"]
+
+    def test_api_timing_counts_failed_attempts_once_and_excludes_backoff(self, agent):
+        """API time is the sum of attempts, not the retry-loop wall clock."""
+        self._setup_agent(agent)
+        from agent import conversation_loop as _conv_loop
+
+        clock = {"now": 100.0, "wall": 1000.0}
+        mock_time = MagicMock()
+        mock_time.perf_counter.side_effect = lambda: clock["now"]
+
+        def _wall_time():
+            clock["wall"] += 500.0
+            return clock["wall"]
+
+        mock_time.time.side_effect = _wall_time
+        mock_time.monotonic.return_value = 12345.0
+        mock_time.sleep = MagicMock()
+
+        def _failed_attempt(*_args, **_kwargs):
+            clock["now"] += 2.0
+            raise RuntimeError("rate limited")
+
+        def _backoff(*_args, **_kwargs):
+            # Simulate substantial time passing between attempts. It must not
+            # be charged to the provider API-time total.
+            clock["now"] += 50.0
+            return 0.0
+
+        agent.client.chat.completions.create.side_effect = _failed_attempt
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", mock_time),
+            patch.object(_conv_loop, "time", mock_time),
+            patch.object(_conv_loop, "jittered_backoff", _backoff),
+        ):
+            result = agent.run_conversation("hello")
+
+        attempts = agent.client.chat.completions.create.call_count
+        assert attempts > 1
+        assert result["api_calls"] == attempts
+        assert result["api_time"] == pytest.approx(attempts * 2.0)
+        assert result["api_time"] < 50.0
 
     def test_build_api_kwargs_error_no_unbound_local(self, agent):
         """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.

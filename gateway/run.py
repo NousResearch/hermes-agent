@@ -11843,7 +11843,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
-        _msg_start_time = time.time()
+        _msg_start_time = time.perf_counter()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
         _reply_id = getattr(event, "reply_to_message_id", None)
@@ -12830,7 +12830,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "rephrase your question."
                 )
             agent_messages = agent_result.get("messages", [])
-            _response_time = time.time() - _msg_start_time
+            _response_time = time.perf_counter() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
             logger.info(
@@ -12967,6 +12967,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    turn_time=_response_time,
+                    api_time=agent_result.get("api_time"),
+                    tool_time=agent_result.get("tool_time"),
+                    api_calls=_api_calls,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -20742,6 +20746,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "last_reasoning": result.get("last_reasoning"),
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
+                "api_time": result_holder[0].get("api_time", 0.0) if result_holder[0] else 0.0,
+                "tool_time": result_holder[0].get("tool_time", 0.0) if result_holder[0] else 0.0,
                 "completed": result_holder[0].get("completed") if result_holder[0] else None,
                 "interrupted": result_holder[0].get("interrupted", False) if result_holder[0] else False,
                 "partial": result_holder[0].get("partial", False) if result_holder[0] else False,
@@ -21016,6 +21022,75 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         return False
             return False
+
+        async def _finalize_stream_delivery_state(candidate) -> None:
+            """Finalize stream delivery before any early return can escape.
+
+            `_run_agent_inner` has several returns inside its main try block.
+            Python evaluates those return values before running `finally`, so
+            delivery state must be written from the finally block itself. If it
+            is written afterward, the caller sees `already_sent=False`, appends
+            the footer to a body Discord already streamed, and then suppresses
+            that unsent combined response.
+            """
+            _sc = stream_consumer_holder[0]
+            if not isinstance(candidate, dict) or candidate.get("failed"):
+                return
+
+            _final = candidate.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
+            _previewed = bool(candidate.get("response_previewed"))
+            _content_delivered = bool(
+                _sc and getattr(_sc, "final_content_delivered", False)
+            )
+            _transformed = bool(candidate.get("response_transformed"))
+            _streamed = _stream_confirmed_final_delivery(
+                _sc,
+                _final,
+                previewed=_previewed,
+            )
+
+            if (
+                not _is_empty_sentinel
+                and not _transformed
+                and (_streamed or _content_delivered)
+            ):
+                candidate["already_sent"] = True
+                logger.info(
+                    "Suppressing normal final send for session %s: final delivery "
+                    "already confirmed (streamed=%s previewed=%s "
+                    "content_delivered=%s).",
+                    session_key or "?",
+                    _streamed,
+                    _previewed,
+                    _content_delivered,
+                )
+            elif not _is_empty_sentinel and _transformed and _sc is not None:
+                # Plugin hooks transformed the response after streaming. Edit
+                # the existing message before returning rather than sending a
+                # duplicate final response.
+                _sc_msg_id = _sc.message_id
+                if _sc_msg_id:
+                    try:
+                        await _sc.adapter.edit_message(
+                            chat_id=source.chat_id,
+                            message_id=_sc_msg_id,
+                            content=candidate["final_response"],
+                            finalize=True,
+                        )
+                        candidate["already_sent"] = True
+                        logger.info(
+                            "Edited streamed message %s for session %s to include "
+                            "plugin-transformed content.",
+                            _sc_msg_id,
+                            session_key or "?",
+                        )
+                    except Exception as _edit_err:
+                        logger.warning(
+                            "Failed to edit streamed message for session %s: %s",
+                            session_key or "?",
+                            _edit_err,
+                        )
 
         try:
             # Run in thread pool to not block.  Use an *inactivity*-based
@@ -21523,6 +21598,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
+            # Capture the exact mutable object an early return may already have
+            # evaluated before awaiting stream cleanup below.
+            _held_agent_result = result_holder[0]
+
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
                 progress_task.cancel()
@@ -21558,6 +21637,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await stream_task
                         except asyncio.CancelledError:
                             pass
+
+            # This must run inside `finally`: returns from the try block are
+            # evaluated before finally executes, and code after finally is
+            # skipped for those paths. Mutating the held result here ensures
+            # the caller sees definitive stream-delivery state and can send a
+            # trailing runtime footer instead of appending it to an unsent body.
+            try:
+                _delivery_response = locals().get("response")
+                _delivery_candidate = (
+                    _delivery_response
+                    if isinstance(_delivery_response, dict)
+                    else _held_agent_result
+                )
+                await _finalize_stream_delivery_state(_delivery_candidate)
+                # Some early-return branches return the original agent result,
+                # while the normal path returns the gateway's enriched response
+                # dict. Propagate the confirmed flag to both mutable objects so
+                # the exact object evaluated by `return` observes the update.
+                if (
+                    isinstance(_delivery_candidate, dict)
+                    and _delivery_candidate.get("already_sent")
+                    and isinstance(_held_agent_result, dict)
+                ):
+                    _held_agent_result["already_sent"] = True
+            except Exception as _stream_state_err:
+                # Delivery bookkeeping must never mask the agent's real result.
+                logger.debug(
+                    "stream delivery finalization failed for session %s: %s",
+                    session_key or "?",
+                    _stream_state_err,
+                )
             
             # Clean up tracking
             tracking_task.cancel()
@@ -21580,78 +21690,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await task
                     except asyncio.CancelledError:
                         pass
-
-        # If streaming already delivered the response, mark it so the
-        # caller's send() is skipped (avoiding duplicate messages).
-        # BUT: never suppress delivery when the agent failed — the error
-        # message is new content the user hasn't seen, and it must reach
-        # them even if streaming had sent earlier partial output.
-        #
-        # Also never suppress when the final response is "(empty)" — this
-        # means the model failed to produce content after tool calls (common
-        # with mimo-v2-pro, GLM-5, etc.).  The stream consumer may have
-        # sent intermediate text ("Let me search for that…") alongside the
-        # tool call, setting already_sent=True, but that text is NOT the
-        # final answer.  Suppressing delivery here leaves the user staring
-        # at silence.  (#10xxx — "agent stops after web search")
-        _sc = stream_consumer_holder[0]
-        if isinstance(response, dict) and not response.get("failed"):
-            _final = response.get("final_response") or ""
-            _is_empty_sentinel = not _final or _final == "(empty)"
-            # response_previewed means the interim_assistant_callback already
-            # saw the final text, but only suppress the normal send if that
-            # exact final text was delivered. Unrelated commentary/progress
-            # must not be mistaken for the final response (#14238).
-            _previewed = bool(response.get("response_previewed"))
-            _content_delivered = bool(
-                _sc and getattr(_sc, "final_content_delivered", False)
-            )
-            # Plugin hooks (e.g. transform_llm_output) may have appended content
-            # after streaming finished — when the response was transformed, always
-            # send the final version so the appended content reaches the client.
-            _transformed = bool(response.get("response_transformed"))
-            # Only suppress the normal send when the actual final reply reached
-            # the user: the stream consumer streamed it (final_response_sent /
-            # final_content_delivered), or the interim preview delivered that
-            # *exact* final text. Unrelated commentary/progress shown during a
-            # compression/session split must not be mistaken for the final
-            # response (#14238).
-            _streamed = _stream_confirmed_final_delivery(
-                _sc,
-                _final,
-                previewed=_previewed,
-            )
-            if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
-                logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
-                    session_key or "?",
-                    _streamed,
-                    _previewed,
-                    _content_delivered,
-                )
-                response["already_sent"] = True
-            elif not _is_empty_sentinel and _transformed and _sc is not None:
-                # Plugin hooks transformed the response after streaming — edit the
-                # existing streamed message instead of sending a duplicate.
-                _sc_msg_id = _sc.message_id
-                if _sc_msg_id:
-                    try:
-                        await _sc.adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=_sc_msg_id,
-                            content=response["final_response"],
-                            finalize=True,
-                        )
-                        response["already_sent"] = True
-                        logger.info(
-                            "Edited streamed message %s for session %s to include plugin-transformed content.",
-                            _sc_msg_id, session_key or "?",
-                        )
-                    except Exception as _edit_err:
-                        logger.warning(
-                            "Failed to edit streamed message for session %s: %s",
-                            session_key or "?", _edit_err,
-                        )
 
         # Schedule deletion of tracked temporary progress bubbles after the
         # final response lands. Failed runs skip this so bubbles remain as

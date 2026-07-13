@@ -736,6 +736,13 @@ class AIAgent:
         self.session_api_calls = 0
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
+        # Per-turn timing accumulators. The conversation loop mutates these
+        # in-place during a turn; the AIAgent.run_conversation forwarder
+        # copies them onto the result dict so the gateway footer always
+        # surfaces real values regardless of which return path executed.
+        self._turn_api_calls = 0
+        self._turn_api_time = 0.0
+        self._turn_tool_time = 0.0
         self.session_cost_source = "none"
         
         # Turn counter (added after reset_session_state was first written — #2635)
@@ -6368,7 +6375,7 @@ class AIAgent:
         # which may be observed from another thread.
         with scoped_runtime_main({}):
             try:
-                return run_conversation(
+                result = run_conversation(
                     self,
                     user_message,
                     system_message,
@@ -6382,6 +6389,22 @@ class AIAgent:
             finally:
                 reset_accounting_context(acct_token)
                 reset_conversation_context(token)
+        # Inject per-turn timing into the result dict regardless of which
+        # return path the conversation loop took. Some early-exit dicts
+        # (max-iterations, guardrail-halt, invalid-tool recovery, codex
+        # incomplete, etc.) skip finalize_turn and don't carry api_time /
+        # tool_time, so the gateway footer reads 0.0. The conversation loop
+        # accumulates them on self._turn_api_time and self._turn_tool_time
+        # in-place; copy them onto the result here so every path surfaces
+        # the same shape.
+        if isinstance(result, dict):
+            result.setdefault("api_time", float(getattr(self, "_turn_api_time", 0.0) or 0.0))
+            result.setdefault("tool_time", float(getattr(self, "_turn_tool_time", 0.0) or 0.0))
+            result["api_calls"] = max(
+                int(result.get("api_calls", 0) or 0),
+                int(getattr(self, "_turn_api_calls", 0) or 0),
+            )
+        return result
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

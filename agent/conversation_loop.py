@@ -662,7 +662,6 @@ def run_conversation(
             _last_commit = Path(agent.workspace_path or ".") / ".git" / "logs" / "HEAD"
             _need_pause = True
             if _last_commit.exists():
-                import time, subprocess
                 try:
                     _r = subprocess.run(
                         ["git", "log", "-1", "--format=%ct"],

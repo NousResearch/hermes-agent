@@ -97,6 +97,8 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     # Rust — too heavy (hundreds of MB to bootstrap).  We do NOT
     # auto-install rust-analyzer; users install via rustup.
     "rust-analyzer": {"strategy": "manual", "pkg": "", "bin": "rust-analyzer"},
+    # Swift — sourcekit-lsp ships with the Swift/Xcode toolchain.
+    "sourcekit-lsp": {"strategy": "manual", "pkg": "", "bin": "sourcekit-lsp"},
     # C/C++ — manual (clangd ships with LLVM, very heavy)
     "clangd": {"strategy": "manual", "pkg": "", "bin": "clangd"},
     # Lua — manual (LuaLS is platform-specific binaries from GitHub

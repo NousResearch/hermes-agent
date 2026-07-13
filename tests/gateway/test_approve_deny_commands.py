@@ -421,18 +421,6 @@ class TestBlockingApprovalE2E:
         os.environ.pop("HERMES_GATEWAY_SESSION", None)
         os.environ.pop("HERMES_EXEC_ASK", None)
         os.environ.pop("HERMES_SESSION_KEY", None)
-        # Force manual approval mode — these tests exercise the blocking
-        # gateway flow, not smart approval. The default became "smart"
-        # (#62661), which routes through _smart_approve() first and
-        # delays the notify callback past the test's wait window.
-        self._approval_mode_patch = patch(
-            "tools.approval._get_approval_config",
-            return_value={"mode": "manual"},
-        )
-        self._approval_mode_patch.start()
-
-    def teardown_method(self):
-        self._approval_mode_patch.stop()
 
     def test_blocking_approval_approve_once(self):
         """check_all_command_guards blocks until resolve_gateway_approval is called."""

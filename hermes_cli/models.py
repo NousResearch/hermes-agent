@@ -517,12 +517,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.7",
         "MiniMax-M2.5",
     ],
-    # DeepInfra: empty by design. The live catalog at
-    # _fetch_deepinfra_models() (filtered by the ``chat`` surface tag) is
-    # the only source of truth. Hardcoding ids here would rot as models
-    # are deprecated upstream; the picker shows "no models" when the
-    # catalog is unreachable, which is honest.
-    "deepinfra": [],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "moonshotai/Kimi-K2.5",
@@ -1094,7 +1088,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
-    ProviderEntry("deepinfra",      "DeepInfra",                "DeepInfra (100+ top models)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
@@ -1305,7 +1298,6 @@ _PROVIDER_ALIASES = {
     "lm_studio": "lmstudio",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
-    "deep-infra": "deepinfra",
 }
 
 
@@ -2397,9 +2389,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             return merged
         return list(_PROVIDER_MODELS.get("anthropic", []))
     if normalized == "deepinfra":
-        live = _fetch_deepinfra_models()
-        if live:
-            return live
+        # DeepInfra's generic /models endpoint mixes chat, image, video,
+        # speech, and embedding models. The tagged catalog helper is the only
+        # safe source for the chat picker, including its empty/failure result.
+        return _fetch_deepinfra_models() or []
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
@@ -3710,7 +3703,7 @@ def _fetch_deepinfra_catalog(
 
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
         _deepinfra_catalog_neg_cache[cache_key] = time.monotonic()

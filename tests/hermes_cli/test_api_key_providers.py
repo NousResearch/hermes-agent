@@ -1374,8 +1374,10 @@ class TestFetchDeepInfraModels:
                     {"id": "stabilityai/stable-diffusion-xl-base-1.0", "metadata": {}},
                 ]}).encode()
 
-        import urllib.request
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _Resp())
+        import hermes_cli.models as models
+        monkeypatch.setattr(
+            models, "_urlopen_model_catalog_request", lambda *a, **kw: _Resp()
+        )
         from hermes_cli.models import _fetch_deepinfra_models
         result = _fetch_deepinfra_models()
 
@@ -1399,18 +1401,68 @@ class TestFetchDeepInfraModels:
                     {"id": "meta-llama/Llama-3-70B-Instruct", "metadata": {}},
                 ]}).encode()
 
-        import urllib.request
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _Resp())
+        import hermes_cli.models as models
+        monkeypatch.setattr(
+            models, "_urlopen_model_catalog_request", lambda *a, **kw: _Resp()
+        )
         from hermes_cli.models import _fetch_deepinfra_models
         result = _fetch_deepinfra_models()
         assert result == ["meta-llama/Llama-3-70B-Instruct"]
 
     def test_returns_none_on_network_failure(self, monkeypatch):
         monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
-        import urllib.request
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: (_ for _ in ()).throw(Exception("timeout")))
+        import hermes_cli.models as models
+        monkeypatch.setattr(
+            models,
+            "_urlopen_model_catalog_request",
+            lambda *a, **kw: (_ for _ in ()).throw(Exception("timeout")),
+        )
         from hermes_cli.models import _fetch_deepinfra_models
         assert _fetch_deepinfra_models() is None
+
+    def test_catalog_uses_credential_safe_opener(self, monkeypatch):
+        import hermes_cli.models as models
+
+        seen = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"data": []}).encode()
+
+        def _safe_open(request, *, timeout):
+            seen["authorization"] = request.get_header("Authorization")
+            seen["timeout"] = timeout
+            return _Resp()
+
+        monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
+        monkeypatch.setattr(models, "_urlopen_model_catalog_request", _safe_open)
+
+        assert models._fetch_deepinfra_catalog(force_refresh=True) == []
+        assert seen == {"authorization": "Bearer test-key", "timeout": 5.0}
+
+    def test_empty_filtered_catalog_never_falls_back_to_mixed_profile_catalog(
+        self, monkeypatch
+    ):
+        import hermes_cli.models as models
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("deepinfra")
+        assert profile is not None
+        monkeypatch.setattr(models, "_fetch_deepinfra_models", lambda: None)
+        monkeypatch.setattr(
+            profile,
+            "fetch_models",
+            lambda **kwargs: ["black-forest-labs/FLUX-1-dev"],
+        )
+        monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
+
+        assert models.provider_model_ids("deepinfra") == []
 
     def test_excludes_non_chat_models(self, monkeypatch):
         monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
@@ -1432,8 +1484,10 @@ class TestFetchDeepInfraModels:
                     {"id": "nvidia/sdxl-turbo", "metadata": {}},
                 ]}).encode()
 
-        import urllib.request
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _Resp())
+        import hermes_cli.models as models
+        monkeypatch.setattr(
+            models, "_urlopen_model_catalog_request", lambda *a, **kw: _Resp()
+        )
         from hermes_cli.models import _fetch_deepinfra_models
         result = _fetch_deepinfra_models()
 
@@ -1483,13 +1537,16 @@ class TestDeepInfraTagFiltering:
             # null metadata — stub model, must be skipped
             {"id": "stub-model", "metadata": None},
         ]}
-        import urllib.request
         from hermes_cli.models import _fetch_deepinfra_models_by_tag
+        import hermes_cli.models as _m
 
         for surface in ("chat", "image-gen", "tts", "stt", "embed"):
-            monkeypatch.setattr(urllib.request, "urlopen", _make_urlopen_returning(payload))
+            monkeypatch.setattr(
+                _m,
+                "_urlopen_model_catalog_request",
+                _make_urlopen_returning(payload),
+            )
             # Reset cache between iterations so each surface re-parses the payload.
-            import hermes_cli.models as _m
             _m._deepinfra_catalog_cache.clear()
             got = _fetch_deepinfra_models_by_tag(surface)
             assert got is not None
@@ -1508,9 +1565,9 @@ class TestDeepInfraTagFiltering:
                     assert surface in item["metadata"]["tags"]
 
     def test_returns_none_on_network_failure(self, monkeypatch):
-        import urllib.request
+        import hermes_cli.models as models
         monkeypatch.setattr(
-            urllib.request, "urlopen",
+            models, "_urlopen_model_catalog_request",
             lambda *a, **kw: (_ for _ in ()).throw(Exception("timeout")),
         )
         from hermes_cli.models import _fetch_deepinfra_models_by_tag, _fetch_deepinfra_pricing
@@ -1544,8 +1601,12 @@ class TestDeepInfraPricingFetcher:
             # non-chat — must not appear
             {"id": "vendor/model-image", "metadata": {"tags": ["image-gen"], "pricing": {"per_image_unit": 0.05}}},
         ]}
-        import urllib.request
-        monkeypatch.setattr(urllib.request, "urlopen", _make_urlopen_returning(payload))
+        import hermes_cli.models as models
+        monkeypatch.setattr(
+            models,
+            "_urlopen_model_catalog_request",
+            _make_urlopen_returning(payload),
+        )
         from hermes_cli.models import get_pricing_for_provider
 
         # get_pricing_for_provider → _fetch_deepinfra_pricing dispatch path
@@ -1564,6 +1625,9 @@ class TestDeepInfraProviderProfile:
     def test_profile_registered_with_alias_and_aux(self):
         from providers import get_provider_profile
         from agent.auxiliary_client import _get_aux_model_for_provider
+        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        from hermes_cli.models import CANONICAL_PROVIDERS
 
         profile = get_provider_profile("deepinfra")
         assert profile is not None
@@ -1571,6 +1635,11 @@ class TestDeepInfraProviderProfile:
         assert profile.auth_type == "api_key"
         # Alias resolves to the same profile.
         assert get_provider_profile("deep-infra") is profile
+        assert resolve_provider("deep-infra") == "deepinfra"
+        assert PROVIDER_REGISTRY["deepinfra"].inference_base_url == profile.base_url
+        assert any(entry.slug == "deepinfra" for entry in CANONICAL_PROVIDERS)
+        assert OPTIONAL_ENV_VARS["DEEPINFRA_API_KEY"]["password"] is True
+        assert OPTIONAL_ENV_VARS["DEEPINFRA_BASE_URL"]["password"] is False
         # Aux model is resolved via the profile (not via the legacy
         # _API_KEY_PROVIDER_AUX_MODELS_FALLBACK dict, which has no
         # deepinfra entry).
@@ -1579,20 +1648,11 @@ class TestDeepInfraProviderProfile:
         # of truth. Pin the shape only, not contents.
         assert isinstance(profile.fallback_models, tuple)
 
-    def test_profile_sets_default_max_tokens(self):
-        """A non-None default_max_tokens must be advertised so the transport's
-        ``elif profile_max`` branch fires when the user hasn't configured
-        ``agent.max_tokens``. Without it DeepInfra applies a small server
-        default and tool-heavy runs truncate (finish_reason='length')."""
+    def test_profile_does_not_force_one_output_cap_across_mixed_catalog(self):
+        """DeepInfra model output limits vary, so the server default is safest."""
         from providers import get_provider_profile
 
         profile = get_provider_profile("deepinfra")
-        assert profile.default_max_tokens is not None
-        assert profile.default_max_tokens > 0
-        # get_max_tokens() returns the static default regardless of model
-        # (DeepInfra clamps per-model server-side, so one value is safe).
-        assert profile.get_max_tokens(None) == profile.default_max_tokens
-        assert (
-            profile.get_max_tokens("deepseek-ai/DeepSeek-V4-Flash")
-            == profile.default_max_tokens
-        )
+        assert profile is not None
+        assert profile.default_max_tokens is None
+        assert profile.get_max_tokens("deepseek-ai/DeepSeek-V4-Flash") is None

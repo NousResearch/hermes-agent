@@ -1084,18 +1084,7 @@ def _build_no_backend_setup_message() -> str:
 
 
 def check_image_generation_requirements() -> bool:
-    """True if any image gen backend is available.
-
-    Providers are considered in this order:
-
-    1. The in-tree FAL backend (FAL_KEY or managed gateway).
-    2. Any plugin-registered provider whose ``is_available()`` returns True.
-
-    Plugins win only when the in-tree FAL path is NOT ready, which matches
-    the historical behavior: shipping hermes with a FAL key configured
-    should still expose the tool. The active selection among ready
-    providers is resolved per-call by ``image_gen.provider``.
-    """
+    """True if FAL or the explicitly configured image backend is available."""
     try:
         if check_fal_api_key():
             # Trigger the lazy fal_client import here as the SDK presence
@@ -1107,22 +1096,21 @@ def check_image_generation_requirements() -> bool:
     except ImportError:
         pass
 
-    # Probe plugin providers. Discovery is idempotent and cheap.
+    configured = _read_configured_image_provider()
+    if not configured or configured == "fal":
+        return False
+
+    # Probe only the explicitly selected plugin. Merely possessing a cloud
+    # provider key must not opt a user into a paid image-generation backend.
     try:
-        from agent.image_gen_registry import list_providers
+        from agent.image_gen_registry import get_provider
         from hermes_cli.plugins import _ensure_plugins_discovered
 
         _ensure_plugins_discovered()
-        for provider in list_providers():
-            try:
-                if provider.is_available():
-                    return True
-            except Exception:
-                continue
+        provider = get_provider(configured)
+        return bool(provider and provider.is_available())
     except Exception:
-        pass
-
-    return False
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1271,29 +1259,6 @@ def _read_configured_image_provider():
     return None
 
 
-def _resolve_active_image_provider() -> Optional[str]:
-    """Return the registry's active image-gen provider name, or ``None``.
-
-    Used only when ``image_gen.provider`` is unset. Delegates to
-    :func:`agent.image_gen_registry.get_active_provider`, which selects the
-    single provider that has credentials (else the legacy FAL preference) —
-    the same availability-filtered fallback the video surface uses. So a
-    box whose only image credential is ``DEEPINFRA_API_KEY`` auto-selects
-    DeepInfra, while a box with FAL credentials keeps FAL, without this tool
-    re-implementing provider inference or env auto-detect.
-    """
-    try:
-        from agent.image_gen_registry import get_active_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
-        _ensure_plugins_discovered()
-        provider = get_active_provider()
-        if provider is not None:
-            return provider.name
-    except Exception as exc:
-        logger.debug("image_gen active-provider resolution skipped: %s", exc)
-    return None
-
-
 def _dispatch_to_plugin_provider(
     prompt: str,
     aspect_ratio: str,
@@ -1316,17 +1281,8 @@ def _dispatch_to_plugin_provider(
     route to its edit endpoint.
     """
     configured = _read_configured_image_provider()
-    if configured == "fal":
-        return None  # explicit opt-in to legacy FAL
-    if not configured:
-        # Let the registry pick the active backend (single available provider,
-        # else legacy FAL preference). ``fal`` or nothing → fall through to the
-        # in-tree FAL pipeline; any other available backend (e.g. DeepInfra on
-        # a box whose only image credential is DEEPINFRA_API_KEY) dispatches.
-        active = _resolve_active_image_provider()
-        if not active or active == "fal":
-            return None
-        configured = active
+    if not configured or configured == "fal":
+        return None  # unset/explicit FAL keeps the legacy FAL path
 
     # Also read configured model so we can pass it to the plugin
     configured_model = _read_configured_image_model()

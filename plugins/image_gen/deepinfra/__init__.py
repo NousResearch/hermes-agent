@@ -152,6 +152,10 @@ class DeepInfraImageGenProvider(ImageGenProvider):
             return rows[0].get("id")
         return None
 
+    def capabilities(self) -> Dict[str, Any]:
+        """DeepInfra's OpenAI-compatible generation surface is text-only."""
+        return {"modalities": ["text"], "max_reference_images": 0}
+
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "DeepInfra",
@@ -174,6 +178,18 @@ class DeepInfraImageGenProvider(ImageGenProvider):
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
+
+        if kwargs.get("image_url") or kwargs.get("reference_image_urls"):
+            return error_response(
+                error=(
+                    "DeepInfra image generation is text-to-image only in this "
+                    "backend; image_url and reference_image_urls are unsupported."
+                ),
+                error_type="modality_unsupported",
+                provider="deepinfra",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         if not prompt:
             return error_response(

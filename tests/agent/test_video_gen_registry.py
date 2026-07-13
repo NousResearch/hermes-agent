@@ -113,9 +113,8 @@ class TestGetActiveProvider:
         active = video_gen_registry.get_active_provider()
         assert active is not None and active.name == "fal"
 
-    def test_unknown_config_falls_back(self, tmp_path, monkeypatch):
-        """If video_gen.provider names a provider that isn't registered,
-        the single-provider fallback still applies."""
+    def test_unknown_explicit_config_fails_closed(self, tmp_path, monkeypatch):
+        """A typo must not silently route a paid request to another backend."""
         import yaml
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -123,5 +122,4 @@ class TestGetActiveProvider:
             yaml.safe_dump({"video_gen": {"provider": "ghost"}})
         )
         video_gen_registry.register_provider(_FakeProvider("only"))
-        active = video_gen_registry.get_active_provider()
-        assert active is not None and active.name == "only"
+        assert video_gen_registry.get_active_provider() is None

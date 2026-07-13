@@ -57,22 +57,10 @@ deepinfra = _DeepInfraProfile(
     env_vars=("DEEPINFRA_API_KEY", "DEEPINFRA_BASE_URL"),
     base_url="https://api.deepinfra.com/v1/openai",
     auth_type="api_key",
-    # Default output cap when the user hasn't set ``agent.max_tokens``.
-    # Without this the profile inherits ``None`` and the transport sends no
-    # ``max_tokens`` (chat_completions.py: the ``elif profile_max`` branch
-    # is skipped because ``None`` is falsy), so DeepInfra applies its small
-    # server-side default (~8-16K). Tool-heavy runs (e.g. cron jobs doing
-    # many web_search calls before composing) then exhaust that budget on
-    # tool results, hit ``finish_reason='length'``, and fail after the
-    # 3 continuation retries in conversation_loop.py.
-    #
-    # 128K gives ample room for tool-result processing + final output.
-    # Safe across the whole catalog despite per-model limits ranging from
-    # 4K (Gryphe/MythoMax) to 1M (DeepSeek-V4): DeepInfra silently CLAMPS
-    # max_tokens to each model's own limit rather than rejecting it
-    # (verified live). Users who set ``agent.max_tokens`` still win — their
-    # value takes priority over this profile default in the transport.
-    default_max_tokens=131072,
+    # The catalog spans models with different output limits. Omitting a
+    # provider-wide default lets DeepInfra apply its documented per-model cap;
+    # an explicit user ``agent.max_tokens`` still passes through normally.
+    default_max_tokens=None,
     # Auxiliary model — cheap/fast chat model the same provider uses for
     # side tasks (context compression, session search, web extract,
     # vision). This is the *only* hardcoded DeepInfra model in the

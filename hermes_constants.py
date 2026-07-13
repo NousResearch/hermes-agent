@@ -564,6 +564,17 @@ def agent_browser_runnable(path: str | None) -> bool:
         return False
     import subprocess
 
+    run_env = with_hermes_node_path()
+    # npm-installed shims commonly use ``#!/usr/bin/env node``. When the
+    # candidate came from a mise/asdf/nvm fallback directory that was absent
+    # from the original process PATH, validation must expose that same
+    # directory so the shim can resolve its sibling Node executable.
+    candidate_dir = str(Path(path).absolute().parent)
+    path_parts = [part for part in run_env.get("PATH", "").split(os.pathsep) if part]
+    if candidate_dir not in path_parts:
+        path_parts.insert(0, candidate_dir)
+    run_env["PATH"] = os.pathsep.join(path_parts)
+
     try:
         from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -571,7 +582,7 @@ def agent_browser_runnable(path: str | None) -> bool:
             [path, "--version"],
             capture_output=True,
             timeout=10,
-            env=with_hermes_node_path(),
+            env=run_env,
             creationflags=windows_hide_flags(),
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):

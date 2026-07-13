@@ -26,7 +26,7 @@ def test_common_tool_path_dirs_include_version_manager_and_platform_dirs(monkeyp
     assert str(mise_shims) in dirs
     assert str(asdf_shims) in dirs
     assert str(nvm_node_bin) in dirs
-    assert "/usr/bin" in dirs
+    assert "/usr/bin" in common_tool_path_dirs(existing_only=False)
 
 
 def test_common_tool_path_dirs_can_return_non_existing_static_candidates(monkeypatch, tmp_path):
@@ -43,15 +43,17 @@ def test_merge_common_tool_path_appends_fallbacks_without_duplicates(monkeypatch
     monkeypatch.setenv("HOME", str(tmp_path))
     custom_bin = tmp_path / "custom" / "bin"
     mise_shims = tmp_path / ".local" / "share" / "mise" / "shims"
+    asdf_shims = tmp_path / ".asdf" / "shims"
     custom_bin.mkdir(parents=True)
     mise_shims.mkdir(parents=True)
+    asdf_shims.mkdir(parents=True)
 
     merged = merge_common_tool_path(os.pathsep.join([str(custom_bin), str(mise_shims)]))
     parts = merged.split(os.pathsep)
 
     assert parts[0] == str(custom_bin)
     assert parts.count(str(mise_shims)) == 1
-    assert "/usr/bin" in parts
+    assert str(asdf_shims) in parts
 
 
 def test_merge_common_tool_path_can_prepend_fallbacks(monkeypatch, tmp_path):

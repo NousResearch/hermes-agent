@@ -92,7 +92,8 @@ def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess.
 
     Strips Hermes-managed secrets (provider keys, gateway tokens, GitHub auth,
-    infra secrets) then re-adds only the browser-backend keys the worker needs.
+    infra secrets), re-adds only the browser-backend keys the worker needs,
+    then supplies the same executable PATH fallbacks used for discovery.
     The ``hermes_subprocess_env`` import is deferred to keep ``browser_tool``
     importable under test harnesses that load it against a stubbed ``tools``
     package (tests/tools/test_managed_browserbase_and_modal.py).
@@ -103,6 +104,7 @@ def _build_browser_env() -> dict:
     for _key in _BROWSER_PASSTHROUGH_KEYS:
         if _key in os.environ:
             env[_key] = os.environ[_key]
+    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
     return env
 
 try:
@@ -187,7 +189,8 @@ def _browser_candidate_path_dirs() -> list[str]:
     hermes_node_bin = str(hermes_home / "node" / "bin")
     hermes_node_root = str(hermes_home / "node")
     hermes_nm_bin = str(hermes_home / "node_modules" / ".bin")
-    return [hermes_node_bin, hermes_node_root, hermes_nm_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
+    common_dirs = common_tool_path_dirs(existing_only=False)
+    return [hermes_node_bin, hermes_node_root, hermes_nm_bin, *list(_discover_homebrew_node_dirs()), *common_dirs]
 
 
 def _merge_browser_path(existing_path: str = "") -> str:
@@ -1044,7 +1047,6 @@ def _run_chrome_fallback_command(
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
     browser_env = _build_browser_env()
     browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
-    browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
 
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
         browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
@@ -2369,10 +2371,6 @@ def _run_browser_command(
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
         browser_env = _build_browser_env()
-
-        # Ensure subprocesses inherit the same browser-specific PATH fallbacks
-        # used during CLI discovery.
-        browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
 
         # Tell the agent-browser daemon to self-terminate after being idle

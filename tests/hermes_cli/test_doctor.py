@@ -249,6 +249,57 @@ def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
     assert seen["path_helper_called"] is True
 
 
+def test_run_doctor_resolves_node_from_mise_with_minimal_path(monkeypatch, tmp_path):
+    """The real doctor flow should expose mise shims to its Node lookup."""
+    if os.name == "nt":
+        pytest.skip("mise shell shims are POSIX executables")
+
+    project_root = tmp_path / "project"
+    hermes_home = tmp_path / ".hermes"
+    minimal_bin = tmp_path / "minimal-bin"
+    mise_shims = tmp_path / ".local" / "share" / "mise" / "shims"
+    for path in (project_root, hermes_home, minimal_bin, mise_shims):
+        path.mkdir(parents=True)
+
+    node_shim = mise_shims / "node"
+    node_shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    node_shim.chmod(0o755)
+
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("PATH", str(minimal_bin))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.delenv("NVM_DIR", raising=False)
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+
+    real_which = doctor_mod.shutil.which
+    seen = {}
+
+    class NodeLookupReached(BaseException):
+        pass
+
+    def record_real_lookup(cmd, *args, **kwargs):
+        # Avoid probing host-specific Docker/Codex installations while still
+        # using the real shutil.which implementation for the Node contract.
+        if cmd in {"codex", "docker"}:
+            return None
+        result = real_which(cmd, *args, **kwargs)
+        if cmd == "node":
+            seen["node"] = result
+            raise NodeLookupReached
+        return result
+
+    monkeypatch.setattr(doctor_mod.shutil, "which", record_real_lookup)
+
+    with pytest.raises(NodeLookupReached):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert seen["node"] == str(node_shim)
+    assert str(mise_shims) in os.environ["PATH"].split(os.pathsep)
+
+
 def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")

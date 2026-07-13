@@ -2,6 +2,8 @@
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, mock_open
 
@@ -105,6 +107,55 @@ class TestDiscoverHomebrewNodeDirs:
 class TestFindAgentBrowser:
     """Tests for _find_agent_browser() Homebrew path search."""
 
+    @pytest.mark.skipif(os.name == "nt", reason="nvm shell shims are POSIX executables")
+    def test_resolves_node_backed_nvm_shim_with_minimal_original_path(self, tmp_path):
+        """A fresh browser process should validate a Node-backed nvm shim."""
+        minimal_bin = tmp_path / "minimal-bin"
+        nvm_bin = tmp_path / ".nvm" / "versions" / "node" / "v24.11.0" / "bin"
+        hermes_home = tmp_path / ".hermes"
+        for path in (minimal_bin, nvm_bin, hermes_home):
+            path.mkdir(parents=True)
+
+        node_shim = nvm_bin / "node"
+        node_shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        node_shim.chmod(0o755)
+        browser_shim = nvm_bin / "agent-browser"
+        browser_shim.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+        browser_shim.chmod(0o755)
+
+        repo_root = Path(__file__).resolve().parents[2]
+        env = os.environ.copy()
+        env.update(
+            {
+                "HOME": str(tmp_path),
+                "HERMES_HOME": str(hermes_home),
+                "PATH": str(minimal_bin),
+            }
+        )
+        env.pop("NVM_DIR", None)
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = os.pathsep.join(
+            part for part in (str(repo_root), existing_pythonpath) if part
+        )
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from tools.browser_tool import _find_agent_browser; "
+                "print(_find_agent_browser())",
+            ],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == str(browser_shim)
+
     def test_finds_in_current_path(self):
         """Should return result from shutil.which if available on current PATH."""
         with patch("shutil.which", return_value="/usr/local/bin/agent-browser"), \
@@ -207,6 +258,7 @@ class TestFindAgentBrowser:
         with patch("shutil.which", return_value=None), \
              patch("os.path.isdir", return_value=False), \
              patch.object(Path, "exists", mock_path_exists), \
+             patch("hermes_cli.dep_ensure.ensure_dependency", return_value=False), \
              patch(
                  "tools.browser_tool._discover_homebrew_node_dirs",
                  return_value=[],

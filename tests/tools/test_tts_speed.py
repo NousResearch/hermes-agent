@@ -89,6 +89,40 @@ class TestOpenaiTtsSpeed:
         kwargs = create.call_args[1]
         assert "speed" not in kwargs
 
+    def test_instructions_forwarded_for_gpt4o_mini_tts(self, tmp_path, monkeypatch):
+        """Non-empty instructions are forwarded for the steering-capable model."""
+        create = self._run(
+            {"openai": {"instructions": "Speak warmly and slowly."}},
+            tmp_path,
+            monkeypatch,
+        )
+        kwargs = create.call_args[1]
+        assert kwargs["instructions"] == "Speak warmly and slowly."
+
+    @pytest.mark.parametrize("instructions", [None, "", "   "])
+    def test_empty_or_unset_instructions_omitted(self, instructions, tmp_path, monkeypatch):
+        """Empty and unset instructions must not be sent to OpenAI."""
+        openai_config = {} if instructions is None else {"instructions": instructions}
+        create = self._run({"openai": openai_config}, tmp_path, monkeypatch)
+        kwargs = create.call_args[1]
+        assert "instructions" not in kwargs
+
+    def test_instructions_omitted_for_direct_tts_1_hd(self, tmp_path, monkeypatch):
+        """Direct-only models must not receive gpt-4o-mini-tts instructions."""
+        create = self._run(
+            {
+                "openai": {
+                    "model": "tts-1-hd",
+                    "instructions": "Speak warmly and slowly.",
+                }
+            },
+            tmp_path,
+            monkeypatch,
+        )
+        kwargs = create.call_args[1]
+        assert kwargs["model"] == "tts-1-hd"
+        assert "instructions" not in kwargs
+
     def test_global_speed_applied(self, tmp_path, monkeypatch):
         """Global tts.speed used as fallback."""
         create = self._run({"speed": 1.5}, tmp_path, monkeypatch)

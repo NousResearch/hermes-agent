@@ -54,6 +54,7 @@ tts:
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
+    instructions: "Speak warmly and slowly"  # gpt-4o-mini-tts only
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
     speed: 1.0                  # 0.25 - 4.0
   minimax:
@@ -98,6 +99,8 @@ tts:
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+**OpenAI voice steering**: `tts.openai.instructions` is forwarded only when the effective model is `gpt-4o-mini-tts`. Empty or unset values are omitted. Direct models such as `tts-1-hd` do not receive this parameter.
 
 ### Gemini Persona Prompts
 

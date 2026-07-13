@@ -10,10 +10,8 @@ Covers:
 
 import json
 import os
-import queue
 import time
 import pytest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.process_registry import (
@@ -101,6 +99,8 @@ class TestCompletionQueue:
         assert completion["session_id"] == s.id
         assert completion["command"] == "echo hello"
         assert completion["exit_code"] == 0
+        assert completion["completion_reason"] == "exited"
+        assert completion["termination_source"] == ""
         assert "build succeeded" in completion["output"]
 
     def test_move_to_finished_nonzero_exit(self, registry):
@@ -139,6 +139,35 @@ class TestCompletionQueue:
         assert registry.completion_queue.qsize() == 1
         completion = registry.completion_queue.get_nowait()
         assert completion["exit_code"] == -15  # from the first (kill) call
+
+    def test_kill_process_sets_completion_reason_and_source(self, registry):
+        s = _make_session(notify_on_complete=True, output="stopping")
+        s.process = MagicMock()
+        s.process.pid = 4242
+        registry._running[s.id] = s
+
+        class FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def children(self, recursive=False):
+                return []
+
+            def terminate(self):
+                pass
+
+        import psutil as _psutil
+
+        with patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)), \
+             patch.object(registry, "_write_checkpoint"):
+            result = registry.kill_process(s.id)
+
+        assert result["status"] == "killed"
+        assert result["completion_reason"] == "killed"
+        assert result["termination_source"] == "process.kill"
+        completion = registry.completion_queue.get_nowait()
+        assert completion["completion_reason"] == "killed"
+        assert completion["termination_source"] == "process.kill"
 
     def test_output_truncated_to_2000(self, registry):
         """Long output is truncated to last 2000 chars."""
@@ -296,7 +325,7 @@ class TestCodeExecutionBlocked:
 # =========================================================================
 
 class TestCompletionConsumed:
-    """Test that wait/poll/log suppress redundant completion notifications."""
+    """Test that wait/log consume completion notifications while poll stays read-only."""
 
     def test_wait_marks_completion_consumed(self, registry):
         """wait() returning exited status marks session as consumed."""
@@ -318,8 +347,8 @@ class TestCompletionConsumed:
         # Now the completion is marked as consumed
         assert registry.is_completion_consumed("proc_wait")
 
-    def test_poll_marks_completion_consumed(self, registry):
-        """poll() returning exited status marks session as consumed."""
+    def test_poll_does_not_mark_completion_consumed(self, registry):
+        """poll() is a read-only status check and must not suppress notify_on_complete."""
         s = _make_session(sid="proc_poll", notify_on_complete=True, output="done")
         s.exited = True
         s.exit_code = 0
@@ -327,7 +356,7 @@ class TestCompletionConsumed:
 
         result = registry.poll("proc_poll")
         assert result["status"] == "exited"
-        assert registry.is_completion_consumed("proc_poll")
+        assert not registry.is_completion_consumed("proc_poll")
 
     def test_log_marks_completion_consumed(self, registry):
         """read_log() on exited session marks as consumed."""
@@ -348,6 +377,72 @@ class TestCompletionConsumed:
         result = registry.poll("proc_running")
         assert result["status"] == "running"
         assert not registry.is_completion_consumed("proc_running")
+
+    def test_poll_marks_poll_observed_for_cli_drain(self, registry):
+        """poll() on an exited process records _poll_observed so the CLI drain
+        dedups (the agent already saw the exit inline) without marking the
+        session _completion_consumed (which would suppress the gateway watcher)."""
+        s = _make_session(sid="proc_pobs", notify_on_complete=True, output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+
+        # Completion is queued, nothing consumed/observed yet.
+        assert not registry.completion_queue.empty()
+        assert "proc_pobs" not in registry._poll_observed
+        assert not registry.is_completion_consumed("proc_pobs")
+
+        # Agent polls inline — read-only, so NOT _completion_consumed, but the
+        # exit was observed so the CLI drain must skip the queued completion.
+        assert registry.poll("proc_pobs")["status"] == "exited"
+        assert "proc_pobs" in registry._poll_observed
+        assert not registry.is_completion_consumed("proc_pobs")
+
+        # CLI drain skips it → no duplicate [SYSTEM: ...] injection (#8228).
+        drained = registry.drain_notifications()
+        assert drained == []
+
+    def test_poll_observed_does_not_suppress_gateway_watcher(self, registry):
+        """The gateway/tui watcher gate (is_completion_consumed) must stay False
+        after a read-only poll, so the autonomous delivery turn still fires
+        even though the CLI drain was deduped (#10156)."""
+        s = _make_session(sid="proc_gw", notify_on_complete=True, output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._finished[s.id] = s
+
+        registry.poll("proc_gw")
+        # CLI-side dedup signal present...
+        assert "proc_gw" in registry._poll_observed
+        # ...but the gateway watcher gate is untouched, so it still delivers.
+        assert not registry.is_completion_consumed("proc_gw")
+
+    def test_running_poll_does_not_mark_poll_observed(self, registry):
+        """poll() on a still-running process must not record _poll_observed."""
+        s = _make_session(sid="proc_run2", notify_on_complete=True, output="partial")
+        registry._running[s.id] = s
+
+        registry.poll("proc_run2")
+        assert "proc_run2" not in registry._poll_observed
+
+    def test_wait_and_log_still_skip_cli_drain(self, registry):
+        """wait()/read_log() consume the output, so the CLI drain skips their
+        completions via _completion_consumed (the original #8228 contract)."""
+        for sid, action in (("proc_w", "wait"), ("proc_l", "log")):
+            s = _make_session(sid=sid, notify_on_complete=True, output="done")
+            s.exited = True
+            s.exit_code = 0
+            registry._running[s.id] = s
+            with patch.object(registry, "_write_checkpoint"):
+                registry._move_to_finished(s)
+            if action == "wait":
+                registry.wait(sid, timeout=1)
+            else:
+                registry.read_log(sid)
+            assert registry.is_completion_consumed(sid)
+        assert registry.drain_notifications() == []
 
 
 # ---------------------------------------------------------------------------

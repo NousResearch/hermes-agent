@@ -27,7 +27,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| WeCom | ✅ | ✅ | ✅ | — | — | — | — |
 | WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
@@ -162,13 +162,21 @@ hermes gateway status --system         # 仅 Linux：显式检查系统服务
 
 ### 重置策略
 
-会话根据可配置的策略重置：
+**默认情况下会话永不自动重置** —— 上下文会一直保留，直到你手动 `/reset` 或触发上下文压缩。如果你希望会话自动重置，可在 `~/.hermes/config.yaml` 的 `session_reset` 部分选择启用：
 
-| 策略 | 默认值 | 说明 |
-|--------|---------|-------------|
-| 每日 | 凌晨 4:00 | 每天在指定时间重置 |
-| 空闲 | 1440 分钟 | 空闲 N 分钟后重置 |
-| 两者 | （组合） | 以先触发者为准 |
+```yaml
+session_reset:
+  mode: idle        # "idle"、"daily"、"both" 或 "none"（默认）
+  idle_minutes: 1440  # idle/both 模式：空闲多少分钟后重置
+  at_hour: 4          # daily/both 模式：每天的重置时间（0-23，本地时间）
+```
+
+| 模式 | 说明 |
+|------|-------------|
+| `none` | 永不自动重置（默认） |
+| `daily` | 每天在指定时间重置 |
+| `idle` | 空闲 N 分钟后重置 |
+| `both` | 以先触发者为准 |
 
 在 `~/.hermes/gateway.json` 中配置各平台的覆盖设置：
 
@@ -494,6 +502,21 @@ gateway:
 ```
 
 在嘈杂或低优先级的平台上禁用，同时在主要聊天上保持启用。无论有多少会话正在进行，每次重启只发送一次通知。
+
+### 正在输入指示器
+
+当 agent 正在处理消息时，网关会在支持的平台上显示实时的输入状态——Telegram/Discord/Signal 上的"正在输入……"气泡，或 Slack 上的"is thinking…"助手状态。这由 `gateway-config.yaml` 中每个平台的 `typing_indicator` 标志控制，默认为 `true`：
+
+```yaml
+gateway:
+  platforms:
+    slack:
+      typing_indicator: false   # 在 Slack 上不显示"is thinking…"
+    telegram:
+      # typing_indicator 未设置 → 默认为 true
+```
+
+在任何不需要该指示器的平台上设置 `typing_indicator: false`。部分用户觉得 Slack 的"is thinking…"状态比较嘈杂（由于它使用 Slack 的 Assistant API，显示期间还会短暂禁用输入框）。禁用它只会抑制该指示器——消息投递及其他一切均不受影响。该标志是通用的，因此同一个键对每个平台都有效。
 
 ### 网关重启后的会话恢复
 

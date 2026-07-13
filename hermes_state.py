@@ -122,7 +122,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -831,7 +831,7 @@ END;
 FTS_TRIGRAM_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,
-    tokenize='trigram'
+    tokenize='simple'
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
@@ -896,6 +896,7 @@ class SessionDB:
         self._write_count = 0
         self._fts_enabled = False
         self._trigram_available = False
+        self._simple_loaded = False
         self._fts_unavailable_warned = False
         self._conn = None
         try:
@@ -916,6 +917,7 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                self._apply_read_pragmas()
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -936,6 +938,8 @@ class SessionDB:
                 self._conn.row_factory = sqlite3.Row
                 apply_wal_with_fallback(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
+                self._apply_read_pragmas()
+                self._simple_loaded = self._load_simple_extension()
                 self._init_schema()
 
             try:
@@ -1329,6 +1333,47 @@ class SessionDB:
                             "reconcile %s.%s: %s", table_name, col_name, exc,
                         )
 
+    def _apply_read_pragmas(self):
+        """Apply read-performance PRAGMAs after opening a connection.
+
+        These are connection-level settings — every new connection must
+        re-apply them.  The defaults (2 MB cache, no mmap, file-backed
+        temp) are tuned for embedded use; state.db is 2+ GB.
+        """
+        try:
+            self._conn.execute("PRAGMA cache_size=-64000")       # 64 MB page cache
+            self._conn.execute("PRAGMA mmap_size=2147483648")    # 2 GB memory-map
+            self._conn.execute("PRAGMA temp_store=MEMORY")       # sorts in RAM
+        except Exception:
+            pass  # non-fatal; degrade gracefully
+
+    def _load_simple_extension(self):
+        """Load the simple FTS5 tokenizer extension for Chinese word segmentation.
+
+        The extension (libsimple.so) provides jieba-based tokenization that
+        correctly handles multi-character Chinese terms — critical because the
+        default unicode61 tokenizer splits CJK into individual characters,
+        making 2-character searches (\"教學\", \"繼續\") fall back to slow LIKE.
+
+        Gracefully degrades if the .so is missing or fails to load.
+        """
+        simple_path = get_hermes_home() / "libsimple" / "libsimple.so"
+        if not simple_path.exists():
+            return False
+        try:
+            self._conn.enable_load_extension(True)
+            self._conn.load_extension(str(simple_path))
+            logger.info("Loaded simple FTS5 tokenizer: %s", simple_path)
+            return True
+        except Exception as exc:
+            logger.debug("Failed to load simple FTS5 tokenizer: %s", exc)
+            return False
+        finally:
+            try:
+                self._conn.enable_load_extension(False)
+            except Exception:
+                pass
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.
 
@@ -1522,6 +1567,20 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 18:
+                # v18: migrate messages_fts_trigram from trigram to simple
+                # tokenizer for Chinese word segmentation.  Drops the old
+                # trigram-backed table and recreates it with the simple
+                # tokenizer (FTS_TRIGRAM_SQL now uses tokenize='simple'
+                # since July 2026).  If the simple extension is unavailable
+                # the migration is a no-op (trigram / LIKE fallback stays).
+                if self._simple_loaded and fts5_available:
+                    try:
+                        cursor.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+                        # Triggers are dropped with the table; _ensure_fts_schema
+                        # below recreates both table + triggers.
+                    except sqlite3.OperationalError:
+                        pass
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",

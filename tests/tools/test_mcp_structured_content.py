@@ -18,6 +18,15 @@ class _FakeContentBlock:
         self.type = block_type
 
 
+class _FakeImageContentBlock:
+    """Minimal image block with MCP ImageContent-like attributes."""
+
+    def __init__(self):
+        self.type = "image"
+        self.data = "not-base64"
+        self.mimeType = "image/png"
+
+
 class _FakeCallToolResult:
     """Minimal CallToolResult stand-in.
 
@@ -62,6 +71,17 @@ def _patch_mcp_server():
         yield fake_session
 
 
+def _call_tool_result(session, content, structured):
+    session.call_tool = AsyncMock(
+        return_value=_FakeCallToolResult(
+            content=content,
+            structuredContent=structured,
+        )
+    )
+    handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+    return json.loads(handler({}))
+
+
 class TestStructuredContentPreservation:
     """Ensure structuredContent from CallToolResult is forwarded."""
 
@@ -95,6 +115,39 @@ class TestStructuredContentPreservation:
         assert data["result"] == "OK"
         assert data["structuredContent"] == payload
 
+    def test_fastmcp_semantic_duplicate_omits_structured_content(self, _patch_mcp_server):
+        """FastMCP dict tools mirror structuredContent as one JSON TextContent."""
+        payload = {"value": "secret-123", "revealed": True, "items": [1, 2]}
+        data = _call_tool_result(
+            _patch_mcp_server,
+            [_FakeContentBlock(json.dumps(payload))],
+            payload,
+        )
+        assert data == {"result": json.dumps(payload)}
+
+    def test_duplicate_with_different_whitespace_and_key_formatting(self, _patch_mcp_server):
+        """Semantic equality, not byte equality, controls the narrow dedupe."""
+        payload = {"b": [2, 3], "a": {"nested": True}}
+        text = json.dumps({"a": {"nested": True}, "b": [2, 3]}, indent=2)
+        data = _call_tool_result(
+            _patch_mcp_server,
+            [_FakeContentBlock(text)],
+            payload,
+        )
+        assert data == {"result": text}
+
+    def test_supplementary_human_file_text_remains_combined(self, _patch_mcp_server):
+        """File/body text plus metadata is not a duplicate FastMCP payload."""
+        file_text = "import os\nprint('hello')\n"
+        metadata = {"fileName": "main.py", "filePath": "/tmp/main.py", "fileType": "python"}
+        data = _call_tool_result(
+            _patch_mcp_server,
+            [_FakeContentBlock(file_text)],
+            metadata,
+        )
+        assert data["result"] == file_text
+        assert data["structuredContent"] == metadata
+
     def test_both_content_and_structured_desktop_commander(self, _patch_mcp_server):
         """Real-world case: Desktop Commander returns file text in content,
         metadata in structuredContent.  Agent must see file contents."""
@@ -112,6 +165,48 @@ class TestStructuredContentPreservation:
         data = json.loads(raw)
         assert data["result"] == file_text
         assert data["structuredContent"] == metadata
+
+    def test_multiple_text_blocks_remain_combined(self, _patch_mcp_server):
+        """Multiple text blocks may carry extra context; do not dedupe."""
+        payload = {"value": 1}
+        data = _call_tool_result(
+            _patch_mcp_server,
+            [_FakeContentBlock(json.dumps(payload)), _FakeContentBlock("human note")],
+            payload,
+        )
+        assert data["result"] == f"{json.dumps(payload)}\nhuman note"
+        assert data["structuredContent"] == payload
+
+    def test_image_or_media_content_remains_combined(self, _patch_mcp_server):
+        """Image/MEDIA content must keep structured metadata attached."""
+        payload = {"value": 1}
+        data = _call_tool_result(
+            _patch_mcp_server,
+            [_FakeContentBlock(json.dumps(payload)), _FakeImageContentBlock()],
+            payload,
+        )
+        assert data["result"] == json.dumps(payload)
+        assert data["structuredContent"] == payload
+
+    def test_media_text_content_remains_combined(self, _patch_mcp_server):
+        """Already-materialized MEDIA tags are not treated as duplicate JSON text."""
+        payload = {"image": "metadata"}
+        data = _call_tool_result(
+            _patch_mcp_server,
+            [_FakeContentBlock("MEDIA:/tmp/render.png")],
+            payload,
+        )
+        assert data["result"] == "MEDIA:/tmp/render.png"
+        assert data["structuredContent"] == payload
+
+    def test_json_string_semantics_are_deduped(self, _patch_mcp_server):
+        """JSON-native scalar semantics still dedupe when values are equal."""
+        data = _call_tool_result(
+            _patch_mcp_server,
+            [_FakeContentBlock('"2026-07-13T12:34:56+00:00"')],
+            "2026-07-13T12:34:56+00:00",
+        )
+        assert data == {"result": '"2026-07-13T12:34:56+00:00"'}
 
     def test_structured_content_none_falls_back_to_text(self, _patch_mcp_server):
         """When structuredContent is explicitly None, fall back to text."""

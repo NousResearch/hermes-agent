@@ -670,6 +670,42 @@ def _mcp_image_extension_for_mime_type(mime_type: str) -> str:
     return mimetypes.guess_extension(normalized) or ".png"
 
 
+def _mcp_block_is_image(block) -> bool:
+    """Return True when *block* looks like an MCP ImageContent block."""
+    data = getattr(block, "data", None)
+    mime_type = getattr(block, "mimeType", None)
+    normalized_mime = str(mime_type or "").split(";", 1)[0].strip().lower()
+    return data is not None and normalized_mime.startswith("image/")
+
+
+def _mcp_structured_content_duplicates_text(
+    content_blocks: List[Any],
+    structured: Any,
+) -> bool:
+    """Return True for FastMCP's one-block JSON text mirror of structuredContent.
+
+    Conservative by design: only dedupe one textual JSON content block, with no
+    image/MEDIA content, when json.loads(text) is semantically equal to the SDK's
+    structuredContent value. Other combinations may carry supplementary
+    human-readable content and must stay combined.
+    """
+    if len(content_blocks) != 1:
+        return False
+
+    block = content_blocks[0]
+    if _mcp_block_is_image(block):
+        return False
+    text = getattr(block, "text", None)
+    if not isinstance(text, str) or "MEDIA:" in text:
+        return False
+
+    try:
+        parsed = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return parsed == structured
+
+
 def _cache_mcp_image_block(block) -> str:
     """Cache an MCP ``ImageContent`` block to the shared image cache and
     return a ``MEDIA:<path>`` tag that Hermes gateways know how to render.
@@ -685,7 +721,7 @@ def _cache_mcp_image_block(block) -> str:
     data = getattr(block, "data", None)
     mime_type = getattr(block, "mimeType", None)
     normalized_mime = str(mime_type or "").split(";", 1)[0].strip().lower()
-    if data is None or not normalized_mime.startswith("image/"):
+    if not _mcp_block_is_image(block):
         return ""
 
     try:
@@ -3980,9 +4016,18 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # MCP spec: content is model-oriented (text), structuredContent
             # is machine-oriented (JSON metadata).  For an AI agent, content
             # is the primary payload; structuredContent supplements it.
+            #
+            # FastMCP dict-returning tools mirror structuredContent as a single
+            # JSON TextContent block. In only that semantically equivalent case,
+            # keep the existing text result and omit the duplicate structured
+            # payload to avoid doubling model context. Supplementary content
+            # (file body + metadata, images, multiple text blocks, non-JSON
+            # prose, unequal JSON) remains combined unchanged.
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
                 if text_result:
+                    if _mcp_structured_content_duplicates_text(result.content or [], structured):
+                        return json.dumps({"result": text_result}, ensure_ascii=False)
                     return json.dumps({
                         "result": text_result,
                         "structuredContent": structured,

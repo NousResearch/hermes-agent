@@ -353,6 +353,14 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "completed_at": task.completed_at,
         "current_run_id": task.current_run_id,
         "model_override": task.model_override,
+        "budget_usd": task.budget_usd,
+        "budget_spent_usd": task.budget_spent_usd,
+        "budget_remaining_usd": (
+            max(0.0, task.budget_usd - task.budget_spent_usd)
+            if task.budget_usd is not None
+            else None
+        ),
+        "budget_unknown_cost_runs": task.budget_unknown_cost_runs,
         "parents": parents,
         "children": children,
         "parent_count": len(parents),
@@ -398,6 +406,14 @@ def _handle_show(args: dict, **kw) -> str:
                     "result": t.result,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
+                    "budget_usd": t.budget_usd,
+                    "budget_spent_usd": t.budget_spent_usd,
+                    "budget_remaining_usd": (
+                        max(0.0, t.budget_usd - t.budget_spent_usd)
+                        if t.budget_usd is not None
+                        else None
+                    ),
+                    "budget_unknown_cost_runs": t.budget_unknown_cost_runs,
                 }
 
             def _run_dict(r):
@@ -406,6 +422,21 @@ def _handle_show(args: dict, **kw) -> str:
                     "status": r.status, "outcome": r.outcome,
                     "summary": r.summary, "error": r.error,
                     "metadata": r.metadata,
+                    "usage_report_path": r.usage_report_path,
+                    "usage_report_ingested_at": r.usage_report_ingested_at,
+                    "estimated_cost_usd": r.estimated_cost_usd,
+                    "cost_status": r.cost_status,
+                    "cost_source": r.cost_source,
+                    "input_tokens": r.input_tokens,
+                    "output_tokens": r.output_tokens,
+                    "cache_read_tokens": r.cache_read_tokens,
+                    "cache_write_tokens": r.cache_write_tokens,
+                    "reasoning_tokens": r.reasoning_tokens,
+                    "total_tokens": r.total_tokens,
+                    "api_calls": r.api_calls,
+                    "model": r.model,
+                    "provider": r.provider,
+                    "usage_session_id": r.usage_session_id,
                     "started_at": r.started_at, "ended_at": r.ended_at,
                 }
 
@@ -838,6 +869,206 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _handle_record_plan_audit_verdict(args: dict, **kw) -> str:
+    """Record a plan-audit verdict on the gated executor task."""
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error(
+            "task_id is required and must be the gated executor task id, "
+            "not the plan-auditor task id"
+        )
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if env_tid and str(tid) == env_tid:
+        return tool_error(
+            "kanban_record_plan_audit_verdict targets the gated executor task, "
+            "not the current plan-auditor task; pass executor_task_id explicitly"
+        )
+    if "approved" not in args:
+        return tool_error("approved is required")
+    approved, bool_error = _parse_bool_arg(args, "approved")
+    if bool_error:
+        return tool_error(bool_error)
+
+    reason = args.get("reason")
+    if not reason or not str(reason).strip():
+        return tool_error("reason is required")
+    reason = redact_sensitive_text(str(reason), force=True)
+
+    metadata = args.get("metadata")
+    if not isinstance(metadata, dict):
+        return tool_error(
+            "metadata must be an object with at least a stable round field"
+        )
+    if "round" not in metadata:
+        return tool_error("metadata.round is required for idempotent replay")
+    round_value = metadata.get("round")
+    if (
+        round_value is None
+        or isinstance(round_value, bool)
+        or not str(round_value).strip()
+    ):
+        return tool_error("metadata.round must be a non-empty round number or key")
+    if not approved:
+        reject_kind = metadata.get("kind")
+        if reject_kind not in {"revise_plan", "needs_user_decision"}:
+            return tool_error(
+                "rejected plan audits require metadata.kind to be "
+                "'revise_plan' or 'needs_user_decision'"
+            )
+
+    meta_json = json.dumps(metadata)
+    redacted_meta_json = redact_sensitive_text(meta_json, force=True)
+    try:
+        metadata = json.loads(redacted_meta_json)
+    except json.JSONDecodeError:
+        pass
+
+    board = args.get("board")
+    reviewer = os.environ.get("HERMES_PROFILE") or "worker"
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            task = kb.get_task(conn, str(tid))
+            if task is None:
+                return tool_error(f"task {tid} not found")
+            if not task.plan_audit_required:
+                return tool_error(
+                    "plan-audit verdicts must target the executor task that "
+                    "carries plan_audit_required; refusing to record on "
+                    f"{tid}"
+                )
+            kb.record_plan_audit_verdict(
+                conn,
+                str(tid),
+                approved=approved,
+                reviewer=reviewer,
+                reason=reason,
+                metadata=metadata,
+            )
+            return _ok(
+                task_id=str(tid),
+                approved=approved,
+                verdict_kind=(
+                    "plan_audit_approved" if approved else "plan_audit_rejected"
+                ),
+                round=metadata.get("round") if isinstance(metadata, dict) else None,
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_record_plan_audit_verdict: {e}")
+    except Exception as e:
+        logger.exception("kanban_record_plan_audit_verdict failed")
+        return tool_error(f"kanban_record_plan_audit_verdict: {e}")
+
+
+def _clean_optional_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return redact_sensitive_text(text, force=True)
+
+
+def _handle_apply_plan_audit_actuation(args: dict, **kw) -> str:
+    """Apply the full plan-auditor actuator mutation."""
+    executor_tid = args.get("executor_task_id") or args.get("task_id")
+    if not executor_tid:
+        return tool_error(
+            "executor_task_id is required and must be the gated executor "
+            "task id, not the current plan-auditor task id"
+        )
+    auditor_tid = _default_task_id(args.get("auditor_task_id"))
+    if not auditor_tid:
+        return tool_error(
+            "auditor_task_id is required (or set HERMES_KANBAN_TASK)"
+        )
+    if str(executor_tid) == str(auditor_tid):
+        return tool_error(
+            "executor_task_id must be the gated executor task, not the "
+            "current plan-auditor task id"
+        )
+    root_tid = args.get("root_task_id")
+    if not root_tid:
+        return tool_error("root_task_id is required for revision idempotency keys")
+    if "approved" not in args:
+        return tool_error("approved is required")
+    approved, bool_error = _parse_bool_arg(args, "approved")
+    if bool_error:
+        return tool_error(bool_error)
+
+    reason = _clean_optional_text(args.get("reason"))
+    if not reason:
+        return tool_error("reason is required")
+
+    metadata = args.get("metadata")
+    if not isinstance(metadata, dict):
+        return tool_error(
+            "metadata must be an object with at least a stable round field"
+        )
+    if "round" not in metadata:
+        return tool_error("metadata.round is required for idempotent replay")
+    if not approved and metadata.get("kind") not in {
+        "revise_plan", "needs_user_decision",
+    }:
+        return tool_error(
+            "rejected plan audits require metadata.kind to be "
+            "'revise_plan' or 'needs_user_decision'"
+        )
+
+    meta_json = json.dumps(metadata)
+    redacted_meta_json = redact_sensitive_text(meta_json, force=True)
+    try:
+        metadata = json.loads(redacted_meta_json)
+    except json.JSONDecodeError:
+        pass
+
+    board = args.get("board")
+    reviewer = os.environ.get("HERMES_PROFILE") or "worker"
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            result = kb.apply_plan_audit_actuation(
+                conn,
+                executor_task_id=str(executor_tid),
+                auditor_task_id=str(auditor_tid),
+                root_task_id=str(root_tid),
+                approved=approved,
+                reason=reason,
+                reviewer=reviewer,
+                metadata=metadata,
+                planner_assignee=str(args.get("planner_assignee") or "planner"),
+                auditor_assignee=str(args.get("auditor_assignee") or reviewer),
+                planner_title=_clean_optional_text(args.get("planner_title")),
+                auditor_title=_clean_optional_text(args.get("auditor_title")),
+                planner_body=_clean_optional_text(args.get("planner_body")),
+                auditor_body=_clean_optional_text(args.get("auditor_body")),
+                comment=_clean_optional_text(args.get("comment")),
+            )
+            return _ok(
+                executor_task_id=result.executor_task_id,
+                auditor_task_id=result.auditor_task_id,
+                verdict_kind=result.verdict_kind,
+                round=result.round,
+                action=result.action,
+                rejected_rounds=result.rejected_rounds,
+                limit=result.limit,
+                planner_task_id=result.planner_task_id,
+                auditor_revision_task_id=result.auditor_revision_task_id,
+                comment_id=result.comment_id,
+                executor_status=result.executor_status,
+                auditor_completed=result.auditor_completed,
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_apply_plan_audit_actuation: {e}")
+    except Exception as e:
+        logger.exception("kanban_apply_plan_audit_actuation failed")
+        return tool_error(f"kanban_apply_plan_audit_actuation: {e}")
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
@@ -892,6 +1123,16 @@ def _handle_create(args: dict, **kw) -> str:
     if goal_bool_error:
         return tool_error(goal_bool_error)
     goal_max_turns = args.get("goal_max_turns")
+    plan_audit_required, plan_audit_bool_error = _parse_bool_arg(
+        args, "plan_audit_required"
+    )
+    if plan_audit_bool_error:
+        return tool_error(plan_audit_bool_error)
+    plan_audit_max_rounds = args.get("plan_audit_max_rounds")
+    budget_usd = args.get("budget_usd")
+    no_budget, no_budget_bool_error = _parse_bool_arg(args, "no_budget")
+    if no_budget_bool_error:
+        return tool_error(no_budget_bool_error)
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -937,6 +1178,16 @@ def _handle_create(args: dict, **kw) -> str:
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
                 ),
+                plan_audit_required=plan_audit_required,
+                plan_audit_max_rounds=(
+                    int(plan_audit_max_rounds)
+                    if plan_audit_max_rounds is not None
+                    else None
+                ),
+                budget_usd=(
+                    float(budget_usd) if budget_usd is not None else None
+                ),
+                use_default_budget=not no_budget,
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
@@ -946,6 +1197,14 @@ def _handle_create(args: dict, **kw) -> str:
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                plan_audit_required=(
+                    new_task.plan_audit_required if new_task else None
+                ),
+                budget_usd=new_task.budget_usd if new_task else None,
+                budget_spent_usd=new_task.budget_spent_usd if new_task else None,
+                budget_unknown_cost_runs=(
+                    new_task.budget_unknown_cost_runs if new_task else None
+                ),
                 subscribed=subscribed,
             )
         finally:
@@ -1396,6 +1655,149 @@ KANBAN_COMMENT_SCHEMA = {
     },
 }
 
+KANBAN_RECORD_PLAN_AUDIT_VERDICT_SCHEMA = {
+    "name": "kanban_record_plan_audit_verdict",
+    "description": (
+        "Record an approved/rejected plan-audit verdict on the gated executor "
+        "task. Use only from the plan-auditor actuator after reviewing the "
+        "planner output. task_id must be the executor task that carries "
+        "plan_audit_required, not the current auditor task id. Rejected "
+        "verdicts require metadata.round and metadata.kind so replay is "
+        "idempotent and the workflow can distinguish revise_plan from "
+        "needs_user_decision."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": (
+                    "Required executor/gated task id. Do not pass the "
+                    "plan-auditor task id or rely on HERMES_KANBAN_TASK."
+                ),
+            },
+            "approved": {
+                "type": "boolean",
+                "description": (
+                    "True when the executor's plan is approved and can be "
+                    "claimed; false when it must be revised or routed to a "
+                    "human decision."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Short audit rationale. It is persisted in the task event "
+                    "log, so keep it concise and avoid secrets."
+                ),
+            },
+            "metadata": {
+                "type": "object",
+                "description": (
+                    "Structured audit metadata. Must include round, e.g. "
+                    "{\"round\": 1}. For rejected verdicts include kind: "
+                    "\"revise_plan\" or \"needs_user_decision\"."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "approved", "reason", "metadata"],
+    },
+}
+
+KANBAN_APPLY_PLAN_AUDIT_ACTUATION_SCHEMA = {
+    "name": "kanban_apply_plan_audit_actuation",
+    "description": (
+        "Apply the worker-embedded plan-auditor actuator result in one "
+        "idempotent Kanban mutation. Use from the plan-auditor task after "
+        "reviewing the planner output: it records the verdict on the gated "
+        "executor task id, creates revision planner/auditor cards on "
+        "revise_plan, blocks on needs_user_decision or max rounds, and "
+        "completes the current auditor task. executor_task_id must be the "
+        "task carrying plan_audit_required, not the current auditor task id."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "executor_task_id": {
+                "type": "string",
+                "description": (
+                    "Required gated executor task id carrying "
+                    "plan_audit_required. Do not pass the plan-auditor task id."
+                ),
+            },
+            "auditor_task_id": {
+                "type": "string",
+                "description": (
+                    "Current plan-auditor task id. Defaults to "
+                    "HERMES_KANBAN_TASK when omitted."
+                ),
+            },
+            "root_task_id": {
+                "type": "string",
+                "description": (
+                    "Root workflow task id. Used only for deterministic "
+                    "revision idempotency keys."
+                ),
+            },
+            "approved": {
+                "type": "boolean",
+                "description": "True to open the executor gate, false to reject.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Concise audit rationale; persisted on events/comments.",
+            },
+            "metadata": {
+                "type": "object",
+                "description": (
+                    "Must include round. Rejections must include kind: "
+                    "\"revise_plan\" or \"needs_user_decision\"."
+                ),
+            },
+            "planner_assignee": {
+                "type": "string",
+                "description": "Assignee for the next revision planner card.",
+            },
+            "auditor_assignee": {
+                "type": "string",
+                "description": "Assignee for the next revision auditor card.",
+            },
+            "planner_title": {
+                "type": "string",
+                "description": "Optional title for the revision planner card.",
+            },
+            "auditor_title": {
+                "type": "string",
+                "description": "Optional title for the revision auditor card.",
+            },
+            "planner_body": {
+                "type": "string",
+                "description": "Optional body/context for the revision planner card.",
+            },
+            "auditor_body": {
+                "type": "string",
+                "description": "Optional body/context for the revision auditor card.",
+            },
+            "comment": {
+                "type": "string",
+                "description": (
+                    "Optional executor comment. Required in practice for "
+                    "needs_user_decision so the human sees the question."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": [
+            "executor_task_id",
+            "root_task_id",
+            "approved",
+            "reason",
+            "metadata",
+        ],
+    },
+}
+
 KANBAN_CREATE_SCHEMA = {
     "name": "kanban_create",
     "description": (
@@ -1550,6 +1952,40 @@ KANBAN_CREATE_SCHEMA = {
                     "true. Defaults to the goal-engine default (20)."
                 ),
             },
+            "plan_audit_required": {
+                "type": "boolean",
+                "description": (
+                    "If true, the dispatcher cannot claim this task until a "
+                    "plan_audit_approved verdict has been recorded. Use for "
+                    "execution tasks whose plan must pass audit first. Until "
+                    "an auditor caller records approved/rejected verdicts, "
+                    "the task remains ready and unclaimed."
+                ),
+            },
+            "plan_audit_max_rounds": {
+                "type": "integer",
+                "description": (
+                    "Rejected plan-audit verdicts allowed before the task is "
+                    "blocked for review. Ignored unless plan_audit_required "
+                    "is true. Defaults to 2."
+                ),
+            },
+            "budget_usd": {
+                "type": "number",
+                "description": (
+                    "Optional per-task spend cap in USD. This caps only this "
+                    "Kanban task/run chain: once recorded worker usage reaches "
+                    "the cap, future dispatcher claims for this task are "
+                    "blocked. It is not a board/day/account/provider budget."
+                ),
+            },
+            "no_budget": {
+                "type": "boolean",
+                "description": (
+                    "If true, create this task without a per-task budget even "
+                    "when kanban.task_budget.default_usd is configured."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": ["title", "assignee"],
@@ -1651,6 +2087,23 @@ registry.register(
     handler=_handle_comment,
     check_fn=_check_kanban_mode,
     emoji="💬",
+)
+
+registry.register(
+    name="kanban_record_plan_audit_verdict",
+    toolset="kanban",
+    schema=KANBAN_RECORD_PLAN_AUDIT_VERDICT_SCHEMA,
+    handler=_handle_record_plan_audit_verdict,
+    check_fn=_check_kanban_mode,
+    emoji="🧾",
+)
+
+registry.register(
+    name="kanban_apply_plan_audit_actuation",
+    toolset="kanban",
+    schema=KANBAN_APPLY_PLAN_AUDIT_ACTUATION_SCHEMA,
+    handler=_handle_apply_plan_audit_actuation,
+    check_fn=_check_kanban_mode,
 )
 
 registry.register(

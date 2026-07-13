@@ -231,6 +231,21 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
         "summary": r.summary,
         "metadata": r.metadata,
         "error": r.error,
+        "usage_report_path": r.usage_report_path,
+        "usage_report_ingested_at": r.usage_report_ingested_at,
+        "estimated_cost_usd": r.estimated_cost_usd,
+        "cost_status": r.cost_status,
+        "cost_source": r.cost_source,
+        "input_tokens": r.input_tokens,
+        "output_tokens": r.output_tokens,
+        "cache_read_tokens": r.cache_read_tokens,
+        "cache_write_tokens": r.cache_write_tokens,
+        "reasoning_tokens": r.reasoning_tokens,
+        "total_tokens": r.total_tokens,
+        "api_calls": r.api_calls,
+        "model": r.model,
+        "provider": r.provider,
+        "usage_session_id": r.usage_session_id,
     }
 
 
@@ -608,6 +623,10 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    plan_audit_required: bool = False
+    plan_audit_max_rounds: Optional[int] = None
+    budget_usd: Optional[float] = None
+    no_budget: bool = False
 
 
 @router.post("/tasks")
@@ -632,6 +651,10 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            plan_audit_required=payload.plan_audit_required,
+            plan_audit_max_rounds=payload.plan_audit_max_rounds,
+            budget_usd=payload.budget_usd,
+            use_default_budget=not payload.no_budget,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}

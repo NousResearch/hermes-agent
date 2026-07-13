@@ -73,7 +73,9 @@ _HERMES_CORE_TOOLS = [
     # tools/kanban_tools.py.
     "kanban_show", "kanban_list",
     "kanban_complete", "kanban_block", "kanban_heartbeat",
-    "kanban_comment", "kanban_create", "kanban_link",
+    "kanban_comment", "kanban_record_plan_audit_verdict",
+    "kanban_apply_plan_audit_actuation",
+    "kanban_create", "kanban_link",
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
@@ -270,6 +272,8 @@ TOOLSETS = {
         "tools": [
             "kanban_show", "kanban_list", "kanban_complete", "kanban_block",
             "kanban_heartbeat", "kanban_comment",
+            "kanban_record_plan_audit_verdict",
+            "kanban_apply_plan_audit_actuation",
             "kanban_create", "kanban_link",
             "kanban_unblock",
         ],

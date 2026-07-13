@@ -534,6 +534,33 @@ prompt_caching:
 #                           #     enable_thinking: false
 
 # =============================================================================
+# Kanban
+# =============================================================================
+# kanban:
+#   # Existing cards and ordinary creates are not gated unless explicitly opted in.
+#   plan_audit_required: false
+#   # Consecutive rejected plan audits before the card is blocked for review.
+#   plan_audit_max_rounds: 2
+#   task_budget:
+#     # Optional default per-task cap in USD, applied only to newly-created
+#     # tasks that do not pass --budget-usd/budget_usd and do not opt out with
+#     # --no-budget/no_budget. Existing tasks are unchanged.
+#     default_usd: null
+#     # allow: unknown-cost runs are counted but do not block by themselves.
+#     # block: a budgeted task with an unknown-cost run is blocked before the
+#     # next claim so a human can inspect pricing. This is a per-task/run
+#     # boundary guard, not a board/day/account/provider budget.
+#     unknown_cost_policy: "allow"
+#
+# auxiliary:
+#   # Kanban plan auditor. Callers record approved/rejected verdicts on gated
+#   # cards; the dispatcher only enforces the recorded verdict.
+#   plan_auditor:
+#     provider: "auto"
+#     model: ""
+#     timeout: 120
+
+# =============================================================================
 # Persistent Memory
 # =============================================================================
 # Bounded curated memory injected into the system prompt every session.

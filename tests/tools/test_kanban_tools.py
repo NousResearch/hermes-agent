@@ -56,7 +56,9 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
-        "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_comment", "kanban_record_plan_audit_verdict",
+        "kanban_apply_plan_audit_actuation",
+        "kanban_create", "kanban_link",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -84,6 +86,8 @@ def test_kanban_worker_env_overrides_profile_toolset_filter(monkeypatch, tmp_pat
     assert "kanban_show" in names
     assert "kanban_complete" in names
     assert "kanban_block" in names
+    assert "kanban_record_plan_audit_verdict" in names
+    assert "kanban_apply_plan_audit_actuation" in names
     assert "kanban_list" not in names
 
 
@@ -136,7 +140,9 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     expected = {
         "kanban_list",
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
-        "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_comment", "kanban_record_plan_audit_verdict",
+        "kanban_apply_plan_audit_actuation",
+        "kanban_create", "kanban_link",
         "kanban_unblock",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
@@ -981,6 +987,270 @@ def test_comment_schema_omits_author_override():
     from tools.kanban_tools import KANBAN_COMMENT_SCHEMA
     props = KANBAN_COMMENT_SCHEMA["parameters"]["properties"]
     assert "author" not in props
+
+
+def test_record_plan_audit_verdict_opens_executor_gate(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_PROFILE", "plan-auditor")
+    conn = kb.connect()
+    try:
+        executor = kb.create_task(
+            conn,
+            title="executor behind plan gate",
+            assignee="executor",
+            plan_audit_required=True,
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_record_plan_audit_verdict({
+        "task_id": executor,
+        "approved": True,
+        "reason": "plan is concrete",
+        "metadata": {"round": 1},
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["task_id"] == executor
+    assert d["verdict_kind"] == "plan_audit_approved"
+
+    conn = kb.connect()
+    try:
+        claimed = kb.claim_task(conn, executor, claimer="executor")
+        events = kb.list_events(conn, executor)
+    finally:
+        conn.close()
+    assert claimed is not None
+    assert [event.kind for event in events].count("plan_audit_approved") == 1
+
+
+def test_record_plan_audit_verdict_rejects_current_auditor_task_id(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_record_plan_audit_verdict({
+        "task_id": worker_env,
+        "approved": True,
+        "reason": "wrong id",
+        "metadata": {"round": 1},
+    })
+    err = json.loads(out).get("error", "")
+    assert "gated executor task" in err
+    assert "current plan-auditor task" in err
+
+
+def test_record_plan_audit_verdict_requires_round_and_reject_kind(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        executor = kb.create_task(
+            conn,
+            title="executor behind plan gate",
+            assignee="executor",
+            plan_audit_required=True,
+        )
+    finally:
+        conn.close()
+
+    no_round = json.loads(kt._handle_record_plan_audit_verdict({
+        "task_id": executor,
+        "approved": True,
+        "reason": "missing round",
+        "metadata": {},
+    }))
+    assert "metadata.round is required" in no_round.get("error", "")
+
+    no_kind = json.loads(kt._handle_record_plan_audit_verdict({
+        "task_id": executor,
+        "approved": False,
+        "reason": "missing reject kind",
+        "metadata": {"round": 1},
+    }))
+    assert "metadata.kind" in no_kind.get("error", "")
+
+
+def test_record_plan_audit_verdict_reject_replay_is_idempotent(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        executor = kb.create_task(
+            conn,
+            title="executor behind plan gate",
+            assignee="executor",
+            plan_audit_required=True,
+            plan_audit_max_rounds=2,
+        )
+    finally:
+        conn.close()
+    payload = {
+        "task_id": executor,
+        "approved": False,
+        "reason": "needs a concrete file list",
+        "metadata": {"round": 1, "kind": "revise_plan"},
+    }
+
+    first = json.loads(kt._handle_record_plan_audit_verdict(payload))
+    second = json.loads(kt._handle_record_plan_audit_verdict(payload))
+    assert first["ok"] is True
+    assert second["ok"] is True
+
+    conn = kb.connect()
+    try:
+        claimed = kb.claim_task(conn, executor, claimer="executor")
+        task = kb.get_task(conn, executor)
+        rejected = [
+            event for event in kb.list_events(conn, executor)
+            if event.kind == "plan_audit_rejected"
+        ]
+    finally:
+        conn.close()
+
+    assert claimed is None
+    assert task.status == "ready"
+    assert len(rejected) == 1
+
+
+def test_apply_plan_audit_actuation_reject_creates_revision_and_completes_auditor(
+    worker_env,
+):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="root goal", assignee="lead")
+        executor = kb.create_task(
+            conn,
+            title="executor behind plan gate",
+            assignee="executor",
+            parents=(worker_env,),
+            plan_audit_required=True,
+            plan_audit_max_rounds=2,
+        )
+    finally:
+        conn.close()
+
+    payload = {
+        "executor_task_id": executor,
+        "root_task_id": root,
+        "approved": False,
+        "reason": "needs a concrete file list",
+        "metadata": {"round": 1, "kind": "revise_plan"},
+        "planner_assignee": "planner",
+        "auditor_assignee": "auditor",
+    }
+    first = json.loads(kt._handle_apply_plan_audit_actuation(payload))
+    second = json.loads(kt._handle_apply_plan_audit_actuation(payload))
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert first["action"] == "revision_created"
+    assert first["planner_task_id"] == second["planner_task_id"]
+    assert first["auditor_revision_task_id"] == second["auditor_revision_task_id"]
+    assert first["auditor_completed"] is True
+
+    conn = kb.connect()
+    try:
+        auditor_task = kb.get_task(conn, worker_env)
+        executor_task = kb.get_task(conn, executor)
+        rejected = [
+            event for event in kb.list_events(conn, executor)
+            if event.kind == "plan_audit_rejected"
+        ]
+    finally:
+        conn.close()
+
+    assert auditor_task.status == "done"
+    assert executor_task.status == "todo"
+    assert len(rejected) == 1
+
+
+def test_apply_plan_audit_actuation_approved_opens_gate_and_completes_auditor(
+    worker_env,
+):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="root goal", assignee="lead")
+        executor = kb.create_task(
+            conn,
+            title="executor behind plan gate",
+            assignee="executor",
+            plan_audit_required=True,
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_apply_plan_audit_actuation({
+        "executor_task_id": executor,
+        "root_task_id": root,
+        "approved": True,
+        "reason": "plan is concrete",
+        "metadata": {"round": 1},
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["action"] == "approved"
+    assert d["verdict_kind"] == "plan_audit_approved"
+    assert d["auditor_completed"] is True
+
+    conn = kb.connect()
+    try:
+        claimed = kb.claim_task(conn, executor, claimer="executor")
+        auditor_task = kb.get_task(conn, worker_env)
+    finally:
+        conn.close()
+
+    assert claimed is not None
+    assert auditor_task.status == "done"
+
+
+def test_apply_plan_audit_actuation_needs_user_blocks_executor(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="root goal", assignee="lead")
+        executor = kb.create_task(
+            conn,
+            title="executor behind plan gate",
+            assignee="executor",
+            plan_audit_required=True,
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_apply_plan_audit_actuation({
+        "executor_task_id": executor,
+        "root_task_id": root,
+        "approved": False,
+        "reason": "needs product decision",
+        "metadata": {"round": 1, "kind": "needs_user_decision"},
+        "comment": "PLAN AUDIT NEEDS INPUT: choose API A or API B.",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["action"] == "blocked"
+    assert d["executor_status"] == "blocked"
+    assert d["auditor_completed"] is True
+
+    conn = kb.connect()
+    try:
+        executor_task = kb.get_task(conn, executor)
+        comments = kb.list_comments(conn, executor)
+    finally:
+        conn.close()
+
+    assert executor_task.status == "blocked"
+    assert executor_task.block_kind == "needs_input"
+    assert comments[-1].body.startswith("PLAN AUDIT NEEDS INPUT:")
 
 
 def test_create_happy_path(worker_env):
@@ -2030,7 +2300,7 @@ def test_board_param_rejects_invalid_slug(multi_board_env):
 
 
 def test_board_param_in_all_schemas():
-    """All nine kanban_* tool schemas must expose an optional ``board``
+    """All ten kanban_* tool schemas must expose an optional ``board``
     parameter. This pins the contract surfaced to the LLM — adding a
     new kanban tool without ``board`` will fail CI immediately."""
     from tools import kanban_tools as kt
@@ -2042,6 +2312,7 @@ def test_board_param_in_all_schemas():
         kt.KANBAN_BLOCK_SCHEMA,
         kt.KANBAN_HEARTBEAT_SCHEMA,
         kt.KANBAN_COMMENT_SCHEMA,
+        kt.KANBAN_RECORD_PLAN_AUDIT_VERDICT_SCHEMA,
         kt.KANBAN_CREATE_SCHEMA,
         kt.KANBAN_UNBLOCK_SCHEMA,
         kt.KANBAN_LINK_SCHEMA,

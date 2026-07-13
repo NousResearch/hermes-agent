@@ -15786,6 +15786,42 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     )
 
 
+def _kanban_usage_result_from_agent(cli: "HermesCLI", result: dict) -> dict:
+    """Return cumulative worker usage after any kanban goal-loop turns."""
+    agent = getattr(cli, "agent", None)
+    if agent is None:
+        return result if isinstance(result, dict) else {}
+    return {
+        "estimated_cost_usd": getattr(agent, "session_estimated_cost_usd", None),
+        "cost_status": getattr(agent, "session_cost_status", None),
+        "cost_source": getattr(agent, "session_cost_source", None),
+        "input_tokens": getattr(agent, "session_input_tokens", None),
+        "output_tokens": getattr(agent, "session_output_tokens", None),
+        "cache_read_tokens": getattr(agent, "session_cache_read_tokens", None),
+        "cache_write_tokens": getattr(agent, "session_cache_write_tokens", None),
+        "reasoning_tokens": getattr(agent, "session_reasoning_tokens", None),
+        "total_tokens": getattr(agent, "session_total_tokens", None),
+        "api_calls": getattr(agent, "session_api_calls", None),
+        "model": getattr(agent, "model", None),
+        "provider": getattr(agent, "provider", None),
+        "session_id": getattr(agent, "session_id", None) or getattr(cli, "session_id", None),
+        "completed": result.get("completed") if isinstance(result, dict) else None,
+        "failed": result.get("failed") if isinstance(result, dict) else None,
+    }
+
+
+def _write_kanban_usage_file_q(cli: "HermesCLI", result: dict) -> None:
+    path = os.environ.get("HERMES_KANBAN_USAGE_FILE")
+    if not path:
+        return
+    try:
+        from hermes_cli.oneshot import _write_usage_file
+
+        _write_usage_file(path, _kanban_usage_result_from_agent(cli, result))
+    except Exception:
+        logger.debug("kanban usage report write failed", exc_info=True)
+
+
 def main(
     query: str = None,
     q: str = None,
@@ -16235,6 +16271,8 @@ def main(
                                 _run_kanban_goal_loop_q(cli, response)
                             except Exception as _goal_exc:
                                 logger.debug("kanban goal loop failed: %s", _goal_exc)
+
+                        _write_kanban_usage_file_q(cli, result)
 
                         # Session ID goes to stderr so piped stdout is clean.
                         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)

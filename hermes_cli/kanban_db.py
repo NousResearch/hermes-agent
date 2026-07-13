@@ -73,6 +73,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import random
@@ -132,6 +133,9 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
+DEFAULT_PLAN_AUDIT_MAX_ROUNDS = 2
+DEFAULT_TASK_BUDGET_UNKNOWN_COST_POLICY = "allow"
+VALID_TASK_BUDGET_UNKNOWN_COST_POLICIES = {"allow", "block"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
@@ -915,6 +919,15 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Opt-in dispatcher gate: when enabled, claim_task refuses ready->running
+    # until a plan_audit_approved event is recorded for this task.
+    plan_audit_required: bool = False
+    plan_audit_max_rounds: Optional[int] = None
+    # Optional per-task spend cap. NULL means unbudgeted/inert. Spend is
+    # accumulated from idempotently ingested worker usage reports.
+    budget_usd: Optional[float] = None
+    budget_spent_usd: float = 0.0
+    budget_unknown_cost_runs: int = 0
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -999,6 +1012,32 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            plan_audit_required=(
+                bool(row["plan_audit_required"])
+                if "plan_audit_required" in keys and row["plan_audit_required"]
+                else False
+            ),
+            plan_audit_max_rounds=(
+                int(row["plan_audit_max_rounds"])
+                if "plan_audit_max_rounds" in keys and row["plan_audit_max_rounds"] is not None
+                else None
+            ),
+            budget_usd=(
+                float(row["budget_usd"])
+                if "budget_usd" in keys and row["budget_usd"] is not None
+                else None
+            ),
+            budget_spent_usd=(
+                float(row["budget_spent_usd"])
+                if "budget_spent_usd" in keys and row["budget_spent_usd"] is not None
+                else 0.0
+            ),
+            budget_unknown_cost_runs=(
+                int(row["budget_unknown_cost_runs"])
+                if "budget_unknown_cost_runs" in keys
+                and row["budget_unknown_cost_runs"] is not None
+                else 0
+            ),
         )
 
 
@@ -1029,9 +1068,25 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    usage_report_path: Optional[str] = None
+    usage_report_ingested_at: Optional[int] = None
+    estimated_cost_usd: Optional[float] = None
+    cost_status: Optional[str] = None
+    cost_source: Optional[str] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    cache_read_tokens: Optional[int] = None
+    cache_write_tokens: Optional[int] = None
+    reasoning_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    api_calls: Optional[int] = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    usage_session_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
+        keys = set(row.keys())
         try:
             meta = json.loads(row["metadata"]) if row["metadata"] else None
         except Exception:
@@ -1053,6 +1108,62 @@ class Run:
             summary=row["summary"],
             metadata=meta,
             error=row["error"],
+            usage_report_path=(
+                row["usage_report_path"] if "usage_report_path" in keys else None
+            ),
+            usage_report_ingested_at=(
+                int(row["usage_report_ingested_at"])
+                if "usage_report_ingested_at" in keys
+                and row["usage_report_ingested_at"] is not None
+                else None
+            ),
+            estimated_cost_usd=(
+                float(row["estimated_cost_usd"])
+                if "estimated_cost_usd" in keys and row["estimated_cost_usd"] is not None
+                else None
+            ),
+            cost_status=row["cost_status"] if "cost_status" in keys else None,
+            cost_source=row["cost_source"] if "cost_source" in keys else None,
+            input_tokens=(
+                int(row["input_tokens"])
+                if "input_tokens" in keys and row["input_tokens"] is not None
+                else None
+            ),
+            output_tokens=(
+                int(row["output_tokens"])
+                if "output_tokens" in keys and row["output_tokens"] is not None
+                else None
+            ),
+            cache_read_tokens=(
+                int(row["cache_read_tokens"])
+                if "cache_read_tokens" in keys and row["cache_read_tokens"] is not None
+                else None
+            ),
+            cache_write_tokens=(
+                int(row["cache_write_tokens"])
+                if "cache_write_tokens" in keys and row["cache_write_tokens"] is not None
+                else None
+            ),
+            reasoning_tokens=(
+                int(row["reasoning_tokens"])
+                if "reasoning_tokens" in keys and row["reasoning_tokens"] is not None
+                else None
+            ),
+            total_tokens=(
+                int(row["total_tokens"])
+                if "total_tokens" in keys and row["total_tokens"] is not None
+                else None
+            ),
+            api_calls=(
+                int(row["api_calls"])
+                if "api_calls" in keys and row["api_calls"] is not None
+                else None
+            ),
+            model=row["model"] if "model" in keys else None,
+            provider=row["provider"] if "provider" in keys else None,
+            usage_session_id=(
+                row["usage_session_id"] if "usage_session_id" in keys else None
+            ),
         )
 
 
@@ -1087,6 +1198,22 @@ class Event:
     payload: Optional[dict]
     created_at: int
     run_id: Optional[int] = None
+
+
+@dataclass
+class PlanAuditActuationResult:
+    executor_task_id: str
+    auditor_task_id: str
+    verdict_kind: str
+    round: int
+    action: str
+    rejected_rounds: int
+    limit: int
+    planner_task_id: Optional[str] = None
+    auditor_revision_task_id: Optional[str] = None
+    comment_id: Optional[int] = None
+    executor_status: Optional[str] = None
+    auditor_completed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1176,7 +1303,19 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Optional plan-audit gate. When enabled, claim_task refuses ready ->
+    -- running until a plan_audit_approved verdict is recorded for this task.
+    -- The max rounds field caps consecutive plan_audit_rejected verdicts
+    -- before the gate blocks the task for human review.
+    plan_audit_required  INTEGER NOT NULL DEFAULT 0,
+    plan_audit_max_rounds INTEGER,
+    -- Optional per-task/run budget cap. NULL = no cap. Spend is accumulated
+    -- from idempotently ingested worker usage reports; unknown-cost runs are
+    -- counted separately so policy can decide whether they block future claims.
+    budget_usd           REAL,
+    budget_spent_usd     REAL NOT NULL DEFAULT 0,
+    budget_unknown_cost_runs INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1228,7 +1367,25 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    -- Per-worker-run usage report written by the spawned CLI process and
+    -- ingested by the dispatcher. Ingestion is idempotent via
+    -- usage_report_ingested_at.
+    usage_report_path   TEXT,
+    usage_report_ingested_at INTEGER,
+    estimated_cost_usd  REAL,
+    cost_status         TEXT,
+    cost_source         TEXT,
+    input_tokens        INTEGER,
+    output_tokens       INTEGER,
+    cache_read_tokens   INTEGER,
+    cache_write_tokens  INTEGER,
+    reasoning_tokens    INTEGER,
+    total_tokens        INTEGER,
+    api_calls           INTEGER,
+    model               TEXT,
+    provider            TEXT,
+    usage_session_id    TEXT
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -1987,6 +2144,43 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "plan_audit_required" not in cols:
+        # Safe default: existing cards keep dispatching normally unless they
+        # explicitly opt into the audit gate.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "plan_audit_required",
+            "plan_audit_required INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "plan_audit_max_rounds" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "plan_audit_max_rounds",
+            "plan_audit_max_rounds INTEGER",
+        )
+
+    if "budget_usd" not in cols:
+        _add_column_if_missing(conn, "tasks", "budget_usd", "budget_usd REAL")
+
+    if "budget_spent_usd" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "budget_spent_usd",
+            "budget_spent_usd REAL NOT NULL DEFAULT 0",
+        )
+
+    if "budget_unknown_cost_runs" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "budget_unknown_cost_runs",
+            "budget_unknown_cost_runs INTEGER NOT NULL DEFAULT 0",
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2039,6 +2233,30 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
     ).fetchone() is not None
     if runs_exist:
+        run_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        run_columns = {
+            "usage_report_path": "usage_report_path TEXT",
+            "usage_report_ingested_at": "usage_report_ingested_at INTEGER",
+            "estimated_cost_usd": "estimated_cost_usd REAL",
+            "cost_status": "cost_status TEXT",
+            "cost_source": "cost_source TEXT",
+            "input_tokens": "input_tokens INTEGER",
+            "output_tokens": "output_tokens INTEGER",
+            "cache_read_tokens": "cache_read_tokens INTEGER",
+            "cache_write_tokens": "cache_write_tokens INTEGER",
+            "reasoning_tokens": "reasoning_tokens INTEGER",
+            "total_tokens": "total_tokens INTEGER",
+            "api_calls": "api_calls INTEGER",
+            "model": "model TEXT",
+            "provider": "provider TEXT",
+            "usage_session_id": "usage_session_id TEXT",
+        }
+        for name, ddl in run_columns.items():
+            if name not in run_cols:
+                _add_column_if_missing(conn, "task_runs", name, ddl)
+
         with write_txn(conn):
             inflight = conn.execute(
                 "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
@@ -2140,7 +2358,13 @@ _REBUILD_SPECS = {
         " worker_pid INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
-        " error TEXT)",
+        " error TEXT, usage_report_path TEXT,"
+        " usage_report_ingested_at INTEGER, estimated_cost_usd REAL,"
+        " cost_status TEXT, cost_source TEXT, input_tokens INTEGER,"
+        " output_tokens INTEGER, cache_read_tokens INTEGER,"
+        " cache_write_tokens INTEGER, reasoning_tokens INTEGER,"
+        " total_tokens INTEGER, api_calls INTEGER, model TEXT,"
+        " provider TEXT, usage_session_id TEXT)",
         (
             "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",
             "CREATE INDEX idx_runs_status ON task_runs(status)",
@@ -2404,6 +2628,10 @@ def create_task(
     max_retries: Optional[int] = None,
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
+    plan_audit_required: bool = False,
+    plan_audit_max_rounds: Optional[int] = None,
+    budget_usd: Optional[float] = None,
+    use_default_budget: bool = True,
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
@@ -2448,6 +2676,17 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    if plan_audit_max_rounds is not None and int(plan_audit_max_rounds) < 1:
+        raise ValueError("plan_audit_max_rounds must be >= 1")
+    if budget_usd is None and use_default_budget:
+        budget_usd = _resolve_task_budget_default_usd()
+    if budget_usd is not None:
+        try:
+            budget_usd = float(budget_usd)
+        except (TypeError, ValueError):
+            raise ValueError("budget_usd must be a number") from None
+        if not math.isfinite(budget_usd) or budget_usd <= 0:
+            raise ValueError("budget_usd must be > 0")
 
     # Resolve an optional first-class Project link. A project-linked task is
     # anchored to the project's primary repo as a git worktree, so its branch
@@ -2636,8 +2875,10 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns,
+                        plan_audit_required, plan_audit_max_rounds,
+                        budget_usd, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2659,6 +2900,13 @@ def create_task(
                         int(max_retries) if max_retries is not None else None,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
+                        1 if plan_audit_required else 0,
+                        (
+                            int(plan_audit_max_rounds)
+                            if plan_audit_max_rounds is not None
+                            else None
+                        ),
+                        budget_usd,
                         session_id,
                     ),
                 )
@@ -2679,6 +2927,13 @@ def create_task(
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
+                        "plan_audit_required": bool(plan_audit_required) or None,
+                        "plan_audit_max_rounds": (
+                            int(plan_audit_max_rounds)
+                            if plan_audit_max_rounds is not None
+                            else None
+                        ),
+                        "budget_usd": budget_usd,
                     },
                 )
             return task_id
@@ -3122,6 +3377,752 @@ def _append_event(
     )
 
 
+def _latest_plan_audit_event(conn: sqlite3.Connection, task_id: str) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        "SELECT id, kind, payload FROM task_events "
+        "WHERE task_id = ? "
+        "AND kind IN ('plan_audit_requested', 'plan_audit_approved', "
+        "'plan_audit_rejected', 'plan_audit_exhausted') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+
+
+def _plan_audit_rejections_since_approval(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> int:
+    approved = conn.execute(
+        "SELECT id FROM task_events "
+        "WHERE task_id = ? AND kind = 'plan_audit_approved' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    after_id = int(approved["id"]) if approved else 0
+    rows = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'plan_audit_rejected' AND id > ? "
+        "ORDER BY id ASC",
+        (task_id, after_id),
+    ).fetchall()
+    unique_rounds: set[str] = set()
+    unkeyed = 0
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+        except Exception:
+            payload = {}
+        round_key = _payload_plan_audit_round_key(payload)
+        if round_key:
+            unique_rounds.add(round_key)
+        else:
+            unkeyed += 1
+    return len(unique_rounds) + unkeyed
+
+
+def _append_plan_audit_requested_if_needed(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    rejected_rounds: int,
+    limit: int,
+) -> None:
+    latest = _latest_plan_audit_event(conn, task_id)
+    if latest and latest["kind"] == "plan_audit_requested":
+        try:
+            payload = json.loads(latest["payload"]) if latest["payload"] else {}
+        except Exception:
+            payload = {}
+        if int(payload.get("rejected_rounds", -1)) == int(rejected_rounds):
+            return
+    _append_event(
+        conn,
+        task_id,
+        "plan_audit_requested",
+        {"rejected_rounds": rejected_rounds, "limit": limit},
+    )
+
+
+def _effective_plan_audit_max_rounds(value: Optional[int]) -> int:
+    if value is None:
+        return DEFAULT_PLAN_AUDIT_MAX_ROUNDS
+    return max(1, int(value))
+
+
+def _plan_audit_round_key(metadata: Optional[dict]) -> Optional[str]:
+    if not isinstance(metadata, dict) or "round" not in metadata:
+        return None
+    raw = metadata.get("round")
+    if raw is None or isinstance(raw, bool):
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return str(int(text))
+    except ValueError:
+        return text
+
+
+def _payload_plan_audit_round_key(payload: Optional[dict]) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    metadata = payload.get("metadata")
+    return _plan_audit_round_key(metadata if isinstance(metadata, dict) else None)
+
+
+def _plan_audit_round_event_exists(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    kind: str,
+    round_key: str,
+) -> bool:
+    rows = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = ? "
+        "ORDER BY id ASC",
+        (task_id, kind),
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+        except Exception:
+            payload = {}
+        if _payload_plan_audit_round_key(payload) == round_key:
+            return True
+    return False
+
+
+def record_plan_audit_verdict(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    approved: bool,
+    reviewer: Optional[str] = None,
+    reason: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> None:
+    """Record a plan-audit verdict event for a task.
+
+    This intentionally only writes the verdict. The LLM/human auditor that
+    decides approved vs rejected lives outside the claim transaction.
+    """
+    if get_task(conn, task_id) is None:
+        raise ValueError(f"unknown task: {task_id}")
+    payload: dict[str, Any] = {}
+    if reviewer:
+        payload["reviewer"] = reviewer
+    if reason:
+        payload["reason"] = reason
+    if metadata:
+        payload["metadata"] = metadata
+    kind = "plan_audit_approved" if approved else "plan_audit_rejected"
+    round_key = _plan_audit_round_key(metadata)
+    with write_txn(conn):
+        if round_key and _plan_audit_round_event_exists(
+            conn,
+            task_id,
+            kind=kind,
+            round_key=round_key,
+        ):
+            return
+        _append_event(conn, task_id, kind, payload or None)
+
+
+def _plan_audit_int_round(metadata: dict) -> int:
+    round_key = _plan_audit_round_key(metadata)
+    if round_key is None:
+        raise ValueError("metadata.round is required")
+    try:
+        round_num = int(round_key)
+    except ValueError:
+        raise ValueError("metadata.round must be an integer for actuation") from None
+    if round_num < 1:
+        raise ValueError("metadata.round must be >= 1")
+    return round_num
+
+
+def _block_plan_audit_executor_for_input(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+) -> bool:
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        prev_kind = row["block_kind"] if "block_kind" in row.keys() else None
+        prev_recurrences = (
+            int(row["block_recurrences"])
+            if "block_recurrences" in row.keys()
+            and row["block_recurrences"] is not None
+            else 0
+        )
+        if row["status"] == "blocked" and prev_kind == "needs_input":
+            return True
+        recurrences = (
+            prev_recurrences + 1 if prev_kind == "needs_input" else 1
+        )
+        if recurrences >= BLOCK_RECURRENCE_LIMIT:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'triage',
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL,
+                       block_kind = 'needs_input',
+                       block_recurrences = ?
+                 WHERE id = ?
+                   AND status IN ('todo', 'ready', 'running')
+                """,
+                (recurrences, task_id),
+            )
+            if cur.rowcount != 1:
+                return False
+            _append_event(
+                conn,
+                task_id,
+                "block_loop_detected",
+                {
+                    "reason": reason,
+                    "kind": "needs_input",
+                    "recurrences": recurrences,
+                    "limit": BLOCK_RECURRENCE_LIMIT,
+                    "source": "plan_audit",
+                },
+            )
+            return True
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status = 'blocked',
+                   claim_lock = NULL,
+                   claim_expires = NULL,
+                   worker_pid = NULL,
+                   block_kind = 'needs_input',
+                   block_recurrences = ?
+             WHERE id = ?
+               AND status IN ('todo', 'ready', 'running')
+            """,
+            (recurrences, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "blocked",
+            {
+                "reason": reason,
+                "kind": "needs_input",
+                "recurrences": recurrences,
+                "source": "plan_audit",
+            },
+        )
+        return True
+
+
+def _add_plan_audit_comment_once(
+    conn: sqlite3.Connection,
+    task_id: str,
+    author: str,
+    body: str,
+) -> int:
+    stripped = body.strip()
+    rows = conn.execute(
+        "SELECT id, body FROM task_comments "
+        "WHERE task_id = ? AND author = ? ORDER BY id DESC",
+        (task_id, author),
+    ).fetchall()
+    for row in rows:
+        if row["body"] == stripped:
+            return int(row["id"])
+    return add_comment(conn, task_id, author, stripped)
+
+
+def apply_plan_audit_actuation(
+    conn: sqlite3.Connection,
+    *,
+    executor_task_id: str,
+    auditor_task_id: str,
+    root_task_id: str,
+    approved: bool,
+    reason: str,
+    reviewer: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    planner_assignee: str = "planner",
+    auditor_assignee: str = "plan-auditor",
+    planner_title: Optional[str] = None,
+    auditor_title: Optional[str] = None,
+    planner_body: Optional[str] = None,
+    auditor_body: Optional[str] = None,
+    comment: Optional[str] = None,
+) -> PlanAuditActuationResult:
+    """Apply the worker-embedded plan-auditor actuation.
+
+    The caller has already made the audit decision outside any claim lock.
+    This helper records the verdict on the gated executor task, creates the
+    next revision cards idempotently when needed, blocks for human input or
+    max-round exhaustion, and completes the current auditor task.
+    """
+    if not reason or not reason.strip():
+        raise ValueError("reason is required")
+    metadata = dict(metadata or {})
+    round_num = _plan_audit_int_round(metadata)
+    if not approved:
+        reject_kind = metadata.get("kind")
+        if reject_kind not in {"revise_plan", "needs_user_decision"}:
+            raise ValueError(
+                "rejected plan audits require metadata.kind to be "
+                "'revise_plan' or 'needs_user_decision'"
+            )
+    if executor_task_id == auditor_task_id:
+        raise ValueError(
+            "executor_task_id must be the gated executor task id, not the "
+            "current auditor task id"
+        )
+
+    executor = get_task(conn, executor_task_id)
+    if executor is None:
+        raise ValueError(f"unknown executor task: {executor_task_id}")
+    if not executor.plan_audit_required:
+        raise ValueError(
+            "executor_task_id must carry plan_audit_required for plan-audit "
+            "actuation"
+        )
+    auditor = get_task(conn, auditor_task_id)
+    if auditor is None:
+        raise ValueError(f"unknown auditor task: {auditor_task_id}")
+    if get_task(conn, root_task_id) is None:
+        raise ValueError(f"unknown root task: {root_task_id}")
+
+    record_plan_audit_verdict(
+        conn,
+        executor_task_id,
+        approved=approved,
+        reviewer=reviewer,
+        reason=reason,
+        metadata=metadata,
+    )
+
+    limit = _effective_plan_audit_max_rounds(executor.plan_audit_max_rounds)
+    rejected_rounds = _plan_audit_rejections_since_approval(conn, executor_task_id)
+    action = "approved"
+    planner_task_id: Optional[str] = None
+    auditor_revision_task_id: Optional[str] = None
+    comment_id: Optional[int] = None
+
+    if approved:
+        action = "approved"
+    else:
+        reject_kind = str(metadata.get("kind"))
+        if reject_kind == "needs_user_decision" or rejected_rounds >= limit:
+            action = "blocked"
+            block_reason = (
+                "Plan audit needs human input"
+                if reject_kind == "needs_user_decision"
+                else "Plan audit max rounds exhausted"
+            )
+            body = comment or f"PLAN AUDIT NEEDS INPUT: {reason.strip()}"
+            comment_id = _add_plan_audit_comment_once(
+                conn,
+                executor_task_id,
+                reviewer or "plan-auditor",
+                body,
+            )
+            if not _block_plan_audit_executor_for_input(
+                conn,
+                executor_task_id,
+                reason=block_reason,
+            ):
+                raise ValueError(
+                    f"could not block executor task {executor_task_id}"
+                )
+        else:
+            action = "revision_created"
+            next_round = round_num + 1
+            planner_key = (
+                f"koc:{root_task_id}:{executor_task_id}:"
+                f"plan-round:{next_round}:planner"
+            )
+            auditor_key = (
+                f"koc:{root_task_id}:{executor_task_id}:"
+                f"plan-round:{next_round}:auditor"
+            )
+            planner_task_id = create_task(
+                conn,
+                title=planner_title or f"Revise plan round {next_round}",
+                body=planner_body,
+                assignee=planner_assignee,
+                idempotency_key=planner_key,
+                created_by=reviewer,
+            )
+            auditor_revision_task_id = create_task(
+                conn,
+                title=auditor_title or f"Audit revised plan round {next_round}",
+                body=auditor_body,
+                assignee=auditor_assignee,
+                parents=(planner_task_id,),
+                idempotency_key=auditor_key,
+                created_by=reviewer,
+            )
+            link_tasks(conn, auditor_revision_task_id, executor_task_id)
+            if comment:
+                comment_id = _add_plan_audit_comment_once(
+                    conn,
+                    executor_task_id,
+                    reviewer or "plan-auditor",
+                    comment,
+                )
+
+    completed = complete_task(
+        conn,
+        auditor_task_id,
+        summary=(
+            f"Plan audit round {round_num} "
+            f"{'approved' if approved else 'rejected'} for {executor_task_id}; "
+            f"action={action}."
+        ),
+        metadata={
+            "executor_task_id": executor_task_id,
+            "round": round_num,
+            "approved": approved,
+            "action": action,
+            "rejected_rounds": rejected_rounds,
+            "limit": limit,
+            "planner_task_id": planner_task_id,
+            "auditor_revision_task_id": auditor_revision_task_id,
+            "reject_kind": metadata.get("kind"),
+        },
+    )
+    if not completed:
+        auditor_after_attempt = get_task(conn, auditor_task_id)
+        if not (auditor_after_attempt and auditor_after_attempt.status == "done"):
+            raise ValueError(f"could not complete auditor task {auditor_task_id}")
+        completed = True
+
+    executor_after = get_task(conn, executor_task_id)
+    return PlanAuditActuationResult(
+        executor_task_id=executor_task_id,
+        auditor_task_id=auditor_task_id,
+        verdict_kind="plan_audit_approved" if approved else "plan_audit_rejected",
+        round=round_num,
+        action=action,
+        rejected_rounds=rejected_rounds,
+        limit=limit,
+        planner_task_id=planner_task_id,
+        auditor_revision_task_id=auditor_revision_task_id,
+        comment_id=comment_id,
+        executor_status=executor_after.status if executor_after else None,
+        auditor_completed=completed,
+    )
+
+
+def _coerce_optional_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return parsed
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_task_budget_unknown_cost_policy(policy: Optional[str] = None) -> str:
+    raw = (policy or "").strip().lower()
+    if not raw:
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            task_budget = ((cfg.get("kanban") or {}).get("task_budget") or {})
+            raw = str(task_budget.get("unknown_cost_policy") or "").strip().lower()
+        except Exception:
+            raw = ""
+    if raw not in VALID_TASK_BUDGET_UNKNOWN_COST_POLICIES:
+        return DEFAULT_TASK_BUDGET_UNKNOWN_COST_POLICY
+    return raw
+
+
+def _resolve_task_budget_default_usd() -> Optional[float]:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        task_budget = ((cfg.get("kanban") or {}).get("task_budget") or {})
+        value = task_budget.get("default_usd")
+    except Exception:
+        return None
+    parsed = _coerce_optional_float(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
+def _budget_remaining_usd(task: Task) -> Optional[float]:
+    if task.budget_usd is None:
+        return None
+    return max(0.0, float(task.budget_usd) - float(task.budget_spent_usd or 0.0))
+
+
+def _usage_report_path_for_run(
+    task_id: str,
+    run_id: int,
+    *,
+    board: Optional[str] = None,
+) -> Path:
+    return worker_logs_dir(board=board) / f"{task_id}.run-{int(run_id)}.usage.json"
+
+
+def _usage_report_value(report: dict, key: str) -> Any:
+    return report.get(key)
+
+
+def _read_usage_report(path: str) -> Optional[dict[str, Any]]:
+    if not path:
+        return None
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _usage_report_columns(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "estimated_cost_usd": _coerce_optional_float(
+            _usage_report_value(report, "estimated_cost_usd")
+        ),
+        "cost_status": _usage_report_value(report, "cost_status"),
+        "cost_source": _usage_report_value(report, "cost_source"),
+        "input_tokens": _coerce_optional_int(_usage_report_value(report, "input_tokens")),
+        "output_tokens": _coerce_optional_int(_usage_report_value(report, "output_tokens")),
+        "cache_read_tokens": _coerce_optional_int(
+            _usage_report_value(report, "cache_read_tokens")
+        ),
+        "cache_write_tokens": _coerce_optional_int(
+            _usage_report_value(report, "cache_write_tokens")
+        ),
+        "reasoning_tokens": _coerce_optional_int(
+            _usage_report_value(report, "reasoning_tokens")
+        ),
+        "total_tokens": _coerce_optional_int(_usage_report_value(report, "total_tokens")),
+        "api_calls": _coerce_optional_int(_usage_report_value(report, "api_calls")),
+        "model": _usage_report_value(report, "model"),
+        "provider": _usage_report_value(report, "provider"),
+        "usage_session_id": _usage_report_value(report, "session_id"),
+    }
+
+
+def _record_run_usage_report(
+    conn: sqlite3.Connection,
+    run_id: int,
+    report: dict[str, Any],
+) -> bool:
+    """Ingest one worker usage report into task_runs/tasks exactly once."""
+    columns = _usage_report_columns(report)
+    cost = columns["estimated_cost_usd"]
+    if cost is not None and cost < 0:
+        cost = 0.0
+        columns["estimated_cost_usd"] = cost
+    cost_status = (str(columns["cost_status"] or "").strip().lower() or None)
+    unknown = cost is None or cost_status == "unknown"
+    now = int(time.time())
+    with write_txn(conn):
+        run = conn.execute(
+            "SELECT id, task_id, usage_report_ingested_at "
+            "FROM task_runs WHERE id = ?",
+            (int(run_id),),
+        ).fetchone()
+        if not run or run["usage_report_ingested_at"] is not None:
+            return False
+        conn.execute(
+            """
+            UPDATE task_runs
+               SET usage_report_ingested_at = ?,
+                   estimated_cost_usd = ?,
+                   cost_status = ?,
+                   cost_source = ?,
+                   input_tokens = ?,
+                   output_tokens = ?,
+                   cache_read_tokens = ?,
+                   cache_write_tokens = ?,
+                   reasoning_tokens = ?,
+                   total_tokens = ?,
+                   api_calls = ?,
+                   model = ?,
+                   provider = ?,
+                   usage_session_id = ?
+             WHERE id = ? AND usage_report_ingested_at IS NULL
+            """,
+            (
+                now,
+                cost,
+                columns["cost_status"],
+                columns["cost_source"],
+                columns["input_tokens"],
+                columns["output_tokens"],
+                columns["cache_read_tokens"],
+                columns["cache_write_tokens"],
+                columns["reasoning_tokens"],
+                columns["total_tokens"],
+                columns["api_calls"],
+                columns["model"],
+                columns["provider"],
+                columns["usage_session_id"],
+                int(run_id),
+            ),
+        )
+        if cost is not None and not unknown:
+            conn.execute(
+                "UPDATE tasks SET budget_spent_usd = COALESCE(budget_spent_usd, 0) + ? "
+                "WHERE id = ?",
+                (float(cost), run["task_id"]),
+            )
+        elif unknown:
+            conn.execute(
+                "UPDATE tasks SET budget_unknown_cost_runs = "
+                "COALESCE(budget_unknown_cost_runs, 0) + 1 WHERE id = ?",
+                (run["task_id"],),
+            )
+        _append_event(
+            conn,
+            run["task_id"],
+            "usage_report_ingested",
+            {
+                "run_id": int(run_id),
+                "estimated_cost_usd": cost,
+                "cost_status": columns["cost_status"],
+                "cost_source": columns["cost_source"],
+                "unknown_cost": bool(unknown),
+            },
+            run_id=int(run_id),
+        )
+        return True
+
+
+def ingest_worker_usage_reports(conn: sqlite3.Connection) -> int:
+    """Best-effort pass over un-ingested run usage reports.
+
+    Safe to call repeatedly across dispatcher ticks and process restarts.
+    """
+    rows = conn.execute(
+        "SELECT id, usage_report_path FROM task_runs "
+        "WHERE usage_report_path IS NOT NULL "
+        "AND usage_report_ingested_at IS NULL"
+    ).fetchall()
+    ingested = 0
+    for row in rows:
+        report = _read_usage_report(row["usage_report_path"])
+        if report is None:
+            continue
+        if _record_run_usage_report(conn, int(row["id"]), report):
+            ingested += 1
+    return ingested
+
+
+def _block_task_budget_exhausted(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_status: str = "ready",
+    reason: str,
+    budget_usd: Optional[float],
+    budget_spent_usd: float,
+    budget_unknown_cost_runs: int,
+    unknown_cost_policy: str,
+) -> None:
+    payload = {
+        "reason": reason,
+        "budget_usd": budget_usd,
+        "budget_spent_usd": budget_spent_usd,
+        "budget_unknown_cost_runs": budget_unknown_cost_runs,
+        "unknown_cost_policy": unknown_cost_policy,
+    }
+    conn.execute(
+        "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+        "claim_expires = NULL, worker_pid = NULL, block_kind = 'capability' "
+        "WHERE id = ? AND status = ?",
+        (task_id, source_status),
+    )
+    _append_event(conn, task_id, "budget_exhausted", payload)
+    _append_event(
+        conn,
+        task_id,
+        "blocked",
+        {
+            "reason": (
+                "task budget exhausted before dispatcher claim"
+                if reason == "spent"
+                else "task budget cost is unknown and unknown_cost_policy=block"
+            ),
+            "kind": "capability",
+            **payload,
+        },
+    )
+
+
+def _budget_gate_allows_claim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_status: str = "ready",
+    unknown_cost_policy: str,
+) -> bool:
+    row = conn.execute(
+        "SELECT budget_usd, budget_spent_usd, budget_unknown_cost_runs "
+        "FROM tasks WHERE id = ? AND status = ?",
+        (task_id, source_status),
+    ).fetchone()
+    if not row or row["budget_usd"] is None:
+        return True
+    budget = float(row["budget_usd"])
+    spent = float(row["budget_spent_usd"] or 0.0)
+    unknown_runs = int(row["budget_unknown_cost_runs"] or 0)
+    if spent >= budget:
+        _block_task_budget_exhausted(
+            conn,
+            task_id,
+            source_status=source_status,
+            reason="spent",
+            budget_usd=budget,
+            budget_spent_usd=spent,
+            budget_unknown_cost_runs=unknown_runs,
+            unknown_cost_policy=unknown_cost_policy,
+        )
+        return False
+    if unknown_runs > 0 and unknown_cost_policy == "block":
+        _block_task_budget_exhausted(
+            conn,
+            task_id,
+            source_status=source_status,
+            reason="unknown_cost",
+            budget_usd=budget,
+            budget_spent_usd=spent,
+            budget_unknown_cost_runs=unknown_runs,
+            unknown_cost_policy=unknown_cost_policy,
+        )
+        return False
+    return True
+
+
 def _end_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3385,6 +4386,7 @@ def claim_task(
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    unknown_cost_policy = _resolve_task_budget_unknown_cost_policy()
     with write_txn(conn):
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
@@ -3411,6 +4413,72 @@ def claim_task(
                 {"reason": "parents_not_done"},
             )
             return None
+
+        gate = conn.execute(
+            "SELECT plan_audit_required, plan_audit_max_rounds "
+            "FROM tasks WHERE id = ? AND status = 'ready'",
+            (task_id,),
+        ).fetchone()
+        if gate and gate["plan_audit_required"]:
+            latest_plan_event = _latest_plan_audit_event(conn, task_id)
+            if not (latest_plan_event and latest_plan_event["kind"] == "plan_audit_approved"):
+                rejected_rounds = _plan_audit_rejections_since_approval(conn, task_id)
+                limit = _effective_plan_audit_max_rounds(
+                    gate["plan_audit_max_rounds"]
+                    if "plan_audit_max_rounds" in gate.keys()
+                    else None
+                )
+                if rejected_rounds >= limit:
+                    conn.execute(
+                        "UPDATE tasks "
+                        "SET status = 'blocked', claim_lock = NULL, "
+                        "claim_expires = NULL, worker_pid = NULL, "
+                        "block_kind = 'needs_input' "
+                        "WHERE id = ? AND status = 'ready'",
+                        (task_id,),
+                    )
+                    if not (
+                        latest_plan_event
+                        and latest_plan_event["kind"] == "plan_audit_exhausted"
+                    ):
+                        payload = {
+                            "rejected_rounds": rejected_rounds,
+                            "limit": limit,
+                        }
+                        _append_event(conn, task_id, "plan_audit_exhausted", payload)
+                    else:
+                        payload = {
+                            "rejected_rounds": rejected_rounds,
+                            "limit": limit,
+                        }
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": (
+                                "plan audit exhausted before dispatcher claim"
+                            ),
+                            "kind": "needs_input",
+                            **payload,
+                        },
+                    )
+                    return None
+                _append_plan_audit_requested_if_needed(
+                    conn,
+                    task_id,
+                    rejected_rounds=rejected_rounds,
+                    limit=limit,
+                )
+                return None
+
+        if not _budget_gate_allows_claim(
+            conn,
+            task_id,
+            unknown_cost_policy=unknown_cost_policy,
+        ):
+            return None
+
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant
@@ -3514,7 +4582,15 @@ def claim_review_task(
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    unknown_cost_policy = _resolve_task_budget_unknown_cost_policy()
     with write_txn(conn):
+        if not _budget_gate_allows_claim(
+            conn,
+            task_id,
+            source_status="review",
+            unknown_cost_policy=unknown_cost_policy,
+        ):
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -5968,6 +7044,8 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    usage_reports_ingested: int = 0
+    """Number of worker usage reports idempotently ingested this tick."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -6957,6 +8035,25 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
         _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
 
 
+def _set_run_usage_report_path(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[str]:
+    run_id = _current_run_id(conn, task_id)
+    if run_id is None:
+        return None
+    path = str(_usage_report_path_for_run(task_id, run_id, board=board))
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET usage_report_path = ? "
+            "WHERE id = ? AND usage_report_path IS NULL",
+            (path, int(run_id)),
+        )
+    return path
+
+
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
     """Reset the unified consecutive-failures counter.
 
@@ -7306,6 +8403,7 @@ def _dispatch_once_locked(
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
+    result.usage_reports_ingested = ingest_worker_usage_reports(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather
@@ -7497,6 +8595,7 @@ def _dispatch_once_locked(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        _set_run_usage_report_path(conn, claimed.id, board=board)
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -7589,6 +8688,7 @@ def _dispatch_once_locked(
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        _set_run_usage_report_path(conn, claimed.id, board=board)
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -7972,6 +9072,13 @@ def _default_spawn(
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    if task.current_run_id is not None:
+        usage_path = _usage_report_path_for_run(
+            task.id,
+            int(task.current_run_id),
+            board=board,
+        )
+        env["HERMES_KANBAN_USAGE_FILE"] = str(usage_path)
     # Goal-loop mode: the worker reads these and wraps its run in the
     # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
     # when enabled so non-goal tasks keep a clean env.

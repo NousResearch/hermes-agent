@@ -50,6 +50,12 @@ def _fmt_ts(ts: Optional[int]) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
 
+def _fmt_usd(value: Optional[float]) -> str:
+    if value is None:
+        return "-"
+    return f"${float(value):.4f}"
+
+
 def _fmt_task_line(t: kb.Task) -> str:
     icon = _STATUS_ICONS.get(t.status, "?")
     assignee = t.assignee or "(unassigned)"
@@ -77,6 +83,16 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "plan_audit_required": t.plan_audit_required,
+        "plan_audit_max_rounds": t.plan_audit_max_rounds,
+        "budget_usd": t.budget_usd,
+        "budget_spent_usd": t.budget_spent_usd,
+        "budget_remaining_usd": (
+            max(0.0, t.budget_usd - t.budget_spent_usd)
+            if t.budget_usd is not None
+            else None
+        ),
+        "budget_unknown_cost_runs": t.budget_unknown_cost_runs,
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
@@ -360,6 +376,27 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           metavar="N", dest="goal_max_turns",
                           help="Turn budget for --goal workers (default 20). "
                                "Ignored without --goal.")
+    p_create.add_argument("--budget-usd", type=float, default=None,
+                          metavar="USD", dest="budget_usd",
+                          help="Per-task spend cap in USD. Once recorded "
+                               "run usage reaches the cap, future dispatcher "
+                               "claims are blocked. This is not a board/day/"
+                               "account budget.")
+    p_create.add_argument("--no-budget", action="store_true",
+                          dest="no_budget",
+                          help="Create this task without a budget even when "
+                               "kanban.task_budget.default_usd is configured.")
+    p_create.add_argument("--plan-audit", action="store_true",
+                          dest="plan_audit_required",
+                          help="Require a plan_audit_approved verdict before "
+                               "the dispatcher can claim this task. Until an "
+                               "auditor records approved/rejected verdicts "
+                               "(currently via code/skill follow-up), the task "
+                               "will remain ready and unclaimed.")
+    p_create.add_argument("--plan-audit-max-rounds", type=int, default=None,
+                          metavar="N", dest="plan_audit_max_rounds",
+                          help="Rejected plan-audit verdicts allowed before "
+                               "the task is blocked for review (default 2).")
     p_create.add_argument("--initial-status",
                           choices=sorted(kb.VALID_INITIAL_STATUSES),
                           default="running",
@@ -1325,6 +1362,21 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    plan_audit_max_rounds = getattr(args, "plan_audit_max_rounds", None)
+    if plan_audit_max_rounds is not None and plan_audit_max_rounds < 1:
+        print(
+            "kanban: --plan-audit-max-rounds must be >= 1 "
+            f"(got {plan_audit_max_rounds}).",
+            file=sys.stderr,
+        )
+        return 2
+    budget_usd = getattr(args, "budget_usd", None)
+    if budget_usd is not None and budget_usd <= 0:
+        print(
+            f"kanban: --budget-usd must be > 0 (got {budget_usd}).",
+            file=sys.stderr,
+        )
+        return 2
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1346,6 +1398,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_retries=max_retries,
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
+            plan_audit_required=bool(getattr(args, "plan_audit_required", False)),
+            plan_audit_max_rounds=plan_audit_max_rounds,
+            budget_usd=budget_usd,
+            use_default_budget=not bool(getattr(args, "no_budget", False)),
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
@@ -1497,6 +1553,21 @@ def _cmd_show(args: argparse.Namespace) -> int:
                     "error": r.error,
                     "metadata": r.metadata,
                     "worker_pid": r.worker_pid,
+                    "usage_report_path": r.usage_report_path,
+                    "usage_report_ingested_at": r.usage_report_ingested_at,
+                    "estimated_cost_usd": r.estimated_cost_usd,
+                    "cost_status": r.cost_status,
+                    "cost_source": r.cost_source,
+                    "input_tokens": r.input_tokens,
+                    "output_tokens": r.output_tokens,
+                    "cache_read_tokens": r.cache_read_tokens,
+                    "cache_write_tokens": r.cache_write_tokens,
+                    "reasoning_tokens": r.reasoning_tokens,
+                    "total_tokens": r.total_tokens,
+                    "api_calls": r.api_calls,
+                    "model": r.model,
+                    "provider": r.provider,
+                    "usage_session_id": r.usage_session_id,
                     "started_at": r.started_at,
                     "ended_at": r.ended_at,
                 }
@@ -1536,6 +1607,19 @@ def _cmd_show(args: argparse.Namespace) -> int:
             print(f"  max-retries: {int(cfg_val)} (config kanban.failure_limit)")
         else:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
+    if task.plan_audit_required:
+        rounds = task.plan_audit_max_rounds or kb.DEFAULT_PLAN_AUDIT_MAX_ROUNDS
+        print(f"  plan-audit: required (max rounds: {rounds})")
+        print("              waiting for recorded audit verdicts before claim")
+    if task.budget_usd is not None:
+        remaining = max(0.0, task.budget_usd - task.budget_spent_usd)
+        print(
+            "  budget:    "
+            f"{_fmt_usd(task.budget_spent_usd)} / {_fmt_usd(task.budget_usd)} "
+            f"(remaining {_fmt_usd(remaining)})"
+        )
+        if task.budget_unknown_cost_runs:
+            print(f"             unknown-cost runs: {task.budget_unknown_cost_runs}")
     print(f"  created:   {_fmt_ts(task.created_at)} by {task.created_by or '-'}")
 
     # Diagnostics section — surface active distress signals at the top
@@ -1612,6 +1696,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 print(f"        → {r.summary.splitlines()[0][:160]}")
             if r.error:
                 print(f"        ! {r.error.splitlines()[0][:160]}")
+            if r.estimated_cost_usd is not None or r.cost_status:
+                print(
+                    "        $ "
+                    f"{_fmt_usd(r.estimated_cost_usd)} "
+                    f"({r.cost_status or 'unknown'}, calls={r.api_calls or 0})"
+                )
     return 0
 
 
@@ -2510,6 +2600,21 @@ def _cmd_runs(args: argparse.Namespace) -> int:
                 "ended_at": r.ended_at, "summary": r.summary,
                 "error": r.error, "metadata": r.metadata,
                 "worker_pid": r.worker_pid, "step_key": r.step_key,
+                "usage_report_path": r.usage_report_path,
+                "usage_report_ingested_at": r.usage_report_ingested_at,
+                "estimated_cost_usd": r.estimated_cost_usd,
+                "cost_status": r.cost_status,
+                "cost_source": r.cost_source,
+                "input_tokens": r.input_tokens,
+                "output_tokens": r.output_tokens,
+                "cache_read_tokens": r.cache_read_tokens,
+                "cache_write_tokens": r.cache_write_tokens,
+                "reasoning_tokens": r.reasoning_tokens,
+                "total_tokens": r.total_tokens,
+                "api_calls": r.api_calls,
+                "model": r.model,
+                "provider": r.provider,
+                "usage_session_id": r.usage_session_id,
             } for r in runs
         ], indent=2, ensure_ascii=False))
         return 0
@@ -2535,6 +2640,11 @@ def _cmd_runs(args: argparse.Namespace) -> int:
             print(f"     → {summary}")
         if r.error:
             print(f"     ✖ {r.error[:100]}")
+        if r.estimated_cost_usd is not None or r.cost_status:
+            print(
+                f"     $ {_fmt_usd(r.estimated_cost_usd)} "
+                f"({r.cost_status or 'unknown'}, calls={r.api_calls or 0})"
+            )
     return 0
 
 

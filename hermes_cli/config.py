@@ -1670,6 +1670,17 @@ DEFAULT_CONFIG = {
             "timeout": 180,
             "extra_body": {},
         },
+        # Plan auditor for workflows that review an execution plan before a
+        # gated Kanban task may be claimed. The caller records
+        # plan_audit_approved/rejected on the card after this auxiliary call.
+        "plan_auditor": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 120,
+            "extra_body": {},
+        },
         # Profile describer — auto-generates a 1-2 sentence description
         # of what a profile is good at. Invoked by
         # ``hermes profile describe <name> --auto`` and the dashboard's
@@ -2716,6 +2727,22 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Defaults used by plan-audit-aware creators. Existing tasks and tasks
+        # created without an explicit opt-in are not gated.
+        "plan_audit_required": False,
+        "plan_audit_max_rounds": 2,
+        # Per-task/run budget defaults. Existing tasks are not retrofitted;
+        # default_usd applies only when a new task is created without an
+        # explicit budget and without --no-budget/no_budget. Enforcement is at
+        # task/run boundaries after usage reports are ingested, not live
+        # per-token interruption.
+        "task_budget": {
+            "default_usd": None,
+            # allow = unknown-cost runs are counted but do not block by
+            # themselves; block = a budgeted task with an unknown-cost run is
+            # blocked before the next claim so a human can inspect pricing.
+            "unknown_cost_policy": "allow",
+        },
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.

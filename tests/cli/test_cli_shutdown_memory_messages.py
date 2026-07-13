@@ -492,6 +492,51 @@ def test_cli_close_persists_pending_user_when_agent_snapshot_is_empty(tmp_path, 
     assert staged["_db_persisted"] is True
 
 
+def test_cli_close_uses_clean_override_for_shortened_pending_snapshot(tmp_path, monkeypatch):
+    """Close retains the clean user text when its snapshot omits the prefix."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    import cli as cli_mod
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "cli-close-shortened-noted-pending"
+    db.create_session(session_id=session_id, source="cli")
+    prefix = [
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    for message in prefix:
+        db.append_message(
+            session_id=session_id,
+            role=message["role"],
+            content=message["content"],
+        )
+
+    agent = _real_agent(db, session_id, [])
+    staged = {"role": "user", "content": "[MODEL NOTE]\n\nnew prompt"}
+    agent._pending_cli_user_message = staged
+    # The normal worker index is relative to the full resumed history, while a
+    # close before its first persistence flush sees only this staged dict.
+    agent._persist_user_message_idx = len(prefix)
+    agent._persist_user_message_override = "new prompt"
+    agent._persist_user_message_timestamp = None
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = list(prefix) + [staged]
+    cli.session_id = session_id
+    cli.agent = agent
+
+    cli._persist_active_session_before_close()
+
+    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
+        "old prompt",
+        "old answer",
+        "new prompt",
+    ]
+    assert staged["_db_persisted"] is True
+
+
 def test_cli_close_preserves_clean_staged_user_across_noted_worker_turn(tmp_path, monkeypatch):
     """A noted API-only turn reuses the close-marked clean staged user row."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

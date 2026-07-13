@@ -1887,7 +1887,15 @@ class AIAgent:
                 # clean replacement for an API-local noted payload. Preserve the
                 # historical text-only guard for a list payload, though: a plain
                 # text override must not erase its image/audio transcript summary.
-                if _ov_idx == _msg_idx and msg.get("role") == "user":
+                # The close safety-net may flush a shortened snapshot while
+                # turn setup still owns its staged CLI dict. In that shape the
+                # normal turn index refers to the full history, not this list;
+                # preserve the API-local override by recognizing the same dict.
+                pending_cli_message = getattr(self, "_pending_cli_user_message", None)
+                is_current_turn_user = (
+                    _ov_idx == _msg_idx or msg is pending_cli_message
+                )
+                if is_current_turn_user and msg.get("role") == "user":
                     if _ov_content is not None and (
                         not isinstance(content, list) or isinstance(_ov_content, list)
                     ):

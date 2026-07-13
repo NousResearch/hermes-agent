@@ -409,6 +409,49 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ 本工作階段 YOLO 模式 **已關閉** — 危險指令將需要批准。"
     enabled:                    "⚡ 本工作階段 YOLO 模式 **已開啟** — 所有指令自動批准。請謹慎使用。"
 
+  queue:
+    usage:                 "用法：/queue <prompt>"
+    queued:                "已排入下一輪。"
+    queued_with_depth:     "已排入下一輪。（目前 {depth} 則排隊）"
+
+  steer:
+    usage:                 "用法：/steer <prompt>"
+    agent_starting_queued: "代理仍在啟動 — /steer 已排入下一輪。"
+    failed:                "⚠️ 引導失敗：{error}"
+    queued_after_tool:     "⏩ 已加入目前執行 — 將在下一次工具呼叫後生效：'{preview}'"
+    rejected_empty:        "引導已拒絕（內容為空）。"
+    no_active_queued:      "沒有作用中代理 — /steer 已排入下一輪。"
+    usage_no_agent:        "用法：/steer <prompt>  （目前沒有代理在執行；將作為一般訊息傳送）"
+
+  busy:
+    action_restarting:          "重新啟動"
+    action_shutting_down:       "關閉"
+    draining_queued:            "⏳ 閘道正在{action} — 已排隊，閘道恢復後進入下一輪。"
+    draining_reject:            "⏳ 閘道正在{action}，暫不接受另一輪任務。"
+    draining_new_work_reject:   "⏳ 閘道正在{action}，暫不接受新的工作。"
+    status_elapsed_min:         "已用 {minutes} 分鐘"
+    status_iteration:           "第 {iteration}/{max} 輪"
+    status_running_tool:        "正在執行：{tool}"
+    status_separator:           "，"
+    status_detail:              "（{details}）"
+    steer_ack:                  "⏩ 已引導到目前執行{status}。你的訊息會在下一次工具呼叫後送達。"
+    subagent_queue_ack:         "⏳ 子代理正在工作{status} — 你的訊息已排隊，完成後處理（使用 /stop 取消全部任務）。"
+    compression_queue_ack:      "⏳ 正在壓縮上下文{status} — 你的訊息已排隊，完成後處理（使用 /stop 取消全部任務）。"
+    queue_ack:                  "⏳ 已排入下一輪{status}。目前任務完成後我會回覆。"
+    interrupt_ack:              "⚡ 正在中斷目前任務{status}。稍後會回覆你的訊息。"
+    wait_stop_switch_model:     "代理正在執行 — 請等待或先使用 /stop，然後再切換模型。"
+    wait_stop_change_runtime:   "代理正在執行 — 請等待或先使用 /stop，然後再變更執行階段。"
+    wait_stop_run_moa:          "代理正在執行 — 請等待或先使用 /stop，然後再執行 /moa。"
+    goal_mid_run:               "代理正在執行 — 執行中可使用 /goal status / pause / clear / wait；若要設定新目標，請先使用 /stop。"
+    command_mid_turn:           "⏳ 代理正在執行 — `/{command}` 不能在目前回合中執行。請等待目前回覆完成，或先使用 `/stop`。"
+
+  shutdown:
+    notice:                "⚠️ 閘道正在{action} — {hint}"
+    interrupt:             "目前任務將被中斷。"
+    interrupt_resume:      "目前任務將被中斷。重新啟動後傳送任意訊息，我會嘗試從中斷處恢復。"
+    restart_success:       "♻ 閘道已成功重新啟動。工作階段將繼續。"
+    online_ready:          "♻️ 閘道已上線 — Hermes 已恢復並準備就緒。"
+
   shared:
     session_db_unavailable:      "工作階段資料庫無法使用。"
     session_db_unavailable_prefix: "工作階段資料庫無法使用"

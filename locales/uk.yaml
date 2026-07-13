@@ -409,6 +409,49 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ Режим YOLO для цього сеансу **ВИМКНЕНО** — небезпечні команди потребуватимуть схвалення."
     enabled:                    "⚡ Режим YOLO для цього сеансу **УВІМКНЕНО** — усі команди схвалюються автоматично. Використовуйте з обережністю."
 
+  queue:
+    usage:                 "Usage: /queue <prompt>"
+    queued:                "Queued for the next turn."
+    queued_with_depth:     "Queued for the next turn. ({depth} queued)"
+
+  steer:
+    usage:                 "Usage: /steer <prompt>"
+    agent_starting_queued: "Agent still starting — /steer queued for the next turn."
+    failed:                "⚠️ Steer failed: {error}"
+    queued_after_tool:     "⏩ Steer queued — arrives after the next tool call: '{preview}'"
+    rejected_empty:        "Steer rejected (empty payload)."
+    no_active_queued:      "No active agent — /steer queued for the next turn."
+    usage_no_agent:        "Usage: /steer <prompt>  (no agent is running; sending as a normal message)"
+
+  busy:
+    action_restarting:          "restarting"
+    action_shutting_down:       "shutting down"
+    draining_queued:            "⏳ Gateway {action} — queued for the next turn after it comes back."
+    draining_reject:            "⏳ Gateway is {action} and is not accepting another turn right now."
+    draining_new_work_reject:   "⏳ Gateway is {action} and is not accepting new work right now."
+    status_elapsed_min:         "{minutes} min elapsed"
+    status_iteration:           "iteration {iteration}/{max}"
+    status_running_tool:        "running: {tool}"
+    status_separator:           ", "
+    status_detail:              " ({details})"
+    steer_ack:                  "⏩ Steered into current run{status}. Your message arrives after the next tool call."
+    subagent_queue_ack:         "⏳ Subagent working{status} — your message is queued for when it finishes (use /stop to cancel everything)."
+    compression_queue_ack:      "⏳ Compressing context{status} — your message is queued for when it finishes (use /stop to cancel everything)."
+    queue_ack:                  "⏳ Queued for the next turn{status}. I'll respond once the current task finishes."
+    interrupt_ack:              "⚡ Interrupting current task{status}. I'll respond to your message shortly."
+    wait_stop_switch_model:     "Agent is running — wait or /stop first, then switch models."
+    wait_stop_change_runtime:   "Agent is running — wait or /stop first, then change runtime."
+    wait_stop_run_moa:          "Agent is running — wait or /stop first, then run /moa."
+    goal_mid_run:               "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
+    command_mid_turn:           "⏳ Agent is running — `/{command}` can't run mid-turn. Wait for the current response or `/stop` first."
+
+  shutdown:
+    notice:                "⚠️ Gateway {action} — {hint}"
+    interrupt:             "Your current task will be interrupted."
+    interrupt_resume:      "Your current task will be interrupted. Send any message after restart and I'll try to resume where you left off."
+    restart_success:       "♻ Gateway restarted successfully. Your session continues."
+    online_ready:          "♻️ Gateway online — Hermes is back and ready."
+
   shared:
     session_db_unavailable:      "База даних сеансів недоступна."
     session_db_unavailable_prefix: "База даних сеансів недоступна"

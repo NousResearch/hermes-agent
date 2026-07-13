@@ -409,6 +409,49 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"
     enabled:                    "⚡ 本会话 YOLO 模式 **已开启** — 所有命令自动批准。请谨慎使用。"
 
+  queue:
+    usage:                 "用法：/queue <prompt>"
+    queued:                "已排队到下一轮。"
+    queued_with_depth:     "已排队到下一轮。（当前 {depth} 条排队）"
+
+  steer:
+    usage:                 "用法：/steer <prompt>"
+    agent_starting_queued: "代理仍在启动 — /steer 已排队到下一轮。"
+    failed:                "⚠️ 引导失败：{error}"
+    queued_after_tool:     "⏩ 已加入当前运行 — 将在下一次工具调用后生效：'{preview}'"
+    rejected_empty:        "引导已拒绝（内容为空）。"
+    no_active_queued:      "没有活跃代理 — /steer 已排队到下一轮。"
+    usage_no_agent:        "用法：/steer <prompt>  （当前没有代理在运行；将作为普通消息发送）"
+
+  busy:
+    action_restarting:          "重启"
+    action_shutting_down:       "关闭"
+    draining_queued:            "⏳ 网关正在{action} — 已排队，网关恢复后进入下一轮。"
+    draining_reject:            "⏳ 网关正在{action}，暂不接受另一轮任务。"
+    draining_new_work_reject:   "⏳ 网关正在{action}，暂不接受新的工作。"
+    status_elapsed_min:         "已用 {minutes} 分钟"
+    status_iteration:           "第 {iteration}/{max} 轮"
+    status_running_tool:        "正在运行：{tool}"
+    status_separator:           "，"
+    status_detail:              "（{details}）"
+    steer_ack:                  "⏩ 已引导到当前运行{status}。你的消息将在下一次工具调用后送达。"
+    subagent_queue_ack:         "⏳ 子代理正在工作{status} — 你的消息已排队，完成后处理（使用 /stop 取消全部任务）。"
+    compression_queue_ack:      "⏳ 正在压缩上下文{status} — 你的消息已排队，完成后处理（使用 /stop 取消全部任务）。"
+    queue_ack:                  "⏳ 已排队到下一轮{status}。当前任务完成后我会回复。"
+    interrupt_ack:              "⚡ 正在中断当前任务{status}。稍后会回复你的消息。"
+    wait_stop_switch_model:     "代理正在运行 — 请等待或先使用 /stop，然后再切换模型。"
+    wait_stop_change_runtime:   "代理正在运行 — 请等待或先使用 /stop，然后再更改运行时。"
+    wait_stop_run_moa:          "代理正在运行 — 请等待或先使用 /stop，然后再运行 /moa。"
+    goal_mid_run:               "代理正在运行 — 运行中可使用 /goal status / pause / clear / wait；若要设置新目标，请先使用 /stop。"
+    command_mid_turn:           "⏳ 代理正在运行 — `/{command}` 不能在当前回合中运行。请等待当前回复完成，或先使用 `/stop`。"
+
+  shutdown:
+    notice:                "⚠️ 网关正在{action} — {hint}"
+    interrupt:             "当前任务将被中断。"
+    interrupt_resume:      "当前任务将被中断。重启后发送任意消息，我会尝试从中断处恢复。"
+    restart_success:       "♻ 网关已成功重启。会话将继续。"
+    online_ready:          "♻️ 网关已上线 — Hermes 已恢复并准备就绪。"
+
   shared:
     session_db_unavailable:      "会话数据库不可用。"
     session_db_unavailable_prefix: "会话数据库不可用"

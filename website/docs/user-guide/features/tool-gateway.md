@@ -22,9 +22,9 @@ The Tool Gateway is included with every paid [Nous Portal](https://portal.nousre
 | 🔍 | **Web search & extract** | Agent-grade web search and full-page extraction via Firecrawl. No rate limits to worry about — the gateway handles scaling. |
 | 🎨 | **Image generation** | Nine models under one endpoint: **FLUX 2 Klein 9B**, **FLUX 2 Pro**, **Z-Image Turbo**, **Nano Banana Pro** (Gemini 3 Pro Image), **GPT Image 1.5**, **GPT Image 2**, **Ideogram V3**, **Recraft V4 Pro**, **Qwen Image**. Pick per-generation with a flag, or let Hermes default to FLUX 2 Klein. |
 | 🔊 | **Text-to-speech** | OpenAI TTS voices wired into the `text_to_speech` tool. Drop voice notes into Telegram, generate audio for pipelines, narrate anything. |
-| 🌐 | **Cloud browser automation** | Headless Chromium sessions via Browser Use. `browser_navigate`, `browser_click`, `browser_type`, `browser_vision` — all the agent-driving primitives, no Browserbase account required. Hermes also supports managed Skyvern MCP configuration for when Nous deploys that gateway. |
+| 🌐 | **Cloud browser automation** | Headless Chromium sessions via Browser Use. `browser_navigate`, `browser_click`, `browser_type`, `browser_vision` — all the agent-driving primitives, no Browserbase account required. |
 
-The four currently deployed gateway categories are pay-as-you-use billed against your Nous subscription. Use any combination — run the gateway for web and images while keeping your own ElevenLabs key for TTS, or route everything through Nous.
+All four are pay-as-you-use billed against your Nous subscription. Use any combination — run the gateway for web and images while keeping your own ElevenLabs key for TTS, or route everything through Nous.
 
 ## Why it's here
 
@@ -151,13 +151,13 @@ mcp_servers:
 
 Precedence: `use_gateway: true` routes through Nous regardless of any direct keys in `.env`. `use_gateway: false` (or absent) uses direct keys if available and only falls back to the gateway when none exist.
 
-### Managed Skyvern MCP (pending Nous deployment)
+### Managed Skyvern MCP
 
 The `managed_gateway: skyvern` entry records managed Skyvern intent without storing a Skyvern API key. At runtime, Hermes resolves it to `https://skyvern-gateway.<TOOL_GATEWAY_DOMAIN>/mcp/` (using `nousresearch.com` by default) and sends the Nous Portal token as an `Authorization: Bearer` header. An explicit Skyvern `url` or `command` remains untouched for direct configurations.
 
 MCP servers require the optional `mcp` extra (`pip install "hermes-agent[mcp]"` or `uv sync --extra mcp`).
 
-This is the client-side gateway convention only. Server-side Skyvern gateway availability is pending Nous deployment; until that is available, configure Skyvern's MCP endpoint directly with your own credentials.
+Managed routing requires the Skyvern gateway to be available for your subscription. If it isn't, configure Skyvern's MCP endpoint directly with your own credentials.
 
 ### Disabling the gateway
 

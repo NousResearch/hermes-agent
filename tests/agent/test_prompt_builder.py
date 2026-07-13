@@ -1269,6 +1269,14 @@ class TestEnvironmentHints:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         _pb._clear_backend_probe_cache()
 
+        config = {
+            "docker_image": "python:3.11",
+            "cwd": "/workspace",
+            "timeout": 60,
+            "docker_network": False,
+            "docker_forward_env": ["PROBE_SECRET"],
+        }
+
         class _FakeEnv:
             def execute(self, cmd, timeout=None):
                 return {
@@ -1283,15 +1291,19 @@ class TestEnvironmentHints:
 
         def _fake_create_environment(*, env_type, **kwargs):
             created["env_type"] = env_type
+            created.update(kwargs)
             return _FakeEnv()
 
         # Patch the REAL factory in tools.terminal_tool — the probe imports it
         # locally, so the import itself must succeed (the bug was here).
         import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_get_env_config", lambda: config)
         monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
 
         line = _pb._probe_remote_backend("docker")
         assert created.get("env_type") == "docker"
+        assert created["container_config"] == _tt._build_container_config(config)
+        assert created["container_config"]["docker_network"] is False
         assert line is not None
         assert "Linux 6.8.0" in line
         assert "root" in line
@@ -1644,5 +1656,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

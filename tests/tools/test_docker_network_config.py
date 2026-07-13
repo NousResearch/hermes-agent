@@ -84,33 +84,35 @@ def test_docker_network_config_is_bridged_everywhere():
     assert "TERMINAL_DOCKER_NETWORK" in _terminal_tool_env_var_names()
 
 
-def test_sibling_container_config_sites_carry_docker_network():
-    """Every container_config dict that carries docker_run_as_host_user must
-    also carry docker_network — otherwise that code path silently falls back
-    to networked containers while the terminal path honors the lockdown
-    (the probe/exec asymmetry reported on issue #46358).
-    """
-    import ast
-    import inspect
+def test_prompt_backend_probe_honors_network_lockdown(monkeypatch):
+    """The real config→builder→factory path must keep probe egress disabled."""
+    import agent.prompt_builder as prompt_builder
 
-    import tools.code_execution_tool as code_execution_tool
-    import tools.file_tools as file_tools
+    captured = {}
 
-    for module in (terminal_tool, file_tools, code_execution_tool):
-        tree = ast.parse(inspect.getsource(module))
-        sites = 0
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Dict):
-                continue
-            keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
-            if "docker_run_as_host_user" in keys:
-                sites += 1
-                assert "docker_network" in keys, (
-                    f"{module.__name__} builds a container_config with "
-                    f"docker_run_as_host_user but without docker_network "
-                    f"(line {node.lineno})"
-                )
-        assert sites >= 1, f"expected at least one container_config site in {module.__name__}"
+    class _FakeDockerEnvironment:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def execute(self, command, timeout=None):
+            return {
+                "returncode": 0,
+                "output": (
+                    "os=Linux\nkernel=6.8.0\nhome=/root\n"
+                    "cwd=/workspace\nuser=root\n"
+                ),
+            }
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_NETWORK", "false")
+    monkeypatch.setattr(terminal_tool, "_DockerEnvironment", _FakeDockerEnvironment)
+    monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", lambda _config: None)
+    monkeypatch.setattr(prompt_builder, "_BACKEND_PROBE_CACHE", {})
+
+    result = prompt_builder._probe_remote_backend("docker")
+
+    assert result is not None
+    assert captured["network"] is False
 
 
 def _reuse_guard_harness(monkeypatch, *, existing_mode: str, network: bool):

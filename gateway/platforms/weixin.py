@@ -1223,6 +1223,14 @@ class WeixinAdapter(BasePlatformAdapter):
         self._text_batch_split_delay_seconds = self._coerce_float_extra(
             "text_batch_split_delay_seconds", 5.0
         )
+        # Media/file bursts (docx, images, ...) arrive as separate iLink
+        # messages too. They flow through the same session-scoped batcher as
+        # text so a mixed burst dispatches as one turn, but use their own quiet
+        # window since file uploads are slower-paced than typed text. Set to 0
+        # to disable media batching (each file dispatches immediately).
+        self._media_batch_delay_seconds = self._coerce_float_extra(
+            "media_batch_delay_seconds", 2.0
+        )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
@@ -1312,9 +1320,15 @@ class WeixinAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         _LIVE_ADAPTERS.pop(self._token, None)
         self._running = False
+        # Cancel and await in-flight batch flushes (text + media) so a timer
+        # armed here cannot fire handle_message() after shutdown has begun.
         for task in self._pending_text_batch_tasks.values():
             if not task.done():
                 task.cancel()
+        if self._pending_text_batch_tasks:
+            await asyncio.gather(
+                *self._pending_text_batch_tasks.values(), return_exceptions=True
+            )
         self._pending_text_batches.clear()
         self._pending_text_batch_tasks.clear()
         if self._poll_task and not self._poll_task.done():
@@ -1469,6 +1483,11 @@ class WeixinAdapter(BasePlatformAdapter):
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         if event.message_type == MessageType.TEXT:
             self._enqueue_text_event(event)
+        elif self._should_batch_media(event):
+            # Burst-batch rapid file/photo uploads so N of them become one turn,
+            # avoiding the gateway's interrupt-recursion guard. Shares the text
+            # batcher's pending state so a caption + files coalesce together.
+            self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
 
@@ -1503,10 +1522,23 @@ class WeixinAdapter(BasePlatformAdapter):
         return True
 
     # ------------------------------------------------------------------
-    # Text debounce batching
+    # Message debounce batching (text + media/file bursts)
     # ------------------------------------------------------------------
 
     _SPLIT_THRESHOLD = 1800  # iLink chunks at ~2048 chars
+
+    # Media types that are debounced. Only file/photo bursts (which trigger the
+    # interrupt-recursion lockup) are batched. Voice/audio/video are left to
+    # dispatch immediately: they are latency-sensitive and their downstream
+    # handling (STT, voice-reply routing) is keyed on message_type, which the
+    # batch merge would flatten.
+    _BATCHABLE_MEDIA_TYPES = (MessageType.DOCUMENT, MessageType.PHOTO)
+
+    def _should_batch_media(self, event: MessageEvent) -> bool:
+        return (
+            self._media_batch_delay_seconds > 0
+            and event.message_type in self._BATCHABLE_MEDIA_TYPES
+        )
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text message batching."""
@@ -1518,12 +1550,13 @@ class WeixinAdapter(BasePlatformAdapter):
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text event and reset the flush timer.
+        """Buffer a text or media event and reset the flush timer.
 
-        When users forward multiple messages or send rapid-fire texts
-        via WeChat, each arrives as a separate iLink message. This
-        concatenates them and waits for a short quiet period before
-        dispatching the combined message.
+        When users forward multiple messages, send rapid-fire texts, or
+        upload several files via WeChat, each arrives as a separate iLink
+        message. This concatenates their text and merges their media into a
+        single pending event, then waits for a short quiet period before
+        dispatching one combined ``handle_message`` call.
         """
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
@@ -1538,6 +1571,13 @@ class WeixinAdapter(BasePlatformAdapter):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+                # Re-derive the type so a batch that absorbs media (e.g. a photo
+                # merging into a pending text event) still classifies as media
+                # downstream — otherwise it stays TEXT and media-specific
+                # handling (photo/STT/voice-reply) is skipped.
+                existing.message_type = _message_type_from_media(
+                    existing.media_types, existing.text or ""
+                )
 
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():
@@ -1551,18 +1591,27 @@ class WeixinAdapter(BasePlatformAdapter):
         current_task = asyncio.current_task()
         try:
             pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            if last_len >= self._SPLIT_THRESHOLD:
-                delay = self._text_batch_split_delay_seconds
+            if pending is not None and pending.media_urls:
+                # A file/media burst is in flight; give it the media window.
+                delay = self._media_batch_delay_seconds
             else:
-                delay = self._text_batch_delay_seconds
+                last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+                if last_len >= self._SPLIT_THRESHOLD:
+                    delay = self._text_batch_split_delay_seconds
+                else:
+                    delay = self._text_batch_delay_seconds
             await asyncio.sleep(delay)
             if self._pending_text_batch_tasks.get(key) is not current_task:
                 return
             event = self._pending_text_batches.pop(key, None)
             if not event:
                 return
-            await self.handle_message(event)
+            # Shield the dispatch: a follow-up message/file arriving mid-turn
+            # cancels this flush task (see _enqueue_text_event), which must not
+            # abort the agent response already in flight. Matches the Discord/
+            # Telegram adapters. Especially important for file bursts, whose
+            # turns run long and widen the cancellation window.
+            await asyncio.shield(self.handle_message(event))
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)

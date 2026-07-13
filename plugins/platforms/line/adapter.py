@@ -687,10 +687,9 @@ class LineAdapter(BasePlatformAdapter):
         self.allowed_rooms = _csv_set(
             os.getenv("LINE_ALLOWED_ROOMS", "")
         ) | set(extra.get("allowed_rooms", []))
-        self.require_group_mention = _truthy_env(
-            "LINE_REQUIRE_MENTION_IN_GROUPS",
-            bool(extra.get("require_mention_in_groups", False)),
-        )
+        # ``require_mention`` is the shared config.yaml platform setting.
+        # LINE applies it only to group and room messages; DMs remain direct.
+        self.require_group_mention = bool(extra.get("require_mention", False))
 
         # Slow-LLM postback button threshold
         try:

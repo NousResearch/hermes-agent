@@ -162,7 +162,7 @@ class TestMentionGate:
             extra={
                 "channel_access_token": "tok",
                 "channel_secret": "sec",
-                "require_mention_in_groups": require_group_mention,
+                "require_mention": require_group_mention,
             },
         )
         ad = LineAdapter(cfg)
@@ -750,12 +750,10 @@ class TestAdapterInit:
         monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
         monkeypatch.setenv("LINE_ALLOWED_USERS", "U1, U2,U3")
         monkeypatch.setenv("LINE_ALLOWED_GROUPS", "C1")
-        monkeypatch.setenv("LINE_REQUIRE_MENTION_IN_GROUPS", "true")
         from gateway.config import PlatformConfig
         ad = LineAdapter(PlatformConfig(enabled=True))
         assert ad.allowed_users == {"U1", "U2", "U3"}
         assert ad.allowed_groups == {"C1"}
-        assert ad.require_group_mention is True
 
     def test_get_chat_info_infers_type_from_prefix(self, monkeypatch):
         monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")

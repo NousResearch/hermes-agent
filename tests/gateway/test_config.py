@@ -294,6 +294,24 @@ class TestLoadGatewayConfig:
 
         assert config.thread_sessions_per_user is True
 
+    def test_bridges_line_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
+        """line.require_mention must reach the LINE adapter through config.extra."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "line:\n"
+            "  enabled: true\n"
+            "  require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        line_config = config.platforms[Platform("line")]
+        assert line_config.extra["require_mention"] is True
+
     def test_thread_sessions_per_user_defaults_to_false(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

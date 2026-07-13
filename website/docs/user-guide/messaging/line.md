@@ -67,7 +67,6 @@ LINE_CHANNEL_SECRET=YOUR_CHANNEL_SECRET
 LINE_ALLOWED_USERS=U1234567890abcdef...           # comma-separated U-prefixed IDs
 LINE_ALLOWED_GROUPS=C1234567890abcdef...          # optional group IDs
 LINE_ALLOWED_ROOMS=R1234567890abcdef...           # optional room IDs
-LINE_REQUIRE_MENTION_IN_GROUPS=false              # optional: require @mention in groups
 
 # Required for image / audio / video sends — the public HTTPS base URL
 # the tunnel resolves to.  Without it, send_image/voice/video will refuse.
@@ -77,10 +76,10 @@ LINE_PUBLIC_URL=https://my-tunnel.example.com
 Then in `~/.hermes/config.yaml`:
 
 ```yaml
-gateway:
-  platforms:
-    line:
-      enabled: true
+line:
+  enabled: true
+  # Optional: relay only group/room messages that mention the bot.
+  # require_mention: true
 ```
 
 That's enough — the bundled-plugin scan in `gateway/config.py` automatically picks up `plugins/platforms/line/`. No `Platform.LINE` enum edit, no `_create_adapter` registration.
@@ -170,7 +169,6 @@ Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a
 | `LINE_ALLOWED_GROUPS` | one of | — | Comma-separated group IDs (C-prefixed) |
 | `LINE_ALLOWED_ROOMS` | one of | — | Comma-separated room IDs (R-prefixed) |
 | `LINE_ALLOW_ALL_USERS` | dev only | `false` | Skip allowlist entirely |
-| `LINE_REQUIRE_MENTION_IN_GROUPS` | no | `false` | In group/room chats, only relay messages that mention the bot |
 | `LINE_HOME_CHANNEL` | no | — | Default cron / notification delivery target |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | no | `45` | Seconds before the postback button fires (`0` = disabled) |
 | `LINE_PENDING_TEXT` | no | "🤔 Still thinking…" | Bubble text shown alongside the postback button |
@@ -186,7 +184,14 @@ Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a
 
 **Bot receives nothing in groups.** Check `LINE_ALLOWED_GROUPS` includes the `C...` group ID. To find a group ID, send a test message and grep `~/.hermes/logs/gateway.log` for `LINE: rejecting unauthorized source` — the rejected source dict has the IDs.
 
-**Bot replies to every group or room message.** Set `LINE_REQUIRE_MENTION_IN_GROUPS=true` so Hermes only relays group or room messages whose LINE mention metadata includes the bot user ID. Direct messages are unaffected.
+**Bot replies to every group or room message.** In `~/.hermes/config.yaml`, set:
+
+```yaml
+line:
+  require_mention: true
+```
+
+Hermes will then relay only group or room messages whose LINE mention metadata includes the bot user ID. Direct messages are unaffected.
 
 **`send_image` fails with "LINE_PUBLIC_URL must be set".** LINE's Messaging API does not accept binary uploads — images, audio, and video must be reachable HTTPS URLs. Set `LINE_PUBLIC_URL` to the tunnel's public hostname and the adapter will serve files from `/line/media/<token>/<filename>` automatically.
 

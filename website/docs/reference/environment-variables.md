@@ -468,7 +468,6 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_ALLOWED_GROUPS` | Comma-separated group IDs the bot will respond in (`C`-prefixed). |
 | `LINE_ALLOWED_ROOMS` | Comma-separated room IDs the bot will respond in (`R`-prefixed). |
 | `LINE_ALLOW_ALL_USERS` | Dev-only escape hatch — accepts any source. Default: `false`. |
-| `LINE_REQUIRE_MENTION_IN_GROUPS` | Require group or room messages to mention the bot before they are relayed to the agent. Default: `false`. |
 | `LINE_HOME_CHANNEL` | Default delivery target for cron jobs with `deliver: line`. |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | Seconds before the slow-LLM Template Buttons postback fires (default: `45`). Set `0` to disable and always Push-fallback. |
 | `LINE_PENDING_TEXT` | Bubble text shown alongside the postback button. |

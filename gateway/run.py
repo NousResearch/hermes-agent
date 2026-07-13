@@ -15777,6 +15777,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "codex_app_server_auto"),
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
+        ("compression", "min_tail_user_messages"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
     )

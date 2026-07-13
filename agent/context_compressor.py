@@ -1050,6 +1050,7 @@ class ContextCompressor(ContextEngine):
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
+        min_tail_user_messages: int = 3,
     ):
         self.model = model
         self.base_url = base_url
@@ -1059,6 +1060,7 @@ class ContextCompressor(ContextEngine):
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
+        self.min_tail_user_messages = min_tail_user_messages
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
         # Output-token reservation: the provider carves max_tokens out of the
@@ -2692,6 +2694,60 @@ This compaction should PRIORITISE preserving all information related to the focu
             return max(pair_end, head_end + 1)
         return adjusted
 
+    def _ensure_last_n_user_messages_in_tail(
+        self,
+        messages: List[Dict[str, Any]],
+        cut_idx: int,
+        head_end: int,
+        n: int,
+    ) -> int:
+        """Guarantee the last N user messages are in the protected tail.
+
+        Generalizes ``_ensure_last_user_message_in_tail`` to preserve an
+        arbitrary number of recent user messages.  This prevents the token-
+        budget-based tail cut from consuming recent conversation turns
+        when large tool outputs fill the budget (COMPRESS-01).
+
+        When *n* <= 1, delegates directly to the existing single-message
+        method for byte-identical regression safety (COMPRESS-08).
+
+        If the conversation has fewer than *n* user messages, the earliest
+        available user message is used without error (COMPRESS-07).
+
+        A user message is already a clean boundary — there is no
+        tool_call/result group that spans across it, so
+        ``_align_boundary_backward`` is intentionally NOT called.
+        Calling it can pull the cut past the user message into the
+        preceding assistant(tool_calls)→tool group and split it (#22566).
+        """
+        if n <= 1:
+            return self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+
+        # Collect real user message indices walking backward from end.
+        # Skip context-summary handoff banners — they are internal
+        # continuity state, not real user turns.
+        user_indices = []
+        for i in range(len(messages) - 1, head_end - 1, -1):
+            msg = messages[i]
+            if msg.get("role") == "user" and not self._is_context_summary_content(
+                msg.get("content")
+            ):
+                user_indices.append(i)
+
+        if len(user_indices) == 0:
+            return cut_idx
+
+        if len(user_indices) < n:
+            target_idx = user_indices[-1]
+        else:
+            target_idx = user_indices[n - 1]
+
+        if target_idx >= cut_idx:
+            return cut_idx
+
+        cut_idx = target_idx
+        return max(cut_idx, head_end + 1)
+
     def _find_turn_pair_end(
         self,
         messages: List[Dict[str, Any]],
@@ -2820,6 +2876,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Each anchor only walks ``cut_idx`` backward, so chaining them is
         # monotonic — the tail can only grow, never shrink.
         cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
+
+        # Extend to N user messages when configured (default 3).  This
+        # prevents the token-budget tail from consuming recent turns when
+        # large tool outputs fill the budget (COMPRESS-01).
+        cut_idx = self._ensure_last_n_user_messages_in_tail(
+            messages, cut_idx, head_end, self.min_tail_user_messages,
+        )
 
         return max(cut_idx, head_end + 1)
 

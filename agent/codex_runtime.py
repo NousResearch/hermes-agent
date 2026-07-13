@@ -884,6 +884,15 @@ def _item_field(item: Any, name: str, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+def _normalize_stream_value(value: Any) -> Any:
+    """Recursively convert raw dict/list SSE payloads into attr-style objects."""
+    if isinstance(value, dict):
+        return SimpleNamespace(**{k: _normalize_stream_value(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return [_normalize_stream_value(v) for v in value]
+    return value
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
 
@@ -1077,7 +1086,7 @@ def _consume_codex_event_stream(
         if event_type == "response.output_item.done":
             done_item = _event_field(event, "item")
             if done_item is not None:
-                collected_output_items.append(done_item)
+                collected_output_items.append(_normalize_stream_value(done_item))
                 done_phase = _item_field(done_item, "phase", None)
                 done_phase = done_phase.strip().lower() if isinstance(done_phase, str) else None
                 if done_phase == "commentary" and on_commentary_message is not None:

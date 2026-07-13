@@ -2238,8 +2238,8 @@ DEFAULT_CONFIG = {
                                      # (API, tools, iteration budget), never a delegation
                                      # stopwatch. Set a positive number of seconds
                                      # (floor 30s) to enforce a hard cap.
-        "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
-                                 # "low", "minimal", "none" (empty = inherit parent's level)
+        "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
+                                 # "medium", "low", "minimal", "none" (empty = inherit)
         "max_concurrent_children": 3,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap
@@ -2521,15 +2521,15 @@ DEFAULT_CONFIG = {
     },
 
     # Approval mode for dangerous commands:
-    #   manual — always prompt the user (default)
-    #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
+    #   manual — always prompt the user
+    #   smart  — use auxiliary LLM to auto-approve low-risk commands (default)
     #   off    — skip all approval prompts (equivalent to --yolo)
     #
     # cron_mode — what to do when a cron job hits a dangerous command:
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
-        "mode": "manual",
+        "mode": "smart",
         "timeout": 60,
         "cron_mode": "deny",
         # User-defined deny rules: fnmatch globs matched against terminal
@@ -3530,6 +3530,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "GMI Cloud base URL (leave empty for default)",
         "url": None,
         "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "FIREWORKS_API_KEY": {
+        "description": "Fireworks AI API key",
+        "prompt": "Fireworks AI API key",
+        "url": "https://app.fireworks.ai/settings/users/api-keys",
+        "password": True,
         "category": "provider",
         "advanced": True,
     },

@@ -680,6 +680,20 @@ def compress_context(
         finally:
             _release_lock()
 
+    # A compressor that returns the exact input object made no structural
+    # progress. Do not rotate/rewrite the session or arm post-compression
+    # deferral in that case; its own anti-thrash counter records the no-op.
+    if compressed is messages:
+        logger.info(
+            "Compression made no progress (session=%s) — skipping boundary rewrite.",
+            agent.session_id or "none",
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()
+        return messages, _existing_sp
+
     try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
         if summary_error:
@@ -968,6 +982,12 @@ def compress_context(
         agent.context_compressor.last_prompt_tokens = -1
         agent.context_compressor.last_completion_tokens = 0
         agent.context_compressor.awaiting_real_usage_after_compression = True
+        # Arm the effectiveness verdict only after a completed rewrite crosses
+        # the full compaction boundary. Exceptions, aborts, and no-op attempts
+        # leave this false, so unrelated later usage cannot be charged to an
+        # attempt that never changed the transcript.
+        if getattr(agent.context_compressor, "_last_compression_made_progress", False):
+            agent.context_compressor._verify_compaction_cleared_threshold = True
 
         # Clear the file-read dedup cache.  After compression the original
         # read content is summarised away — if the model re-reads the same
@@ -1061,7 +1081,7 @@ def _compress_context_via_codex_app_server(
             pass
         agent._codex_session = None
 
-    if getattr(result, "error", None):
+    if getattr(result, "interrupted", False) or getattr(result, "error", None):
         try:
             agent._emit_warning(
                 f"⚠ Codex app-server compaction failed: {result.error}"
@@ -1085,7 +1105,11 @@ def _compress_context_via_codex_app_server(
             approx_tokens=approx_tokens,
             force=True,
         )
-        if getattr(result, "token_usage_last", None):
+        # An empty usage report must consume the pending post-compaction verdict
+        # rather than leaving preflight deferral armed until some unrelated later
+        # Codex turn supplies usage. Minimal external test engines may not expose
+        # the ContextEngine update hook; preserve their existing bookkeeping.
+        if hasattr(agent.context_compressor, "update_from_response"):
             _record_codex_app_server_usage(agent, result)
     except Exception:
         logger.debug("codex compaction bookkeeping failed", exc_info=True)

@@ -192,6 +192,26 @@ def _oneshot_run_claim_ttl_seconds() -> float:
     )
 
 
+def _job_running_in_this_process(job_id: str) -> bool:
+    """Return True when the scheduler in THIS process is still running ``job_id``.
+
+    Direct liveness signal for stale-entry recovery (#62002): the run_claim
+    TTL alone cannot distinguish "the claiming tick died" from "the run is
+    alive but slow" — a run stalled on network I/O (or a laptop that slept
+    mid-run) legitimately outlives the TTL. The in-process ticker and the run
+    share this process, so the scheduler's running set settles the common
+    single-gateway case without any claim-age guesswork.
+
+    Imported lazily: the scheduler imports this module at load, so a
+    module-level import here would be circular.
+    """
+    try:
+        from cron.scheduler import get_running_job_ids
+        return job_id in get_running_job_ids()
+    except Exception:
+        return False
+
+
 def _jobs_lock_file() -> Path:
     """Return the advisory lock path for the current cron directory."""
     return _current_cron_store().cron_dir / ".jobs.lock"
@@ -1603,6 +1623,38 @@ def claim_dispatch(job_id: str) -> bool:
         return True
 
 
+def heartbeat_run_claim(job_id: str, *, expected_owner: str) -> bool:
+    """Refresh a one-shot's ``run_claim`` timestamp while its run is alive.
+
+    Called periodically from the scheduler's run monitor (#62002) so a
+    legitimately long run keeps its claim fresh: an expired claim then really
+    does mean "the claiming process died", and neither another process's tick
+    nor this process's own next tick will re-dispatch or stale-remove the job
+    while the run is in flight. mark_job_run() clears the claim on completion.
+
+    ``expected_owner`` is the stable owner copied from the dispatched job. The
+    compare-and-refresh prevents a stale runner that resumes after a long sleep
+    from extending a claim another scheduler process has since taken over.
+
+    Returns True if this owner's one-shot claim was refreshed; False when the
+    job, claim, or ownership no longer matches.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            if job.get("schedule", {}).get("kind") != "once":
+                return False
+            claim = job.get("run_claim")
+            if not isinstance(claim, dict) or claim.get("by") != expected_owner:
+                return False
+            claim["at"] = _hermes_now().isoformat()
+            save_jobs(jobs)
+            return True
+    return False
+
+
 def advance_next_run(job_id: str) -> bool:
     """Preemptively advance next_run_at for a recurring job before execution.
 
@@ -1986,6 +2038,25 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                         times = repeat.get("times")
                         completed = repeat.get("completed", 0)
                         if times is not None and times > 0 and completed >= times:
+                            # A live run must never have its job record deleted
+                            # underneath it (#62002): a run that outlives the
+                            # run_claim TTL (stream stall, laptop asleep
+                            # mid-run) satisfies the same completed >= times +
+                            # expired-claim condition as a dead tick, but
+                            # mark_job_run() still needs the record to land
+                            # last_run_at / last_status / last_delivery_error.
+                            # If this process is still running the job, it is
+                            # slow, not stale — keep the entry and skip.
+                            if _job_running_in_this_process(job.get("id", "")):
+                                logger.info(
+                                    "Job '%s': dispatch limit reached (%d/%d) "
+                                    "but its run is still in flight in this "
+                                    "process — keeping entry",
+                                    job.get("name", job.get("id", "?")),
+                                    completed,
+                                    times,
+                                )
+                                continue
                             logger.info(
                                 "Job '%s': one-shot dispatch limit reached (%d/%d) "
                                 "— removing stale due entry",

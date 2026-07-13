@@ -888,6 +888,7 @@ class _CodexCompletionsAdapter:
         # `function_call_output` items with a valid call_id, so every
         # Responses path normalizes tool history identically and cannot drift.
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from utils import base_url_host_matches
 
         instructions = "You are a helpful assistant."
         replay_messages: List[Dict[str, Any]] = []
@@ -899,7 +900,18 @@ class _CodexCompletionsAdapter:
             else:
                 replay_messages.append(msg)
 
-        input_items = _chat_messages_to_responses_input(replay_messages)
+        # Copilot (githubcopilot.com) binds replayed codex_message_items ids
+        # to a backend "connection" that doesn't survive credential
+        # rotation/gateway restarts — replaying one gets HTTP 401 "input
+        # item ID does not belong to this connection" (#32716). Auxiliary
+        # calls (context compression, flush_memories, MoA aggregation) go
+        # through this adapter instead of agent/transports/codex.py's
+        # build_kwargs, so they need the same guard applied independently.
+        _host_for_input = str(getattr(self._client, "base_url", "") or "")
+        _is_github_for_input = base_url_host_matches(_host_for_input, "githubcopilot.com")
+        input_items = _chat_messages_to_responses_input(
+            replay_messages, is_github_responses=_is_github_for_input,
+        )
 
         resp_kwargs: Dict[str, Any] = {
             "model": model,

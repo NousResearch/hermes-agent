@@ -4050,6 +4050,97 @@ class TestCodexAdapterPromptCacheKey:
         assert "prompt_cache_key" not in captured
 
 
+class TestCodexAdapterGithubResponsesMessageIdDrop:
+    """_CodexCompletionsAdapter must drop codex_message_items ``id`` when
+    talking to Copilot (githubcopilot.com), independent of the main
+    transport's build_kwargs path. Auxiliary calls (context compression,
+    flush_memories, MoA aggregation) route through this adapter instead of
+    agent/transports/codex.py, so they need the same #32716 guard applied
+    separately — Copilot binds replayed ids to a backend "connection" that
+    doesn't survive credential rotation/gateway restarts, and rejects a
+    stale id with HTTP 401 regardless of its length.
+    """
+
+    @staticmethod
+    def _build_adapter(base_url):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+        from types import SimpleNamespace
+
+        message_item = SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(type="output_text", text="hi")],
+        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed", id="resp_test",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                ),
+            ),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
+
+        captured_kwargs = {}
+
+        def _create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeCreateStream()
+
+        real_client = MagicMock()
+        real_client.base_url = base_url
+        real_client.responses.create = _create
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+        return adapter, captured_kwargs
+
+    @staticmethod
+    def _replay_messages():
+        return [
+            {"role": "system", "content": "You are helpful."},
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "msg_short_but_connection_scoped",
+                        "phase": "final_answer",
+                    }
+                ],
+            },
+            {"role": "user", "content": "continue"},
+        ]
+
+    def test_drops_message_id_for_github_copilot_host(self):
+        adapter, captured = self._build_adapter(base_url="https://api.githubcopilot.com")
+        adapter.create(messages=self._replay_messages())
+        message_item = next(
+            item for item in captured["input"] if item.get("type") == "message"
+        )
+        assert "id" not in message_item
+        assert message_item["phase"] == "final_answer"
+        assert message_item["status"] == "in_progress"
+        assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
+
+    def test_keeps_message_id_for_codex_backend_host(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://chatgpt.com/backend-api/codex"
+        )
+        adapter.create(messages=self._replay_messages())
+        message_item = next(
+            item for item in captured["input"] if item.get("type") == "message"
+        )
+        assert message_item["id"] == "msg_short_but_connection_scoped"
+
+
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto vision branch skips providers that have no vision on
     their main endpoint (e.g. Kimi Coding Plan /coding) and falls through

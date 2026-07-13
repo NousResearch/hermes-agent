@@ -635,6 +635,36 @@ class TestPluginHooks:
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS
 
+    def test_status_bar_render_registration_and_metadata_contract(self, caplog):
+        """Status-bar hooks use the standard plugin-manager hook contract."""
+        manager = PluginManager()
+        context = PluginContext(
+            PluginManifest(name="status-bar-plugin", source="user"),
+            manager,
+        )
+        snapshot = {"model": "test-model", "state": "ready"}
+        contribution = {"label": "ready"}
+        received = {}
+
+        def render_status_bar(**kwargs):
+            received.update(kwargs)
+            return contribution
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            context.register_hook("on_status_bar_render", render_status_bar)
+
+        assert not any(
+            "unknown hook" in record.message.lower() for record in caplog.records
+        )
+        assert manager.has_hook("on_status_bar_render") is True
+
+        results = manager.invoke_hook("on_status_bar_render", snapshot=snapshot)
+
+        assert received["snapshot"] is snapshot
+        assert received["telemetry_schema_version"] == "hermes.observer.v1"
+        assert results == [contribution]
+        assert results[0] is contribution
+
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

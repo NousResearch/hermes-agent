@@ -69,6 +69,7 @@ HERMES_DIR = get_hermes_home().resolve()
 # with use_cron_store() instead of mutating them process-wide.
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
+_CRON_STATE_PATH = CRON_DIR / "cron_state.json"
 # Heartbeat file the in-process ticker touches on every loop iteration. The
 # gateway process and the (separate) ``hermes cron status`` process share it
 # so status can tell whether the ticker THREAD is alive, not just whether the
@@ -2333,3 +2334,19 @@ def rewrite_skill_refs(
             "jobs_updated": len(rewrites),
             "jobs_scanned": len(jobs),
         }
+
+
+def _restore_from_cron_state() -> list:
+    """Restore jobs from the cron_state.json backup file.
+
+    Returns the list of jobs restored, or empty list if the backup
+    file does not exist or is corrupt.
+    """
+    try:
+        if _CRON_STATE_PATH.exists():
+            data = json.loads(_CRON_STATE_PATH.read_text())
+            if isinstance(data, list):
+                return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return []

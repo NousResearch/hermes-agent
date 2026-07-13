@@ -15,6 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli.colors import Colors, color, RichColors, rich_color
 import rich
+from rich.text import Text
 
 # Gateway-lifecycle command detection lives in ``cron.lifecycle_guard`` so it
 # can be shared across every job-creation path (CLI + the agent's ``cronjob``
@@ -182,8 +183,8 @@ def cron_list(show_all: bool = False):
         else:
             status = rich_color("[disabled]", RichColors.RED)
 
-        rich.print(f"  {rich_color(job_id, RichColors.YELLOW)} {status}")
-        rich.print(f"    Name:      {name}")
+        rich.print(Text.assemble("  ", rich_color(job_id, RichColors.YELLOW), " ", status))
+        rich.print("    Name:      ", Text(name))
         rich.print(f"    Schedule:  {schedule}")
         rich.print(f"    Repeat:    {repeat_str}")
         rich.print(f"    Next run:  {next_run}")
@@ -192,14 +193,12 @@ def cron_list(show_all: bool = False):
             rich.print(f"    Skills:    {', '.join(skills)}")
         script = job.get("script")
         if script:
-            rich.print(f"    Script:    {script}")
+            rich.print("    Script:    ", Text(script))
         if job.get("no_agent"):
-            rich.print(
-                f"    Mode:      {rich_color('no-agent', RichColors.DIM)} (script stdout delivered directly)"
-            )
+            rich.print(Text.assemble("    Mode:      ", rich_color('no-agent', RichColors.DIM), " (script stdout delivered directly)"))
         workdir = job.get("workdir")
         if workdir:
-            rich.print(f"    Workdir:   {workdir}")
+            rich.print("    Workdir:   ", Text(workdir))
 
         # Execution history
         last_status = job.get("last_status")
@@ -211,13 +210,11 @@ def cron_list(show_all: bool = False):
                 status_display = rich_color(
                     f"{last_status}: {job.get('last_error', '?')}", RichColors.RED
                 )
-            rich.print(f"    Last run:  {last_run}  {status_display}")
+            rich.print(Text.assemble("    Last run:  ", last_run, "  ", status_display))
 
         delivery_err = job.get("last_delivery_error")
         if delivery_err:
-            rich.print(
-                f"    {rich_color('⚠ Delivery failed:', RichColors.YELLOW)} {delivery_err}"
-            )
+            rich.print(Text.assemble("    ", rich_color('⚠ Delivery failed:', RichColors.YELLOW), " ", delivery_err))
 
         rich.print()
 
@@ -383,17 +380,17 @@ def cron_create(args):
         )
         return 1
     rich.print(rich_color(f"Created job: {result['job_id']}", RichColors.GREEN))
-    rich.print(f"  Name: {result['name']}")
+    rich.print("  Name: ", Text(result['name']))
     rich.print(f"  Schedule: {result['schedule']}")
     if result.get("skills"):
         rich.print(f"  Skills: {', '.join(result['skills'])}")
     job_data = result.get("job", {})
     if job_data.get("script"):
-        rich.print(f"  Script: {job_data['script']}")
+        rich.print("  Script: ", Text(job_data['script']))
     if job_data.get("no_agent"):
         rich.print("  Mode: no-agent (script stdout delivered directly)")
     if job_data.get("workdir"):
-        rich.print(f"  Workdir: {job_data['workdir']}")
+        rich.print("  Workdir: ", Text(job_data['workdir']))
     rich.print(f"  Next run: {result['next_run_at']}")
     _warn_if_gateway_not_running()
     return 0
@@ -461,18 +458,18 @@ def cron_edit(args):
 
     updated = result["job"]
     rich.print(rich_color(f"Updated job: {updated['job_id']}", RichColors.GREEN))
-    rich.print(f"  Name: {updated['name']}")
+    rich.print("  Name: ", Text(updated['name']))
     rich.print(f"  Schedule: {updated['schedule']}")
     if updated.get("skills"):
         rich.print(f"  Skills: {', '.join(updated['skills'])}")
     else:
         rich.print("  Skills: none")
     if updated.get("script"):
-        rich.print(f"  Script: {updated['script']}")
+        rich.print("  Script: ", Text(updated['script']))
     if updated.get("no_agent"):
         rich.print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
-        rich.print(f"  Workdir: {updated['workdir']}")
+        rich.print("  Workdir: ", Text(updated['workdir']))
     return 0
 
 

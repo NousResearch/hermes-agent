@@ -250,6 +250,50 @@ class TestHandleVisionAnalyzeFastPath:
         assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
             "Fast path fired for unknown provider; should have fallen through"
 
+    def test_path_aliases_resolve_like_image_url(self, tmp_path):
+        """Regression: a model naturally passing `path` / `image_path` /
+        `file_path` for a LOCAL file (instead of the canonically-named
+        `image_url`) must resolve the image, not return 'image_url is
+        required'. Guards the alias-resolution fix so it can't silently
+        re-break. Each alias should behave identically to image_url.
+        """
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+
+        img = tmp_path / "alias.png"
+        img.write_bytes(_TINY_PNG)
+
+        set_runtime_main("openrouter", "anthropic/claude-opus-4.6")
+        try:
+            with patch(
+                "agent.image_routing.decide_image_input_mode",
+                return_value="native",
+            ):
+                for alias in ("image_url", "path", "image_path", "file_path"):
+                    coro = _handle_vision_analyze({alias: str(img), "question": "?"})
+                    result = asyncio.get_event_loop().run_until_complete(coro)
+                    # Must resolve to the multimodal envelope, never the
+                    # "image_url is required" error.
+                    assert isinstance(result, dict), (
+                        f"alias {alias!r} did not resolve: "
+                        f"{type(result).__name__}: {str(result)[:200]}"
+                    )
+                    assert result.get("_multimodal") is True, \
+                        f"alias {alias!r} did not produce a multimodal envelope"
+        finally:
+            clear_runtime_main()
+
+    def test_missing_all_image_params_still_errors(self):
+        """With none of image_url/path/image_path/file_path present, the
+        handler must still return the 'image_url is required' error — the
+        alias fix must not mask a genuinely-absent image arg.
+        """
+        coro = _handle_vision_analyze({"question": "?"})
+        result = asyncio.get_event_loop().run_until_complete(coro)
+        assert isinstance(result, str)
+        parsed = json.loads(result)
+        assert parsed.get("success") is False
+        assert "image_url is required" in parsed.get("error", "")
+
     def test_supports_vision_override_bypasses_provider_allowlist(self, tmp_path):
         """supports_vision=true enables the fast path on an unlisted provider."""
         img = tmp_path / "x.png"

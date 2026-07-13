@@ -1459,7 +1459,7 @@ VISION_ANALYZE_SCHEMA = {
         "properties": {
             "image_url": {
                 "type": "string",
-                "description": "Image URL (http/https), local file path, or data: URL to load."
+                "description": "Image URL (http/https), local file path, or data: URL to load. NOTE: pass a local file path here directly — this is the correct param even for local files (aliases path/image_path/file_path are also accepted)."
             },
             "question": {
                 "type": "string",
@@ -1472,7 +1472,18 @@ VISION_ANALYZE_SCHEMA = {
 
 
 async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
-    image_url = args.get("image_url", "")
+    # `image_url` is the canonical param, but it accepts local file paths and
+    # data: URLs too — so a model naturally guessing `path` / `image_path` /
+    # `file_path` for a local screenshot is not wrong. Accept those aliases so
+    # the whole "I passed the obvious name and got 'image_url is required'"
+    # failure class just works. Canonical wins if both are somehow present.
+    image_url = (
+        args.get("image_url")
+        or args.get("path")
+        or args.get("image_path")
+        or args.get("file_path")
+        or ""
+    )
     question = args.get("question", "")
     task_id = kw.get("task_id")
 

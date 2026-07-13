@@ -8723,6 +8723,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
+        elif canonical == "quota":
+            self._handle_quota_command()
         elif canonical == "credits":
             self._show_credits()
         elif canonical == "billing":
@@ -9621,6 +9623,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             except Exception as e:
                 print(f"  ❌ Compression failed: {e}")
 
+
+
+    def _handle_quota_command(self) -> None:
+        """Render quota and balance snapshots for all configured providers."""
+        from agent.account_usage import fetch_all_providers_quota, render_account_usage_lines
+
+        try:
+            snapshots = fetch_all_providers_quota()
+        except Exception:
+            snapshots = []
+
+        print()
+        if not snapshots:
+            print("  (._.) No quota data is available for configured providers.")
+            return
+
+        print("  📊 Provider Quotas")
+        print(f"  {'─' * 40}")
+        for index, snapshot in enumerate(snapshots):
+            if index:
+                print()
+            for line in render_account_usage_lines(snapshot):
+                print(f"  {line}")
 
 
     def _show_usage(self):

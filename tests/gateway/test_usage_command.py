@@ -305,3 +305,29 @@ class TestUsageContextBreakdown:
         assert "📊 **Session Token Usage**" in result
         assert "50,000" in result  # total tokens
         assert "Context breakdown" not in result
+
+
+@pytest.mark.asyncio
+async def test_gateway_runner_exposes_quota_handler_from_slash_command_mixin(monkeypatch):
+    """A bare runner must expose the handler through its mixin MRO."""
+    from agent.account_usage import AccountUsageSnapshot
+    from gateway.run import GatewayRunner
+
+    snapshot = AccountUsageSnapshot(
+        provider="openrouter",
+        source="credits_api",
+        fetched_at=None,
+        details=("Credits balance: $12.00",),
+    )
+    monkeypatch.setattr(
+        "gateway.slash_commands.fetch_all_providers_quota",
+        lambda: [snapshot],
+        raising=False,
+    )
+    runner = object.__new__(GatewayRunner)
+
+    result = await runner._handle_quota_command(MagicMock())
+
+    assert "Provider Quotas" in result
+    assert "openrouter" in result
+    assert "Credits balance: $12.00" in result

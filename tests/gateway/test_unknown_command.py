@@ -371,3 +371,15 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     # First emit_collect fires on the original command; after rewrite the
     # dispatcher does NOT re-fire for the new command (one decision per turn).
     assert call_log == ["command:status"]
+
+
+@pytest.mark.asyncio
+async def test_quota_command_is_dispatched_to_gateway_handler():
+    """/quota must not fall through as plain text or an unknown command."""
+    runner = _make_runner()
+    runner._handle_quota_command = AsyncMock(return_value="quota: ok")
+
+    result = await runner._handle_message(_make_event("/quota"))
+
+    assert result == "quota: ok"
+    runner._handle_quota_command.assert_awaited_once()

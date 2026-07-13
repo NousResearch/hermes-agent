@@ -12365,13 +12365,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._pending_moa_config = None
                 if _moa_cfg is None:
                     _moa_cfg = None
+                # Model/skill notes and voice instructions are API-local. Keep
+                # the original staged input as the durable transcript value so a
+                # close-path marker follows the same dict into turn setup rather
+                # than producing a second noted user row (#63766).
+                _persist_clean_user_message = (
+                    message if (_voice_prefix or agent_message != message) else None
+                )
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,
                         conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
                         stream_callback=stream_callback,
                         task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
+                        persist_user_message=_persist_clean_user_message,
                         moa_config=_moa_cfg,
                     )
                     if getattr(self, "_pending_moa_disable_after_turn", False):

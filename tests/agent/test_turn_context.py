@@ -241,6 +241,24 @@ def test_stale_pending_cli_message_does_not_replace_new_turn_input():
     assert agent._pending_cli_user_message is None
 
 
+def test_pending_cli_message_uses_clean_override_for_api_local_note():
+    """A noted API message reuses the clean staged dict and its DB marker."""
+    agent = _FakeAgent()
+    staged = {"role": "user", "content": "clean prompt", "_db_persisted": True}
+    agent._pending_cli_user_message = staged
+
+    ctx = _build(
+        agent,
+        user_message="[MODEL NOTE]\n\nclean prompt",
+        persist_user_message="clean prompt",
+    )
+
+    assert ctx.messages[-1] is staged
+    assert ctx.messages[-1]["content"] == "[MODEL NOTE]\n\nclean prompt"
+    assert ctx.messages[-1]["_db_persisted"] is True
+    assert agent._pending_cli_user_message is None
+
+
 def test_memory_nudge_fires_at_interval():
     agent = _FakeAgent()
     agent._memory_nudge_interval = 1

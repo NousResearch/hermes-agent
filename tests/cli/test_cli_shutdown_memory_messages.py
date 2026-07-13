@@ -17,6 +17,7 @@ other tests keep their existing no-arg behaviour.
 from __future__ import annotations
 
 import threading
+import types
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -489,6 +490,98 @@ def test_cli_close_persists_pending_user_when_agent_snapshot_is_empty(tmp_path, 
         "new prompt",
     ]
     assert staged["_db_persisted"] is True
+
+
+def test_cli_close_preserves_clean_staged_user_across_noted_worker_turn(tmp_path, monkeypatch):
+    """A noted API-only turn reuses the close-marked clean staged user row."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    import cli as cli_mod
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "cli-close-noted-staged-user"
+    db.create_session(session_id=session_id, source="cli")
+    prefix = [
+        {"role": "user", "content": "old prompt"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    agent = _real_agent(db, session_id, prefix)
+    agent._flush_messages_to_session_db(prefix, [])
+    staged = {"role": "user", "content": "new prompt"}
+    agent._pending_cli_user_message = staged
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = list(prefix) + [staged]
+    cli.session_id = session_id
+    cli.agent = agent
+
+    cli._persist_active_session_before_close()
+    assert staged["_db_persisted"] is True
+
+    # A queued model/skills note changes only the API message. The worker
+    # reuses the marked clean dict, so the normal persistence seam cannot append
+    # a second noted user row.
+    from agent.turn_context import build_turn_context
+
+    agent.quiet_mode = True
+    agent.max_iterations = 1
+    agent.provider = "test"
+    agent.base_url = ""
+    agent.api_key = ""
+    agent.api_mode = "chat_completions"
+    agent.tools = []
+    agent.valid_tool_names = set()
+    agent.enabled_toolsets = None
+    agent.disabled_toolsets = None
+    agent._skip_mcp_refresh = True
+    agent.compression_enabled = False
+    agent.context_compressor = types.SimpleNamespace(protect_first_n=2, protect_last_n=2)
+    agent._memory_store = None
+    agent._memory_manager = None
+    agent._memory_nudge_interval = 0
+    agent._turns_since_memory = 0
+    agent._user_turn_count = 0
+    agent._todo_store = types.SimpleNamespace(has_items=lambda: True)
+    agent._tool_guardrails = types.SimpleNamespace(reset_for_turn=lambda: None)
+    agent._compression_warning = None
+    agent._interrupt_requested = False
+    agent._memory_write_origin = "assistant_tool"
+    agent._stream_context_scrubber = None
+    agent._stream_think_scrubber = None
+    agent._restore_primary_runtime = lambda: None
+    agent._cleanup_dead_connections = lambda: False
+    agent._emit_status = lambda _message: None
+    agent._replay_compression_warning = lambda: None
+    agent._hydrate_todo_store = lambda *_args: None
+    agent._safe_print = lambda *_args: None
+
+    worker = build_turn_context(
+        agent,
+        "[MODEL SWITCH NOTE]\n\nnew prompt",
+        None,
+        prefix,
+        "task",
+        None,
+        "new prompt",
+        None,
+        restore_or_build_system_prompt=lambda *_args: None,
+        install_safe_stdio=lambda: None,
+        sanitize_surrogates=lambda value: value,
+        summarize_user_message_for_log=lambda value: value,
+        set_session_context=lambda _session_id: None,
+        set_current_write_origin=lambda _origin: None,
+        ra=lambda: types.SimpleNamespace(_set_interrupt=lambda *_args: None),
+    )
+    assert worker.messages[-1] is staged
+    assert worker.messages[-1]["content"] == "[MODEL SWITCH NOTE]\n\nnew prompt"
+
+    stored = db.get_messages_as_conversation(session_id)
+    assert [m["content"] for m in stored] == [
+        "old prompt",
+        "old answer",
+        "new prompt",
+    ]
 
 
 def test_cli_close_builds_prompt_before_creating_first_session_row(tmp_path, monkeypatch):

@@ -18,6 +18,7 @@ during a retry backoff) must still SIGINT the command (exit 130); non-approved
 commands keep current interrupt behavior.
 """
 import json
+import shlex
 import threading
 import time
 
@@ -89,12 +90,12 @@ def test_non_approved_command_still_interrupts_on_stale_bit(monkeypatch):
 def test_approved_command_genuine_interrupt_after_start_still_kills(tmp_path):
     """The clean-slate clear must NOT make approved commands un-interruptible:
     an interrupt that arrives after execution starts still SIGINTs (130)."""
-    sentinel = tmp_path / "cmd_started_c"
+    sentinel = tmp_path / "cmd started c"
     holder = {}
 
     def worker():
         holder["result"] = tt.terminal_tool(
-            command=f"touch {sentinel}; sleep 5; echo DONE", force=True
+            command=f"touch {shlex.quote(sentinel.as_posix())}; sleep 5; echo DONE", force=True
         )
 
     t = threading.Thread(target=worker, daemon=True)
@@ -121,11 +122,13 @@ def test_approved_note_enriched_not_misleading_on_interrupt(monkeypatch, tmp_pat
         "_check_all_guards",
         lambda *a, **k: {"approved": True, "user_approved": True, "description": "rm -rf x"},
     )
-    sentinel = tmp_path / "cmd_started_d"
+    sentinel = tmp_path / "cmd started d"
     holder = {}
 
     def worker():
-        holder["result"] = tt.terminal_tool(command=f"touch {sentinel}; sleep 5; echo DONE")
+        holder["result"] = tt.terminal_tool(
+            command=f"touch {shlex.quote(sentinel.as_posix())}; sleep 5; echo DONE"
+        )
 
     t = threading.Thread(target=worker, daemon=True)
     t.start()

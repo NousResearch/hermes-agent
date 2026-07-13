@@ -167,7 +167,7 @@ def encode_fact(content: str, entities: list[str], dim: int = 1024) -> "np.ndarr
     return bundle(*components)
 
 
-def phases_to_bytes(phases: "np.ndarray") -> bytes:
+def phases_to_bytes(phases: "np.ndarray", dim: int | None = None) -> bytes:
     """Serialize phase vectors as float32 blobs.
 
     float32 halves SQLite BLOB storage versus the legacy float64 format
@@ -175,8 +175,20 @@ def phases_to_bytes(phases: "np.ndarray") -> bytes:
     preserving enough precision for phase-similarity retrieval.
     ``bytes_to_phases`` keeps reading legacy float64 blobs for backward
     compatibility.
+
+    When ``dim`` is 1 the prefixed float32 blob (8 bytes) collides in size
+    with a raw float64 blob (8 bytes), making the format ambiguous.  In
+    that case we fall back to writing raw float64 so that ``bytes_to_phases``
+    can never misinterpret the blob.
     """
     numpy = _np()
+    if dim is None:
+        dim = int(phases.shape[0])
+    float32_blob_bytes = len(_FLOAT32_BLOB_PREFIX) + dim * numpy.dtype(numpy.float32).itemsize
+    float64_bytes = dim * numpy.dtype(numpy.float64).itemsize
+    if float32_blob_bytes == float64_bytes:
+        # dim=1: sizes collide, write legacy float64 to stay unambiguous
+        return numpy.asarray(phases, dtype=numpy.float64).tobytes()
     payload = numpy.asarray(phases, dtype=numpy.float32).tobytes()
     return _FLOAT32_BLOB_PREFIX + payload
 
@@ -189,6 +201,13 @@ def bytes_to_phases(data: bytes, dim: int | None = None) -> "np.ndarray":
     readable for backward compatibility. The returned array is copied and
     promoted to float64 so downstream HRR math keeps the existing numerical
     behavior.
+
+    When ``dim`` is 1 the prefixed float32 blob and the raw float64 blob are
+    both 8 bytes, so size alone cannot disambiguate.  ``phases_to_bytes``
+    avoids writing prefixed blobs in that case; here we guard the remaining
+    collision window (a legacy float64 blob that happens to start with the
+    ``HRR1`` prefix) by preferring the legacy interpretation when sizes
+    match and the caller supplied ``dim``.
     """
     numpy = _np()
 
@@ -196,6 +215,23 @@ def bytes_to_phases(data: bytes, dim: int | None = None) -> "np.ndarray":
         float32_payload_bytes = dim * numpy.dtype(numpy.float32).itemsize
         float32_blob_bytes = len(_FLOAT32_BLOB_PREFIX) + float32_payload_bytes
         float64_bytes = dim * numpy.dtype(numpy.float64).itemsize
+
+        # When sizes collide (dim=1), prefer legacy float64 for a blob that
+        # starts with the prefix, because phases_to_bytes never writes a
+        # prefixed float32 blob at dim=1 — any such blob must be legacy.
+        if float32_blob_bytes == float64_bytes:
+            if len(data) == float64_bytes:
+                return numpy.frombuffer(data, dtype=numpy.float64).copy()
+            if data.startswith(_FLOAT32_BLOB_PREFIX):
+                payload_len = len(data) - len(_FLOAT32_BLOB_PREFIX)
+                raise ValueError(
+                    f"HRR vector blob has {len(data)} bytes ({payload_len} payload bytes after "
+                    f"the float32 prefix); expected {float64_bytes} (legacy float64) for dim={dim}"
+                )
+            raise ValueError(
+                f"HRR legacy vector blob has {len(data)} bytes; expected "
+                f"{float64_bytes} (float64) for dim={dim}"
+            )
 
         if data.startswith(_FLOAT32_BLOB_PREFIX) and len(data) == float32_blob_bytes:
             payload = data[len(_FLOAT32_BLOB_PREFIX):]

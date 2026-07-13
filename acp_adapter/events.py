@@ -8,6 +8,7 @@ thread while the event loop lives on the main thread).
 """
 
 import asyncio
+import base64
 import json
 import logging
 from collections import deque
@@ -186,15 +187,95 @@ def make_tool_progress_cb(
 # Thinking callback
 # ------------------------------------------------------------------
 
+_CURSOR_EVENT_PREFIX = "\x1ehermes_cursor_event:"
+_CURSOR_TOOL_NAMES = {
+    "read": "read_file",
+    "shell": "terminal",
+    "grep": "search_files",
+    "search": "search_files",
+}
+
+
+def _decode_cursor_event(text: str) -> dict[str, Any] | None:
+    if not isinstance(text, str) or not text.startswith(_CURSOR_EVENT_PREFIX):
+        return None
+    encoded = text[len(_CURSOR_EVENT_PREFIX):]
+    try:
+        padding = "=" * (-len(encoded) % 4)
+        value = json.loads(base64.urlsafe_b64decode(encoded + padding).decode("utf-8"))
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def make_thinking_cb(
     conn: acp.Client,
     session_id: str,
     loop: asyncio.AbstractEventLoop,
 ) -> Callable:
-    """Create a ``thinking_callback`` for AIAgent."""
+    """Create a reasoning callback, including Cursor proxy progress events."""
+
+    cursor_tool_calls: dict[str, tuple[str, str, dict[str, Any]]] = {}
 
     def _thinking(text: str) -> None:
         if not text:
+            return
+        cursor_event = _decode_cursor_event(text)
+        if cursor_event is not None and cursor_event.get("kind") == "tool":
+            source_id = str(cursor_event.get("callId") or "")
+            phase = str(cursor_event.get("phase") or "")
+            raw_name = str(cursor_event.get("name") or "tool")
+            tool_name = _CURSOR_TOOL_NAMES.get(raw_name, f"cursor_{raw_name}")
+            args = cursor_event.get("args")
+            if not isinstance(args, dict):
+                args = {}
+
+            if phase == "started":
+                tool_call_id = make_tool_call_id()
+                cursor_tool_calls[source_id] = (tool_call_id, tool_name, args)
+                _send_update(
+                    conn,
+                    session_id,
+                    loop,
+                    build_tool_start(tool_call_id, tool_name, args),
+                )
+                return
+
+            if phase in {"completed", "failed"}:
+                tracked = cursor_tool_calls.pop(source_id, None)
+                if tracked is None:
+                    tool_call_id = make_tool_call_id()
+                    tracked = (tool_call_id, tool_name, args)
+                    _send_update(
+                        conn,
+                        session_id,
+                        loop,
+                        build_tool_start(tool_call_id, tool_name, args),
+                    )
+                tool_call_id, tracked_name, tracked_args = tracked
+                result_value = cursor_event.get("result")
+                if phase == "failed" and not isinstance(result_value, dict):
+                    result_value = {
+                        "success": False,
+                        "error": result_value or "Cursor tool failed",
+                    }
+                try:
+                    result = json.dumps(result_value, ensure_ascii=False, default=str)
+                except (TypeError, ValueError):
+                    result = str(result_value)
+                _send_update(
+                    conn,
+                    session_id,
+                    loop,
+                    build_tool_complete(
+                        tool_call_id,
+                        tracked_name,
+                        result=result,
+                        function_args=tracked_args,
+                    ),
+                )
+                return
+
             return
         update = acp.update_agent_thought_text(text)
         _send_update(conn, session_id, loop, update)

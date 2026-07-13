@@ -1243,8 +1243,18 @@ class GatewaySlashCommandsMixin:
             "  /platform resume <name> — re-queue a paused platform"
         )
 
+    def _restart_starts_new_session(self, event: MessageEvent) -> bool:
+        """Return whether this platform opts into resetting before /restart."""
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", None)
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = adapters.get(platform)
+        config = getattr(adapter, "config", None)
+        extra = (getattr(config, "extra", {}) or {}) if config is not None else {}
+        return is_truthy_value(extra.get("restart_starts_new_session", False))
+
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /restart command - drain active work, then restart the gateway."""
+        """Handle /restart command - optionally reset the session, then restart."""
         from gateway.run import _hermes_home
         # Defensive idempotency check: if the previous gateway process
         # recorded this same /restart (same platform + update_id) and the new
@@ -1265,6 +1275,12 @@ class GatewaySlashCommandsMixin:
                 event.platform_update_id,
             )
             return ""
+
+        # A platform may opt into a clean session boundary before restart. This
+        # prevents oversized conversation history from being auto-resumed and
+        # compressed on the restart path.
+        if self._restart_starts_new_session(event):
+            await self._handle_reset_command(event)
 
         if self._restart_requested or self._draining:
             count = self._running_agent_count()

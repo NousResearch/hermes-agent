@@ -8,38 +8,12 @@ import { composerPlainText, normalizeComposerEditorDom, placeCaretEnd, refChipEl
 /** A chip to insert: a raw `@kind:value` string, or a typed value + display label. */
 export type InlineRefInput = string | { kind: string; label?: string; value: string }
 
-/** MIME for an in-app session drag (sidebar row → composer). */
-export const HERMES_SESSION_MIME = 'application/x-hermes-session'
-
+/** A dragged sidebar session — carried in-memory by the pointer drag session
+ *  (session-drag.ts); sessions never ride native DnD. */
 export interface SessionDragPayload {
   id: string
   profile: string
   title: string
-}
-
-export function writeSessionDrag(transfer: DataTransfer, payload: SessionDragPayload) {
-  transfer.setData(HERMES_SESSION_MIME, JSON.stringify(payload))
-  transfer.effectAllowed = 'copy'
-}
-
-export function dragHasSession(transfer: DataTransfer | null) {
-  return Boolean(transfer) && Array.from(transfer!.types || []).includes(HERMES_SESSION_MIME)
-}
-
-export function readSessionDrag(transfer: DataTransfer | null): null | SessionDragPayload {
-  const raw = transfer?.getData(HERMES_SESSION_MIME)
-
-  if (!raw) {
-    return null
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<SessionDragPayload>
-
-    return parsed.id ? { id: parsed.id, profile: parsed.profile || 'default', title: parsed.title || '' } : null
-  } catch {
-    return null
-  }
 }
 
 /** Build a `@session:<profile>/<id>` chip. Value carries the metadata the agent

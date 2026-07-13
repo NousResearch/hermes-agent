@@ -1,7 +1,7 @@
 import { useRef } from 'react'
 
 import type { DragKind } from '@/app/chat/hooks/use-file-drop-zone'
-import { Codicon } from '@/components/ui/codicon'
+import { DROP_SHEET_BLUR_CLASS, DROP_SHEET_CLASS, DropPill } from '@/components/ui/drop-affordance'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
@@ -38,11 +38,16 @@ export function ChatDropOverlay({ kind }: { kind: DragKind }) {
       )}
       data-slot="chat-drop-overlay"
     >
-      <div className="absolute inset-2 rounded-2xl border-2 border-dashed border-[color-mix(in_srgb,var(--dt-composer-ring)_55%,transparent)] bg-[color-mix(in_srgb,var(--dt-card)_55%,transparent)] backdrop-blur-[2px] [-webkit-backdrop-filter:blur(2px)]" />
-      <div className="relative flex items-center gap-2 rounded-full border border-[color-mix(in_srgb,var(--dt-composer-ring)_45%,transparent)] bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 text-[0.8125rem] font-medium text-foreground shadow-composer">
-        <Codicon className="text-(--ui-accent)" name={icon} size="1rem" />
+      <div
+        className={cn(
+          DROP_SHEET_CLASS,
+          DROP_SHEET_BLUR_CLASS,
+          'absolute inset-2 border-[color-mix(in_srgb,var(--dt-composer-ring)_55%,transparent)] bg-[color-mix(in_srgb,var(--dt-card)_55%,transparent)]'
+        )}
+      />
+      <DropPill className="relative" icon={icon}>
         {label}
-      </div>
+      </DropPill>
     </div>
   )
 }

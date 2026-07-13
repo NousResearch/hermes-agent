@@ -205,6 +205,12 @@ TOOLSETS = {
         "tools": ["todo"],
         "includes": []
     },
+
+    "goal": {
+        "description": "Set a persistent per-session goal for autonomous continuation",
+        "tools": ["set_goal"],
+        "includes": []
+    },
     
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",

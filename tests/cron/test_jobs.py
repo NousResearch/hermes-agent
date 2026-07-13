@@ -257,6 +257,7 @@ class TestJobCRUD:
         jobs = list_jobs()
         assert len(jobs) == 2
 
+
     def test_list_jobs_normalizes_partial_legacy_records(self, tmp_cron_dir):
         save_jobs([
             {
@@ -413,6 +414,47 @@ class TestUpdateJob:
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})
         assert result is None
+
+    def test_update_repeat_scalar_preserves_repeat_shape_and_completed_count(self, tmp_cron_dir):
+        job = create_job(prompt="Repeat me", schedule="every 1h")
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["repeat"]["completed"] == 1
+
+        updated = update_job(job["id"], {"repeat": 3})
+
+        assert updated["repeat"] == {"times": 3, "completed": 1}
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["repeat"] == {"times": 3, "completed": 2}
+
+    def test_update_repeat_none_preserves_repeat_shape_and_clears_limit(self, tmp_cron_dir):
+        job = create_job(prompt="Repeat me", schedule="every 1h", repeat=2)
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["repeat"]["completed"] == 1
+
+        updated = update_job(job["id"], {"repeat": None})
+
+        assert updated["repeat"] == {"times": None, "completed": 1}
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"]) is not None
+        assert get_job(job["id"])["repeat"] == {"times": None, "completed": 2}
+
+    def test_mark_job_run_normalizes_legacy_scalar_repeat(self, tmp_cron_dir):
+        job = create_job(prompt="Legacy repeat", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["repeat"] = 3
+        save_jobs(jobs)
+
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        assert updated["repeat"] == {"times": 3, "completed": 1}
+
+    @pytest.mark.parametrize("bad_repeat", [0, -1, "3", 2.5, True])
+    def test_update_repeat_rejects_invalid_values(self, tmp_cron_dir, bad_repeat):
+        job = create_job(prompt="Bad repeat", schedule="every 1h")
+
+        with pytest.raises(ValueError, match="Repeat"):
+            update_job(job["id"], {"repeat": bad_repeat})
 
     def test_update_rejects_id_change(self, tmp_cron_dir):
         """Job IDs are filesystem path components — must be immutable."""
@@ -1802,6 +1844,31 @@ class TestClaimDispatch:
         # Persisted BEFORE any side effect — survives a crash.
         assert load_jobs()[0]["repeat"]["completed"] == 1
 
+    def test_claim_normalizes_legacy_scalar_repeat(self, tmp_cron_dir):
+        job = self._oneshot()
+        job["repeat"] = 3
+        save_jobs([job])
+
+        assert claim_dispatch("os1") is True
+        assert load_jobs()[0]["repeat"] == {"times": 3, "completed": 1}
+
+    def test_claim_repairs_malformed_oneshot_repeat_as_finite(self, tmp_cron_dir):
+        job = self._oneshot()
+        job["repeat"] = "bad"
+        save_jobs([job])
+
+        assert claim_dispatch("os1") is True
+        assert load_jobs()[0]["repeat"] == {"times": 1, "completed": 1}
+
+    def test_claim_repairs_repeat_when_schedule_is_malformed(self, tmp_cron_dir):
+        job = self._oneshot()
+        job["schedule"] = None
+        job["repeat"] = "bad"
+        save_jobs([job])
+
+        assert claim_dispatch("os1") is True
+        assert load_jobs()[0]["repeat"] == {"times": None, "completed": 0}
+
     def test_already_dispatched_oneshot_is_removed(self, tmp_cron_dir):
         # A prior tick claimed (completed==times) then died before mark_job_run
         # could remove the job.  The next claim must refuse AND clean up.
@@ -1859,6 +1926,19 @@ class TestClaimDispatch:
         mark_job_run("rec", success=True)
         assert load_jobs()[0]["repeat"]["completed"] == 2
 
+    def test_get_due_jobs_normalizes_legacy_scalar_repeat(self, tmp_cron_dir):
+        past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        job = self._oneshot()
+        job["schedule"]["run_at"] = past
+        job["next_run_at"] = past
+        job["repeat"] = 3
+        save_jobs([job])
+
+        due = get_due_jobs()
+
+        assert [item["id"] for item in due] == ["os1"]
+        assert load_jobs()[0]["repeat"] == {"times": 3, "completed": 0}
+
     def test_get_due_jobs_removes_stale_maxed_oneshot(self, tmp_cron_dir):
         # A claimed one-shot whose tick died leaves completed>=times with
         # last_run_at still unset, so the recovery helper re-arms it as due.
@@ -1893,6 +1973,7 @@ class TestClaimDispatch:
             "name": "bad",
             "enabled": True,
             "schedule": None,  # poison: not a dict
+            "repeat": "bad",
             "next_run_at": future,  # not due
         }
         good = {

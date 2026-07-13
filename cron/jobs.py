@@ -363,6 +363,73 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _is_plain_int(value: Any) -> bool:
+    """Return True for integers, excluding bool's int subclass."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _repeat_completed_count(repeat_state: Any) -> int:
+    """Extract a valid completed count from an existing repeat state."""
+    if isinstance(repeat_state, dict):
+        completed = repeat_state.get("completed", 0)
+        if _is_plain_int(completed) and completed >= 0:
+            return completed
+    return 0
+
+
+def _normalize_repeat_state(
+    repeat: Any,
+    existing_repeat: Optional[Any] = None,
+) -> Dict[str, Optional[int]]:
+    """Normalize API/scalar repeat values to the persisted scheduler shape."""
+    completed = _repeat_completed_count(existing_repeat)
+    if isinstance(repeat, dict):
+        times = repeat.get("times")
+        completed = repeat.get("completed", completed)
+        if not _is_plain_int(completed) or completed < 0:
+            raise ValueError("Repeat completed count must be a non-negative integer")
+    else:
+        times = repeat
+
+    if times is None:
+        normalized_times = None
+    elif _is_plain_int(times) and times > 0:
+        normalized_times = times
+    elif isinstance(repeat, dict) and _is_plain_int(times) and times <= 0:
+        normalized_times = None
+    else:
+        raise ValueError("Repeat must be a positive integer or null")
+
+    return {"times": normalized_times, "completed": completed}
+
+
+def _repair_repeat_state(job: Dict[str, Any]) -> bool:
+    """Repair a persisted legacy repeat value in place; return whether it changed."""
+    if "repeat" not in job:
+        return False
+    raw_repeat = job.get("repeat")
+    try:
+        normalized = _normalize_repeat_state(raw_repeat, raw_repeat)
+    except ValueError as exc:
+        schedule = job.get("schedule")
+        schedule_kind = schedule.get("kind") if isinstance(schedule, dict) else None
+        logger.warning(
+            "Job '%s' (%s) had invalid repeat state %r; repairing to safe default: %s",
+            job.get("name", job.get("id", "unknown")),
+            job.get("id", "unknown"),
+            raw_repeat,
+            exc,
+        )
+        normalized = {
+            "times": 1 if schedule_kind == "once" else None,
+            "completed": 0,
+        }
+    if raw_repeat == normalized:
+        return False
+    job["repeat"] = normalized
+    return True
+
+
 def _coerce_job_text(value: Any, fallback: str = "") -> str:
     """Coerce legacy/hand-edited nullable cron fields to strings for readers."""
     if value is None:
@@ -1309,6 +1376,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
 
+            if "repeat" in updates:
+                updates["repeat"] = _normalize_repeat_state(
+                    updates["repeat"], job.get("repeat")
+                )
+
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
@@ -1494,6 +1566,8 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # is claimable again. No-op if the job never carried a claim.
                 if job.get("run_claim") is not None:
                     job["run_claim"] = None
+
+                _repair_repeat_state(job)
                 
                 # Increment completed count.  Finite one-shot jobs are
                 # pre-claimed by claim_dispatch() BEFORE the side effect runs
@@ -1582,13 +1656,20 @@ def claim_dispatch(job_id: str) -> bool:
         for i, job in enumerate(jobs):
             if job["id"] != job_id:
                 continue
-            if job.get("schedule", {}).get("kind") != "once":
+            repeat_repaired = _repair_repeat_state(job)
+            schedule = job.get("schedule")
+            schedule_kind = schedule.get("kind") if isinstance(schedule, dict) else None
+            if schedule_kind != "once":
+                if repeat_repaired:
+                    save_jobs(jobs)
                 return True  # recurring jobs use advance_next_run(), not dispatch claims
             repeat = job.get("repeat")
             if not repeat:
                 return True  # no repeat limit — always dispatch
             times = repeat.get("times")
             if times is None or times <= 0:
+                if repeat_repaired:
+                    save_jobs(jobs)
                 return True  # infinite — always dispatch
             completed = repeat.get("completed", 0)
             if completed >= times:
@@ -1793,6 +1874,10 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     for rj in raw_jobs:
         if not rj.get("id"):
             rj["id"] = rj.pop("job_id", None) or uuid.uuid4().hex[:12]
+            needs_save = True
+
+    for rj in raw_jobs:
+        if _repair_repeat_state(rj):
             needs_save = True
 
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]

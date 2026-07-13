@@ -54,6 +54,29 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
 )
 
 
+# ── Prefix-to-provider map for per-call model override ──────────────
+# When delegate_task receives model="copilot/gpt-5.5" without an explicit
+# provider, the prefix before "/" is used to auto-detect the provider.
+# Add new provider prefixes here so they're discoverable in one place.
+_PREFIX_TO_PROVIDER: dict[str, str] = {
+    "copilot": "copilot-acp",
+    "openai": "openai-codex",
+    "openrouter": "openrouter",
+    "anthropic": "anthropic",
+    "google": "google",
+    "gemini": "google",
+    "deepseek": "deepseek",
+    "xai": "xai",
+    "grok": "xai",
+    "zai": "zai",
+    "glm": "zai",
+    "minimax": "minimax",
+    "nous": "nous",
+    "kimi": "kimi-coding",
+    "qwen": "qwen-oauth",
+}
+
+
 # ---------------------------------------------------------------------------
 # Subagent approval callbacks
 # ---------------------------------------------------------------------------
@@ -3063,7 +3086,10 @@ def _resolve_delegation_credentials(
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
-    # Per-call values beat config values
+    # Per-call values beat config values (strip whitespace so empty/whitespace-only
+    # strings don't override a configured value)
+    call_model = call_model.strip() if call_model else None
+    call_provider = call_provider.strip() if call_provider else None
     effective_model = call_model or configured_model
     effective_provider = call_provider or configured_provider
 
@@ -3074,25 +3100,16 @@ def _resolve_delegation_credentials(
     # we shouldn't second-guess their intent.
     if call_model and effective_model and not effective_provider and "/" in effective_model:
         prefix = effective_model.split("/", 1)[0].strip().lower()
-        _PREFIX_TO_PROVIDER = {
-            "copilot": "copilot-acp",
-            "openai": "openai-codex",
-            "openrouter": "openrouter",
-            "anthropic": "anthropic",
-            "google": "google",
-            "gemini": "google",
-            "deepseek": "deepseek",
-            "xai": "xai",
-            "grok": "xai",
-            "zai": "zai",
-            "glm": "zai",
-            "minimax": "minimax",
-            "nous": "nous",
-            "kimi": "kimi-coding",
-            "qwen": "qwen-oauth",
-        }
         if prefix in _PREFIX_TO_PROVIDER:
             effective_provider = _PREFIX_TO_PROVIDER[prefix]
+        else:
+            logger.warning(
+                "delegate_task: unrecognized model prefix '%s' in model '%s' — "
+                "no provider auto-detected; child will inherit parent's provider "
+                "which may not support this model. Known prefixes: %s.",
+                prefix, effective_model,
+                ", ".join(sorted(_PREFIX_TO_PROVIDER)),
+            )
 
     # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
     # wire protocol — they cannot be reached via OpenAI chat_completions against

@@ -25,6 +25,7 @@ from tools.delegate_tool import (
     _load_config,
     _LEGACY_EVENT_MAP,
     MAX_DEPTH,
+    _PREFIX_TO_PROVIDER,
     check_delegate_requirements,
     delegate_task,
     _build_child_agent,
@@ -1427,6 +1428,84 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
 
+    # ── Per-call prefix auto-detection edge cases ─────────────────────
+
+    def test_unknown_model_prefix_logs_warning(self):
+        """An unrecognized prefix logs a warning and falls through to provider=None."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "", "provider": ""}
+        with self.assertLogs("tools.delegate_tool", level="WARNING") as logs:
+            creds = _resolve_delegation_credentials(
+                cfg, parent, call_model="unknown/model-v7"
+            )
+        self.assertEqual(creds["model"], "unknown/model-v7")
+        self.assertIsNone(creds["provider"])
+        self.assertIsNone(creds["base_url"])
+        self.assertIsNone(creds["api_key"])
+        joined = "\n".join(logs.output)
+        self.assertIn("unrecognized model prefix 'unknown'", joined)
+        self.assertIn("copilot", joined)  # known prefixes listed
+
+    def test_model_without_slash_never_triggers_prefix_detection(self):
+        """A model with no '/' at all — no prefix detection at all."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "deepseek/deepseek-v4-pro", "provider": ""}
+        creds = _resolve_delegation_credentials(
+            cfg, parent, call_model="gpt-5.5"
+        )
+        self.assertEqual(creds["model"], "gpt-5.5")
+        self.assertIsNone(creds["provider"])
+
+    def test_empty_call_model_does_not_override(self):
+        """An empty string call_model should not override a configured model."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "deepseek/deepseek-v4-pro", "provider": ""}
+        creds = _resolve_delegation_credentials(
+            cfg, parent, call_model=""
+        )
+        self.assertEqual(creds["model"], "deepseek/deepseek-v4-pro")
+
+    def test_whitespace_only_call_model_does_not_override(self):
+        """Whitespace-only call_model should not override configured model."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "deepseek/deepseek-v4-pro", "provider": ""}
+        creds = _resolve_delegation_credentials(
+            cfg, parent, call_model="  "
+        )
+        self.assertEqual(creds["model"], "deepseek/deepseek-v4-pro")
+
+    def test_call_model_detects_every_known_prefix(self):
+        """Every entry in _PREFIX_TO_PROVIDER is reachable via call_model prefix."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "", "provider": ""}
+        for prefix, expected_provider in _PREFIX_TO_PROVIDER.items():
+            model_name = f"{prefix}/test-model"
+            # Prefixes that map to providers needing runtime resolution (copilot-acp,
+            # openai-codex) will fail in test env. Catch known resolver failures to
+            # assert the prefix *would* have been correct.
+            try:
+                creds = _resolve_delegation_credentials(
+                    cfg, parent, call_model=model_name
+                )
+                self.assertEqual(
+                    creds["model"], model_name,
+                    f"prefix '{prefix}' should pass model unchanged",
+                )
+                self.assertEqual(
+                    creds["provider"], expected_provider,
+                    f"prefix '{prefix}' should map to provider '{expected_provider}', "
+                    f"got '{creds['provider']}'",
+                )
+            except ValueError as exc:
+                # Runtime-provider resolution failure (missing CLI, unconfigured
+                # API key) — check the error references the provider we'd expect,
+                # confirming the prefix detection worked before the resolver failed.
+                msg = str(exc)
+                self.assertIn(
+                    expected_provider, msg,
+                    f"prefix '{prefix}' should reach provider '{expected_provider}' "
+                    f"before failing; got: {msg}",
+                )
 
 
 class TestDelegationProviderIntegration(unittest.TestCase):

@@ -364,6 +364,27 @@ _HARDLINE_SYSTEM_DIRS = (
 # catching `rm -rf "/"`.
 _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 
+# ``kill 1`` targets the init/supervisor process in the current PID namespace.
+# In container deployments where terminal() uses the local backend, that is
+# the container's PID 1: terminating it drops Hermes and every active session.
+# Match PID 1 as a complete numeric target anywhere in kill's target list,
+# including accepted signed/zero-padded spellings and path-qualified binaries,
+# while leaving PID 10/11 and quoted prose alone.
+# Signal 0 and kill's list/help modes are non-terminating probes, so they stay
+# available instead of being pulled onto the hardline floor.
+_PID1_KILL_PATTERN = (
+    _CMDPOS
+    + r'(?:[^\s;&|`]+/)?kill\s+'
+    + r'(?!(?:'
+      r'-0(?:\s|$)|'
+      r'-(?:s|n)\s+0(?:\s|$)|'
+      r'--signal(?:=|\s+)0(?:\s|$)|'
+      r'-(?:l|L)(?:\s|$)|'
+      r'--(?:list|table|help|version)(?:[=\s]|$)'
+      r'))'
+    + r'(?=[^;&|`\n]*(?<!\S)["\']?\+?0*1["\']?(?=\s|$|[;&|)`]))'
+)
+
 HARDLINE_PATTERNS = [
     # rm recursive targeting the root filesystem or protected roots.
     # `${HOME}` brace form and quoted paths (`rm -rf "/"`, `rm -rf "$HOME"`)
@@ -393,6 +414,8 @@ HARDLINE_PATTERNS = [
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system
     (r'\bkill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    # Killing a container's init/supervisor terminates the whole deployment.
+    (_PID1_KILL_PATTERN, "signal init/supervisor process (PID 1)"),
     # System shutdown / reboot — anchor to command position (start of line,
     # after a command separator, or after sudo/env wrappers) so we don't
     # false-positive on "echo reboot" or "grep 'shutdown' logs".

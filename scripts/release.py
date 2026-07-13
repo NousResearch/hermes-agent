@@ -1968,6 +1968,7 @@ AUTHOR_MAP = {
     "i@dex.moe": "dexhunter",  # PR #60339 salvage (skills snapshot manifest speedup)
     "1torhan@protonmail.com": "uzaylisak",  # PR #29988 salvage (detect_local_server_type process-lifetime cache)
     "zhchl@hermes-agent.local": "8294",  # PR #50572 salvage (honor config context_length on banner)
+    "koho.jung@outlook.com": "kohoj",  # PR #58527/#62486 (desktop composer source-marker: refresh default-derived model from config.yaml; #63835)
 }
 
 

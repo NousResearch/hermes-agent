@@ -5,6 +5,7 @@ import sys
 import types
 import io
 import contextlib
+import sqlite3
 from argparse import Namespace
 from types import SimpleNamespace
 
@@ -90,6 +91,34 @@ class _FakeCheckpointConnection:
 
 
 class TestDoctorLargeWalRepair:
+    def test_real_sqlite_wal_is_truncated_on_disk(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        wal_path = tmp_path / "state.db-wal"
+        writer = sqlite3.connect(str(db_path))
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            writer.execute("CREATE TABLE events (payload TEXT)")
+            writer.executemany(
+                "INSERT INTO events(payload) VALUES (?)",
+                [("x" * 1024,) for _ in range(128)],
+            )
+            writer.commit()
+            before_size = wal_path.stat().st_size
+            assert before_size > 1
+
+            result = doctor_mod._checkpoint_oversized_state_wal(
+                db_path,
+                wal_path,
+                threshold_bytes=1,
+            )
+
+            assert result.before_size == before_size
+            assert result.truncate_result is not None
+            assert result.after_size <= 1
+            assert result.retained_large_wal is False
+        finally:
+            writer.close()
+
     def test_falls_back_to_truncate_when_passive_retains_large_wal(
         self, monkeypatch, tmp_path
     ):

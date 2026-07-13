@@ -128,9 +128,22 @@ class TestTranslateOneServer:
 
 
 class TestHermesToolsPythonExecutable:
-    def test_prefers_repo_venv_python_over_current_interpreter(self, tmp_path):
+    def test_prefers_dot_venv_when_both_checkout_environments_exist(self, tmp_path):
         root = tmp_path / "hermes-agent"
-        venv_python = root / "venv" / "bin" / "python3"
+        dot_venv_python = root / ".venv" / "bin" / "python3"
+        legacy_venv_python = root / "venv" / "bin" / "python3"
+        dot_venv_python.parent.mkdir(parents=True)
+        legacy_venv_python.parent.mkdir(parents=True)
+        dot_venv_python.write_text("#!/bin/sh\n")
+        legacy_venv_python.write_text("#!/bin/sh\n")
+
+        chosen = _hermes_tools_python_executable(root, fallback="/usr/bin/python")
+
+        assert chosen == str(dot_venv_python)
+
+    def test_prefers_dot_venv_python_over_current_interpreter(self, tmp_path):
+        root = tmp_path / "hermes-agent"
+        venv_python = root / ".venv" / "bin" / "python3"
         venv_python.parent.mkdir(parents=True)
         venv_python.write_text("#!/bin/sh\n")
 

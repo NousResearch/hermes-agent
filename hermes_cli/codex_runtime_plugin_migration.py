@@ -563,13 +563,15 @@ def _hermes_tools_python_executable(source_root: Path, fallback: Optional[str] =
     server has Hermes' optional deps (notably mcp), then fall back to the
     current interpreter for packaged installs.
     """
+    # ``.venv`` is the documented checkout environment (AGENTS.md); keep it
+    # ahead of the legacy ``venv`` directory when both happen to exist.
     candidates = [
-        source_root / "venv" / "bin" / "python3",
         source_root / ".venv" / "bin" / "python3",
-        source_root / "venv" / "bin" / "python",
         source_root / ".venv" / "bin" / "python",
-        source_root / "venv" / "Scripts" / "python.exe",
         source_root / ".venv" / "Scripts" / "python.exe",
+        source_root / "venv" / "bin" / "python3",
+        source_root / "venv" / "bin" / "python",
+        source_root / "venv" / "Scripts" / "python.exe",
     ]
     for candidate in candidates:
         if candidate.is_file():

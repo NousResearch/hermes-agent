@@ -115,6 +115,58 @@ class TestOpenaiTtsSpeed:
 
 
 # ---------------------------------------------------------------------------
+# OpenAI TTS language (lang_code for OpenAI-compatible endpoints)
+# ---------------------------------------------------------------------------
+
+class TestOpenaiTtsLangCode:
+    def _run(self, tts_config, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        mock_response = MagicMock()
+        mock_client = MagicMock()
+        mock_client.audio.speech.create.return_value = mock_response
+        mock_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
+             patch("tools.tts_tool._resolve_openai_audio_client_config",
+                   return_value=("test-key", None)):
+            from tools.tts_tool import _generate_openai_tts
+            _generate_openai_tts("Hola", str(tmp_path / "out.mp3"), tts_config)
+        return mock_client.audio.speech.create
+
+    def test_default_no_extra_body(self, tmp_path, monkeypatch):
+        """No language config => no extra_body kwarg in create call."""
+        create = self._run({}, tmp_path, monkeypatch)
+        kwargs = create.call_args[1]
+        assert "extra_body" not in kwargs
+
+    def test_language_forwarded_as_lang_code(self, tmp_path, monkeypatch):
+        """tts.openai.language is forwarded as extra_body lang_code."""
+        create = self._run({"openai": {"language": "es"}}, tmp_path, monkeypatch)
+        kwargs = create.call_args[1]
+        assert kwargs["extra_body"] == {"lang_code": "es"}
+
+    def test_empty_language_omitted(self, tmp_path, monkeypatch):
+        """Empty language string => extra_body omitted."""
+        create = self._run({"openai": {"language": ""}}, tmp_path, monkeypatch)
+        kwargs = create.call_args[1]
+        assert "extra_body" not in kwargs
+
+    def test_global_language_not_forwarded(self, tmp_path, monkeypatch):
+        """Only tts.openai.language is honored, not a top-level tts.language."""
+        create = self._run({"language": "es"}, tmp_path, monkeypatch)
+        kwargs = create.call_args[1]
+        assert "extra_body" not in kwargs
+
+    def test_language_coexists_with_speed(self, tmp_path, monkeypatch):
+        """language and speed are forwarded independently."""
+        create = self._run({"openai": {"language": "es", "speed": 2.0}},
+                           tmp_path, monkeypatch)
+        kwargs = create.call_args[1]
+        assert kwargs["extra_body"] == {"lang_code": "es"}
+        assert kwargs["speed"] == 2.0
+
+
+# ---------------------------------------------------------------------------
 # MiniMax TTS (t2a_v2 endpoint: nested voice_setting/audio_setting,
 # JSON response with hex-encoded audio.  Falls back to the legacy
 # text_to_speech endpoint shape when the base_url points at it.)

@@ -4631,11 +4631,30 @@ def run_conversation(
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 
+                turn_content = assistant_message.content or ""
+
+                # Classify tools in this turn to determine if they are all housekeeping.
+                # This classification is needed regardless of whether the turn has visible content,
+                # because a substantive tool-only turn must invalidate any older housekeeping fallback.
+                _HOUSEKEEPING_TOOLS = frozenset({
+                    "memory", "todo", "skill_manage", "session_search",
+                })
+                _all_housekeeping = all(
+                    tc.function.name in _HOUSEKEEPING_TOOLS
+                    for tc in assistant_message.tool_calls
+                )
+
+                # If this turn has substantive tools (non-housekeeping), clear any older fallback.
+                # Prevents a two-turn-old housekeeping narration from being treated as if it belonged
+                # to the immediately preceding substantive tool turn.
+                if assistant_message.tool_calls and not _all_housekeeping:
+                    agent._last_content_with_tools = None
+                    agent._last_content_tools_all_housekeeping = False
+
                 # If this turn has both content AND tool_calls, capture the content
                 # as a fallback final response. Common pattern: model delivers its
                 # answer and calls memory/skill tools as a side-effect in the same
                 # turn. If the follow-up turn after tools is empty, we use this.
-                turn_content = assistant_message.content or ""
                 if turn_content and agent._has_content_after_think_block(turn_content):
                     agent._last_content_with_tools = turn_content
                     # Only mute subsequent output when EVERY tool call in
@@ -4643,13 +4662,6 @@ def run_conversation(
                     # skill_manage, etc.).  If any substantive tool is present
                     # (search_files, read_file, write_file, terminal, ...),
                     # keep output visible so the user sees progress.
-                    _HOUSEKEEPING_TOOLS = frozenset({
-                        "memory", "todo", "skill_manage", "session_search",
-                    })
-                    _all_housekeeping = all(
-                        tc.function.name in _HOUSEKEEPING_TOOLS
-                        for tc in assistant_message.tool_calls
-                    )
                     agent._last_content_tools_all_housekeeping = _all_housekeeping
                     if _all_housekeeping and agent._has_stream_consumers():
                         agent._mute_post_response = True

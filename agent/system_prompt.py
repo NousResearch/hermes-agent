@@ -283,10 +283,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
             # OpenAI GPT/Codex execution discipline (tool persistence,
             # prerequisite checks, verification, anti-hallucination).
-            # Also applied to xAI Grok — same failure modes (claims completion
-            # without tool calls, suggests workarounds instead of using
-            # existing tools, replies with plans instead of executing).
-            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
+            # Also applied to xAI Grok and the broader non-Google tool-use-
+            # enforcement set — the same failure modes appear on GLM,
+            # DeepSeek, Qwen (claims completion without tool calls, suggests
+            # workarounds instead of using existing tools, replies with plans
+            # or plain-text ``[TOOL_CALL]`` markers instead of executing via
+            # the structured tool_calls channel). The OPENAI_ prefix
+            # reflects origin, not exclusivity — see the comment in
+            # ``prompt_builder.OPENAI_MODEL_EXECUTION_GUIDANCE``. Google
+            # models are skipped because they get the more specific
+            # ``GOOGLE_MODEL_OPERATIONAL_GUIDANCE`` block above.
+            _openai_exec_families = tuple(
+                m for m in TOOL_USE_ENFORCEMENT_MODELS
+                if m not in ("gemini", "gemma")
+            )
+            if any(fam in _model_lower for fam in _openai_exec_families):
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])

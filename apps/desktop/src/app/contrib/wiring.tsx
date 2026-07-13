@@ -59,6 +59,7 @@ import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/t
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
+import { useSubagentLiveness } from '../agents/use-subagent-liveness'
 import { requestComposerInsert } from '../chat/composer/focus'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { CommandPalette } from '../command-palette'
@@ -608,6 +609,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshHermesConfig,
     refreshSessions
   })
+
+  useSubagentLiveness()
 
   // Only the open messaging transcript needs its own poll — local chats are
   // live over the websocket already.

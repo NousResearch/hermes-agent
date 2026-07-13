@@ -40,6 +40,7 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { resetTileRuntimeBindings } from '@/store/session-states'
+import { $subagentsBySession } from '@/store/subagents'
 import type { RpcEvent } from '@/types/hermes'
 
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
@@ -403,11 +404,20 @@ export function useGatewayBoot({
         }
       }
 
+      for (const list of Object.values($subagentsBySession.get())) {
+        for (const item of list) {
+          if (item.profile && (item.status === 'queued' || item.status === 'running')) {
+            keep.add(normalizeProfileKey(item.profile))
+          }
+        }
+      }
+
       pruneSecondaryGateways(keep)
     }
 
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
+    const offSubagents = $subagentsBySession.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
 
     const offWindowState = desktop.onWindowStateChanged?.(payload => {
@@ -503,6 +513,7 @@ export function useGatewayBoot({
       clearInterval(keepaliveTimer)
       offWorking()
       offAttention()
+      offSubagents()
       offActiveProfile()
       window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onVisible)

@@ -15,6 +15,7 @@ import {
   setSessionsLoading,
   setSessionsTotal
 } from '@/store/session'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from './gateway-switch'
 
@@ -32,6 +33,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setSessionsLoading(false)
     setFreshDraftReady(false)
     $sessionsLimit.set(SIDEBAR_SESSIONS_PAGE_SIZE * 3)
+    upsertSubagent('s1', { goal: 'old worker', status: 'running', subagent_id: 'worker-1', task_index: 0 })
   })
 
   afterEach(() => {
@@ -39,6 +41,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setSessions([])
     setCronSessions([])
     setMessagingSessions([])
+    $subagentsBySession.set({})
     setSessionsLoading(true)
     $gatewaySwitching.set(false)
   })
@@ -53,5 +56,6 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
+    expect($subagentsBySession.get()).toEqual({})
   })
 })

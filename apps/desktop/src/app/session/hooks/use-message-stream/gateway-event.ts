@@ -476,7 +476,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             sessionId,
             payload as Record<string, unknown>,
             event.type === 'subagent.spawn_requested' || event.type === 'subagent.start',
-            event.type
+            event.type,
+            event.profile
           )
         }
       } else if (event.type === 'clarify.request') {

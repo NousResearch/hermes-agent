@@ -26,6 +26,18 @@ describe('subagent store', () => {
     expect(item?.summary).toBe('done')
   })
 
+  it('records the renderer-side source profile separately from the backend payload', () => {
+    upsertSubagent(
+      's1',
+      { goal: 'scan files', status: 'running', subagent_id: 'a1', task_index: 0 },
+      true,
+      undefined,
+      'review'
+    )
+
+    expect(listFor('s1')[0]?.profile).toBe('review')
+  })
+
   it('builds parent/child trees', () => {
     upsertSubagent('s1', { goal: 'parent', status: 'running', subagent_id: 'p', task_index: 0 })
     upsertSubagent('s1', { goal: 'child', parent_id: 'p', status: 'queued', subagent_id: 'c', task_index: 1 })

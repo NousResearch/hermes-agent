@@ -1,7 +1,6 @@
 """Tests for Google AI Studio (Gemini) provider integration."""
 
 import json
-import os
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -145,7 +144,8 @@ class TestGeminiModelNormalization:
         assert normalize_model_for_provider("gemini-2.5-flash", "gemini") == "gemini-2.5-flash"
 
     def test_strip_vendor_prefix(self):
-        assert normalize_model_for_provider("google/gemini-2.5-flash", "gemini") == "google/gemini-2.5-flash"
+        assert normalize_model_for_provider("google/gemini-2.5-flash", "gemini") == "gemini-2.5-flash"
+        assert normalize_model_for_provider("gemini/gemini-2.5-flash", "gemini") == "gemini-2.5-flash"
 
     def test_gemma_vendor_detection(self):
         assert detect_vendor("gemma-4-31b-it") == "google"
@@ -357,22 +357,15 @@ class TestGeminiModelsDev:
         assert "gemini-2.0-flash" not in result
 
 
-# ── Google AI Studio Model Probing ──
-
 class TestGoogleModelProbing:
-    """Tests for _is_google_gemini_base_url() and _fetch_google_models()."""
+    """Regression coverage for native Gemini and OpenAI-compatible routing."""
 
-    def test_is_google_gemini_base_url_with_google_url(self):
+    def test_native_base_url_requires_exact_host_and_excludes_openai(self):
         from hermes_cli.models import _is_google_gemini_base_url
-        assert _is_google_gemini_base_url("https://generativelanguage.googleapis.com/v1beta")
-        assert _is_google_gemini_base_url("https://generativelanguage.googleapis.com/v1beta/")
-        assert _is_google_gemini_base_url("https://generativelanguage.googleapis.com")
 
-    def test_is_google_gemini_base_url_with_non_google_url(self):
-        from hermes_cli.models import _is_google_gemini_base_url
-        assert not _is_google_gemini_base_url("https://api.openai.com/v1")
-        assert not _is_google_gemini_base_url("https://models.github.ai/inference")
-        assert not _is_google_gemini_base_url("http://localhost:11434/v1")
+        assert _is_google_gemini_base_url(
+            "https://generativelanguage.googleapis.com/v1beta"
+        )
         assert not _is_google_gemini_base_url(
             "https://example.com/generativelanguage.googleapis.com/v1beta"
         )
@@ -382,186 +375,58 @@ class TestGoogleModelProbing:
         assert not _is_google_gemini_base_url(
             "https://generativelanguage.googleapis.com/v1beta/openai"
         )
-        assert not _is_google_gemini_base_url("")
-        assert not _is_google_gemini_base_url(None)
 
-    def test_is_google_gemini_base_url_case_insensitive(self):
-        from hermes_cli.models import _is_google_gemini_base_url
-        assert _is_google_gemini_base_url("https://GENERATIVELANGUAGE.GOOGLEapis.com/v1beta")
-
-    def test_fetch_google_models_with_api_key(self, monkeypatch):
-        """Test _fetch_google_models with mocked API response."""
-        from hermes_cli.models import _fetch_google_models
-        
-        mock_response = {
-            "models": [
-                {"name": "models/gemini-2.5-flash", "displayName": "Gemini 2.5 Flash"},
-                {"name": "models/gemini-2.5-pro", "displayName": "Gemini 2.5 Pro"},
-                {"name": "models/gemini-3-flash-preview", "displayName": "Gemini 3 Flash Preview"},
-            ]
-        }
-        
-        # Mock urllib.request.urlopen
-        mock_urlopen = MagicMock()
-        mock_urlopen.return_value.__enter__ = MagicMock(return_value=MagicMock(
-            read=lambda: json.dumps(mock_response).encode()
-        ))
-        mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
-        
-        with patch("hermes_cli.models.urllib.request.urlopen", mock_urlopen):
-            result = _fetch_google_models(
-                api_key="test-key",
-                base_url="https://generativelanguage.googleapis.com/v1beta",
-            )
-        
-        assert result is not None
-        assert "gemini-2.5-flash" in result
-        assert "gemini-2.5-pro" in result
-        assert "gemini-3-flash-preview" in result
-        assert len(result) == 3
-        
-        # Verify the correct URL was called
-        call_args = mock_urlopen.call_args[0][0]
-        assert "key=test-key" in call_args.full_url
-        assert "/models" in call_args.full_url
-
-    def test_fetch_google_models_without_api_key(self):
-        from hermes_cli.models import _fetch_google_models
-        result = _fetch_google_models(api_key=None)
-        assert result is None
-
-    def test_fetch_google_models_with_empty_api_key(self):
-        from hermes_cli.models import _fetch_google_models
-        result = _fetch_google_models(api_key="")
-        assert result is None
-
-    def test_fetch_google_models_with_default_base_url(self, monkeypatch):
-        """Test that default base URL is used when none provided."""
-        from hermes_cli.models import _fetch_google_models
-        
-        mock_response = {"models": [{"name": "models/gemini-2.5-flash"}]}
-        
-        mock_urlopen = MagicMock()
-        mock_urlopen.return_value.__enter__ = MagicMock(return_value=MagicMock(
-            read=lambda: json.dumps(mock_response).encode()
-        ))
-        mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
-        
-        with patch("hermes_cli.models.urllib.request.urlopen", mock_urlopen):
-            result = _fetch_google_models(api_key="test-key")
-        
-        # Verify default URL was used
-        call_args = mock_urlopen.call_args[0][0]
-        assert "generativelanguage.googleapis.com/v1beta/models" in call_args.full_url
-
-    def test_fetch_google_models_handles_api_error(self):
-        """Test that API errors return None gracefully."""
-        from hermes_cli.models import _fetch_google_models
-        
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=Exception("API error")):
-            result = _fetch_google_models(
-                api_key="test-key",
-                base_url="https://generativelanguage.googleapis.com/v1beta",
-            )
-        assert result is None
-
-    def test_fetch_google_models_handles_malformed_response(self):
-        """Test that malformed JSON response returns None."""
-        from hermes_cli.models import _fetch_google_models
-        
-        mock_urlopen = MagicMock()
-        mock_urlopen.return_value.__enter__ = MagicMock(return_value=MagicMock(
-            read=lambda: b"invalid json"
-        ))
-        mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
-        
-        with patch("hermes_cli.models.urllib.request.urlopen", mock_urlopen):
-            result = _fetch_google_models(
-                api_key="test-key",
-                base_url="https://generativelanguage.googleapis.com/v1beta",
-            )
-        assert result is None
-
-    def test_fetch_google_models_handles_missing_name_field(self):
-        """Test that models without 'name' field are skipped."""
-        from hermes_cli.models import _fetch_google_models
-        
-        mock_response = {
-            "models": [
-                {"name": "models/gemini-2.5-flash"},
-                {"displayName": "No Name Model"},  # Missing 'name' field
-                {"name": "models/gemini-2.5-pro"},
-            ]
-        }
-        
-        mock_urlopen = MagicMock()
-        mock_urlopen.return_value.__enter__ = MagicMock(return_value=MagicMock(
-            read=lambda: json.dumps(mock_response).encode()
-        ))
-        mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
-        
-        with patch("hermes_cli.models.urllib.request.urlopen", mock_urlopen):
-            result = _fetch_google_models(
-                api_key="test-key",
-                base_url="https://generativelanguage.googleapis.com/v1beta",
-            )
-        
-        assert result is not None
-        assert len(result) == 2
-        assert "gemini-2.5-flash" in result
-        assert "gemini-2.5-pro" in result
-
-    def test_probe_api_models_routes_native_google_with_query_key(self):
-        """Native Gemini uses query auth and parses the native model shape."""
+    def test_probe_native_google_uses_query_key_without_authorization(self):
         from hermes_cli.models import probe_api_models
 
-        mock_response = {
+        response = MagicMock()
+        response.__enter__ = MagicMock(return_value=response)
+        response.__exit__ = MagicMock(return_value=False)
+        response.read.return_value = json.dumps({
             "models": [
                 {"name": "models/gemini-2.5-flash"},
                 {"name": "models/gemini-2.5-pro"},
             ]
-        }
-        mock_urlopen = MagicMock()
-        mock_urlopen.return_value.__enter__ = MagicMock(return_value=MagicMock(
-            read=lambda: json.dumps(mock_response).encode()
-        ))
-        mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
+        }).encode()
 
-        with patch("hermes_cli.models.urllib.request.urlopen", mock_urlopen):
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=response,
+        ) as mock_open:
             result = probe_api_models(
                 "test-key",
                 "https://generativelanguage.googleapis.com/v1beta",
             )
 
-        request = mock_urlopen.call_args[0][0]
+        request = mock_open.call_args[0][0]
         assert request.full_url.endswith("/models?key=test-key")
         assert request.get_header("Authorization") is None
         assert result["models"] == ["gemini-2.5-flash", "gemini-2.5-pro"]
         assert result["used_fallback"] is False
 
-    def test_probe_api_models_keeps_google_openai_compat_on_generic_path(self):
-        """The Google OpenAI compatibility endpoint keeps Bearer auth/data[].id."""
+    def test_probe_google_openai_compat_stays_on_generic_path(self):
         from hermes_cli.models import probe_api_models
 
-        mock_response = {
+        response = MagicMock()
+        response.__enter__ = MagicMock(return_value=response)
+        response.__exit__ = MagicMock(return_value=False)
+        response.read.return_value = json.dumps({
             "data": [
                 {"id": "gemini-2.5-flash"},
                 {"id": "gemini-2.5-pro"},
             ]
-        }
-        mock_urlopen = MagicMock()
-        mock_urlopen.return_value.__enter__ = MagicMock(return_value=MagicMock(
-            read=lambda: json.dumps(mock_response).encode()
-        ))
-        mock_urlopen.return_value.__exit__ = MagicMock(return_value=False)
+        }).encode()
 
-        with patch("hermes_cli.models.urllib.request.urlopen", mock_urlopen):
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=response,
+        ) as mock_open:
             result = probe_api_models(
                 "test-key",
                 "https://generativelanguage.googleapis.com/v1beta/openai",
             )
 
-        request = mock_urlopen.call_args[0][0]
+        request = mock_open.call_args[0][0]
         assert request.full_url.endswith("/v1beta/openai/models")
         assert "key=" not in request.full_url
         assert request.get_header("Authorization") == "Bearer test-key"

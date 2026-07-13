@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Copy, X, Check, Loader2 } from "lucide-react";
-import { H2 } from "@nous-research/ui";
+import { ExternalLink, X, Check, Copy } from "lucide-react";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
+import { cn, themedBody } from "@/lib/utils";
 
 interface Props {
   provider: OAuthProvider;
@@ -22,20 +25,18 @@ type Phase =
   | "approved"
   | "error";
 
-export function OAuthLoginModal({
-  provider,
-  onClose,
-  onSuccess,
-  onError,
-}: Props) {
+export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
   const [phase, setPhase] = useState<Phase>("starting");
   const [start, setStart] = useState<OAuthStartResponse | null>(null);
   const [pkceCode, setPkceCode] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
-  const [codeCopied, setCodeCopied] = useState(false);
   const isMounted = useRef(true);
   const pollTimer = useRef<number | null>(null);
+  const copyResetTimer = useRef<number | null>(null);
   const { t } = useI18n();
 
   // Initiate flow on mount
@@ -62,6 +63,8 @@ export function OAuthLoginModal({
     return () => {
       isMounted.current = false;
       if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
+      if (copyResetTimer.current !== null)
+        window.clearTimeout(copyResetTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -154,16 +157,6 @@ export function OAuthLoginModal({
     onClose();
   };
 
-  const handleCopyUserCode = async (code: string) => {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCodeCopied(true);
-      window.setTimeout(() => isMounted.current && setCodeCopied(false), 1500);
-    } catch {
-      onError("Clipboard write failed");
-    }
-  };
-
   const handleBackdrop = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget) handleClose();
   };
@@ -175,23 +168,42 @@ export function OAuthLoginModal({
     return `${m}:${String(r).padStart(2, "0")}`;
   };
 
+  const handleCopyDeviceCode = async (code: string) => {
+    if (copyResetTimer.current !== null) {
+      window.clearTimeout(copyResetTimer.current);
+      copyResetTimer.current = null;
+    }
+    const copied = await copyTextToClipboard(code);
+    if (!isMounted.current) return;
+    setCopyStatus(copied ? "copied" : "failed");
+    copyResetTimer.current = window.setTimeout(() => {
+      if (isMounted.current) setCopyStatus("idle");
+      copyResetTimer.current = null;
+    }, 2000);
+  };
+
+  const deviceCode = start?.flow === "device_code" ? start.user_code : "";
+  const verificationUrl =
+    start?.flow === "device_code" ? start.verification_url : "";
+
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
       onClick={handleBackdrop}
       role="dialog"
       aria-modal="true"
       aria-labelledby="oauth-modal-title"
     >
-      <div className="relative w-full max-w-md border border-border bg-card shadow-2xl">
-        <button
-          type="button"
+      <div className={cn(themedBody, "relative w-full max-w-md border border-border bg-card shadow-2xl")}>
+        <Button
+          ghost
+          size="icon"
           onClick={handleClose}
-          className="absolute right-3 top-3 text-muted-foreground hover:text-foreground transition-colors"
+          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
           aria-label={t.common.close}
         >
-          <X className="h-5 w-5" />
-        </button>
+          <X />
+        </Button>
         <div className="p-6 flex flex-col gap-4">
           <div>
             <H2
@@ -214,15 +226,13 @@ export function OAuthLoginModal({
               )}
           </div>
 
-          {/* ── starting ───────────────────────────────────── */}
           {phase === "starting" && (
             <div className="flex items-center gap-3 py-6 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <Spinner />
               {t.oauth.initiatingLogin}
             </div>
           )}
 
-          {/* ── PKCE: paste code ───────────────────────────── */}
           {start?.flow === "pkce" && phase === "awaiting_user" && (
             <>
               <ol className="text-sm space-y-2 list-decimal list-inside text-muted-foreground">
@@ -254,7 +264,6 @@ export function OAuthLoginModal({
                   <Button
                     onClick={handleSubmitPkceCode}
                     disabled={!pkceCode.trim()}
-                    size="sm"
                   >
                     {t.oauth.submitCode}
                   </Button>
@@ -263,15 +272,13 @@ export function OAuthLoginModal({
             </>
           )}
 
-          {/* ── PKCE: submitting exchange ──────────────────── */}
           {phase === "submitting" && (
             <div className="flex items-center gap-3 py-6 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <Spinner />
               {t.oauth.exchangingCode}
             </div>
           )}
 
-          {/* ── Device code: show code + URL, polling ──────── */}
           {start?.flow === "device_code" && phase === "polling" && (
             <>
               <p className="text-sm text-muted-foreground">
@@ -279,46 +286,32 @@ export function OAuthLoginModal({
               </p>
               <div className="flex items-center justify-between gap-2 border border-border bg-secondary/30 p-4">
                 <code className="font-mono-ui text-2xl tracking-widest text-foreground">
-                  {
-                    (
-                      start as Extract<
-                        OAuthStartResponse,
-                        { flow: "device_code" }
-                      >
-                    ).user_code
-                  }
+                  {deviceCode}
                 </code>
                 <Button
-                  variant="outline"
                   size="sm"
-                  onClick={() =>
-                    handleCopyUserCode(
-                      (
-                        start as Extract<
-                          OAuthStartResponse,
-                          { flow: "device_code" }
-                        >
-                      ).user_code,
+                  outlined
+                  className="shrink-0 uppercase"
+                  onClick={() => void handleCopyDeviceCode(deviceCode)}
+                  prefix={
+                    copyStatus === "copied" ? (
+                      <Check className="h-4 w-4" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
                     )
                   }
-                  className="text-xs"
+                  aria-label={t.oauth.copyCode}
                 >
-                  {codeCopied ? (
-                    <Check className="h-3 w-3" />
-                  ) : (
-                    <Copy className="h-3 w-3" />
-                  )}
+                  {copyStatus === "copied" ? t.oauth.copied : t.oauth.copyCode}
                 </Button>
               </div>
+              {copyStatus === "failed" && (
+                <p className="text-xs text-destructive">
+                  {t.oauth.copyFailed}
+                </p>
+              )}
               <a
-                href={
-                  (
-                    start as Extract<
-                      OAuthStartResponse,
-                      { flow: "device_code" }
-                    >
-                  ).verification_url
-                }
+                href={verificationUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
@@ -327,13 +320,12 @@ export function OAuthLoginModal({
                 {t.oauth.reOpenVerification}
               </a>
               <div className="flex items-center gap-2 text-xs text-muted-foreground border-t border-border pt-3">
-                <Loader2 className="h-3 w-3 animate-spin" />
+                <Spinner className="text-xs" />
                 {t.oauth.waitingAuth}
               </div>
             </>
           )}
 
-          {/* ── approved ───────────────────────────────────── */}
           {phase === "approved" && (
             <div className="flex items-center gap-3 py-6 text-sm text-success">
               <Check className="h-5 w-5" />
@@ -341,18 +333,16 @@ export function OAuthLoginModal({
             </div>
           )}
 
-          {/* ── error ──────────────────────────────────────── */}
           {phase === "error" && (
             <>
               <div className="border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
                 {errorMsg || t.oauth.loginFailed}
               </div>
               <div className="flex justify-end gap-2">
-                <Button variant="outline" size="sm" onClick={handleClose}>
+                <Button outlined onClick={handleClose}>
                   {t.common.close}
                 </Button>
                 <Button
-                  size="sm"
                   onClick={() => {
                     if (start?.session_id) {
                       api.cancelOAuthSession(start.session_id).catch(() => {});

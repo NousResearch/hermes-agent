@@ -29,6 +29,7 @@ function settledClarifyProps(
     args,
     argsText: JSON.stringify(args),
     isError: false,
+    respondToApproval: vi.fn(),
     result,
     resume: vi.fn(),
     status: { type: 'complete' },

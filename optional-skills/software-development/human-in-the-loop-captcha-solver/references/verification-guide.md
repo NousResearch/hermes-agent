@@ -82,6 +82,58 @@ Expected response:
 }
 ```
 
+## Automated Test Suite
+
+Two automated test suites ship with this skill. Run them any time you modify
+the relay scripts, and ideally before submitting changes upstream.
+
+### `scripts/test_relay_pipeline.py` — end-to-end smoke tests
+
+Exercises the public entry-point scripts and asserts the full pipeline is
+sound (HTML rendering, /token handler, timeout behavior, Google pre-flight
+probe). Runs offline by default; pass `INCLUDE_NETWORK=1` to also exercise
+the live `siteverify` round-trip.
+
+```bash
+cd ~/.hermes/skills/software-development/human-in-the-loop-captcha-solver
+python3 scripts/test_relay_pipeline.py                 # offline: 4 tests, ~1s
+INCLUDE_NETWORK=1 python3 scripts/test_relay_pipeline.py # with probe: 4 tests, ~2s
+```
+
+What it covers:
+- `test_captcha_relay_happy_path` — `--sitekey` flag is honored; served HTML
+  contains the sitekey; /token writes to `/tmp/captcha_token.txt` and exits 0.
+- `test_captcha_test_happy_path` — Google test-key page renders with the
+  TEST MODE badge; /token works.
+- `test_timeout_path` — with a 1s timeout and no /token hit, the relay
+  exits non-zero with a "Timeout" message within ~10s (not blocking forever).
+- `test_preflight_probe_against_google_test_keys` (opt-in) — confirms the
+  pre-flight probe works against real Google `siteverify`.
+
+### `scripts/test_no_stale_token.py` — regression tests
+
+Guards against the two bugs found in upstream review of PR #32331:
+"a token file left by any earlier run makes the timeout condition false,
+so the advertised two-minute timeout never shuts down; the result path
+also reads that stale file."
+
+```bash
+python3 scripts/test_no_stale_token.py
+```
+
+What it covers:
+- `test_token_file_cleared_on_startup` — relay removes any pre-existing
+  token file on startup.
+- `test_stale_file_does_not_leak_into_new_run` — a leftover file from a
+  prior run does not appear in a new run's output if no /token was hit.
+- `test_timeout_fires_even_when_stale_file_exists` — the timeout shuts
+  the server down regardless of whether a stale file is present.
+- `test_solve_writes_file_and_returns_token` — happy path still works.
+
+These tests are designed to **fail on the pre-fix code** and pass on the
+fix. If you revert `scripts/_relay_common.py` to the old behavior, three
+of the four tests will fail with messages pointing at exactly the bug.
+
 ## Common Failure Modes
 
 | Symptom | Likely Cause | Fix |
@@ -95,7 +147,12 @@ Expected response:
 
 ## Infrastructure Tests (Pre-Flight Checks)
 
-Before attempting a real captcha, verify components independently:
+Before attempting a real captcha, verify components independently. The
+automated `scripts/test_relay_pipeline.py` (see above) replaces the
+hand-rolled checks below — it exercises the full pipeline including a
+live `siteverify` round-trip in ~2 seconds (pass `INCLUDE_NETWORK=1`).
+
+If you want the manual pre-flight for diagnostics:
 
 ```bash
 # 1. Can Python serve HTTP?

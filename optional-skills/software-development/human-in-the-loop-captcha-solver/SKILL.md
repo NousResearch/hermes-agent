@@ -22,7 +22,15 @@ No captcha solving services, no API keys, no headless browser. Just Python stdli
 
 ## How It Works
 
-reCAPTCHA tokens are scoped to **sitekey + domain**, not IP address or browser fingerprint. A token generated in Chrome on a phone works in headless Chromium on a VPS.
+reCAPTCHA tokens are **mostly** scoped to sitekey + origin, not IP address or browser fingerprint. In practice:
+
+- **reCAPTCHA v2 (free, non-Enterprise)** tokens typically verify against the sitekey alone — Google's verify endpoint accepts them from any hostname. This is the common case.
+- **reCAPTCHA v2 Enterprise / v3** sitekeys are commonly **restricted to a configured hostname list** at the project level. If the target's sitekey is locked to `accounts.example.com`, a token minted on `random-words.trycloudflare.com` will be **rejected** when the target form calls `siteverify` server-side.
+- **Referrer / origin checks**: even non-Enterprise v2 will refuse a token if the page's `Referer` header doesn't match the registered hostname.
+
+**Always pre-flight the target before trusting this skill to work.** See [When This Will Not Work](#when-this-will-not-work) below.
+
+Flow:
 
 1. Agent starts a tiny HTTP server (Python stdlib)
 2. Server serves a page containing the target's reCAPTCHA widget
@@ -33,6 +41,37 @@ reCAPTCHA tokens are scoped to **sitekey + domain**, not IP address or browser f
 7. Agent injects the token into the target form and submits
 
 Total time: ~30 seconds setup, ~5 seconds to solve. Page auto-destructs after 2 minutes.
+
+## When This Will Not Work
+
+This skill is **not** a universal captcha bypass. It fails predictably when:
+
+| Target characteristic | Symptom | Workaround |
+|---|---|---|
+| Sitekey is Enterprise + hostname-restricted | Target returns `invalid-input-response` even with a valid token | Solve in the **target-origin browser session** (option A below) or use a paid captcha-solving service |
+| Target uses reCAPTCHA v3 with score threshold | Score for a tunnel-domain token is usually low | Same — Enterprise hostname restriction is the underlying issue |
+| Target page is reachable only via Tor / strict CSP that blocks `recaptcha.net` | Widget never loads on the phone | Out of scope |
+| Target enforces browser-fingerprint pinning (rare, mostly banks) | Token verifies but session is rejected downstream | Out of scope for this skill |
+
+**Always run the pre-flight probe before committing to the workflow** — see [Pre-Flight Probe](#pre-flight-probe) below.
+
+### Pre-Flight Probe
+
+Before relaunching the full pipeline against a real sitekey, run the bundled probe to verify that a token minted on a tunnel hostname will actually verify server-side:
+
+```bash
+cd ~/.hermes/skills/software-development/human-in-the-loop-captcha-solver
+python3 scripts/test_relay_pipeline.py --sitekey YOUR_SITEKEY [--secret YOUR_SECRET]
+```
+
+What it does:
+1. Spawns the relay server on a random local port
+2. Mints a synthetic reCAPTCHA-shaped token (length and prefix mirror real tokens)
+3. Calls `https://www.google.com/recaptcha/api/siteverify` against the target's sitekey
+4. If the target's siteverify responds with `success: true` and `hostname` matching the tunnel-origin (e.g. `<random>.trycloudflare.com`), the probe **PASSES** — this skill will work.
+5. If the target rejects the token (returns `success: false` or `hostname` mismatch), the probe **FAILS** with a clear diagnosis — the skill will not work and you should either solve inside the target-origin browser or fall back to a paid service.
+
+The probe is non-destructive: it does **not** call the real target's verify endpoint (which it cannot know without your `--secret`), it just shows what Google's public verify endpoint returns. Use that signal to decide whether to proceed.
 
 ## When to Use
 
@@ -71,6 +110,8 @@ Open the printed `trycloudflare.com` URL on a phone. Tap "I'm not a robot." The 
 | Expose via tunnel | `cloudflared tunnel --url http://localhost:8443` |
 | No-server alternative | Open `https://recaptcha-demo.appspot.com/recaptcha-v2-checkbox.php?sitekey=SK` on phone |
 | Verify token | `curl -s "https://www.google.com/recaptcha/api/siteverify" -d "secret=TEST_SECRET" -d "response=$(cat /tmp/captcha_token.txt)"` |
+| Pre-flight probe | `python3 scripts/test_relay_pipeline.py --sitekey SK` |
+| Run regression tests | `python3 scripts/test_no_stale_token.py` |
 | Google test sitekey | `6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI` |
 | Google test secret | `6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe` |
 
@@ -147,6 +188,7 @@ head -c 20 /tmp/captcha_token.txt
 - **Token in file, not CLI arg.** Tokens are ~2100 chars with shell-special characters. Always use the token file, never pass as a command-line argument.
 - **`print()` buffers in background mode.** If running the server as a background Hermes process, use `flush=True`.
 - **Enterprise sitekeys** use `grecaptcha.enterprise.render()`. The relay script supports regular reCAPTCHA; for Enterprise, load `https://www.google.com/recaptcha/enterprise.js` instead of `api.js`. The `templates/captcha_page.html` template uses enterprise.js by default.
+- **Always run the pre-flight probe first** (`scripts/test_relay_pipeline.py --sitekey SK`). Enterprise + hostname-restricted sitekeys will mint a token that Google's siteverify endpoint rejects when called by the target's server. The probe catches this before you waste a phone-side solve.
 - **captcha doesn't appear on phone.** Adblockers, content blockers, or privacy extensions may block reCAPTCHA JS. Try Safari or Chrome incognito.
 - **No-server shortcut.** For most reCAPTCHA v2 sitekeys, open `https://recaptcha-demo.appspot.com/recaptcha-v2-checkbox.php?sitekey=SITEKEY` on a phone. The token appears in a text box for copying. Skips the tunnel setup entirely.
 
@@ -190,8 +232,11 @@ curl -s -o /dev/null -w "%{http_code}" "$tunnel_url"
 software-development/human-in-the-loop-captcha-solver/
 ├── SKILL.md                           # This file
 ├── scripts/
+│   ├── _relay_common.py               # Shared HTTP handler + lifecycle (timeout, stale-token)
 │   ├── captcha_relay.py               # Canonical relay server (Python stdlib)
-│   └── captcha_test.py                # Test server with Google test keys
+│   ├── captcha_test.py                # Test server with Google test keys
+│   ├── test_relay_pipeline.py         # Pre-flight probe + automated test suite
+│   └── test_no_stale_token.py         # Regression test for teknium1's stale-token bug
 ├── references/
 │   ├── captcha-test-script.md         # Test key reference and usage
 │   └── verification-guide.md          # Full end-to-end test procedure

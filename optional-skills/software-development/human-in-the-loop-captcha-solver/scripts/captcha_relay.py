@@ -9,20 +9,16 @@ Usage:
 Then tunnel: cloudflared tunnel --url http://localhost:PORT
 
 Dependencies: Python stdlib only. No pip packages needed.
+
+The HTTP server, /token capture, timeout, and stale-token handling live in
+`_relay_common.py`. This script only owns the HTML template + CLI parsing.
 """
 import argparse
-import http.server
-import json
-import os
-import socketserver
-import threading
-import time
-from urllib.parse import urlparse, parse_qs
 
-TOKEN_FILE = "/tmp/captcha_token.txt"
+from _relay_common import run_relay
 
 
-def make_html(sitekey):
+def make_html(sitekey: str) -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -63,69 +59,30 @@ setTimeout(function(){{if(!box.value&&container.childElementCount===0){{status.c
 </html>"""
 
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(HTML.encode("utf-8"))
-        elif self.path.startswith("/token"):
-            qs = parse_qs(urlparse(self.path).query)
-            t = qs.get("t", [None])[0]
-            if t:
-                with open(TOKEN_FILE, "w") as f:
-                    f.write(t)
-                print(f"\n✓ Token received ({len(t)} chars)", flush=True)
-                print(json.dumps({"token": t}), flush=True)
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b'{"ok":true}')
-            if t:
-                threading.Thread(target=self.server.shutdown, daemon=True).start()
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def log_message(self, *a):
-        pass
-
-
-def main():
+def main() -> int:
     ap = argparse.ArgumentParser(description="reCAPTCHA relay server")
-    ap.add_argument("--sitekey", required=True, help="The reCAPTCHA sitekey from the target page")
-    ap.add_argument("--port", type=int, default=8443, help="Local port to listen on (default: 8443)")
+    ap.add_argument(
+        "--sitekey", required=True, help="The reCAPTCHA sitekey from the target page"
+    )
+    ap.add_argument(
+        "--port", type=int, default=8443, help="Local port to listen on (default: 8443)"
+    )
     args = ap.parse_args()
 
-    global HTML
-    HTML = make_html(args.sitekey)
+    sitekey = args.sitekey
 
-    socketserver.TCPServer.allow_reuse_address = True
-    server = socketserver.TCPServer(("0.0.0.0", args.port), Handler)
+    def html_factory() -> str:
+        return make_html(sitekey)
 
-    print(f"reCAPTCHA relay server on http://0.0.0.0:{args.port}", flush=True)
-    print(f"Tunnel: cloudflared tunnel --url http://localhost:{args.port}", flush=True)
-    print("Waiting for human to solve...", flush=True)
-
-    # Auto-shutdown after 2 minutes
-    def timeout():
-        time.sleep(120)
-        if not os.path.exists(TOKEN_FILE):
-            print("\nTimeout. No token received.", flush=True)
-            server.shutdown()
-    threading.Thread(target=timeout, daemon=True).start()
-
-    server.serve_forever()
-
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE) as f:
-            token = f.read().strip()
-        print(f"\nResult: {json.dumps({'token': token})}", flush=True)
-        return token
-    return None
+    token = run_relay(
+        html_factory=html_factory,
+        banner=f"reCAPTCHA relay server on http://0.0.0.0:{args.port}",
+        port=args.port,
+    )
+    return 0 if token else 1
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    sys.exit(main())

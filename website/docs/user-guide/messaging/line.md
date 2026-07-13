@@ -113,7 +113,7 @@ Resolver behavior:
 - `runtimePeerPrefix` namespaces unknown LINE users (for example `line_U...`) instead of storing bare raw IDs.
 - `pinUserPeer: true` is still available for single-operator bots where every gateway user should collapse to `peerName`.
 
-Keep `LINE_ALLOWED_USERS` as the raw LINE `U...` IDs. The alias only changes the Honcho memory peer; it does not replace LINE's platform identity. Restart the gateway after changing `honcho.json`.
+Keep `LINE_ALLOWED_USERS` as the raw LINE `U...` IDs. The alias only changes the Honcho memory peer; it does not replace LINE's platform identity. Changes to `honcho.json` apply on the next inbound gateway message.
 
 For multi-profile deployments, configure aliases in each profile's `$HERMES_HOME/honcho.json`: platform routing decides which Hermes profile handles the message, then that profile's Honcho config decides which memory peer receives it.
 

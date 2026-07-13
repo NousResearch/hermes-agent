@@ -1981,6 +1981,19 @@ class TestNormalizeResponse:
         assert nr.content is None
         assert len(nr.tool_calls) == 1
 
+    def test_null_content_does_not_raise(self):
+        """Direct normalizer callers handle a non-spec null content value."""
+        resp = self._make_response(None)
+        transport = get_transport("anthropic_messages")
+
+        assert transport.validate_response(resp) is False
+
+        nr = transport.normalize_response(resp)
+        assert nr.content is None
+        assert nr.tool_calls is None
+        assert nr.reasoning is None
+        assert nr.finish_reason == "stop"
+
 
 # ---------------------------------------------------------------------------
 # Role alternation

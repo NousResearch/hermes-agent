@@ -236,11 +236,16 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "session_id" in task_columns
     assert "tenant" in task_columns
     assert "idempotency_key" in task_columns
+    assert "pass_loop_state" in task_columns
+    assert "pass_loop_status" in task_columns
+    assert "pass_loop_count" in task_columns
+    assert "pass_loop_reason_code" in task_columns
     assert "run_id" in event_columns
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
     assert "idx_tasks_tenant" in indexes
     assert "idx_tasks_idempotency" in indexes
+    assert "idx_tasks_pass_loop_status" in indexes
     assert "idx_events_run" in indexes
 
 
@@ -265,6 +270,89 @@ def test_delivery_state_helpers_persist_snapshot_and_event(kanban_home, tmp_path
     assert task.delivery_state is not None
     assert task.delivery_state["artifact"]["readable"] is True
     assert any(e.kind == "delivery_state_updated" for e in events)
+
+
+def test_pass_loop_state_helpers_persist_snapshot_and_event(kanban_home, tmp_path):
+    audit = tmp_path / "pass-loop-audit.jsonl"
+    audit.write_text('{"action":"halted_pass_loop"}\n', encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pilot pass loop", assignee="alice")
+        state = kb.write_pass_loop_state(
+            conn,
+            tid,
+            {
+                "status": "tracking",
+                "count": 1,
+                "threshold": 2,
+                "fingerprint": {
+                    "branch_name": "wt/pilot",
+                    "completion_block_kind": "completion_blocked_unmerged_branch",
+                },
+                "evidence": {
+                    "review_comment_ids": [11],
+                    "completion_block_event_ids": [22],
+                    "audit_refs": [{"kind": "file", "path": str(audit)}],
+                },
+            },
+        )
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert state["status"] == "tracking"
+    assert state["count"] == 1
+    assert state["threshold"] == 2
+    assert state["task_status"] == "ready"
+    assert task is not None
+    assert task.pass_loop_status == "tracking"
+    assert task.pass_loop_count == 1
+    assert task.pass_loop_reason_code is None
+    assert task.pass_loop_state is not None
+    assert task.pass_loop_state["fingerprint"]["branch_name"] == "wt/pilot"
+    assert any(e.kind == "pass_loop_state_updated" for e in events)
+
+
+def test_pass_loop_state_refreshes_after_block_and_unblock(kanban_home, tmp_path):
+    audit = tmp_path / "pass-loop-refresh.jsonl"
+    audit.write_text('{"action":"would_halt_pass_loop"}\n', encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pass loop lifecycle", assignee="alice")
+        kb.write_pass_loop_state(
+            conn,
+            tid,
+            {
+                "status": "halted",
+                "count": 2,
+                "threshold": 2,
+                "reason_code": kb.PASS_LOOP_REASON_CODE,
+                "evidence": {
+                    "audit_refs": [{"kind": "file", "path": str(audit)}],
+                },
+            },
+            emit_event=False,
+        )
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="pass-loop-detected: reviewer PASS repeated twice",
+            kind="needs_input",
+        ) is True
+        blocked_task = kb.get_task(conn, tid)
+        assert kb.unblock_task(conn, tid) is True
+        unblocked_task = kb.get_task(conn, tid)
+
+    assert blocked_task is not None
+    assert blocked_task.pass_loop_state is not None
+    assert blocked_task.pass_loop_state["task_status"] == "blocked"
+    assert blocked_task.pass_loop_state["block_kind"] == "needs_input"
+    assert blocked_task.pass_loop_reason_code == kb.PASS_LOOP_REASON_CODE
+
+    assert unblocked_task is not None
+    assert unblocked_task.pass_loop_state is not None
+    assert unblocked_task.pass_loop_state["task_status"] == "ready"
+    assert unblocked_task.pass_loop_state["block_kind"] == "needs_input"
 
 
 def test_delivery_state_derives_blocked_for_unreadable_artifact(kanban_home, tmp_path):

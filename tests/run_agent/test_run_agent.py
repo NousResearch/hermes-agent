@@ -144,6 +144,24 @@ def test_persist_user_message_override_preserves_multimodal_turns(agent):
     assert messages == [{"role": "user", "content": multimodal_content}]
 
 
+def test_persist_user_message_override_restores_clean_multimodal_note(agent):
+    clean_content = [
+        {"type": "text", "text": "Describe this screenshot"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    api_content = [
+        {"type": "text", "text": "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    messages = [{"role": "user", "content": api_content}]
+    agent._persist_user_message_idx = 0
+    agent._persist_user_message_override = clean_content
+
+    agent._apply_persist_user_message_override(messages)
+
+    assert messages == [{"role": "user", "content": clean_content}]
+
+
 def test_flush_persist_override_replaces_api_local_multimodal_note(agent):
     """A note-added multimodal API payload stores the original clean content."""
     clean_content = [

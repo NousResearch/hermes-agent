@@ -51,7 +51,14 @@ class FakeAgent:
         pass
 
     def _persist_session(self, messages, conversation_history):
-        self.persisted_messages = list(messages)
+        # Capture the durable write before finalization restores API-local
+        # guidance to the returned/live transcript.
+        self.persisted_messages = [dict(message) for message in messages]
+
+    def _apply_persist_user_message_override(self, messages):
+        from run_agent import AIAgent
+
+        return AIAgent._apply_persist_user_message_override(self, messages)
 
     def _file_mutation_verifier_enabled(self):
         return False
@@ -67,6 +74,78 @@ class FakeAgent:
 
     def _sync_external_memory_for_turn(self, **_kwargs):
         pass
+
+
+def test_finalizer_restores_clean_api_local_text_before_return(monkeypatch):
+    """One-shot CLI notes do not replay through same-process history."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "[MODEL SWITCH NOTE]\n\nclean prompt"},
+        {"role": "assistant", "content": "Done."},
+    ]
+    agent._persist_user_message_idx = 0
+    agent._persist_user_message_override = "clean prompt"
+    agent._persist_user_message_timestamp = None
+
+    result = finalize_turn(
+        agent,
+        final_response="Done.",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="[MODEL SWITCH NOTE]\n\nclean prompt",
+        original_user_message="clean prompt",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    assert agent.persisted_messages[0]["content"] == "clean prompt"
+    assert result["messages"][0]["content"] == "clean prompt"
+
+
+def test_finalizer_restores_clean_api_local_multimodal_before_return(monkeypatch):
+    """A queued note does not remain in the next-turn native image payload."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    clean_content = [
+        {"type": "text", "text": "Describe the image"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    api_content = [
+        {"type": "text", "text": "[MODEL SWITCH NOTE]\n\nDescribe the image"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    messages = [
+        {"role": "user", "content": api_content},
+        {"role": "assistant", "content": "Done."},
+    ]
+    agent._persist_user_message_idx = 0
+    agent._persist_user_message_override = clean_content
+    agent._persist_user_message_timestamp = None
+
+    result = finalize_turn(
+        agent,
+        final_response="Done.",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message=api_content,
+        original_user_message=clean_content,
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    assert agent.persisted_messages[0]["content"] == clean_content
+    assert result["messages"][0]["content"] == clean_content
 
 
 def test_final_response_closes_tool_tail_before_persistence(monkeypatch):

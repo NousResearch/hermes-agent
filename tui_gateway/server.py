@@ -10760,6 +10760,7 @@ def _run_prompt_submit(
         tts_queue = None  # streaming-TTS feed for this turn (voice mode)
         one_turn_restore = session.pop("one_turn_model_restore", None)
         claimed_notifications_consumed = False
+        history_adopted = False
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -11014,6 +11015,7 @@ def _run_prompt_submit(
                             _clean_returned_user_message(result["messages"], len(history), persist_user_message) if persist_user_message is not None else None
                             session["history"] = result["messages"]
                             session["history_version"] = history_version + 1
+                            history_adopted = True
                         else:
                             # History mutated externally during the turn
                             # (undo/compress/retry/rollback now guard on
@@ -11097,7 +11099,7 @@ def _run_prompt_submit(
             with session["history_lock"]:
                 _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
-            claimed_notifications_consumed = status == "complete"
+            claimed_notifications_consumed = status == "complete" and history_adopted
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge

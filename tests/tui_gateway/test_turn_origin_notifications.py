@@ -364,6 +364,65 @@ def test_failed_user_turn_restores_claimed_notifications_before_concurrent_arriv
     assert session["defer_notifications_until_user"] is False
 
 
+def test_history_version_mismatch_restores_claimed_notifications(monkeypatch):
+    emitted = []
+    calls = []
+    session = None
+
+    class _Agent:
+        model = "test-model"
+        provider = "test-provider"
+        base_url = ""
+        api_key = ""
+        service_tier = ""
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(
+            self,
+            prompt,
+            conversation_history=None,
+            stream_callback=None,
+            task_id=None,
+            persist_user_message=None,
+        ):
+            calls.append(prompt)
+            if len(calls) == 1:
+                assert session is not None
+                with session["history_lock"]:
+                    session["history_version"] += 1
+                    session.setdefault("deferred_notification_texts", []).append(
+                        "arrived during mismatch"
+                    )
+            return _successful_turn(prompt, conversation_history)
+
+    session = _session(
+        agent=_Agent(),
+        deferred_notification_texts=["claimed before mismatch"],
+        defer_notifications_until_user=True,
+    )
+    _patch_prompt_turn_runtime(monkeypatch, emitted)
+
+    server._run_prompt_submit("rid-1", "sid", session, "First attempt", origin="user")
+
+    assert session["history"] == []
+    assert session["deferred_notification_texts"] == [
+        "claimed before mismatch",
+        "arrived during mismatch",
+    ]
+    assert session["defer_notifications_until_user"] is True
+
+    server._run_prompt_submit("rid-2", "sid", session, "Retry", origin="user")
+
+    delivered = calls[-1]
+    assert delivered.count("claimed before mismatch") == 1
+    assert delivered.count("arrived during mismatch") == 1
+    assert delivered.endswith("Retry")
+    assert session["deferred_notification_texts"] == []
+    assert session["defer_notifications_until_user"] is False
+
+
 def test_context_reference_block_restores_claimed_notifications_for_next_user_turn(monkeypatch):
     emitted = []
     calls = []

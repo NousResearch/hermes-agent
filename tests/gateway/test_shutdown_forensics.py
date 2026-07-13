@@ -248,3 +248,64 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+    @staticmethod
+    def _mock_cgroup_and_systemctl(monkeypatch, cgroup, stdout):
+        import builtins
+        import io
+
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/self/cgroup":
+                return io.StringIO(cgroup)
+            return real_open(path, *args, **kwargs)
+
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            return sf.subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        return calls
+
+    def test_system_unit_queries_only_system_manager(self, monkeypatch):
+        calls = self._mock_cgroup_and_systemctl(
+            monkeypatch,
+            "0::/system.slice/hermes-gateway.service\n",
+            "LoadState=loaded\nTimeoutStopUSec=3min 30s\n",
+        )
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is not None
+        assert result["mismatch"] is False
+        assert calls == [[
+            "systemctl", "show", "hermes-gateway.service",
+            "--property=LoadState", "--property=TimeoutStopUSec",
+        ]]
+
+    def test_user_unit_queries_only_user_manager(self, monkeypatch):
+        calls = self._mock_cgroup_and_systemctl(
+            monkeypatch,
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service\n",
+            "LoadState=loaded\nTimeoutStopUSec=3min 30s\n",
+        )
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is not None
+        assert result["mismatch"] is False
+        assert calls[0][1] == "--user"
+
+    def test_unknown_unit_manager_defaults_are_ignored(self, monkeypatch):
+        self._mock_cgroup_and_systemctl(
+            monkeypatch,
+            "0::/system.slice/hermes-gateway.service\n",
+            "LoadState=not-found\nTimeoutStopUSec=1min 30s\n",
+        )
+
+        assert sf.check_systemd_timing_alignment(180.0) is None

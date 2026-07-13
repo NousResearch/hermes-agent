@@ -39,6 +39,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
   workflow_dispatch:
+  pull_request:
 
 permissions:
   contents: read # default; apply-patch job overrides to write

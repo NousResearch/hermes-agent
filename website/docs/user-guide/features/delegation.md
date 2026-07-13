@@ -129,6 +129,21 @@ When you provide a `tasks` array, subagents run in **parallel** using a thread p
 
 Single-task delegation runs directly without thread pool overhead.
 
+### Durable background completions
+
+When a background delegation finishes, Hermes stores its completion event in
+the active profile's `state.db` before publishing it to the normal fresh-turn
+queue. If Hermes restarts after completion but before delivery, the pending
+event is restored and routed through the same ownership checks. Competing
+consumers use a durable claim, so only the consumer that successfully accepts
+the synthetic turn acknowledges delivery; failed attempts release the claim for
+retry.
+
+This does not resume child execution after a crash. A delegation whose owner
+process disappears while it is still running is recorded as `unknown`, because
+Hermes cannot prove whether its external side effects happened. Pending and
+delivered records are bounded and profile-local.
+
 ## Model Override
 
 You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:

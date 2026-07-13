@@ -467,3 +467,38 @@ describe('StatusRule idle-since read-out', () => {
     expect(findComponentByName(element, 'IdleSince')).toBeNull()
   })
 })
+
+describe('StatusRule reasoning-effort label', () => {
+  // session.info reasoning_effort contract: '' = unset (no explicit effort
+  // configured — hide), 'none' = explicitly disabled, anything else is an
+  // explicit user pick and shows — including 'medium', which the backend
+  // only sends when the user configured it.
+  it('shows an explicit effort next to the model', () => {
+    const element = StatusRule({ ...baseProps, modelReasoningEffort: 'high' })
+
+    expect(textContent(element)).toContain('opus 4.8 high')
+  })
+
+  it('shows an explicit medium', () => {
+    const element = StatusRule({ ...baseProps, modelReasoningEffort: 'medium' })
+
+    expect(textContent(element)).toContain('opus 4.8 medium')
+  })
+
+  it('shows "none" when reasoning is explicitly disabled', () => {
+    const element = StatusRule({ ...baseProps, modelReasoningEffort: 'none' })
+
+    expect(textContent(element)).toContain('opus 4.8 none')
+  })
+
+  it('hides the label when unset or a legacy placeholder', () => {
+    for (const unset of [undefined, '', 'default', 'normal']) {
+      const element = StatusRule({ ...baseProps, modelReasoningEffort: unset })
+
+      expect(textContent(element)).toContain('opus 4.8')
+      expect(textContent(element)).not.toContain('medium')
+      expect(textContent(element)).not.toContain('default')
+      expect(textContent(element)).not.toContain('normal')
+    }
+  })
+})

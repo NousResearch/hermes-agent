@@ -10903,6 +10903,7 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
         # the client never clobbers its sticky pick before the build lands.
         assert resp["result"]["info"]["model"] == "claude-sonnet-4.6"
         assert resp["result"]["info"]["provider"] == "anthropic"
+        assert resp["result"]["info"]["reasoning_effort"] == "high"
 
         # Explicit false is not the same as omission: it must suppress a Fast
         # profile default for this session's first request.
@@ -10920,6 +10921,91 @@ def test_session_create_records_ui_model_as_session_override(monkeypatch):
         assert plain_sess["create_service_tier_override"] is None
     finally:
         server._sessions.clear()
+
+
+def test_session_create_initial_info_reasoning_falls_back_to_config(
+    monkeypatch, tmp_path
+):
+    """Without a per-session effort override, the immediate session.create
+    info reports the config default — the same value the deferred build's
+    session.info will report — so the status bar never flashes blank."""
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(server, "_cfg_cache", None)
+    monkeypatch.setattr(server, "_cfg_mtime", None)
+    (tmp_path / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5\n"
+        "agent:\n"
+        "  reasoning_effort: low\n"
+        "  reasoning_overrides:\n"
+        "    gpt-5: xhigh\n"
+        "    claude-opus-4.8: high\n",
+        encoding="utf-8",
+    )
+    try:
+        resp = server._methods["session.create"]("r1", {"cols": 80})
+        assert resp["result"]["info"]["reasoning_effort"] == "xhigh"
+
+        # A per-session model pick must resolve against that model, matching
+        # the deferred agent build rather than the profile's default model.
+        picked = server._methods["session.create"](
+            "r-model", {"cols": 80, "model": "claude-opus-4.8"}
+        )
+        assert picked["result"]["info"]["reasoning_effort"] == "high"
+
+        # Explicitly disabled reasoning ("none") must survive the round trip,
+        # not collapse into unset "".
+        off = server._methods["session.create"](
+            "r2", {"cols": 80, "reasoning_effort": "none"}
+        )
+        assert off["result"]["info"]["reasoning_effort"] == "none"
+    finally:
+        server._sessions.clear()
+
+
+def test_session_info_reasoning_effort_labels(monkeypatch):
+    """_session_info reports the canonical shared label: explicit efforts
+    verbatim, disabled as "none", unset as "" (see reasoning_effort_label)."""
+    explicit = server._session_info(
+        types.SimpleNamespace(
+            tools=[], model="m", provider="", reasoning_config={"enabled": True, "effort": "medium"}
+        )
+    )
+    assert explicit["reasoning_effort"] == "medium"
+
+    disabled = server._session_info(
+        types.SimpleNamespace(
+            tools=[], model="m", provider="", reasoning_config={"enabled": False}
+        )
+    )
+    assert disabled["reasoning_effort"] == "none"
+
+    unset = server._session_info(
+        types.SimpleNamespace(tools=[], model="m", provider="", reasoning_config=None)
+    )
+    assert unset["reasoning_effort"] == ""
+
+
+def test_lazy_resume_info_includes_reasoning_effort(monkeypatch, tmp_path):
+    """Cold resume's immediate info must carry the stored session effort (or
+    the config default the deferred build will use) so the first render
+    matches the session.info the build emits — no blank/stale flash."""
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(server, "_cfg_cache", None)
+    monkeypatch.setattr(server, "_cfg_mtime", None)
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n  reasoning_effort: low\n", encoding="utf-8"
+    )
+
+    stored = server._lazy_resume_info(
+        str(tmp_path), reasoning_config={"enabled": True, "effort": "max"}
+    )
+    assert stored["reasoning_effort"] == "max"
+
+    fallback = server._lazy_resume_info(str(tmp_path))
+    assert fallback["reasoning_effort"] == "low"
 
 
 @pytest.mark.parametrize("service_tier_override", ["priority", ""])

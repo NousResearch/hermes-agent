@@ -386,12 +386,17 @@ function IdleSince({ endedAt }: { endedAt: number }) {
   return `✓ ${fmtDuration(now - endedAt)}`
 }
 
+// session.info reasoning_effort contract: '' = unset (no explicit effort
+// configured — hide), 'none' = explicitly disabled, anything else is an
+// explicit user pick and shows — including 'medium', which the backend only
+// sends when the user configured it. 'normal'/'default' are legacy
+// placeholder values from older backends, never valid efforts.
 const effortLabel = (effort?: string) => {
   const value = String(effort ?? '')
     .trim()
     .toLowerCase()
 
-  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? value : ''
+  return value && value !== 'normal' && value !== 'default' ? value : ''
 }
 
 const shortModelLabel = (model: string) =>

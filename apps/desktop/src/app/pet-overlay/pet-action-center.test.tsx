@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
-import type { PetActionCenterState } from '@/store/pet-action-center'
+import type { PetActionCenterLiveStatus, PetActionCenterState } from '@/store/pet-action-center'
 import type { PetActionCenterControl } from '@/store/pet-overlay'
 
 import { PetActionCenter } from './pet-action-center'
@@ -13,6 +13,8 @@ import { PetActionCenter } from './pet-action-center'
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
 const ac = en.pet.actionCenter
+type TestItem = NonNullable<PetActionCenterState['items'][number]>
+type TestLiveTurnItem = Extract<TestItem, { kind: 'live-turn' }>
 
 let controlMock: ReturnType<typeof vi.fn>
 let setFocusableMock: ReturnType<typeof vi.fn>
@@ -95,6 +97,47 @@ function makeClarifyItem(
   } as NonNullable<PetActionCenterState['items'][number]>
 }
 
+function makeLiveTurnItem(
+  overrides: Partial<TestLiveTurnItem> = {}
+): TestLiveTurnItem {
+  return {
+    actionable: true,
+    activityKind: null,
+    activityName: null,
+    allowedActions: ['steer', 'queue', 'stop', 'open-in-app'],
+    blocking: false,
+    connectionState: 'open',
+    detail: null,
+    id: 'live-1',
+    kind: 'live-turn',
+    profile: 'work-profile-id',
+    profileLabel: 'Work',
+    queuedCount: 0,
+    receivedAt: 3000,
+    sessionId: 'runtime-secret-id',
+    sessionTitle: 'Release prep',
+    status: 'working',
+    storedSessionId: 'stored-secret-id',
+    summary: null,
+    turnStartedAt: null,
+    ...overrides
+  }
+}
+
+function makeLiveStatus(
+  overrides: Partial<PetActionCenterLiveStatus> = {}
+): PetActionCenterLiveStatus {
+  return {
+    activityKind: null,
+    activityName: null,
+    connectionState: 'open',
+    queuedCount: 0,
+    status: 'waiting',
+    turnStartedAt: null,
+    ...overrides
+  }
+}
+
 function makeState(
   items: NonNullable<PetActionCenterState['items'][number]>[] = [],
   overrides: Partial<PetActionCenterState> = {}
@@ -146,7 +189,7 @@ describe('PetActionCenter — contract 1: no auto-focus/expand', () => {
 
     render(<PetActionCenter state={state} />)
 
-    const trigger = screen.getByRole('button', { name: /review pending actions/i })
+    const trigger = screen.getByRole('button', { name: ac.open })
     fireEvent.click(trigger)
 
     // Panel is now open (getByRole throws if absent, so this suffices).
@@ -182,12 +225,12 @@ describe('PetActionCenter — contract 2: count + navigation', () => {
     render(<PetActionCenter state={state} />)
 
     // Open the panel.
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     const dialog = screen.getByRole('dialog')
 
     // Count is shown.
-    expect(within(dialog).getByText(/2 pending actions/i)).not.toBeNull()
+    expect(within(dialog).getByText(ac.itemCount(2, 2))).not.toBeNull()
 
     // Next button navigates to a-2.
     const nextBtn = within(dialog).getByRole('button', { name: /next item/i })
@@ -223,7 +266,7 @@ describe('PetActionCenter — contract 4: render only present capabilities', () 
     const state = makeState([item])
 
     render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     const dialog = screen.getByRole('dialog')
 
@@ -244,7 +287,7 @@ describe('PetActionCenter — contract 3: approval shows description + command p
     const state = makeState([item])
 
     render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText('Run the full test suite')).not.toBeNull()
@@ -262,7 +305,7 @@ describe('PetActionCenter — contract 5: approve-always opens inline confirmati
     const state = makeState([item])
 
     render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     const dialog = screen.getByRole('dialog')
 
@@ -295,7 +338,7 @@ describe('PetActionCenter — contract 5: approve-always opens inline confirmati
       const state = makeState([item])
 
       render(<PetActionCenter state={state} />)
-      fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
       const dialog = screen.getByRole('dialog')
       const sourceButton = within(dialog).getByRole('button', { name: /always allow/i })
 
@@ -352,7 +395,7 @@ describe('PetActionCenter — contract 6: deny opens optional reason', () => {
     const state = makeState([item])
 
     render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     const dialog = screen.getByRole('dialog')
 
@@ -419,7 +462,7 @@ describe('PetActionCenter — contract 7: clarify choices + Other + skip + IME-s
     const state = makeState([item])
 
     render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     const dialog = screen.getByRole('dialog')
 
@@ -460,7 +503,7 @@ describe('PetActionCenter — contract 7: clarify choices + Other + skip + IME-s
     const state = makeState([item])
 
     render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     const dialog = screen.getByRole('dialog')
     const textInput = within(dialog).getByRole('textbox', { name: ac.other })
@@ -489,7 +532,7 @@ describe('PetActionCenter — contract 7: clarify choices + Other + skip + IME-s
     const state = makeState([item])
 
     render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     const dialog = screen.getByRole('dialog')
     const skipBtn = within(dialog).getByRole('button', { name: /skip/i })
@@ -551,7 +594,7 @@ describe('PetActionCenter — contract 8: submitting disables duplicate actions'
     })
 
     render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     const dialog = screen.getByRole('dialog')
 
@@ -586,7 +629,7 @@ describe('PetActionCenter — contract 8: submitting disables duplicate actions'
     })
 
     render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText(/something went wrong/i)).not.toBeNull()
@@ -606,7 +649,7 @@ describe('PetActionCenter — contract 8: submitting disables duplicate actions'
       <PetActionCenter state={makeState([item], { action: { status: 'success', itemId: item.id } })} />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     // The resolved item may disappear before the terminal status reaches the
     // overlay. The live announcement must survive that removal.
@@ -670,7 +713,7 @@ describe('PetActionCenter — contract 9: keyboard + focus restoration', () => {
 
     render(<PetActionCenter state={state} />)
 
-    const trigger = screen.getByRole('button', { name: /review pending actions/i })
+    const trigger = screen.getByRole('button', { name: ac.open })
     fireEvent.click(trigger)
 
     const dialog = screen.getByRole('dialog')
@@ -682,7 +725,7 @@ describe('PetActionCenter — contract 9: keyboard + focus restoration', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
     // Focus is restored to the trigger button.
     await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole('button', { name: /review pending actions/i }))
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: ac.open }))
     )
   })
 })
@@ -692,7 +735,7 @@ describe('PetActionCenter — contract 10: flat layout, one surface, tokens', ()
     const state = makeState([makeApprovalItem()])
 
     const { container } = render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     // One dialog.
     expect(screen.getAllByRole('dialog')).toHaveLength(1)
@@ -721,7 +764,7 @@ describe('PetActionCenter — contract 11: gateway-less control channel', () => 
     const state = makeState([item])
 
     render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     const dialog = screen.getByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: /run once/i }))
@@ -743,7 +786,7 @@ describe('PetActionCenter — contract 12: i18n strings', () => {
     render(<PetActionCenter state={state} />)
 
     // Trigger button uses i18n string.
-    expect(screen.getByRole('button', { name: /review pending actions/i })).not.toBeNull()
+    expect(screen.getByRole('button', { name: ac.open })).not.toBeNull()
   })
 })
 
@@ -754,7 +797,7 @@ describe('PetActionCenter — stale item handling', () => {
 
     // Should not throw.
     render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     // Falls back to first item.
     const dialog = screen.getByRole('dialog')
@@ -767,9 +810,440 @@ describe('PetActionCenter — contract 13: secure input count hint', () => {
     const state = makeState([makeApprovalItem()], { secureInputCount: 2 })
 
     render(<PetActionCenter state={state} />)
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText(/2 secure inputs need attention/i)).not.toBeNull()
+  })
+})
+
+describe('PetActionCenter — Pet-6C2 live visibility and status', () => {
+  it('renders a collapsed trigger for a working zero-attention item without opening or focusing until click', () => {
+    const item = makeLiveTurnItem()
+
+    render(<PetActionCenter state={makeState([item], { attentionCount: 0 })} />)
+
+    const trigger = screen.getByRole('button')
+    expect(trigger.textContent).not.toMatch(/pending/i)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(document.activeElement).not.toBe(trigger)
+    expect(setFocusableMock).not.toHaveBeenCalled()
+
+    fireEvent.click(trigger)
+
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).queryByText(/0 pending actions/i)).toBeNull()
+    expect(within(dialog).getByText('Work')).not.toBeNull()
+    expect(within(dialog).getByText('Release prep')).not.toBeNull()
+  })
+
+  it('shows safe live metadata, queue/connection state, advancing elapsed time, and a stable status announcement', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(120_000)
+    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval')
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
+
+    const item = makeLiveTurnItem({
+      activityKind: 'reasoning',
+      activityName: 'Reviewing patch',
+      connectionState: 'connecting',
+      queuedCount: 2,
+      turnStartedAt: 62_000
+    })
+
+    const { rerender, unmount } = render(<PetActionCenter state={makeState([item], { attentionCount: 0 })} />)
+    fireEvent.click(screen.getByRole('button'))
+
+    const strip = screen.getByTestId('live-status-strip')
+    expect(within(strip).getByText('Work')).not.toBeNull()
+    expect(within(strip).getByText('Release prep')).not.toBeNull()
+    expect(within(strip).getByText('Working')).not.toBeNull()
+    expect(within(strip).getByText('Reasoning')).not.toBeNull()
+    expect(within(strip).getByText('Reviewing patch')).not.toBeNull()
+    expect(within(strip).getByText('2 queued')).not.toBeNull()
+    expect(within(strip).getByText('Connecting')).not.toBeNull()
+    expect(within(strip).getByText('00:58')).not.toBeNull()
+
+    const announcement = within(strip).getByTestId('live-status-announcement')
+    const announcedStatus = announcement.textContent
+
+    act(() => vi.advanceTimersByTime(2_000))
+
+    expect(within(strip).getByText('01:00')).not.toBeNull()
+    expect(announcement.textContent).toBe(announcedStatus)
+
+    rerender(
+      <PetActionCenter
+        state={makeState([makeLiveTurnItem({ ...item, turnStartedAt: 125_000 })], { attentionCount: 0 })}
+      />
+    )
+    expect(within(strip).getByText('00:00')).not.toBeNull()
+
+    rerender(
+      <PetActionCenter
+        state={makeState([makeLiveTurnItem({ ...item, turnStartedAt: Number.NaN })], { attentionCount: 0 })}
+      />
+    )
+    expect(within(strip).getByText('00:00')).not.toBeNull()
+
+    const timerId = setIntervalSpy.mock.results.at(-1)?.value
+    unmount()
+    expect(clearIntervalSpy).toHaveBeenCalledWith(timerId)
+
+    clearIntervalSpy.mockRestore()
+    setIntervalSpy.mockRestore()
+    vi.useRealTimers()
+  })
+
+  it('renders an attached prompt live status exactly once above the prompt detail', () => {
+    const item = makeApprovalItem({
+      liveStatus: makeLiveStatus({ activityKind: 'tool', activityName: 'Terminal' })
+    })
+
+    render(<PetActionCenter state={makeState([item])} />)
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
+
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getAllByTestId('live-status-strip')).toHaveLength(1)
+    const children = Array.from(dialog.children)
+    expect(children.indexOf(within(dialog).getByTestId('live-status-strip'))).toBeLessThan(
+      children.findIndex(child => child.textContent?.includes('Approval needed'))
+    )
+  })
+
+  it('uses localized safe fallbacks and never renders runtime or stored session ids', () => {
+    const item = makeLiveTurnItem({
+      sessionId: 'runtime-do-not-render',
+      sessionTitle: null,
+      storedSessionId: 'stored-do-not-render'
+    })
+
+    const { container, rerender } = render(<PetActionCenter state={makeState([item], { attentionCount: 0 })} />)
+    fireEvent.click(screen.getByRole('button'))
+
+    expect(container.textContent).toContain('Untitled session')
+    expect(container.textContent).not.toContain('runtime-do-not-render')
+    expect(container.textContent).not.toContain('stored-do-not-render')
+
+    rerender(
+      <PetActionCenter
+        state={makeState([makeLiveTurnItem({ id: 'new', sessionTitle: null, storedSessionId: null })], {
+          attentionCount: 0,
+          selectedItemId: 'new'
+        })}
+      />
+    )
+    expect(container.textContent).toContain('New session')
+  })
+})
+
+describe('PetActionCenter — Pet-6C2 live actions', () => {
+  it('sends an idle draft only when non-empty, keeps Enter IME/Shift-safe, and clears on send success', async () => {
+    const item = makeLiveTurnItem({ allowedActions: ['send'], status: 'idle' })
+
+    const base = makeState([item], { attentionCount: 0 })
+    const { rerender } = render(<PetActionCenter state={base} />)
+    fireEvent.click(screen.getByRole('button'))
+
+    const dialog = screen.getByRole('dialog')
+    const input = within(dialog).getByRole<HTMLTextAreaElement>('textbox', { name: /message session/i })
+    const sendButton = within(dialog).getByRole<HTMLButtonElement>('button', { name: /^send$/i })
+
+    expect(sendButton.disabled).toBe(true)
+    fireEvent.change(input, { target: { value: '   ' } })
+    expect(sendButton.disabled).toBe(true)
+
+    fireEvent.change(input, { target: { value: '  ship it  ' } })
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+    fireEvent(
+      input,
+      new KeyboardEvent('keydown', { bubbles: true, cancelable: true, isComposing: true, key: 'Enter' })
+    )
+    expect(emittedControls()).toHaveLength(0)
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(emittedControls()).toEqual([
+      { type: 'action-center-submit', itemId: item.id, text: 'ship it' }
+    ])
+
+    controlMock.mockClear()
+    fireEvent.click(sendButton)
+    expect(emittedControls()).toEqual([
+      { type: 'action-center-submit', itemId: item.id, text: 'ship it' }
+    ])
+
+    rerender(<PetActionCenter state={{ ...base, action: { status: 'success', itemId: item.id } }} />)
+    await waitFor(() => expect(input.value).toBe(''))
+  })
+
+  it('offers explicit online Steer, Queue, and Stop controls and emits exact opaque controls', () => {
+    const item = makeLiveTurnItem()
+
+    const base = makeState([item], { attentionCount: 0 })
+    const { rerender } = render(<PetActionCenter state={base} />)
+    fireEvent.click(screen.getByRole('button'))
+    const dialog = screen.getByRole('dialog')
+    const input = within(dialog).getByRole<HTMLTextAreaElement>('textbox', { name: /message session/i })
+    fireEvent.change(input, { target: { value: '  redirect  ' } })
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.click(within(dialog).getByRole('button', { name: /^queue$/i }))
+    fireEvent.click(within(dialog).getByRole('button', { name: /^stop$/i }))
+
+    expect(emittedControls()).toEqual([
+      { type: 'action-center-steer', itemId: item.id, text: 'redirect' },
+      { type: 'action-center-queue', itemId: item.id, text: 'redirect' },
+      { type: 'action-center-stop', itemId: item.id }
+    ])
+    expect(JSON.stringify(emittedControls())).not.toContain(item.profile)
+    expect(JSON.stringify(emittedControls())).not.toContain(item.sessionId)
+
+    rerender(<PetActionCenter state={{ ...base, action: { status: 'stopped', itemId: item.id } }} />)
+    expect(input.value).toBe('  redirect  ')
+  })
+
+  it('makes offline queue-only behavior explicit and Enter queues without exposing Steer or Stop', () => {
+    const item = makeLiveTurnItem({
+      allowedActions: ['queue'],
+      connectionState: 'closed'
+    })
+
+    render(<PetActionCenter state={makeState([item], { attentionCount: 0 })} />)
+    fireEvent.click(screen.getByRole('button'))
+    const dialog = screen.getByRole('dialog')
+
+    expect(within(dialog).queryByRole('button', { name: /^steer$/i })).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: /^stop$/i })).toBeNull()
+    expect(within(dialog).getByRole('button', { name: /^queue$/i })).not.toBeNull()
+
+    const input = within(dialog).getByRole('textbox', { name: /queue message/i })
+    fireEvent.change(input, { target: { value: '  later  ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(emittedControls()).toEqual([
+      { type: 'action-center-queue', itemId: item.id, text: 'later' }
+    ])
+  })
+
+  it('retains a rejected steer draft and queues only after the explicit Queue click', async () => {
+    const item = makeLiveTurnItem()
+    const base = makeState([item], { attentionCount: 0 })
+    const { rerender } = render(<PetActionCenter state={base} />)
+    fireEvent.click(screen.getByRole('button'))
+    const input = screen.getByRole<HTMLInputElement>('textbox', { name: /message session/i })
+    fireEvent.change(input, { target: { value: 'keep this draft' } })
+
+    rerender(
+      <PetActionCenter
+        state={{ ...base, action: { status: 'steer-rejected', itemId: item.id } }}
+      />
+    )
+
+    expect(input.value).toBe('keep this draft')
+    expect(screen.getByText(/could not be steered/i)).not.toBeNull()
+    expect(emittedControls()).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: /queue this message/i }))
+    expect(emittedControls()).toEqual([
+      { type: 'action-center-queue', itemId: item.id, text: 'keep this draft' }
+    ])
+
+    rerender(<PetActionCenter state={{ ...base, action: { status: 'queued', itemId: item.id } }} />)
+    await waitFor(() => expect(input.value).toBe(''))
+  })
+
+  it('clears only a matching successful draft and ignores a stale terminal action from another item', async () => {
+    const first = makeLiveTurnItem({ id: 'live-first' })
+    const second = makeLiveTurnItem({ id: 'live-second', sessionTitle: 'Second session' })
+
+    const { rerender } = render(
+      <PetActionCenter state={makeState([first, second], { attentionCount: 0, selectedItemId: first.id })} />
+    )
+
+    fireEvent.click(screen.getByRole('button'))
+    let input = screen.getByRole<HTMLInputElement>('textbox', { name: /message session/i })
+    fireEvent.change(input, { target: { value: 'first draft' } })
+    fireEvent.click(screen.getByRole('button', { name: /^steer$/i }))
+
+    rerender(
+      <PetActionCenter
+        state={makeState([first, second], {
+          action: { status: 'steered', itemId: first.id },
+          attentionCount: 0,
+          selectedItemId: first.id
+        })}
+      />
+    )
+    await waitFor(() => expect(input.value).toBe(''))
+
+    fireEvent.change(input, { target: { value: 'keep after opening' } })
+    fireEvent.click(screen.getByRole('button', { name: /open in hermes/i }))
+    rerender(
+      <PetActionCenter
+        state={makeState([first, second], {
+          action: { status: 'success', itemId: first.id },
+          attentionCount: 0,
+          selectedItemId: first.id
+        })}
+      />
+    )
+    expect(input.value).toBe('keep after opening')
+
+    rerender(
+      <PetActionCenter
+        state={makeState([first, second], {
+          action: { status: 'steered', itemId: first.id },
+          attentionCount: 0,
+          selectedItemId: second.id
+        })}
+      />
+    )
+    input = screen.getByRole<HTMLInputElement>('textbox', { name: /message session/i })
+    fireEvent.change(input, { target: { value: 'second draft' } })
+    rerender(
+      <PetActionCenter
+        state={makeState([first, second], {
+          action: { status: 'queued', itemId: first.id },
+          attentionCount: 0,
+          selectedItemId: second.id
+        })}
+      />
+    )
+
+    expect(input.value).toBe('second draft')
+  })
+
+  it('renders no live text or stop controls while waiting and acknowledges done/failed exactly', () => {
+    const waiting = makeLiveTurnItem({
+      allowedActions: ['steer', 'queue', 'stop'],
+      status: 'waiting'
+    })
+
+    const { rerender } = render(<PetActionCenter state={makeState([waiting])} />)
+    fireEvent.click(screen.getByRole('button'))
+
+    expect(screen.queryByRole('textbox', { name: /message session/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^steer$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^queue$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^stop$/i })).toBeNull()
+
+    const done = makeLiveTurnItem({ id: 'done', allowedActions: ['acknowledge'], status: 'done' })
+    rerender(<PetActionCenter state={makeState([done], { selectedItemId: done.id })} />)
+    fireEvent.click(screen.getByRole('button', { name: /acknowledge|dismiss/i }))
+    expect(emittedControls().at(-1)).toEqual({ type: 'action-center-acknowledge', itemId: done.id })
+
+    const failed = makeLiveTurnItem({ id: 'failed', allowedActions: ['acknowledge'], status: 'failed' })
+    rerender(<PetActionCenter state={makeState([failed], { selectedItemId: failed.id })} />)
+    fireEvent.click(screen.getByRole('button', { name: /acknowledge|dismiss/i }))
+    expect(emittedControls().at(-1)).toEqual({ type: 'action-center-acknowledge', itemId: failed.id })
+  })
+
+  it('renders Open in Hermes for every capable item kind and emits only the opaque item id', () => {
+    const items = [
+      makeApprovalItem({ id: 'approval-open', allowedActions: ['approve-once', 'open-in-app'] }),
+      makeClarifyItem({ id: 'clarify-open', allowedActions: ['clarify-respond', 'open-in-app'] }),
+      makeLiveTurnItem({ id: 'live-open', allowedActions: ['steer', 'open-in-app'] })
+    ]
+
+    const { rerender } = render(
+      <PetActionCenter state={makeState([items[0]!], { selectedItemId: items[0]!.id })} />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
+
+    for (const item of items) {
+      rerender(<PetActionCenter state={makeState([item], { selectedItemId: item.id })} />)
+      fireEvent.click(screen.getByRole('button', { name: /open in hermes/i }))
+    }
+
+    expect(emittedControls()).toEqual(
+      items.map(item => ({ type: 'action-center-open-session', itemId: item.id }))
+    )
+  })
+
+  it('renders only allowed live actions and the global submitting mutex disables input and buttons', () => {
+    const item = makeLiveTurnItem({ allowedActions: ['queue', 'open-in-app'] })
+
+    const state = makeState([item], {
+      action: { status: 'submitting', itemId: 'some-other-item' },
+      attentionCount: 0
+    })
+
+    render(<PetActionCenter state={state} />)
+    fireEvent.click(screen.getByRole('button'))
+    const dialog = screen.getByRole('dialog')
+
+    expect(within(dialog).queryByRole('button', { name: /^steer$/i })).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: /^stop$/i })).toBeNull()
+    expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: /^queue$/i }).disabled).toBe(true)
+    expect(within(dialog).getByRole<HTMLButtonElement>('button', { name: /open in hermes/i }).disabled).toBe(true)
+    expect(within(dialog).getByRole<HTMLTextAreaElement>('textbox', { name: /queue message/i }).disabled).toBe(true)
+  })
+})
+
+describe('PetActionCenter — Pet-6C2 live feedback', () => {
+  it.each([
+    ['success', 'Done'],
+    ['stale', 'No longer pending'],
+    ['steered', 'Instruction sent'],
+    ['queued', 'Message queued'],
+    ['stopped', 'Session stopped'],
+    ['acknowledged', 'Dismissed']
+  ] as const)('announces %s even after the acted-on item is removed', (status, message) => {
+    const item = makeLiveTurnItem()
+    const { rerender } = render(<PetActionCenter state={makeState([item], { attentionCount: 0 })} />)
+    fireEvent.click(screen.getByRole('button'))
+
+    rerender(
+      <PetActionCenter
+        state={makeState([], {
+          action: { status, itemId: item.id },
+          attentionCount: 0
+        })}
+      />
+    )
+
+    expect(screen.getByRole('status').textContent).toContain(message)
+  })
+
+  it('keeps steer rejection and generic errors attached to the selected item', () => {
+    const first = makeLiveTurnItem({ id: 'first' })
+    const second = makeLiveTurnItem({ id: 'second' })
+
+    const { rerender } = render(
+      <PetActionCenter
+        state={makeState([first, second], {
+          action: { status: 'steer-rejected', itemId: first.id },
+          attentionCount: 0,
+          selectedItemId: second.id
+        })}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button'))
+
+    expect(screen.queryByText(/could not be steered/i)).toBeNull()
+
+    rerender(
+      <PetActionCenter
+        state={makeState([first, second], {
+          action: { status: 'steer-rejected', itemId: second.id },
+          attentionCount: 0,
+          selectedItemId: second.id
+        })}
+      />
+    )
+    expect(screen.getByRole('status').textContent).toMatch(/could not be steered/i)
+
+    rerender(
+      <PetActionCenter
+        state={makeState([first, second], {
+          action: { status: 'error', itemId: first.id, errorCode: 'rpc-failed' },
+          attentionCount: 0,
+          selectedItemId: second.id
+        })}
+      />
+    )
+    expect(screen.queryByText(/something went wrong/i)).toBeNull()
   })
 })

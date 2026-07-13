@@ -2542,7 +2542,9 @@ export const en: Translations = {
     actionCenter: {
       title: 'Action Center',
       count: n => `${n} pending action${n === 1 ? '' : 's'}`,
-      open: 'Review pending actions',
+      itemCount: (total, attention) =>
+        `${total} item${total === 1 ? '' : 's'} · ${attention} need${attention === 1 ? 's' : ''} attention`,
+      open: 'Open action center',
       close: 'Close action center',
       previous: 'Previous item',
       next: 'Next item',
@@ -2569,7 +2571,35 @@ export const en: Translations = {
       errorGeneric: 'Something went wrong. Try again.',
       success: 'Done',
       stale: 'No longer pending',
-      secureInputHint: count => `${count} secure input${count === 1 ? '' : 's'} need attention in Hermes`
+      secureInputHint: count => `${count} secure input${count === 1 ? '' : 's'} need attention in Hermes`,
+      statusIdle: 'Idle',
+      statusWorking: 'Working',
+      statusWaiting: 'Waiting',
+      statusReviewing: 'Reviewing',
+      statusDone: 'Done',
+      statusFailed: 'Failed',
+      newSession: 'New session',
+      untitledSession: 'Untitled session',
+      unknownProfile: 'Default profile',
+      reasoning: 'Reasoning',
+      queuedCount: count => `${count} queued`,
+      connectionConnecting: 'Connecting',
+      connectionOffline: 'Offline',
+      connectionError: 'Error',
+      messageSession: 'Message session',
+      queueMessage: 'Queue message',
+      liveMessagePlaceholder: 'Type a message…',
+      send: 'Send',
+      steer: 'Steer',
+      queue: 'Queue',
+      stop: 'Stop',
+      acknowledge: 'Dismiss',
+      steerRejected: 'The running session could not be steered. Queue the message to send it next.',
+      queueRejected: 'Queue this message',
+      steered: 'Instruction sent',
+      queued: 'Message queued',
+      stopped: 'Session stopped',
+      acknowledged: 'Dismissed'
     }
   }
 }

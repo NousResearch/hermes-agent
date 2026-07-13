@@ -69,6 +69,40 @@ function makeActionCenterState(): PetActionCenterState {
   }
 }
 
+function makeWorkingActionCenterState(): PetActionCenterState {
+  return {
+    action: null,
+    actionableCount: 1,
+    attentionCount: 0,
+    blockingCount: 0,
+    items: [
+      {
+        actionable: true,
+        activityKind: 'tool',
+        activityName: 'Terminal',
+        allowedActions: ['steer', 'queue', 'stop', 'open-in-app'],
+        blocking: false,
+        connectionState: 'open',
+        detail: null,
+        id: 'live-1',
+        kind: 'live-turn',
+        profile: 'default',
+        profileLabel: 'Default',
+        queuedCount: 0,
+        receivedAt: 1,
+        sessionId: 'runtime-1',
+        sessionTitle: 'Working session',
+        status: 'working',
+        storedSessionId: 'stored-1',
+        summary: null,
+        turnStartedAt: null
+      }
+    ],
+    secureInputCount: 0,
+    selectedItemId: 'live-1'
+  }
+}
+
 function makePayload(actionCenter = makeActionCenterState()): PetOverlayStatePayload {
   return {
     actionCenter,
@@ -133,12 +167,12 @@ afterEach(() => {
 })
 
 describe('PetOverlayApp action-center integration', () => {
-  it('mirrors pushed state without auto-opening or stealing focus, then opens explicitly inside the interactive root', () => {
+  it('mirrors a zero-attention working session without auto-opening or stealing focus, then opens explicitly', () => {
     render(<PetOverlayApp />)
 
-    pushState()
+    pushState(makePayload(makeWorkingActionCenterState()))
 
-    const trigger = screen.getByRole('button', { name: /review pending actions/i })
+    const trigger = screen.getByRole('button', { name: ac.open })
     const interactiveRoot = document.querySelector('[data-pet-overlay-interactive-root]')
 
     expect(screen.queryByRole('dialog')).toBeNull()
@@ -156,7 +190,7 @@ describe('PetOverlayApp action-center integration', () => {
     render(<PetOverlayApp />)
     pushState()
 
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
     setFocusableMock.mockClear()
     fireEvent.click(screen.getByRole('button', { name: /close action center/i }))
 
@@ -175,7 +209,7 @@ describe('PetOverlayApp action-center integration', () => {
 
     expect(screen.getByPlaceholderText(composerPlaceholder)).not.toBeNull()
     setFocusableMock.mockClear()
-    fireEvent.click(screen.getByRole('button', { name: /review pending actions/i }))
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
 
     expect(screen.queryByPlaceholderText(composerPlaceholder)).toBeNull()
     expect(setFocusableMock).toHaveBeenCalledWith(true)
@@ -192,7 +226,7 @@ describe('PetOverlayApp action-center integration', () => {
     pushState()
     controlMock.mockClear()
 
-    const trigger = screen.getByRole('button', { name: /review pending actions/i })
+    const trigger = screen.getByRole('button', { name: ac.open })
     fireEvent.pointerDown(trigger, { button: 0, pointerId: 1, screenX: 10, screenY: 10 })
     fireEvent.pointerUp(trigger, { button: 0, pointerId: 1, screenX: 10, screenY: 10 })
     fireEvent.click(trigger)

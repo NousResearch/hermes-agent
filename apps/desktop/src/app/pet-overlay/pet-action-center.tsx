@@ -4,9 +4,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
-import type { PetActionCenterState } from '@/store/pet-action-center'
+import type { PetActionCenterLiveStatus, PetActionCenterState } from '@/store/pet-action-center'
 import type { PetActionCenterApprovalChoice, PetActionCenterControl } from '@/store/pet-overlay'
 import { sendPetOverlayControl } from '@/store/pet-overlay'
+
+import { LiveStatusStrip } from './live-status-strip'
+import { type LiveTextAction, LiveTurnActions, type LiveTurnItem } from './live-turn-actions'
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -31,6 +34,25 @@ function isApprovalItem(item: Item): item is ApprovalItem {
 
 function isClarifyItem(item: Item): item is ClarifyItem {
   return item.kind === 'clarify'
+}
+
+function isLiveTurnItem(item: Item): item is LiveTurnItem {
+  return item.kind === 'live-turn'
+}
+
+function liveStatusFor(item: Item): PetActionCenterLiveStatus | null {
+  if (isLiveTurnItem(item)) {
+    return {
+      activityKind: item.activityKind,
+      activityName: item.activityName,
+      connectionState: item.connectionState,
+      queuedCount: item.queuedCount,
+      status: item.status,
+      turnStartedAt: item.turnStartedAt
+    }
+  }
+
+  return item.liveStatus ?? null
 }
 
 function selectedItem(state: PetActionCenterState): Item | null {
@@ -135,10 +157,12 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
   const [denyReason, setDenyReason] = useState('')
   const [clarifyChoice, setClarifyChoice] = useState<string | null>(null)
   const [clarifyText, setClarifyText] = useState('')
+  const [liveDraft, setLiveDraft] = useState('')
   const nestedSourceRef = useRef<HTMLButtonElement | null>(null)
   const denyInputRef = useRef<HTMLInputElement | null>(null)
   const alwaysCancelRef = useRef<HTMLButtonElement | null>(null)
   const restoreNestedFocusRef = useRef(false)
+  const pendingDraftActionRef = useRef<{ action: LiveTextAction; itemId: string } | null>(null)
 
   // Reset nested state when the selected item changes or disappears.
   const itemId = item?.id ?? null
@@ -152,6 +176,8 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
       setDenyReason('')
       setClarifyChoice(null)
       setClarifyText('')
+      setLiveDraft('')
+      pendingDraftActionRef.current = null
     }
   }, [itemId])
 
@@ -188,7 +214,25 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
   // ── Action status ──────────────────────────────────────────────────────
   const action = state.action
   const isSubmitting = action?.status === 'submitting'
-  const isItemError = action?.status === 'error' && action.itemId === itemId
+  const isSteerRejected = action?.status === 'steer-rejected' && action.itemId === itemId
+
+  useEffect(() => {
+    const pending = pendingDraftActionRef.current
+
+    if (!pending || pending.itemId !== item?.id || action?.itemId !== item.id || action.status === 'submitting') {
+      return
+    }
+
+    if (
+      (action.status === 'success' && pending.action === 'send') ||
+      (action.status === 'steered' && pending.action === 'steer') ||
+      (action.status === 'queued' && pending.action === 'queue')
+    ) {
+      setLiveDraft('')
+    }
+
+    pendingDraftActionRef.current = null
+  }, [action?.itemId, action?.status, item?.id, item?.kind])
 
   // ── Control dispatch ────────────────────────────────────────────────────
   function send(control: PetActionCenterControl) {
@@ -353,6 +397,46 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
     sendClarify('')
   }
 
+  // ── Live turn actions ───────────────────────────────────────────────────
+  function onLiveTextAction(actionType: LiveTextAction) {
+    if (!item || !isLiveTurnItem(item) || isSubmitting) {
+      return
+    }
+
+    const text = liveDraft.trim()
+
+    if (!text) {
+      return
+    }
+
+    const controlType = {
+      queue: 'action-center-queue',
+      send: 'action-center-submit',
+      steer: 'action-center-steer'
+    } as const
+
+    pendingDraftActionRef.current = { action: actionType, itemId: item.id }
+    send({ type: controlType[actionType], itemId: item.id, text })
+  }
+
+  function onLiveStop() {
+    if (item && isLiveTurnItem(item) && !isSubmitting) {
+      send({ type: 'action-center-stop', itemId: item.id })
+    }
+  }
+
+  function onLiveAcknowledge() {
+    if (item && isLiveTurnItem(item) && !isSubmitting) {
+      send({ type: 'action-center-acknowledge', itemId: item.id })
+    }
+  }
+
+  function onOpenInApp() {
+    if (item && item.allowedActions.includes('open-in-app') && !isSubmitting) {
+      send({ type: 'action-center-open-session', itemId: item.id })
+    }
+  }
+
   // ── Navigation ──────────────────────────────────────────────────────────
   function navigate(direction: 1 | -1) {
     const items = state.items
@@ -385,15 +469,44 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
   }
 
   // ── Live region for status announcements ─────────────────────────────────
-  // Success/stale are terminal states — the item may have already been removed
-  // from the list by the time the status arrives. Show the message as long as
-  // the action status is success/stale, regardless of whether itemId still
-  // matches the current selection. Error remains item-specific; submitting is
-  // global because the bridge accepts only one side-effect action at a time.
-  const liveMessage = action?.status === 'success' ? ac.success : action?.status === 'stale' ? ac.stale : ''
+  // Terminal results survive removal of the acted-on item. Recoverable errors
+  // and steer rejection stay attached to their selected item so feedback can
+  // never appear to describe a different session after navigation.
+  const liveMessage = (() => {
+    switch (action?.status) {
+      case 'success':
+        return ac.success
+
+      case 'stale':
+        return ac.stale
+
+      case 'steered':
+        return ac.steered
+
+      case 'queued':
+        return ac.queued
+
+      case 'stopped':
+        return ac.stopped
+
+      case 'acknowledged':
+        return ac.acknowledged
+
+      case 'steer-rejected':
+        return action.itemId === itemId ? ac.steerRejected : ''
+
+      case 'error':
+        return action.itemId === itemId ? ac.errorGeneric : ''
+
+      default:
+        return ''
+    }
+  })()
+
+  const visibleLiveStatus = item ? liveStatusFor(item) : null
 
   // ── Render ───────────────────────────────────────────────────────────────
-  if (state.attentionCount === 0 && !panelOpen) {
+  if (state.items.length === 0 && state.secureInputCount === 0 && !panelOpen) {
     return null
   }
 
@@ -436,7 +549,7 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
           {/* Header: count + close */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ui-text-primary)' }}>
-              {ac.count(state.attentionCount)}
+              {ac.itemCount(state.items.length, state.attentionCount)}
             </span>
             <Button aria-label={ac.close} onClick={closePanel} size="icon-xs" variant="ghost">
               ✕
@@ -457,8 +570,19 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
             </div>
           )}
 
-          {/* Error state (recoverable) */}
-          {isItemError && <div style={{ fontSize: 11, color: 'var(--ui-text-secondary)' }}>{ac.errorGeneric}</div>}
+
+          {/* Live status belongs to the selected prompt/session and precedes
+              its detail. Prompt-attached snapshots never become a duplicate
+              standalone row in this component. */}
+          {item && visibleLiveStatus && (
+            <LiveStatusStrip
+              ac={ac}
+              profileLabel={item.profileLabel}
+              sessionTitle={item.sessionTitle}
+              status={visibleLiveStatus}
+              storedSessionId={item.storedSessionId}
+            />
+          )}
 
           {/* Item detail */}
           {item && isApprovalItem(item) && <ApprovalDetail ac={ac} item={item} />}
@@ -515,6 +639,30 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
               onTextChange={onClarifyTextChange}
               onTextKeyDown={onClarifyTextKeyDown}
             />
+          )}
+
+          {/* Live session actions */}
+          {item && isLiveTurnItem(item) && (
+            <LiveTurnActions
+              ac={ac}
+              draft={liveDraft}
+              isSteerRejected={isSteerRejected}
+              isSubmitting={isSubmitting}
+              item={item}
+              onAcknowledge={onLiveAcknowledge}
+              onDraftChange={setLiveDraft}
+              onStop={onLiveStop}
+              onTextAction={onLiveTextAction}
+            />
+          )}
+
+          {/* Exact-session navigation is capability-gated for every item kind. */}
+          {item && item.allowedActions.includes('open-in-app') && nestedMode === 'none' && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button disabled={isSubmitting} onClick={onOpenInApp} size="inline" variant="textStrong">
+                {ac.openInApp}
+              </Button>
+            </div>
           )}
 
           {/* No items */}
@@ -621,6 +769,7 @@ function ApprovalActions({
           <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ui-text-primary)' }}>{ac.denyReason}</div>
           <Input
             aria-label={ac.denyReason}
+            disabled={isSubmitting}
             onChange={e => onDenyReasonChange(e.target.value)}
             placeholder={ac.denyReasonPlaceholder}
             ref={denyInputRef}
@@ -724,6 +873,7 @@ function ClarifyActions({
       {/* Other (free text) */}
       <Textarea
         aria-label={ac.other}
+        disabled={isSubmitting}
         onChange={onTextChange}
         onKeyDown={onTextKeyDown}
         placeholder={ac.otherPlaceholder}

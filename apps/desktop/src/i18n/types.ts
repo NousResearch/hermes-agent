@@ -2128,6 +2128,7 @@ export interface Translations {
     actionCenter: {
       title: string
       count: (n: number) => string
+      itemCount: (total: number, attention: number) => string
       open: string
       close: string
       previous: string
@@ -2158,6 +2159,35 @@ export interface Translations {
       success: string
       stale: string
       secureInputHint: (count: number) => string
+      // Live session
+      statusIdle: string
+      statusWorking: string
+      statusWaiting: string
+      statusReviewing: string
+      statusDone: string
+      statusFailed: string
+      newSession: string
+      untitledSession: string
+      unknownProfile: string
+      reasoning: string
+      queuedCount: (count: number) => string
+      connectionConnecting: string
+      connectionOffline: string
+      connectionError: string
+      messageSession: string
+      queueMessage: string
+      liveMessagePlaceholder: string
+      send: string
+      steer: string
+      queue: string
+      stop: string
+      acknowledge: string
+      steerRejected: string
+      queueRejected: string
+      steered: string
+      queued: string
+      stopped: string
+      acknowledged: string
     }
   }
 }

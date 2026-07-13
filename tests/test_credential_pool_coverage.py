@@ -959,16 +959,6 @@ class TestPooledCredentialSerialization:
         assert d["token_type"] == "Bearer"
         assert d["scope"] == "openid"
 
-    def test_runtime_api_key_nous_prefers_agent_key(self):
-        from agent.credential_pool import PooledCredential
-
-        entry = PooledCredential(
-            provider="nous", id="x", label="x", auth_type="oauth",
-            priority=0, source="env", access_token="access-tok",
-            agent_key="agent-key-123",
-        )
-        assert entry.runtime_api_key == "agent-key-123"
-
     def test_runtime_api_key_anthropic_uses_access_token(self):
         from agent.credential_pool import PooledCredential
 

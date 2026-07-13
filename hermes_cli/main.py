@@ -2426,6 +2426,18 @@ def cmd_chat(args):
             accept_hooks=getattr(args, "accept_hooks", False),
         )
 
+    # Built-in and `hermes -p <profile> chat` invoke this path directly.
+    # Enforce profile-scoped HERMES_HOME if the bootstrap didn't already
+    # set it so sessions, logs, and config all live under the profile.
+    if not os.environ.get("HERMES_HOME"):
+        try:
+            from hermes_cli.profiles import resolve_profile_env, get_active_profile_name
+            _profile_for_chat = get_active_profile_name()
+            if _profile_for_chat and _profile_for_chat not in {"default", "custom"}:
+                os.environ["HERMES_HOME"] = resolve_profile_env(_profile_for_chat)
+        except Exception:
+            pass
+
     # Import and run the CLI
     from cli import main as cli_main
 

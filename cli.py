@@ -15867,6 +15867,18 @@ def main(
         asyncio.run(start_gateway())
         return
 
+    # Ensure HERMES_HOME is scoped when a profile was requested via argv
+    # but the bootstrap in hermes_cli/main.py did not propagate it. This
+    # keeps non-TUI chat/REPL in the correct profile home.
+    if not os.environ.get("HERMES_HOME"):
+        try:
+            from hermes_cli.profiles import resolve_profile_env, get_active_profile_name
+            _profile_for_chat = get_active_profile_name()
+            if _profile_for_chat and _profile_for_chat not in {"default", "custom"}:
+                os.environ["HERMES_HOME"] = resolve_profile_env(_profile_for_chat)
+        except Exception:
+            pass
+
     # Skip worktree for list commands (they exit immediately)
     if not list_tools and not list_toolsets:
         # ── Git worktree isolation (#652) ──

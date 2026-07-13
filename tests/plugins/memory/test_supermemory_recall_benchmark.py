@@ -1,6 +1,9 @@
+from copy import deepcopy
 from pathlib import Path
 
-from scripts.benchmarks.supermemory_recall_precision import evaluate, load_fixture
+import pytest
+
+from scripts.benchmarks.supermemory_recall_precision import FixtureClient, evaluate, load_fixture
 
 FIXTURE = Path(__file__).parents[2] / "fixtures/supermemory_recall_benchmark.json"
 EXPECTED_CATEGORIES = {
@@ -30,6 +33,35 @@ def test_recall_benchmark_fixture_has_compact_expected_label_schema():
         response_ids = set(case.get("static", [])) | set(case.get("dynamic", []))
         response_ids.update(doc_id for doc_id, _ in case.get("search", []))
         assert response_ids.issubset(documents)
+
+
+def test_fixture_client_keeps_evaluator_truth_out_of_provider_responses():
+    fixture = load_fixture(FIXTURE)
+    documents = {document["id"]: document for document in fixture["documents"]}
+    client = FixtureClient(fixture["cases"], documents)
+
+    for case in fixture["cases"]:
+        response = client.get_profile(case["query"])
+        for result in response["search_results"]:
+            evaluator_fields = {"label", "class", "benchmark_label", "benchmark_class"}
+            assert evaluator_fields.isdisjoint(result["metadata"])
+            assert result["metadata"] == documents[result["id"]].get("metadata", {})
+
+
+@pytest.mark.parametrize(
+    ("collection", "field"),
+    [("documents", "id"), ("cases", "id"), ("cases", "query")],
+)
+def test_evaluate_rejects_duplicate_fixture_identifiers(collection, field):
+    fixture = deepcopy(load_fixture(FIXTURE))
+    duplicate = deepcopy(fixture[collection][0])
+    if collection == "cases":
+        other_field = "query" if field == "id" else "id"
+        duplicate[other_field] += "-otherwise-unique"
+    fixture[collection].append(duplicate)
+
+    with pytest.raises(ValueError, match=f"duplicate {field}"):
+        evaluate(fixture)
 
 
 def test_current_prefetch_baseline_exposes_precision_problem():

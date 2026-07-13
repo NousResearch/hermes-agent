@@ -22,6 +22,19 @@ from plugins.memory.supermemory import SupermemoryMemoryProvider  # noqa: E402
 DEFAULT_FIXTURE = ROOT / "tests/fixtures/supermemory_recall_benchmark.json"
 
 
+def _require_unique(items: list[dict[str, Any]], field: str, collection: str) -> None:
+    counts = Counter(item[field] for item in items)
+    duplicates = sorted(value for value, count in counts.items() if count > 1)
+    if duplicates:
+        raise ValueError(f"duplicate {field} in {collection}: {duplicates}")
+
+
+def _validate_fixture(fixture: dict[str, Any]) -> None:
+    _require_unique(fixture["documents"], "id", "documents")
+    _require_unique(fixture["cases"], "id", "cases")
+    _require_unique(fixture["cases"], "query", "cases")
+
+
 class FixtureClient:
     """Read-only fake client returning one checked-in response per query."""
 
@@ -41,10 +54,7 @@ class FixtureClient:
                     "id": doc_id,
                     "memory": content(doc_id),
                     "similarity": similarity,
-                    "metadata": {
-                        "benchmark_label": self._documents[doc_id]["label"],
-                        "benchmark_class": self._documents[doc_id]["class"],
-                    },
+                    "metadata": dict(self._documents[doc_id].get("metadata", {})),
                 }
                 for doc_id, similarity in case.get("search", [])
             ],
@@ -52,7 +62,9 @@ class FixtureClient:
 
 
 def load_fixture(path: Path = DEFAULT_FIXTURE) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    fixture = json.loads(path.read_text(encoding="utf-8"))
+    _validate_fixture(fixture)
+    return fixture
 
 
 def _selected_ids(context: str, documents: dict[str, dict[str, Any]]) -> list[str]:
@@ -65,6 +77,7 @@ def _selected_ids(context: str, documents: dict[str, dict[str, Any]]) -> list[st
 
 
 def evaluate(fixture: dict[str, Any]) -> dict[str, Any]:
+    _validate_fixture(fixture)
     settings = fixture["settings"]
     documents = {document["id"]: document for document in fixture["documents"]}
     cases = fixture["cases"]

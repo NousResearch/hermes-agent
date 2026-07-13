@@ -2272,11 +2272,16 @@ class CLICommandsMixin:
             return
 
         new_skin = parts[1].strip().lower()
-        available = {s["name"] for s in list_skins()}
-        if new_skin not in available:
-            print(f"  Unknown skin: {new_skin}")
-            print(f"  Available: {', '.join(sorted(available))}")
-            return
+        # 'auto' is a virtual selector -- bypass the installed-skins check
+        # and let set_active_skin() resolve it to 'light' or 'default' via
+        # the existing terminal detection chain.  Persist 'auto' so the
+        # preference is re-evaluated on every session start.
+        if new_skin != "auto":
+            available = {s["name"] for s in list_skins()}
+            if new_skin not in available:
+                print(f"  Unknown skin: {new_skin}")
+                print(f"  Available: auto, {', '.join(sorted(available))}")
+                return
 
         set_active_skin(new_skin)
         _ACCENT.reset()  # Re-resolve ANSI color for the new skin

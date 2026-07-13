@@ -388,3 +388,143 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
         assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"
+
+
+class TestAutoSkinSelector:
+    """Regression tests for the 'auto' virtual skin selector (PR #16330).
+
+    'auto' must bypass the installed-skin validation in /skin and resolve
+    to a concrete skin via the existing terminal detection chain rather than
+    an OS-specific probe.  The persisted config value stays 'auto' so the
+    preference is re-evaluated on every session start.
+    """
+
+    def test_set_active_skin_auto_resolves_to_concrete_skin(self, monkeypatch):
+        """set_active_skin('auto') must store a concrete name, not 'auto'."""
+        from unittest.mock import patch
+        from hermes_cli.skin_engine import set_active_skin, get_active_skin_name
+
+        with patch("hermes_cli.skin_engine.resolve_auto_skin", return_value="default"):
+            set_active_skin("auto")
+
+        assert get_active_skin_name() != "auto", (
+            "set_active_skin('auto') must resolve to a concrete skin name"
+        )
+        assert get_active_skin_name() == "default"
+
+    def test_resolve_auto_skin_light_mode(self, monkeypatch):
+        """resolve_auto_skin() returns 'light' when _is_light_mode() is True."""
+        from unittest.mock import MagicMock, patch
+        from hermes_cli.skin_engine import resolve_auto_skin
+
+        # Patch at the import-lookup level so prompt_toolkit is not needed.
+        fake_cli = MagicMock()
+        fake_cli._is_light_mode.return_value = True
+        with patch.dict("sys.modules", {"cli": fake_cli}):
+            result = resolve_auto_skin()
+
+        assert result == "light"
+
+    def test_resolve_auto_skin_dark_mode(self, monkeypatch):
+        """resolve_auto_skin() returns 'default' when _is_light_mode() is False."""
+        from unittest.mock import MagicMock, patch
+        from hermes_cli.skin_engine import resolve_auto_skin
+
+        fake_cli = MagicMock()
+        fake_cli._is_light_mode.return_value = False
+        with patch.dict("sys.modules", {"cli": fake_cli}):
+            result = resolve_auto_skin()
+
+        assert result == "default"
+
+    def test_resolve_auto_skin_falls_back_on_error(self):
+        """resolve_auto_skin() returns 'default' when detection raises."""
+        from unittest.mock import patch
+        from hermes_cli.skin_engine import resolve_auto_skin
+
+        # When cli import itself fails, must still return a safe default.
+        with patch.dict("sys.modules", {"cli": None}):
+            result = resolve_auto_skin()
+
+        assert result == "default"
+
+    def test_init_skin_from_config_persists_auto(self, monkeypatch, tmp_path):
+        """display.skin: auto in config must resolve at startup without crashing."""
+        from unittest.mock import patch
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with patch("hermes_cli.skin_engine.resolve_auto_skin", return_value="default"):
+            init_skin_from_config({"display": {"skin": "auto"}})
+
+        assert get_active_skin_name() == "default"
+
+
+class TestAutoSkinSelector:
+    """Regression tests for the 'auto' virtual skin selector (PR #16330).
+
+    'auto' must bypass the installed-skin validation in /skin and resolve
+    to a concrete skin via the existing terminal detection chain rather than
+    an OS-specific probe.  The persisted config value stays 'auto' so the
+    preference is re-evaluated on every session start.
+    """
+
+    def test_set_active_skin_auto_resolves_to_concrete_skin(self, monkeypatch):
+        """set_active_skin('auto') must store a concrete name, not 'auto'."""
+        from unittest.mock import patch
+        from hermes_cli.skin_engine import set_active_skin, get_active_skin_name
+
+        with patch("hermes_cli.skin_engine.resolve_auto_skin", return_value="default"):
+            set_active_skin("auto")
+
+        assert get_active_skin_name() != "auto", (
+            "set_active_skin('auto') must resolve to a concrete skin name"
+        )
+        assert get_active_skin_name() == "default"
+
+    def test_resolve_auto_skin_light_mode(self, monkeypatch):
+        """resolve_auto_skin() returns 'light' when _is_light_mode() is True."""
+        from unittest.mock import MagicMock, patch
+        from hermes_cli.skin_engine import resolve_auto_skin
+
+        # Patch at the import-lookup level so prompt_toolkit is not needed.
+        fake_cli = MagicMock()
+        fake_cli._is_light_mode.return_value = True
+        with patch.dict("sys.modules", {"cli": fake_cli}):
+            result = resolve_auto_skin()
+
+        assert result == "light"
+
+    def test_resolve_auto_skin_dark_mode(self, monkeypatch):
+        """resolve_auto_skin() returns 'default' when _is_light_mode() is False."""
+        from unittest.mock import MagicMock, patch
+        from hermes_cli.skin_engine import resolve_auto_skin
+
+        fake_cli = MagicMock()
+        fake_cli._is_light_mode.return_value = False
+        with patch.dict("sys.modules", {"cli": fake_cli}):
+            result = resolve_auto_skin()
+
+        assert result == "default"
+
+    def test_resolve_auto_skin_falls_back_on_error(self):
+        """resolve_auto_skin() returns 'default' when detection raises."""
+        from unittest.mock import patch
+        from hermes_cli.skin_engine import resolve_auto_skin
+
+        # When cli import itself fails, must still return a safe default.
+        with patch.dict("sys.modules", {"cli": None}):
+            result = resolve_auto_skin()
+
+        assert result == "default"
+
+    def test_init_skin_from_config_persists_auto(self, monkeypatch, tmp_path):
+        """display.skin: auto in config must resolve at startup without crashing."""
+        from unittest.mock import patch
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with patch("hermes_cli.skin_engine.resolve_auto_skin", return_value="default"):
+            init_skin_from_config({"display": {"skin": "auto"}})
+
+        assert get_active_skin_name() == "default"

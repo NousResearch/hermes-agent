@@ -774,9 +774,36 @@ def get_active_skin() -> SkinConfig:
     return _active_skin
 
 
+def resolve_auto_skin() -> str:
+    """Resolve the 'auto' virtual skin selector to a concrete skin name.
+
+    Uses the existing CLI light-mode detection chain (HERMES_TUI_THEME env var,
+    COLORFGBG, OSC 11 terminal query, etc.) that already drives color remapping
+    in cli.py. This avoids OS-specific probes (GNOME dconf) that cannot work
+    over SSH or Docker, and reuses the same signal sources for consistency.
+
+    Falls back to 'default' on any error or when detection is inconclusive.
+    """
+    try:
+        # Import lazily to avoid a circular dependency at module level.
+        # cli.py imports skin_engine, so we cannot import cli at the top.
+        from cli import _is_light_mode  # type: ignore[import]
+        return "light" if _is_light_mode() else "default"
+    except Exception:
+        return "default"
+
+
 def set_active_skin(name: str) -> SkinConfig:
-    """Switch the active skin. Returns the new SkinConfig."""
+    """Switch the active skin. Returns the new SkinConfig.
+
+    Accepts the virtual name 'auto', which resolves to 'light' or 'default'
+    based on the current terminal's background luminance via the existing
+    CLI detection chain.  The resolved name (not 'auto') is stored so that
+    get_active_skin_name() reflects the actual skin in use.
+    """
     global _active_skin, _active_skin_name
+    if name == "auto":
+        name = resolve_auto_skin()
     _active_skin_name = name
     _active_skin = load_skin(name)
     return _active_skin

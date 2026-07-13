@@ -12,6 +12,7 @@ from gateway.runtime_footer import (
     _model_short,
     build_footer_line,
     format_runtime_footer,
+    reasoning_effort_label,
     resolve_footer_config,
 )
 
@@ -72,6 +73,40 @@ def test_format_footer_skips_missing_context_length():
     assert "%" not in out
     assert "gpt-5.4" in out
     assert "/tmp/wd" in out
+
+
+@pytest.mark.parametrize(
+    "field,effort,expected",
+    [
+        ("reasoning_effort", "high", "gpt-5.4 · reasoning: high"),
+        ("reasoning", "xhigh", "gpt-5.4 · reasoning: xhigh"),
+        ("reasoning_effort", "none", "gpt-5.4 · reasoning: none"),
+        ("reasoning_effort", None, "gpt-5.4"),
+    ],
+)
+def test_format_footer_reasoning_effort(field, effort, expected):
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=100,
+        cwd="",
+        reasoning_effort=effort,
+        fields=("model", field),
+    )
+    assert out == expected
+
+
+@pytest.mark.parametrize(
+    "config,expected",
+    [
+        (None, "medium"),
+        ({"enabled": False, "effort": "high"}, "none"),
+        ({"enabled": True, "effort": "XHIGH"}, "xhigh"),
+        ({"enabled": True}, "medium"),
+    ],
+)
+def test_reasoning_effort_label(config, expected):
+    assert reasoning_effort_label(config) == expected
 
 
 # ---------------------------------------------------------------------------

@@ -520,6 +520,8 @@ class TestFileDedup(unittest.TestCase):
             os.symlink(self._tmpfile, link_path)
         except OSError as exc:
             self.skipTest(f"symlink unavailable: {exc}")
+        else:
+            self.addCleanup(lambda p=link_path: os.path.exists(p) and os.unlink(p))
 
         mock_ops.return_value = _make_fake_ops(
             content="line one\nline two\n", file_size=20,
@@ -536,12 +538,6 @@ class TestFileDedup(unittest.TestCase):
         self.assertEqual(r2.get("status"), "unchanged")
         self.assertFalse(r2.get("content_returned"))
 
-        # Cleanup
-        try:
-            os.unlink(link_path)
-        except OSError:
-            pass
-
     @patch("tools.file_tools._get_file_ops")
     def test_symlink_read_reverse_hits_dedup(self, mock_ops):
         """Reading the target directly after reading through a symlink
@@ -551,6 +547,8 @@ class TestFileDedup(unittest.TestCase):
             os.symlink(self._tmpfile, link_path)
         except OSError as exc:
             self.skipTest(f"symlink unavailable: {exc}")
+        else:
+            self.addCleanup(lambda p=link_path: os.path.exists(p) and os.unlink(p))
 
         mock_ops.return_value = _make_fake_ops(
             content="line one\nline two\n", file_size=20,
@@ -566,12 +564,6 @@ class TestFileDedup(unittest.TestCase):
                         "Direct read after symlink should hit dedup")
         self.assertEqual(r2.get("status"), "unchanged")
         self.assertFalse(r2.get("content_returned"))
-
-        # Cleanup
-        try:
-            os.unlink(link_path)
-        except OSError:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1044,6 +1036,8 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
             os.symlink(self._tmpfile, link_path)
         except OSError as exc:
             self.skipTest(f"symlink unavailable: {exc}")
+        else:
+            self.addCleanup(lambda p=link_path: os.path.exists(p) and os.unlink(p))
 
         fake = MagicMock()
         fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
@@ -1069,12 +1063,6 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         self.assertNotEqual(r2.get("dedup"), True,
                             "read after symlink write must not return dedup stub")
         self.assertIn("content", r2)
-
-        # Cleanup
-        try:
-            os.unlink(link_path)
-        except OSError:
-            pass
 
     def test_invalidate_dedup_for_path_noop_on_missing_task(self):
         """_invalidate_dedup_for_path is safe when task_id doesn't exist."""

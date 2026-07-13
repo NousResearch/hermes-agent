@@ -97,6 +97,7 @@ from tools.tool_backend_helpers import (  # noqa: F401
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
+from tools.agentwiki_routing import maybe_agentwiki_route_search
 from tools.url_safety import async_is_safe_url, normalize_url_for_request, sensitive_query_param_name
 import sys
 
@@ -672,6 +673,19 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
+        web_config = _load_web_config()
+        agentwiki_result = maybe_agentwiki_route_search(query, web_config, limit=limit)
+        decision_record = agentwiki_result.decision.log_record(query)
+        if agentwiki_result.response_data is not None:
+            response_data = agentwiki_result.response_data
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            debug_call_data["agentwiki_decision"] = decision_record
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         # Dispatch through the web search registry. All 7 providers
         # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
         # now live as plugins; the dispatcher is just a registry lookup +
@@ -722,9 +736,19 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             )
             response_data = provider.search(query, limit)
 
+        response_data.setdefault("source_routing", {
+            "selected_source": "web_search",
+            "selected_wiki_slug": agentwiki_result.decision.selected_wiki_slug,
+            "selection_reason": agentwiki_result.decision.reason,
+            "current_as_used": agentwiki_result.decision.current_as_used,
+            "pages_fetched_count": agentwiki_result.decision.pages_fetched_count,
+            "fallback_occurred": bool(agentwiki_result.decision.fallback_occurred or agentwiki_result.decision.reason != "disabled"),
+        })
+
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
         debug_call_data["final_response_size"] = len(result_json)
+        debug_call_data["agentwiki_decision"] = decision_record
         _debug.log_call("web_search_tool", debug_call_data)
         _debug.save()
         return result_json
@@ -1058,10 +1082,11 @@ def check_web_api_key() -> bool:
     registry.
     """
     # ``or ""``: a null ``web.backend`` value yields None from ``.get``, and
-    # ``None.lower()`` would raise. Mirrors ``_get_backend``.
+    # ``None.lower()`` would raise. Mirrors ``_get_backend`` while still
+    # honoring an explicit configured backend strictly.
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured and _is_backend_available(configured):
-        return True
+    if configured:
+        return _is_backend_available(configured)
     # Any built-in backend with credentials present. This is a boolean OR, so
     # unlike _get_backend() the probe order is irrelevant.
     if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
@@ -1169,13 +1194,13 @@ from tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
-    "description": "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
+    "description": "Search the web for information. When web.agentwikis is enabled, Hermes may consult a configured Agent Wiki first for covered, non-time-sensitive domains; otherwise it falls back to the configured web backend. Returns up to 5 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "The search query to look up on the web. You may include backend-supported operators such as site:example.com, filetype:pdf, intitle:word, -term, or \"exact phrase\"."
+                "description": "The search query to look up on the web. If Agent Wiki routing is enabled and the query matches a configured domain that is still fresh enough, Hermes may return raw-markdown-backed Agent Wiki results before web search. You may include backend-supported operators such as site:example.com, filetype:pdf, intitle:word, -term, or \"exact phrase\"."
             },
             "limit": {
                 "type": "integer",

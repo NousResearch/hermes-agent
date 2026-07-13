@@ -1262,6 +1262,70 @@ DEFAULT_CONFIG = {
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
+        "agentwikis": {
+            "enabled": False,  # feature flag: prefer configured Agent Wikis ahead of web search
+            "shadow_mode": False,  # evaluate + log routing decisions but still use web search
+            "registry": {
+                "index_json_url": "https://agentwikis.com/index.json",
+                "llms_txt_url": "https://agentwikis.com/llms.txt",
+                "refresh_ttl_seconds": 86400,
+                "conditional_get": True,
+            },
+            "retrieval": {
+                "prefer": "raw_http",  # raw_http | mcp (mcp reserved for future optimization)
+                "mcp_server_name": "agentwikis",
+                "timeout_ms": 8000,
+                "max_pages_per_query": 6,
+                "retry_html_accept_markdown": True,
+            },
+            "routing": {
+                "min_select_score": 70,
+                "abstain_on_tie": True,
+                "freshness_trigger_terms": [
+                    "latest",
+                    "current",
+                    "recently",
+                    "recent",
+                    "today",
+                    "this week",
+                    "this month",
+                    "new",
+                    "just released",
+                    "roadmap",
+                    "upcoming",
+                ],
+            },
+            "domains": {
+                "hermes": {
+                    "wiki_slug": "hermes",
+                    "aliases": ["hermes", "hermes-agent"],
+                },
+                "gbrain": {
+                    "wiki_slug": "gbrain",
+                    "aliases": ["gbrain", "garrytan-gbrain", "agent-brain"],
+                },
+                "github": {
+                    "wiki_slug": "github",
+                    "aliases": ["github", "github-actions", "pull request", "pull requests", "actions", "codeql", "dependabot"],
+                },
+                "vercel": {
+                    "wiki_slug": "vercel",
+                    "aliases": ["vercel", "nextjs-deploy", "next.js deploy", "edge function", "vercel.json"],
+                },
+                "meta_ads": {
+                    "wiki_slug": "meta-ads",
+                    "aliases": ["meta ads", "facebook ads", "instagram ads", "ads manager", "advantage+"],
+                },
+                "google_ads": {
+                    "wiki_slug": "google-ads",
+                    "aliases": ["google ads", "adwords", "ga4 import", "enhanced conversions", "quality score"],
+                },
+                "claude_code": {
+                    "wiki_slug": "claude-code",
+                    "aliases": ["claude code", "claude-code", "claude mcp", "claude hooks", "claude subagents"],
+                },
+            },
+        },
     },
 
     "browser": {

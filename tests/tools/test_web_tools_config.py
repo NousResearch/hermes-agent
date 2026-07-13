@@ -487,7 +487,9 @@ class TestWebSearchSchema:
              patch.object(tools.web_tools._debug, "save"):
             result = json.loads(tools.web_tools.web_search_tool("docs", limit=500))
 
-        assert result == {"success": True, "data": {"web": []}}
+        assert result["success"] is True
+        assert result["data"] == {"web": []}
+        assert result["source_routing"]["selected_source"] == "web_search"
         fake_search.assert_called_once_with("docs", 100)
 
 
@@ -609,7 +611,9 @@ class TestCheckWebApiKey:
 
     def test_no_keys_returns_false(self):
         from tools.web_tools import check_web_api_key
-        with patch("tools.web_tools._ddgs_package_importable", return_value=False):
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("agent.web_search_registry.get_active_search_provider", return_value=None), \
+             patch("agent.web_search_registry.get_active_extract_provider", return_value=None):
             assert check_web_api_key() is False
 
     def test_both_keys_returns_true(self):

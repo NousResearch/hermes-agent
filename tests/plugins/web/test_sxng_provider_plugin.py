@@ -141,10 +141,11 @@ class TestSxngSearch:
         }
         assert run.call_args.args[0] == [
             "/usr/bin/custom-sxng",
-            "test query",
             "--limit",
             "5",
             "--json",
+            "--",
+            "test query",
         ]
         assert run.call_args.kwargs["timeout"] == 17
         assert run.call_args.kwargs["shell"] is False
@@ -197,7 +198,57 @@ class TestSxngSearch:
         with patch("subprocess.run", return_value=completed):
             result = SxngWebSearchProvider().search("q")
 
-        assert result == {"success": False, "error": "backend unavailable"}
+        assert result == {
+            "success": False,
+            "error": "sxng-search failed with exit code 2",
+        }
+
+    def test_nonzero_exit_does_not_echo_private_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from plugins.web.sxng.provider import SxngWebSearchProvider
+
+        _set_config(monkeypatch)
+        monkeypatch.setattr("shutil.which", lambda command: "/usr/bin/sxng-search")
+        private_path = "/" + "home/example/.config/sxng/private.yml"
+        completed = MagicMock(
+            returncode=2,
+            stdout="",
+            stderr=f"{private_path}: backend unavailable",
+        )
+
+        with patch("subprocess.run", return_value=completed):
+            result = SxngWebSearchProvider().search("q")
+
+        assert result == {
+            "success": False,
+            "error": "sxng-search failed with exit code 2",
+        }
+        assert private_path not in result["error"]
+
+    def test_leading_dash_query_is_after_option_terminator(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from plugins.web.sxng.provider import SxngWebSearchProvider
+
+        _set_config(monkeypatch)
+        monkeypatch.setattr("shutil.which", lambda command: "/usr/bin/sxng-search")
+        completed = MagicMock(returncode=0, stdout='{"results": []}', stderr="")
+
+        with patch("subprocess.run", return_value=completed) as run:
+            result = SxngWebSearchProvider().search("--help", limit=3)
+
+        assert result["success"] is True
+        assert run.call_args.args[0] == [
+            "/usr/bin/sxng-search",
+            "--limit",
+            "3",
+            "--json",
+            "--",
+            "--help",
+        ]
 
     def test_nonzero_exit_redacts_secret_like_stderr(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from plugins.web.sxng.provider import SxngWebSearchProvider

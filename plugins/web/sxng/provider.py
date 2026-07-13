@@ -106,17 +106,6 @@ def _normalize_results(payload: Any, limit: int) -> List[Dict[str, Any]]:
     return web_results
 
 
-def _redact_error(text: str) -> str:
-    detail = str(text or "").strip() or "sxng-search failed"
-    try:
-        from agent.redact import redact_sensitive_text
-
-        detail = redact_sensitive_text(detail, force=True)
-    except Exception:  # noqa: BLE001 — never echo unredacted subprocess output
-        return "sxng-search failed"
-    return detail[:1000]
-
-
 class SxngWebSearchProvider(WebSearchProvider):
     """Search provider backed by a local ``sxng-search`` executable."""
 
@@ -153,7 +142,17 @@ class SxngWebSearchProvider(WebSearchProvider):
         except (TypeError, ValueError):
             result_limit = 5
         timeout = _timeout_seconds()
-        args = [command, str(query or ""), "--limit", str(result_limit), "--json"]
+        # Put fixed options first and terminate option parsing before the query.
+        # Without ``--``, a query such as ``--help`` is interpreted by argparse
+        # as a command option rather than search text.
+        args = [
+            command,
+            "--limit",
+            str(result_limit),
+            "--json",
+            "--",
+            str(query or ""),
+        ]
 
         try:
             completed = subprocess.run(
@@ -178,7 +177,9 @@ class SxngWebSearchProvider(WebSearchProvider):
         if completed.returncode != 0:
             return {
                 "success": False,
-                "error": _redact_error(completed.stderr or completed.stdout),
+                # Do not expose subprocess output to the model: it may contain
+                # private paths, local endpoints, usernames, or credentials.
+                "error": f"sxng-search failed with exit code {completed.returncode}",
             }
 
         try:

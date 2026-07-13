@@ -28,7 +28,7 @@ Each plugin's `register(ctx)` function calls `ctx.register_web_search_provider(.
 | `web_extract` | `web.extract_backend` | `web.backend` |
 | Deep crawl modes inside `web_extract` | `web.extract_backend` | `web.backend` |
 
-When neither key is set, Hermes auto-detects the backend from whichever API key/URL is present in the environment. `hermes tools` walks users through selection.
+When neither key is set, Hermes resolves an available provider. Availability may come from an API key/URL or from a credential-free local dependency such as DDGS or `sxng-search`. `hermes tools` walks users through explicit selection.
 
 ## Directory structure
 
@@ -39,7 +39,7 @@ plugins/web/my-backend/
 └── plugin.yaml     # Manifest with kind: backend and provides_web_providers
 ```
 
-`brave_free/` and `ddgs/` are the smallest in-tree references — `brave_free` for an API-key-gated search-only provider, `ddgs` for a no-key provider that lazy-installs its SDK.
+`brave_free/`, `ddgs/`, and `sxng/` are the smallest in-tree references — respectively an API-key-gated search-only provider, a no-key provider that lazy-installs its SDK, and a no-key local-command provider.
 
 ## The WebSearchProvider ABC
 

@@ -271,7 +271,7 @@ web:
 Hermes invokes the configured executable without a shell as:
 
 ```text
-sxng-search <query> --limit <N> --json
+sxng-search --limit <N> --json -- <query>
 ```
 
 The command must be on `PATH` unless `web.sxng.command` is an executable path. Command and timeout are behavioral settings in `config.yaml`; they are not stored in `.env`.
@@ -387,16 +387,16 @@ web:
   extract_backend: "firecrawl"  # used by web_extract
 ```
 
-When per-capability keys are empty, both fall through to `web.backend`. When `web.backend` is also empty, the backend is auto-detected from whichever API key/URL is present.
+When per-capability keys are empty, both fall through to `web.backend`. When `web.backend` is also empty, Hermes resolves an available provider from configured credentials/URLs or credential-free local providers.
 
 **Priority order (per capability):**
 1. `web.search_backend` / `web.extract_backend` (explicit per-capability)
 2. `web.backend` (shared fallback)
-3. Auto-detect from environment variables
+3. Auto-detect from provider availability
 
 ### Auto-detection
 
-If no backend is explicitly configured, Hermes picks the first available one based on which credentials are set:
+If no backend is explicitly configured, Hermes picks an available provider. Most providers advertise availability through credentials or a configured URL:
 
 | Credential present | Auto-selected backend |
 |--------------------|-----------------------|
@@ -405,6 +405,9 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 | `TAVILY_API_KEY` | tavily |
 | `EXA_API_KEY` | exa |
 | `SEARXNG_URL` | searxng |
+| `sxng-search` executable on `PATH` | sxng, when it is the sole available search provider |
+
+The local sxng wrapper is not added to the legacy multi-provider preference order. If another credential-free provider such as DDGS is also available, select sxng explicitly with `web.search_backend: "sxng"`.
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
 

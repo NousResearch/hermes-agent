@@ -237,7 +237,9 @@ class SpritesEnvironment(BaseEnvironment):
                     self._sprite.delete()
                     logger.info("Sprites: deleted sprite %s", self._sprite.name)
             except Exception as e:
-                logger.warning("Sprites: cleanup failed: %s", e)
+                logger.warning(
+                    "Sprites: cleanup failed for %s: %s", self._sprite_name, e
+                )
             finally:
                 try:
                     self._client.close()

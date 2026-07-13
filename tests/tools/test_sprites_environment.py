@@ -168,11 +168,14 @@ class TestConstruction:
         )
         env._mock_client.get_sprite.assert_called_once_with("hermes-mine")
         env._mock_client.create_sprite.assert_not_called()
+        # The instance records the resolved name it will resume under.
+        assert env._sprite_name == "hermes-mine"
 
     def test_creates_when_not_found(self, make_env):
         env = make_env(task_id="fresh", persistent_filesystem=True)
         env._mock_client.get_sprite.assert_called_once_with("hermes-fresh")
         env._mock_client.create_sprite.assert_called_once_with("hermes-fresh")
+        assert env._sprite_name == "hermes-fresh"
 
     def test_no_size_kwargs_passed_to_create(self, make_env):
         """Compute sizing isn't honored yet — make sure we don't sneak it back in."""
@@ -255,6 +258,103 @@ class TestSpriteNaming:
             "agent.file_safety._resolve_active_profile_name", _boom, raising=False
         )
         assert sprites_mod._resolve_sprite_name("x") == "hermes-x"
+
+
+class TestDispatchWiring:
+    """Wiring pins: config → terminal_tool dispatch → SpritesEnvironment kwargs.
+
+    The class-level tests above prove SpritesEnvironment honors
+    ``persistent_filesystem``; these prove the dispatch actually delivers it.
+    A backend missing from terminal_tool's container_config builder gets
+    ``container_config=None``, silently re-defaulting ``container_persistent:
+    false`` back to persistent — i.e. ephemeral mode can never engage.
+    """
+
+    def test_terminal_tool_builds_container_config_for_sprites(self, monkeypatch):
+        import tools.terminal_tool as tt
+
+        captured = {}
+
+        config = {
+            "env_type": "sprites",
+            "docker_image": "unused",
+            "singularity_image": "unused",
+            "modal_image": "unused",
+            "daytona_image": "unused",
+            "cwd": "/root",
+            "host_cwd": None,
+            "timeout": 180,
+            "lifetime_seconds": 300,
+            "container_cpu": 1,
+            "container_memory": 5120,
+            "container_disk": 51200,
+            "container_persistent": False,
+            "docker_volumes": [],
+            "docker_env": {},
+            "docker_extra_args": [],
+            "docker_mount_cwd_to_workspace": False,
+            "docker_run_as_host_user": False,
+            "docker_forward_env": [],
+            "modal_mode": "auto",
+        }
+
+        class _DummyEnv:
+            cwd = "/root"
+
+            def execute(self, *a, **k):
+                return {"output": "", "exit_code": 0}
+
+        def fake_create_environment(env_type, image, cwd, timeout, **kwargs):
+            captured["env_type"] = env_type
+            captured["container_config"] = kwargs.get("container_config")
+            return _DummyEnv()
+
+        monkeypatch.setattr(tt, "_get_env_config", lambda: config)
+        monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
+        monkeypatch.setattr(tt, "_check_all_guards", lambda *a, **k: {"approved": True})
+        monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+        monkeypatch.setattr(tt, "_active_environments", {})
+        monkeypatch.setattr(tt, "_last_activity", {})
+
+        tt.terminal_tool(command="pwd")
+
+        assert captured["env_type"] == "sprites"
+        cc = captured["container_config"]
+        assert cc is not None, (
+            "sprites must be in terminal_tool's container_config builder set; "
+            "container_config=None silently discards container_persistent"
+        )
+        assert cc["container_persistent"] is False
+
+    def test_create_environment_passes_persistence_and_task_id(self, monkeypatch):
+        import tools.terminal_tool as tt
+        import tools.environments.sprites as sprites_mod
+
+        captured = {}
+
+        class _FakeSpritesEnv:
+            def __init__(self, cwd, timeout, persistent_filesystem, task_id):
+                captured.update(
+                    cwd=cwd,
+                    timeout=timeout,
+                    persistent_filesystem=persistent_filesystem,
+                    task_id=task_id,
+                )
+
+        monkeypatch.setattr(sprites_mod, "SpritesEnvironment", _FakeSpritesEnv)
+
+        tt._create_environment(
+            env_type="sprites",
+            image="ignored",
+            cwd="/root",
+            timeout=60,
+            container_config={"container_persistent": False},
+            task_id="tid-ephemeral",
+        )
+
+        assert captured["persistent_filesystem"] is False
+        assert captured["task_id"] == "tid-ephemeral"
+        assert captured["cwd"] == "/root"
 
     def test_no_base_url_kwarg(self, make_env, sprites_sdk):
         """SpritesClient is constructed without a base_url override (endpoint is fixed)."""

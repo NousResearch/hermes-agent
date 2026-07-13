@@ -65,7 +65,6 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
-import { resolvePickerDefaultPath } from './wsl-path-bridge'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -128,6 +127,7 @@ import {
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+import { resolvePickerDefaultPath } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -3759,6 +3759,62 @@ function fetchJson(url, token, options: any = {}) {
   })
 }
 
+function fetchBuffer(url, token, options: any = {}) {
+  return new Promise((resolve, reject) => {
+    let parsed
+
+    try {
+      parsed = new URL(url)
+    } catch (error) {
+      reject(new Error(`Invalid URL: ${error.message}`))
+
+      return
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+
+      return
+    }
+
+    const client = parsed.protocol === 'https:' ? https : http
+    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+    const req = client.request(
+      parsed,
+      {
+        method: 'GET',
+        headers: {
+          'X-Hermes-Session-Token': token
+        }
+      },
+      res => {
+        const chunks = []
+
+        res.on('error', reject)
+        res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+        res.on('end', () => {
+          const buffer = Buffer.concat(chunks)
+          const statusCode = res.statusCode || 500
+
+          if (statusCode >= 400) {
+            reject(new Error(`${statusCode}: ${buffer.toString('utf8').slice(0, 500) || res.statusMessage || ''}`))
+
+            return
+          }
+
+          resolve({ buffer, headers: res.headers || {} })
+        })
+      }
+    )
+
+    req.on('error', reject)
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    })
+    req.end()
+  })
+}
+
 function fetchPublicJson(url, options: any = {}) {
   // Credential-free JSON GET/POST for public gateway endpoints
   // (``/api/status``, ``/api/auth/providers``). Unlike ``fetchJson`` it sends
@@ -5365,6 +5421,158 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
     }
     request.end()
   })
+}
+
+function fetchBufferViaOauthSession(url, options: any = {}) {
+  return new Promise((resolve, reject) => {
+    const sess = getOauthSession()
+
+    if (!sess) {
+      reject(new Error('OAuth session partition is unavailable.'))
+
+      return
+    }
+
+    let parsed
+
+    try {
+      parsed = new URL(url)
+    } catch (error) {
+      reject(new Error(`Invalid URL: ${error.message}`))
+
+      return
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+
+      return
+    }
+
+    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+    const request = electronNet.request({
+      method: 'GET',
+      url,
+      session: sess,
+      useSessionCookies: true,
+      redirect: 'follow'
+    } as any)
+    let timedOut = false
+
+    const timer = setTimeout(() => {
+      timedOut = true
+
+      try {
+        request.abort()
+      } catch {
+        // already finished
+      }
+
+      reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    }, timeoutMs)
+
+    request.on('response', res => {
+      const chunks = []
+
+      res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      res.on('end', () => {
+        if (timedOut) {
+          return
+        }
+
+        clearTimeout(timer)
+        const buffer = Buffer.concat(chunks)
+        const statusCode = res.statusCode || 500
+
+        if (statusCode >= 400) {
+          reject(new Error(`${statusCode}: ${buffer.toString('utf8').slice(0, 500) || res.statusMessage || ''}`))
+
+          return
+        }
+
+        resolve({ buffer, headers: res.headers || {} })
+      })
+    })
+    request.on('error', error => {
+      if (timedOut) {
+        return
+      }
+
+      clearTimeout(timer)
+      reject(error)
+    })
+    request.end()
+  })
+}
+
+function gatewayFilePath(rawPath) {
+  const value = String(rawPath || '').trim()
+
+  if (!value) {
+    return ''
+  }
+
+  if (!/^file:/i.test(value)) {
+    return value
+  }
+
+  try {
+    return decodeURIComponent(new URL(value).pathname)
+  } catch {
+    return value.replace(/^file:\/\//i, '')
+  }
+}
+
+function filenameFromContentDisposition(value) {
+  const text = String(value || '')
+  const encoded = text.match(/filename\*=(?:UTF-8'')?([^;]+)/i)?.[1]
+  const plain = text.match(/filename="?([^";]+)"?/i)?.[1]
+  const raw = encoded || plain || ''
+
+  if (!raw) {
+    return ''
+  }
+
+  try {
+    return path.basename(decodeURIComponent(raw.trim()))
+  } catch {
+    return path.basename(raw.trim())
+  }
+}
+
+async function saveGatewayFile(payload: any = {}) {
+  const filePath = gatewayFilePath(payload.path)
+
+  if (!filePath) {
+    throw new Error('Missing gateway file path')
+  }
+
+  const profile = payload.profile || null
+  const connection = await ensureBackend(profile)
+  const requestPath = pathWithGlobalRemoteProfile(`/api/fs/download?path=${encodeURIComponent(filePath)}`, profile, {
+    globalRemote: globalRemoteActive(),
+    profileRemoteOverride: profileHasRemoteOverride(profile)
+  })
+  const url = `${connection.baseUrl}${requestPath}`
+  const fetched = (
+    connection.authMode === 'oauth' ? await fetchBufferViaOauthSession(url) : await fetchBuffer(url, connection.token)
+  ) as any
+  const disposition = fetched.headers['content-disposition'] || fetched.headers['Content-Disposition']
+  const fallbackName = path.basename(filePath) || String(payload.suggestedName || '').trim() || 'download'
+  const filename =
+    filenameFromContentDisposition(disposition) || String(payload.suggestedName || '').trim() || fallbackName
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: filename,
+    title: 'Save File'
+  })
+
+  if (result.canceled || !result.filePath) {
+    return { canceled: true, saved: false }
+  }
+
+  await fs.promises.writeFile(result.filePath, fetched.buffer)
+
+  return { path: result.filePath, saved: true }
 }
 
 // Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
@@ -8066,6 +8274,8 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
 
   return true
 })
+
+ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
 
 ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
 

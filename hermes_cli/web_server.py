@@ -2243,6 +2243,19 @@ async def fs_read_data_url(path: str):
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
 
 
+@app.get("/api/fs/download")
+async def fs_download(path: str):
+    target, _st = _fs_regular_file(_fs_path(path))
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    return FileResponse(
+        path=str(target),
+        media_type=_fs_mime_type(target),
+        filename=target.name,
+        content_disposition_type="attachment",
+    )
+
+
 @app.get("/api/fs/git-root")
 async def fs_git_root(path: str):
     target = _fs_path(path)

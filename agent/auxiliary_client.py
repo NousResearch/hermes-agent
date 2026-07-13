@@ -5219,21 +5219,39 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
 def _resolve_strict_vision_backend(
     provider: str,
     model: Optional[str] = None,
+    *,
+    api_key: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
+    """Resolve a dedicated client for ``provider``'s strict vision backend.
+
+    ``api_key`` (when provided) overrides env-var lookup so configs that
+    set ``auxiliary.vision.api_key`` actually use the configured key
+    instead of silently falling back to ``OPENROUTER_API_KEY`` / etc.
+    Without the override, users who set ``auxiliary.vision.provider:
+    openrouter`` *and* ``auxiliary.vision.api_key`` in ``config.yaml``
+    would still see ``Auxiliary: marking openrouter unhealthy for 60s``
+    because the provider-router branches below never read the resolved
+    config key.  See issue #31996 sub-issue 2.
+    """
     provider = _normalize_vision_provider(provider)
+    explicit_key = (api_key or "").strip() or None
     if provider == "copilot":
-        return resolve_provider_client("copilot", model, is_vision=True)
+        return resolve_provider_client(
+            "copilot", model, is_vision=True, explicit_api_key=explicit_key
+        )
     if provider == "openrouter":
-        return _try_openrouter(model=model)
+        return _try_openrouter(model=model, explicit_api_key=explicit_key)
     if provider == "nous":
         return _try_nous(vision=True)
     if provider == "openai-codex":
         # Route through resolve_provider_client so the caller's explicit
         # model is used.  There is no safe default Codex model (shifting
         # allow-list); callers must specify via auxiliary.<task>.model.
-        return resolve_provider_client("openai-codex", model, is_vision=True)
+        return resolve_provider_client(
+            "openai-codex", model, is_vision=True, explicit_api_key=explicit_key
+        )
     if provider == "anthropic":
-        return _try_anthropic()
+        return _try_anthropic(explicit_api_key=explicit_key)
     if provider == "custom":
         return _try_custom_endpoint()
     return None, None
@@ -5421,8 +5439,15 @@ def resolve_vision_provider_client(
         return None, None, None
 
     if requested in _VISION_AUTO_PROVIDER_ORDER:
+        # Plumb the resolved api_key through so an explicit
+        # ``auxiliary.vision.api_key`` in config.yaml actually overrides
+        # the env-var lookup (#31996 sub-issue 2).  Without this, users
+        # who configured ``provider: openrouter`` + ``api_key: …`` would
+        # still see "marking openrouter unhealthy for 60s" when their
+        # ``OPENROUTER_API_KEY`` env var was empty, and the vision call
+        # would silently fall through to a non-vision fallback.
         sync_client, default_model = _resolve_strict_vision_backend(
-            requested, resolved_model
+            requested, resolved_model, api_key=resolved_api_key,
         )
         return _finalize(requested, sync_client, default_model)
 

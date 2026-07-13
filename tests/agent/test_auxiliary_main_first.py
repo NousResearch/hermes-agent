@@ -568,7 +568,9 @@ class TestResolveVisionMainFirst:
 
         # Explicit "nous" override → uses strict backend, NOT main model path
         assert provider == "nous"
-        mock_strict.assert_called_once_with("nous", None)
+        # ``api_key=None`` is forwarded after #31996 wired the resolved
+        # auxiliary api_key through to the strict-backend dispatcher.
+        mock_strict.assert_called_once_with("nous", None, api_key=None)
 
 
 # ── Vision — custom provider endpoint credential passthrough ────────────────

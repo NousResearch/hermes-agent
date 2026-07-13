@@ -5382,6 +5382,186 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 f"Move '{key}' under the appropriate section",
             ))
 
+    # ── Tool-config / provider-config consistency (#31996) ───────────────
+    # If a user wires a backend provider for image generation or vision
+    # but the matching toolset is *explicitly* disabled, the
+    # ``image_generate`` / ``vision_analyze`` tools never reach the LLM
+    # and the configured backend looks broken from the user's side.
+    # Detect that exact mismatch so doctor surfaces a clear pointer
+    # instead of leaving users to grep ``hermes tools`` output.
+    issues.extend(_validate_tool_provider_consistency(config))
+
+    # ── Auxiliary task api_key without provider (#31996 sub-issue 2) ─────
+    # Configuring ``auxiliary.<task>.api_key`` without also setting
+    # ``auxiliary.<task>.provider`` silently leaves the key unused —
+    # auto-resolution falls through to env-var lookup and the explicit
+    # config value is ignored.  Warn so users wire both keys instead of
+    # debugging a "marking openrouter unhealthy for 60s" log line.
+    issues.extend(_validate_auxiliary_api_key_has_provider(config))
+
+    return issues
+
+
+def _platform_explicit_toolsets(config: Dict[str, Any]) -> Dict[str, List[str]]:
+    """Return ``platform_toolsets`` as a normalised name→list mapping.
+
+    Drops non-list / non-dict shapes silently — those are caught by
+    schema validation elsewhere and we don't want a stale value to
+    crash the consistency check.
+    """
+    pt = config.get("platform_toolsets")
+    if not isinstance(pt, dict):
+        return {}
+    out: Dict[str, List[str]] = {}
+    for plat, names in pt.items():
+        if isinstance(names, list):
+            out[str(plat)] = [str(n) for n in names]
+    return out
+
+
+def _validate_tool_provider_consistency(config: Dict[str, Any]) -> List["ConfigIssue"]:
+    """Surface mismatches between configured providers and enabled toolsets.
+
+    Two checks (#31996 sub-issues 1 and 3):
+
+    * ``image_gen.provider`` is set, but every platform's toolset list
+      that the user has explicitly written *omits* ``image_gen`` and
+      doesn't contain a composite (``hermes-cli``, ``hermes-api-server``,
+      …) that would expand to it.  This produces "image_generate tool
+      never reaches the model even though the plugin is loaded".
+    * ``auxiliary.vision`` is configured (non-default ``provider`` /
+      ``base_url`` / ``api_key`` / ``model``) but the same explicit
+      toolset list omits ``vision``.  Same failure mode — vision_analyze
+      is invisible to the LLM.
+
+    Implicit defaults (no ``platform_toolsets`` entry, falls through to
+    ``hermes-cli``) keep working out of the box; this only fires when
+    the user has *explicitly* narrowed the toolset list and forgot the
+    matching entry.
+    """
+    issues: List[ConfigIssue] = []
+
+    explicit = _platform_explicit_toolsets(config)
+    if not explicit:
+        # User hasn't narrowed any platform — defaults include the
+        # full ``hermes-cli`` composite which already wires both tools.
+        return issues
+
+    try:
+        from toolsets import TOOLSETS, resolve_toolset
+    except Exception:
+        return issues
+
+    def _platforms_missing_tool(target_tool: str) -> List[str]:
+        """Return platforms whose explicit toolset list omits ``target_tool``."""
+        bad: List[str] = []
+        for plat, names in explicit.items():
+            tools = set()
+            for ts_name in names:
+                if ts_name in TOOLSETS:
+                    try:
+                        tools.update(resolve_toolset(ts_name))
+                    except Exception:
+                        continue
+            if target_tool not in tools:
+                bad.append(plat)
+        return bad
+
+    image_gen_cfg = config.get("image_gen") or {}
+    image_gen_provider = ""
+    if isinstance(image_gen_cfg, dict):
+        image_gen_provider = str(image_gen_cfg.get("provider") or "").strip().lower()
+    if image_gen_provider and image_gen_provider not in {"none", "off", "disabled"}:
+        bad = _platforms_missing_tool("image_generate")
+        if bad:
+            issues.append(ConfigIssue(
+                "warning",
+                (
+                    f"image_gen.provider is set to '{image_gen_provider}' but the "
+                    f"following platform toolsets omit image_gen: {', '.join(sorted(bad))} — "
+                    f"the image_generate tool will never reach the model on those platforms"
+                ),
+                "Add 'image_gen' to platform_toolsets entries that should expose image generation, "
+                "e.g. `hermes tools` → check '🎨 Image Generation', or add it manually:\n"
+                "  platform_toolsets:\n"
+                f"    {bad[0]}:\n"
+                "      - hermes-cli\n"
+                "      - image_gen",
+            ))
+
+    aux_cfg = config.get("auxiliary") or {}
+    vision_cfg = aux_cfg.get("vision") if isinstance(aux_cfg, dict) else None
+    if isinstance(vision_cfg, dict):
+        configured = any(
+            str(vision_cfg.get(field) or "").strip()
+            for field in ("provider", "model", "base_url", "api_key")
+        )
+        if configured:
+            bad = _platforms_missing_tool("vision_analyze")
+            if bad:
+                issues.append(ConfigIssue(
+                    "warning",
+                    (
+                        "auxiliary.vision is configured but the following platform "
+                        f"toolsets omit vision: {', '.join(sorted(bad))} — vision_analyze "
+                        f"will never reach the model on those platforms"
+                    ),
+                    "Add 'vision' to platform_toolsets entries that should expose vision analysis, "
+                    "e.g. `hermes tools` → check '👁️ Vision / Image Analysis', or add it manually:\n"
+                    "  platform_toolsets:\n"
+                    f"    {bad[0]}:\n"
+                    "      - hermes-cli\n"
+                    "      - vision",
+                ))
+
+    return issues
+
+
+def _validate_auxiliary_api_key_has_provider(config: Dict[str, Any]) -> List["ConfigIssue"]:
+    """Warn when ``auxiliary.<task>.api_key`` is set but ``provider`` is not.
+
+    The auxiliary-client resolver only forwards ``api_key`` after a
+    concrete provider has been selected (``_resolve_task_provider_model``
+    short-circuits to ``"auto"`` when ``provider`` is empty/auto).  In
+    auto mode every backend reads its own env var (``OPENROUTER_API_KEY``,
+    ``ANTHROPIC_API_KEY``, …) and the configured ``api_key`` is silently
+    ignored.  Users hit this and report "I set the key in the right
+    place but vision still 401s" — see #31996 sub-issue 2.
+    """
+    issues: List[ConfigIssue] = []
+    aux_cfg = config.get("auxiliary")
+    if not isinstance(aux_cfg, dict):
+        return issues
+    for task, task_cfg in aux_cfg.items():
+        if not isinstance(task_cfg, dict):
+            continue
+        api_key = str(task_cfg.get("api_key") or "").strip()
+        if not api_key:
+            continue
+        provider = str(task_cfg.get("provider") or "").strip().lower()
+        base_url = str(task_cfg.get("base_url") or "").strip()
+        # ``provider: <something>`` or an explicit ``base_url`` both
+        # carry the api_key into the resolved client.  Only complain
+        # when neither is wired.
+        if provider and provider != "auto":
+            continue
+        if base_url:
+            continue
+        issues.append(ConfigIssue(
+            "warning",
+            (
+                f"auxiliary.{task}.api_key is set but auxiliary.{task}.provider is "
+                f"empty/auto — the key will be silently ignored during auto-resolution"
+            ),
+            (
+                f"Either set auxiliary.{task}.provider to the backend that owns this key "
+                f"(e.g. 'openrouter', 'nous', 'anthropic'), or move the key into "
+                f"~/.hermes/.env under the provider's standard variable name "
+                f"(OPENROUTER_API_KEY, ANTHROPIC_API_KEY, etc.).  Without one of those, "
+                f"the resolver falls back to env-var lookup and your config value is "
+                f"never used."
+            ),
+        ))
     return issues
 
 

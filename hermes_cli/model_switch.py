@@ -1806,6 +1806,19 @@ def list_authenticated_providers(
                     if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
                         has_creds = True
                         break
+        # External-process providers (copilot-acp) hold no API key, OAuth
+        # token, or pool entry by design — the spawned ACP subprocess brings
+        # its own auth. "Configured" means the executable resolves, which is
+        # exactly what get_auth_status() reports for them; without this branch
+        # the has_creds filter below unconditionally hides the provider from
+        # every picker (#63662).
+        if not has_creds and overlay.auth_type == "external_process":
+            try:
+                from hermes_cli.auth import get_auth_status
+                _ext_status = get_auth_status(hermes_slug) or {}
+                has_creds = bool(_ext_status.get("logged_in") or _ext_status.get("configured"))
+            except Exception as exc:
+                logger.debug("External-process check failed for %s: %s", pid, exc)
         # Check auth store and credential pool for non-env-var credentials.
         # This applies to OAuth providers AND api_key providers that also
         # support OAuth (e.g. anthropic supports both API key and Claude Code

@@ -92,6 +92,7 @@ class GatewayStreamConsumer:
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
         on_new_message: Optional[callable] = None,
+        prefix: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
@@ -123,6 +124,10 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
+        # Response prefix — prepended to the first message chunk sent.
+        # Used by gateway to show model/provider info on streamed replies.
+        self._prefix = prefix or ""
+        self._prefix_applied = False    # Track whether prefix was already prepended
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
         # a redundant final edit.  Everyone else keeps the fast path.
@@ -980,9 +985,14 @@ class GatewayStreamConsumer:
                     return False
             else:
                 # First message — send new
+                # Prepend response prefix to the first message only
+                send_text = text
+                if self._prefix and not self._prefix_applied:
+                    send_text = f"{self._prefix} {text}"
+                    self._prefix_applied = True
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
-                    content=text,
+                    content=send_text,
                     metadata=self.metadata,
                 )
                 if result.success:

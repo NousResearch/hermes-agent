@@ -9472,6 +9472,14 @@ class GatewayRunner:
                 msgs["response_prefix"] = new_template
             else:
                 msgs["response_prefix"] = ""
+                # Also clear per-platform overrides so /prefix off truly disables
+                # the prefix everywhere (not just globally — platform overrides
+                # would otherwise keep it active on specific platforms).
+                platforms = msgs.get("platforms")
+                if isinstance(platforms, dict):
+                    for _plat_key, _plat_cfg in platforms.items():
+                        if isinstance(_plat_cfg, dict) and "response_prefix" in _plat_cfg:
+                            del _plat_cfg["response_prefix"]
             atomic_yaml_write(config_path, user_config)
         except Exception as e:
             logger.warning("Failed to save messages.response_prefix: %s", e)
@@ -13381,6 +13389,22 @@ class GatewayRunner:
                             buffer_only=_buffer_only,
                             fresh_final_after_seconds=_fresh_final_secs,
                         )
+                        # Build response prefix for streamed first message.
+                        # The prefix is prepended to the first chunk by the
+                        # stream consumer so it appears on the streamed reply
+                        # (not retroactively added after streaming completes).
+                        _stream_prefix = ""
+                        try:
+                            from gateway.response_prefix import build_prefix_line as _bpl_stream
+                            _stream_prefix = _bpl_stream(
+                                user_config=_load_gateway_config(),
+                                platform_key=_platform_config_key(source.platform),
+                                model=_resolve_gateway_model(_load_gateway_config()) or None,
+                                provider=None,
+                                thinking=None,
+                            )
+                        except Exception:
+                            _stream_prefix = ""
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,
                             chat_id=source.chat_id,
@@ -13391,6 +13415,7 @@ class GatewayRunner:
                                 if progress_queue is not None
                                 else None
                             ),
+                            prefix=_stream_prefix,
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:

@@ -304,3 +304,115 @@ def test_build_prefix_thinking_level():
         thinking="high",
     )
     assert out == "[gpt-5.4 | think:high] "
+
+
+# ---------------------------------------------------------------------------
+# Streaming prefix — GatewayStreamConsumer prepends prefix to first chunk
+# ---------------------------------------------------------------------------
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+
+def test_stream_consumer_prepends_prefix_to_first_chunk():
+    """Stream consumer should prepend prefix to the first sent chunk."""
+    adapter = MagicMock()
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    adapter.SUPPORTS_MESSAGE_EDITING = True
+
+    send_result = MagicMock()
+    send_result.success = True
+    send_result.message_id = "msg123"
+    adapter.send = AsyncMock(return_value=send_result)
+    adapter.truncate_message = lambda text, limit: [text]
+
+    consumer = GatewayStreamConsumer(
+        adapter=adapter,
+        chat_id="test_chat",
+        config=StreamConsumerConfig(buffer_threshold=1000),  # high threshold so it doesn't flush early
+        prefix="[openai/gpt-5.4]",
+    )
+
+    async def _run():
+        consumer.on_delta("Hello world")
+        consumer.finish()
+        await consumer.run()
+
+    asyncio.run(_run())
+
+    # The first send should have the prefix prepended
+    adapter.send.assert_called()
+    first_call_content = adapter.send.call_args_list[0].kwargs.get("content", "")
+    assert first_call_content.startswith("[openai/gpt-5.4]"), f"Expected prefix, got: {first_call_content}"
+    assert "Hello world" in first_call_content
+
+
+def test_stream_consumer_prefix_only_on_first_chunk():
+    """Prefix should only appear on the first chunk, not subsequent ones."""
+    adapter = MagicMock()
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    adapter.SUPPORTS_MESSAGE_EDITING = True
+
+    send_result = MagicMock()
+    send_result.success = True
+    send_result.message_id = "msg123"
+    adapter.send = AsyncMock(return_value=send_result)
+    adapter.truncate_message = lambda text, limit: [text]
+
+    consumer = GatewayStreamConsumer(
+        adapter=adapter,
+        chat_id="test_chat",
+        config=StreamConsumerConfig(buffer_threshold=5),  # low threshold to force multiple sends
+        prefix="[TEST]",
+    )
+
+    async def _run():
+        consumer.on_delta("First chunk of text ")
+        consumer.on_delta("Second chunk of text here")
+        consumer.finish()
+        await consumer.run()
+
+    asyncio.run(_run())
+
+    # Check all sends — only the first should have the prefix
+    calls = adapter.send.call_args_list
+    assert len(calls) >= 1
+    first_content = calls[0].kwargs.get("content", "")
+    assert first_content.startswith("[TEST]"), f"First send should have prefix: {first_content}"
+    # Subsequent sends (if any) should NOT have the prefix
+    for call in calls[1:]:
+        content = call.kwargs.get("content", "")
+        assert not content.startswith("[TEST]"), f"Subsequent send should not have prefix: {content}"
+
+
+def test_stream_consumer_no_prefix_when_empty():
+    """When prefix is empty/None, no prefix should be prepended."""
+    adapter = MagicMock()
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    adapter.SUPPORTS_MESSAGE_EDITING = True
+
+    send_result = MagicMock()
+    send_result.success = True
+    send_result.message_id = "msg123"
+    adapter.send = AsyncMock(return_value=send_result)
+    adapter.truncate_message = lambda text, limit: [text]
+
+    consumer = GatewayStreamConsumer(
+        adapter=adapter,
+        chat_id="test_chat",
+        config=StreamConsumerConfig(buffer_threshold=1000),
+        prefix="",  # empty prefix
+    )
+
+    async def _run():
+        consumer.on_delta("Hello world")
+        consumer.finish()
+        await consumer.run()
+
+    asyncio.run(_run())
+
+    adapter.send.assert_called()
+    first_call_content = adapter.send.call_args_list[0].kwargs.get("content", "")
+    assert first_call_content == "Hello world", f"No prefix expected, got: {first_call_content}"

@@ -6550,6 +6550,8 @@ class HermesCLI:
             self._toggle_verbose()
         elif canonical == "footer":
             self._handle_footer_command(cmd_original)
+        elif canonical == "prefix":
+            self._handle_prefix_command(cmd_original)
         elif canonical == "yolo":
             self._toggle_yolo()
         elif canonical == "reasoning":
@@ -7386,6 +7388,94 @@ class HermesCLI:
             _cprint(f"  Runtime footer: {state}")
         else:
             _cprint("  Failed to save runtime_footer setting to config.yaml")
+
+    def _handle_prefix_command(self, cmd_original: str) -> None:
+        """Toggle or inspect ``messages.response_prefix`` from the CLI.
+
+        Usage:
+            /prefix           → toggle
+            /prefix on|off    → explicit
+            /prefix status    → show current state + template
+        """
+        from hermes_cli.config import load_config
+        from hermes_cli.colors import Colors as _Colors
+        from gateway.response_prefix import resolve_prefix_config, interpolate_prefix_template
+
+        # Parse arg
+        arg = ""
+        try:
+            parts = (cmd_original or "").strip().split(None, 1)
+            if len(parts) > 1:
+                arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        cfg = load_config() or {}
+        effective = resolve_prefix_config(cfg, None)
+
+        if arg in ("status", "?"):
+            state = "ON" if effective["enabled"] else "OFF"
+            template = effective.get("template") or "(empty — disabled)"
+            _cprint(
+                f"  {_Colors.BOLD}Response prefix:{_Colors.RESET} {state}\n"
+                f"  Template: `{template}`\n"
+                f"  Vars: {{model}}, {{modelFull}}, {{provider}}, {{thinking}}"
+            )
+            return
+
+        if arg in ("on", "enable", "true", "1"):
+            new_template = effective.get("template") or "[{provider}/{model}] "
+            new_enabled = True
+        elif arg in ("off", "disable", "false", "0"):
+            new_template = ""
+            new_enabled = False
+        elif arg == "":
+            # Toggle
+            if effective["enabled"] and effective.get("template"):
+                new_template = ""
+                new_enabled = False
+            else:
+                new_template = effective.get("template") or "[{provider}/{model}] "
+                new_enabled = True
+        else:
+            _cprint("  Usage: /prefix [on|off|status]")
+            return
+
+        # Write config
+        if not isinstance(cfg.get("messages"), dict):
+            cfg["messages"] = {}
+        msgs = cfg["messages"]
+        if new_enabled:
+            msgs["response_prefix"] = new_template
+        else:
+            msgs["response_prefix"] = ""
+            # Clear per-platform overrides so /prefix off truly disables everywhere
+            platforms = msgs.get("platforms")
+            if isinstance(platforms, dict):
+                for _plat_key, _plat_cfg in platforms.items():
+                    if isinstance(_plat_cfg, dict) and "response_prefix" in _plat_cfg:
+                        del _plat_cfg["response_prefix"]
+
+        from hermes_cli.config import save_config
+        if save_config(cfg):
+            state = (
+                f"{_Colors.GREEN}ON{_Colors.RESET}" if new_enabled
+                else f"{_Colors.DIM}OFF{_Colors.RESET}"
+            )
+            example = ""
+            if new_enabled and new_template:
+                model = (cfg.get("model") or {}).get("default") or ""
+                preview = interpolate_prefix_template(
+                    new_template,
+                    model=model,
+                    provider=None,
+                    thinking=None,
+                )
+                if preview:
+                    example = f"\n  Example: `{preview}`"
+            _cprint(f"  Response prefix: {state}{example}")
+        else:
+            _cprint("  Failed to save response_prefix setting to config.yaml")
 
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off."""

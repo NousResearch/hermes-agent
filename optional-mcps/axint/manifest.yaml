@@ -1,0 +1,73 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: axint
+description: Generate, diagnose, repair, and prove Swift and Xcode projects with Axint.
+source: https://github.com/agenticempire/axint
+
+# Axint publishes a self-contained stdio MCP server. Pinning the npm package
+# keeps every Hermes install reproducible; users update it by reinstalling the
+# catalog entry after a reviewed manifest bump. 0.4.33 was published on
+# 2026-06-25 and satisfies the catalog's two-week supply-chain cooldown.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - -y
+    - -p
+    - "@axint/compiler@0.4.33"
+    - axint-mcp
+  version: "0.4.33"
+  env:
+    # Hermes requires outbound product telemetry to be explicitly opt-in.
+    # Keep both Axint learning channels disabled for catalog installs.
+    AXINT_TELEMETRY: "off"
+    AXINT_FEEDBACK: "off"
+
+auth:
+  type: none
+
+# Axint exposes a broad Apple-development surface. Preselect the cohesive
+# generate -> diagnose -> repair -> proof path while leaving tools that edit
+# source, upgrade packages, install project configuration, cancel processes,
+# or manage coordination state for users to enable deliberately.
+tools:
+  default_enabled:
+    - axint.status
+    - axint.activate
+    - axint.doctor
+    - axint.feature
+    - axint.context.memory
+    - axint.context.docs
+    - axint.suggest
+    - axint.registry.search
+    - axint.workflow.check
+    - axint.compile
+    - axint.validate
+    - axint.fix-packet
+    - axint.cloud.check
+    - axint.repair
+    - axint.run
+    - axint.run.status
+    - axint.schema.compile
+    - axint.swift.validate
+    - axint.swift.fix
+    - axint.templates.list
+    - axint.templates.get
+
+post_install: |
+  Axint requires Node.js 22 or newer. Swift generation and static checks work
+  anywhere Node runs; Xcode build, test, and runtime proof require macOS with
+  Xcode installed.
+
+  Start a new Hermes session, then call `axint.status` followed by
+  `axint.activate` to verify the pinned server and compiler end to end. For an
+  existing Apple project, call `axint.doctor` before the first proof run.
+
+  The default selection does not expose direct source writes, package upgrades,
+  process cancellation, project configuration installation, or team claim
+  mutations. Review and enable those tools when needed with:
+    hermes mcp configure axint
+
+  Axint telemetry and feedback are disabled for this catalog entry by default.

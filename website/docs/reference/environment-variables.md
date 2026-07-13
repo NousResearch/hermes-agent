@@ -413,6 +413,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `BLUEBUBBLES_HOME_CHANNEL` | Phone/email for cron/notification delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | Allow all users (`true`/`false`) |
+| `BLUEBUBBLES_ALLOWED_CHAT_GUIDS` | Exact BlueBubbles chat GUIDs allowed into the agent path (comma-separated or JSON list). Unset preserves stock; empty denies all chats. |
 | `QQ_APP_ID` | QQ Bot App ID from [q.qq.com](https://q.qq.com) |
 | `QQ_CLIENT_SECRET` | QQ Bot App Secret from [q.qq.com](https://q.qq.com) |
 | `QQ_STT_API_KEY` | API key for external STT fallback provider (optional, used when QQ built-in ASR returns no text) |

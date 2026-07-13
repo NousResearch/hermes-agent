@@ -282,6 +282,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
     "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD",
     "BLUEBUBBLES_HOME_CHANNEL", "BLUEBUBBLES_HOME_CHANNEL_NAME",
+    "BLUEBUBBLES_ALLOWED_CHAT_GUIDS",
     "QQ_APP_ID", "QQ_CLIENT_SECRET", "QQBOT_HOME_CHANNEL", "QQBOT_HOME_CHANNEL_NAME",
     "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",  # legacy aliases (pre-rename, still read for back-compat)
     "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
@@ -4270,6 +4271,14 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": False,
         "category": "messaging",
+    },
+    "BLUEBUBBLES_ALLOWED_CHAT_GUIDS": {
+        "description": "Comma-separated or JSON list of exact BlueBubbles chat GUIDs allowed to enter the agent path (DM + group). Unset preserves stock; empty denies all chats",
+        "prompt": "Allowed BlueBubbles chat GUIDs (comma-separated or JSON list)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
     },
     "BLUEBUBBLES_ALLOW_ALL_USERS": {
         "description": "Allow all BlueBubbles users without allowlist",

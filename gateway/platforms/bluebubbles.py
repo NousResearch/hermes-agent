@@ -150,6 +150,20 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if "mention_patterns" in extra
             else os.getenv("BLUEBUBBLES_MENTION_PATTERNS")
         )
+        # Three-state chat GUID allowlist:
+        #   None  -> setting absent, preserve stock behavior (no chat-GUID gate)
+        #   set() -> explicitly configured empty allowlist, deny all chats
+        #   {...} -> exact-match positive allowlist for DM + group destinations
+        if "allowed_chat_guids" in extra:
+            self._allowed_chat_guids: Optional[set] = self._parse_allowed_chat_guids(
+                extra.get("allowed_chat_guids")
+            )
+        elif "BLUEBUBBLES_ALLOWED_CHAT_GUIDS" in os.environ:
+            self._allowed_chat_guids = self._parse_allowed_chat_guids(
+                os.environ.get("BLUEBUBBLES_ALLOWED_CHAT_GUIDS")
+            )
+        else:
+            self._allowed_chat_guids = None
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
@@ -204,6 +218,77 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not text or not self._mention_patterns:
             return False
         return any(pattern.search(text) for pattern in self._mention_patterns)
+
+    @staticmethod
+    def _parse_allowed_chat_guids(raw: Any) -> set:
+        """Parse a positive exact chat-GUID allowlist.
+
+        Accepts a list/tuple/set (YAML), JSON list string, or comma/newline-
+        separated string (env). Entries are whitespace-stripped only — no
+        case folding, substring, or wildcard matching.
+        """
+        if raw is None:
+            return set()
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return set()
+            try:
+                loaded = json.loads(text)
+            except Exception:
+                loaded = None
+            if isinstance(loaded, list):
+                items = loaded
+            else:
+                items = [
+                    part.strip()
+                    for line in text.splitlines()
+                    for part in line.split(",")
+                    if part.strip()
+                ]
+        elif isinstance(raw, (list, tuple, set)):
+            items = list(raw)
+        else:
+            items = [raw]
+        return {str(item).strip() for item in items if str(item).strip()}
+
+    def _is_chat_guid_allowed(self, chat_guid: Optional[str]) -> bool:
+        """Return whether an inbound chat GUID may enter the agent path.
+
+        When the allowlist setting is absent (``None``), all chats pass
+        (stock behavior). When configured, only exact GUID matches pass;
+        missing/unknown GUIDs fail closed.
+        """
+        if self._allowed_chat_guids is None:
+            return True
+        if not chat_guid:
+            return False
+        return chat_guid in self._allowed_chat_guids
+
+    def _extract_inbound_chat_guid(
+        self, record: Dict[str, Any], payload: Dict[str, Any]
+    ) -> Optional[str]:
+        """Resolve chat GUID from a webhook record before side effects."""
+        chat_guid = self._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+            # Prefer nested chats[] over top-level payload guid, which is often
+            # the *message* guid rather than the chat guid.
+            None,
+        )
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        if not chat_guid:
+            # Last resort: only accept payload.guid when it looks like a chat
+            # guid (service;direction;target), not a message UUID.
+            candidate = self._value(payload.get("guid"), record.get("guid"))
+            if candidate and ";" in str(candidate):
+                chat_guid = candidate
+        return chat_guid or None
 
     def _clean_mention_text(self, text: str) -> str:
         """Strip a leading BlueBubbles wake word before dispatch.
@@ -931,6 +1016,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or ""
         )
 
+        # Resolve chat GUID and apply positive exact allowlist BEFORE attachment
+        # download, read receipts, handle_message, session, model, tools, or
+        # outbound. Absent setting preserves stock; configured empty denies all.
+        chat_guid = self._extract_inbound_chat_guid(record, payload)
+        if self._allowed_chat_guids is not None and not self._is_chat_guid_allowed(
+            chat_guid
+        ):
+            logger.info(
+                "[bluebubbles] rejected webhook: chat not in allowed_chat_guids"
+            )
+            return web.Response(text="ok")
+
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []
         media_urls: List[str] = []
@@ -967,19 +1064,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             text = "(attachment)"
         # --- End attachment handling ---
 
-        chat_guid = self._value(
-            record.get("chatGuid"),
-            payload.get("chatGuid"),
-            record.get("chat_guid"),
-            payload.get("chat_guid"),
-            payload.get("guid"),
-        )
-        # Fallback: BlueBubbles v1.9+ webhook payloads omit top-level chatGuid;
-        # the chat GUID is nested under data.chats[0].guid instead.
-        if not chat_guid:
-            _chats = record.get("chats") or []
-            if _chats and isinstance(_chats[0], dict):
-                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
         chat_identifier = self._value(
             record.get("chatIdentifier"),
             record.get("identifier"),

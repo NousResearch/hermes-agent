@@ -2008,6 +2008,31 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     if part.strip()
                 ]
             config.platforms[Platform.BLUEBUBBLES].extra["mention_patterns"] = parsed_patterns
+        # Present-even-if-empty: empty string fails closed (deny all chats).
+        # Unset leaves the key absent so stock behavior is preserved.
+        if "BLUEBUBBLES_ALLOWED_CHAT_GUIDS" in os.environ:
+            raw_allowed_chat_guids = os.environ.get("BLUEBUBBLES_ALLOWED_CHAT_GUIDS", "")
+            text = (raw_allowed_chat_guids or "").strip()
+            if not text:
+                parsed_chat_guids: list = []
+            else:
+                try:
+                    loaded = json.loads(text)
+                except Exception:
+                    loaded = None
+                if isinstance(loaded, list):
+                    parsed_chat_guids = [
+                        str(item).strip() for item in loaded if str(item).strip()
+                    ]
+                else:
+                    parsed_chat_guids = [
+                        part.strip()
+                        for part in text.replace("\n", ",").split(",")
+                        if part.strip()
+                    ]
+            config.platforms[Platform.BLUEBUBBLES].extra["allowed_chat_guids"] = (
+                parsed_chat_guids
+            )
     bluebubbles_home = getenv("BLUEBUBBLES_HOME_CHANNEL")
     if bluebubbles_home and Platform.BLUEBUBBLES in config.platforms:
         config.platforms[Platform.BLUEBUBBLES].home_channel = HomeChannel(

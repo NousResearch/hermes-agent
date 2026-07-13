@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -315,6 +316,35 @@ def _short_addr(addr: str) -> str:
 
 def print_json(data: Any) -> None:
     print(json.dumps(data, indent=2, default=str))
+
+
+# Read-only JSON-RPC methods exposed via the `rpc` subcommand. Everything else
+# (eth_send*, admin_*, personal_*, debug_*, miner_*, txpool_*) stays blocked.
+READONLY_RPC_METHODS: frozenset[str] = frozenset({
+    "eth_chainId",
+    "eth_blockNumber",
+    "eth_gasPrice",
+    "eth_getBalance",
+    "eth_getTransactionCount",
+    "eth_getCode",
+    "eth_call",
+})
+_ETH_CALL_DATA_MAX_HEX_CHARS = 20_480
+
+
+def redact_rpc_url(url: str) -> str:
+    """Strip credentials / query tokens from RPC URLs before printing."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except Exception:
+        return "<redacted>"
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    if parts.username or parts.password:
+        host = f"***@{host}"
+    return urllib.parse.urlunsplit((parts.scheme, host, parts.path, "", ""))
+
 
 # ---------------------------------------------------------------------------
 # HTTP / JSON-RPC layer
@@ -1376,6 +1406,65 @@ def cmd_contract(args: argparse.Namespace) -> None:
 # Argument parsing & dispatch
 # ---------------------------------------------------------------------------
 
+def cmd_rpc(args: argparse.Namespace) -> None:
+    """Whitelist-gated raw JSON-RPC for chain inspection / eth_call only."""
+    method = str(args.method or "").strip()
+    endpoint = redact_rpc_url(get_rpc_url(args.chain))
+    if method not in READONLY_RPC_METHODS:
+        print_json({
+            "ok": False,
+            "error": f"disallowed method {method!r}",
+            "allowed": sorted(READONLY_RPC_METHODS),
+            "endpoint": endpoint,
+        })
+        sys.exit(2)
+
+    params: List[Any]
+    if args.params:
+        try:
+            params = json.loads(args.params)
+        except json.JSONDecodeError as exc:
+            print_json({"ok": False, "error": f"invalid --params JSON: {exc}", "endpoint": endpoint})
+            sys.exit(2)
+        if not isinstance(params, list):
+            print_json({"ok": False, "error": "--params must be a JSON array", "endpoint": endpoint})
+            sys.exit(2)
+    else:
+        params = []
+
+    if method == "eth_call":
+        if not params or not isinstance(params[0], dict):
+            print_json({
+                "ok": False,
+                "error": "eth_call requires params [call_object, block_tag]",
+                "endpoint": endpoint,
+            })
+            sys.exit(2)
+        data = params[0].get("data") or ""
+        if isinstance(data, str) and data.startswith("0x"):
+            if len(data) - 2 > _ETH_CALL_DATA_MAX_HEX_CHARS:
+                print_json({
+                    "ok": False,
+                    "error": "eth_call data exceeds maximum hex length",
+                    "endpoint": endpoint,
+                })
+                sys.exit(2)
+
+    try:
+        result = rpc_call(args.chain, method, params)
+    except Exception as exc:
+        print_json({"ok": False, "error": str(exc), "method": method, "endpoint": endpoint})
+        sys.exit(1)
+
+    print_json({
+        "ok": True,
+        "method": method,
+        "result": result,
+        "endpoint": endpoint,
+        "chain": args.chain,
+    })
+
+
 def build_parser() -> argparse.ArgumentParser:
     chain_choices = list(CHAINS.keys())
 
@@ -1459,6 +1548,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_contract.add_argument("address", help="Contract address (0x...)")
     p_contract.add_argument("--chain", default=DEFAULT_CHAIN, choices=chain_choices)
 
+    # -- rpc (whitelist raw JSON-RPC) --
+    p_rpc = sub.add_parser(
+        "rpc",
+        help="Raw read-only JSON-RPC (whitelist: chainId/block/gas/balance/code/call)",
+    )
+    p_rpc.add_argument("method", help="JSON-RPC method name (whitelist only)")
+    p_rpc.add_argument(
+        "--params",
+        default="[]",
+        help='JSON array of params (default: [])',
+    )
+    p_rpc.add_argument("--chain", default=DEFAULT_CHAIN, choices=chain_choices)
+
     return parser
 
 
@@ -1477,6 +1579,7 @@ DISPATCH = {
     "decode":     cmd_decode,
     "ens":        cmd_ens,
     "contract":   cmd_contract,
+    "rpc":        cmd_rpc,
 }
 
 

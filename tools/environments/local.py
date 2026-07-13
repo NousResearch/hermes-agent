@@ -604,6 +604,71 @@ def _find_bash() -> str:
     )
 
 
+_CONFIGURABLE_SHELL_KINDS = frozenset({"bash", "zsh"})
+
+
+def _read_terminal_shell_config() -> str:
+    """Return the configured local ``terminal.shell`` override, if any.
+
+    Config loading is best-effort so a missing or malformed config never
+    prevents terminal execution from using its historical fallback.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        terminal_cfg = cfg.get("terminal") or {}
+        shell = terminal_cfg.get("shell") or ""
+        return str(shell).strip()
+    except Exception:
+        return ""
+
+
+def _configured_shell_kind(shell: str) -> str | None:
+    """Classify a configured executable as a supported snapshot shell."""
+    names = {
+        Path(shell).name.lower(),
+        Path(os.path.realpath(shell)).name.lower(),
+    }
+    if names & {"bash", "bash.exe"}:
+        return "bash"
+    if "zsh" in names:
+        return "zsh"
+    return None
+
+
+def _resolve_terminal_shell() -> tuple[str, str] | None:
+    """Resolve ``terminal.shell`` to ``(executable, snapshot kind)``.
+
+    Only bash and zsh are accepted because the foreground session snapshot
+    protocol is shell-specific. Unsupported or unavailable values return
+    ``None`` so callers can preserve their existing fallback behavior.
+    """
+    configured = _read_terminal_shell_config()
+    if not configured:
+        return None
+
+    if os.path.isabs(configured):
+        if not (os.path.isfile(configured) and os.access(configured, os.X_OK)):
+            return None
+        kind = _configured_shell_kind(configured)
+        return (configured, kind) if kind else None
+
+    requested = Path(configured).name.lower()
+    if requested not in {"bash", "bash.exe", "zsh"}:
+        return None
+
+    if requested in {"bash", "bash.exe"}:
+        shell = _find_bash()
+    else:
+        shell = shutil.which(configured)
+        if not shell:
+            return None
+
+    kind = _configured_shell_kind(shell)
+    return (shell, kind) if kind in _CONFIGURABLE_SHELL_KINDS else None
+
+
 # POSIX-sh-family shells that understand the ``[shell, "-lic", "set +m; …"]``
 # invocation spawn_local uses. $SHELL values outside this set (fish, csh/tcsh,
 # nushell, elvish, xonsh, …) would error on that syntax, so _find_shell falls
@@ -640,7 +705,15 @@ def _find_shell() -> str:
 
     On Windows, ``$SHELL`` is typically bash (Git Bash), so behaviour is
     unchanged — we fall through to ``_find_bash``.
+
+    An explicit supported ``terminal.shell`` override takes precedence for
+    both background and foreground local execution. When it is unset or cannot
+    be resolved, this function preserves the existing ``$SHELL`` behavior.
     """
+    configured = _resolve_terminal_shell()
+    if configured:
+        return configured[0]
+
     if not _IS_WINDOWS:
         user_shell = os.environ.get("SHELL")
         if (
@@ -893,20 +966,23 @@ def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
         return [], True
 
 
-def _resolve_shell_init_files() -> list[str]:
-    """Resolve the list of files to source before the login-shell snapshot.
+def _resolve_shell_init_files(shell_kind: str = "bash") -> list[str]:
+    """Resolve files to source before the configured login-shell snapshot.
+
+    Explicit ``terminal.shell_init_files`` applies to every supported shell.
+    Automatic discovery remains bash-only because ``auto_source_bashrc`` names
+    bash startup files and sourcing them in zsh is unsafe.
 
     Expands ``~`` and ``${VAR}`` references and drops anything that doesn't
-    exist on disk, so a missing ``~/.bashrc`` never breaks the snapshot.
-    The ``auto_source_bashrc`` path runs only when the user hasn't supplied
-    an explicit list — once they have, Hermes trusts them.
+    exist on disk, so a missing rc file never breaks the snapshot. Once users
+    supply an explicit list, Hermes trusts it.
     """
     explicit, auto_bashrc = _read_terminal_shell_init_config()
 
     candidates: list[str] = []
     if explicit:
         candidates.extend(explicit)
-    elif auto_bashrc and not _IS_WINDOWS:
+    elif auto_bashrc and shell_kind == "bash" and not _IS_WINDOWS:
         # Build a login-shell-ish source list so tools like n / nvm / asdf /
         # pyenv that self-install into the user's shell rc land on PATH in
         # the captured snapshot.
@@ -959,8 +1035,8 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host machine.
 
-    Spawn-per-call: every execute() spawns a fresh bash process.
-    Session snapshot preserves env vars across calls.
+    Spawn-per-call: every execute() spawns the configured bash or zsh process.
+    Session snapshot preserves environment and supported shell state across calls.
     CWD persists via file-based read after each command.
     """
 
@@ -968,6 +1044,11 @@ class LocalEnvironment(BaseEnvironment):
         if cwd:
             cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        configured = _resolve_terminal_shell()
+        if configured:
+            self._shell_path, self._shell_kind = configured
+        else:
+            self._shell_path, self._shell_kind = _find_bash(), "bash"
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -1030,18 +1111,17 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        bash = _find_bash()
+        shell = self._shell_path
         # For login-shell invocations (used by init_session to build the
-        # environment snapshot), prepend sources for the user's bashrc /
-        # custom init files so tools registered outside bash_profile
-        # (nvm, asdf, pyenv, …) end up on PATH in the captured snapshot.
-        # Non-login invocations are already sourcing the snapshot and
-        # don't need this.
+        # environment snapshot), prepend explicit shell init files. Automatic
+        # rc discovery remains bash-only; zsh users can list ~/.zshrc or a
+        # custom startup file explicitly via terminal.shell_init_files.
+        # Non-login invocations already source the snapshot.
         if login:
-            init_files = _resolve_shell_init_files()
+            init_files = _resolve_shell_init_files(self._shell_kind)
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
-        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+        args = [shell, "-l", "-c", cmd_string] if login else [shell, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by

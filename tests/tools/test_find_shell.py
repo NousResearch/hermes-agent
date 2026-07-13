@@ -27,6 +27,20 @@ class TestFindShellPrefersUserShell:
         with patch.dict(os.environ, {"SHELL": str(fake_zsh)}):
             assert _find_shell() == str(fake_zsh)
 
+    def test_configured_shell_overrides_shell_env(self, tmp_path):
+        configured_zsh = tmp_path / "zsh"
+        configured_zsh.touch()
+        configured_zsh.chmod(0o755)
+        user_bash = tmp_path / "bash"
+        user_bash.touch()
+        user_bash.chmod(0o755)
+
+        with patch.dict(os.environ, {"SHELL": str(user_bash)}), patch(
+            "tools.environments.local._resolve_terminal_shell",
+            return_value=(str(configured_zsh), "zsh"),
+        ):
+            assert _find_shell() == str(configured_zsh)
+
     def test_falls_back_when_shell_not_executable(self, tmp_path):
         """$SHELL exists but lacks the execute bit -> fall back to _find_bash
         (returning it would fail at spawn time)."""

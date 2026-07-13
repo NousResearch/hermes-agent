@@ -116,6 +116,7 @@ terminal:
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
+  shell: ""         # local only: bash | zsh | absolute path; empty preserves defaults
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
@@ -143,6 +144,37 @@ The default. Commands run directly on your machine with no isolation. No special
 terminal:
   backend: local
 ```
+
+#### `terminal.shell`
+
+Local foreground commands use bash by default. Background processes and PTY
+sessions keep the existing behavior of using a compatible `$SHELL` when one is
+available. Set `terminal.shell` to override all three local execution paths:
+
+```yaml
+terminal:
+  backend: local
+  shell: zsh                       # bash | zsh
+  shell_init_files:
+    - "~/.zshrc"                  # optional; explicit files apply to either shell
+```
+
+`terminal.shell` accepts `bash`, `zsh`, or an absolute path to a bash/zsh
+executable (including a symlink named `bash` or `zsh`). Other shells such as
+`fish`, `dash`, `ksh`, and `tcsh` are not accepted because the session snapshot
+protocol is implemented only for bash and zsh. If the setting is empty,
+unsupported, missing, or not executable, Hermes falls back to the historical
+behavior instead of preventing terminal startup.
+
+Hermes runs the selected shell in login mode once to create a per-session
+snapshot, then restores exported variables, public functions, aliases, and the
+supported shell options before later commands. The snapshot uses shell-specific
+function, alias, option, and process-PID handling so concurrent updates remain
+atomic under both bash and zsh.
+
+Automatic startup-file discovery through `auto_source_bashrc` remains bash-only.
+For zsh, list `~/.zshrc` or another startup file explicitly in
+`shell_init_files`. Missing listed files are skipped silently.
 
 By default, local tool subprocesses keep your real OS-user `HOME`. This lets
 external CLIs such as `git`, `ssh`, `gh`, `az`, `npm`, Claude Code, and Codex

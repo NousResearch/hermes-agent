@@ -290,7 +290,9 @@ def _cwd_marker(session_id: str) -> str:
 class BaseEnvironment(ABC):
     """Common interface and unified execution flow for all Hermes backends.
 
-    Subclasses implement ``_run_bash()`` and ``cleanup()``.  The base class
+    Subclasses implement ``_run_bash()`` and ``cleanup()``. The method name is
+    retained for backend compatibility, but local execution may use bash or
+    zsh. The base class
     provides ``execute()`` with session snapshot sourcing, CWD tracking,
     interrupt handling, and timeout enforcement.
     """
@@ -300,6 +302,10 @@ class BaseEnvironment(ABC):
 
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
+
+    # Snapshot protocol. Every backend remains bash by default; the local
+    # backend may opt into zsh when terminal.shell is configured explicitly.
+    _shell_kind: str = "bash"
 
     def get_temp_dir(self) -> str:
         """Return the backend temp directory used for session artifacts.
@@ -334,7 +340,7 @@ class BaseEnvironment(ABC):
         timeout: int = 120,
         stdin_data: str | None = None,
     ) -> ProcessHandle:
-        """Spawn a bash process to run *cmd_string*.
+        """Spawn the backend's supported shell to run *cmd_string*.
 
         Returns a ProcessHandle (subprocess.Popen or _ThreadedProcessHandle).
         Must be overridden by every backend.
@@ -350,12 +356,52 @@ class BaseEnvironment(ABC):
     # Session snapshot (init_session)
     # ------------------------------------------------------------------
 
+    def _snapshot_temp_parts(self) -> tuple[str, str]:
+        """Return ``(setup, unique_temp_path)`` for the active shell.
+
+        Bash exposes the real subshell PID as ``$BASHPID``. zsh's ``$$`` has
+        parent-PID semantics in ``&`` subshells, so load the standard
+        ``zsh/system`` module and use ``$sysparams[pid]`` instead.
+        """
+        prefix = self._quote_shell_path(self._snapshot_path + ".tmp.")
+        if self._shell_kind == "zsh":
+            return "zmodload zsh/system 2>/dev/null", prefix + "${sysparams[pid]}"
+        return "", prefix + "$BASHPID"
+
+    def _snapshot_dump_command(self, snap_tmp: str) -> str:
+        """Build an atomic-ready dump of env, functions, aliases and options."""
+        if self._shell_kind == "zsh":
+            return (
+                f"export -p > {snap_tmp} && {{\n"
+                "for __hermes_fn in ${(k)functions}; do\n"
+                "  [[ \"$__hermes_fn\" == _* && \"$__hermes_fn\" != __* ]] && continue\n"
+                f"  functions \"$__hermes_fn\" >> {snap_tmp} 2>/dev/null || true\n"
+                "done\n"
+                f"alias -L >> {snap_tmp} 2>/dev/null || true\n"
+                "setopt | while IFS= read -r __hermes_opt; do\n"
+                f"  print -r -- \"setopt $__hermes_opt\" >> {snap_tmp}\n"
+                "done\n"
+                f"printf '%s\\n' 'set +e' 'set +u' >> {snap_tmp}\n"
+                "}"
+            )
+
+        return (
+            f"export -p > {snap_tmp} && {{\n"
+            "__hermes_fns=$(declare -F | awk '{print $3}' | "
+            "grep -vE '^_[^_]') || true\n"
+            f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns >> {snap_tmp} "
+            "2>/dev/null || true\n"
+            f"alias -p >> {snap_tmp}\n"
+            f"printf '%s\\n' 'shopt -s expand_aliases' 'set +e' 'set +u' >> {snap_tmp}\n"
+            "}"
+        )
+
     def init_session(self):
         """Capture login shell environment into a snapshot file.
 
         Called once after backend construction.  On success, sets
         ``_snapshot_ready = True`` so subsequent commands source the snapshot
-        instead of running with ``bash -l``.
+        instead of starting a login shell for every command.
         """
         # Full capture: env vars, functions, aliases, shell options.
         # Restore configured cwd after login shell profile scripts, which may
@@ -383,41 +429,19 @@ class BaseEnvironment(ABC):
         # source() either sees the old complete snapshot or the new complete
         # one — never a partial/truncated file.
         #
-        # The temp name MUST be unique per concurrent writer.  ``$$`` is the
-        # bash PID, but in ``&``-launched subshells (how concurrent terminal
-        # calls run) ``$$`` stays the *parent* shell's PID — so two concurrent
-        # writers would pick the SAME temp name, clobber each other's temp
-        # mid-write, and mv would then publish a torn file (the corruption is
-        # only narrowed, not closed).  ``$BASHPID`` is the actual subshell PID
-        # and is genuinely unique per writer, which closes the race.  The
-        # static path is shell-quoted (Windows/Git-Bash drive letters, spaces)
-        # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # The temp name MUST be unique per concurrent writer. ``$$`` keeps the
+        # parent PID in both bash and zsh ``&`` subshells, so it is unsafe here.
+        # Bash uses ``$BASHPID``; zsh loads ``zsh/system`` and uses the current
+        # process PID from ``$sysparams[pid]``. The static path remains quoted
+        # while the dynamic PID expression stays outside the quotes.
+        _snapshot_setup, _snap_tmp = self._snapshot_temp_parts()
+        _dump_snapshot = self._snapshot_dump_command(_snap_tmp)
+        _setup_line = f"{_snapshot_setup} || exit 1\n" if _snapshot_setup else ""
         bootstrap = (
+            f"{_setup_line}"
             f"umask 077\n"
-            f"export -p > {_snap_tmp}\n"
-            # Dump function definitions, filtering out private (``_``-prefixed)
-            # helpers — mainly bash-completion internals (``_git``, ``_make``…)
-            # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
-            # is line-based: it strips the function *header* line but leaves the
-            # orphaned ``{ … }`` body behind, which corrupts the snapshot and
-            # makes every sourced command fail (e.g. exit 127).  Selecting the
-            # wanted names with ``declare -F`` first, then dumping only those
-            # whole definitions, preserves the filter's intent without ever
-            # tearing a function body.  The non-empty guard matters: bare
-            # ``declare -f`` with no name args dumps ALL functions, so an empty
-            # name list (only private funcs present) would otherwise leak the
-            # very functions we meant to drop.
-            f"__hermes_fns=$(declare -F | awk '{{print $3}}' | grep -vE '^_[^_]') || true\n"
-            f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns "
-            f">> {_snap_tmp} 2>/dev/null || true\n"
-            f"alias -p >> {_snap_tmp}\n"
-            f"echo 'shopt -s expand_aliases' >> {_snap_tmp}\n"
-            f"echo 'set +e' >> {_snap_tmp}\n"
-            f"echo 'set +u' >> {_snap_tmp}\n"
-            # Publish atomically only if assembly succeeded; otherwise drop the
-            # partial temp rather than leave it to be sourced or orphaned.
-            f"mv -f {_snap_tmp} {_quoted_snap} || rm -f {_snap_tmp}\n"
+            f"{{ {_dump_snapshot} && mv -f {_snap_tmp} {_quoted_snap}; }} || "
+            f"{{ rm -f {_snap_tmp}; exit 1; }}\n"
             f"builtin cd -- {_quoted_cwd} 2>/dev/null || true\n"
             f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
@@ -439,7 +463,7 @@ class BaseEnvironment(ABC):
         except Exception as exc:
             logger.warning(
                 "init_session failed (session=%s): %s — "
-                "falling back to bash -l per command",
+                "falling back to a login shell per command",
                 self._session_id,
                 exc,
             )
@@ -470,7 +494,7 @@ class BaseEnvironment(ABC):
         return shlex.quote(path)
 
     def _wrap_command(self, command: str, cwd: str) -> str:
-        """Build the full bash script that sources snapshot, cd's, runs command,
+        """Build the shell script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
         escaped = command.replace("'", "'\\''")
 
@@ -478,14 +502,10 @@ class BaseEnvironment(ABC):
         # rewrites ``C:/...`` to ``/c/...`` so MSYS doesn't mangle them).
         _quoted_snap = self._quote_shell_path(self._snapshot_path)
         _quoted_cwd_file = self._quote_shell_path(self._cwd_file)
-        # Use atomic file replacement for env snapshot updates (issue #38249).
-        # Assemble into a per-writer-unique temp file, then mv to atomically
-        # replace the snapshot so concurrent source() calls never read a
-        # truncated/half-written file.  ``$BASHPID`` (not ``$$``) is the actual
-        # subshell PID — unique per concurrent ``&``-launched writer — so two
-        # writers never share a temp name and clobber each other before the mv.
-        # Static path shell-quoted (Windows/spaces); ``$BASHPID`` left to expand.
-        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # Use atomic file replacement for snapshot updates (issue #38249).
+        # Shell-specific PID handling keeps concurrent writers unique.
+        _snapshot_setup, _snap_tmp = self._snapshot_temp_parts()
+        _dump_snapshot = self._snapshot_dump_command(_snap_tmp)
 
         parts = []
 
@@ -513,13 +533,13 @@ class BaseEnvironment(ABC):
         # umask. Snapshot files may contain env-carried secrets.
         parts.append("umask 077")
 
-        # Re-dump env vars to snapshot (atomic replacement to avoid races).
-        # Chain mv on the export succeeding so a failed/partial dump never
-        # replaces a good snapshot; drop the temp on failure so it isn't
-        # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
+        # Re-dump env vars and supported shell state atomically. This keeps
+        # functions, aliases, and zsh options loaded during init available after
+        # every execute() call, not only the first one.
         if self._snapshot_ready:
+            setup = f"{_snapshot_setup} && " if _snapshot_setup else ""
             parts.append(
-                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"{{ {setup}{_dump_snapshot} && mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )
 

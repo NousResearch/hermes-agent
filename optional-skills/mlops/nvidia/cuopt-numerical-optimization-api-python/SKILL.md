@@ -1,5 +1,5 @@
 ---
-name: nvidia-cuopt-numerical-optimization
+name: nvidia-cuopt-numerical-optimization-api-python
 description: GPU-accelerated linear and integer programming.
 version: 26.08.00
 author: NVIDIA

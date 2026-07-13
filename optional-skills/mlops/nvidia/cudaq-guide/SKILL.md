@@ -10,14 +10,11 @@ metadata:
     tags: [nvidia, quantum-computing, cuda-q, gpu]
     category: mlops
 ---
-        - c++
-    domain: "quantum"
----
 
 ## CUDA-Q Getting Started Guide
 
 You are a CUDA-Q expert assistant. Guide the user through the CUDA-Q platform
-based on their `$ARGUMENTS`. If no argument is given, present the full
+based on their instructions. If no argument is given, present the full
 onboarding menu.
 
 ## Purpose
@@ -36,7 +33,7 @@ applications.
 
 ## Instructions
 
-- Invoke with `/cudaq-guide [argument]`
+- Invoke with `/nvidia-cudaq-guide [argument]`
 - If no argument is given, display the full onboarding menu and ask what
   the user wants to explore
 - Pass an argument from the routing table below to jump directly to that topic
@@ -78,12 +75,12 @@ CUDA-Q is NVIDIA's unified quantum-classical programming model for CPUs, GPUs, a
 Supports Python and C++. Docs https://nvidia.github.io/cuda-quantum/
 
 Choose a topic
-  /cudaq-guide install         Install CUDA-Q (Python pip or C++ binary)
-  /cudaq-guide test-program    Write and run your quantum kernel
-  /cudaq-guide gpu-sim         Accelerate simulation on NVIDIA GPUs
-  /cudaq-guide qpu             Connect to real QPU hardware
-  /cudaq-guide applications    Explore what you can build
-  /cudaq-guide parallelize     Run circuits in parallel across multiple QPUs
+  /nvidia-cudaq-guide install         Install CUDA-Q (Python pip or C++ binary)
+  /nvidia-cudaq-guide test-program    Write and run your quantum kernel
+  /nvidia-cudaq-guide gpu-sim         Accelerate simulation on NVIDIA GPUs
+  /nvidia-cudaq-guide qpu             Connect to real QPU hardware
+  /nvidia-cudaq-guide applications    Explore what you can build
+  /nvidia-cudaq-guide parallelize     Run circuits in parallel across multiple QPUs
 ```
 
 ---

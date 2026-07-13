@@ -66,10 +66,13 @@ Match the user's request to a reference file, then read and follow it:
 
 1. Match the user's request to a reference file from the table above.
 
-2. Detect what's running:
-   ```bash
-   echo "=== NIM ===" && docker ps --format '{{.Names}}' 2>/dev/null | grep -iE '(nim-llm|nemoretriever-embedding|nemoretriever-ranking|nemo-vlm|nemotron-vlm)' || echo "NO_LOCAL_NIMS"; echo "=== RAG ===" && docker ps --format '{{.Names}}' 2>/dev/null | grep -iE '(rag-server|ingestor-server|milvus)' || echo "NO_DOCKER_RAG"; echo "=== K8S ===" && kubectl get pods -n rag 2>/dev/null | head -5 || echo "NO_K8S"; echo "=== LIBRARY ===" && ps aux 2>/dev/null | grep -E '(nvidia_rag|uvicorn.*rag)' | grep -v grep || echo "NO_LIBRARY"
+2. Detect what's running using `terminal`:
    ```
+   docker ps --format '{{.Names}}'
+   kubectl get pods -n rag
+   ps aux
+   ```
+   Check for NIM containers (names matching `nim-llm`, `nemoretriever-embedding`, `nemoretriever-ranking`, `nemo-vlm`, `nemotron-vlm`), RAG services (`rag-server`, `ingestor-server`, `milvus`), K8s pods in the `rag` namespace, and library processes (`nvidia_rag`, `uvicorn.*rag`).
 
 3. Use this table to determine platform, deployment type, and where config lives:
 
@@ -84,16 +87,13 @@ Match the user's request to a reference file, then read and follow it:
 
    Tell the user what you detected and ask to confirm. Example: "I see local NIM containers running (nim-llm-ms, nemoretriever-embedding-ms) — this is a self-hosted deployment. Config file is `deploy/compose/.env`. Correct?"
 
-4. Check current feature state before changing anything — read the config location from step 3, then cross-check the live service:
-   - Docker: `docker exec rag-server env 2>/dev/null | grep -E "<VAR_NAME>"`
-   - Helm: `kubectl get pod -n rag -l app=rag-server -o jsonpath='{.items[0].spec.containers[0].env}' 2>/dev/null`
+4. Check current feature state before changing anything — read the config location from step 3, then cross-check the live service using `terminal`:
+   - Docker: run `docker exec rag-server env` and filter for the relevant variable names
+   - Helm: run `kubectl get pod -n rag -l app=rag-server -o jsonpath='{.items[0].spec.containers[0].env}'`
 
    If the config file and live service disagree, tell the user the service has stale config and will need a restart.
 
-5. If the feature needs extra GPUs, check availability against hardware restrictions (see below):
-   ```bash
-   nvidia-smi --query-gpu=index,name,memory.total,memory.used --format=csv,noheader 2>/dev/null || echo "NO_GPU"
-   ```
+5. If the feature needs extra GPUs, check availability using `terminal` to run `nvidia-smi --query-gpu=index,name,memory.total,memory.used --format=csv,noheader`.
 
 6. Read the reference file and apply changes:
    - **Docker**: edit the env file (uncomment to enable, re-comment to disable — the env file is the source of truth). Then restart the affected service:
@@ -111,20 +111,16 @@ Match the user's request to a reference file, then read and follow it:
    - **Helm**: edit `values.yaml`, then upgrade: `helm upgrade rag <chart> -n rag -f values.yaml`
    - **Library**: edit `notebooks/config.yaml`, then restart the Python process
 
-7. Verify:
-   - Docker: `docker ps --format "table {{.Names}}\t{{.Status}}" | head -20; curl -s http://localhost:8081/v1/health?check_dependencies=true 2>/dev/null | head -1`
-   - Helm: `kubectl get pods -n rag; kubectl rollout status deployment/rag-server -n rag --timeout=120s`
-   - Library: `curl -s http://localhost:8081/v1/health 2>/dev/null | head -1`
+7. Verify using `terminal`:
+   - Docker: run `docker ps --format "table {{.Names}}\t{{.Status}}"` and `curl -s http://localhost:8081/v1/health?check_dependencies=true`
+   - Helm: run `kubectl get pods -n rag` and `kubectl rollout status deployment/rag-server -n rag --timeout=120s`
+   - Library: run `curl -s http://localhost:8081/v1/health`
 
 8. If restart fails, read `references/troubleshoot.md`. If multiple features requested, repeat from step 1 for each.
 
 ### When User Says "Configure" Without Specifics
 
-Run steps 2–3 above, then read the identified config file to list what's currently enabled:
-```bash
-grep -E "^(export )?(ENABLE_|APP_)" <config-file> 2>/dev/null | sort
-```
-Summarize what's running and enabled, then ask which feature to change.
+Run steps 2–3 above, then use `read_file` to read the identified config file and filter for lines matching `^(export )?(ENABLE_|APP_)`. Summarize what's running and enabled, then ask which feature to change.
 
 ---
 

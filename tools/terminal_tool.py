@@ -2346,7 +2346,13 @@ def terminal_tool(
                 "EOF."
             )
 
-        # Claim the shared terminal environment for this session.
+        # Claim the (shared "default") terminal env for the session driving this
+        # command. File tools read env.cwd_owner to decide whether the env's live
+        # cwd is THIS session's `cd` or a different worktree session's — without
+        # it, two open worktree sessions sharing the env route each other's edits
+        # to the wrong checkout. get_current_session_key()'s contextvar doesn't
+        # cross tool-worker threads, so fall back to the raw task_id (which IS the
+        # session_key for the top-level agent) — a stable, thread-safe anchor.
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")

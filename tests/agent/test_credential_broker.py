@@ -37,7 +37,6 @@ def test_resolve_env_credential_when_tool_and_command_allowed(monkeypatch):
 
     assert credential.env_name == "GITHUB_TOKEN"
     assert credential.value == "ghp_test"
-    assert credential.forced_env_name == "_HERMES_FORCE_GITHUB_TOKEN"
 
 
 def test_resolve_env_credential_denies_unlisted_command(monkeypatch):
@@ -77,20 +76,113 @@ def test_resolve_env_credential_denies_secret_without_allow_rule(monkeypatch):
         )
 
 
-def test_scoped_env_overrides_restore_original_environment():
-    env = {"KEEP": "1", "_HERMES_FORCE_GITHUB_TOKEN": "old"}
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gh pr list; env",
+        "gh pr list && env",
+        "gh pr list || env",
+        "gh pr list | env",
+        "gh pr list & env",
+        "gh pr list\nenv",
+        "gh pr list $(env)",
+        "gh pr list `env`",
+        "gh pr list < input",
+        "gh pr list > output",
+        "gh pr list <(env)",
+        "gh pr list >(env)",
+        "gh pr list (env)",
+    ],
+)
+def test_resolve_env_credential_denies_compound_command(monkeypatch, command):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
 
-    with credential_broker.scoped_env_overrides(
-        env,
-        {"_HERMES_FORCE_GITHUB_TOKEN": "new", "_HERMES_FORCE_OTHER": "value"},
-    ):
-        assert env["_HERMES_FORCE_GITHUB_TOKEN"] == "new"
-        assert env["_HERMES_FORCE_OTHER"] == "value"
+    with pytest.raises(credential_broker.CredentialBrokerError, match="not allowed"):
+        credential_broker.resolve(
+            "github_token",
+            requester="terminal",
+            command=command,
+            config=BROKER_CONFIG,
+        )
 
-    assert env == {"KEEP": "1", "_HERMES_FORCE_GITHUB_TOKEN": "old"}
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gh search issues 'parser; bug'",
+        "gh api --jq ';'",
+        "gh api --jq '|'",
+        r"gh search issues parser\;bug",
+    ],
+)
+def test_resolve_env_credential_allows_inert_shell_metacharacters(monkeypatch, command):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+
+    credential = credential_broker.resolve(
+        "github_token",
+        requester="terminal",
+        command=command,
+        config=BROKER_CONFIG,
+    )
+
+    assert credential.value == "ghp_test"
 
 
-def test_terminal_tool_injects_brokered_credential_for_one_command(monkeypatch, tmp_path):
+def test_resolve_env_credential_requires_exact_executable(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+
+    with pytest.raises(credential_broker.CredentialBrokerError, match="not allowed"):
+        credential_broker.resolve(
+            "github_token",
+            requester="terminal",
+            command="/tmp/gh pr list",
+            config=BROKER_CONFIG,
+        )
+
+
+def test_canonicalize_command_preserves_arguments_as_data():
+    assert (
+        credential_broker.canonicalize_command("gh search issues 'parser; bug'")
+        == "gh search issues 'parser; bug'"
+    )
+
+
+def test_resolve_rejects_invalid_environment_name():
+    config = {
+        "credentials": {
+            "broker": {
+                "enabled": True,
+                "secrets": {
+                    "bad": {
+                        "source": "env",
+                        "name": "BAD-NAME",
+                        "allow": {"tools": ["terminal"], "commands": ["gh"]},
+                    }
+                },
+            }
+        }
+    }
+
+    with pytest.raises(credential_broker.CredentialBrokerError, match="invalid env"):
+        credential_broker.resolve(
+            "bad", requester="terminal", command="gh pr list", config=config
+        )
+
+
+def test_resolve_env_overrides_uses_target_environment_name(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+
+    assert credential_broker.resolve_env_overrides(
+        ["github_token"],
+        requester="terminal",
+        command="gh pr list",
+        config=BROKER_CONFIG,
+    ) == {"GITHUB_TOKEN": "ghp_test"}
+
+
+def test_terminal_tool_injects_brokered_credential_for_one_command(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
     monkeypatch.setattr(credential_broker, "_load_config", lambda: BROKER_CONFIG)
 
@@ -104,8 +196,9 @@ def test_terminal_tool_injects_brokered_credential_for_one_command(monkeypatch, 
             self.env = {}
 
         def execute(self, command, **kwargs):
+            captured.setdefault("calls", []).append((command, kwargs))
             captured["command"] = command
-            captured["env_during_execute"] = dict(self.env)
+            captured["kwargs"] = kwargs
             return {"output": "ok", "returncode": 0}
 
     fake_env = FakeEnv()
@@ -131,7 +224,11 @@ def test_terminal_tool_injects_brokered_credential_for_one_command(monkeypatch, 
     )
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
     monkeypatch.setattr(terminal_tool, "_create_environment", lambda **kwargs: fake_env)
-    monkeypatch.setattr(terminal_tool, "_check_all_guards", lambda command, env_type: {"approved": True})
+    monkeypatch.setattr(
+        terminal_tool,
+        "_check_all_guards",
+        lambda command, env_type, **kwargs: {"approved": True},
+    )
 
     result = json.loads(
         terminal_tool.terminal_tool(
@@ -142,5 +239,19 @@ def test_terminal_tool_injects_brokered_credential_for_one_command(monkeypatch, 
     )
 
     assert result["exit_code"] == 0
-    assert captured["env_during_execute"] == {"_HERMES_FORCE_GITHUB_TOKEN": "ghp_test"}
+    assert captured["command"] == "gh pr list"
+    assert captured["kwargs"]["env_overrides"] == {"GITHUB_TOKEN": "ghp_test"}
     assert fake_env.env == {}
+
+    sentinel = tmp_path / "credential-bypass-sentinel"
+    blocked = json.loads(
+        terminal_tool.terminal_tool(
+            f"gh pr list; touch {sentinel}",
+            credentials=["github_token"],
+            workdir=str(tmp_path),
+        )
+    )
+
+    assert blocked["status"] == "blocked"
+    assert len(captured["calls"]) == 1
+    assert not sentinel.exists()

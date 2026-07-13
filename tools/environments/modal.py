@@ -12,7 +12,7 @@ import shlex
 import tarfile
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from hermes_constants import get_hermes_home
 from tools.environments.base import (
@@ -407,7 +407,8 @@ class ModalEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None):
+                  stdin_data: str | None = None,
+                  env_overrides: Mapping[str, str] | None = None):
         """Return a _ThreadedProcessHandle wrapping an async Modal sandbox exec."""
         sandbox = self._sandbox
         worker = self._worker
@@ -417,7 +418,13 @@ class ModalEnvironment(BaseEnvironment):
 
         def exec_fn() -> tuple[str, int]:
             async def _do():
-                args = ["bash"]
+                args = []
+                if env_overrides:
+                    args.append("env")
+                    args.extend(
+                        f"{key}={value}" for key, value in env_overrides.items()
+                    )
+                args.append("bash")
                 if login:
                     args.extend(["-l", "-c", cmd_string])
                 else:

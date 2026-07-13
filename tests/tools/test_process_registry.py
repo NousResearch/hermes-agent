@@ -699,6 +699,30 @@ class TestSpawnEnvSanitization:
         assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN" not in env
         assert env["PYTHONUNBUFFERED"] == "1"
 
+    def test_spawn_local_applies_brokered_override_after_sanitization(self, registry):
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["env"] = kwargs["env"]
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.stdout = iter([])
+            proc.poll.return_value = None
+            return proc
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+            patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local(
+                "gh pr list",
+                cwd="/tmp",
+                env_overrides={"GITHUB_TOKEN": "brokered-token"},
+            )
+
+        assert captured["env"]["GITHUB_TOKEN"] == "brokered-token"
+        assert not any(key.startswith("_HERMES_FORCE_") for key in captured["env"])
+
     def test_spawn_via_env_uses_backend_temp_dir_for_artifacts(self, registry):
         class FakeEnv:
             def __init__(self):
@@ -716,7 +740,11 @@ class TestSpawnEnvSanitization:
 
         with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
             patch.object(registry, "_write_checkpoint"):
-            session = registry.spawn_via_env(env, "echo hello")
+            session = registry.spawn_via_env(
+                env,
+                "echo hello",
+                env_overrides={"GITHUB_TOKEN": "brokered-token"},
+            )
 
         bg_command = env.commands[0][0]
         assert session.pid == 4321
@@ -725,6 +753,9 @@ class TestSpawnEnvSanitization:
         assert "rc=$?;" in bg_command
         assert " > /tmp/hermes_bg_" not in bg_command
         assert "cat /tmp/hermes_bg_" not in bg_command
+        assert env.commands[0][1]["env_overrides"] == {
+            "GITHUB_TOKEN": "brokered-token"
+        }
         fake_thread.start.assert_called_once()
 
     def test_spawn_via_env_checks_returncode_when_wrapper_fails(self, registry):
@@ -805,6 +836,7 @@ class TestSpawnEnvSanitization:
         assert env.commands[0][0] == "cat '/path with spaces/hermes_bg.log' 2>/dev/null"
         assert env.commands[1][0] == "kill -0 \"$(cat '/path with spaces/hermes_bg.pid' 2>/dev/null)\" 2>/dev/null; echo $?"
         assert env.commands[2][0] == "cat '/path with spaces/hermes_bg.exit' 2>/dev/null"
+        assert all("env_overrides" not in kwargs for _, kwargs in env.commands)
 
 
 # =========================================================================

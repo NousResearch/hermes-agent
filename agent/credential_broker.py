@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shlex
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +26,6 @@ class BrokeredCredential:
     value: str
     env_name: str
     source: str = "env"
-
-    @property
-    def forced_env_name(self) -> str:
-        """Return the internal env override name used by terminal backends."""
-
-        return f"_HERMES_FORCE_{self.env_name}"
 
 
 def _load_config() -> dict[str, Any]:
@@ -60,16 +54,67 @@ def is_enabled(config: Mapping[str, Any] | None = None) -> bool:
     return bool(broker.get("enabled", False))
 
 
-def _requested_executable(command: str | None) -> str:
-    if not command:
-        return ""
+_SHELL_OPERATOR_CHARS = frozenset("();<>|&")
+
+
+def _contains_shell_execution_syntax(command: str) -> bool:
+    """Return whether *command* contains active Bash execution syntax."""
+
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(command):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote == "'":
+            if char == "'":
+                quote = None
+            continue
+        if char == '"':
+            quote = None if quote == '"' else '"'
+            continue
+        if quote == '"':
+            if char == "`" or (char == "$" and command[index : index + 2] == "$("):
+                return True
+            continue
+        if char == "'":
+            quote = "'"
+            continue
+        if char in _SHELL_OPERATOR_CHARS or char == "`":
+            return True
+        if char == "$" and command[index : index + 2] == "$(":
+            return True
+    return False
+
+
+def _parse_simple_command(command: str | None) -> list[str]:
+    """Parse one simple Bash command, rejecting active shell syntax.
+
+    Brokered credentials are inherited by the whole shell.  An allow rule for
+    ``gh`` therefore cannot safely authorize ``gh ...; other-command`` (or an
+    equivalent pipe/background/command-substitution form).
+    """
+    if not command or "\n" in command or "\r" in command:
+        return []
+    if _contains_shell_execution_syntax(command):
+        return []
     try:
-        parts = shlex.split(command, posix=(os.name != "nt"))
+        parts = shlex.split(command, posix=True, comments=False)
     except ValueError:
-        return ""
+        return []
+    return parts
+
+
+def canonicalize_command(command: str | None) -> str:
+    """Return a shell-safe canonical form of an accepted simple command."""
+
+    parts = _parse_simple_command(command)
     if not parts:
-        return ""
-    return os.path.basename(parts[0])
+        raise CredentialBrokerError("brokered credentials require one simple command")
+    return shlex.join(parts)
 
 
 def _as_str_list(value: Any) -> list[str]:
@@ -80,7 +125,9 @@ def _as_str_list(value: Any) -> list[str]:
     return []
 
 
-def _is_allowed(secret_cfg: Mapping[str, Any], *, requester: str, command: str | None) -> bool:
+def _is_allowed(
+    secret_cfg: Mapping[str, Any], *, requester: str, command: str | None
+) -> bool:
     allow = secret_cfg.get("allow") or {}
     if not isinstance(allow, Mapping) or not allow:
         return False
@@ -94,7 +141,8 @@ def _is_allowed(secret_cfg: Mapping[str, Any], *, requester: str, command: str |
         return False
 
     if commands:
-        executable = _requested_executable(command)
+        parts = _parse_simple_command(command)
+        executable = parts[0] if parts else ""
         if executable not in commands:
             return False
 
@@ -149,9 +197,15 @@ def resolve(
     env_name = str(secret_cfg.get("name") or "").strip()
     if not env_name:
         raise CredentialBrokerError(f"credential {name!r} is missing env variable name")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name):
+        raise CredentialBrokerError(
+            f"credential {name!r} has invalid env variable name"
+        )
 
     if not _is_allowed(secret_cfg, requester=requester, command=command):
-        raise CredentialBrokerError(f"credential {name!r} is not allowed for {requester}")
+        raise CredentialBrokerError(
+            f"credential {name!r} is not allowed for {requester}"
+        )
 
     try:
         from hermes_cli.config import get_env_value
@@ -160,7 +214,9 @@ def resolve(
     except Exception:
         value = os.environ.get(env_name)
     if not value:
-        raise CredentialBrokerError(f"credential {name!r} source env:{env_name} is not set")
+        raise CredentialBrokerError(
+            f"credential {name!r} source env:{env_name} is not set"
+        )
 
     return BrokeredCredential(name=name, value=value, env_name=env_name, source=source)
 
@@ -172,31 +228,12 @@ def resolve_env_overrides(
     command: str | None = None,
     config: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
-    """Resolve names into internal one-command environment overrides."""
+    """Resolve names into one-command environment overrides."""
 
     overrides: dict[str, str] = {}
     for name in names or []:
-        credential = resolve(str(name), requester=requester, command=command, config=config)
-        overrides[credential.forced_env_name] = credential.value
+        credential = resolve(
+            str(name), requester=requester, command=command, config=config
+        )
+        overrides[credential.env_name] = credential.value
     return overrides
-
-
-@contextmanager
-def scoped_env_overrides(env: dict[str, str], overrides: Mapping[str, str]) -> Iterator[None]:
-    """Temporarily add brokered env overrides to an environment object."""
-
-    if not overrides:
-        yield
-        return
-
-    sentinel = object()
-    previous: dict[str, str | object] = {key: env.get(key, sentinel) for key in overrides}
-    env.update({str(key): str(value) for key, value in overrides.items()})
-    try:
-        yield
-    finally:
-        for key, old_value in previous.items():
-            if old_value is sentinel:
-                env.pop(key, None)
-            else:
-                env[key] = str(old_value)

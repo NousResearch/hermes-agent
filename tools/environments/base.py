@@ -18,7 +18,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import IO, Callable, Protocol
+from typing import IO, Callable, Mapping, Protocol, Sequence
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -333,6 +333,7 @@ class BaseEnvironment(ABC):
         login: bool = False,
         timeout: int = 120,
         stdin_data: str | None = None,
+        env_overrides: Mapping[str, str] | None = None,
     ) -> ProcessHandle:
         """Spawn a bash process to run *cmd_string*.
 
@@ -469,7 +470,12 @@ class BaseEnvironment(ABC):
         """
         return shlex.quote(path)
 
-    def _wrap_command(self, command: str, cwd: str) -> str:
+    def _wrap_command(
+        self,
+        command: str,
+        cwd: str,
+        env_override_names: Sequence[str] = (),
+    ) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
         escaped = command.replace("'", "'\\''")
@@ -512,6 +518,11 @@ class BaseEnvironment(ABC):
         # Restrict Hermes metadata files without changing the user's command
         # umask. Snapshot files may contain env-carried secrets.
         parts.append("umask 077")
+
+        # Per-invocation values arrive through the backend's process environment.
+        # Remove them before refreshing the persistent shell snapshot.
+        if env_override_names:
+            parts.append("unset " + " ".join(env_override_names))
 
         # Re-dump env vars to snapshot (atomic replacement to avoid races).
         # Chain mv on the export succeeding so a failed/partial dump never
@@ -904,8 +915,9 @@ class BaseEnvironment(ABC):
         timeout: int | None = None,
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
+        env_overrides: Mapping[str, str] | None = None,
     ) -> dict:
-        """Execute a command, return {"output": str, "returncode": int}."""
+        """Execute a command with optional invocation-scoped environment values."""
         self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
@@ -931,13 +943,28 @@ class BaseEnvironment(ABC):
             exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
             effective_stdin = None
 
-        wrapped = self._wrap_command(exec_command, effective_cwd)
+        invocation_env = {
+            str(key): str(value) for key, value in (env_overrides or {}).items()
+        }
+        for key in invocation_env:
+            if not key.isidentifier() or not key.isascii():
+                raise ValueError(f"Invalid environment override name: {key!r}")
+
+        wrapped = self._wrap_command(
+            exec_command,
+            effective_cwd,
+            tuple(invocation_env),
+        )
 
         # Use login shell if snapshot failed (so user's profile still loads)
         login = not self._snapshot_ready
 
         proc = self._run_bash(
-            wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
+            wrapped,
+            login=login,
+            timeout=effective_timeout,
+            stdin_data=effective_stdin,
+            env_overrides=invocation_env,
         )
         result = self._wait_for_process(proc, timeout=effective_timeout)
         self._update_cwd(result)

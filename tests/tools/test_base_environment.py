@@ -15,7 +15,15 @@ class _TestableEnv(BaseEnvironment):
     def __init__(self, cwd="/tmp", timeout=10):
         super().__init__(cwd=cwd, timeout=timeout)
 
-    def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+    def _run_bash(
+        self,
+        cmd_string,
+        *,
+        login=False,
+        timeout=120,
+        stdin_data=None,
+        env_overrides=None,
+    ):
         raise NotImplementedError("Use mock")
 
     def cleanup(self):
@@ -43,6 +51,19 @@ class TestWrapCommand:
         wrapped = env._wrap_command("echo hello", "/tmp")
 
         assert "source" not in wrapped
+
+    def test_invocation_env_is_unset_before_snapshot_refresh(self):
+        env = _TestableEnv()
+        env._snapshot_ready = True
+
+        wrapped = env._wrap_command(
+            "python -c 'print(1)'",
+            "/tmp",
+            ("GITHUB_TOKEN",),
+        )
+
+        assert wrapped.index("eval ") < wrapped.index("unset GITHUB_TOKEN")
+        assert wrapped.index("unset GITHUB_TOKEN") < wrapped.index("export -p >")
 
     def test_single_quote_escaping(self):
         env = _TestableEnv()
@@ -297,7 +318,7 @@ class TestSnapshotFileModes:
             def get_temp_dir(self):
                 return self._temp_dir
 
-            def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+            def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None, env_overrides=None):
                 proc = subprocess.Popen(
                     ["/bin/bash", "-lc", cmd_string],
                     stdout=subprocess.PIPE,
@@ -422,7 +443,9 @@ class TestInitSessionFailure:
         env._snapshot_ready = False
 
         calls = []
-        def mock_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+        def mock_run_bash(
+            cmd, *, login=False, timeout=120, stdin_data=None, env_overrides=None
+        ):
             calls.append({"login": login})
             # Return a mock process handle
             mock = MagicMock()

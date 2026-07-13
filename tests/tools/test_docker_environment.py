@@ -1,4 +1,6 @@
 import logging
+import os
+import shutil
 from io import StringIO
 import subprocess
 
@@ -1840,3 +1842,93 @@ def test_execute_does_not_recover_on_ordinary_failure(monkeypatch):
     result = env.execute("badcmd")
     assert result.get("returncode") == 127
     assert "command not found" in result.get("output", "")
+
+
+def test_run_bash_applies_environment_overrides_to_one_docker_exec(monkeypatch):
+    env = object.__new__(docker_env.DockerEnvironment)
+    env._container_id = "container-id"
+    env._docker_exe = "/usr/bin/docker"
+    env._init_env_args = ["-e", "BASE=value"]
+    calls = []
+
+    def fake_popen(cmd, stdin_data):
+        calls.append((cmd, stdin_data))
+        return StringIO()
+
+    monkeypatch.setattr(docker_env, "_popen_bash", fake_popen)
+
+    env._run_bash(
+        "env",
+        env_overrides={"GITHUB_TOKEN": "brokered-token"},
+    )
+    env._run_bash("env")
+
+    assert calls[0][0][:5] == [
+        "/usr/bin/docker",
+        "exec",
+        "-e",
+        "GITHUB_TOKEN=brokered-token",
+        "container-id",
+    ]
+    assert "GITHUB_TOKEN=brokered-token" not in calls[1][0]
+    assert env._init_env_args == ["-e", "BASE=value"]
+
+
+def test_real_docker_override_is_scoped_for_foreground_and_background():
+    docker = shutil.which("docker")
+    image = os.environ.get("HERMES_DOCKER_TEST_IMAGE", "python:3.11")
+    if not docker:
+        pytest.skip("Docker CLI is unavailable")
+    if subprocess.run(
+        [docker, "info"], capture_output=True, text=True, timeout=15
+    ).returncode:
+        pytest.skip("Docker daemon is unavailable")
+    if subprocess.run(
+        [docker, "image", "inspect", image],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    ).returncode:
+        pytest.skip(f"Docker test image is not present locally: {image}")
+
+    from tools.process_registry import ProcessRegistry
+
+    env = docker_env.DockerEnvironment(
+        image=image,
+        cwd="/root",
+        timeout=60,
+        cpu=0,
+        memory=0,
+        disk=0,
+        persistent_filesystem=False,
+        task_id="credential-broker-real-docker",
+        volumes=[],
+        network=True,
+        auto_mount_cwd=False,
+        persist_across_processes=False,
+    )
+    registry = ProcessRegistry()
+    command = "python -c 'import os; print(os.getenv(\"BROKER_TEST\", \"missing\"))'"
+    try:
+        foreground = env.execute(
+            command,
+            env_overrides={"BROKER_TEST": "foreground-value"},
+        )
+        foreground_after = env.execute(command)
+
+        session = registry.spawn_via_env(
+            env,
+            command,
+            env_overrides={"BROKER_TEST": "background-value"},
+        )
+        background = registry.wait(session.id, timeout=30)
+        background_after = env.execute(command)
+    finally:
+        env.cleanup()
+
+    assert foreground["returncode"] == 0
+    assert foreground["output"].strip() == "foreground-value"
+    assert foreground_after["output"].strip() == "missing"
+    assert background["exit_code"] == 0
+    assert background["output"].strip() == "background-value"
+    assert background_after["output"].strip() == "missing"

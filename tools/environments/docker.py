@@ -14,7 +14,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 from tools.environments.base import BaseEnvironment, _popen_bash
 from tools.environments.local import (
@@ -1056,7 +1056,8 @@ class DockerEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None,
+                  env_overrides: Mapping[str, str] | None = None) -> subprocess.Popen:
         """Spawn a bash process inside the Docker container."""
         assert self._container_id, "Container not started"
         cmd = [self._docker_exe, "exec"]
@@ -1067,6 +1068,8 @@ class DockerEnvironment(BaseEnvironment):
         # Subsequent commands get env vars from the snapshot.
         if login:
             cmd.extend(self._init_env_args)
+        for key, value in (env_overrides or {}).items():
+            cmd.extend(["-e", f"{key}={value}"])
 
         cmd.extend([self._container_id])
 

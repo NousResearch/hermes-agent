@@ -12,7 +12,7 @@ import subprocess
 import threading
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 from hermes_constants import get_hermes_home
 from tools.environments.base import (
@@ -231,13 +231,16 @@ class SingularityEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None,
+                  env_overrides: Mapping[str, str] | None = None) -> subprocess.Popen:
         """Spawn a bash process inside the Singularity instance."""
         if not self._instance_started:
             raise RuntimeError("Singularity instance not started")
 
-        cmd = [self.executable, "exec",
-               f"instance://{self.instance_id}"]
+        cmd = [self.executable, "exec"]
+        for key, value in (env_overrides or {}).items():
+            cmd.extend(["--env", f"{key}={value}"])
+        cmd.append(f"instance://{self.instance_id}")
         if login:
             cmd.extend(["bash", "-l", "-c", cmd_string])
         else:

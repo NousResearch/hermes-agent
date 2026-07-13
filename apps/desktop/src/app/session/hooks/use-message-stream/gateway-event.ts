@@ -489,9 +489,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         setApprovalRequest({
           // false only when a tirith warning forbids it; backend omits the field otherwise.
           allowPermanent: payload?.allow_permanent !== false,
+          choices: Array.isArray(payload?.choices) ? payload.choices.filter(choice => typeof choice === 'string') : undefined,
           command,
           description,
-          sessionId: sessionId ?? null
+          sessionId: sessionId ?? null,
+          smartDenied: payload?.smart_denied === true
         })
 
         if (sessionId) {
